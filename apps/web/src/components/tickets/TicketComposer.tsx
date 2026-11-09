@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { TICKET_ATTACHMENT_LIMITS, type TicketTemplateVars } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { showToast } from '../shared/Toast';
+import { registerLogoutHook } from '@/stores/logoutHooks';
 import CannedResponsePicker from './CannedResponsePicker';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 
@@ -20,12 +21,19 @@ interface AttachmentChip {
   id?: string;
 }
 
+type ComposerMode = 'reply' | 'internal';
+
 /**
  * Unsent text per ticket, for this page session. Moving to another ticket
  * (j/k, the next-ticket offer, back to the queue) unmounts the composer; a
  * half-written reply must be there again on return, never silently dropped.
+ * The mode travels with the text: an internal note restored as a public reply
+ * would email the requester on Send.
  */
-const draftsByKey = new Map<string, string>();
+const draftsByKey = new Map<string, { content: string; mode: ComposerMode }>();
+// Web sign-out is same-document, so module state outlives it: the next person
+// to sign in on this browser must not find the last one's drafts.
+registerLogoutHook(() => draftsByKey.clear());
 
 interface Props {
   requesterName: string | null;
@@ -58,24 +66,36 @@ interface Props {
   templates?: CannedResponse[];
   /** Merge-variable values resolved from the current ticket, applied on insert. */
   templateVars?: TicketTemplateVars;
+  /** The host asks for the composer (r / n): set this mode and focus the box.
+   *  Acted on once per token. */
+  focusRequest?: { mode: ComposerMode; token: number } | null;
 }
 
-export default function TicketComposer({ requesterName, requesterEmail, toolbarExtra, draftKey, hidden, onLogTime, logTimeOpen = false, contentClassName, onSend, onUploadAttachment, disabled, templates, templateVars }: Props) {
+export default function TicketComposer({ requesterName, requesterEmail, toolbarExtra, draftKey, hidden, onLogTime, logTimeOpen = false, contentClassName, onSend, onUploadAttachment, disabled, templates, templateVars, focusRequest }: Props) {
   const { t } = useTranslation('tickets');
-  const [mode, setMode] = useState<'reply' | 'internal'>('reply'); // public reply default (UI brief)
-  const [content, setContent] = useState(() => (draftKey ? draftsByKey.get(draftKey) ?? '' : ''));
+  // Public reply is the default (UI brief); a restored draft keeps its own mode.
+  const [mode, setMode] = useState<ComposerMode>(() => (draftKey ? draftsByKey.get(draftKey)?.mode : undefined) ?? 'reply');
+  const [content, setContent] = useState(() => (draftKey ? draftsByKey.get(draftKey)?.content ?? '' : ''));
   const [sending, setSending] = useState(false);
-  // Mirror the text into the per-ticket memory; an emptied box forgets it.
+  // Mirror the text and its mode into the per-ticket memory; an emptied box forgets it.
   useEffect(() => {
     if (!draftKey) return;
-    if (content) draftsByKey.set(draftKey, content);
+    if (content) draftsByKey.set(draftKey, { content, mode });
     else draftsByKey.delete(draftKey);
-  }, [draftKey, content]);
+  }, [draftKey, content, mode]);
   const [chips, setChips] = useState<AttachmentChip[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const modeRefs = useRef<Record<'reply' | 'internal', HTMLButtonElement | null>>({ reply: null, internal: null });
+  const modeRefs = useRef<Record<ComposerMode, HTMLButtonElement | null>>({ reply: null, internal: null });
   const isPublic = mode === 'reply';
+
+  const handledFocusToken = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focusRequest || focusRequest.token === handledFocusToken.current) return;
+    handledFocusToken.current = focusRequest.token;
+    setMode(focusRequest.mode);
+    textareaRef.current?.focus();
+  }, [focusRequest]);
 
   // Radio-group keys: every arrow moves to the other mode and checks it
   // (two options, so it always wraps). The queue's window-level ArrowUp/Down
@@ -163,6 +183,11 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
     setSending(true);
     try {
       await onSend(content.trim(), isPublic, readyIds);
+      // Forget the sent text here, not through the mirror effect: if the
+      // composer unmounted while the POST was in flight (j/k, the next-ticket
+      // offer), that effect never runs again and the reply would come back as
+      // an unsent draft. Only the text that was sent is forgotten.
+      if (draftKey && draftsByKey.get(draftKey)?.content === content) draftsByKey.delete(draftKey);
       // A chip still sitting in 'error' (e.g. a rejected file type) never made
       // it into attachmentIds, so the comment above just posted WITHOUT it.
       // Keep that chip — clearing it here would silently discard the user's
@@ -184,7 +209,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
     } finally {
       setSending(false);
     }
-  }, [chips, content, isPublic, onSend, readyIds, sending, t, uploading]);
+  }, [chips, content, draftKey, isPublic, onSend, readyIds, sending, t, uploading]);
 
   return (
     <div

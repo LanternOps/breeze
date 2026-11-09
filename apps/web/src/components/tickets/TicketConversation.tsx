@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import TicketFeed from './TicketFeed';
+import TicketFeed, { isRequesterAuthored } from './TicketFeed';
 import type { TicketDetail } from './ticketConfig';
 
 interface Props {
@@ -11,6 +11,9 @@ interface Props {
   onSaveDescription: (description: string) => void;
   onEditComment?: (commentId: string, content: string) => void;
   onDeleteComment?: (commentId: string) => void;
+  /** tickets:manage: the server lets its holder edit or delete anyone's comment
+   *  (assertCommentEditable); everyone else only their own. */
+  canManageAnyComment: boolean;
   mergedFromNumbers: Record<string, string>;
 }
 
@@ -19,7 +22,7 @@ interface Props {
  * description, as message 1), then the feed. Message bodies hold a reading
  * measure near 72ch; the column itself may be wider.
  */
-export default function TicketConversation({ ticket, merged, onSaveDescription, onEditComment, onDeleteComment, mergedFromNumbers }: Props) {
+export default function TicketConversation({ ticket, merged, onSaveDescription, onEditComment, onDeleteComment, canManageAnyComment, mergedFromNumbers }: Props) {
   const { t } = useTranslation('tickets');
   const [editing, setEditing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -88,9 +91,12 @@ export default function TicketConversation({ ticket, merged, onSaveDescription, 
         comments={ticket.comments}
         onEditComment={merged ? undefined : onEditComment}
         onDeleteComment={merged ? undefined : onDeleteComment}
-        // Delete stays for redaction on every comment; TicketFeed itself never
-        // offers Edit on a requester's words.
-        canManageComment={() => !merged}
+        // A requester's comment is never this user's own, so the server allows
+        // its delete (redaction) only with tickets:manage; offering it to anyone
+        // else is a 403 toast. Staff comments keep their controls (the server
+        // still refuses someone else's without tickets:manage). TicketFeed
+        // itself never offers Edit on a requester's words.
+        canManageComment={(c) => !merged && (canManageAnyComment || !isRequesterAuthored(c))}
         mergedFromNumbers={mergedFromNumbers}
         embedded
       />

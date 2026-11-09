@@ -268,6 +268,12 @@ const TARGET_GLOBS = [
   // composer's Log time); its POST /time-entries stays guarded.
   'src/components/tickets/TicketQuickTimeEntry.tsx',
   'src/components/tickets/TicketPartsCard.tsx',
+  // Split out of TicketWorkbench by the focus-view redesign: move-org, the
+  // invoice action and the AI assist POSTs (triage apply/reject, draft
+  // send/discard, proposal post-note) all go through runAction.
+  'src/components/tickets/TicketMoveOrgDialog.tsx',
+  'src/components/tickets/TicketInvoiceAction.tsx',
+  'src/components/tickets/useTicketAiAssist.ts',
   'src/components/clientAi/OrgsTab.tsx',
   'src/components/clientAi/PolicyEditor.tsx',
   'src/components/clientAi/SessionsTab.tsx',

@@ -54,6 +54,10 @@ interface Props {
   /** Names the browser tab after the ticket (the focus view). Defaults to `expanded`. */
   namesPage?: boolean;
   resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
+  /** Increments when the page-level `r` / `n` shortcut asks for the composer
+   *  in that mode. Honoured from either tab; ignored (nothing changes) while a
+   *  resolve or pending form holds the composer's place. */
+  composeRequest?: { mode: 'reply' | 'internal'; token: number };
   refreshToken?: number;         // bumped by bulk actions in the queue after they mutate tickets
   // Host-supplied assignee list (TicketsPage already fetches /users for its
   // filter bar). When provided — including null for "picker hidden" — the
@@ -61,14 +65,15 @@ interface Props {
   // self-fetch.
   assignees?: UserOption[] | null;
   categories?: Array<{ id: string; name: string }>;
-  /** Toast "Ticket resolved" on resolve. The queue host turns it off: its
-   *  next-ticket strip already says so. */
-  resolveToast?: boolean;
+  /** Toast "Ticket resolved" on resolve. The queue host passes a function,
+   *  asked once the resolve has landed: false when its next-ticket offer will
+   *  say so instead. */
+  resolveToast?: boolean | ((ticketId: string) => boolean);
 }
 
 type FocusTab = 'conversation' | 'details';
 
-export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, onDeleted, onMerged, onReady, expanded, namesPage, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [], resolveToast = true }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, onDeleted, onMerged, onReady, expanded, namesPage, resolveRequestToken, composeRequest, refreshToken, assignees: assigneesProp, categories = [], resolveToast = true }: Props) {
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
@@ -99,6 +104,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   >(null);
   const [checklistConfirm, setChecklistConfirm] = useState<(() => void) | null>(null);
   const [moveOrgOpen, setMoveOrgOpen] = useState(false);
+  // What the composer was last asked for (r / n), handed down once the
+  // conversation is the visible tab.
+  const [composerFocus, setComposerFocus] = useState<{ mode: 'reply' | 'internal'; token: number } | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -267,6 +275,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setMoveOrgOpen(false);
     setChecklistCounts(null);
     setChecklistConfirm(null);
+    setComposerFocus(null);
     setFocusTab('conversation');
   }, [ticketId]);
 
@@ -303,6 +312,24 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   useEffect(() => {
     if (resolveOpen) resolveNoteRef.current?.focus();
   }, [resolveOpen, resolveRequestToken, loadedId]);
+
+  // Page-level `r` / `n`: the composer, in that mode, from either tab. As with
+  // `e`, the token a workbench mounts with is an old press. While a resolve or
+  // pending form holds the composer's place the key does nothing: closing the
+  // form would drop what was typed there, and flipping the hidden composer's
+  // mode behind it would surface later as a surprise.
+  const mountComposeToken = useRef(composeRequest?.token);
+  const formOpenNow = resolveOpen || pendingOpen !== null;
+  const formOpenRef = useRef(formOpenNow);
+  formOpenRef.current = formOpenNow;
+  const composeToken = composeRequest?.token;
+  const composeMode = composeRequest?.mode;
+  useEffect(() => {
+    if (!composeToken || !composeMode || composeToken === mountComposeToken.current) return;
+    if (formOpenRef.current) return;
+    setFocusTab('conversation');
+    setComposerFocus({ mode: composeMode, token: composeToken });
+  }, [composeToken, composeMode]);
 
   // Fetch assignees once; degrade gracefully if the endpoint is unavailable.
   // Skipped entirely when the host already supplies the list via the prop.
@@ -504,7 +531,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       await runAction({
         request: () => fetchWithAuth(`/tickets/${ticketId}/status`, { method: 'POST', body: JSON.stringify(body) }),
         errorFallback: t('ticketWorkbench.toast.resolveFailed'),
-        successMessage: resolveToast ? t('ticketWorkbench.toast.ticketResolved') : undefined,
+        // Asked once the POST has landed: the host knows by then whether its
+        // next-ticket offer will say "resolved" instead.
+        successMessage: () => ((typeof resolveToast === 'function' ? resolveToast(ticketId) : resolveToast) ? t('ticketWorkbench.toast.ticketResolved') : ''),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
     } catch (err) {
@@ -754,6 +783,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               onSaveDescription={(description) => handleFieldSave({ description })}
               onEditComment={handleEditComment}
               onDeleteComment={handleDeleteComment}
+              canManageAnyComment={canManage}
               mergedFromNumbers={mergedFromNumbers}
             />
           </div>
@@ -787,6 +817,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             templates={cannedTemplates}
             templateVars={templateVars}
             toolbarExtra={askAi}
+            composerFocus={composerFocus}
           />
         </div>
         <aside

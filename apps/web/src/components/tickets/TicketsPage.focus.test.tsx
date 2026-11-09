@@ -38,22 +38,36 @@ vi.mock('../../lib/authScope', () => ({
 
 type WorkbenchProps = {
   ticketId: string;
-  resolveToast?: boolean;
+  resolveToast?: boolean | ((ticketId: string) => boolean);
+  composeRequest?: { mode: 'reply' | 'internal'; token: number };
   onTicketPatched?: (id: string, patch: Partial<TicketSummary>) => void;
+  onChanged?: () => void;
+  onReady?: (id: string) => void;
 };
 const workbenchProps: WorkbenchProps[] = [];
 const lastWorkbench = () => workbenchProps[workbenchProps.length - 1];
-vi.mock('./TicketWorkbench', () => ({
-  default: (props: WorkbenchProps) => {
-    workbenchProps.push(props);
-    return (
-      <div data-testid="ticket-workbench-mock">
-        {props.ticketId}
-        <textarea data-testid="ticket-composer-input" />
-      </div>
-    );
-  }
-}));
+// How many times the focus view's workbench mounted: a refetch that drops the
+// open ticket from the list must never unmount it.
+const workbenchMounts = vi.hoisted(() => ({ count: 0 }));
+vi.mock('./TicketWorkbench', async () => {
+  const { useEffect } = await import('react');
+  return {
+    default: (props: WorkbenchProps) => {
+      workbenchProps.push(props);
+      useEffect(() => { workbenchMounts.count += 1; }, []);
+      // The real workbench reports ready once the ticket's detail has loaded.
+      const { ticketId, onReady } = props;
+      useEffect(() => { onReady?.(ticketId); }, [ticketId, onReady]);
+      return (
+        <div data-testid="ticket-workbench-mock">
+          {props.ticketId}
+          <h2 id="ticket-focus-subject" tabIndex={-1} data-testid="ticket-workbench-subject">Subject of {props.ticketId}</h2>
+          <textarea data-testid="ticket-composer-input" />
+        </div>
+      );
+    }
+  };
+});
 vi.mock('./InboundReviewQueue', () => ({ default: () => <div data-testid="inbound-review-queue-mock" /> }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -88,9 +102,14 @@ const two = makeTicket({ id: 'tk-2', internalNumber: 'T-1002', subject: 'VPN dro
 const three = makeTicket({ id: 'tk-3', internalNumber: 'T-1003', subject: 'New laptop' });
 const LIST = [one, two, three];
 
-function mockApi(list: TicketSummary[] | ((url: string) => TicketSummary[]) = LIST) {
-  fetchMock.mockImplementation(async (input) => {
+function mockApi(
+  list: TicketSummary[] | ((url: string) => TicketSummary[]) = LIST,
+  route?: (url: string, init?: RequestInit) => Response | undefined,
+) {
+  fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
+    const routed = route?.(url, init);
+    if (routed) return routed;
     if (url === '/tickets/stats') return json({ data: { open: 3, unassigned: 3, mine: 0, breached: 1 } });
     if (url.startsWith('/tickets?')) return json({ data: typeof list === 'function' ? list(url) : list });
     if (url === '/ticket-categories') return json({ data: [] });
@@ -105,6 +124,9 @@ function mockApi(list: TicketSummary[] | ((url: string) => TicketSummary[]) = LI
   });
 }
 
+const wantsResolveToast = (props: WorkbenchProps, id: string): boolean =>
+  typeof props.resolveToast === 'function' ? props.resolveToast(id) : props.resolveToast ?? true;
+
 const ticketListUrls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.startsWith('/tickets?'));
 const press = (key: string, target: Element | Document = document.body) => {
   resetTypingCadence();
@@ -114,8 +136,11 @@ const press = (key: string, target: Element | Document = document.body) => {
 beforeEach(() => {
   vi.clearAllMocks();
   workbenchProps.length = 0;
+  workbenchMounts.count = 0;
   authState.permissions = [];
-  history.replaceState(null, '', '/tickets');
+  // A new entry, so no forward entries a previous test left behind (Back /
+  // Forward below) can be reached from this one.
+  history.pushState(null, '', '/tickets');
   try { window.localStorage.clear(); } catch { /* storage unavailable */ }
 });
 afterEach(() => { history.replaceState(null, '', '/tickets'); });
@@ -290,11 +315,12 @@ describe('TicketsPage resolve → next offer', () => {
     render(<TicketsPage />);
     await waitFor(() => expect(lastWorkbench()?.ticketId).toBe('tk-1'));
 
+    // The strip will say it, so the focus view does not toast "Ticket resolved"
+    // too (asked once the resolve lands, before the row is patched).
+    expect(wantsResolveToast(lastWorkbench(), 'tk-1')).toBe(false);
     act(() => { lastWorkbench().onTicketPatched?.('tk-1', { status: 'resolved' }); });
 
     const offer = await screen.findByTestId('ticket-next-offer');
-    // The strip says it; the focus view does not toast "Ticket resolved" too.
-    expect(lastWorkbench().resolveToast).toBe(false);
     // One ruled band on the header's gutter.
     const band = screen.getByTestId('ticket-focus-notice-band');
     expect(band).toContainElement(offer);
@@ -329,5 +355,254 @@ describe('TicketsPage resolve → next offer', () => {
     await waitFor(() => expect(lastWorkbench()?.ticketId).toBe('tk-1'));
     act(() => { lastWorkbench().onTicketPatched?.('tk-1', { priority: 'high' }); });
     expect(screen.queryByTestId('ticket-next-offer')).toBeNull();
+  });
+});
+
+describe('TicketsPage resolve toast', () => {
+  it('toasts the resolve when no next ticket is left to offer', async () => {
+    window.location.hash = '#T-1001';
+    mockApi([one]);
+    render(<TicketsPage />);
+    await waitFor(() => expect(lastWorkbench()?.ticketId).toBe('tk-1'));
+    expect(wantsResolveToast(lastWorkbench(), 'tk-1')).toBe(true);
+  });
+
+  it('toasts a resolve of a ticket that was already closed (the Closed tab offers nothing)', async () => {
+    const closedOne = makeTicket({ id: 'tk-9', internalNumber: 'T-1009', status: 'closed' });
+    window.location.hash = '#T-1009';
+    mockApi([closedOne, two]);
+    render(<TicketsPage />);
+    await waitFor(() => expect(lastWorkbench()?.ticketId).toBe('tk-9'));
+    expect(wantsResolveToast(lastWorkbench(), 'tk-9')).toBe(true);
+  });
+});
+
+describe('TicketsPage browser history', () => {
+  it('opening a ticket from the board pushes one entry, keeping the router state; j/k in focus replace it', async () => {
+    history.replaceState({ index: 7, scrollX: 0, scrollY: 0 }, '', '/tickets');
+    mockApi();
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-1');
+    const push = vi.spyOn(window.history, 'pushState');
+    const before = window.history.length;
+    try {
+      fireEvent.click(screen.getByTestId('ticket-row-tk-1'));
+      await waitFor(() => expect(window.location.hash).toBe('#T-1001'));
+      expect(push).toHaveBeenCalledTimes(1);
+      expect(window.history.length).toBe(before + 1);
+      // Astro's view-transition router reads its index from history.state.
+      expect(window.history.state).toEqual({ index: 7, scrollX: 0, scrollY: 0 });
+
+      press('j');
+      await waitFor(() => expect(window.location.hash).toBe('#T-1002'));
+      expect(push).toHaveBeenCalledTimes(1);
+      expect(window.history.length).toBe(before + 1);
+    } finally {
+      push.mockRestore();
+    }
+  });
+
+  it('browser Back from focus returns to the board with the active row restored, and the router never sees it', async () => {
+    // Stands in for Astro's popstate listener, registered at module load
+    // (before any island). For a same-page traversal it would re-fetch and
+    // swap this page unless its stale location carries a hash.
+    const routerPops: unknown[] = [];
+    const router = (e: PopStateEvent) => { routerPops.push(e.state); };
+    window.addEventListener('popstate', router);
+    try {
+      history.replaceState({ index: 3, scrollX: 0, scrollY: 0 }, '', '/tickets');
+      mockApi();
+      render(<TicketsPage />);
+      fireEvent.click(await screen.findByTestId('ticket-row-tk-2'));
+      await screen.findByTestId('tickets-focus');
+      press('j');
+      await waitFor(() => expect(window.location.hash).toBe('#T-1003'));
+
+      history.back();
+
+      await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+      expect(window.location.pathname + window.location.hash).toBe('/tickets');
+      expect(screen.getByTestId('ticket-row-tk-3')).toHaveAttribute('aria-selected', 'true');
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('ticket-row-tk-3')));
+      expect(routerPops).toEqual([]);
+
+      // Forward opens it again.
+      history.forward();
+      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-3'));
+      expect(routerPops).toEqual([]);
+    } finally {
+      window.removeEventListener('popstate', router);
+    }
+  });
+
+  it('Esc after opening from the board steps back through the pushed entry, so Forward reopens the ticket', async () => {
+    mockApi();
+    render(<TicketsPage />);
+    fireEvent.click(await screen.findByTestId('ticket-row-tk-1'));
+    await screen.findByTestId('tickets-focus');
+    const length = window.history.length;
+
+    press('Escape');
+    await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+    // No new entry: Esc went back rather than writing the board over the ticket.
+    expect(window.history.length).toBe(length);
+
+    history.forward();
+    await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-1'));
+  });
+});
+
+describe('TicketsPage focus: keyboard focus and announcements', () => {
+  it('opening from the board moves focus to the subject and announces the ticket outside the hidden board', async () => {
+    mockApi();
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-1');
+    press('j');
+    press('j');
+    press('Enter');
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('ticket-workbench-subject')));
+    const announcer = screen.getByTestId('tickets-queue-announcer');
+    expect(screen.getByTestId('tickets-triage')).toHaveAttribute('hidden');
+    expect(screen.getByTestId('tickets-triage')).not.toContainElement(announcer);
+    expect(announcer).toHaveTextContent('T-1002 VPN drops, Normal priority, SLA breached');
+  });
+
+  it('j/k in focus move focus to the new subject and announce the new ticket', async () => {
+    mockApi();
+    render(<TicketsPage />);
+    fireEvent.click(await screen.findByTestId('ticket-row-tk-1'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('ticket-workbench-subject')));
+    // Focus leaves the heading (e.g. onto the page) before the next move.
+    (document.activeElement as HTMLElement).blur();
+
+    press('j');
+    await waitFor(() => expect(lastWorkbench().ticketId).toBe('tk-2'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('ticket-workbench-subject')));
+    expect(screen.getByTestId('tickets-queue-announcer')).toHaveTextContent('T-1002 VPN drops, Normal priority, SLA breached');
+  });
+
+  it('a /tickets/[id] page load announces nothing and leaves focus where the page put it', async () => {
+    history.replaceState(null, '', '/tickets/tk-2');
+    mockApi();
+    render(<TicketsPage routeTicketId="tk-2" />);
+    expect(await screen.findByTestId('ticket-workbench-mock')).toHaveTextContent('tk-2');
+    await waitFor(() => expect(screen.getByTestId('ticket-focus-position')).toHaveTextContent('2 of 3'));
+    expect(screen.getByTestId('tickets-queue-announcer')).toHaveTextContent('');
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe('TicketsPage r / n reach the composer through the workbench', () => {
+  it('in focus, r and n ask the workbench for the composer in that mode', async () => {
+    window.location.hash = '#T-1001';
+    mockApi();
+    render(<TicketsPage />);
+    await waitFor(() => expect(lastWorkbench()?.ticketId).toBe('tk-1'));
+
+    press('n');
+    expect(lastWorkbench().composeRequest).toEqual({ mode: 'internal', token: 1 });
+    press('r');
+    expect(lastWorkbench().composeRequest).toEqual({ mode: 'reply', token: 2 });
+  });
+
+  it('r from the board opens the active ticket, then asks for the composer once its detail is ready', async () => {
+    mockApi();
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-1');
+    press('j');
+    press('r');
+    await waitFor(() => expect(lastWorkbench()?.composeRequest).toEqual({ mode: 'reply', token: 1 }));
+    expect(lastWorkbench().ticketId).toBe('tk-1');
+  });
+});
+
+describe('TicketsPage keeps the open ticket when a refetch drops it from the view', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
+  // jsdom measures every tab at 0px, so OverflowTabs puts all but the first
+  // behind "More" (see TicketsPage.test.tsx selectTicketsTab).
+  const selectTab = async (id: string) => {
+    let el = screen.queryByTestId(`tickets-tab-${id}`);
+    if (!el || el.getAttribute('role') !== 'tab') {
+      const more = screen.queryByTestId('tickets-tab-more');
+      if (more && more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more);
+      el = await screen.findByTestId(`tickets-tab-${id}`);
+    }
+    fireEvent.click(el);
+  };
+
+  it('on Unassigned, `a` assigns the open ticket; the refetch without it does not unmount the focus view', async () => {
+    let assigned = false;
+    mockApi(
+      (url) => (url.includes('assignee=unassigned') && assigned ? [two, three] : LIST),
+      (url, init) => {
+        if (url === '/tickets/tk-1/assign' && init?.method === 'POST') {
+          assigned = true;
+          return json({ data: { id: 'tk-1' } });
+        }
+        return undefined;
+      },
+    );
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-1');
+    await selectTab('unassigned');
+    await waitFor(() => expect(ticketListUrls().at(-1)).toContain('assignee=unassigned'));
+    fireEvent.click(await screen.findByTestId('ticket-row-tk-1'));
+    await waitFor(() => expect(lastWorkbench()?.ticketId).toBe('tk-1'));
+    const mounts = workbenchMounts.count;
+    const lists = ticketListUrls().length;
+
+    press('a');
+    await waitFor(() => expect(assigned).toBe(true));
+    await waitFor(() => expect(ticketListUrls().length).toBeGreaterThan(lists));
+    await settle();
+
+    expect(workbenchMounts.count).toBe(mounts);
+    expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-1');
+    expect(screen.getByTestId('tickets-left-view')).toHaveTextContent('Ticket T-1001 is not in this view.');
+  });
+
+  it('on Breaching, a first reply that takes the ticket off the tab does not unmount the focus view', async () => {
+    let replied = false;
+    mockApi((url) => (url.includes('slaState=breaching') ? (replied ? [three] : [two, three]) : LIST));
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-1');
+    await selectTab('breaching');
+    fireEvent.click(await screen.findByTestId('ticket-row-tk-2'));
+    await waitFor(() => expect(lastWorkbench()?.ticketId).toBe('tk-2'));
+    const mounts = workbenchMounts.count;
+    const lists = ticketListUrls().length;
+
+    // sendComment reconciles without a row patch (firstResponseAt is stamped server-side).
+    replied = true;
+    act(() => { lastWorkbench().onChanged?.(); });
+    await waitFor(() => expect(ticketListUrls().length).toBeGreaterThan(lists));
+    await settle();
+
+    expect(workbenchMounts.count).toBe(mounts);
+    expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-2');
+  });
+});
+
+describe('TicketsPage back on the board', () => {
+  it('scrolls the active row into view after many j/k in focus', async () => {
+    const original = Element.prototype.scrollIntoView;
+    const scrolled: Array<{ el: Element; arg: unknown }> = [];
+    Element.prototype.scrollIntoView = function (this: Element, arg?: unknown) { scrolled.push({ el: this, arg }); };
+    try {
+      mockApi();
+      render(<TicketsPage />);
+      fireEvent.click(await screen.findByTestId('ticket-row-tk-1'));
+      await screen.findByTestId('tickets-focus');
+      press('j');
+      press('j');
+      await waitFor(() => expect(window.location.hash).toBe('#T-1003'));
+
+      press('Escape');
+      await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+      await waitFor(() => expect(scrolled.some(({ el, arg }) => el === screen.getByTestId('ticket-row-tk-3') && (arg as { block?: string })?.block === 'nearest')).toBe(true));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
   });
 });

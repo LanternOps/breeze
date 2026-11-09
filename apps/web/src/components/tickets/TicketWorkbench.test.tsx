@@ -2363,9 +2363,12 @@ describe('TicketWorkbench comment edit/delete', () => {
     ).toHaveLength(0);
   });
 
-  // A requester's words are never rewritten (no Edit), but a tech can still
-  // remove them, e.g. to redact a pasted password (Delete).
+  // A requester's words are never rewritten (no Edit), but a tickets:manage
+  // holder can still remove them, e.g. to redact a pasted password (Delete).
+  // Without tickets:manage the server refuses (assertCommentEditable): see
+  // TicketWorkbench.layout.test.tsx for that side.
   it('requester-authored comments offer Delete for redaction but never Edit', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'manage' }];
     const portal = makeComment({ id: 'c-portal', content: 'Portal user comment', portalUserId: 'pu-1' });
     const seeded = makeComment({ id: 'c-portal-type', content: 'Seeded portal reply', portalUserId: null, authorType: 'portal' });
     mockTicketApi({ 'tk-1': makeTicket({ comments: [portal, seeded] }) });

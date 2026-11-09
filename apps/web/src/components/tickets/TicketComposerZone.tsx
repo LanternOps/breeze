@@ -46,6 +46,8 @@ interface Props {
   templates: CannedResponse[];
   templateVars: TicketTemplateVars;
   toolbarExtra?: ReactNode;
+  /** The page's r / n, routed through the workbench (see TicketComposer focusRequest). */
+  composerFocus?: { mode: 'reply' | 'internal'; token: number } | null;
 }
 
 const PANEL = 'rounded-md border bg-muted/30 p-2';
@@ -58,7 +60,7 @@ const PANEL = 'rounded-md border bg-muted/30 p-2';
  */
 export default function TicketComposerZone({
   ticket, merged, config, categories, ai, resolve, pending, checklistConfirm, checklistCounts,
-  onChecklistConfirmCancel, onChecklistConfirmAccept, onSend, onUploadAttachment, templates, templateVars, toolbarExtra,
+  onChecklistConfirmCancel, onChecklistConfirmAccept, onSend, onUploadAttachment, templates, templateVars, toolbarExtra, composerFocus,
 }: Props) {
   const { t } = useTranslation('tickets');
   const { triageSuggestion, triageLoading, applyingTriage, rejectingTriage, aiDrafts, draftContent, setDraftContent, sendingDraftId, discardingDraftId } = ai;
@@ -234,7 +236,7 @@ export default function TicketComposerZone({
             data-testid="ticket-workbench-resolve-note"
           />
           <div className="mt-1.5 flex justify-end gap-2">
-            <button type="button" onClick={resolve.onCancel} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted">{t('common:actions.cancel')}</button>
+            <button type="button" onClick={resolve.onCancel} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="ticket-workbench-resolve-cancel">{t('common:actions.cancel')}</button>
             <button
               type="button"
               onClick={resolve.onSubmit}
@@ -302,6 +304,7 @@ export default function TicketComposerZone({
             onLogTime={() => setLogTimeOpen((open) => !open)}
             logTimeOpen={logTimeOpen}
             contentClassName="max-w-[78ch]"
+            focusRequest={composerFocus}
           />
       )}
     </div>

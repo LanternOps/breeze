@@ -35,6 +35,10 @@ interface Props {
 
 const SELECT = 'h-8 min-w-0 rounded-md border bg-background px-2 py-1 text-xs font-medium leading-tight';
 
+/** The subject heading's id: the queue host moves keyboard focus here when it
+ *  opens a ticket or steps to another (the board row that had it is hidden). */
+export const TICKET_FOCUS_SUBJECT_ID = 'ticket-focus-subject';
+
 /**
  * Focus header: who and what (number, subject, org · requester), then the
  * three triage controls inline. Everything rarer lives in More.
@@ -107,7 +111,9 @@ export default function TicketFocusHeader({
             ) : (
               <>
                 <h2
-                  className={cn('min-w-0 line-clamp-2 break-words text-lg font-semibold leading-snug', closed && 'text-muted-foreground')}
+                  id={TICKET_FOCUS_SUBJECT_ID}
+                  tabIndex={-1}
+                  className={cn('min-w-0 line-clamp-2 break-words text-lg font-semibold leading-snug focus:outline-none', closed && 'text-muted-foreground')}
                   title={ticket.subject}
                   data-testid="ticket-workbench-subject"
                 >

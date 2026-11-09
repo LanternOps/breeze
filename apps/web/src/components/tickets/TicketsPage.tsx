@@ -24,7 +24,8 @@ import { formatRelative, NEUTRAL_CHIP_TEXT, slaState, ticketDisplayNumber, type 
 import { useUiStore } from '../../stores/uiStore';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import { useStableT } from '@/lib/i18n/useStableT';
-import { replaceUrl } from '../../lib/replaceUrl';
+import { pushUrl, replaceUrl, URL_CHANGE_EVENT } from '../../lib/replaceUrl';
+import { TICKET_FOCUS_SUBJECT_ID } from './TicketFocusHeader';
 import type { TicketType } from './ticketType';
 import { showBulkOutcomeToast, type BulkResult } from './ticketBulkOutcome';
 import { useFillAvailableHeight } from './useFillAvailableHeight';
@@ -65,6 +66,14 @@ function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus
 }
 
 const isClosedStatus = (status: TicketStatus): boolean => status === 'resolved' || status === 'closed';
+
+/** The open ticket the next-ticket offer names after `id` closes: the next one
+ *  below it in the list, else the first open one above. */
+function nextOpenAfter(list: TicketSummary[], id: string): TicketSummary | null {
+  const idx = list.findIndex((t) => t.id === id);
+  const isNext = (t: TicketSummary) => t.id !== id && !isClosedStatus(t.status);
+  return (idx >= 0 ? list.slice(idx + 1).find(isNext) : undefined) ?? list.find(isNext) ?? null;
+}
 
 /** Escape inside a dialog or menu belongs to it, never to "back to the queue". */
 const OVERLAY = '[aria-modal="true"],[role="dialog"],[role="alertdialog"],[role="menu"]';
@@ -110,6 +119,12 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   }, []);
 
   const [resolveToken, setResolveToken] = useState(0);
+  // r / n for the focus view's composer, honoured by the workbench (see its
+  // composeRequest): it switches to the Conversation tab first.
+  const [composeRequest, setComposeRequest] = useState<{ mode: 'reply' | 'internal'; token: number }>({ mode: 'reply', token: 0 });
+  const requestCompose = useCallback((mode: 'reply' | 'internal') => {
+    setComposeRequest((prev) => ({ mode, token: prev.token + 1 }));
+  }, []);
   const [paneRefresh, setPaneRefresh] = useState(0);
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [stats, setStats] = useState<{ open: number; unassigned: number; mine: number; breached: number; atRisk?: number } | null>(null);
@@ -163,6 +178,13 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   const fetchSeq = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const savedScroll = useRef(0);
+  // Whether the current history entry is the one openFocus pushed from the
+  // board, so leaving focus can step back through it (see backToTriage).
+  const focusEntryPushed = useRef(false);
+  // This page's own path + query, kept current by writeHash: a popstate that
+  // stays on it is a step between the board and a ticket opened from it.
+  const pagePath = useRef<string | null>(null);
+  useEffect(() => { pagePath.current = window.location.pathname + window.location.search; }, []);
   const rootRef = useRef<HTMLDivElement>(null);
   const fillHeight = useFillAvailableHeight(rootRef);
 
@@ -173,13 +195,17 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   // Single writer for the hash: state and URL always move together, so focus,
   // sort, type and the merged toggle never clobber each other. `mergedValue`
   // defaults to the current toggle so the three-field callers keep it.
-  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '', mergedValue: boolean = showMerged) => {
+  // `push` adds a history entry (opening a ticket from the board); every other
+  // write replaces the current one.
+  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '', mergedValue: boolean = showMerged, opts?: { push?: boolean }) => {
     setRouteFocus(null);
     setQueueHash({ selection, sort: sortValue, type: typeValue, showMerged: mergedValue });
     const hash = hashFor(selection, sortValue, typeValue || null, mergedValue);
     // From /tickets/[id] the first move lands on the canonical /tickets URL.
-    if (routeTicketId) replaceUrl(`/tickets${window.location.search}${hash}`);
-    else replaceUrl(hash || window.location.pathname + window.location.search);
+    const url = routeTicketId ? `/tickets${window.location.search}${hash}` : (hash || window.location.pathname + window.location.search);
+    if (opts?.push) pushUrl(url);
+    else replaceUrl(url);
+    pagePath.current = window.location.pathname + window.location.search;
   }, [setQueueHash, showMerged, routeTicketId]);
 
   const clearFilters = useCallback(() => {
@@ -305,22 +331,34 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   const heldRef = useRef(heldTicket);
   heldRef.current = heldTicket;
 
-  const onWorkbenchPatched = useCallback((id: string, patch: Partial<TicketSummary>) => {
+  // Whether `id` was already resolved/closed before the change now landing.
+  const wasClosed = useCallback((id: string): boolean => {
     const before = ticketsRef.current.find((t) => t.id === id) ?? (heldRef.current?.id === id ? heldRef.current : null);
+    return Boolean(before && isClosedStatus(before.status));
+  }, []);
+
+  const onWorkbenchPatched = useCallback((id: string, patch: Partial<TicketSummary>) => {
+    const closing = Boolean(patch.status && isClosedStatus(patch.status)) && !wasClosed(id);
     patchTicketRow(id, patch);
     setHeldTicket((prev) => {
       const base = prev?.id === id ? prev : ticketsRef.current.find((t) => t.id === id);
       return base ? { ...base, ...patch } : prev;
     });
     // Resolving (or closing) offers the next ticket; it never opens it.
-    if (patch.status && isClosedStatus(patch.status) && !(before && isClosedStatus(before.status))) {
-      const list = ticketsRef.current;
-      const idx = list.findIndex((t) => t.id === id);
-      const isNext = (t: TicketSummary) => t.id !== id && !isClosedStatus(t.status);
-      const next = (idx >= 0 ? list.slice(idx + 1).find(isNext) : undefined) ?? list.find(isNext);
+    if (closing) {
+      const next = nextOpenAfter(ticketsRef.current, id);
       setNextOffer(next ? { fromId: id, ticket: next } : null);
     }
-  }, [patchTicketRow]);
+  }, [patchTicketRow, wasClosed]);
+
+  // The workbench asks, once a resolve has landed and before the row is
+  // patched, whether to toast "Ticket resolved": not when the next-ticket
+  // offer is about to say so, otherwise (nothing left to offer, a ticket that
+  // was already closed) yes.
+  const resolveToastFor = useCallback(
+    (id: string): boolean => wasClosed(id) || nextOpenAfter(ticketsRef.current, id) === null,
+    [wasClosed]
+  );
 
   // Debounced background reconcile after a mutation: coalesces bursts (rapid
   // status/assignee changes) into one list+stats refresh instead of one per click.
@@ -392,6 +430,15 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
     prevTab.current = tab;
     setHeldTicket((prev) => (prev && tab === 'closed' && isClosedStatus(prev.status) ? prev : null));
   }, [tab]);
+  // The focused ticket is sticky: once its key has resolved to a listed row,
+  // that row is held for as long as the key stays, so a refetch that drops it
+  // from the view never unmounts the open workbench (assigned with `a` out of
+  // Unassigned, a first public reply out of Breaching, resolved out of an open
+  // tab, #9564). Declared after the release effects above so a fresh key's
+  // row is not released in the same pass.
+  useEffect(() => {
+    if (inFocus && focusedInList) setHeldTicket(focusedInList);
+  }, [inFocus, focusedInList]);
 
   // The board's active row follows the ticket in focus, so going back lands on it.
   useEffect(() => { if (focused) setActiveId(focused.id); }, [focused?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -459,28 +506,83 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
     return next && next.id !== focusTicketId ? next : null;
   };
 
+  // What to do once the focus view's detail has loaded: move keyboard focus to
+  // its subject (every open), or finish a board shortcut (r / n / e).
+  const pendingIntent = useRef<{ id: string; kind: 'heading' | 'reply' | 'internal' | 'resolve' } | null>(null);
+
   // Open a ticket in focus, in place. The board keeps its scroll offset.
-  const openFocus = useCallback((ticket: TicketSummary) => {
-    if (!inFocus && scrollRef.current) savedScroll.current = scrollRef.current.scrollTop;
+  const openFocusWith = useCallback((ticket: TicketSummary, kind: 'heading' | 'reply' | 'internal' | 'resolve') => {
+    const fromBoard = !inFocus;
+    if (fromBoard && scrollRef.current) savedScroll.current = scrollRef.current.scrollTop;
     setActiveId(ticket.id);
-    writeHash(ticket.internalNumber ?? ticket.id, sort, typeFilter);
-  }, [inFocus, sort, typeFilter, writeHash]);
+    // The row (or ticket) that had focus is going away: say where the user is
+    // now, outside the board that is about to be hidden.
+    pendingIntent.current = { id: ticket.id, kind };
+    setAnnouncement(queueAnnouncement(ticket, config, t));
+    // From the board, a new history entry: Back returns to the board instead
+    // of leaving /tickets. Inside focus (j/k, the next-ticket offer) it is
+    // replaced, so Back never walks through every ticket seen.
+    if (fromBoard) focusEntryPushed.current = true;
+    writeHash(ticket.internalNumber ?? ticket.id, sort, typeFilter, showMerged, { push: fromBoard });
+  }, [inFocus, sort, typeFilter, showMerged, writeHash, config, t]);
+  const openFocus = useCallback((ticket: TicketSummary) => openFocusWith(ticket, 'heading'), [openFocusWith]);
 
   const backToTriage = useCallback(() => {
     if (focusTicketId) setActiveId(focusTicketId);
     setNextOffer(null);
+    if (focusEntryPushed.current) {
+      // Step back through the entry openFocus pushed (the popstate handler
+      // below shows the board), so Esc, Back and Forward agree.
+      focusEntryPushed.current = false;
+      window.history.back();
+      return;
+    }
     writeHash(null, sort, typeFilter);
   }, [focusTicketId, sort, typeFilter, writeHash]);
 
-  // Back on the board: put the scroll offset and the keyboard focus back on
-  // the row the tech left from.
+  // Back / Forward between the board and a ticket opened from it.
+  const inFocusRef = useRef(inFocus);
+  inFocusRef.current = inFocus;
+  useEffect(() => {
+    const onPopState = (e: PopStateEvent) => {
+      // Leaving this page (another path or query) is the router's job.
+      if (window.location.pathname + window.location.search !== pagePath.current) return;
+      // A step between two of this page's own entries. Astro's router would
+      // take it for a navigation and, unless the location it last moved to
+      // happens to carry a hash, re-fetch and swap this same page
+      // (dist/transitions/router.js transition(): the same-page shortcut needs
+      // `direction === 'back' && from.hash`), remounting the board without
+      // its row, scroll or filters. This capture listener runs before the
+      // router's and keeps the step to itself. Null-state entries are left
+      // alone: the router ignores those already.
+      if (e.state !== null) e.stopImmediatePropagation();
+      const next = parseQueueHash(window.location.hash.replace(/^#/, ''));
+      // Forward from the board onto a ticket lands on an entry openFocus pushed.
+      focusEntryPushed.current = next.selection !== null && !inFocusRef.current;
+      setRouteFocus(null);
+      setQueueHash(next);
+      // The sidebar mirrors the URL; its own popstate listener was skipped.
+      window.dispatchEvent(new CustomEvent(URL_CHANGE_EVENT));
+    };
+    window.addEventListener('popstate', onPopState, true);
+    return () => window.removeEventListener('popstate', onPopState, true);
+  }, [setQueueHash]);
+
+  // Back on the board (Esc, the back button, browser Back): put the scroll
+  // offset and the keyboard focus back on the row the tech left from.
   const wasInFocus = useRef(inFocus);
   useIsomorphicLayoutEffect(() => {
     const left = wasInFocus.current && !inFocus;
     wasInFocus.current = inFocus;
     if (!left) return;
+    focusEntryPushed.current = false;
     if (scrollRef.current) scrollRef.current.scrollTop = savedScroll.current;
-    if (activeId) document.getElementById(queueOptionId(activeId))?.focus({ preventScroll: true });
+    const row = activeId ? document.getElementById(queueOptionId(activeId)) : null;
+    if (!row) return;
+    row.focus({ preventScroll: true });
+    // After many j/k in focus the active row can sit outside the restored
+    // offset; bring it just into view (no jump when it already is). Absent in jsdom.
+    row.scrollIntoView?.({ block: 'nearest' });
   }, [inFocus, activeId]);
 
   // #8972: after a merge the source is a closed tombstone; follow the survivor
@@ -624,29 +726,20 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
     }
   }, [fetchTickets, fetchStats, t]);
 
-  const focusComposer = useCallback((internal: boolean) => {
-    const modeBtn = document.querySelector<HTMLButtonElement>(
-      internal ? '[data-testid="ticket-composer-tab-internal"]' : '[data-testid="ticket-composer-tab-reply"]'
-    );
-    modeBtn?.click();
-    document.querySelector<HTMLTextAreaElement>('[data-testid="ticket-composer-input"]')?.focus();
-  }, []);
-
   // r / n / e from the board open the active ticket first; the focus view
   // finishes the action once its detail (and composer) has loaded.
-  const pendingIntent = useRef<{ id: string; kind: 'reply' | 'internal' | 'resolve' } | null>(null);
   const actFromBoard = useCallback((kind: 'reply' | 'internal' | 'resolve') => {
     if (!activeTicket) return;
-    pendingIntent.current = { id: activeTicket.id, kind };
-    openFocus(activeTicket);
-  }, [activeTicket, openFocus]);
+    openFocusWith(activeTicket, kind);
+  }, [activeTicket, openFocusWith]);
   const onWorkbenchReady = useCallback((id: string) => {
     const intent = pendingIntent.current;
     if (!intent || intent.id !== id) return;
     pendingIntent.current = null;
-    if (intent.kind === 'resolve') setResolveToken((n) => n + 1);
-    else requestAnimationFrame(() => focusComposer(intent.kind === 'internal'));
-  }, [focusComposer]);
+    if (intent.kind === 'heading') document.getElementById(TICKET_FOCUS_SUBJECT_ID)?.focus();
+    else if (intent.kind === 'resolve') setResolveToken((n) => n + 1);
+    else requestCompose(intent.kind);
+  }, [requestCompose]);
 
   const onEscape = useCallback((e: KeyboardEvent) => {
     if (e.defaultPrevented) return;
@@ -670,8 +763,8 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
       if (activeTicket && liveTab) openFocus(activeTicket);
     },
     onAssignMe: () => void assignMe(inFocus ? focused : activeTicket),
-    onFocusReply: () => (inFocus ? focusComposer(false) : liveTab && actFromBoard('reply')),
-    onFocusInternal: () => (inFocus ? focusComposer(true) : liveTab && actFromBoard('internal')),
+    onFocusReply: () => (inFocus ? focusTicketId && requestCompose('reply') : liveTab && actFromBoard('reply')),
+    onFocusInternal: () => (inFocus ? focusTicketId && requestCompose('internal') : liveTab && actFromBoard('internal')),
     onResolve: () => (inFocus ? (focusTicketId && setResolveToken((n) => n + 1)) : liveTab && actFromBoard('resolve')),
     // Bulk selection lives on the board of the live queue tabs only.
     onToggleBulk: inFocus || !liveTab ? undefined : toggleActiveBulk,
@@ -696,9 +789,19 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   const prevTarget = inFocus ? stepTarget(-1) : null;
   const nextTarget = inFocus ? stepTarget(1) : null;
   const movedNotice = inFocus && focused && heldDroppedFromView && tab !== 'closed' && isClosedStatus(focused.status);
+  // Held but no longer in this view for another reason (assigned out of
+  // Unassigned, replied out of Breaching): say so instead of leaving "N of M"
+  // to vanish silently. Only once the list is the current view's.
+  const leftViewNotice = inFocus && focused && heldDroppedFromView && listIsCurrent && !movedNotice
+    ? ticketDisplayNumber(focused)
+    : null;
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 flex-col" style={fillHeight ? { height: fillHeight } : undefined} data-testid="tickets-page">
+      {/* Outside the board, which is hidden in focus: j/k on the board and
+          every ticket opened (from the board, j/k in focus, the next-ticket
+          offer) are announced here. */}
+      <p role="status" className="sr-only" data-testid="tickets-queue-announcer">{announcement}</p>
       <div hidden={inFocus} className="flex min-h-0 flex-1 flex-col" data-testid="tickets-triage">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h1 className="text-xl font-semibold" data-testid="tickets-heading">{t('ticketsPage.title')}</h1>
@@ -828,7 +931,6 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
                 <kbd aria-hidden="true" className={cn('inline-flex min-w-4 items-center justify-center rounded border bg-muted px-1 font-mono text-xs font-semibold leading-4', NEUTRAL_CHIP_TEXT)}>?</kbd>
               </button>
             </div>
-            <p role="status" className="sr-only" data-testid="tickets-queue-announcer">{announcement}</p>
             <div
               ref={scrollRef}
               className="min-h-0 flex-1 overflow-y-auto"
@@ -878,7 +980,7 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
             canPrevious={prevTarget !== null}
             canNext={nextTarget !== null}
           />
-          {(movedNotice || nextOffer) && (
+          {(movedNotice || leftViewNotice || nextOffer) && (
             // One ruled band on the header's gutter: where the ticket went, and what is next.
             <div className="flex shrink-0 flex-wrap items-center gap-x-6 gap-y-2 border-b bg-muted/40 px-4 py-2" data-testid="ticket-focus-notice-band">
               {movedNotice && focused && (
@@ -901,6 +1003,11 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
                   </button>
                 </p>
               )}
+              {leftViewNotice && (
+                <p role="status" className="text-sm" data-testid="tickets-left-view">
+                  {t('ticketsPage.ticketNotInView', { number: leftViewNotice })}
+                </p>
+              )}
               {nextOffer && <TicketNextOffer ticket={nextOffer.ticket} onOpen={() => openFocus(nextOffer.ticket)} />}
             </div>
           )}
@@ -909,8 +1016,9 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
               <TicketWorkbench
                 ticketId={focusTicketId}
                 namesPage
-                resolveToast={false}
+                resolveToast={resolveToastFor}
                 resolveRequestToken={resolveToken}
+                composeRequest={composeRequest}
                 refreshToken={paneRefresh}
                 assignees={assignees}
                 categories={categories}

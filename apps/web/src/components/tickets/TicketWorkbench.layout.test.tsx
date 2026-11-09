@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TicketWorkbench from './TicketWorkbench';
 import { fetchWithAuth } from '../../stores/auth';
+import { runLogoutHooks } from '@/stores/logoutHooks';
 import type { TicketDetail } from './ticketConfig';
 
 // Focus layout: header (Status / Priority / Assignee + More), the conversation
@@ -102,6 +103,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   authState.permissions = [];
   endpoint.value = { state: { kind: 'loading' }, session: null, alerts: null };
+  // Unsent drafts are module state; start each test without the last one's.
+  runLogoutHooks();
 });
 
 const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
@@ -229,6 +232,43 @@ describe('TicketWorkbench focus layout — below 1024px', () => {
     fireEvent.keyDown(conversationTab, { key: 'ArrowRight' });
     expect(screen.getByTestId('ticket-workbench-tab-details')).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('ticket-workbench-tab-details')).toHaveFocus();
+  });
+
+  // r / n reach the composer through the workbench, so they work while the
+  // Details tab hides the conversation.
+  it('a compose request from the Details tab switches to Conversation, sets the mode and focuses the box', async () => {
+    mockApi(makeTicket({ id: 'tk-compose' }));
+    const { rerender } = render(<TicketWorkbench ticketId="tk-compose" />);
+    await screen.findByTestId('ticket-composer-input');
+    fireEvent.click(screen.getByTestId('ticket-workbench-tab-details'));
+    expect(screen.getByTestId('ticket-workbench-conversation')).toHaveAttribute('hidden');
+
+    rerender(<TicketWorkbench ticketId="tk-compose" composeRequest={{ mode: 'internal', token: 1 }} />);
+    expect(screen.getByTestId('ticket-workbench-tab-conversation')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('ticket-workbench-conversation')).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('ticket-composer-input')).toHaveFocus();
+  });
+
+  it('while a resolve form holds the composer\'s place, a compose request changes nothing', async () => {
+    mockApi(makeTicket({ id: 'tk-compose-form' }));
+    const { rerender } = render(<TicketWorkbench ticketId="tk-compose-form" resolveRequestToken={0} />);
+    await screen.findByTestId('ticket-composer-input');
+    rerender(<TicketWorkbench ticketId="tk-compose-form" resolveRequestToken={1} />);
+    await screen.findByTestId('ticket-workbench-resolve-form');
+
+    rerender(<TicketWorkbench ticketId="tk-compose-form" resolveRequestToken={1} composeRequest={{ mode: 'internal', token: 1 }} />);
+    // The form stays open, and the hidden composer did not flip to internal behind it.
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-composer')).toHaveAttribute('hidden');
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-cancel'));
+    expect(screen.getByTestId('ticket-composer')).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('ticket-composer-tab-reply')).toHaveAttribute('aria-checked', 'true');
+
+    // With the form gone, the next request is honoured.
+    rerender(<TicketWorkbench ticketId="tk-compose-form" resolveRequestToken={1} composeRequest={{ mode: 'internal', token: 2 }} />);
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('ticket-composer-input')).toHaveFocus();
   });
 });
 
@@ -381,16 +421,68 @@ describe('TicketWorkbench focus layout — 1024px and up', () => {
     expect(screen.getByTestId('ticket-workbench-rail').className).toContain('w-[360px]');
   });
 
-  it('resolving without the success toast when the host shows its own next-ticket strip', async () => {
-    mockApi(makeTicket());
-    render(<TicketWorkbench ticketId="tk-1" resolveToast={false} />);
+  const resolveTicket = async () => {
     await screen.findByTestId('ticket-composer-input');
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
     fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), { target: { value: 'Fixed' } });
     fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/tickets/tk-1/status' && init?.method === 'POST')).toBe(true));
     await waitFor(() => expect(screen.queryByTestId('ticket-workbench-resolve-form')).toBeNull());
-    expect(showToast.mock.calls.some(([arg]) => (arg as { message?: string }).message === 'Ticket resolved')).toBe(false);
+  };
+  const resolvedToasts = () => showToast.mock.calls.filter(([arg]) => (arg as { message?: string }).message === 'Ticket resolved');
+
+  it('resolving without the success toast when the host shows its own next-ticket strip', async () => {
+    mockApi(makeTicket());
+    render(<TicketWorkbench ticketId="tk-1" resolveToast={false} />);
+    await resolveTicket();
+    expect(resolvedToasts()).toHaveLength(0);
+  });
+
+  // The queue host suppresses the toast only when its next-ticket offer will
+  // actually say "resolved"; it is asked once the resolve has landed.
+  it('asks the host, after the resolve lands, whether to toast: no next-ticket offer means a toast', async () => {
+    mockApi(makeTicket());
+    const wantsToast = vi.fn(() => true);
+    render(<TicketWorkbench ticketId="tk-1" resolveToast={wantsToast} />);
+    await resolveTicket();
+    expect(wantsToast).toHaveBeenCalledWith('tk-1');
+    expect(resolvedToasts()).toHaveLength(1);
+  });
+
+  it('skips the toast when the host says its next-ticket offer shows', async () => {
+    mockApi(makeTicket());
+    render(<TicketWorkbench ticketId="tk-1" resolveToast={() => false} />);
+    await resolveTicket();
+    expect(resolvedToasts()).toHaveLength(0);
+  });
+
+  // The server lets an author delete their own comment and a tickets:manage
+  // holder delete anyone's (assertCommentEditable). A requester never authored
+  // as this user, so their comments need tickets:manage.
+  const COMMENT_BASE = { authorName: null, commentType: 'comment' as const, isPublic: true, oldValue: null, newValue: null, createdAt: '2026-06-01T11:00:00.000Z' };
+  const withComments = () => makeTicket({
+    comments: [
+      { ...COMMENT_BASE, id: 'c-requester', userId: null, portalUserId: 'pu-1', authorType: 'portal', authorName: 'Pat Smith', content: 'Still broken' },
+      { ...COMMENT_BASE, id: 'c-staff', userId: 'user-1', portalUserId: null, authorType: 'internal', authorName: 'Test Agent', content: 'Looking now' },
+    ],
+  });
+
+  it('without tickets:manage, offers Delete on staff comments but not on the requester\'s', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockApi(withComments());
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-comment-delete-c-staff');
+    expect(screen.queryByTestId('ticket-comment-delete-c-requester')).toBeNull();
+    expect(screen.getByTestId('ticket-comment-edit-c-staff')).toBeInTheDocument();
+  });
+
+  it('with tickets:manage, offers Delete (redaction) on the requester\'s comment, still never Edit', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }, { resource: 'tickets', action: 'manage' }];
+    mockApi(withComments());
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-comment-delete-c-requester');
+    expect(screen.queryByTestId('ticket-comment-edit-c-requester')).toBeNull();
+    expect(screen.getByTestId('ticket-comment-delete-c-staff')).toBeInTheDocument();
   });
 
   it('moves Related tickets out of the conversation into Details', async () => {

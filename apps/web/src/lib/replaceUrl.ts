@@ -25,6 +25,18 @@ export function replaceUrl(url: string): void {
 }
 
 /**
+ * Add a history entry for `url` (Back returns to the current URL), carrying
+ * `history.state` over so the router's index and scroll fields survive on the
+ * new entry. Like `replaceUrl` it fires neither `hashchange` nor `popstate`,
+ * so it announces the move with URL_CHANGE_EVENT.
+ */
+export function pushUrl(url: string): void {
+  if (typeof window === 'undefined') return;
+  window.history.pushState(window.history.state, '', url);
+  window.dispatchEvent(new CustomEvent(URL_CHANGE_EVENT));
+}
+
+/**
  * A plain `window.location.hash = x` assignment pushes an entry whose
  * `history.state` is null, which the router cannot cope with on its next
  * `navigate(..., { history: 'replace' })`. Seed the router's expected shape

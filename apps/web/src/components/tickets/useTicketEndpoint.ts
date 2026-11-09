@@ -37,6 +37,8 @@ export interface TicketEndpoint {
   alerts: ActiveAlert[] | 'failed' | null;
 }
 
+const LOADING: DeviceState = { kind: 'loading' };
+
 function toDevice(raw: Record<string, unknown>): EndpointDevice | null {
   if (typeof raw?.id !== 'string' || raw.id.length === 0) return null;
   const str = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : null);
@@ -64,34 +66,36 @@ function toDevice(raw: Record<string, unknown>): EndpointDevice | null {
  * answered) the signed-in session and up to three active alerts. Needs
  * devices:read (`enabled`); a 403/404 becomes `denied`, never a fan-out of
  * refusals.
+ *
+ * Every piece of state remembers the device it was read for, and a mismatch
+ * reads as loading: on j/k to another ticket the first render with the new
+ * device id would otherwise still paint the previous ticket's device.
  */
 export function useTicketEndpoint(deviceId: string | null, enabled: boolean): TicketEndpoint {
-  const [state, setState] = useState<DeviceState>({ kind: 'loading' });
-  const [session, setSession] = useState<{ value: ActiveSession | null; failed: boolean } | null>(null);
-  const [alerts, setAlerts] = useState<ActiveAlert[] | 'failed' | null>(null);
+  const [device, setDevice] = useState<{ forId: string; state: DeviceState } | null>(null);
+  const [session, setSession] = useState<{ forId: string; value: { value: ActiveSession | null; failed: boolean } } | null>(null);
+  const [alerts, setAlerts] = useState<{ forId: string; value: ActiveAlert[] | 'failed' } | null>(null);
 
   useEffect(() => {
     if (!deviceId || !enabled) return;
     let cancelled = false;
-    setState({ kind: 'loading' });
-    setSession(null);
-    setAlerts(null);
+    const settle = (next: DeviceState) => { if (!cancelled) setDevice({ forId: deviceId, state: next }); };
     void (async () => {
       try {
         const res = await fetchWithAuth(`/devices/${deviceId}`);
         if (cancelled) return;
-        if (res.status === 403 || res.status === 404) { setState({ kind: 'denied' }); return; }
-        if (!res.ok) { setState({ kind: 'failed' }); return; }
-        const device = toDevice((await res.json()) as Record<string, unknown>);
-        if (cancelled) return;
-        if (!device) { setState({ kind: 'failed' }); return; }
-        setState({ kind: 'ready', device });
+        if (res.status === 403 || res.status === 404) { settle({ kind: 'denied' }); return; }
+        if (!res.ok) { settle({ kind: 'failed' }); return; }
+        const read = toDevice((await res.json()) as Record<string, unknown>);
+        settle(read ? { kind: 'ready', device: read } : { kind: 'failed' });
       } catch {
-        if (!cancelled) setState({ kind: 'failed' });
+        settle({ kind: 'failed' });
       }
     })();
     return () => { cancelled = true; };
   }, [deviceId, enabled]);
+
+  const state: DeviceState = device && device.forId === deviceId ? device.state : LOADING;
 
   // Who is signed in and what is alerting: read only once the device itself
   // answered, so a 403 never fans out into two more refusals.
@@ -103,9 +107,9 @@ export function useTicketEndpoint(deviceId: string | null, enabled: boolean): Ti
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = (await res.json()) as { data?: { activeUsers?: ActiveSession[] } };
-        if (!cancelled) setSession({ value: selectIdleSession(body?.data?.activeUsers ?? []), failed: false });
+        if (!cancelled) setSession({ forId: readyId, value: { value: selectIdleSession(body?.data?.activeUsers ?? []), failed: false } });
       })
-      .catch(() => { if (!cancelled) setSession({ value: null, failed: true }); });
+      .catch(() => { if (!cancelled) setSession({ forId: readyId, value: { value: null, failed: true } }); });
     void fetchWithAuth(`/devices/${readyId}/alerts?status=active&limit=3`)
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -118,13 +122,17 @@ export function useTicketEndpoint(deviceId: string | null, enabled: boolean): Ti
             title: String(a.title || a.message || a.summary || ''),
             severity: String(a.severity || 'info').toLowerCase(),
           }));
-        if (!cancelled) setAlerts(list.slice(0, 3));
+        if (!cancelled) setAlerts({ forId: readyId, value: list.slice(0, 3) });
       })
       // Never "No active alerts" on a failed read: a false all-clear is the
       // worst answer on a triage surface.
-      .catch(() => { if (!cancelled) setAlerts('failed'); });
+      .catch(() => { if (!cancelled) setAlerts({ forId: readyId, value: 'failed' }); });
     return () => { cancelled = true; };
   }, [readyId]);
 
-  return { state, session, alerts };
+  return {
+    state,
+    session: readyId && session?.forId === readyId ? session.value : null,
+    alerts: readyId && alerts?.forId === readyId ? alerts.value : null,
+  };
 }
