@@ -103,9 +103,9 @@ describe('processIngest unmapped-site log (unifi.reconcile.unmapped)', () => {
     devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0, devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0,
     removedDiscoveredAssetIds: [] as string[],
   };
-  const loggedEvents = (spy: ReturnType<typeof vi.spyOn>) => spy.mock.calls
-    .map((args) => { try { return JSON.parse(String(args[0])); } catch { return null; } })
-    .filter((line) => line?.event === 'unifi.reconcile.unmapped');
+  const loggedEvents = (spy: { mock: { calls: unknown[][] } }): Array<Record<string, any>> => spy.mock.calls
+    .map((args: unknown[]) => { try { return JSON.parse(String(args[0])) as Record<string, any>; } catch { return null; } })
+    .filter((line): line is Record<string, any> => line?.event === 'unifi.reconcile.unmapped');
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -127,7 +127,7 @@ describe('processIngest unmapped-site log (unifi.reconcile.unmapped)', () => {
         collectorId: 'c1', devicesSkippedUnmapped: 2, clientsSkippedUnmapped: 3, devicesRemovedUnmapped: 60, clientsRemovedUnmapped: 4,
         removedDiscoveredAssetIdCount: 60,
       });
-      expect(events[0].removedDiscoveredAssetIds).toEqual(ids.slice(0, 50));
+      expect(events[0]!.removedDiscoveredAssetIds).toEqual(ids.slice(0, 50));
     } finally {
       spy.mockRestore();
     }
