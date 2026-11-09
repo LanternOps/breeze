@@ -41,7 +41,7 @@ tracking_issue: LanternOps/breeze#11377
 |---|---|---|---|---|
 | W1 Invite from contacts | `2026-11-08-portal-registration-options-w01-invite-from-contacts.md` | — | Medium | plan written |
 | W2 Account foundations | `2026-11-08-portal-registration-options-w02-account-foundations.md` | — | High | plan written |
-| W3 Policy + access requests + identities read switch | write at start | W2 | High | — |
+| W3 Policy + access requests + identities read switch | `2026-11-08-portal-registration-options-w03-access-policy.md` (W03a API, W03b web) | W2 | High | plan written |
 | W4 Tenant proof + Microsoft sign-in + OIDC layer + session caps + `sso_only` | write at start | W3 | High | — |
 | W5 Domain verification + Organization › Domains | write at start | W3 (Entra method: W4) | Medium | — |
 | W6 Self-registration | write at start | W3, W5 | High | — |
@@ -63,8 +63,12 @@ Later wave plans must use these names. If W2's plan or code renames any of them,
 | W2 | state module `services/portalAccountState.ts` (allowed transitions + assert helper) | all later waves |
 | W2 | purpose-bound token helpers (issue/consume with `{purpose, portalUserId, orgId, email, authEpoch}`) | W4 (invite/link purposes), W6 (self-registration purpose) |
 | W2 | identity reconciliation function | W3 (read switch), cleanup |
-| W3 | `resolvePortalAccessPolicy(orgId)` → effective values + per-field source | W4–W9 |
-| W3 | `portal_access_requests` table + approve/deny service | W4, W6, W7 |
+| W3 | `resolvePortalAccessPolicy(orgId)` → effective values + per-field source; `isSignInMethodAllowed(policy, method)` | W4–W9 |
+| W3 | `getPortalSignInCapabilities()`: each wave flips its own key (`entra` W4, `selfRegistration` W6, `google` W7) | W4, W6, W7 |
+| W3 | `portal_access_requests` table + `createPortalAccessRequest` / `approvePortalAccessRequest` / `denyPortalAccessRequest` | W4, W6, W7 |
+| W3 | browser session `method` (`PortalSessionMethod`) + `parseStoredPortalSession` + `isBrowserSessionAllowed` | W4, W7 |
+| W3 | `portalUserHasIdentitySql()`: the only "has an external identity" fact | all later waves |
+| W3 | Writer fence (W3 plan D4): until release C, every writer that creates an Entra identity also sets `portal_users.entra_*`, and every writer that removes one clears them | W4, W8, W9, cleanup |
 | W4 | OIDC common layer (state/nonce/PKCE store, callback handler, account resolution §5.6) | W7 |
 | W4 | tenant proof record on the org's tenant mapping (`proven_at`, `proven_via`, `proven_by`) | W5 (`entra_tenant` method), W8, W9 |
 | W5 | domain verification state on `customer_email_domains` + `isDomainVerifiedForOrg(domain, orgId)` | W6, W7 |
