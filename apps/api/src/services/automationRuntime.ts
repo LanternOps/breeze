@@ -72,11 +72,11 @@ import {
 import { notHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 // scriptCancellation is imported LAZILY (see cancelDispatchIfRunCancelled) for
-// the same reason softwareDeployment is below: it pulls the
-// agentWs → commandQueue → configurationPolicy chain in at module load.
+// the same reason softwareDeployment is below: it pulls the command-queue /
+// relay-facade import graph in at module load.
 // softwareDeployment and softwareCurrency are imported lazily inside
-// executeDeploySoftwareActions to avoid pulling the agentWs→configurationPolicy
-// import chain into partial-mock test suites at module-load time.
+// executeDeploySoftwareActions to avoid pulling the command-queue / relay-facade
+// import graph into partial-mock test suites at module-load time.
 
 const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 /** What a runner reports back to its caller (#3525 W05 added `cancelled`). */
@@ -487,7 +487,7 @@ const QUEUED_UNDELIVERED_MESSAGE = 'Queued — delivery to the agent failed; wil
  * may already be running and is NOT retried (the claim is kept), so neither
  * "device offline" nor "will retry" is true.
  */
-const QUEUED_UNCONFIRMED_MESSAGE = 'Queued — delivery to the agent is unconfirmed; the result will arrive when the agent reports';
+const QUEUED_UNCONFIRMED_MESSAGE = 'Queued — delivery to the agent is unconfirmed; the step completes when the agent reports, or times out';
 
 function queuedMessageFor(deliveryOutcome: string | undefined): string {
   // `undefined` is treated as the offline case: it is what the pre-W4 result
@@ -2841,8 +2841,8 @@ export async function executeDeploySoftwareActions(args: {
   let failed = false;
   if (deployActions.length === 0) return { logs, deployedDeviceIds, failedDeviceIds, replayed, failed };
 
-  // Lazy imports — avoid pulling the agentWs→configurationPolicy chain into
-  // partial-mock test suites at module-load time.
+  // Lazy imports — avoid pulling the command-queue / relay-facade import graph
+  // into partial-mock test suites at module-load time.
   const { createSoftwareDeployment } = await import('./softwareDeployment');
   const {
     isDeviceSoftwareCurrent,

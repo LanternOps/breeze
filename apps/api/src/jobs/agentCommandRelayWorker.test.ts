@@ -140,8 +140,14 @@ describe('processAgentCommandRelayJob', () => {
     vi.mocked(openRelayCommand).mockImplementation(() => {
       throw new Error('tamper');
     });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await processAgentCommandRelayJob(fakeJob());
+
+    // #4142: nothing was sent, so the claim it took goes back.
+    expect(releaseRelaySendClaim).toHaveBeenCalledWith('agent-1', 'cmd-1');
+    expect(error).toHaveBeenCalledWith('[AgentCommandRelayWorker] relay envelope failed to open', expect.objectContaining({ error: 'tamper' }));
+    error.mockRestore();
 
     expect(writeRelayAck).toHaveBeenCalledWith('relay-1', {
       status: 'infrastructure_error',

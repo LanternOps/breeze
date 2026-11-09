@@ -299,6 +299,18 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
       expect(captureExceptionMock).toHaveBeenCalled();
     });
 
+    it('a deliver() whose relay is unconfirmed resolves indeterminate and keeps the claim (#4142)', async () => {
+      selectReturning(deviceRow('online'));
+      claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date(), agentId: 'agent-1' });
+      dispatchMock.mockResolvedValue({ status: 'indeterminate' });
+
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory', deferDelivery: true });
+      const delivered = await (res.ok ? res.deliver! : async () => { throw new Error('no deliver'); })();
+
+      expect(delivered.ok && delivered.delivery).toBe('indeterminate');
+      expect(releaseMock).not.toHaveBeenCalled();
+    });
+
     it('without deferDelivery the immediate push is unchanged and carries no continuation', async () => {
       selectReturning(deviceRow('online'));
       claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });

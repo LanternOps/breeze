@@ -10,9 +10,10 @@ import type { TopologyDiagnosticDelivery } from './diagnosticDispatch';
 /**
  * Push a freshly bound diagnostic command to the agent's live socket.
  *
- * Kept out of `diagnosticDispatch.ts` on purpose: the dispatch service sits
- * inside `commandDispatch.ts`'s import closure, and only the dispatch WORKER
- * needs a delivery leg. It reaches the agent through the role-safe
+ * Kept out of `diagnosticDispatch.ts` on purpose: `commandDispatch.ts`
+ * side-effect-imports the dispatch service while this leg value-imports
+ * `commandDispatch.ts` (claim/release), so folding them together would be an
+ * import cycle, and only the dispatch WORKER needs a delivery leg. It reaches the agent through the role-safe
  * `agentCommandRelay` facade (a local socket first, otherwise the instance that
  * owns the socket), not the socket registry under `routes/`, so the worker is
  * `global` placement (#4142).

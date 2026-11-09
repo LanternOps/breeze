@@ -33,6 +33,7 @@ import { breezeRole } from '../config/env';
 import { hasDbAccessContext } from '../db';
 import { createInstrumentedQueue } from './bullmqQueue';
 import { probeAgentPresence, readAgentPresence } from './agentPresence';
+import { captureException } from './sentry';
 import type { AgentCommand } from '../routes/agentWs';
 
 // Socket-local dispatch, loaded LAZILY (#4141). The static value-import of
@@ -91,17 +92,31 @@ const redisFailureLog = new Map<string, { at: number; suppressed: number }>();
  * suppressed, so a refresh loop during an outage stays readable.
  */
 export function logRelayRedisFailure(operation: string, err: unknown): void {
+  warnRateLimited(operation, `${operation} failed`, err);
+}
+
+/**
+ * Warn about a dispatch that ended without a confirmed answer (#4142): a relay
+ * refused inside a held DB context, a transport deadline, an enqueue whose
+ * outcome is unknown. Same per-minute limit as {@link logRelayRedisFailure}.
+ * The caller only sees the outcome status, so this line is the evidence.
+ */
+function logRelayDispatchIssue(issue: string, detail: unknown): void {
+  warnRateLimited(`dispatch: ${issue}`, issue, detail);
+}
+
+function warnRateLimited(key: string, headline: string, detail: unknown): void {
   const now = Date.now();
-  const entry = redisFailureLog.get(operation);
+  const entry = redisFailureLog.get(key);
   if (entry && now - entry.at < REDIS_FAILURE_LOG_INTERVAL_MS) {
     entry.suppressed += 1;
     return;
   }
   const suppressed = entry?.suppressed ?? 0;
-  redisFailureLog.set(operation, { at: now, suppressed: 0 });
+  redisFailureLog.set(key, { at: now, suppressed: 0 });
   console.warn(
-    `[agentCommandRelay] ${operation} failed${suppressed > 0 ? ` (${suppressed} more since the last report)` : ''}:`,
-    err instanceof Error ? err.message : err,
+    `[agentCommandRelay] ${headline}${suppressed > 0 ? ` (${suppressed} more since the last report)` : ''}:`,
+    detail instanceof Error ? detail.message : detail,
   );
 }
 
@@ -171,9 +186,10 @@ const SENT_MARKER_TTL_MS = 600_000; // outlives any BullMQ stalled-job redeliver
 const AAD_BOUND_PREFIX = 'enc:v3:';
 
 /**
- * What a dispatch did. `infrastructure_error` is used only for failures that
- * provably happened before anything was enqueued, so nothing was sent; a
- * failure after the enqueue was issued is `indeterminate` (#4142).
+ * What a dispatch did. `infrastructure_error` means nothing was sent: the
+ * failure happened before the enqueue (producer) or before the socket write
+ * (relay consumer). A failure after the enqueue was issued, with no consumer
+ * answer, is `indeterminate` (#4142).
  */
 export type DispatchOutcome =
   | { status: 'sent'; via: 'local' | 'relay' }
@@ -362,7 +378,8 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
 // is bounded: the least recently used handle (a long-gone instance, in
 // practice) is closed. A handle in use is the most recently used, so only more
 // than 32 instances in use at once could close one under an in-flight add,
-// which would then fail as `infrastructure_error`.
+// which would then answer `indeterminate`: the add had been issued, and a
+// rejected add cannot prove nothing was stored (#4142).
 const MAX_CACHED_RELAY_QUEUES = 32;
 const relayQueues = new Map<string, Queue<RelayJobData>>();
 
@@ -472,6 +489,10 @@ export async function dispatchCommandToAgent(
   try {
     return await dispatchUnguarded(agentId, command, opts, progress);
   } catch (err) {
+    // Not a transport answer: something threw that the steps below do not
+    // expect. Reported, then answered by whether the enqueue had been issued.
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    logRelayDispatchIssue('dispatch threw unexpectedly', err);
     if (progress.enqueueIssued) return { status: 'indeterminate' };
     return { status: 'infrastructure_error', message: `dispatch failed before enqueue: ${errorMessage(err)}` };
   }
@@ -499,13 +520,19 @@ async function dispatchUnguarded(
   // instance runs after the context: runAfterDbContextCommit, or
   // runOutsideDbContext for a send that deliberately does not wait on commit.
   if (hasDbAccessContext()) {
+    logRelayDispatchIssue(
+      'relay refused inside a held DB context; the command waits for the agent\'s heartbeat',
+      `command type ${command.type}`,
+    );
     return { status: 'infrastructure_error', message: HELD_DB_CONTEXT_REFUSAL };
   }
 
   const deadlineAt = Date.now() + RELAY_TRANSPORT_DEADLINE_MS;
   const lease = await beforeTransportDeadline(readAgentPresence(agentId), deadlineAt);
   if (lease === TRANSPORT_DEADLINE) {
-    return { status: 'infrastructure_error', message: 'relay transport deadline passed before enqueue (presence read)' };
+    const message = 'relay transport deadline passed before enqueue (presence read)';
+    logRelayDispatchIssue(message, `command type ${command.type}`);
+    return { status: 'infrastructure_error', message };
   }
   if (!lease) return { status: 'offline' };
 
@@ -523,7 +550,9 @@ async function dispatchUnguarded(
   // queue answered the same case at once, through another instance's consumer.
   const shardLive = await beforeTransportDeadline(isRelayShardLive(lease.instanceId), deadlineAt);
   if (shardLive === TRANSPORT_DEADLINE) {
-    return { status: 'infrastructure_error', message: 'relay transport deadline passed before enqueue (shard check)' };
+    const message = 'relay transport deadline passed before enqueue (shard check)';
+    logRelayDispatchIssue(message, `command type ${command.type}`);
+    return { status: 'infrastructure_error', message };
   }
   if (!shardLive) return { status: 'offline' };
 
@@ -568,14 +597,27 @@ async function dispatchUnguarded(
   let enqueued: unknown;
   try {
     enqueued = await beforeTransportDeadline(added, deadlineAt);
-  } catch {
+  } catch (err) {
+    logRelayDispatchIssue('relay enqueue rejected after it was issued; outcome indeterminate', err);
     return { status: 'indeterminate' };
   }
-  if (enqueued === TRANSPORT_DEADLINE) return { status: 'indeterminate' };
+  if (enqueued === TRANSPORT_DEADLINE) {
+    logRelayDispatchIssue(
+      'relay enqueue did not settle within the transport deadline; outcome indeterminate',
+      `command type ${command.type}`,
+    );
+    return { status: 'indeterminate' };
+  }
 
   const ack = await beforeTransportDeadline(
     awaitRelayAck(relayId, Math.max(0, deadlineAt - Date.now())),
     deadlineAt,
   );
-  return ack === TRANSPORT_DEADLINE ? { status: 'indeterminate' } : ack;
+  const outcome: DispatchOutcome = ack === TRANSPORT_DEADLINE ? { status: 'indeterminate' } : ack;
+  if (outcome.status === 'indeterminate') {
+    // No ack in time, an ack this build cannot read, or a consumer that found
+    // the send claim held by another delivery.
+    logRelayDispatchIssue('relay delivery unconfirmed; outcome indeterminate', `command type ${command.type}`);
+  }
+  return outcome;
 }

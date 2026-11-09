@@ -7,9 +7,10 @@
  * runtime `import()` execution. See the contract test header for why both the
  * static-only and dynamic-following traversal modes exist.
  *
- * The only addition over the original inline resolver is the optional
- * `dropEdge` filter on `importClosure`, used by the report CLI to preview
- * "what if file X no longer reached the socket-local modules".
+ * Additions over the original inline resolver: the optional `dropEdge` filter
+ * on `importClosure` (used by the report CLI to preview "what if file X no
+ * longer reached the socket-local modules"), the role-safe boundary modules,
+ * and the `isSocketLocalClean` / registry-source helpers.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -64,7 +65,7 @@ const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
  * DELIBERATELY AVOIDS reads as a real dynamic-import edge — which is exactly
  * what `services/sentry.ts`'s header comment does, and which turned nearly
  * every entry's closure into a false-positive hit on `services/commandQueue.ts`
- * (which really does import `routes/agentWs.ts`) via `services/index.ts`'s
+ * (then a module whose closure reached `routes/agentWs.ts`) via `services/index.ts`'s
  * barrel `export * from './commandQueue'` — a graph edge that exists only in
  * a code sample inside a comment, not in `services/sentry.ts`'s real imports.
  */
@@ -133,12 +134,6 @@ export function parseFile(file: string): ParsedFile {
 }
 
 /**
- * Transitive closure of relative-import edges reachable from `entryFile`,
- * as absolute file paths (entryFile itself included). `followDynamic`
- * chooses whether `import('...')` edges are traversed — see the module
- * header comment for why both modes are needed.
- */
-/**
  * Role-safe boundary modules (#4141): the walk records them but does NOT
  * traverse their imports. `services/agentCommandRelay.ts` is the ONE module
  * designed to be loaded by every placement: its only socket-local access is a
@@ -155,6 +150,13 @@ export const ROLE_SAFE_BOUNDARY_MODULES: ReadonlySet<string> = new Set([AGENT_CO
 /** An edge filter: return true to DROP the edge `from -> to` (it is not followed). */
 export type EdgeFilter = (from: string, to: string) => boolean;
 
+/**
+ * Transitive closure of relative-import edges reachable from `entryFile`,
+ * as absolute file paths (entryFile itself included). `followDynamic`
+ * chooses whether `import('...')` edges are traversed — see the header
+ * comment in `workerEntrypointClosure.contract.test.ts` for why both modes
+ * are needed.
+ */
 export function importClosure(
   entryFile: string,
   opts: { followDynamic: boolean; dropEdge?: EdgeFilter },

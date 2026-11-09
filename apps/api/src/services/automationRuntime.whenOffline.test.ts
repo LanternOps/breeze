@@ -233,7 +233,7 @@ describe('executeRunScriptAction — offline policy', () => {
     const message = (result.outcome as { message?: string }).message;
     expect(message).not.toContain('offline');
     expect(message).not.toContain('retry');
-    expect(message).toBe('Queued — delivery to the agent is unconfirmed; the result will arrive when the agent reports');
+    expect(message).toBe('Queued — delivery to the agent is unconfirmed; the step completes when the agent reports, or times out');
   });
 
   it("skip reproduces today's failure message byte-for-byte", async () => {

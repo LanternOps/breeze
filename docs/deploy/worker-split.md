@@ -22,7 +22,7 @@ Design docs:
   its own container.
 - Socket-owner workers (anything whose import closure or runtime reaches
   agent-socket dispatch — see the plan's Task 5 classification) **stay on the
-  `api` container** this wave. `BREEZE_ROLE=all` (the default, both
+  `api` container** in the 3.5d-b rollout. `BREEZE_ROLE=all` (the default, both
   containers' fallback) is unaffected: `api` alone still runs every worker,
   byte-for-byte as before. Which entries are socket-owner changes over time;
   see "Which workers run where" below.
@@ -66,8 +66,8 @@ container travels through that instance's relay queue
 (`agent-command-relay-<instance id>`), so the relay consumer on `api` must be
 running. A send the relay cannot confirm is treated as uncertain: the delivery
 claim is kept, nothing is retried, and the agent's result or the stale-command
-reaper settles the row. Inside a held DB transaction the relay refuses outright
-and the command waits for the agent's next heartbeat.
+reaper settles the row. Inside a held DB transaction the relay refuses outright;
+a caller holding a delivery claim releases it for the agent's next heartbeat.
 
 ## Observability (#4143)
 

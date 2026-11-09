@@ -1416,6 +1416,17 @@ describe('command queue service', () => {
         expect(result.status).toBe('completed');
       });
 
+      it.each(['expired', 'owner_mismatch'] as const)('%s is final: one attempt, one release', async (status) => {
+        setupOnlineDeviceMocks();
+        vi.mocked(isAgentConnected).mockReturnValue(true);
+        vi.mocked(dispatchCommandToAgent).mockResolvedValueOnce({ status });
+
+        await executeCommand('dev-online', CommandTypes.FILE_LIST, { path: '/' });
+
+        expect(dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+        expect(releaseClaimedCommandDelivery).toHaveBeenCalledTimes(1);
+      });
+
       it('infrastructure_error releases once and does not retry', async () => {
         setupOnlineDeviceMocks();
         vi.mocked(isAgentConnected).mockReturnValue(true);

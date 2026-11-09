@@ -1,7 +1,7 @@
 /**
  * Declarative, lazily-loaded worker registry (wave 3.5d-b, #4086).
  *
- * Replaces the 104-entry static array that used to live in `index.ts`
+ * Replaces the static array that used to live in `index.ts`
  * (`initializeWorkers()` / `workerShutdownTasks`). Every entry's module is
  * loaded via a dynamic `import()` thunk instead of a static top-of-file
  * import, so a process that only wants a subset of workers (the `worker`
@@ -13,7 +13,7 @@
  *
  * This file is itself deliberately EXCLUDED as a seed from that same test's
  * separate SEEDED walk of `worker.ts`'s own `await import(...)` specifiers —
- * this registry's whole point is 104 `load()` thunks that must stay
+ * this registry's whole point is its `load()` thunks that must stay
  * unfollowed, and the seeded walk is static-only regardless (an entry's own
  * runtime closure, dynamic-follow included, is what the per-entry
  * `global`/`socket-owner` test above checks instead). That seeded walk is
@@ -44,8 +44,14 @@
  * contract test can't independently verify. Task 5's contract test is the
  * final authority and will flip any entry this pass got wrong.
  *
+ * Placement is mechanical in both directions: a `global` entry whose closure
+ * reaches socket-local dispatch must flip to `socket-owner`, and a clean
+ * `socket-owner` entry must flip to `global` or carry a `KEEP_SOCKET_OWNER`
+ * reason in `workerEntrypointClosure.contract.test.ts`.
+ *
  * DO NOT relitigate placement values by guessing — see CLAUDE.md and the plan
- * doc: run the closure tool, don't reason about it from memory.
+ * doc: run the closure tool (`pnpm --filter @breeze/api worker:closure`),
+ * don't reason about it from memory.
  */
 import type { BreezeRole } from '../config/env';
 
@@ -364,8 +370,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // routes/agentWs.ts — jobs/policyEvaluationWorker.ts ->
     // services/policyEvaluationService.ts -> (dynamic `await
     // import('../jobs/automationWorker')` for `enqueueAutomationRun`) ->
-    // services/automationRuntime.ts -> services/scriptDispatch.ts ->
-    // routes/agentWs.ts. Found by workerEntrypointClosure.contract.test.ts
+    // services/automationRuntime.ts -> ... -> routes/agentWs.ts. Run
+    // `pnpm --filter @breeze/api worker:closure` for the current frontier
+    // importers. Found by workerEntrypointClosure.contract.test.ts
     // (#4086 Task 5) — flipped from an initial-pass 'global' guess.
     name: 'policyEvaluationWorker',
     placement: 'socket-owner',
@@ -1294,10 +1301,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // #6263 W01. socket-owner, not global: the dispatch path imports
-    // services/commandQueue, whose closure reaches routes/agentWs.ts — the same
-    // reason sensitiveDataWorker above is socket-owner. Verified by
-    // workerEntrypointClosure.contract.test.ts, not by guessing.
+    // #6263 W01. socket-owner, not global: its closure still reaches
+    // routes/agentWs.ts through the shared service graph (see
+    // `pnpm --filter @breeze/api worker:closure` for the frontier importers).
+    // Verified by workerEntrypointClosure.contract.test.ts, not by guessing.
     name: 'securityScanWorker',
     placement: 'socket-owner',
     load: async () => {
@@ -1520,12 +1527,13 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // publisher feeds, plus its own 15s reconciler tick.
     name: 'aiOperatorTaskWorker',
     // SOCKET-OWNER, not global — same placement as `intentReleaseWorker` just
-    // below, and for the same reason. The coordinator's verification step
-    // issues a real `list_services` device read (`actVerify.ts`), so its
-    // runtime import closure reaches `routes/agentWs.ts` via
-    // `services/agentCommandAwait.ts`. On a non-socket-owner process that
-    // reach fails SILENTLY rather than loudly, which would quietly turn every
-    // criterion evaluation `inconclusive` and hand off tasks that had in fact
+    // below. The coordinator's verification step issues a real `list_services`
+    // device read (`actVerify.ts`, via the commandQueue relay facade); its
+    // runtime import closure still reaches `routes/agentWs.ts` through the
+    // shared service graph (`pnpm --filter @breeze/api worker:closure`). On a
+    // non-socket-owner process a socket-local reach fails SILENTLY rather than
+    // loudly, which would quietly turn every criterion evaluation
+    // `inconclusive` and hand off tasks that had in fact
     // recovered. Caught by `workerEntrypointClosure.contract.test.ts`, which
     // is exactly what that contract exists for (#4086).
     placement: 'socket-owner',
@@ -1539,9 +1547,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'pamActuationWorker',
-    // Immediate delivery uses the canonical command claim, whose cancellation
-    // propagation reaches socket-local command services. Keep that closure on
-    // API processes; the relay still delivers to agents owned by another API.
+    // Immediate delivery uses the canonical command claim. The entry's closure
+    // still reaches routes/agentWs.ts through the shared service graph
+    // (`pnpm --filter @breeze/api worker:closure`), so keep it on API
+    // processes; the relay still delivers to agents owned by another API.
     placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/pamActuationWorker');
@@ -1808,10 +1817,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // admits a verdict run for an alert that stays open and uncorrelated for
     // UNGROUPED_VERDICT_DELAY_MINUTES. Its closure reaches
     // `enqueueVerdictRunForAlert` (alertVerdictSubscriber.ts) ->
-    // `createAndEnqueueAgentRun` (runService.ts) -> `routes/agentWs.ts` /
-    // `services/agentCommandAwait.ts` (verified by
-    // workerEntrypointClosure.contract.test.ts, which is the mechanical
-    // authority here — do not relitigate by guessing) — so `socket-owner`,
+    // `createAndEnqueueAgentRun` (runService.ts) -> ... -> `routes/agentWs.ts`
+    // (verified by workerEntrypointClosure.contract.test.ts, which is the
+    // mechanical authority here — do not relitigate by guessing; see
+    // `pnpm --filter @breeze/api worker:closure`) — so `socket-owner`,
     // same placement as `aiAgentRunner` above for the identical reason.
     name: 'alertVerdictScheduler',
     placement: 'socket-owner',
@@ -1937,10 +1946,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // W03 (#5612): evaluates a proposal's verification claim after its
-    // execution lands. `socket-owner`, NOT `global`: the closure reaches
-    // evaluateVerificationClaim -> executeCommandWithSystemPrecheck ->
-    // agentCommandAwait / agentWs, the same dependency that puts
-    // alertVerdictScheduler on this placement.
+    // execution lands. `socket-owner`, NOT `global`: the closure still reaches
+    // routes/agentWs.ts through the shared service graph, the same dependency
+    // that puts alertVerdictScheduler on this placement.
     // workerEntrypointClosure.contract.test.ts is the mechanical authority.
     name: 'scriptVerifyWorker',
     placement: 'socket-owner',

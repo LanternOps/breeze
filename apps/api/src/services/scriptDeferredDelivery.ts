@@ -13,9 +13,10 @@ import { captureException } from './sentry';
  * A throw from deliver() never escapes. The committed command is either
  * still `pending` (a throw before the claim) or claimed and kept: a relay
  * facade rejection means the frame may be out, so the claim is NOT released
- * and the agent's result or the stale reaper settles the row (#4142). Either
- * way the run still happens, so the result says `send_failed` instead of
- * failing the caller.
+ * and the agent's result or the stale reaper settles the row (#4142). Pending
+ * runs at the agent's next check-in; claimed and kept runs if the frame reached
+ * the agent, otherwise the reaper settles it. Either way the row is settled, so
+ * the result says `send_failed` instead of failing the caller.
  */
 export async function deliverDeferredDispatch(
   dispatch: DispatchScriptResult,

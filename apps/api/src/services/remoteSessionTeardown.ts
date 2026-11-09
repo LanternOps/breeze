@@ -193,7 +193,7 @@ export async function teardownDisconnectedSessions(
         // Outside any held DB context: the relay refuses to run inside one
         // (#4142), and this teardown runs inline in request handlers. The
         // send itself touches no database. The request transaction still
-        // waits on the ack (existing, #4142 W2.T4 reworks this file).
+        // waits on the ack (known limitation; tracked in #4142).
         const generation = row.terminalGeneration;
         await runOutsideDbContext(() => dispatchCommandToAgent(agentId, buildStopDesktopCommand(row.id, generation)));
       } catch (err) {

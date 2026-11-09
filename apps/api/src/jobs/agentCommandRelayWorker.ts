@@ -84,7 +84,17 @@ export async function processAgentCommandRelayJob(job: Job<RelayJobData>): Promi
       agentId: d.agentId, commandId: d.commandId,
       targetInstanceId: d.targetInstanceId, expiresAt: d.expiresAt,
     });
-  } catch {
+  } catch (err) {
+    // Tamper or a key this instance does not hold: nothing was sent, so the
+    // claim goes back (#4142), and the cause is reported here because the ack
+    // carries only a fixed message.
+    console.error('[AgentCommandRelayWorker] relay envelope failed to open', {
+      relayId: d.relayId,
+      commandId: d.commandId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    await releaseRelaySendClaim(d.agentId, d.commandId);
     return ack({ status: 'infrastructure_error', message: 'relay envelope failed to open (tamper or key mismatch)' });
   }
 

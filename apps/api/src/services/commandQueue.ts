@@ -72,11 +72,11 @@ export const DEVICE_UNREACHABLE_ERROR =
 // the command can't be delivered, so fail fast instead of queueing forever.
 export const WATCHDOG_STALE_MS = 10 * 60 * 1000;
 
-// Number of times we attempt the dispatch before releasing the claim and
-// short-circuiting with DEVICE_UNREACHABLE_ERROR. With a 500 ms gap this
-// gives a transient WS hiccup ~1s of grace before the user sees a failure.
-// Only an `offline` answer is retried (#4142): any other answer is final for
-// this attempt. Exported so tests can derive the expected call count.
+// Maximum dispatch attempts before releasing the claim and short-circuiting
+// with DEVICE_UNREACHABLE_ERROR. With a 500 ms gap this gives a transient WS
+// hiccup ~1s of grace before the user sees a failure. Only an `offline`
+// answer is retried (#4142); any other answer ends the loop on that attempt.
+// Exported so tests can derive the expected call count.
 export const SEND_RETRY_ATTEMPTS = 3;
 export const SEND_RETRY_DELAY_MS = 500;
 
@@ -214,8 +214,9 @@ function writeAiCommandAudit(input: {
 
 // The transaction-scoped insert chokepoint lives in its own leaf module so
 // that `services/peripheralPolicyState.ts` can reach it WITHOUT pulling this
-// file (and therefore `routes/agentWs.ts`) into two global-placement worker
-// closures — see the header of commandQueueInsert.ts. Re-exported here so
+// file and its large import graph into two global-placement worker closures
+// (it once reached `routes/agentWs.ts`; since #4142 it reaches agents only
+// through the relay facade) — see the header of commandQueueInsert.ts. Re-exported here so
 // every existing importer keeps working.
 export { insertQueuedCommandInTransaction } from './commandQueueInsert';
 
@@ -1704,10 +1705,10 @@ async function dispatchPreparedCommand(
             type,
             status: lastStatus,
           });
-          // Nothing was delivered. For interactive
-          // commands the user is staring at a spinner — short-circuit with
-          // the unreachable error rather than burning the full poll timeout.
-          // (An `uncertain` push never lands here: it polls, claim kept.)
+          // Nothing was delivered. For interactive commands the user is
+          // staring at a spinner — short-circuit with the unreachable error
+          // rather than burning the full poll timeout. (An `uncertain` push
+          // never lands here: it polls, claim kept.)
           // For non-interactive commands, fall through to polling: the agent
           // may still pick the command up via the heartbeat path before the
           // timeout fires, in which case the user gets a real result.

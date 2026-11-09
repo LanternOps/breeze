@@ -193,6 +193,18 @@ describe('acks', () => {
     await expect(awaitRelayAck('r-1', 1_000)).resolves.toEqual({ status: 'offline' });
   });
 
+  // #4142: an ack this build cannot read says nothing it can trust about the
+  // send. Callers that branch on `status` directly must see `indeterminate`.
+  it('awaitRelayAck maps an unknown ack status to indeterminate', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({ status: 'evicted' }));
+    await expect(awaitRelayAck('r-1', 1_000)).resolves.toEqual({ status: 'indeterminate' });
+  });
+
+  it('awaitRelayAck treats a null ack body as unknown (indeterminate)', async () => {
+    redisMock.get.mockResolvedValueOnce('null');
+    await expect(awaitRelayAck('r-1', 1_000)).resolves.toEqual({ status: 'indeterminate' });
+  });
+
   it('awaitRelayAck returns indeterminate at the deadline', async () => {
     redisMock.get.mockResolvedValue(null);
     await expect(awaitRelayAck('r-1', 250)).resolves.toEqual({ status: 'indeterminate' });
@@ -399,6 +411,41 @@ describe('dispatchCommandToAgent facade', () => {
       expect(fakeQueue.add).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('a shard check that hangs past the budget answers infrastructure_error: nothing was enqueued', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(isAgentConnected).mockReturnValue(false);
+      vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+      redisMock.exists.mockReturnValueOnce(new Promise(() => {}));
+      let settled: { status: string; message?: string } | undefined;
+      const pending = dispatchCommandToAgent('agent-1', command).then((r) => { settled = r as typeof settled; });
+
+      await vi.advanceTimersByTimeAsync(RELAY_TRANSPORT_DEADLINE_MS);
+      await pending;
+      expect(settled?.status).toBe('infrastructure_error');
+      expect(settled?.message).toMatch(/shard check/);
+      expect(fakeQueue.add).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a held-DB-context refusal is logged (rate-limited), so a silent heartbeat fallback is visible', async () => {
+    __resetRelayRedisFailureLogForTests();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(hasDbAccessContext).mockReturnValue(true);
+    try {
+      await dispatchCommandToAgent('agent-1', command);
+      await dispatchCommandToAgent('agent-1', command);
+      const refusals = warn.mock.calls.filter((c) => String(c[0]).includes('held DB context'));
+      expect(refusals).toHaveLength(1);
+    } finally {
+      vi.mocked(hasDbAccessContext).mockReturnValue(false);
+      warn.mockRestore();
     }
   });
 

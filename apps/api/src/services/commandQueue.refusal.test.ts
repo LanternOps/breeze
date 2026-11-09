@@ -10,7 +10,7 @@ vi.mock('./dispatchDeviceCommand', () => ({
 vi.mock('./agentCommandRelay', () => ({
   dispatchCommandToAgent: vi.fn(),
   agentReachability: vi.fn(),
-  dispatchDisposition: vi.fn(),
+  dispatchDisposition: vi.fn(() => 'not_delivered'),
 }));
 
 import {

@@ -41,7 +41,9 @@
  * Task 5). This test is the mechanical authority: an entry marked `global`
  * whose closure reaches socket-local dispatch is a bug in the registry, not
  * in this test — fix it by flipping the entry's placement to `socket-owner`,
- * never by loosening this test.
+ * never by loosening this test. The reverse holds too: a `socket-owner` entry
+ * whose closure is clean flips to `global`, or carries a `KEEP_SOCKET_OWNER`
+ * reason below.
  */
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -405,7 +407,7 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
   describe('the role-safe boundary module holds its side of the bargain', () => {
     it('agentCommandRelay.ts static CLOSURE reaches no socket-local module and no routes/ file', () => {
       // A direct-spec check would be strictly narrower than the exemption it
-      // justifies: an INDIRECT static edge (e.g. importing commandQueue, which
+      // justifies: an INDIRECT static edge (e.g. importing a hub module that
       // value-imports agentWs) or any other route reachability would re-pin
       // agentWs into the worker container while a direct check stays green.
       // importClosure skips boundary modules only when they are non-entry
