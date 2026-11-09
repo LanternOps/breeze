@@ -414,8 +414,19 @@ async function lastCleanAssessmentFinish(grantId: string, orgId: string): Promis
       eq(aiAgentRuns.profile, 'assessment'),
       inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
       or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
+      notCheckInRun(),
     )), 'wisp.assessment.noChangesAnchor');
   return toDate(row?.at);
+}
+
+/**
+ * W07 (#11496): not a run check-in's assessment. That run answers one
+ * follow-up the person asked for, so it never moves the org's digest
+ * watermark or the no-changes anchor: the next tick still sees every change
+ * since the last full look. Null-safe: a row with no reason kind is kept.
+ */
+function notCheckInRun(): SQL {
+  return sql`coalesce(${aiAgentRuns.triggerRef} -> 'wisp' -> 'reason' ->> 'kind', '') <> ${'check_in'}`;
 }
 
 /** Not a row the no-changes gate wrote (null-safe: a null error_code is kept). */
@@ -675,6 +686,7 @@ export async function lastAssessmentWatermark(grantId: string, orgId: string): P
       eq(aiAgentRuns.profile, 'assessment'),
       inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
       or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
+      notCheckInRun(),
     )), 'wisp.assessment.watermark');
   return toDate(row?.at);
 }

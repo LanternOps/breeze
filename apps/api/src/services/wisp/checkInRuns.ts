@@ -46,7 +46,7 @@
  * DB access: every read and write runs in a FRESH system context; every
  * admission and notifyUser call happens outside it (#1105).
  */
-import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import type { WispCheckInFireReason } from '@breeze/shared';
 import { wispEnabled } from '../../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -55,12 +55,13 @@ import { devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispCheckIns, type WispCheckInRow } from '../../db/schema/wispCheckIns';
+import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { wispThreads } from '../../db/schema/wispThreads';
 import { captureException } from '../sentry';
 import { sanitizeCheckInInstruction } from './checkInTurn';
 import { AI_AGENT_RUN_SETTLED_STATUSES, type CheckInEvidence } from './checkInTriggers';
 import { GrantInactiveError, resolveGrantCeiling } from './grantAuthority';
-import { isOrgReadableOnThread, notifyUser } from './notifyUser';
+import { isOrgReadableOnThread, nudgeDedupeKey, notifyUser } from './notifyUser';
 import { mobileDeepLink } from './nudgeLinks';
 import { cleanText, SPECIALIST_RESULT_BODY_MAX_CHARS, specialistRunLink } from './specialistResult';
 
@@ -70,6 +71,15 @@ const TITLE_INSTRUCTION_CHARS = 80;
 export const CHECK_IN_RUN_RECONCILE_LIMIT = 200;
 /** A sweep reports at most this many failed rows (a DB outage fails them all the same way). */
 const RECONCILE_MAX_REPORTED_FAILURES = 5;
+/**
+ * A `running` row older than this is closed out by the tick: a run still not
+ * settled (a lost job) posts as did-not-finish, and a row whose post keeps
+ * failing is cancelled (`post_failed`), so no row holds a cap slot or the head
+ * of the sweep for ever.
+ */
+export const CHECK_IN_RUN_STALE_MS = 24 * 60 * 60 * 1000;
+/** Admission skips that scheduling should have made impossible: reported, not only logged. */
+const UNEXPECTED_SKIPS: ReadonlySet<string> = new Set(['grant_org_site_restricted', 'grant_org_out_of_ceiling', 'duplicate']);
 
 /** The run's dedupe key: one check-in admits at most one run. Starts with CHECK_IN_RUN_DEDUPE_PREFIX (assessment.ts). */
 export function checkInRunDedupeKey(checkInId: string): string {
@@ -130,6 +140,21 @@ async function postForCheckIn(
   });
   // `backoff` with no in-app row is notifyUser's dedupe hit: the post already exists.
   return !res.inApp && res.suppressed === 'backoff' ? 'already' : 'posted';
+}
+
+/** This check-in's one post (any of fire, degrade or result) is already on its thread. */
+async function checkInPostExists(row: Pick<WispCheckInRow, 'id' | 'threadId' | 'grantId'>): Promise<boolean> {
+  // The same key notifyUser writes for a check_in post (one per check-in, ever).
+  const key = nudgeDedupeKey({
+    kind: 'check_in', checkInId: row.id, concernId: null, grantId: row.grantId, threadId: row.threadId,
+    nextEligibleNudgeAt: null, now: new Date(), digestCadenceMinutes: 0,
+  });
+  const found = await sys(() => db
+    .select({ id: wispThreadPosts.id })
+    .from(wispThreadPosts)
+    .where(and(eq(wispThreadPosts.threadId, row.threadId), eq(wispThreadPosts.dedupeKey, key)))
+    .limit(1), 'wisp-check-in-run-post-exists');
+  return found.length > 0;
 }
 
 /** scheduled → fired (the post asked the grantor), compare-and-set. */
@@ -211,25 +236,35 @@ export async function fireRunCheckIn(
 
   const degrade = async (skipped: string): Promise<RunCheckInFireOutcome> => {
     console.info('[wisp.checkInRuns] run check-in degraded to a post', { checkInId: row.id, grantId: row.grantId, skipped });
+    if (UNEXPECTED_SKIPS.has(skipped)) {
+      report('unexpected_skip', new Error(`run check-in admission skipped: ${skipped}`), { checkInId: row.id, grantId: row.grantId, skipped });
+    }
     await postForCheckIn(row, checkInTitle(row.instruction), degradedBody(skipped, postBody));
     return (await flipScheduledToFired(row.id, now)) ? 'fired' : 'skipped';
   };
 
-  // 1. The revision pin: any other current revision runs nothing.
+  // 1. A retry after the admission committed: the same run, never a second
+  //    one. First, because a run already admitted passed every check below
+  //    when it was admitted (a revision landing since must not drop it).
+  const admitted = await findAdmittedRun(orgId, row.id);
+  if (admitted) return (await markRunning(row.id, admitted, now)) ? 'running' : 'skipped';
+
+  // 2. A retry after a degrade (or device-deleted) post landed but its flip
+  //    did not: the post stands, so finish the flip and run nothing. Admitting
+  //    now would end in a result the post's dedupe key could never show.
+  if (await checkInPostExists(row)) return (await flipScheduledToFired(row.id, now)) ? 'fired' : 'skipped';
+
+  // 3. The revision pin: any other current revision runs nothing.
   const pinnedRevisionId = row.grantRevisionId;
   if (pinnedRevisionId === null || pinnedRevisionId !== input.currentRevisionId) return degrade('grant_revision_changed');
 
-  // 2. A deleted subject device: nothing to check, and nothing to ask.
+  // 4. A deleted subject device: nothing to check, and nothing to ask.
   if (await contextDeviceDeleted(row)) {
     await postForCheckIn(row, checkInTitle(row.instruction), CHECK_IN_DEVICE_DELETED_BODY);
     return (await flipScheduledToFired(row.id, now)) ? 'fired' : 'skipped';
   }
 
-  // 3. A retry after the admission committed: the same run, never a second one.
-  const admitted = await findAdmittedRun(orgId, row.id);
-  if (admitted) return (await markRunning(row.id, admitted, now)) ? 'running' : 'skipped';
-
-  // 4. Admit. Lazy: the assessment graph stays off the chat tool's import path.
+  // 5. Admit. Lazy: the assessment graph stays off the chat tool's import path.
   const { enqueueAssessment } = await import('./assessment');
   const result = await runOutsideDbContext(() => enqueueAssessment({
     grantId: row.grantId,
@@ -245,7 +280,7 @@ export async function fireRunCheckIn(
   }));
   if ('runId' in result) return (await markRunning(row.id, result.runId, now)) ? 'running' : 'skipped';
 
-  // 5. Admission saw a run with this key that step 3 did not (a racing fire).
+  // 6. Admission saw a run with this key that step 1 did not (a racing fire).
   if (result.skipped === 'duplicate') {
     const raced = await findAdmittedRun(orgId, row.id);
     if (raced) return (await markRunning(row.id, raced, now)) ? 'running' : 'skipped';
@@ -261,7 +296,10 @@ export async function fireRunCheckIn(
 const RESULT_STATUSES: ReadonlySet<string> = new Set(['completed', 'awaiting_approval']);
 const SETTLED: readonly string[] = AI_AGENT_RUN_SETTLED_STATUSES;
 
-export type CheckInRunPostOutcome = 'posted' | 'already' | 'not_check_in' | 'not_settled' | 'cancelled';
+export type CheckInRunPostOutcome = 'posted' | 'already' | 'not_check_in' | 'not_settled' | 'cancelled' | 'disabled';
+
+/** The status a did-not-finish post names when the run row is gone. */
+const RUN_UNAVAILABLE_STATUS = 'unavailable';
 
 /** The answer body: the run's summary, sanitised and capped, plus a pending-approval line. */
 export function checkInRunResultBody(run: { status: string; summary: string | null }): string {
@@ -290,7 +328,9 @@ async function cancelRunning(checkInId: string, now: Date, reason: string): Prom
  * Post the result of a settled check-in run, once. 'not_check_in' — no
  * check-in names this run (any other assessment). 'already' — the row is no
  * longer `running` (posted, or cancelled by the user). 'not_settled' — the run
- * is still going. 'cancelled' — the post may no longer go to the thread: the
+ * is still going (a row `running` for over CHECK_IN_RUN_STALE_MS, or whose
+ * run row is gone, posts as did-not-finish instead). 'disabled' — Wisp is off.
+ * 'cancelled' — the post may no longer go to the thread: the
  * grant is not usable, the thread or grantor changed, or the run's org is no
  * longer readable on the thread (`cancel_reason` says which).
  *
@@ -300,7 +340,7 @@ async function cancelRunning(checkInId: string, now: Date, reason: string): Prom
  * is a no-op; the finalizer and the reconcile racing end with one post.
  */
 export async function postCheckInRunResult(runId: string, now: Date = new Date()): Promise<CheckInRunPostOutcome> {
-  if (!wispEnabled()) return 'not_settled';
+  if (!wispEnabled()) return 'disabled';
   const [read] = await sys(() => db
     .select({
       row: wispCheckIns,
@@ -313,8 +353,8 @@ export async function postCheckInRunResult(runId: string, now: Date = new Date()
       grantRevisionId: wispGrants.currentRevisionId,
     })
     .from(wispCheckIns)
-    // Org-pinned: a run of another org never settles this row.
-    .innerJoin(aiAgentRuns, and(eq(aiAgentRuns.id, wispCheckIns.runId), eq(aiAgentRuns.orgId, wispCheckIns.orgId)))
+    // Org-pinned: a run of another org never settles this row (it reads as gone).
+    .leftJoin(aiAgentRuns, and(eq(aiAgentRuns.id, wispCheckIns.runId), eq(aiAgentRuns.orgId, wispCheckIns.orgId)))
     .leftJoin(wispThreads, and(eq(wispThreads.id, wispCheckIns.threadId), eq(wispThreads.partnerId, wispCheckIns.partnerId)))
     .leftJoin(wispGrants, and(eq(wispGrants.id, wispCheckIns.grantId), eq(wispGrants.partnerId, wispCheckIns.partnerId)))
     .where(eq(wispCheckIns.runId, runId))
@@ -322,7 +362,9 @@ export async function postCheckInRunResult(runId: string, now: Date = new Date()
   if (!read) return 'not_check_in';
   const { row } = read;
   if (row.status !== 'running') return 'already';
-  if (!SETTLED.includes(read.runStatus)) return 'not_settled';
+  const runStatus = read.runStatus ?? RUN_UNAVAILABLE_STATUS;
+  const stale = row.firedAt !== null && now.getTime() - row.firedAt.getTime() > CHECK_IN_RUN_STALE_MS;
+  if (read.runStatus !== null && !SETTLED.includes(read.runStatus) && !stale) return 'not_settled';
 
   const cancel = async (reason: string): Promise<CheckInRunPostOutcome> => {
     console.info('[wisp.checkInRuns] run check-in result not posted', { checkInId: row.id, runId, reason });
@@ -342,10 +384,10 @@ export async function postCheckInRunResult(runId: string, now: Date = new Date()
     return cancel('grant_inactive');
   }
 
-  const answered = RESULT_STATUSES.has(read.runStatus);
+  const answered = read.runStatus !== null && RESULT_STATUSES.has(read.runStatus);
   const delivered = answered
-    ? await postForCheckIn(row, checkInResultTitle(row.instruction), checkInRunResultBody({ status: read.runStatus, summary: read.runSummary }), specialistRunLink(runId))
-    : await postForCheckIn(row, checkInTitle(row.instruction), checkInRunUnfinishedBody(read.runStatus, row.instruction), specialistRunLink(runId));
+    ? await postForCheckIn(row, checkInResultTitle(row.instruction), checkInRunResultBody({ status: runStatus, summary: read.runSummary }), specialistRunLink(runId))
+    : await postForCheckIn(row, checkInTitle(row.instruction), checkInRunUnfinishedBody(runStatus, row.instruction), read.runStatus === null ? undefined : specialistRunLink(runId));
 
   // An answer leaves nothing for the next turn (consumed); a run that did not
   // finish asked the grantor to run it now, so the instruction returns with
@@ -360,33 +402,50 @@ export async function postCheckInRunResult(runId: string, now: Date = new Date()
 }
 
 /**
- * The tick's sweep: `running` rows whose run has settled, oldest first, at
- * most CHECK_IN_RUN_RECONCILE_LIMIT, each through postCheckInRunResult. A
- * failing row never stops the sweep; the first few failures are reported.
+ * The tick's sweep, oldest first, at most CHECK_IN_RUN_RECONCILE_LIMIT, each
+ * through postCheckInRunResult: `running` rows whose run has settled, whose
+ * run row is gone, or that have been running for over CHECK_IN_RUN_STALE_MS.
+ * A failing row never stops the sweep; the first few failures are reported. A
+ * stale row whose post still fails is cancelled (`post_failed`), so it cannot
+ * hold the head of the sweep or a cap slot for ever.
  */
 export async function reconcileRunningCheckIns(now: Date): Promise<{ posted: number }> {
   if (!wispEnabled()) return { posted: 0 };
-  const settled = await sys(() => db
-    .select({ runId: wispCheckIns.runId })
+  const staleBefore = new Date(now.getTime() - CHECK_IN_RUN_STALE_MS);
+  const due = await sys(() => db
+    .select({ id: wispCheckIns.id, runId: wispCheckIns.runId, firedAt: wispCheckIns.firedAt })
     .from(wispCheckIns)
-    .innerJoin(aiAgentRuns, and(eq(aiAgentRuns.id, wispCheckIns.runId), eq(aiAgentRuns.orgId, wispCheckIns.orgId)))
+    .leftJoin(aiAgentRuns, and(eq(aiAgentRuns.id, wispCheckIns.runId), eq(aiAgentRuns.orgId, wispCheckIns.orgId)))
     .where(and(
       eq(wispCheckIns.status, 'running'),
       isNotNull(wispCheckIns.runId),
-      inArray(aiAgentRuns.status, [...AI_AGENT_RUN_SETTLED_STATUSES]),
+      or(
+        inArray(aiAgentRuns.status, [...AI_AGENT_RUN_SETTLED_STATUSES]),
+        isNull(aiAgentRuns.id),
+        lt(wispCheckIns.firedAt, staleBefore),
+      ),
     ))
     .orderBy(asc(wispCheckIns.firedAt), asc(wispCheckIns.id))
     .limit(CHECK_IN_RUN_RECONCILE_LIMIT), 'wisp-check-in-run-reconcile');
 
   let posted = 0;
   let failures = 0;
-  for (const { runId } of settled) {
+  for (const { id, runId, firedAt } of due) {
     if (!runId) continue;
     try {
       if ((await postCheckInRunResult(runId, now)) === 'posted') posted += 1;
     } catch (err) {
       failures += 1;
       if (failures <= RECONCILE_MAX_REPORTED_FAILURES) report('reconcile_row', err, { runId });
+      if (firedAt !== null && firedAt.getTime() < staleBefore.getTime()) {
+        try {
+          if (await cancelRunning(id, now, 'post_failed')) {
+            report('reconcile_gave_up', err, { checkInId: id, runId });
+          }
+        } catch (cancelErr) {
+          report('reconcile_give_up_cancel', cancelErr, { checkInId: id, runId });
+        }
+      }
     }
   }
   if (failures > RECONCILE_MAX_REPORTED_FAILURES) {

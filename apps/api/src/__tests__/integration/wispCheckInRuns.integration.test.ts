@@ -65,7 +65,15 @@ vi.mock('../../config/env', async (orig) => ({
 
 import { notifyUser } from '../../services/wisp/notifyUser';
 import { getOrCreateThread } from '../../services/wisp/threads';
-import { CheckInLimitReachedError, cancelCheckIn, createCheckIn, fireCheckIn, listCheckIns } from '../../services/wisp/checkIns';
+import {
+  _resetCheckInTriggerSweepForTests,
+  CheckInLimitReachedError,
+  cancelCheckIn,
+  createCheckIn,
+  fireCheckIn,
+  listCheckIns,
+  reconcileCheckInTriggers,
+} from '../../services/wisp/checkIns';
 import { checkInRunDedupeKey, postCheckInRunResult, reconcileRunningCheckIns } from '../../services/wisp/checkInRuns';
 import { CHECK_IN_RUN_NOT_DONE_LINE, loadFiredCheckIns, renderCheckInBlock } from '../../services/wisp/checkInTurn';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
@@ -269,6 +277,44 @@ describe('firing a run check-in', () => {
     expect(await runsFor(fx, row.id)).toHaveLength(1);
   });
 
+  runDb('a retry after a degrade post landed but its flip failed degrades again: no run, the post stands', async () => {
+    const fx = await seed();
+    const now = new Date();
+    h.enqueueAssessment.mockResolvedValueOnce({ skipped: 'budget_exhausted' });
+    const row = await scheduleRun(fx, now);
+    await makeDue(row.id, now);
+    expect(await fireCheckIn(row.id, now)).toBe('fired');
+    // Simulate the flip having failed: the row is back to scheduled (claimed), the post exists.
+    await withSystemDbAccessContext(() => db.update(wispCheckIns).set({ status: 'scheduled', firedAt: null }).where(eq(wispCheckIns.id, row.id)));
+    admitting(fx);
+    expect(await fireCheckIn(row.id, now)).toBe('fired');
+    expect(h.enqueueAssessment).toHaveBeenCalledTimes(1);
+    expect(await runsFor(fx, row.id)).toHaveLength(0);
+    expect(await postsFor(fx.thread.id)).toHaveLength(1);
+  });
+
+  runDb('a retry after the admission committed keeps the run even if the grant was revised in between', async () => {
+    const fx = await seed();
+    const now = new Date();
+    h.enqueueAssessment.mockImplementationOnce(async (input: { reason: { checkInId: string } }) => {
+      await insertRun(fx, input.reason.checkInId);
+      throw new Error('worker lost');
+    });
+    const row = await scheduleRun(fx, now);
+    await makeDue(row.id, now);
+    await expect(fireCheckIn(row.id, now)).rejects.toThrow('worker lost');
+    await withSystemDbAccessContext(async () => {
+      const [revision] = await db.insert(wispGrantRevisions).values({
+        grantId: fx.grantId, partnerId: fx.partner.id, revision: 2,
+        ceilingSnapshot: { version: 1, permissionKeys: ['ai_sessions:use'], orgIds: [fx.org.id], siteIds: null, toolAllowlist: null, deniedTools: [] },
+        factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
+      }).returning({ id: wispGrantRevisions.id });
+      await db.update(wispGrants).set({ currentRevisionId: revision!.id }).where(eq(wispGrants.id, fx.grantId));
+    });
+    expect(await fireCheckIn(row.id, now)).toBe('running');
+    expect(await postsFor(fx.thread.id)).toHaveLength(0);
+  });
+
   runDb('an admission that reports duplicate (a racing fire) is recovered by its dedupe key', async () => {
     const fx = await seed();
     const now = new Date();
@@ -297,6 +343,36 @@ describe('firing a run check-in', () => {
       dedupeKey: `wisp.check_in:${row.id}`,
     });
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', runId: null, firedAt: now });
+  });
+
+  runDb('a revision that lands between the fire-path check and admission (grant_revision_changed) posts the grant-changed degrade', async () => {
+    const fx = await seed();
+    h.enqueueAssessment.mockResolvedValue({ skipped: 'grant_revision_changed' });
+    const row = await scheduleRun(fx, new Date());
+    await makeDue(row.id, new Date());
+    expect(await fireCheckIn(row.id, new Date())).toBe('fired');
+    expect((await postsFor(fx.thread.id))[0]!.body).toBe(
+      `I couldn't check on my own: the grant changed since this was scheduled. Run it now? ${INSTRUCTION}`,
+    );
+    expect(await runsFor(fx, row.id)).toHaveLength(0);
+  });
+
+  runDb('an event run check-in fired later by the tick admits once, with the evidence; a second sweep admits nothing', async () => {
+    const fx = await seed();
+    admitting(fx);
+    const row = await scheduleRun(fx, new Date(), { trigger: { kind: 'device_online', subjectId: fx.device.id } });
+    expect(row.status).toBe('scheduled');
+    await withSystemDbAccessContext(() => db.update(devices).set({ status: 'online', lastSeenAt: new Date() }).where(eq(devices.id, fx.device.id)));
+    _resetCheckInTriggerSweepForTests();
+    expect(await reconcileCheckInTriggers(new Date())).toMatchObject({ fired: 1 });
+    expect(await rowOf(row.id)).toMatchObject({ status: 'running', fireReason: 'event' });
+    const call = h.enqueueAssessment.mock.calls[0]![0] as { reason: { evidence: Record<string, unknown> }; dedupeKey: string };
+    expect(call.dedupeKey).toBe(`wisp-check-in-${row.id}`);
+    expect(call.reason.evidence).toMatchObject({ kind: 'device_online', status: 'online' });
+    _resetCheckInTriggerSweepForTests();
+    await reconcileCheckInTriggers(new Date());
+    expect(h.enqueueAssessment).toHaveBeenCalledTimes(1);
+    expect(await runsFor(fx, row.id)).toHaveLength(1);
   });
 
   runDb('any other admission skip posts "the check could not start"', async () => {
@@ -390,14 +466,32 @@ describe('posting the settled run', () => {
     expect(await withSystemDbAccessContext(() => loadFiredCheckIns(fx.grantId, fx.user.id))).toEqual([]);
   });
 
+  runDb('a run awaiting approval posts its summary with the waiting note, once, and is consumed', async () => {
+    const fx = await seed();
+    const { row, runId } = await firedRunning(fx);
+    await setRun(runId, { status: 'awaiting_approval', summary: 'WS-01 is missing KB5031; I proposed installing it.', finishedAt: new Date() });
+    expect(await postCheckInRunResult(runId)).toBe('posted');
+    expect((await postsFor(fx.thread.id))[0]!.body).toBe(
+      'WS-01 is missing KB5031; I proposed installing it. A step I proposed is waiting for your approval.',
+    );
+    expect((await rowOf(row.id)).status).toBe('consumed');
+    // The run later completing (after approval) posts nothing more.
+    await setRun(runId, { status: 'completed' });
+    expect(await postCheckInRunResult(runId)).toBe('already');
+    expect(await postsFor(fx.thread.id)).toHaveLength(1);
+  });
+
   runDb('the finalizer and the reconcile racing end with one post', async () => {
     const fx = await seed();
     const { row, runId } = await firedRunning(fx);
     await setRun(runId, { status: 'completed', summary: 'All clear.', finishedAt: new Date() });
-    const results = await Promise.all([postCheckInRunResult(runId), reconcileRunningCheckIns(new Date())]);
+    const [direct, swept] = await Promise.all([postCheckInRunResult(runId), reconcileRunningCheckIns(new Date())]);
     expect(await postsFor(fx.thread.id)).toHaveLength(1);
     expect((await rowOf(row.id)).status).toBe('consumed');
-    expect(results).toBeDefined();
+    // At most one of the two reports a post (the notifyUser dedupe and the
+    // flip's compare-and-set can each be won by a different caller).
+    expect(Number(direct === 'posted') + swept.posted).toBeLessThanOrEqual(1);
+    expect(vi.mocked(notifyUser).mock.calls.length).toBeLessThanOrEqual(2);
   });
 
   runDb('a failed run posts "didn\'t finish" and asks to run it now; the row is fired and its next turn says so', async () => {
@@ -447,6 +541,27 @@ describe('posting the settled run', () => {
     h.ceiling = { ...fx.ceiling, orgIds: new Set([randomUUID()]) } as GrantCeiling;
     expect(await postCheckInRunResult(runId)).toBe('cancelled');
     expect((await rowOf(row.id)).cancelReason).toBe('outside_ceiling');
+  });
+
+  runDb('a run stuck unsettled for over a day, or one that is gone, is closed out by the tick as did-not-finish', async () => {
+    const fx = await seed();
+    const stuck = await firedRunning(fx);
+    const gone = await firedRunning(fx);
+    const fresh = await firedRunning(fx);
+    const longAgo = new Date(Date.now() - 25 * 3_600_000);
+    await withSystemDbAccessContext(async () => {
+      await db.update(wispCheckIns).set({ firedAt: longAgo }).where(eq(wispCheckIns.id, stuck.row.id));
+      await db.update(wispCheckIns).set({ runId: randomUUID() }).where(eq(wispCheckIns.id, gone.row.id));
+    });
+    expect(await reconcileRunningCheckIns(new Date())).toEqual({ posted: 2 });
+    const bodies = (await postsFor(fx.thread.id)).map((p) => p.body).sort();
+    expect(bodies).toEqual([
+      `My check didn't finish (queued). Run it now? ${INSTRUCTION}`,
+      `My check didn't finish (unavailable). Run it now? ${INSTRUCTION}`,
+    ]);
+    expect((await rowOf(stuck.row.id)).status).toBe('fired');
+    expect((await rowOf(gone.row.id)).status).toBe('fired');
+    expect((await rowOf(fresh.row.id)).status).toBe('running');
   });
 
   runDb('the tick reconcile posts settled runs and leaves running ones alone; Wisp off does nothing', async () => {

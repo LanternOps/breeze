@@ -820,6 +820,16 @@ describe('lastAssessmentWatermark', () => {
     expect(params).toEqual(expect.arrayContaining([GRANT, ORG, 'assessment']));
   });
 
+  // W07: a run check-in's assessment answers one follow-up; it must not move
+  // the org's digest window (events since the last real look would be skipped).
+  it('W07: never counts a check-in run', async () => {
+    h.results.push([{ at: null }]);
+    await lastAssessmentWatermark(GRANT, ORG);
+    const { sql: text, params } = compile(h.queries[0]!.where[0]);
+    expect(text).toMatch(/"trigger_ref" -> 'wisp' -> 'reason' ->> 'kind'/);
+    expect(params).toContain('check_in');
+  });
+
   // A run that left a pending intent finishes `awaiting_approval`; excluding
   // it would re-read the same window and could re-propose the same action.
   it('counts runs that ended completed OR awaiting_approval', async () => {
