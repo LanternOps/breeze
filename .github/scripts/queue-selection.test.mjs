@@ -7,6 +7,9 @@ import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import * as queue from './queue-selection.mjs';
+// Imported only to pin the candidate-side consumer to the gate's definitions.
+import * as thin from './ci-gate-thin.mjs';
+import { GATE_WORKFLOW } from './ci-gate.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const workflow = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8');
@@ -806,4 +809,222 @@ test('SHADOW_FIELDS and CLASSIFIER_KEYS are what the shadow line and a record ca
   assert.deepEqual(logged, queue.SHADOW_FIELDS);
   assert.equal(out.mode, 'shadow');
   assert.deepEqual(queue.CLASSIFIER_KEYS, Object.keys(classify(['apps/web/src/x.ts'])));
+});
+
+// ── W05 (#10749): consume, the changes job reading the CI Gate's selection ──
+
+const GATE_PATH = '.github/workflows/ci-gate.yml';
+const REPO = 'LanternOps/breeze';
+const GATE_RUN = 4242, PINNED_WORKFLOW = 409546478, LISTED_GATE = 777, LISTED_CI = 778;
+const QUEUE_REF = 'refs/heads/gh-readonly-queue/main/pr-12-deadbeef';
+const FAKE_TEMP = '/tmp/queue-thin-fake';
+const GATE_ENV = { GATE_WORKFLOW: GATE_PATH, GATE_SELECTION_ARTIFACT: 'ci-gate-selection-attempt-1', GATE_SELECTION_FILE: 'ci-gate-selection.json' };
+const consumeEnv = (overrides = {}) => ({ GITHUB_REPOSITORY: REPO, HEAD_SHA: M, BASE_SHA: BASE, HEAD_REF: QUEUE_REF,
+  THIN_QUEUE: 'enforce', ...GATE_ENV, ...overrides });
+const gateRun = (overrides = {}) => ({ id: GATE_RUN, path: GATE_PATH, event: 'merge_group', head_sha: M,
+  workflow_id: PINNED_WORKFLOW, ...overrides });
+const published = (overrides = {}) => ({ schema: 1, repository: REPO, head_sha: M, base_sha: BASE, head_ref: QUEUE_REF,
+  policy_digest: 'f'.repeat(64), gate_run: GATE_RUN, gate_attempt: 1, source_attempt: 1, mode: 'thin', reason: '',
+  thin_skip: ['test-web', 'build-web'], would_skip: ['build-web', 'test-web', 'smoke-test'], thin_queue: 'enforce', ...overrides });
+// A fake clock: sleep advances it. runsAt / artifactAt say from which second each
+// is visible, so the 60 s and 180 s deadlines can be tested at their boundaries.
+function consumeIO({ runs = [gateRun()], runsAt = 0, artifactAt = 0, body = published(), workflows } = {}) {
+  let now = 1_000_000;
+  const start = now, calls = [], logs = [], errors = [], writes = new Map(), removed = [];
+  const at = () => (now - start) / 1000;
+  const listed = workflows ?? [{ id: LISTED_GATE, path: GATE_PATH }, { id: LISTED_CI, path: '.github/workflows/ci.yml' }];
+  const io = {
+    calls, logs, errors, writes, removed,
+    now: () => now, sleep: ms => { now += ms; },
+    stdout: line => logs.push(line), stderr: line => errors.push(line),
+    append: (path, text) => writes.set(path, (writes.get(path) ?? '') + text),
+    temp: () => FAKE_TEMP, remove: path => removed.push(path),
+    read: path => {
+      assert.equal(path, `${FAKE_TEMP}/ci-gate-selection.json`);
+      return typeof body === 'string' ? body : JSON.stringify(body);
+    },
+    gh: args => {
+      calls.push(args);
+      const endpoint = args[0] === 'api' ? args.find(arg => arg.startsWith('repos/')) : null;
+      if (endpoint === `repos/${REPO}/actions/workflows?per_page=100`) return JSON.stringify([{ workflows: listed }]);
+      if (endpoint === `repos/${REPO}/actions/runs?event=merge_group&head_sha=${M}&per_page=100`) {
+        return JSON.stringify({ workflow_runs: at() >= runsAt ? runs : [] });
+      }
+      const artifacts = endpoint?.match(/^repos\/LanternOps\/breeze\/actions\/runs\/(\d+)\/artifacts\?name=ci-gate-selection-attempt-1&per_page=100$/);
+      if (artifacts) {
+        return JSON.stringify([{ artifacts: at() >= artifactAt && Number(artifacts[1]) === GATE_RUN
+          ? [{ name: 'ci-gate-selection-attempt-1', expired: false }] : [] }]);
+      }
+      if (args[0] === 'run' && args[1] === 'download') {
+        assert.deepEqual(args, ['run', 'download', String(GATE_RUN), '--repo', REPO, '--name', 'ci-gate-selection-attempt-1', '--dir', FAKE_TEMP]);
+        return '';
+      }
+      throw Error(`Unexpected gh: ${args.join(' ')}`);
+    },
+  };
+  return io;
+}
+const outputs = io => Object.fromEntries((io.writes.get('out') ?? '').trim().split('\n').map(line => {
+  const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)];
+}));
+const consumeWith = async (io, env = consumeEnv()) => {
+  assert.equal(await queue.consume(io, env, { output: 'out' }), 0);
+  return outputs(io);
+};
+
+test('consume: kill switch off, unset or unknown is full thin_disabled with no gh call', async () => {
+  for (const value of [undefined, '', 'off', 'ENFORCE', 'on']) {
+    const io = consumeIO();
+    assert.deepEqual(await consumeWith(io, consumeEnv({ THIN_QUEUE: value })),
+      { thin_skip: '', selection_mode: 'full', selection_reason: 'thin_disabled' }, String(value));
+    assert.equal(io.calls.length, 0, String(value));
+    assert.equal(io.logs.length, 1);
+    assert.match(io.logs[0], /^queue-thin: mode=full reason=thin_disabled gate_run=null waited_s=0 thin_skip=""$/);
+  }
+});
+
+test('consume: a thin selection becomes the thin_skip value, exactly three output keys', async () => {
+  const io = consumeIO();
+  await consumeWith(io);
+  assert.equal(io.writes.get('out'), 'thin_skip=,build-web,test-web,\nselection_mode=thin\nselection_reason=\n');
+  assert.deepEqual(io.logs, [`queue-thin: mode=thin reason= gate_run=${GATE_RUN} waited_s=0 thin_skip=",build-web,test-web,"`]);
+  assert.deepEqual(io.removed, [FAKE_TEMP]);
+});
+
+test('consume: shadow runs everything and logs the list it would skip', async () => {
+  const io = consumeIO({ body: published({ mode: 'shadow', thin_queue: 'shadow' }) });
+  assert.deepEqual(await consumeWith(io, consumeEnv({ THIN_QUEUE: 'shadow' })),
+    { thin_skip: '', selection_mode: 'full', selection_reason: 'gate_shadow' });
+  assert.deepEqual(io.logs, [`queue-thin: mode=full reason=gate_shadow gate_run=${GATE_RUN} waited_s=0 thin_skip="" would_skip=",build-web,test-web,"`]);
+});
+
+test('consume: a full selection is full with the gate\'s reason', async () => {
+  for (const reason of ['thin_disabled', 'audit_sample', 'stale_base', 'error']) {
+    assert.deepEqual(await consumeWith(consumeIO({ body: published({ mode: 'full', reason, thin_skip: [] }) })),
+      { thin_skip: '', selection_mode: 'full', selection_reason: `gate:${reason}` }, reason);
+  }
+});
+
+test('consume: the gate run must appear within 60 s (polled every 10 s)', async () => {
+  const found = consumeIO({ runsAt: 60 });
+  assert.equal((await consumeWith(found)).selection_mode, 'thin');
+  assert.match(found.logs[0], / waited_s=60 /);
+  const late = consumeIO({ runsAt: 61 });
+  assert.deepEqual(await consumeWith(late), { thin_skip: '', selection_mode: 'full', selection_reason: 'no_gate_run' });
+  assert.match(late.logs[0], / waited_s=60 /);
+  const polls = late.calls.filter(args => args.some(arg => arg.includes('actions/runs?event=merge_group')));
+  assert.equal(polls.length, 7, 'polls at 0, 10, ... 60 s');
+});
+
+test('consume: the selection must appear within 180 s of the start', async () => {
+  const found = consumeIO({ runsAt: 30, artifactAt: 180 });
+  assert.equal((await consumeWith(found)).selection_mode, 'thin');
+  assert.match(found.logs[0], / waited_s=180 /);
+  const late = consumeIO({ runsAt: 30, artifactAt: 181 });
+  assert.deepEqual(await consumeWith(late), { thin_skip: '', selection_mode: 'full', selection_reason: 'no_gate_selection' });
+  assert.ok(!late.calls.some(args => args[0] === 'run'), 'nothing is downloaded');
+});
+
+test('consume: only a pinned gate run counts (repository-wide, gate path, unlisted workflow id)', async () => {
+  for (const [name, runs] of [
+    ['a candidate copy under a listed id', [gateRun({ workflow_id: LISTED_GATE })]],
+    ['another path', [gateRun({ path: '.github/workflows/ci.yml' })]],
+    ['another event', [gateRun({ event: 'pull_request' })]],
+    ['another head', [gateRun({ head_sha: H })]],
+    ['no workflow id', [gateRun({ workflow_id: null })]],
+  ]) {
+    assert.equal((await consumeWith(consumeIO({ runs }))).selection_reason, 'no_gate_run', name);
+  }
+  const noListedGate = consumeIO({ workflows: [{ id: LISTED_CI, path: '.github/workflows/ci.yml' }] });
+  assert.equal((await consumeWith(noListedGate)).selection_reason, 'no_gate_run', 'an unlisted id proves nothing without a listed gate');
+  // The newest pinned run wins; a newer candidate copy is ignored.
+  const io = consumeIO({ runs: [gateRun({ id: 9999, workflow_id: LISTED_GATE }), gateRun({ id: 1 }), gateRun()] });
+  assert.equal((await consumeWith(io)).selection_mode, 'thin');
+  assert.ok(io.calls.some(args => args.includes(`repos/${REPO}/actions/runs/${GATE_RUN}/artifacts?name=ci-gate-selection-attempt-1&per_page=100`)));
+});
+
+test('consume: a selection for another entry, run, attempt or repository is invalid and full', async () => {
+  for (const [name, body] of [
+    ['another head', published({ head_sha: H })],
+    ['another base', published({ base_sha: B })],
+    ['another head ref', published({ head_ref: 'refs/heads/gh-readonly-queue/main/pr-13-deadbeef' })],
+    ['another repository', published({ repository: 'someone/else' })],
+    ['another gate run', published({ gate_run: GATE_RUN + 1 })],
+    ['a later attempt', published({ gate_attempt: 2 })],
+    ['schema 2', published({ schema: 2 })],
+    ['an unknown mode', published({ mode: 'thinner' })],
+    ['a list that is not job ids', published({ thin_skip: ['test-web,smoke-test'] })],
+    ['a newline in a job id', published({ thin_skip: ['test-web\nselection_mode=thin'] })],
+    ['an extra key', { ...published(), extra: true }],
+    ['not JSON', '{"schema":'],
+    ['not an object', '[]'],
+  ]) {
+    const io = consumeIO({ body });
+    assert.deepEqual(await consumeWith(io), { thin_skip: '', selection_mode: 'full', selection_reason: 'gate_selection_invalid' }, name);
+    assert.match(io.logs[0], / detail=/, name);
+  }
+});
+
+test('consume: any exception is full error and exit 0, and the temp dir is removed', async () => {
+  const io = consumeIO();
+  const gh = io.gh;
+  io.gh = args => { if (args[0] === 'run') throw Error('HTTP 502'); return gh(args); };
+  assert.deepEqual(await consumeWith(io), { thin_skip: '', selection_mode: 'full', selection_reason: 'error' });
+  assert.match(io.logs[0], / detail="HTTP 502"$/);
+  assert.deepEqual(io.removed, [FAKE_TEMP]);
+  for (const env of [consumeEnv({ HEAD_SHA: 'nope' }), consumeEnv({ BASE_SHA: '' }), consumeEnv({ GITHUB_REPOSITORY: 'a b' }),
+    consumeEnv({ GATE_WORKFLOW: undefined }), consumeEnv({ GATE_WORKFLOW: '../x.yml' }), consumeEnv({ GATE_SELECTION_ARTIFACT: 'a b' }),
+    consumeEnv({ GATE_SELECTION_FILE: '../ci-gate-selection.json' })]) {
+    const bad = consumeIO();
+    assert.equal((await consumeWith(bad, env)).selection_reason, 'error');
+    assert.equal(bad.calls.length, 0);
+  }
+});
+
+test('consume: an unwritable output still exits 0 and says so', async () => {
+  const io = consumeIO();
+  io.append = () => { throw Error('EROFS'); };
+  assert.equal(await queue.consume(io, consumeEnv(), { output: 'out' }), 0);
+  assert.equal(io.logs.length, 1);
+  assert.ok(io.errors.some(line => line.includes('EROFS')));
+});
+
+test('consume mirrors the gate: producer names, selection keys, value format and every validity check', () => {
+  assert.deepEqual(GATE_ENV, { GATE_WORKFLOW, GATE_SELECTION_ARTIFACT: thin.selectionArtifact(1), GATE_SELECTION_FILE: thin.SELECTION_FILE });
+  assert.deepEqual(queue.GATE_SELECTION_KEYS, thin.SELECTION_KEYS);
+  for (const list of [[], ['test-web'], ['test-web', 'build-api', 'test-web'], ['integration-test', 'path-read-contracts']]) {
+    assert.equal(queue.skipValue(list), thin.thinSkipValue(list));
+  }
+  for (const bad of [['Test-Web'], ['a,b'], [''], [1]]) {
+    assert.throws(() => queue.skipValue(bad)); assert.throws(() => thin.thinSkipValue(bad));
+  }
+  // Differential: the consumer rejects exactly what the gate's own check rejects.
+  const expected = { repository: REPO, head_sha: M, base_sha: BASE, head_ref: QUEUE_REF, gate_run: GATE_RUN, gate_attempt: 1, source_attempt: 1 };
+  const values = [null, undefined, 0, -1, 1, 2, 1.5, '', 'x', 'shadow', M, 'f'.repeat(64), [], ['test-web'], ['UP'], [1], {}, true];
+  const bodies = [published(), published({ mode: 'full', reason: 'stale_base', thin_skip: [] }), published({ policy_digest: null }),
+    published({ mode: 'shadow' }), null, [], 'text', { ...published(), extra: 1 }];
+  for (const key of thin.SELECTION_KEYS) {
+    const { [key]: _, ...without } = published();
+    bodies.push(without);
+    for (const value of values) bodies.push(published({ [key]: value }));
+  }
+  let rejected = 0;
+  for (const body of bodies) {
+    const gate = thin.selectionFailure(body, expected), mine = queue.gateSelectionProblem(body, expected);
+    assert.equal(mine, gate, JSON.stringify(body));
+    if (gate) rejected++;
+  }
+  assert.ok(rejected > 200 && rejected < bodies.length, `${rejected} of ${bodies.length} rejected`);
+});
+
+test('consume CLI: the real module loads, and with the kill switch unset it writes full and exits 0', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'queue-thin-cli-'));
+  try {
+    const output = join(dir, 'out');
+    const env = { PATH: process.env.PATH, GITHUB_OUTPUT: output, GITHUB_REPOSITORY: REPO, HEAD_SHA: M, BASE_SHA: BASE, HEAD_REF: QUEUE_REF, ...GATE_ENV };
+    const result = spawnSync(process.execPath, [join(REPO_ROOT, '.github/scripts/queue-selection.mjs'), 'consume'], { cwd: dir, encoding: 'utf8', env });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(output, 'utf8'), 'thin_skip=\nselection_mode=full\nselection_reason=thin_disabled\n');
+    assert.match(result.stdout, /^queue-thin: mode=full reason=thin_disabled /);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
