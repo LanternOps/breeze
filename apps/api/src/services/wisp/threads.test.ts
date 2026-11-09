@@ -450,6 +450,13 @@ describe('seedContextForSession', () => {
     expect(WISP_BEHAVIOUR_BLOCK).toMatch(/does not grant|never grants/i);
   });
 
+  it('tells the model to say when a step waited on an approval (#10416)', () => {
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n')).toContain(
+      '- If a tool result carries approvalWaitSeconds, say that the step waited that long for approval.',
+    );
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
+  });
+
   it('tells the model how to name an owner on a partner-wide grant (#11432)', () => {
     const line = WISP_BEHAVIOUR_BLOCK.split('\n').find((l) => l.includes('ownerScope'));
     expect(line).toBeDefined();
@@ -463,13 +470,6 @@ describe('seedContextForSession', () => {
     const lines = WISP_BEHAVIOUR_BLOCK.split('\n');
     expect(lines).toContain('- For "what needs my attention" or a status overview, answer from the Partner picture and the standing state first. Use tools only to drill into the item the user picks; "keep it short" means at most 3 tool calls before you answer.');
     expect(lines.length).toBeLessThanOrEqual(40);
-  });
-
-  it('tells the model to say when a step waited on an approval (#10416)', () => {
-    expect(WISP_BEHAVIOUR_BLOCK.split('\n')).toContain(
-      '- If a tool result carries approvalWaitSeconds, say that the step waited that long for approval.',
-    );
-    expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
   });
 
   it('seedContextForSession wraps the summary as untrusted and appends renderMemoryForPrompt output', async () => {
