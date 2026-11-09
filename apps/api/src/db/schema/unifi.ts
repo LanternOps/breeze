@@ -104,6 +104,8 @@ export const unifiSyncRuns = pgTable('unifi_sync_runs', {
   devicesUpdated: integer('devices_updated').notNull().default(0),
   devicesUnchanged: integer('devices_unchanged').notNull().default(0),
   devicesRemoved: integer('devices_removed').notNull().default(0),
+  // Listed sites with no mapping row. NULL = not recorded (older, failed, no-mapping or incomplete-list runs).
+  sitesUnmapped: integer('sites_unmapped'),
   error: text('error'),
 }, (table) => ({
   integrationStartedIdx: index('unifi_sync_runs_integration_started_idx')
