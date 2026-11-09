@@ -236,7 +236,8 @@ describe('createCheckIn', () => {
 
   runDb('threadForGrant returns the grant\'s thread; listCheckIns returns scheduled + fired, due_at ascending', async () => {
     const fx = await seed();
-    expect(await threadForGrant(fx.grantId)).toEqual({ id: fx.thread.id, partnerId: fx.partner.id });
+    // W07: the focus org rides along (a run check-in may assess it).
+    expect(await threadForGrant(fx.grantId)).toEqual({ id: fx.thread.id, partnerId: fx.partner.id, focusOrgId: null });
     expect(await threadForGrant(randomUUID())).toBeNull();
     const now = new Date();
     const late = await create(fx, now, { dueInMs: 60 * MIN });

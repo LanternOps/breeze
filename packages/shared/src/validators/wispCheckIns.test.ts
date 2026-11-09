@@ -87,6 +87,16 @@ describe('scheduleCheckInSchema (schedule_check_in)', () => {
   });
 });
 
+describe('scheduleCheckInSchema mode (W07)', () => {
+  it('takes notify or run, and leaves it absent when not given', () => {
+    for (const mode of ['notify', 'run'] as const) {
+      expect(scheduleCheckInSchema.parse({ delayMinutes: 5, instruction: 'Check WS-01.', mode }).mode).toBe(mode);
+    }
+    expect(scheduleCheckInSchema.parse({ delayMinutes: 5, instruction: 'Check WS-01.' }).mode).toBeUndefined();
+    expect(scheduleCheckInSchema.safeParse({ delayMinutes: 5, instruction: 'Check WS-01.', mode: 'auto' }).success).toBe(false);
+  });
+});
+
 describe('cancelCheckInSchema / listCheckInsToolSchema', () => {
   it('cancel takes one guid checkInId', () => {
     expect(cancelCheckInSchema.safeParse({ checkInId: id }).success).toBe(true);
