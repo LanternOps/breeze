@@ -92,6 +92,9 @@ export type InvoiceServiceErrorCode =
   // unexpected row count — impossible while the locks are held, so a 500.
   | 'CONCURRENT_MODIFICATION'
   | 'OVERPAYMENT'
+  // #3803: a manual payment's idempotency key already names a DIFFERENT
+  // payment on this invoice (409; the identical retry is answered as a replay).
+  | 'IDEMPOTENCY_KEY_REUSED'
   | 'INVALID_STATE'
   | 'INVALID_AMOUNT'
   | 'COLLECTION_IN_PROGRESS'
