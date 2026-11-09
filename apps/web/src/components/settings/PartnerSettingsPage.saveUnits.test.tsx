@@ -7,6 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { ALL_TABS } from './partnerSettings/tabRegistry';
+import { makePolicyView } from './portalAccess/viewFixture';
 import { PARTNERS_ME_FIXTURE } from './partnerSettings/partnersMeFixture';
 import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsDraftStore';
 import { getPolicy, putPolicy, type PolicyResponse } from '@/lib/api/callerVerification';
@@ -43,6 +44,7 @@ function routeFetch(routes: Record<string, Handler>) {
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const method = (init?.method ?? 'GET').toUpperCase();
     const handler = routes[`${method} ${url}`];
+    if (!handler && url === '/orgs/partners/me/portal-access-policy') return json({ data: makePolicyView({ kind: 'partner' }) });
     return handler ? handler(init) : json({ data: [] });
   });
 }
