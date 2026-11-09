@@ -14,6 +14,7 @@ vi.mock('../services/agentPresence', () => ({
 
 vi.mock('../services/agentCommandRelay', () => ({
   agentCommandRelayQueueName: (id: string) => `agent-command-relay-${id}`,
+  RELAY_SEND_JOB_NAME: 'relay-send',
   claimRelaySend: vi.fn(),
   markRelaySendComplete: vi.fn(),
   openRelayCommand: vi.fn(),
@@ -21,9 +22,15 @@ vi.mock('../services/agentCommandRelay', () => ({
   writeRelayAck: vi.fn(),
 }));
 
+vi.mock('../services/agentCommandRelayEvict', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/agentCommandRelayEvict')>()),
+  writeRelayEvictAck: vi.fn(),
+}));
+
 vi.mock('../routes/agentWs', () => ({
   isAgentConnected: vi.fn(),
   sendCommandToAgent: vi.fn(),
+  disconnectAgentConnection: vi.fn(),
 }));
 
 import { readAgentPresence } from '../services/agentPresence';
@@ -34,7 +41,8 @@ import {
   releaseRelaySendClaim,
   writeRelayAck,
 } from '../services/agentCommandRelay';
-import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
+import { disconnectAgentConnection, isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
+import { writeRelayEvictAck } from '../services/agentCommandRelayEvict';
 import { processAgentCommandRelayJob } from './agentCommandRelayWorker';
 
 const BASE_DATA = {
@@ -48,7 +56,7 @@ const BASE_DATA = {
 };
 
 function fakeJob(overrides: Partial<typeof BASE_DATA> = {}) {
-  return { data: { ...BASE_DATA, ...overrides } } as any;
+  return { name: 'relay-send', data: { ...BASE_DATA, ...overrides } } as any;
 }
 
 const LEASE = { instanceId: 'inst-1', connectionToken: 'token-1' };
@@ -211,5 +219,121 @@ describe('processAgentCommandRelayJob', () => {
     expect(markRelaySendComplete).not.toHaveBeenCalled();
     expect(releaseRelaySendClaim).toHaveBeenCalledWith('agent-1', 'cmd-1');
     expect(writeRelayAck).toHaveBeenCalledWith('relay-1', { status: 'expired' });
+  });
+});
+
+// #4142 W2: the same consumer serves `relay-evict` jobs, dispatched on the
+// BullMQ job name. An eviction closes only the exact connection the
+// producer's lease named, and never touches the send path.
+describe('processAgentCommandRelayJob: relay-evict', () => {
+  const entry = (agentId: string, overrides: Record<string, unknown> = {}) => ({
+    agentId, connectionToken: `tok-${agentId}`, code: 4001, reason: 'Tenant suspended', ...overrides,
+  });
+  function evictJob(entries: unknown[], overrides: Record<string, unknown> = {}) {
+    return {
+      name: 'relay-evict',
+      data: {
+        relayId: 'relay-e', targetInstanceId: 'inst-1', expiresAt: Date.now() + 5_000, awaitAck: true,
+        entries, ...overrides,
+      },
+    } as any;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+    vi.mocked(disconnectAgentConnection).mockReturnValue('closed');
+  });
+
+  it('closes each entry through the fenced close and acks one outcome per entry', async () => {
+    vi.mocked(disconnectAgentConnection).mockImplementation((agentId) => ({
+      a1: 'closed', a2: 'not-connected', a3: 'token_mismatch', a4: 'close-failed',
+    } as const)[agentId as 'a1']);
+
+    await processAgentCommandRelayJob(evictJob([entry('a1'), entry('a2'), entry('a3'), entry('a4')]));
+
+    expect(disconnectAgentConnection).toHaveBeenCalledWith('a1', 'tok-a1', 4001, 'Tenant suspended');
+    expect(writeRelayEvictAck).toHaveBeenCalledWith('relay-e', {
+      a1: { status: 'closed', via: 'relay' },
+      a2: { status: 'not_connected' },
+      a3: { status: 'owner_mismatch' },
+      a4: { status: 'close_failed', via: 'relay' },
+    });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(claimRelaySend).not.toHaveBeenCalled();
+    expect(writeRelayAck).not.toHaveBeenCalled();
+  });
+
+  it('a job addressed to another instance is owner_mismatch for every entry, and nothing is closed', async () => {
+    await processAgentCommandRelayJob(evictJob([entry('a1'), entry('a2')], { targetInstanceId: 'inst-2' }));
+
+    expect(disconnectAgentConnection).not.toHaveBeenCalled();
+    expect(writeRelayEvictAck).toHaveBeenCalledWith('relay-e', {
+      a1: { status: 'owner_mismatch' }, a2: { status: 'owner_mismatch' },
+    });
+  });
+
+  it('checks expiry immediately before each close', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    vi.mocked(disconnectAgentConnection).mockImplementation(() => {
+      vi.setSystemTime(1_000_000 + 10_000); // the first close takes us past expiry
+      return 'closed';
+    });
+
+    await processAgentCommandRelayJob(evictJob([entry('a1'), entry('a2')], { expiresAt: 1_000_000 + 5_000 }));
+
+    expect(disconnectAgentConnection).toHaveBeenCalledTimes(1);
+    expect(writeRelayEvictAck).toHaveBeenCalledWith('relay-e', {
+      a1: { status: 'closed', via: 'relay' }, a2: { status: 'expired' },
+    });
+  });
+
+  it('a disallowed close code or an over-long reason is invalid_request for that entry, with no close', async () => {
+    await processAgentCommandRelayJob(evictJob([
+      entry('bad-code', { code: 1000 }),
+      entry('long', { reason: 'r'.repeat(121) }),
+      entry('no-token', { connectionToken: '' }),
+      entry('ok'),
+    ]));
+
+    expect(disconnectAgentConnection).toHaveBeenCalledTimes(1);
+    expect(disconnectAgentConnection).toHaveBeenCalledWith('ok', 'tok-ok', 4001, 'Tenant suspended');
+    expect(writeRelayEvictAck).toHaveBeenCalledWith('relay-e', {
+      'bad-code': { status: 'unavailable', reason: 'invalid_request' },
+      long: { status: 'unavailable', reason: 'invalid_request' },
+      'no-token': { status: 'unavailable', reason: 'invalid_request' },
+      ok: { status: 'closed', via: 'relay' },
+    });
+  });
+
+  it('a job with more than RELAY_EVICT_MAX_ENTRIES entries or no entry list closes nothing', async () => {
+    const many = Array.from({ length: 501 }, (_, i) => entry(`a-${i}`));
+    await processAgentCommandRelayJob(evictJob(many));
+    await processAgentCommandRelayJob(evictJob(undefined as never));
+
+    expect(disconnectAgentConnection).not.toHaveBeenCalled();
+    expect(writeRelayEvictAck).not.toHaveBeenCalled();
+    expect(writeRelayAck).toHaveBeenCalledTimes(2);
+    expect(writeRelayAck).toHaveBeenCalledWith('relay-e', {
+      status: 'infrastructure_error', message: 'relay-evict job rejected: invalid entry list',
+    });
+  });
+
+  it('a queued eviction (awaitAck:false) closes but writes no ack', async () => {
+    await processAgentCommandRelayJob(evictJob([entry('a1')], { awaitAck: false }));
+
+    expect(disconnectAgentConnection).toHaveBeenCalledTimes(1);
+    expect(writeRelayEvictAck).not.toHaveBeenCalled();
+  });
+
+  it('an unknown job name acks infrastructure_error and sends nothing', async () => {
+    await processAgentCommandRelayJob({ name: 'relay-teleport', data: { ...BASE_DATA } } as any);
+
+    expect(writeRelayAck).toHaveBeenCalledWith('relay-1', {
+      status: 'infrastructure_error', message: 'unknown relay job name relay-teleport: nothing was sent',
+    });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(disconnectAgentConnection).not.toHaveBeenCalled();
+    expect(claimRelaySend).not.toHaveBeenCalled();
   });
 });

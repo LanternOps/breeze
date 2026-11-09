@@ -154,6 +154,40 @@ describe('drainRelayQueue', () => {
     expect(queue.getWorkersCount).not.toHaveBeenCalled();
   });
 
+  it('acks a waiting relay-evict job with an owner_mismatch outcome per entry (#4142)', async () => {
+    const queue = fakeQueue([
+      {
+        name: 'relay-evict',
+        data: {
+          relayId: 'r-e', targetInstanceId: 'inst-1', expiresAt: 1, awaitAck: true,
+          entries: [
+            { agentId: 'a-1', connectionToken: 't-1', code: 4001, reason: 'Tenant suspended' },
+            { agentId: 'a-2', connectionToken: 't-2', code: 4001, reason: 'Tenant suspended' },
+          ],
+        },
+      },
+      // Nobody waits on a queued eviction: no ack to write.
+      {
+        name: 'relay-evict',
+        data: { relayId: 'r-q', targetInstanceId: 'inst-1', expiresAt: 1, awaitAck: false, entries: [] },
+      },
+      { name: 'relay-send', data: { relayId: 'r-s' } },
+    ]);
+    vi.mocked(createInstrumentedQueue).mockReturnValue(queue as never);
+
+    await expect(drainRelayQueue('agent-command-relay-inst-1')).resolves.toEqual({ removed: true, acked: 2 });
+
+    expect(redisMock.set).toHaveBeenCalledWith(
+      'agent-relay-ack:r-e',
+      JSON.stringify({ kind: 'evict', outcomes: { 'a-1': { status: 'owner_mismatch' }, 'a-2': { status: 'owner_mismatch' } } }),
+      'PX',
+      30_000,
+    );
+    expect(redisMock.set).toHaveBeenCalledWith('agent-relay-ack:r-s', JSON.stringify({ status: 'owner_mismatch' }), 'PX', 30_000);
+    expect(redisMock.set).not.toHaveBeenCalledWith('agent-relay-ack:r-q', expect.anything(), 'PX', 30_000);
+    expect(redisMock.set).toHaveBeenCalledTimes(2);
+  });
+
   it('a failed ack write is counted out and logged, and the queue is still removed', async () => {
     const queue = fakeQueue([{ data: { relayId: 'r-1' } }, { data: { relayId: 'r-2' } }]);
     vi.mocked(createInstrumentedQueue).mockReturnValue(queue as never);

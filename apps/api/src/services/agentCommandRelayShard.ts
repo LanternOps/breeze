@@ -33,8 +33,9 @@ import {
   relayQueueOwner,
   relayShardOwnerKey,
   writeRelayAck,
-  type RelayJobData,
+  type RelayQueueJobData,
 } from './agentCommandRelay';
+import { RELAY_EVICT_JOB_NAME, writeRelayEvictAck, type EvictOutcome } from './agentCommandRelayEvict';
 
 export const RELAY_SHARD_OWNER_TTL_MS = 30_000;
 export const RELAY_SHARD_REFRESH_INTERVAL_MS = 10_000;
@@ -113,6 +114,12 @@ export async function releaseRelayShard(instanceId: string, token: string): Prom
   return (await redis.eval(RELEASE_LUA, 1, relayShardOwnerKey(instanceId), token)) === 1;
 }
 
+/** The fields of a `relay-evict` job the drain reads; it trusts none of them. */
+interface RelayEvictJobShape {
+  awaitAck: boolean;
+  entries: Array<{ agentId?: unknown } | null>;
+}
+
 export type RelayQueueDrainResult =
   | { removed: true; acked: number }
   | { removed: false; reason: 'consumer_connected' | 'consumer_check_failed' };
@@ -121,7 +128,9 @@ export type RelayQueueDrainResult =
  * Empty and remove one relay queue. The queue is paused first so no consumer
  * starts a job while it is read. Jobs that never started are then acked
  * `owner_mismatch`, so a producer still waiting gets that answer instead of
- * timing out; any retry is the producer's caller's decision. Active jobs are
+ * timing out; any retry is the producer's caller's decision. A `relay-evict`
+ * job is acked in its own shape, `owner_mismatch` per entry, and one nobody
+ * waits on (`awaitAck: false`) is not acked at all (#4142). Active jobs are
  * not acked: on shutdown none remain, and in a sweep they belonged to a
  * consumer that is gone, so their producers have timed out already.
  *
@@ -136,7 +145,7 @@ export async function drainRelayQueue(
 ): Promise<RelayQueueDrainResult> {
   // skipMetasUpdate: this handle exists to remove the queue, so it must not
   // write the queue's meta hash back on construction.
-  const queue = createInstrumentedQueue<RelayJobData>(queueName, { skipMetasUpdate: true });
+  const queue = createInstrumentedQueue<RelayQueueJobData>(queueName, { skipMetasUpdate: true });
   try {
     if (opts.skipIfConsumerConnected) {
       let workers: number;
@@ -150,22 +159,33 @@ export async function drainRelayQueue(
     }
     await queue.pause();
     const jobs = await queue.getJobs(['waiting', 'prioritized', 'paused', 'delayed'], 0, RELAY_DRAIN_MAX_ACKS - 1);
-    const relayIds = jobs
-      .map((job) => job?.data?.relayId)
-      .filter((relayId): relayId is string => typeof relayId === 'string' && relayId.length > 0);
-    const acks = await Promise.allSettled(
-      relayIds.map((relayId) => writeRelayAck(relayId, { status: 'owner_mismatch' })),
-    );
+    const pendingAcks: Array<() => Promise<void>> = [];
+    for (const job of jobs) {
+      const relayId = job?.data?.relayId;
+      if (typeof relayId !== 'string' || relayId.length === 0) continue;
+      const data = job.data as Partial<RelayEvictJobShape>;
+      if (job.name === RELAY_EVICT_JOB_NAME && Array.isArray(data.entries)) {
+        if (data.awaitAck === false) continue;
+        const outcomes: Record<string, EvictOutcome> = {};
+        for (const entry of data.entries) {
+          if (typeof entry?.agentId === 'string') outcomes[entry.agentId] = { status: 'owner_mismatch' };
+        }
+        pendingAcks.push(() => writeRelayEvictAck(relayId, outcomes));
+      } else {
+        pendingAcks.push(() => writeRelayAck(relayId, { status: 'owner_mismatch' }));
+      }
+    }
+    const acks = await Promise.allSettled(pendingAcks.map((write) => write()));
     const failed = acks.filter((ack) => ack.status === 'rejected');
     if (failed.length > 0) {
       // Those producers time out to `indeterminate` instead; the queue must still go.
       console.warn(
-        `[AgentRelayShard] ${failed.length} of ${relayIds.length} owner_mismatch ack(s) on ${queueName} failed:`,
+        `[AgentRelayShard] ${failed.length} of ${pendingAcks.length} owner_mismatch ack(s) on ${queueName} failed:`,
         (failed[0] as PromiseRejectedResult).reason,
       );
     }
     await queue.obliterate({ force: true });
-    return { removed: true, acked: relayIds.length - failed.length };
+    return { removed: true, acked: pendingAcks.length - failed.length };
   } finally {
     await queue.close().catch((err: unknown) => {
       console.warn(`[AgentRelayShard] closing drain handle for ${queueName} failed:`, err);
