@@ -347,8 +347,8 @@ describe('notifyBudgetExhaustedOnce', () => {
       userId: USER,
       orgId: ORG,
       // The grant stays active (w00), so the copy must not say "paused" (#10145).
-      title: "Wisp hit today's budget — it resumes at 00:00 UTC",
-      body: 'The daily budget resets at 00:00 UTC. Raise it from the thread header to continue sooner.',
+      title: "Wisp is over today's budget: background checks resume at 00:00 UTC",
+      body: 'Chat keeps working. Raise the budget from the thread header to resume background checks sooner.',
       link: `/ai/wisp/thread/${THREAD}`,
       threadId: THREAD,
       grantId: GRANT,

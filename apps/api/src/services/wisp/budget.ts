@@ -262,10 +262,10 @@ export async function notifyBudgetExhaustedOnce(grantId: string, now: Date = new
   const { created } = await deliverInApp({
     userId: grant.grantorUserId,
     orgId: grant.orgId,
-    // The grant stays `active` (see the file header): assessments skip until the UTC day rolls over, so
-    // say "hit the budget", never "paused" — the header and this copy must agree (#10145).
-    title: "Wisp hit today's budget — it resumes at 00:00 UTC",
-    body: 'The daily budget resets at 00:00 UTC. Raise it from the thread header to continue sooner.',
+    // The grant stays `active` (see the file header): background checks skip until the UTC day rolls over
+    // and chat keeps working, so never say the grant is "paused" — the header and this copy must agree (#10145, #10414).
+    title: "Wisp is over today's budget: background checks resume at 00:00 UTC",
+    body: 'Chat keeps working. Raise the budget from the thread header to resume background checks sooner.',
     link,
     threadId: thread.id,
     grantId,

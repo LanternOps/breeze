@@ -694,6 +694,7 @@
     "settings": {
       "title": "Budget et suivi",
       "budget": "Budget quotidien",
+      "budgetHelp": "Comprend le clavardage. Une fois le budget épuisé, les vérifications en arrière-plan sont mises en pause jusqu’à 00:00 UTC et le clavardage continue de fonctionner avec un avertissement. Le budget d’IA de l’organisation s’applique toujours au clavardage.",
       "tick": "Suivi toutes les (minutes)",
       "save": "Enregistrer",
       "unattendedReads": {
@@ -760,6 +761,7 @@
     },
     "spend": {
       "meter": "{{spent}} sur {{budget}} aujourd’hui",
+      "breakdown": "Arrière-plan {{background}} · Clavardage {{chat}} · {{spent}} sur {{budget}} aujourd’hui",
       "resets": "réinitialisation dans {{hours}} h",
       "raise": "Augmenter le budget du jour",
       "atCeiling": "Le budget du jour est à la limite de votre forfait.",
@@ -772,8 +774,8 @@
       "byYou": "Vous avez mis Wisp en pause. Il ne fera aucune vérification et ne vous enverra aucun rappel tant que vous n'aurez pas repris.",
       "partnerDisabled": "Wisp est désactivé pour votre partenaire. Un administrateur peut le réactiver.",
       "system": {
-        "budgetExhausted": "Mis en pause par Breeze : le budget du jour est épuisé. Le budget sera réinitialisé dans {{hours}} h.",
-        "budgetExhaustedNoTime": "Mis en pause par Breeze : le budget du jour est épuisé.",
+        "budgetExhausted": "Le budget Wisp du jour est dépassé : les vérifications en arrière-plan sont en pause jusqu’à {{time}} UTC. Le clavardage continue de fonctionner.",
+        "budgetExhaustedNoTime": "Le budget Wisp du jour est dépassé : les vérifications en arrière-plan sont en pause jusqu’à 00:00 UTC. Le clavardage continue de fonctionner.",
         "grantorAccessLost": "Mis en pause par Breeze : votre accès ne couvre plus cette autorisation. Wisp reprendra de lui-même lorsque votre accès sera rétabli.",
         "grantorSuspended": "Mis en pause par Breeze : votre compte est suspendu. Wisp reprendra de lui-même lorsque la suspension sera levée.",
         "factorExpired": "Mis en pause par Breeze : votre vérification de connexion pour cette autorisation a expiré.",
