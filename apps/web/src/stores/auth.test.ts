@@ -2592,6 +2592,44 @@ describe('MFA enrollment session adoption', () => {
     expect(useAuthStore.getState().tokens?.accessToken).toBe(`replacement-${method}`);
   });
 
+  // #10650: totpEnrolled is derived from the primary-state change so the
+  // shared user record never claims an authenticator the account lost (or
+  // misses one it just enrolled).
+  it.each([
+    ['totp', true],
+    ['sms', false],
+  ] as const)('enrolling %s as the first factor sets totpEnrolled=%s', (method, expected) => {
+    useAuthStore.getState().login({ ...baseUser, totpEnrolled: method === 'sms' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, method);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(expected);
+  });
+
+  it('disabling MFA clears totpEnrolled', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp', totpEnrolled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaDisableIfCurrent(generation);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(false);
+  });
+
+  it.each([
+    [{ mfaEnabled: true, mfaMethod: 'totp' } as const, false, true],
+    [{ mfaEnabled: false, mfaMethod: null } as const, true, false],
+    // A passkey add/delete on a passkey primary keeps the backup as it was.
+    [{ mfaEnabled: true, mfaMethod: 'passkey' } as const, true, true],
+  ])('commitMfaStateIfCurrent(%j) with totpEnrolled=%s → %s', (mfa, before, after) => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'passkey', totpEnrolled: before }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaStateIfCurrent(generation, mfa);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(after);
+  });
+
   it('records disabled MFA in shared state while adopting the replacement session', () => {
     useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp' }, baseTokens);
     const generation = useAuthStore.getState().sessionGeneration;

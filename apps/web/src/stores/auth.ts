@@ -18,6 +18,7 @@ import { resetEntitlementsCache } from '@/lib/entitlementsCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
 import { clearRememberedEnrollmentArtifacts } from '@/lib/rememberedEnrollmentArtifacts';
+import { totpEnrolledAfterPrimaryChange } from '@/lib/mfaFactorState';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import { isGlobalScopeRoute } from '@/lib/routeScope';
 import { throttleRetryDelayMs } from '@/lib/throttleRetry';
@@ -302,9 +303,14 @@ export const useAuthStore = create<AuthState>()(
             || !state.user
           ) return state;
           committed = true;
+          const next = { mfaEnabled: true, mfaMethod: method } as const;
           return {
             ...(tokens ? { tokens } : {}),
-            user: { ...state.user, mfaEnabled: true, mfaMethod: method },
+            user: {
+              ...state.user,
+              ...next,
+              totpEnrolled: totpEnrolledAfterPrimaryChange(next, state.user.totpEnrolled),
+            },
           };
         });
         return committed;
@@ -321,7 +327,7 @@ export const useAuthStore = create<AuthState>()(
           committed = true;
           return {
             ...(tokens ? { tokens } : {}),
-            user: { ...state.user, mfaEnabled: false, mfaMethod: null },
+            user: { ...state.user, mfaEnabled: false, mfaMethod: null, totpEnrolled: false },
           };
         });
         return committed;
@@ -338,7 +344,11 @@ export const useAuthStore = create<AuthState>()(
           committed = true;
           return {
             ...(tokens ? { tokens } : {}),
-            user: { ...state.user, ...mfa },
+            user: {
+              ...state.user,
+              ...mfa,
+              totpEnrolled: totpEnrolledAfterPrimaryChange(mfa, state.user.totpEnrolled),
+            },
           };
         });
         return committed;
