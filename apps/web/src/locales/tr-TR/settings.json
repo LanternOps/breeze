@@ -284,7 +284,7 @@
     "alertThresholds": "Uyar (bütçenin %'si)",
     "alertThresholdsHelp": "Faturalama erişimine sahip partner yöneticileri her eşikte uygulama içi bir uyarı ve aylık ile limit aşımı uyarıları için e-posta alır. 50, 80, 95 değerlerini devralmak için boş bırakın.",
     "notSet": "Ayarlanmadı, kuruluşlar ayrı ayrı yapılandırılır",
-    "description": "Burada ayarlanan değerler her alt kuruluşa uygulanır ve ilgili kuruluş alanını kilitler. Kuruluşların yapılandırması için bir alanı boş bırakın.",
+    "description": "Burada ayarladığınız değer tüm kuruluşlara uygulanır ve onları kilitler. Boş bıraktığınız alan kuruluş başına yapılandırılır. Dolar tutarları dahili olarak sent cinsinden saklanır.",
     "modes": {
       "perStep": "Adım Başına",
       "actionPlan": "Eylem Planı",
@@ -1198,6 +1198,7 @@
       "badge": {
         "locks": "Kuruluşları kilitler",
         "locksConditional": "Etkinken kuruluşları kilitler",
+        "locksWhenSet": "Ayarlandığında kuruluşları kilitler",
         "overridable": "Kuruluş değiştirebilir",
         "overridableCap": "Kuruluş değiştirebilir, en fazla {{limit}}",
         "partnerOnly": "İş ortağı geneli"
@@ -1205,6 +1206,7 @@
       "badgeHelp": {
         "locks": "Bu ayarlıyken her kuruluş sizin değerinizi kullanır. Kuruluşun kendi değeri yok sayılır.",
         "locksConditional": "Etkinken her kuruluş kendi değeri yerine sizinkini kullanır. Devre dışıyken kuruluşlar kendi değerlerini kullanır.",
+        "locksWhenSet": "Bir değer ayarladığınızda her kuruluş onu kullanır ve kendi değeri yok sayılır. Boşken her kuruluş kendi değerini yapılandırır.",
         "overridable": "Sizin değeriniz varsayılandır. Kendi değerini belirleyen bir kuruluş onun yerine kendi değerini kullanır.",
         "overridableCap": "Sizin değeriniz varsayılandır. Bir kuruluş en fazla {{limit}} olmak üzere kendi değerini belirleyebilir.",
         "partnerOnly": "Kuruluşların bunun için kendi ayarı yoktur. Sizin değeriniz hepsine uygulanır."

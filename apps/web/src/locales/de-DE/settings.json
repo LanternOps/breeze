@@ -284,7 +284,7 @@
     "alertThresholds": "Warnen bei (% des Budgets)",
     "alertThresholdsHelp": "Partner-Admins mit Abrechnungszugriff erhalten bei jeder Stufe eine In-App-Benachrichtigung und eine E-Mail für monatliche und Obergrenzen-Warnungen. Leer lassen, um 50, 80, 95 zu übernehmen.",
     "notSet": "Nicht festgelegt, Organisationen werden individuell konfiguriert",
-    "description": "Hier gesetzte Werte gelten für jede untergeordnete Organisation und sperren das entsprechende Organisationsfeld. Lassen Sie ein Feld leer, damit Organisationen es selbst konfigurieren.",
+    "description": "Ein hier festgelegter Wert gilt für alle Organisationen und sperrt das Feld. Ein leer gelassenes Feld wird pro Organisation konfiguriert. Dollarbeträge werden intern in Cent gespeichert.",
     "modes": {
       "perStep": "Pro Schritt",
       "actionPlan": "Aktionsplan",
@@ -1198,6 +1198,7 @@
       "badge": {
         "locks": "Sperrt Organisationen",
         "locksConditional": "Sperrt Organisationen, wenn aktiviert",
+        "locksWhenSet": "Sperrt Organisationen, sobald gesetzt",
         "overridable": "Organisation kann abweichen",
         "overridableCap": "Organisation kann abweichen, bis {{limit}}",
         "partnerOnly": "Partnerweit"
@@ -1205,6 +1206,7 @@
       "badgeHelp": {
         "locks": "Solange dies gesetzt ist, verwendet jede Organisation Ihren Wert. Ein eigener Wert der Organisation wird ignoriert.",
         "locksConditional": "Wenn aktiviert, verwendet jede Organisation Ihren Wert statt ihres eigenen. Wenn deaktiviert, verwenden die Organisationen ihren eigenen.",
+        "locksWhenSet": "Sobald Sie einen Wert festlegen, verwenden alle Organisationen ihn und ihr eigener Wert wird ignoriert. Solange das Feld leer ist, konfiguriert jede Organisation ihren eigenen.",
         "overridable": "Ihr Wert ist der Standard. Eine Organisation, die einen eigenen Wert festlegt, verwendet stattdessen diesen.",
         "overridableCap": "Ihr Wert ist der Standard. Eine Organisation kann einen eigenen Wert festlegen, höchstens {{limit}}.",
         "partnerOnly": "Organisationen haben hierfür keine eigene Einstellung. Ihr Wert gilt für alle."

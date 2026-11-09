@@ -44,6 +44,30 @@ describe('SettingBadge: text per kind and qualifier (spec §5.3)', () => {
     expect(badgeText('defaults.defaultEnrollmentTtlMinutes')).toBe('Org can override, up to 365 days');
   });
 
+  describe('locks is value-aware once the inheritance context is present (#11411)', () => {
+    const id = 'aiBudgets.monthlyBudgetCents';
+    const field = (saved: Record<string, unknown>) => (
+      <PartnerInheritanceContext.Provider value={ui(saved)}>
+        <SettingBadge fieldId={id} />
+      </PartnerInheritanceContext.Provider>
+    );
+
+    it('unset says "Locks orgs when set", not "Locks orgs"', () => {
+      render(field({}));
+      expect(badgeText(id)).toBe('Locks orgs when set');
+    });
+
+    it('a saved value says "Locks orgs"', () => {
+      render(field({ aiBudgets: { monthlyBudgetCents: 5000 } }));
+      expect(badgeText(id)).toBe('Locks orgs');
+    });
+
+    it('a saved zero counts as set', () => {
+      render(field({ aiBudgets: { monthlyBudgetCents: 0 } }));
+      expect(badgeText(id)).toBe('Locks orgs');
+    });
+  });
+
   it('unclassified renders no badge', () => {
     const { container } = render(<SettingBadge fieldId="security.minLength" />);
     expect(container).toBeEmptyDOMElement();

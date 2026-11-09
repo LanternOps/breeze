@@ -284,7 +284,7 @@
     "alertThresholds": "Avisar al (% del presupuesto)",
     "alertThresholdsHelp": "Los administradores del partner con acceso a facturación reciben una alerta en la aplicación en cada nivel y un correo para las alertas mensuales y de límite alcanzado. Deja vacío para heredar 50, 80, 95.",
     "notSet": "No configurado: las organizaciones se configuran individualmente",
-    "description": "Los valores definidos aquí se aplican a todas las organizaciones hijas y bloquean el campo correspondiente de la organización. Deje un campo vacío para que las organizaciones lo configuren.",
+    "description": "Un valor que definas aquí se aplica a todas las organizaciones y las bloquea. Un campo que dejes vacío se configura por organización. Los montos en dólares se almacenan internamente en centavos.",
     "modes": {
       "perStep": "Por paso",
       "actionPlan": "Plan de acción",
@@ -1198,6 +1198,7 @@
       "badge": {
         "locks": "Bloquea organizaciones",
         "locksConditional": "Bloquea organizaciones si está activado",
+        "locksWhenSet": "Bloquea organizaciones al definirse",
         "overridable": "La organización puede cambiarlo",
         "overridableCap": "La organización puede cambiarlo, hasta {{limit}}",
         "partnerOnly": "Para todo el partner"
@@ -1205,6 +1206,7 @@
       "badgeHelp": {
         "locks": "Mientras esté definido, todas las organizaciones usan tu valor. Se ignora el valor propio de la organización.",
         "locksConditional": "Si está activado, todas las organizaciones usan tu valor en lugar del suyo. Si está desactivado, usan el suyo.",
+        "locksWhenSet": "Una vez que defines un valor, todas las organizaciones lo usan y se ignora el suyo. Mientras esté vacío, cada organización configura el suyo.",
         "overridable": "Tu valor es el predeterminado. Una organización que define su propio valor usa ese en su lugar.",
         "overridableCap": "Tu valor es el predeterminado. Una organización puede definir su propio valor, hasta {{limit}}.",
         "partnerOnly": "Las organizaciones no tienen un ajuste propio. Tu valor se aplica a todas."
