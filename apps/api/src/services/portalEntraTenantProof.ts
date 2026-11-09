@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import {
+  assertInTransaction,
   db,
   getCurrentDbAccessContext,
   hasDbAccessContext,
@@ -212,6 +213,39 @@ export async function findOrgByProvenEntraTenant(tid: string): Promise<{ orgId: 
 }
 
 // ---------------------------------------------------------------------------
+// Per-org mapping lock (D8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Takes `pg_advisory_xact_lock(hashtext('portal-entra-org:' || org_id))` for
+ * each org, held until the transaction ends (plan D8 / OD7).
+ *
+ * The org merge refuses `entra_tenant_conflict` when the loser's mapping is
+ * proven and the survivor holds any mapping. Its `FOR UPDATE` on the mapping
+ * rows cannot lock a row that does not exist yet. Without this lock, a writer
+ * could create the survivor's mapping after the Phase-B recheck saw none. The
+ * `keep-survivor` walk would then drop the loser's proven mapping. So every
+ * writer that can CREATE an org's mapping takes this lock first, and the merge
+ * holds it for both orgs for all of Phase B. The writers are
+ * {@link recordEntraTenantProof} and the AI for Office
+ * `PUT /client-ai/admin/orgs/:orgId/tenant-mapping`.
+ *
+ * Lock order: a proof takes its per-tenant lock, then this lock. The PUT and the
+ * merge take only this lock, never a tenant lock. Several orgs (the merge) are
+ * locked one statement at a time, ascending by id, so two callers cannot
+ * invert the order. The key is the canonical uuid text, so a caller that spells
+ * the id differently (upper case) still contends on the same key. Must run
+ * inside a transaction: on the bare pool the lock would end with its statement.
+ */
+export async function lockPortalEntraOrgMappings(orgIds: readonly string[]): Promise<void> {
+  assertInTransaction('lockPortalEntraOrgMappings');
+  const ordered = [...new Set(orgIds.map((id) => id.toLowerCase()))].sort();
+  for (const orgId of ordered) {
+    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('portal-entra-org:' || ${orgId}::uuid::text))`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Record (D7)
 // ---------------------------------------------------------------------------
 
@@ -229,8 +263,9 @@ interface DisplacedMapping {
  *  1. a holding org is refused (PROTECTED_ORG) before any transaction opens;
  *  2. `pg_advisory_xact_lock(hashtext('portal-entra-tenant:' || tid))` FIRST —
  *     FOR UPDATE locks nothing while no row exists, so this is what serializes
- *     two orgs proving one fresh tenant — then the rows of this org and of the
- *     tenant FOR UPDATE;
+ *     two orgs proving one fresh tenant — then this org's per-org lock
+ *     ({@link lockPortalEntraOrgMappings}, which an org merge holds for both
+ *     its orgs), then the rows of this org and of the tenant FOR UPDATE;
  *  3. this org mapping a different tenant → ORG_HAS_OTHER_TENANT;
  *  4. another org's mapping of the tenant: an `m365_connection` proof displaces
  *     only an UNPROVEN one (OD4), else TENANT_PROVEN_ELSEWHERE; a `proof_run`
@@ -273,6 +308,24 @@ async function recordInTransaction(
   now: Date,
 ): Promise<DisplacedMapping | null> {
   await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`portal-entra-tenant:${tenantId}`}))`);
+  // The per-org lock an org merge holds for both its orgs through Phase B: this
+  // proof may CREATE this org's mapping, which the merge's FOR UPDATE cannot
+  // lock in advance (D8). Lock order: tenant lock, org lock, then mapping rows
+  // in id order, then the displaced org's portal_users. No cycle:
+  //  - The merge and the AI for Office PUT take org locks only, never a tenant
+  //    lock. The merge takes them first in Phase B, before any row lock. So a
+  //    proof waiting here holds only its tenant lock, which neither of them
+  //    ever waits for.
+  //  - Displacement does NOT take the displaced org's org lock. Two proofs that
+  //    displace each other's org would take X then Y and Y then X, a cycle. It
+  //    needs none: it only DELETES that org's existing row, which FOR UPDATE
+  //    locks (the merge's recheck locks the same row). Deleting a mapping can
+  //    only turn a merge refusal into an adoption. While a proof holds that
+  //    row, what it locks next is free of every lock the merge takes before
+  //    the row: the displaced org's portal_users rows (the merge moves them
+  //    later, in its walk) and the FK KEY SHARE on organizations (the merge's
+  //    FOR NO KEY UPDATE on its org rows does not conflict with it).
+  await lockPortalEntraOrgMappings([input.orgId]);
 
   const rows = await db
     .select({

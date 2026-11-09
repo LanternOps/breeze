@@ -13,12 +13,19 @@
  *   - `iss === entraIssuer(tid)` (closes a token of tenant A posing as B),
  *     `ver === '2.0'`, `tid`/`oid` GUIDs, `tid` not the consumer (MSA) tenant,
  *     `nonce` equal in constant time;
- *   - guests: STRUCTURALLY refused because user sign-in always uses the
- *     `organizations` authority, so Microsoft issues the token in the user's
- *     HOME tenant. Defence in depth: refuse an `idp` that is neither `iss` nor
- *     the tenant's own v1 STS issuer, and `acct === 1`. Both claims are
- *     optional; a token without them is accepted (the structural rule is the
- *     guarantee);
+ *   - guests, on USER SIGN-IN: STRUCTURALLY refused because user sign-in
+ *     always uses the `organizations` authority, so Microsoft issues the token
+ *     in the user's HOME tenant. Defence in depth: refuse an `idp` that is
+ *     neither `iss` nor the tenant's own v1 STS issuer, and `acct === 1`. Both
+ *     claims are optional; a token without them is accepted (the structural
+ *     rule is the guarantee);
+ *   - guests, on a TENANT-PROOF RUN: admitted when the caller passes
+ *     `allowGuest` (plan Global Constraints "Proof run"). The run pins the
+ *     tenant authority (D6), so a B2B guest's token is issued in the customer
+ *     tenant, and a guest holding Global Administrator there is an admin of it;
+ *     the Graph role check binds to `tid`/`oid`. `allowGuest` skips ONLY the
+ *     two guest checks, and only with a pinned tenant: without one the token
+ *     is refused (fail closed);
  *   - a pinned `expectedTenantId` (proof run, D6) must equal `tid`.
  * The subject is `oid`, never `sub`, so it equals the add-in's identity for
  * the same person.
@@ -179,12 +186,22 @@ function addressClaim(value: unknown): string | null {
   return typeof value === 'string' && value.includes('@') ? value.toLowerCase() : null;
 }
 
-/** Verify a portal-app id_token. See the module header for every rule. */
+/**
+ * Verify a portal-app id_token. See the module header for every rule.
+ * `allowGuest` is for the tenant-proof run only and requires a pinned
+ * `expectedTenantId`; user sign-in, invite and link never pass it.
+ */
 export async function verifyPortalEntraIdToken(
   idToken: string,
-  expected: { clientId: string; nonce: string; expectedTenantId: string | null; now?: Date },
+  expected: { clientId: string; nonce: string; expectedTenantId: string | null; allowGuest?: boolean; now?: Date },
   deps: { verificationKey?: CryptoKey } = {},
 ): Promise<PortalOidcVerifiedIdentity & { entraTenantId: string }> {
+  // A guest is admitted only into a pinned tenant: refuse the misuse before reading the token.
+  const allowGuest = expected.allowGuest === true;
+  if (allowGuest && (expected.expectedTenantId === null || normalizeGuid(expected.expectedTenantId) === null)) {
+    fail('guest_unpinned');
+  }
+
   const options: JWTVerifyOptions = {
     audience: expected.clientId,
     algorithms: ['RS256'],
@@ -217,10 +234,13 @@ export async function verifyPortalEntraIdToken(
   if (!oid) fail('oid');
 
   // Guest refusal, defence in depth (the structural rule is the guarantee).
-  if (payload.idp !== undefined && payload.idp !== issuer && payload.idp !== `https://sts.windows.net/${tid}/`) {
-    fail('guest_idp');
+  // Skipped only for a proof run into a pinned tenant (enforced above).
+  if (!allowGuest) {
+    if (payload.idp !== undefined && payload.idp !== issuer && payload.idp !== `https://sts.windows.net/${tid}/`) {
+      fail('guest_idp');
+    }
+    if (payload.acct === 1 || payload.acct === '1') fail('guest_acct');
   }
-  if (payload.acct === 1 || payload.acct === '1') fail('guest_acct');
 
   if (expected.expectedTenantId !== null && normalizeGuid(expected.expectedTenantId) !== tid) {
     fail('tenant_mismatch');

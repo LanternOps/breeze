@@ -13,6 +13,14 @@ const { authRef, selectResult, insertReturning, sendInvite, createContactMock, u
   insertReturning: vi.fn(),
   sendInvite: vi.fn()
 }));
+// The order of the DB calls a route makes ('select', 'for:<mode>', 'update',
+// 'tx:begin'/'tx:end' around a withDbTransaction, 'purge'), for the tests that
+// pin a read-under-lock shape. `txState.impl` null = withDbTransaction throws,
+// as it did before it was mocked (the invite branding read then falls back).
+const { events, txState } = vi.hoisted(() => ({
+  events: [] as string[],
+  txState: { impl: null as null | ((fn: () => Promise<unknown>) => Promise<unknown>) },
+}));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => { c.set('auth', authRef.current); await next(); }),
@@ -21,11 +29,16 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: () => async (_c: any, next: any) => next()
 }));
 vi.mock('../db', () => ({
+  withDbTransaction: vi.fn((fn: () => Promise<unknown>) => {
+    if (!txState.impl) throw new Error('withDbTransaction is not wired in this test');
+    return txState.impl(fn);
+  }),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn((w: unknown) => {
           selectWhereSpy(w);
+          events.push('select');
           // `.for('key share')` pins the matched contact in the same read (the
           // caller writes an FK to it next), so the chain has to return itself.
           const leaf: any = {
@@ -36,14 +49,14 @@ vi.mock('../db', () => ({
           // `await ...where(x)` also resolves via selectResult().
           then: (resolve: any, reject: any) => selectResult().then(resolve, reject)
           };
-          leaf.for = vi.fn(() => leaf);
+          leaf.for = vi.fn((mode: string) => { events.push(`for:${mode}`); return leaf; });
           return leaf;
         })
       }))
     })),
     insert: vi.fn(() => ({ values: vi.fn((v: unknown) => { valuesSpy(v); return { returning: vi.fn(() => insertReturning()) }; }) })),
     update: vi.fn(() => ({
-      set: vi.fn((v: unknown) => { setSpy(v); return ({
+      set: vi.fn((v: unknown) => { setSpy(v); events.push('update'); return ({
         where: vi.fn((w: unknown) => { updateWhereSpy(w); return ({
           returning: vi.fn(() => insertReturning()),
           // bulk-invite's per-user update has no `.returning()` leaf —
@@ -76,7 +89,7 @@ vi.mock('../services/contacts/crud', async () => {
 vi.mock('../routes/portal/capabilityTokens', () => ({ issuePortalCapabilityToken: issueTokenMock }));
 vi.mock('../routes/portal/helpers', () => ({
   buildPortalUrl: (p: string) => `https://x/portal${p}`,
-  purgePortalSessionsForUsers: vi.fn(async () => 0),
+  purgePortalSessionsForUsers: vi.fn(async () => { events.push('purge'); return 0; }),
 }));
 vi.mock('../services/email', () => ({ getEmailService: () => ({ sendPortalInvite: sendInvite }) }));
 // W4 (#11381) spec §5.5: which methods the invite email offers comes from the
@@ -97,7 +110,7 @@ import { purgePortalSessionsForUsers } from './portal/helpers';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const makeApp = () => { const app = new Hono(); app.use('*', authMiddleware as any); registerOrgPortalUsersRoutes(app); return app; };
-beforeEach(() => { vi.clearAllMocks(); resolveMethods.mockReset().mockResolvedValue({ microsoft: false, password: true }); selectResult.mockReset(); selectResult.mockResolvedValue([]); insertReturning.mockReset(); insertReturning.mockResolvedValue([]); issueTokenMock.mockResolvedValue('raw-token'); authRef.current = { scope: 'partner', user: { id: 'u-1', name: 'Tess', email: 'tess@msp.example' }, partnerId: 'p-1', canAccessOrg: () => true }; });
+beforeEach(() => { vi.clearAllMocks(); events.length = 0; txState.impl = null; resolveMethods.mockReset().mockResolvedValue({ microsoft: false, password: true }); selectResult.mockReset(); selectResult.mockResolvedValue([]); insertReturning.mockReset(); insertReturning.mockResolvedValue([]); issueTokenMock.mockResolvedValue('raw-token'); authRef.current = { scope: 'partner', user: { id: 'u-1', name: 'Tess', email: 'tess@msp.example' }, partnerId: 'p-1', canAccessOrg: () => true }; });
 
 describe('GET /organizations/:id/portal-users', () => {
   it('lists users with an effective status', async () => {
@@ -863,17 +876,31 @@ describe('POST /organizations/:id/portal-users/sso-invite (W4)', () => {
     expect(sendInvite).not.toHaveBeenCalled();
   });
 
+  /** withDbTransaction as a savepoint that runs its callback, bracketed in `events`. */
+  const savepoints = () => {
+    txState.impl = async (fn) => {
+      events.push('tx:begin');
+      try { return await fn(); } finally { events.push('tx:end'); }
+    };
+  };
+  /** Each account is read twice: its row lock, then its facts re-read under that lock. */
+  const locked = (r: ReturnType<typeof row>) => [[{ id: r.id }], [r]] as const;
+  const queue = (...results: ReadonlyArray<readonly unknown[]>) => { for (const r of results) selectResult.mockResolvedValueOnce(r); };
+  const NO_BRANDING: unknown[] = []; // issueAndSendInvite's partner-branding read (its own savepoint)
+
   it('sso-invite re-invites only stranded accounts and reports not_stranded for the rest', async () => {
     resolveMethods.mockResolvedValue({ microsoft: true, password: false });
-    selectResult
-      .mockResolvedValueOnce([{ id: ORG_ID }])                                            // org existence
-      .mockResolvedValueOnce([{ name: 'Acme Co' }])                                       // org name
-      .mockResolvedValueOnce([row(PU(1))])                                                // stranded, invited
-      .mockResolvedValueOnce([row(PU(2), { status: 'active', passwordHash: 'h', hasExternalIdentity: true })]) // has an identity
-      .mockResolvedValueOnce([])                                                          // not in this org
-      .mockResolvedValueOnce([row(PU(4), { status: 'active', passwordHash: 'h' })])       // stranded, active with a password
-      .mockResolvedValueOnce([row(PU(5), { status: 'active' })])                          // stranded legacy row …
-      .mockResolvedValueOnce([row(PU(6), { status: 'disabled' })]);                       // disabled: not stranded
+    savepoints();
+    queue(
+      [{ id: ORG_ID }],                                                                    // org existence
+      [{ name: 'Acme Co' }],                                                               // org name
+      ...locked(row(PU(1))), NO_BRANDING,                                                  // stranded, invited
+      ...locked(row(PU(2), { status: 'active', passwordHash: 'h', hasExternalIdentity: true })), // has an identity
+      [],                                                                                  // not in this org (no row to lock)
+      ...locked(row(PU(4), { status: 'active', passwordHash: 'h' })), NO_BRANDING,         // stranded, active with a password
+      ...locked(row(PU(5), { status: 'active' })),                                         // stranded legacy row …
+      ...locked(row(PU(6), { status: 'disabled' })),                                       // disabled: not stranded
+    );
     insertReturning
       .mockResolvedValueOnce([{ authEpoch: 6 }])  // PU(1) moved
       .mockResolvedValueOnce([{ authEpoch: 6 }])  // PU(4) moved (active with a password → invited)
@@ -907,14 +934,48 @@ describe('POST /organizations/:id/portal-users/sso-invite (W4)', () => {
       action: 'organization.portal_user.sso_invite',
       details: { requested: 6, invited: 2, notStranded: 3, refused: 1 },
     }));
+    // PU(1): row lock, re-read and write in ONE savepoint; the purge and the
+    // invite (its branding read in a savepoint of its own) only after it.
+    expect(events.slice(0, 13)).toEqual([
+      'select', 'select',                                                      // org existence, org name
+      'tx:begin', 'select', 'for:update', 'select', 'update', 'tx:end',       // PU(1) under its lock
+      'purge',
+      'tx:begin', 'select', 'tx:end',                                          // branding
+      'tx:begin',                                                              // PU(2) …
+    ]);
+  });
+
+  it('reads eligibility under the row lock: a link that committed while the lock waited → not_stranded, nothing written', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, password: false });
+    savepoints();
+    queue(
+      [{ id: ORG_ID }],
+      [{ name: 'Acme Co' }],
+      [row(PU(1))],                                   // the lock (the snapshot from before the link committed)
+      [row(PU(1), { hasExternalIdentity: true })],    // the re-read AFTER the lock: the self-link is visible
+    );
+    insertReturning.mockResolvedValue([{ authEpoch: 6 }]);
+    const res = await ssoInvite({ portalUserIds: [PU(1)] });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([{ portalUserId: PU(1), result: 'not_stranded' }]);
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(purgePortalSessionsForUsers).not.toHaveBeenCalled();
+    expect(sendInvite).not.toHaveBeenCalled();
+    expect(events).toEqual(['select', 'select', 'tx:begin', 'select', 'for:update', 'select', 'tx:end']);
+    // The decision comes from the re-read: it carries the identity fact, the lock only the id.
+    const columns = vi.mocked(db.select).mock.calls.map((call) => Object.keys(((call as unknown[])[0] ?? {}) as Record<string, unknown>));
+    expect(columns[2]).toEqual(['id']);
+    expect(columns[3]).toContain('hasExternalIdentity');
   });
 
   it('while password sign-in is still allowed, an active account with a password is not stranded (nothing written)', async () => {
     resolveMethods.mockResolvedValue({ microsoft: true, password: true });
-    selectResult
-      .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ name: 'Acme Co' }])
-      .mockResolvedValueOnce([row(PU(4), { status: 'active', passwordHash: 'h' })]);
+    savepoints();
+    queue(
+      [{ id: ORG_ID }],
+      [{ name: 'Acme Co' }],
+      ...locked(row(PU(4), { status: 'active', passwordHash: 'h' })),
+    );
     const res = await ssoInvite({ portalUserIds: [PU(4)] });
     expect(res.status).toBe(200);
     expect((await res.json()).data).toEqual([{ portalUserId: PU(4), result: 'not_stranded' }]);

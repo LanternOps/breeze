@@ -13,6 +13,9 @@
  *    failure rolls back both), only identity accounts lose their hash and get
  *    an epoch bump, and a partner save touches only its own orgs.
  *  - A flip caused by a tenant proof clears nothing; the refusal at use holds.
+ *  - Races with a concurrent self-link (two connections, no sleeps decide
+ *    anything): a link that waits behind the save's row lock is not cleared,
+ *    and an SSO re-invite that waits behind a committing link sees it.
  *
  * Seeding is superuser (getTestDb); every assertion that matters reads back
  * real rows. Sessions use the in-memory backend (PORTAL_USE_REDIS is false
@@ -25,17 +28,26 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
+import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
 
-// A switch that makes the clear fail AFTER it ran, inside the save's savepoint.
-const { forceClearFailure } = vi.hoisted(() => ({ forceClearFailure: { current: false } }));
+// A switch that makes the clear fail AFTER it ran, inside the save's savepoint;
+// a gate that pauses the save just before it clears; and the ids each clear wrote.
+const { forceClearFailure, clearGate, clearCalls } = vi.hoisted(() => ({
+  forceClearFailure: { current: false },
+  clearGate: { current: null as null | (() => Promise<void>) },
+  clearCalls: [] as string[][],
+}));
 vi.mock('../../services/portalSsoOnly', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/portalSsoOnly')>();
   return {
     ...actual,
     clearPasswordsForSsoOnly: async (...args: Parameters<typeof actual.clearPasswordsForSsoOnly>) => {
+      if (clearGate.current) await clearGate.current();
       const cleared = await actual.clearPasswordsForSsoOnly(...args);
+      clearCalls.push(cleared.clearedUserIds);
       if (forceClearFailure.current) throw new Error('forced failure after the clear');
       return cleared;
     },
@@ -49,24 +61,27 @@ vi.mock('../../services/email', async (importOriginal) => ({
 import { clientAiTenantMappings, portalAccessPolicies, portalUserIdentities, portalUsers } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 import { registerPortalAccessPolicyRoutes } from '../../routes/orgPortalAccessPolicy';
+import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
 import { portalRoutes } from '../../routes/portal';
 import { portalRateLimitBuckets, portalSessions } from '../../routes/portal/helpers';
 import { createAccessToken } from '../../services/jwt';
 import { __testOnly } from '../../services/portalAccessPolicy';
 import { recordEntraTenantProof } from '../../services/portalEntraTenantProof';
 import { ssoOnlyImpactDigest } from '../../services/portalSsoOnly';
-import { entraIssuer } from '../../services/portalUserIdentities';
+import { entraIssuer, linkPortalUserIdentity, type IdentityExecutor } from '../../services/portalUserIdentities';
 import { hashPassword } from '../../services/password';
 import { createOrganization, createPartner, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const PASSWORD = 'SsoOnlyPass1!';
+const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 
 const msp = (() => {
   const a = new Hono();
   a.use('*', authMiddleware);
   registerPortalAccessPolicyRoutes(a);
+  registerOrgPortalUsersRoutes(a);
   return a;
 })();
 const portal = (() => {
@@ -177,10 +192,87 @@ async function previewOrg(token: string, orgId: string, patch: Record<string, un
   };
 }
 
+// ── Races with a self-link (two connections) ────────────────────────────────
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+/**
+ * The person's self-link (portalOidc/accountResolution.ts linkSignedIn) on its
+ * OWN connection: lock the account row, then the real linkPortalUserIdentity
+ * (identity insert + row update, no epoch bump). `hold` keeps the transaction
+ * open after the link until it resolves; `linked` resolves once the link's
+ * writes are in (uncommitted while held).
+ */
+async function selfLink(orgId: string, portalUserId: string, hold?: Promise<void>) {
+  const client = postgres(DATABASE_URL, { max: 1, onnotice: () => undefined });
+  const [backend] = await client<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`;
+  const linked = deferred();
+  const done = drizzle(client).transaction(async (tx) => {
+    await tx.select({ id: portalUsers.id }).from(portalUsers)
+      .where(and(eq(portalUsers.id, portalUserId), eq(portalUsers.orgId, orgId)))
+      .for('update');
+    const link = await linkPortalUserIdentity(tx as unknown as IdentityExecutor, {
+      orgId, portalUserId, provider: 'entra', tid: randomUUID(), oid: randomUUID(),
+      linkedVia: 'self_link', clearPasswordHash: false, now: new Date(),
+    });
+    if (link.kind !== 'linked') throw new Error(`self-link refused: ${link.kind}`);
+    linked.resolve();
+    await hold;
+  }).finally(() => client.end({ timeout: 1 }));
+  return { pid: backend!.pid, linked: linked.promise, done };
+}
+
+async function backendIsBlocked(pid: number): Promise<boolean> {
+  const [row] = await getTestDb().execute<{ blocked: boolean }>(
+    sql`SELECT cardinality(pg_catalog.pg_blocking_pids(${pid})) > 0 AS blocked`,
+  );
+  return Boolean(row?.blocked);
+}
+
+/** `pid` waits on a lock ('blocked') or `done` settles first ('finished'). Polls; no sleep decides. */
+async function blockedOrFinished(pid: number, done: Promise<unknown>): Promise<'blocked' | 'finished'> {
+  let finished = false;
+  done.then(() => { finished = true; }, () => { finished = true; });
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    if (finished) return 'finished';
+    if (await backendIsBlocked(pid)) return 'blocked';
+    if (Date.now() > deadline) throw new Error(`backend ${pid} neither blocked nor finished`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+/** Some backend of this database waits on a lock `blockerPid` holds. */
+async function untilBlockedBy(blockerPid: number): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const [row] = await getTestDb().execute<{ waiting: number }>(sql`
+      SELECT count(*)::int AS waiting FROM pg_catalog.pg_stat_activity
+       WHERE datname = current_database() AND ${blockerPid} = ANY(pg_catalog.pg_blocking_pids(pid))`);
+    if ((row?.waiting ?? 0) > 0) return;
+    if (Date.now() > deadline) throw new Error(`nothing blocked behind backend ${blockerPid}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+async function readState(id: string) {
+  const [row] = await getTestDb().select({ status: portalUsers.status, passwordHash: portalUsers.passwordHash, authEpoch: portalUsers.authEpoch })
+    .from(portalUsers).where(eq(portalUsers.id, id));
+  const identities = await getTestDb().select({ id: portalUserIdentities.id }).from(portalUserIdentities)
+    .where(eq(portalUserIdentities.portalUserId, id));
+  return { ...row!, identities: identities.length };
+}
+
 beforeEach(async () => {
   passwordHash ??= await hashPassword(PASSWORD);
   __testOnly.setCapabilities({ entra: true, google: false, selfRegistration: false });
   forceClearFailure.current = false;
+  clearGate.current = null;
+  clearCalls.length = 0;
   portalSessions.clear();
   portalRateLimitBuckets.clear();
 });
@@ -369,5 +461,69 @@ describe('sso_only save (PATCH with acknowledge)', () => {
     expect(await readAccount(u.id)).toEqual({ passwordHash, authEpoch: u.authEpoch });
     // The other partner's account is untouched.
     expect(await readAccount(x.id)).toEqual({ passwordHash, authEpoch: x.authEpoch });
+  });
+});
+
+describe('races with a concurrent self-link', () => {
+  it('a self-link blocked behind the save\'s row lock is not cleared; the save writes exactly the acknowledged rows', async () => {
+    const s = await orgWithAccounts();
+    const preview = await previewOrg(s.token, s.orgId, { passwordMode: 'sso_only' });
+    expect(preview.flips).toEqual([expect.objectContaining({ passwordsToClear: 1, strandedTotal: 2 })]);
+
+    // Pause the acknowledged save after its impact check, just before it clears.
+    const atClear = deferred();
+    const release = deferred();
+    clearGate.current = async () => { atClear.resolve(); await release.promise; };
+    const saving = call(s.token, 'PATCH', `${orgPolicy(s.orgId)}?acknowledge=${preview.impactDigest}`, { passwordMode: 'sso_only' });
+    let state: 'blocked' | 'finished' | undefined;
+    try {
+      await atClear.promise;
+      // The account the MSP saw as stranded links Microsoft now, from its own session.
+      const link = await selfLink(s.orgId, s.strandedActive.id);
+      try {
+        state = await blockedOrFinished(link.pid, link.done);
+      } finally {
+        release.resolve();
+      }
+      expect((await saving).status).toBe(200);
+      await link.done;
+    } finally {
+      release.resolve();
+    }
+
+    // The save held the account's row lock, so the link waited for its commit …
+    expect(state).toBe('blocked');
+    // … and the save wrote exactly what the MSP acknowledged: one hash, the linked account's.
+    expect(clearCalls).toEqual([[s.linked.id]]);
+    expect(clearCalls[0]).toHaveLength(preview.flips[0]!.passwordsToClear);
+    expect(await readState(s.linked.id)).toEqual({ status: 'active', passwordHash: null, authEpoch: s.linked.authEpoch + 1, identities: 1 });
+    // The stranded account linked after all, and keeps its hash and epoch (it
+    // sheds the hash on its first Microsoft sign-in, D12 lazy convergence).
+    expect(await readState(s.strandedActive.id)).toEqual({ status: 'active', passwordHash, authEpoch: s.strandedActive.authEpoch, identities: 1 });
+  });
+
+  it('a re-invite racing a self-link that commits while it waits for the row lock → not_stranded, nothing written', async () => {
+    const s = await orgWithAccounts();
+    // Password sign-in off: the active stranded account is a re-invite candidate.
+    await getTestDb().update(portalAccessPolicies).set({ passwordMode: 'sso_only' }).where(eq(portalAccessPolicies.orgId, s.orgId));
+
+    const commit = deferred();
+    const link = await selfLink(s.orgId, s.strandedActive.id, commit.promise);
+    let inviting: Promise<Response> | undefined;
+    try {
+      await link.linked; // identity inserted, row updated: not committed yet
+      inviting = Promise.resolve(call(s.token, 'POST', `/organizations/${s.orgId}/portal-users/sso-invite`, { portalUserIds: [s.strandedActive.id] }));
+      // The re-invite reaches the account row while the link still holds it.
+      await untilBlockedBy(link.pid);
+    } finally {
+      commit.resolve();
+    }
+    await link.done;
+    const res = await inviting!;
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([{ portalUserId: s.strandedActive.id, result: 'not_stranded' }]);
+    // Not moved to `invited` (normal SSO would refuse it, invite acceptance its identity).
+    expect(await readState(s.strandedActive.id)).toEqual({ status: 'active', passwordHash, authEpoch: s.strandedActive.authEpoch, identities: 1 });
   });
 });

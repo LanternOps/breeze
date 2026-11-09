@@ -21,13 +21,25 @@ import { portalUserHasIdentitySql } from './portalUserIdentities';
  * #11381, plan D12; spec §5.11, inv. 11).
  *
  * - {@link computeSsoOnlyFlips}: which orgs a policy save would move from
- *   effective `allowed` to effective `sso_only`, with what it costs each one.
+ *   effective `allowed` to effective `sso_only`, with what it costs each one
+ *   (the preview; reads only, no lock).
+ * - {@link lockSsoOnlyImpact}: the same impact on the save's own transaction,
+ *   computed from the candidate account rows it has locked `FOR UPDATE`, with
+ *   the ids it may clear.
  * - {@link ssoOnlyImpactDigest}: the acknowledgement the save must carry, so
  *   neither a script nor a stale dialog clears hashes the MSP never saw.
  * - {@link clearPasswordsForSsoOnly}: on the save's own transaction, drops the
- *   hash and bumps the epoch of every flipped-org account that HAS an identity.
+ *   hash and bumps the epoch of exactly the locked accounts that had a hash
+ *   AND an identity when the impact was taken.
  * - {@link listSsoOnlyStranded}: the accounts with no identity, which keep their
  *   hash and cannot sign in until they link or are re-invited.
+ *
+ * Why the lock: a self-link inserts an identity (its FK check takes `FOR KEY
+ * SHARE` on the account row; accountResolution also locks the row first) and
+ * does not bump `auth_epoch`. Without the lock, a link committing between the
+ * impact and the clear would have its hash cleared although the MSP
+ * acknowledged that account as stranded. With it, such a link waits for the
+ * save to commit, and the rows written are the rows counted.
  *
  * Only a policy SAVE clears (portalAccessPolicyWrites.ts). A flip caused by a
  * tenant proof or a deploy-time capability change clears nothing: W3's refusal
@@ -72,6 +84,9 @@ const BLANK_ROW: PortalAccessPolicyRowValues = Object.freeze<PortalAccessPolicyR
 });
 
 const STRANDED_LIST_LIMIT = 200;
+
+/** Ids per clear statement: one bind parameter each, far under Postgres's 65535. */
+const CLEAR_BATCH_SIZE = 5000;
 
 /** `undefined` = untouched; `null` = clear (inherit / built-in default). */
 function definedOnly(patch: PolicyPatch): PolicyPatch {
@@ -139,12 +154,127 @@ function clearableWhere(): SQL {
 }
 
 /**
+ * Every row that {@link clearableWhere} or {@link strandedWhere} can count,
+ * whatever its identity: any row with a hash, and every active/invited,
+ * browser-granted, password-eligible row. Identity-blind on purpose, so a
+ * link cannot move a row into or out of the save's lock set.
+ */
+function impactCandidateWhere(): SQL {
+  return or(
+    isNotNull(portalUsers.passwordHash),
+    and(
+      inArray(portalUsers.status, ['active', 'invited']),
+      eq(portalUsers.browserAccess, 'granted'),
+      eq(portalUsers.authMethod, 'password'),
+    ),
+  )!;
+}
+
+interface FlippedOrg { orgId: string; orgName: string }
+interface OrgCounts { passwordsToClear: number; strandedTotal: number }
+
+/** The impacts, sorted by name, then id; an org with no counted rows reports zeros. */
+function toImpacts(flipped: FlippedOrg[], countsByOrg: Map<string, OrgCounts>): SsoOnlyOrgImpact[] {
+  return flipped
+    .map((f) => ({
+      orgId: f.orgId,
+      orgName: f.orgName,
+      passwordsToClear: countsByOrg.get(f.orgId)?.passwordsToClear ?? 0,
+      strandedTotal: countsByOrg.get(f.orgId)?.strandedTotal ?? 0,
+    }))
+    .sort((a, b) => a.orgName.localeCompare(b.orgName) || compareIds(a.orgId, b.orgId));
+}
+
+/**
  * Orgs whose effective passwordMode goes allowed → sso_only if `patch` is
  * applied to `owner` (picked before/after with each org's facts), with the
  * number of hashes the save would clear and the number of stranded accounts.
  * Sorted by name, then id. Runs under the caller's context (see the header).
+ *
+ * The preview: no lock. The save recomputes it with {@link lockSsoOnlyImpact},
+ * which counts the same predicates over the rows it locked.
  */
 export async function computeSsoOnlyFlips(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<SsoOnlyOrgImpact[]> {
+  const flipped = await selectFlippedOrgs(owner, patch);
+  if (flipped.length === 0) return [];
+
+  const counts = await db.select({
+    orgId: portalUsers.orgId,
+    passwordsToClear: sql<number>`(count(*) filter (where ${clearableWhere()}))::int`,
+    strandedTotal: sql<number>`(count(*) filter (where ${strandedWhere()}))::int`,
+  }).from(portalUsers)
+    .where(inArray(portalUsers.orgId, flipped.map((f) => f.orgId)))
+    .groupBy(portalUsers.orgId);
+  return toImpacts(flipped, new Map(counts.map((c): [string, OrgCounts] => [c.orgId, {
+    passwordsToClear: Number(c.passwordsToClear),
+    strandedTotal: Number(c.strandedTotal),
+  }])));
+}
+
+export interface LockedSsoOnlyImpact {
+  /** Same shape and order as {@link computeSsoOnlyFlips}; the digest is taken over these. */
+  flips: SsoOnlyOrgImpact[];
+  /** The locked rows that had a hash and an identity: exactly what the save may clear. */
+  clearableUserIds: string[];
+}
+
+/**
+ * The save's impact (D12), on the caller's transaction, from rows it holds:
+ *  1. lock every candidate row of the flipped orgs ({@link impactCandidateWhere})
+ *     `FOR UPDATE`, ordered by id so concurrent saves lock in one order. Only
+ *     those rows, never the table;
+ *  2. in a SEPARATE statement, read hash and identity for them. Under READ
+ *     COMMITTED it takes a fresh snapshot, so a link that committed while step 1
+ *     waited is seen; a link that starts later waits on the lock until the save
+ *     commits (its identity insert's FK check needs `FOR KEY SHARE` on the row);
+ *  3. count only locked rows (one inserted after step 1 was never seen).
+ *
+ * The caller compares the digest of `flips` with the acknowledgement, then
+ * hands `clearableUserIds` to {@link clearPasswordsForSsoOnly}. A refusal rolls
+ * the caller's savepoint back, which releases the locks.
+ */
+export async function lockSsoOnlyImpact(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<LockedSsoOnlyImpact> {
+  const flipped = await selectFlippedOrgs(owner, patch);
+  if (flipped.length === 0) return { flips: [], clearableUserIds: [] };
+
+  const candidates = and(inArray(portalUsers.orgId, flipped.map((f) => f.orgId)), impactCandidateWhere());
+  const locked = await db.select({ id: portalUsers.id })
+    .from(portalUsers)
+    .where(candidates)
+    .orderBy(asc(portalUsers.id))
+    .for('update');
+
+  const countsByOrg = new Map<string, OrgCounts>();
+  const clearableUserIds: string[] = [];
+  if (locked.length > 0) {
+    const lockedIds = new Set(locked.map((r) => r.id));
+    const facts = await db.select({
+      id: portalUsers.id,
+      orgId: portalUsers.orgId,
+      clearable: sql<boolean>`${clearableWhere()}`,
+      stranded: sql<boolean>`${strandedWhere()}`,
+    }).from(portalUsers)
+      .where(candidates)
+      .orderBy(asc(portalUsers.id));
+    for (const f of facts) {
+      if (!lockedIds.has(f.id)) continue;
+      const counts = countsByOrg.get(f.orgId) ?? { passwordsToClear: 0, strandedTotal: 0 };
+      if (f.clearable) {
+        counts.passwordsToClear += 1;
+        clearableUserIds.push(f.id);
+      }
+      if (f.stranded) counts.strandedTotal += 1;
+      countsByOrg.set(f.orgId, counts);
+    }
+  }
+  return { flips: toImpacts(flipped, countsByOrg), clearableUserIds };
+}
+
+/**
+ * The orgs a save of `patch` on `owner` moves from effective `allowed` to
+ * effective `sso_only`, with their names. Shared by the preview and the save.
+ */
+async function selectFlippedOrgs(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<FlippedOrg[]> {
   const delta = definedOnly(patch);
   if (!SSO_ONLY_INPUT_FIELDS.some((f) => f in delta)) return [];
   const caps = getPortalSignInCapabilities();
@@ -184,31 +314,12 @@ export async function computeSsoOnlyFlips(owner: SsoOnlyPolicyOwner, patch: Poli
     .where(and(inArray(clientAiTenantMappings.orgId, orgIds), isNotNull(clientAiTenantMappings.provenAt)));
   const provenOrgIds = new Set(proven.map((p) => p.orgId));
 
-  const flipped = selectSsoOnlyFlips(owner, delta, partnerRow, orgs.map((o) => ({
+  return selectSsoOnlyFlips(owner, delta, partnerRow, orgs.map((o) => ({
     orgId: o.id,
     orgName: o.name,
     orgRow: orgRowById.get(o.id) ?? null,
     entraTenantProven: provenOrgIds.has(o.id),
-  })), caps);
-  if (flipped.length === 0) return [];
-
-  const counts = await db.select({
-    orgId: portalUsers.orgId,
-    passwordsToClear: sql<number>`(count(*) filter (where ${clearableWhere()}))::int`,
-    strandedTotal: sql<number>`(count(*) filter (where ${strandedWhere()}))::int`,
-  }).from(portalUsers)
-    .where(inArray(portalUsers.orgId, flipped.map((f) => f.orgId)))
-    .groupBy(portalUsers.orgId);
-  const countsByOrg = new Map(counts.map((c): [string, (typeof counts)[number]] => [c.orgId, c]));
-
-  return flipped
-    .map((f) => ({
-      orgId: f.orgId,
-      orgName: f.orgName,
-      passwordsToClear: Number(countsByOrg.get(f.orgId)?.passwordsToClear ?? 0),
-      strandedTotal: Number(countsByOrg.get(f.orgId)?.strandedTotal ?? 0),
-    }))
-    .sort((a, b) => a.orgName.localeCompare(b.orgName) || compareIds(a.orgId, b.orgId));
+  })), caps).map((f) => ({ orgId: f.orgId, orgName: f.orgName }));
 }
 
 function compareIds(a: string, b: string): number {
@@ -240,17 +351,26 @@ export async function listSsoOnlyStranded(
 
 /**
  * On the caller's transaction: password_hash = NULL, auth_epoch + 1 WHERE
- * org_id = ANY(orgIds) AND password_hash IS NOT NULL AND an identity exists.
+ * id = ANY(portalUserIds), the `clearableUserIds` of {@link lockSsoOnlyImpact}
+ * on that same transaction. Nothing is re-selected: the rows are still locked,
+ * so the rows written are the rows the acknowledged impact counted.
  * The epoch bump kills password sessions and outstanding reset/invite tokens
  * (inv. 11); the caller purges the cached sessions after commit (cleanup).
  */
-export async function clearPasswordsForSsoOnly(tx: DbTx, orgIds: string[]): Promise<{ clearedUserIds: string[] }> {
-  if (orgIds.length === 0) return { clearedUserIds: [] };
-  const cleared = await tx.update(portalUsers)
-    .set({ passwordHash: null, authEpoch: sql`${portalUsers.authEpoch} + 1`, updatedAt: new Date() })
-    .where(and(inArray(portalUsers.orgId, orgIds), clearableWhere()))
-    .returning({ id: portalUsers.id });
-  return { clearedUserIds: cleared.map((r) => r.id) };
+export async function clearPasswordsForSsoOnly(
+  tx: DbTx,
+  input: { portalUserIds: string[] },
+): Promise<{ clearedUserIds: string[] }> {
+  const clearedUserIds: string[] = [];
+  const now = new Date();
+  for (let i = 0; i < input.portalUserIds.length; i += CLEAR_BATCH_SIZE) {
+    const cleared = await tx.update(portalUsers)
+      .set({ passwordHash: null, authEpoch: sql`${portalUsers.authEpoch} + 1`, updatedAt: now })
+      .where(inArray(portalUsers.id, input.portalUserIds.slice(i, i + CLEAR_BATCH_SIZE)))
+      .returning({ id: portalUsers.id });
+    clearedUserIds.push(...cleared.map((r) => r.id));
+  }
+  return { clearedUserIds };
 }
 
 /** sha256 hex over the flips sorted by orgId as `${orgId}:${passwordsToClear}:${strandedTotal}` lines (D12). */

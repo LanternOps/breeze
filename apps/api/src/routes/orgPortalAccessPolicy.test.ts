@@ -63,9 +63,12 @@ const h = vi.hoisted(() => {
     organizations, portalAccessPolicies, store, upserts, db, authRef: { current: null as any }, auditSpy: vi.fn(),
     // The org's proven Entra tenant (W4 D2), as findProvenEntraTenantForOrg returns it.
     provenTenant: { current: null as { tenantId: string; provenAt: Date } | null },
-    // W4 D12: the sso_only impact / clear (their SQL is portalSsoOnly.integration's), and
-    // the work the route defers until the request transaction commits.
+    // W4 D12: the sso_only impact (the preview's computeFlips, the save's
+    // lockImpact over the rows it locks) and the clear (their SQL is
+    // portalSsoOnly.integration's), and the work the route defers until the
+    // request transaction commits.
     computeFlips: vi.fn(),
+    lockImpact: vi.fn(),
     clearPasswords: vi.fn(),
     listStranded: vi.fn(),
     afterCommit: [] as Array<{ label: string; work: () => unknown }>,
@@ -77,6 +80,7 @@ const h = vi.hoisted(() => {
 vi.mock('../services/portalSsoOnly', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/portalSsoOnly')>()),
   computeSsoOnlyFlips: (...args: unknown[]) => h.computeFlips(...args),
+  lockSsoOnlyImpact: (...args: unknown[]) => h.lockImpact(...args),
   clearPasswordsForSsoOnly: (...args: unknown[]) => h.clearPasswords(...args),
   listSsoOnlyStranded: (...args: unknown[]) => h.listStranded(...args),
 }));
@@ -205,6 +209,7 @@ beforeEach(() => {
   h.provenTenant.current = null;
   h.afterCommit.length = 0;
   h.computeFlips.mockReset().mockResolvedValue([]);
+  h.lockImpact.mockReset().mockResolvedValue({ flips: [], clearableUserIds: [] });
   h.clearPasswords.mockReset().mockResolvedValue({ clearedUserIds: [] });
   h.listStranded.mockReset().mockResolvedValue({ items: [], total: 0 });
   // Explicit, never the deployment's (W4 derives entra from the portal Entra app env).
@@ -533,7 +538,7 @@ describe('sso_only save flow (D12)', () => {
   }
 
   it('PATCH without acknowledge → 409 with impact and nothing written', async () => {
-    h.computeFlips.mockResolvedValue([FLIP]);
+    h.lockImpact.mockResolvedValue({ flips: [FLIP], clearableUserIds: ['pu-1', 'pu-2'] });
     const res = await makeApp().request(ORG_PATH, patch({ passwordMode: 'sso_only' }));
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
@@ -541,7 +546,7 @@ describe('sso_only save flow (D12)', () => {
       code: 'PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED',
       impact: { flips: [FLIP], impactDigest: DIGEST },
     });
-    expect(h.computeFlips).toHaveBeenCalledWith({ kind: 'org', orgId: ORG_ID, partnerId: 'p-1' }, { passwordMode: 'sso_only' });
+    expect(h.lockImpact).toHaveBeenCalledWith({ kind: 'org', orgId: ORG_ID, partnerId: 'p-1' }, { passwordMode: 'sso_only' });
     expect(h.db.insert).not.toHaveBeenCalled();
     expect(h.clearPasswords).not.toHaveBeenCalled();
     expect(h.auditSpy).not.toHaveBeenCalled();
@@ -549,7 +554,7 @@ describe('sso_only save flow (D12)', () => {
   });
 
   it('PATCH with a stale digest → 409 with the fresh digest, nothing written', async () => {
-    h.computeFlips.mockResolvedValue([FLIP]);
+    h.lockImpact.mockResolvedValue({ flips: [FLIP], clearableUserIds: ['pu-1', 'pu-2'] });
     const stale = ssoOnlyImpactDigest([{ ...FLIP, passwordsToClear: 1 }]);
     const res = await makeApp().request(`${ORG_PATH}?acknowledge=${stale}`, patch({ passwordMode: 'sso_only' }));
     expect(res.status).toBe(409);
@@ -559,13 +564,14 @@ describe('sso_only save flow (D12)', () => {
   });
 
   it('PATCH with the current digest saves, audits details.ssoOnly and purges cleared sessions only after commit', async () => {
-    h.computeFlips.mockResolvedValue([FLIP]);
+    h.lockImpact.mockResolvedValue({ flips: [FLIP], clearableUserIds: ['pu-1', 'pu-2'] });
     h.clearPasswords.mockResolvedValue({ clearedUserIds: ['pu-1', 'pu-2'] });
     const res = await makeApp().request(`${ORG_PATH}?acknowledge=${DIGEST}`, patch({ passwordMode: 'sso_only' }));
     expect(res.status).toBe(200);
     expect((await res.json()).data.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
     expect(h.upserts).toHaveLength(1);
-    expect(h.clearPasswords.mock.calls[0]![1]).toEqual([ORG_ID]);
+    // The locked ids the acknowledged impact counted, not an org-wide re-select.
+    expect(h.clearPasswords.mock.calls[0]![1]).toEqual({ portalUserIds: ['pu-1', 'pu-2'] });
     expect(h.auditSpy).toHaveBeenCalledWith(expect.anything(), {
       orgId: ORG_ID,
       action: 'organization.portal_access_policy.update',
@@ -597,18 +603,18 @@ describe('sso_only save flow (D12)', () => {
 
   it('partner PATCH: 409 without an ack; with it, clears across the flipped orgs and audits partner details.ssoOnly', async () => {
     h.store.policies = [];
-    h.computeFlips.mockResolvedValue([FLIP, FLIP_2]);
+    h.lockImpact.mockResolvedValue({ flips: [FLIP, FLIP_2], clearableUserIds: ['pu-7'] });
     const refused = await makeApp().request(PARTNER_PATH, patch({ entraEnabled: true, passwordMode: 'sso_only' }));
     expect(refused.status).toBe(409);
     const { impact } = await refused.json();
     expect(impact.flips).toEqual([FLIP, FLIP_2]);
-    expect(h.computeFlips).toHaveBeenCalledWith({ kind: 'partner', partnerId: 'p-1' }, { entraEnabled: true, passwordMode: 'sso_only' });
+    expect(h.lockImpact).toHaveBeenCalledWith({ kind: 'partner', partnerId: 'p-1' }, { entraEnabled: true, passwordMode: 'sso_only' });
     expect(h.db.insert).not.toHaveBeenCalled();
 
     h.clearPasswords.mockResolvedValue({ clearedUserIds: ['pu-7'] });
     const ok = await makeApp().request(`${PARTNER_PATH}?acknowledge=${impact.impactDigest}`, patch({ entraEnabled: true, passwordMode: 'sso_only' }));
     expect(ok.status).toBe(200);
-    expect(h.clearPasswords.mock.calls[0]![1]).toEqual([ORG_ID, SECOND_ORG_ID]);
+    expect(h.clearPasswords.mock.calls[0]![1]).toEqual({ portalUserIds: ['pu-7'] });
     expect(h.auditSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'partner.portal_access_policy.update',
       details: expect.objectContaining({ ssoOnly: { orgIds: [ORG_ID, SECOND_ORG_ID], passwordsCleared: 1 } }),

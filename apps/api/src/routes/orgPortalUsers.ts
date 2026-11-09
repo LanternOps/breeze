@@ -330,11 +330,42 @@ type SsoInviteResult =
   | { result: string };
 
 /**
+ * The org-scoped account under `SELECT … FOR UPDATE`, its facts (identity
+ * EXISTS included) re-read in a SEPARATE statement after the lock is held.
+ * One statement would not do: under READ COMMITTED a locking read that waited
+ * for a committing self-link re-checks the row but evaluates the identity
+ * EXISTS against its own older snapshot, and so misses the new identity. A
+ * self-link takes this row's lock first (portalOidc/accountResolution.ts), and
+ * its identity insert's FK check needs `FOR KEY SHARE` on it, so no link can
+ * land while we hold it. Held until the caller's transaction ends.
+ */
+async function lockOrgScopedPortalUser(orgId: string, userId: string) {
+  const [locked] = await db.select({ id: portalUsers.id }).from(portalUsers)
+    .where(and(eq(portalUsers.id, userId), eq(portalUsers.orgId, orgId)))
+    .for('update')
+    .limit(1);
+  if (!locked) return null;
+  return getOrgScopedPortalUser(orgId, userId);
+}
+
+/** ssoInviteOne's DB step: a final answer, or the account it moved to `invited`. */
+type SsoInviteWrite =
+  | { kind: 'done'; outcome: SsoInviteResult }
+  | { kind: 'moved'; id: string; email: string; authEpoch: number; bumpedEpoch: boolean };
+
+/**
  * One stranded account through the `msp_sso_invite` writer (the bulk-invite
  * shape: a state-module target written under the epoch it read, sessions
  * purged, then the invite issued at the new epoch). The email offers Microsoft
  * because the route has checked it is effective; issueAndSendInvite re-reads
  * the policy.
+ *
+ * Read, plan and write run in ONE savepoint under the account's row lock
+ * ({@link lockOrgScopedPortalUser}). The epoch guard alone cannot catch a
+ * concurrent self-link, which does not bump the epoch: an account linked
+ * between an unlocked read and the write would be moved to `invited`, where
+ * normal SSO refuses its status and invite acceptance its existing identity.
+ * The purge and the invite run after the savepoint, as before.
  *
  * An `active` account that still holds a password is stranded only while
  * password sign-in is off (effective sso_only): with password allowed it can
@@ -342,33 +373,38 @@ type SsoInviteResult =
  * would only lock it out.
  */
 async function ssoInviteOne(c: any, orgId: string, portalUserId: string, orgName: string | null, actor: { id: string; name?: string | null }, passwordAllowed: boolean): Promise<SsoInviteResult> {
-  const target = await getOrgScopedPortalUser(orgId, portalUserId);
-  if (!target || !isSsoOnlyStranded(target)) return { result: 'not_stranded' };
-  if (passwordAllowed && target.status === 'active' && target.passwordHash) return { result: 'not_stranded' };
-  let plan: PortalAccountTarget;
-  try {
-    plan = planPortalAccountTransition(accountFacts(target), 'msp_sso_invite');
-  } catch (error) {
-    if (!(error instanceof PortalAccountTransitionError)) throw error;
-    const reason = inviteRefusalReason(error);
-    return { result: reason ? REFUSAL_BY_REASON[reason].code : error.code };
-  }
-  const now = new Date();
-  const [moved] = await db.update(portalUsers)
-    .set({ ...stateSet(plan), invitedBy: actor.id, invitedAt: now, updatedAt: now })
-    .where(and(eq(portalUsers.id, target.id), eq(portalUsers.orgId, orgId), eq(portalUsers.authEpoch, target.authEpoch)))
-    .returning({ authEpoch: portalUsers.authEpoch });
-  // Changed since the read (disabled, accepted, re-invited): nothing written.
-  if (!moved) return { result: PORTAL_ACCOUNT_TRANSITION_REFUSED };
+  const done = (outcome: SsoInviteResult): SsoInviteWrite => ({ kind: 'done', outcome });
+  const write = await withDbTransaction(async (): Promise<SsoInviteWrite> => {
+    const target = await lockOrgScopedPortalUser(orgId, portalUserId);
+    if (!target || !isSsoOnlyStranded(target)) return done({ result: 'not_stranded' });
+    if (passwordAllowed && target.status === 'active' && target.passwordHash) return done({ result: 'not_stranded' });
+    let plan: PortalAccountTarget;
+    try {
+      plan = planPortalAccountTransition(accountFacts(target), 'msp_sso_invite');
+    } catch (error) {
+      if (!(error instanceof PortalAccountTransitionError)) throw error;
+      const reason = inviteRefusalReason(error);
+      return done({ result: reason ? REFUSAL_BY_REASON[reason].code : error.code });
+    }
+    const now = new Date();
+    const [moved] = await db.update(portalUsers)
+      .set({ ...stateSet(plan), invitedBy: actor.id, invitedAt: now, updatedAt: now })
+      .where(and(eq(portalUsers.id, target.id), eq(portalUsers.orgId, orgId), eq(portalUsers.authEpoch, target.authEpoch)))
+      .returning({ authEpoch: portalUsers.authEpoch });
+    // Kept under the lock as a fail-closed guard: nothing written on a mismatch.
+    if (!moved) return done({ result: PORTAL_ACCOUNT_TRANSITION_REFUSED });
+    return { kind: 'moved', id: target.id, email: target.email, authEpoch: moved.authEpoch, bumpedEpoch: plan.bumpEpoch };
+  });
+  if (write.kind === 'done') return write.outcome;
   // Side effects after the write, as invite-contacts does: only Redis can throw
   // here (issueAndSendInvite's reads are savepoints), and the bumped epoch is
   // what refuses the old sessions, so a purge failure is safe to report past.
   let emailSent = false;
   try {
-    if (plan.bumpEpoch) await purgeLoginSessions(target.id);
-    emailSent = await issueAndSendInvite(c, orgId, { id: target.id, email: target.email, authEpoch: moved.authEpoch }, orgName, actor.name);
+    if (write.bumpedEpoch) await purgeLoginSessions(write.id);
+    emailSent = await issueAndSendInvite(c, orgId, { id: write.id, email: write.email, authEpoch: write.authEpoch }, orgName, actor.name);
   } catch (err) {
-    console.error(`[orgPortalUsers] sso-invite side effect failed portalUserId=${target.id} orgId=${orgId}:`, err);
+    console.error(`[orgPortalUsers] sso-invite side effect failed portalUserId=${write.id} orgId=${orgId}:`, err);
   }
   return { result: 'invited', emailSent };
 }

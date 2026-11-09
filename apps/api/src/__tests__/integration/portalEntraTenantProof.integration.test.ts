@@ -963,10 +963,11 @@ describe('proof run through the portal router (Task 8, D6)', () => {
   async function microsoftSignsIn(
     flow: { nonce: string },
     who: { tid: string; oid: string; roles: string[] },
+    extraClaims: Record<string, unknown> = {},
   ): Promise<string> {
     const idToken = await new SignJWT({
       tid: who.tid, oid: who.oid, nonce: flow.nonce, ver: '2.0', iss: entraIssuer(who.tid), aud: CLIENT_ID,
-      preferred_username: `admin@${who.tid.slice(0, 8)}.example`, name: 'Tenant Admin',
+      preferred_username: `admin@${who.tid.slice(0, 8)}.example`, name: 'Tenant Admin', ...extraClaims,
     }).setProtectedHeader({ alg: 'RS256' }).setIssuedAt().setExpirationTime('1h').sign(keys.privateKey);
     const code = `code-${randomUUID()}`;
     const accessToken = `graph-access-${randomUUID()}`;
@@ -1020,6 +1021,36 @@ describe('proof run through the portal router (Task 8, D6)', () => {
     expect(await audits(env.organization.id, 'organization.portal_identity_proof.failed')).toEqual([]);
     // The link is spent.
     expect(await peekPortalEntraProofRun(link.runToken)).toBeNull();
+  });
+
+  it("a B2B guest who is Global Administrator of the pinned tenant completes the proof (Global Constraints: Proof run)", async () => {
+    const { env, createLink } = await mspWithOrg();
+    const tenant = newTenant();
+    const link = await createLink({ tenant });
+
+    // The MSP technician is a guest in the customer's tenant: Microsoft issues
+    // the token in that tenant (tid/iss) and marks the guest (idp = home
+    // tenant, acct = 1). Graph sees the guest's object in the customer tenant.
+    const flow = await openLink(link.path);
+    const guestOid = randomUUID();
+    const home = newTenant();
+    const code = await microsoftSignsIn(
+      flow,
+      { tid: tenant, oid: guestOid, roles: [GLOBAL_ADMIN] },
+      { idp: `https://sts.windows.net/${home}/`, acct: 1 },
+    );
+    const res = await callback(flow, code);
+    expect(res.headers.get('location')).toMatch(adminConsentFor(tenant));
+    expect(graphFetch).toHaveBeenCalledTimes(3);
+
+    expect(await mappingFor(env.organization.id)).toMatchObject({
+      entraTenantId: tenant,
+      provenVia: 'proof_run',
+      provenEvidence: { via: 'proof_run', adminOid: guestOid, runId: link.run.runId },
+    });
+    expect(await mappingsForTenant(home)).toEqual([]);
+    expect(await audits(env.organization.id, 'organization.portal_identity_proof.proven')).toHaveLength(1);
+    expect(await audits(env.organization.id, 'organization.portal_identity_proof.failed')).toEqual([]);
   });
 
   it('proof run by a non-admin (Graph check fails) → failed, run still usable', async () => {

@@ -24,8 +24,9 @@ import {
 import { findProvenEntraTenantForOrg } from './portalEntraTenantProof';
 import {
   clearPasswordsForSsoOnly,
-  computeSsoOnlyFlips,
+  lockSsoOnlyImpact,
   ssoOnlyImpactDigest,
+  type LockedSsoOnlyImpact,
   type SsoOnlyOrgImpact,
   type SsoOnlyPolicyOwner,
 } from './portalSsoOnly';
@@ -45,11 +46,14 @@ import {
  *
  * W4 (#11381) plan D12: each update runs in ONE `withDbTransaction`. A save
  * that moves some org from effective `allowed` to effective `sso_only`
- * recomputes that impact inside it, refuses with
- * {@link PortalAccessPolicyConfirmRequiredError} unless the caller acknowledged
- * exactly that impact (its digest), and then clears the identity accounts'
- * hashes in the same savepoint as the upsert. A refusal, or any failure, rolls
- * both back; the caller catches OUTSIDE this call (docs/agents/tenancy-rls.md).
+ * recomputes that impact inside it over the account rows it locks
+ * (lockSsoOnlyImpact), refuses with {@link PortalAccessPolicyConfirmRequiredError}
+ * unless the caller acknowledged exactly that impact (its digest), and then
+ * clears exactly the locked identity accounts it counted, in the same savepoint
+ * as the upsert. A concurrent self-link waits for the commit instead of being
+ * cleared unacknowledged. A refusal, or any failure, rolls both back (and
+ * releases the locks); the caller catches OUTSIDE this call
+ * (docs/agents/tenancy-rls.md).
  */
 
 /** Re-exported (one class): the route maps it to 403 PARTNER_WIDE_WRITE_DENIED_MESSAGE. */
@@ -243,27 +247,27 @@ function parsePatch(patch: PolicyPatch): PolicyPatch {
 
 /**
  * D12, on the write transaction: the orgs this save flips to `sso_only`,
- * recomputed here and never taken from the preview. Throws ConfirmRequired
- * unless `ack` is the digest of exactly this impact. No flip → no ack needed.
+ * recomputed here from the account rows it locks, never taken from the
+ * preview. Throws ConfirmRequired unless `ack` is the digest of exactly this
+ * impact. No flip → no ack needed (and nothing locked).
  */
 async function requireAcknowledgedSsoOnlyFlips(
   owner: SsoOnlyPolicyOwner,
   fields: PolicyPatch,
   ack: string | null | undefined,
-): Promise<SsoOnlyOrgImpact[]> {
-  const flips = await computeSsoOnlyFlips(owner, fields);
-  if (flips.length === 0) return flips;
-  const impactDigest = ssoOnlyImpactDigest(flips);
-  if (ack !== impactDigest) throw new PortalAccessPolicyConfirmRequiredError({ flips, impactDigest });
-  return flips;
+): Promise<LockedSsoOnlyImpact> {
+  const impact = await lockSsoOnlyImpact(owner, fields);
+  if (impact.flips.length === 0) return impact;
+  const impactDigest = ssoOnlyImpactDigest(impact.flips);
+  if (ack !== impactDigest) throw new PortalAccessPolicyConfirmRequiredError({ flips: impact.flips, impactDigest });
+  return impact;
 }
 
-/** After the upsert, same transaction: clear the flipped orgs' identity accounts. */
-async function clearForFlips(flips: SsoOnlyOrgImpact[]): Promise<PortalAccessPolicySsoOnlyOutcome | null> {
-  if (flips.length === 0) return null;
-  const orgIds = flips.map((f) => f.orgId);
-  const { clearedUserIds } = await clearPasswordsForSsoOnly(db, orgIds);
-  return { orgIds, passwordsCleared: clearedUserIds.length, clearedUserIds };
+/** After the upsert, same transaction: clear exactly the locked identity accounts the acknowledged impact counted. */
+async function clearForFlips(impact: LockedSsoOnlyImpact): Promise<PortalAccessPolicySsoOnlyOutcome | null> {
+  if (impact.flips.length === 0) return null;
+  const { clearedUserIds } = await clearPasswordsForSsoOnly(db, { portalUserIds: impact.clearableUserIds });
+  return { orgIds: impact.flips.map((f) => f.orgId), passwordsCleared: clearedUserIds.length, clearedUserIds };
 }
 
 export async function getOrgPortalAccessPolicyView(org: { id: string; partnerId: string }): Promise<PortalAccessPolicyView> {
@@ -306,7 +310,7 @@ export async function updateOrgPortalAccessPolicy(
     if (changedFields.length === 0) {
       return { view: buildView(owner, rows.org, rows.partner, caps, true, entraTenantProven), changedFields, ssoOnly: null };
     }
-    const flips = await requireAcknowledgedSsoOnlyFlips(
+    const impact = await requireAcknowledgedSsoOnlyFlips(
       { kind: 'org', orgId: org.id, partnerId: org.partnerId }, fields, opts.acknowledgeSsoOnly,
     );
     const [row] = await db.insert(portalAccessPolicies).values({ orgId: org.id, partnerId: null, ...fields })
@@ -317,7 +321,7 @@ export async function updateOrgPortalAccessPolicy(
       })
       .returning();
     if (!row) throw new Error('portal access policy: org upsert returned no row');
-    const ssoOnly = await clearForFlips(flips);
+    const ssoOnly = await clearForFlips(impact);
     return {
       view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true, entraTenantProven),
       changedFields,
@@ -356,7 +360,7 @@ export async function updatePartnerPortalAccessPolicy(
     if (changedFields.length === 0) {
       return { view: buildView(owner, rows.partner, null, caps, true, null), changedFields, ssoOnly: null };
     }
-    const flips = await requireAcknowledgedSsoOnlyFlips({ kind: 'partner', partnerId }, fields, opts.acknowledgeSsoOnly);
+    const impact = await requireAcknowledgedSsoOnlyFlips({ kind: 'partner', partnerId }, fields, opts.acknowledgeSsoOnly);
     const [row] = await db.insert(portalAccessPolicies).values({ partnerId, orgId: null, ...fields })
       .onConflictDoUpdate({
         target: portalAccessPolicies.partnerId,
@@ -365,7 +369,7 @@ export async function updatePartnerPortalAccessPolicy(
       })
       .returning();
     if (!row) throw new Error('portal access policy: partner upsert returned no row');
-    const ssoOnly = await clearForFlips(flips);
+    const ssoOnly = await clearForFlips(impact);
     return { view: buildView(owner, toPortalAccessPolicyRowValues(row), null, caps, true, null), changedFields, ssoOnly };
   });
 }

@@ -31,8 +31,10 @@
  * Tenant proof (Task 8, ./oidcTenantProof.ts): the proof-run start route is
  * mounted beside the others, and its callback branch is
  * `handleTenantProofCallback`, reached after the code exchange and the
- * id_token check pinned to the run's tenant. A proof flow refused here, before
- * that branch, is audited as a refused proof on the run's org.
+ * id_token check pinned to the run's tenant (the one check that admits a B2B
+ * guest of that tenant; every sign-in purpose refuses guests). A proof flow
+ * refused here, before that branch, is audited as a refused proof on the
+ * run's org.
  *
  * Nothing here logs or audits a code, token, id_token, secret or token-endpoint
  * body (D14).
@@ -112,7 +114,11 @@ const START_RATE_LIMIT = { windowMs: 5 * 60 * 1000, maxAttempts: 20, blockMs: 15
 /** Global Constraints: per-IP callback limiter. */
 const CALLBACK_RATE_LIMIT = { windowMs: 5 * 60 * 1000, maxAttempts: 30, blockMs: 15 * 60 * 1000 };
 
-/** User sign-in always uses the `organizations` authority (structural guest refusal, Global Constraints). */
+/**
+ * User sign-in always uses the `organizations` authority (structural guest
+ * refusal, Global Constraints). Only the tenant-proof run pins a tenant and
+ * admits that tenant's guests (./oidcTenantProof.ts).
+ */
 const SIGN_IN_AUTHORITY = 'organizations';
 const PROVIDER = 'entra';
 
@@ -195,12 +201,15 @@ async function hostOrgIdFor(c: Context): Promise<string | null> {
 }
 
 /**
- * `Secure` on the binding cookie follows the portal session cookie's rule for
- * a `Lax` cookie: the request's transport (HTTPS, a trusted forwarded
- * `X-Forwarded-Proto`, or production when ambiguous) or an explicit
- * PORTAL_COOKIE_FORCE_SECURE / COOKIE_FORCE_SECURE.
+ * `Secure` on the binding cookie (D3): ALWAYS in production. Entra accepts an
+ * https redirect URI only (localhost aside), so the callback that reads this
+ * cookie is always https there, whatever a proxy reports. Outside production
+ * it follows the portal session cookie's rule for a `Lax` cookie: the
+ * request's transport (HTTPS or a trusted forwarded `X-Forwarded-Proto`) or an
+ * explicit PORTAL_COOKIE_FORCE_SECURE / COOKIE_FORCE_SECURE.
  */
 function bindingCookieSecure(c: Context): boolean {
+  if (process.env.NODE_ENV === 'production') return true;
   const forced = envStr('PORTAL_COOKIE_FORCE_SECURE', envStr('COOKIE_FORCE_SECURE', '')).toLowerCase();
   return forced === '1' || forced === 'true' || isRequestConnectionSecure(c);
 }
@@ -459,7 +468,10 @@ async function runCallback(c: Context, ctx: { purpose?: PortalOidcPurpose }): Pr
   const purpose = state.purpose;
   ctx.purpose = purpose;
 
-  // 3. Code exchange and id_token verification (a proof run is pinned to its tenant).
+  // 3. Code exchange and id_token verification. A proof run is pinned to its
+  // tenant and admits a B2B guest of it (Global Constraints "Proof run": a
+  // guest Global Administrator is an admin there; the branch's Graph role
+  // check binds to tid/oid). Every other purpose keeps refusing guests.
   let identity: VerifiedEntraIdentity;
   let accessToken: string | null;
   try {
@@ -471,11 +483,9 @@ async function runCallback(c: Context, ctx: { purpose?: PortalOidcPurpose }): Pr
     accessToken = tokens.accessToken;
     identity = await verifyPortalEntraIdToken(
       tokens.idToken,
-      {
-        clientId: cfg.clientId,
-        nonce: state.nonce,
-        expectedTenantId: purpose.kind === 'tenant_proof' ? purpose.expectedTenantId : null,
-      },
+      purpose.kind === 'tenant_proof'
+        ? { clientId: cfg.clientId, nonce: state.nonce, expectedTenantId: purpose.expectedTenantId, allowGuest: true }
+        : { clientId: cfg.clientId, nonce: state.nonce, expectedTenantId: null },
       entraTestDeps.verificationKey ? { verificationKey: entraTestDeps.verificationKey } : {},
     );
   } catch (error) {

@@ -80,6 +80,7 @@ import {
 } from './agentOrgSettingsCache';
 import { agentCollectorAbsenceCache } from './unifi/unifiCollectorService';
 import { prepareTopologyOrgMerge, finalizeTopologyOrgMerge } from './topology/tenantLifecycle';
+import { lockPortalEntraOrgMappings } from './portalEntraTenantProof';
 // Self-import so `executeOrgMerge` calls the exported bindings through the
 // module namespace, letting tests spy on `runPolicy` / `fenceLoser` — the same
 // pattern `tenantCascade.ts` uses for `topologicalCascadeOrder`.
@@ -389,10 +390,15 @@ export async function resolveMergePamTransfer(): Promise<boolean> {
  * of the survivor's (perhaps unproven) one and strand the repointed identities.
  * A proven loser mapping with no survivor mapping is adopted, proof intact.
  *
- * `lock` takes both orgs' rows FOR UPDATE (pre-fence and the Phase-B recheck):
- * a tenant proof (services/portalEntraTenantProof.ts) locks the same rows, so it
- * cannot land between this check and the registry walk. The preview reads
- * without locking.
+ * `lock` takes both orgs' rows FOR UPDATE (pre-fence and the Phase-B recheck).
+ * A tenant proof (services/portalEntraTenantProof.ts) locks the same rows, so
+ * it cannot change an EXISTING row between this check and the registry walk.
+ * FOR UPDATE cannot lock a row that is absent, so it does not stop a proof or
+ * the AI for Office PUT from CREATING the survivor's (or loser's) mapping. In
+ * Phase B that is covered by the per-org lock (`lockPortalEntraOrgMappings`),
+ * which `executeOrgMerge` takes for both orgs before this recheck runs. The
+ * pre-fence read and the preview are advisory. The preview reads without
+ * locking.
  */
 async function entraTenantConflictRows(loserOrgId: string, survivorOrgId: string, lock: boolean): Promise<number> {
   const rows = (await dbModule.db.execute(sql`
@@ -1323,7 +1329,7 @@ async function getOrgMergeWalkOrder(): Promise<string[]> {
 /**
  * Must run in Phase B after the export locks and assertPairStillMergeable.
  * `survivorOrgId` keys the pair checks (`entra_tenant_conflict`); the engine
- * always passes it.
+ * always passes it, after it has taken both orgs' per-org portal Entra locks.
  */
 export async function assertMergeIsolationSafe(orgId: string, pamTransfer: boolean, survivorOrgId?: string): Promise<void> {
   // Existing org NO KEY UPDATE is compatible with start's FK KEY SHARE. Never
@@ -1410,6 +1416,16 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
     result = await dbModule.runOutsideDbContext(() =>
       dbModule.withSystemDbAccessContext(async () => {
         // Phase B lock order (#10692):
+        // 0. Both orgs' per-org portal Entra locks, id-ascending
+        //    (lockPortalEntraOrgMappings, portal registration W4 D8 / OD7).
+        //    The entra_tenant_conflict recheck below locks the EXISTING
+        //    mapping rows. This lock covers the absent ones: a tenant proof or
+        //    the AI for Office PUT takes it before it creates either org's
+        //    mapping, so neither can add a survivor mapping between the recheck
+        //    and the keep-survivor walk. It is taken first, while this
+        //    transaction holds no other lock. Those writers take only their
+        //    per-tenant lock before it, which the merge never takes. So none of
+        //    them can wait on this lock while holding something the merge needs.
         // 1. All of the partner's partner-owned group rows FOR KEY SHARE,
         //    id-ascending via acquirePartnerGroupRowLocks. The deferred
         //    membership owner check takes KEY SHARE on the group at COMMIT,
@@ -1447,6 +1463,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // Postgres aborts one side. If it is the merge, it rolls back and
         // unfences as for any Phase B failure; if it is the delete, the caller
         // sees 40P01.
+        await lockPortalEntraOrgMappings([loser.id, survivor.id]);
         await self.lockMergePartnerGroupRows(input.partnerId);
         const locked = [loser.id, survivor.id].sort();
         await dbModule.db.execute(

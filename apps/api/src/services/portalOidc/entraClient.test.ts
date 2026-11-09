@@ -66,7 +66,10 @@ async function mintToken(claims: Record<string, unknown> = {}, options: MintOpti
     : jwt.sign(keys.privateKey);
 }
 
-function verify(token: string, overrides: Partial<{ clientId: string; nonce: string; expectedTenantId: string | null; now: Date }> = {}) {
+function verify(
+  token: string,
+  overrides: Partial<{ clientId: string; nonce: string; expectedTenantId: string | null; allowGuest: boolean; now: Date }> = {},
+) {
   return verifyPortalEntraIdToken(
     token,
     { clientId: CLIENT_ID, nonce: NONCE, expectedTenantId: null, ...overrides },
@@ -229,6 +232,58 @@ describe('verifyPortalEntraIdToken', () => {
     // A member's idp, when present, equals the issuer or the v1 STS issuer of its own tenant.
     await expect(verify(await mintToken({ idp: entraIssuer(TENANT), acct: 0 }))).resolves.toMatchObject({ subject: OBJECT_ID });
     await expect(verify(await mintToken({ idp: `https://sts.windows.net/${TENANT}/` }))).resolves.toMatchObject({ subject: OBJECT_ID });
+  });
+
+  describe('guests in a tenant-proof run (allowGuest, plan Global Constraints "Proof run", D6)', () => {
+    // A B2B guest signing in through the PINNED tenant authority: Microsoft
+    // issues the token in the resource (customer) tenant, so `tid`/`iss` are
+    // the customer's and `idp`/`acct` mark the guest.
+    const guestClaims = { idp: `https://sts.windows.net/${OTHER_TENANT}/`, acct: 1 };
+
+    it('accepts a guest of the pinned tenant when allowGuest is set: identity is the resource tenant\'s tid/oid', async () => {
+      const identity = await verify(await mintToken(guestClaims), { expectedTenantId: TENANT, allowGuest: true });
+      expect(identity).toMatchObject({ issuer: entraIssuer(TENANT), subject: OBJECT_ID, entraTenantId: TENANT });
+      // Each guest marker on its own, and the string form of acct.
+      await expect(verify(await mintToken({ acct: '1' }), { expectedTenantId: TENANT, allowGuest: true }))
+        .resolves.toMatchObject({ entraTenantId: TENANT });
+      await expect(verify(await mintToken({ idp: 'https://login.live.com' }), { expectedTenantId: TENANT, allowGuest: true }))
+        .resolves.toMatchObject({ entraTenantId: TENANT });
+    });
+
+    it('without allowGuest a guest is refused even when the tenant is pinned', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await expect(verify(await mintToken(guestClaims), { expectedTenantId: TENANT })).rejects.toMatchObject({ check: 'guest_idp' });
+      await expect(verify(await mintToken({ acct: 1 }), { expectedTenantId: TENANT, allowGuest: false }))
+        .rejects.toMatchObject({ check: 'guest_acct' });
+    });
+
+    it('allowGuest without a pinned tenant is refused, guest or not (fail closed)', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      for (const claims of [guestClaims, {}]) {
+        const error = await verify(await mintToken(claims), { expectedTenantId: null, allowGuest: true }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(PortalEntraTokenError);
+        expect((error as PortalEntraTokenError).check).toBe('guest_unpinned');
+      }
+      // A pin that is not a tenant GUID is no pin.
+      await expect(verify(await mintToken(guestClaims), { expectedTenantId: 'contoso.example', allowGuest: true }))
+        .rejects.toMatchObject({ check: 'guest_unpinned' });
+    });
+
+    it('allowGuest skips only the guest checks: a guest token for another tenant than the pin is refused', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const otherTenantGuest = await mintToken(guestClaims, { tenant: OTHER_TENANT });
+      await expect(verify(otherTenantGuest, { expectedTenantId: TENANT, allowGuest: true })).rejects.toMatchObject({ check: 'tenant_mismatch' });
+    });
+
+    it.each(refusals.filter(([label]) => !['idp is another tenant (guest)', 'acct = 1'].includes(label)))(
+      'allowGuest keeps every other check: %s',
+      async (_label, check, token) => {
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const error = await verify(await token(), { expectedTenantId: TENANT, allowGuest: true }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(PortalEntraTokenError);
+        expect((error as PortalEntraTokenError).check).toBe(check);
+      },
+    );
   });
 
   it('checks freshness against the injected clock', async () => {

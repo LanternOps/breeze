@@ -113,6 +113,9 @@ const CFG = {
   callbackUrl: 'https://breeze.example.test/api/v1/portal/auth/oidc/entra/callback',
   consentReturnUrl: 'https://breeze.example.test/api/v1/portal/auth/oidc/entra/consent-return',
 };
+/** A B2B guest's home tenant, and the claims marking a guest token issued in another (resource) tenant. */
+const GUEST_HOME_TENANT = '33333333-4444-4555-8666-777777777777';
+const GUEST_CLAIMS = { idp: `https://sts.windows.net/${GUEST_HOME_TENANT}/`, acct: 1 };
 const PORTAL = 'https://portal.example.test/portal';
 const UNAVAILABLE = `${PORTAL}/login?sso=unavailable`;
 const INVALID_INVITE = { error: 'Invalid or expired invite' };
@@ -277,6 +280,68 @@ describe('POST /auth/oidc/entra/start', () => {
   it('the binding cookie is Secure over HTTPS', async () => {
     const res = await start({ purpose: 'login' }, { url: 'https://portal.example.test/auth/oidc/entra/start' });
     expect(bindingFrom(res).setCookie).toContain('; Secure');
+  });
+
+  describe('the binding cookie\'s Secure flag (D3: Secure in production)', () => {
+    const TRUSTED_PROXY_IP = '172.31.0.10';
+    /** The request arrives from the trusted reverse proxy, which reports the browser's scheme. */
+    const viaProxy = { incoming: { socket: { remoteAddress: TRUSTED_PROXY_IP } } };
+    const ENV_KEYS = ['NODE_ENV', 'TRUST_PROXY_HEADERS', 'TRUSTED_PROXY_CIDRS', 'PORTAL_COOKIE_FORCE_SECURE', 'COOKIE_FORCE_SECURE'];
+    let saved: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+      saved = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+      process.env.TRUST_PROXY_HEADERS = 'true';
+      process.env.TRUSTED_PROXY_CIDRS = `${TRUSTED_PROXY_IP}/32`;
+      delete process.env.PORTAL_COOKIE_FORCE_SECURE;
+      delete process.env.COOKIE_FORCE_SECURE;
+    });
+
+    afterEach(() => {
+      for (const key of ENV_KEYS) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    });
+
+    /** Every binding cookie the API sets: the login start, the proof-run link, and the callback's clear. */
+    async function bindingCookies(forwardedProto: 'http' | 'https'): Promise<string[]> {
+      const headers = { 'X-Forwarded-Proto': forwardedProto };
+      const startRes = await app().request('/auth/oidc/entra/start', {
+        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ purpose: 'login' }),
+      }, viaProxy);
+      const run = await createPortalEntraProofRun({ orgId: ORG, partnerId: PARTNER, createdByUserId: USER, expectedTenantId: TENANT });
+      const proofRes = await app().request(`/auth/oidc/entra/proof?run=${encodeURIComponent(run.token)}`, { headers }, viaProxy);
+      const callbackRes = await app().request('/auth/oidc/entra/callback?code=c1&state=s1', { headers }, viaProxy);
+      expect([startRes.status, proofRes.status, callbackRes.status]).toEqual([200, 302, 302]);
+      return [startRes, proofRes, callbackRes].map((res) => bindingFrom(res).setCookie);
+    }
+
+    async function inProduction<T>(fn: () => Promise<T>): Promise<T> {
+      const before = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        return await fn();
+      } finally {
+        process.env.NODE_ENV = before;
+      }
+    }
+
+    it('production: Secure on every binding cookie, even when the trusted proxy reports HTTP', async () => {
+      const cookies = await inProduction(() => bindingCookies('http'));
+      expect(cookies).toHaveLength(3);
+      for (const cookie of cookies) expect(cookie).toContain('; Secure');
+    });
+
+    it('outside production: follows the trusted transport', async () => {
+      for (const cookie of await bindingCookies('http')) expect(cookie).not.toContain('Secure');
+      for (const cookie of await bindingCookies('https')) expect(cookie).toContain('; Secure');
+    });
+
+    it.each(['PORTAL_COOKIE_FORCE_SECURE', 'COOKIE_FORCE_SECURE'])('outside production: %s=true forces Secure over HTTP', async (flag) => {
+      process.env[flag] = 'true';
+      for (const cookie of await bindingCookies('http')) expect(cookie).toContain('; Secure');
+    });
   });
 
   it('records the custom-domain host org in the state (D5)', async () => {
@@ -487,12 +552,38 @@ describe('GET /auth/oidc/entra/callback', () => {
     ['nonce mismatch', { nonce: 'another-nonce' }],
     ['token for another audience', { aud: '00000000-1111-4222-8333-444444444444' }],
     ['guest (acct = 1)', { acct: 1 }],
+    ['guest (idp is another tenant)', { idp: `https://sts.windows.net/${GUEST_HOME_TENANT}/` }],
+    ['guest (idp and acct)', GUEST_CLAIMS],
   ])('a token that fails verification (%s) → unavailable, the resolver is never called', async (_name, claims) => {
     const flow = await started();
     tokenEndpointReturns(await idToken(flow.nonce, claims));
     const res = await callback(`code=c1&state=${encodeURIComponent(flow.state)}`, flow.cookie);
     expect(res.headers.get('location')).toBe(UNAVAILABLE);
     expect(h.resolveSignIn).not.toHaveBeenCalled();
+    expect(h.audit.mock.calls.map((call) => call[1].details)).toEqual([{ provider: 'entra', outcome: 'denied', reason: 'token_invalid' }]);
+  });
+
+  it('guests stay refused on the invite and link purposes (only a proof run admits one)', async () => {
+    // Invite.
+    h.peek.mockResolvedValue({ format: 'v2', payload: { v: 2, purpose: 'invite', portalUserId: USER, orgId: ORG, email: 'pat@acme.test', authEpoch: 3 } });
+    h.validate.mockResolvedValue({ ok: true, user: { id: USER, orgId: ORG } });
+    const invite = await started({ purpose: 'invite', inviteToken: 'raw-invite-token' });
+    tokenEndpointReturns(await idToken(invite.nonce, GUEST_CLAIMS));
+    const inviteRes = await callback(`code=c1&state=${encodeURIComponent(invite.state)}`, invite.cookie);
+    expect(inviteRes.headers.get('location')).toBe(UNAVAILABLE);
+
+    // Link.
+    h.dbRows.current = [{ authEpoch: 5 }];
+    const linkStart = await new Hono().route('/', portalRoutes).request('/auth/oidc/entra/link/start', {
+      method: 'POST', headers: { Authorization: 'Bearer good-session' },
+    });
+    const linkUrl = new URL(((await linkStart.json()) as { redirectUrl: string }).redirectUrl);
+    tokenEndpointReturns(await idToken(linkUrl.searchParams.get('nonce')!, GUEST_CLAIMS));
+    const linkRes = await callback(`code=c1&state=${encodeURIComponent(linkUrl.searchParams.get('state')!)}`, bindingFrom(linkStart).cookieHeader);
+    expect(linkRes.headers.get('location')).toBe(`${PORTAL}/profile?sso=unavailable`);
+
+    expect(h.resolveSignIn).not.toHaveBeenCalled();
+    expect(h.audit.mock.calls.map((call) => call[1].details.reason)).toEqual(['token_invalid', 'token_invalid']);
   });
 
   it('a failing token endpoint → unavailable, its body never logged or audited', async () => {
@@ -703,6 +794,25 @@ describe('GET /auth/oidc/entra/callback', () => {
       expect(h.audit.mock.calls[0]![1]).toMatchObject({
         action: 'organization.portal_identity_proof.failed', details: { reason: 'admin_check_failed', adminCheck: 'no_accepted_role' },
       });
+    });
+
+    it('a B2B guest of the pinned tenant passes the token step and reaches the proof branch, where Graph decides', async () => {
+      // Global Constraints "Proof run": a guest who holds an admin role in the
+      // customer's tenant is an admin there; the Graph role check binds to tid/oid.
+      const flow = await openProofLink();
+      tokenEndpointReturns(await idToken(flow.nonce, GUEST_CLAIMS));
+      graphFetch.mockImplementation(async (input: string) => {
+        const url = String(input);
+        if (url.includes('/v1.0/me?')) return Response.json({ id: OID });
+        if (url.includes('/v1.0/organization?')) return Response.json({ value: [{ id: TENANT }] });
+        return Response.json({ value: [{ roleTemplateId: 'fe930be7-5e62-47db-91af-98c3a49a38b1' }] }); // User Administrator
+      });
+      const res = await callback(`code=c1&state=${encodeURIComponent(flow.state)}`, flow.cookie);
+      expect(res.headers.get('location')).toBe(FAILED);
+      // Not refused as a token: the branch's Graph admin check ran on the guest's token and decided.
+      expect(graphFetch).toHaveBeenCalled();
+      expect(h.audit.mock.calls.map((call) => call[1].details)).toEqual([{ reason: 'admin_check_failed', adminCheck: 'no_accepted_role' }]);
+      expect(h.resolveSignIn).not.toHaveBeenCalled();
     });
   });
 

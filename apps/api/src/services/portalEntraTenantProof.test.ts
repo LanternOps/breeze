@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 /**
  * Unit cover for the tenant proof service (portal registration W4 #11381, plan
@@ -17,6 +18,8 @@ const state = vi.hoisted(() => ({
   selectRows: [] as unknown[],
   /** When set, the next withDbTransaction rejects with it instead of running fn. */
   txError: null as unknown,
+  /** >0 while a mocked system context / savepoint callback runs. */
+  depth: 0,
 }));
 
 function selectChain() {
@@ -43,9 +46,11 @@ vi.mock('../db', () => ({
   getCurrentDbAccessContext: vi.fn(() => state.held ?? undefined),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     state.events.push('system:open');
+    state.depth += 1;
     try {
       return await fn();
     } finally {
+      state.depth -= 1;
       state.events.push('system:close');
     }
   }),
@@ -56,7 +61,15 @@ vi.mock('../db', () => ({
       state.txError = null;
       throw err;
     }
-    return fn();
+    state.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      state.depth -= 1;
+    }
+  }),
+  assertInTransaction: vi.fn((label: string) => {
+    if (state.depth === 0 && state.held === null) throw new Error(`${label} must run inside withDbAccessContext / withSystemDbAccessContext`);
   }),
   runOutsideDbContext: vi.fn(<T,>(fn: () => T) => fn()),
 }));
@@ -78,6 +91,7 @@ import {
   PortalEntraProofError,
   findOrgByProvenEntraTenant,
   findProvenEntraTenantForOrg,
+  lockPortalEntraOrgMappings,
   proveEntraTenantFromM365Connection,
   recordEntraTenantProof,
   type RecordEntraProofInput,
@@ -107,6 +121,7 @@ beforeEach(() => {
   state.events = [];
   state.selectRows = [];
   state.txError = null;
+  state.depth = 0;
   vi.mocked(isHoldingOrg).mockClear();
   vi.mocked(dbModule.withDbTransaction).mockClear();
   vi.mocked(dbModule.withSystemDbAccessContext).mockClear();
@@ -186,6 +201,47 @@ describe('recordEntraTenantProof: refusals and error mapping', () => {
     const err = await caught(recordEntraTenantProof(proofRun({ orgId: 'not-a-uuid' })));
     expect((err as Error).message).toMatch(/org id/i);
     expect(state.events).toEqual([]);
+  });
+});
+
+/**
+ * Org merge race (plan D8 / OD7): FOR UPDATE cannot lock a mapping row that
+ * does not exist yet, so every writer that can CREATE an org's mapping takes a
+ * per-org advisory lock the merge also holds. The interleavings themselves are
+ * proven on real Postgres in portalEntraTenantMerge.integration.test.ts.
+ */
+describe('the per-org portal Entra mapping lock', () => {
+  const dialect = new PgDialect();
+  const executed = () => vi.mocked(dbModule.db.execute).mock.calls.map(([q]) => dialect.sqlToQuery(q as never));
+  const A = '0a0a0a0a-1111-4111-8111-111111111111';
+  const B = 'b0b0b0b0-2222-4222-8222-222222222222';
+
+  it('takes one transaction-scoped lock per distinct org, ascending by id, on the canonical uuid text', async () => {
+    await dbModule.withSystemDbAccessContext(() => lockPortalEntraOrgMappings([B, A, B.toUpperCase()]));
+
+    const locks = executed();
+    expect(locks.map((q) => q.params)).toEqual([[A], [B]]);
+    for (const q of locks) {
+      expect(q.sql).toBe(`SELECT pg_advisory_xact_lock(hashtext('portal-entra-org:' || $1::uuid::text))`);
+    }
+  });
+
+  it('refuses outside a transaction: an xact lock on the bare pool would be released at once', async () => {
+    await expect(lockPortalEntraOrgMappings([A])).rejects.toThrow(/withDbAccessContext/);
+    expect(dbModule.db.execute).not.toHaveBeenCalled();
+  });
+
+  it('recordEntraTenantProof takes the tenant lock, then the org lock, before reading the mapping rows FOR UPDATE', async () => {
+    // No rows: the transaction body reaches the upsert, which this unit mock refuses.
+    const err = await caught(recordEntraTenantProof(proofRun()));
+    expect((err as Error).message).toMatch(/unexpected insert/);
+
+    expect(state.events).toEqual(['system:open', 'isHoldingOrg', 'tx', 'execute', 'execute', 'select', 'system:close']);
+    const [tenantLock, orgLock] = executed();
+    expect(tenantLock!.sql).toBe('SELECT pg_advisory_xact_lock(hashtext($1))');
+    expect(tenantLock!.params).toEqual([`portal-entra-tenant:${TENANT.toLowerCase()}`]);
+    expect(orgLock!.sql).toBe(`SELECT pg_advisory_xact_lock(hashtext('portal-entra-org:' || $1::uuid::text))`);
+    expect(orgLock!.params).toEqual([ORG]);
   });
 });
 

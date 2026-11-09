@@ -106,6 +106,9 @@ vi.mock('../db', () => ({
     }
   }),
   getCurrentDbAccessContext: vi.fn(() => mockState.ambientContext),
+  assertInTransaction: vi.fn((label: string) => {
+    if (mockState.txDepth === 0) throw new Error(`${label} must run inside withDbAccessContext / withSystemDbAccessContext`);
+  }),
   db: {
     execute: vi.fn((q: unknown) => {
       const text = sqlToText(q);
@@ -780,6 +783,49 @@ describe('stampTerminalShell', () => {
       sqlToText(query).includes('breeze_partner_export_lock_orgs_exclusive'));
     expect(exportLockIndex).toBeGreaterThanOrEqual(0);
     expect(groupLocks.mock.invocationCallOrder[0]).toBeLessThan(execute.mock.invocationCallOrder[exportLockIndex]!);
+  });
+
+  // Portal registration W4 (plan D8 / OD7): FOR UPDATE on the mapping rows
+  // cannot lock a survivor mapping that does not exist yet, so Phase B holds
+  // both orgs' per-org portal Entra locks (the ones a tenant proof and the AI
+  // for Office PUT take before writing a mapping) before the recheck reads.
+  it('takes both orgs\' portal Entra org locks in Phase B, id-ascending, before the entra_tenant_conflict recheck reads the mappings', async () => {
+    // The survivor's id sorts first: the order is by id, not loser-then-survivor.
+    const highLoser = org({ id: '99999999-9999-4999-8999-999999999999', partnerId: PARTNER, name: 'Loser Co' });
+    const lowSurvivor = org({ id: '11111111-1111-4111-8111-111111111111', partnerId: PARTNER, name: 'Survivor Co' });
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser: highLoser, survivor: lowSurvivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'lockMergePartnerGroupRows').mockResolvedValue(undefined);
+    const execute = vi.mocked(mockedDb.execute);
+    execute.mockClear();
+    const inTx: boolean[] = [];
+    const impl = execute.getMockImplementation()!;
+    execute.mockImplementation(((query: unknown) => {
+      inTx.push(mockState.txDepth > 0);
+      return impl(query as never);
+    }) as typeof impl);
+
+    try {
+      await orgMergeModule.executeOrgMerge({ ...input, loserOrgId: highLoser.id, survivorOrgId: lowSurvivor.id });
+    } finally {
+      execute.mockImplementation(impl);
+    }
+
+    const statements = execute.mock.calls.map(([query]) => new PgDialect().sqlToQuery(query as never));
+    const orgLocks = statements.flatMap((q, i) => (q.sql.includes(`'portal-entra-org:'`) ? [i] : []));
+    expect(orgLocks.map((i) => statements[i]!.params)).toEqual([[lowSurvivor.id], [highLoser.id]]);
+    expect(orgLocks.every((i) => inTx[i])).toBe(true);
+    // The pre-fence read (advisory, unlocked) and the Phase-B recheck.
+    const mappingReads = statements.flatMap((q, i) =>
+      (/from\s+client_ai_tenant_mappings/i.test(q.sql) && /for update/i.test(q.sql) ? [i] : []));
+    expect(mappingReads).toHaveLength(2);
+    expect(orgLocks[0]!).toBeGreaterThan(mappingReads[0]!);
+    expect(orgLocks[1]!).toBeLessThan(mappingReads[1]!);
   });
 
   // The placement assertion. Phase B is stubbed out through the module
