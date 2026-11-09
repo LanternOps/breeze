@@ -985,6 +985,7 @@
     },
     "instruction": {
       "remembered": "Remembered: {{text}}",
+      "conflictBanner": "Conflicts with a remembered instruction: “{{text}}”",
       "enforcedForm": "Wisp will not propose: {{verb}} · {{targets}} · {{until}}",
       "noEnd": "no end date",
       "keep": "Keep",

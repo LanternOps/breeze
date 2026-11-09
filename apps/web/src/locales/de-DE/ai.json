@@ -985,6 +985,7 @@
     },
     "instruction": {
       "remembered": "Gemerkt: {{text}}",
+      "conflictBanner": "Widerspricht einer gemerkten Anweisung: „{{text}}“",
       "enforcedForm": "Wisp wird nicht vorschlagen: {{verb}} · {{targets}} · {{until}}",
       "noEnd": "kein Enddatum",
       "keep": "Behalten",

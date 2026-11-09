@@ -237,6 +237,24 @@ describe('approval_required — pushedToPhone / waitingOn passthrough (#10416)',
   });
 });
 
+describe('approval_required — standingInstructionConflict passthrough (W06)', () => {
+  it('carries standingInstructionConflict into pendingApproval', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'execute_command',
+        input: {}, description: 'Reboot PC-01',
+        standingInstructionConflict: { text: "don't reboot PC-01" },
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval).toMatchObject({ standingInstructionConflict: { text: "don't reboot PC-01" } });
+  });
+});
+
 describe('approval_required — approvalScope passthrough (#5600)', () => {
   it('carries approvalScope into pendingApproval', () => {
     const state = makeState();

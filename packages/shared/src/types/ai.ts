@@ -331,7 +331,7 @@ export type AiStreamEvent =
    * requester's phone; `waitingOn` says who must decide.
    * The thinking indicator shows the wait from these while the card is open.
    */
-  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary; standingInstructionConflict?: AiStandingInstructionConflict }
   /**
    * W03 (#5612): a proposal outcome delivered into the author's chat session —
    * request-changes findings + note, or a verification result. The durable
@@ -421,6 +421,14 @@ export type AiStreamEvent =
   | ({ type: 'attach_state' } & AiAttachState);
 
 /** The cards a turn can be blocked on, verbatim as they were published. */
+/**
+ * #10428 (W06): a Wisp card whose call matches a remembered standing
+ * instruction that does not refuse it (unconfirmed, conditional, or a
+ * `possible` match). The card shows a red banner; the description carries
+ * the same text so every channel shows it.
+ */
+export type AiStandingInstructionConflict = { text: string };
+
 export type AiPendingCardEvent = Extract<AiStreamEvent, { type: 'approval_required' | 'plan_approval_required' }>;
 
 /**
