@@ -10,11 +10,10 @@ import { PortalAccessPolicyForm, visiblePolicyFields } from './PortalAccessPolic
 import {
   PORTAL_ACCESS_POLICY_ERROR_CODES,
   PORTAL_ACCESS_POLICY_FIELDS,
-  isPortalAccessPolicyView,
-  type PortalAccessPolicyDraft,
   type PortalAccessPolicyField,
   type PortalAccessPolicyView,
-} from './types';
+} from '@breeze/shared';
+import { isPortalAccessPolicyView, type PortalAccessPolicyDraft } from './types';
 
 type Props = {
   orgId: string;

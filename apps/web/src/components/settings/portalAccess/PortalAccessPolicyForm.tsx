@@ -2,18 +2,8 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { InheritChoice, type InheritChoiceOption } from '../../shared/InheritChoice';
-import {
-  draftHasSsoMethod,
-  ownValue,
-  withDraftField,
-  type PortalAccessPolicyDraft,
-  type PortalAccessPolicyField,
-  type PortalAccessPolicyValues,
-  type PortalAccessPolicyView,
-  type PortalPasswordMode,
-  type PortalSelfRegistrationMode,
-  type PortalSsoNewPersonMode,
-} from './types';
+import type { PortalAccessPolicyField, PortalAccessPolicyValues, PortalAccessPolicyView } from '@breeze/shared';
+import { draftHasSsoMethod, ownValue, withDraftField, type PortalAccessPolicyDraft } from './types';
 
 export interface PortalAccessPolicyFormProps {
   view: PortalAccessPolicyView;
@@ -98,7 +88,7 @@ export function PortalAccessPolicyForm({
   ];
 
   const ssoOn = draftHasSsoMethod(view, draft);
-  const passwordOptions: InheritChoiceOption<PortalPasswordMode>[] = [
+  const passwordOptions: InheritChoiceOption<PortalAccessPolicyValues['passwordMode']>[] = [
     { value: 'allowed', label: t('portalAccessPolicy.password.allowed'), testId: `${ID}-password-allowed` },
     {
       value: 'sso_only',
@@ -108,12 +98,12 @@ export function PortalAccessPolicyForm({
       hint: ssoOn ? undefined : t('portalAccessPolicy.password.ssoOnlyNeedsSso'),
     },
   ];
-  const selfRegistrationOptions: InheritChoiceOption<PortalSelfRegistrationMode>[] = [
+  const selfRegistrationOptions: InheritChoiceOption<PortalAccessPolicyValues['selfRegistrationMode']>[] = [
     { value: 'off', label: t('portalAccessPolicy.selfRegistration.off'), testId: `${ID}-self-registration-off` },
     { value: 'approval', label: t('portalAccessPolicy.selfRegistration.approval'), testId: `${ID}-self-registration-approval` },
     { value: 'instant', label: t('portalAccessPolicy.selfRegistration.instant'), testId: `${ID}-self-registration-instant` },
   ];
-  const ssoNewPersonOptions: InheritChoiceOption<PortalSsoNewPersonMode>[] = [
+  const ssoNewPersonOptions: InheritChoiceOption<PortalAccessPolicyValues['ssoNewPersonMode']>[] = [
     { value: 'invited_only', label: t('portalAccessPolicy.ssoNewPerson.invitedOnly'), testId: `${ID}-sso-new-person-invited_only` },
     { value: 'approval', label: t('portalAccessPolicy.ssoNewPerson.approval'), testId: `${ID}-sso-new-person-approval` },
     { value: 'instant', label: t('portalAccessPolicy.ssoNewPerson.instant'), testId: `${ID}-sso-new-person-instant` },

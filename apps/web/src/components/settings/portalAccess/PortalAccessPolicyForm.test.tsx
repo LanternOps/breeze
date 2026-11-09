@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { PortalAccessPolicyForm } from './PortalAccessPolicyForm';
 import { makePolicyView } from './viewFixture';
-import type { PortalAccessPolicyDraft, PortalAccessPolicyView } from './types';
+import type { PortalAccessPolicyView } from '@breeze/shared';
+import type { PortalAccessPolicyDraft } from './types';
 
 function renderForm(view: PortalAccessPolicyView, draft: PortalAccessPolicyDraft = {}, extra: Partial<Parameters<typeof PortalAccessPolicyForm>[0]> = {}) {
   const onChange = vi.fn();

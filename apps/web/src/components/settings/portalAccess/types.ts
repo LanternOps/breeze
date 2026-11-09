@@ -1,69 +1,28 @@
 /**
- * Portal access policy and access-request shapes (portal registration W3,
- * #11380), as the web reads them from the W03a routes.
+ * Web-side portal access shapes (portal registration W3, #11380).
  *
- * These mirror the interface section of the W3 plan
- * (`docs/superpowers/plans/portal/2026-11-08-portal-registration-options-w03-access-policy.md`,
- * Tasks 3 and 7), which W03a implements in
- * `packages/shared/src/validators/portalAccessPolicy.ts` and
- * `apps/api/src/services/portalAccessRequests.ts`. Keep them identical; switch
- * to the `@breeze/shared` exports once W03a is on main.
+ * The policy types and constants (`PortalAccessPolicyView`,
+ * `PORTAL_ACCESS_POLICY_FIELDS`, …) come from `@breeze/shared`
+ * (`packages/shared/src/validators/portalAccessPolicy.ts`). This file holds what
+ * only the web needs: the unsaved-draft helpers, a shape check on the policy
+ * view, and the access-request response shapes, which the API defines in
+ * `apps/api/src/services/portalAccessRequests.ts` and does not share.
  */
-
-export const PORTAL_ACCESS_POLICY_FIELDS = [
-  'entraEnabled',
-  'googleEnabled',
-  'passwordMode',
-  'selfRegistrationMode',
-  'ssoNewPersonMode',
-  'ssoSessionMaxHours',
-] as const;
-export type PortalAccessPolicyField = (typeof PORTAL_ACCESS_POLICY_FIELDS)[number];
-
-export type PortalPasswordMode = 'allowed' | 'sso_only';
-export type PortalSelfRegistrationMode = 'off' | 'approval' | 'instant';
-export type PortalSsoNewPersonMode = 'invited_only' | 'approval' | 'instant';
-
-export interface PortalAccessPolicyValues {
-  entraEnabled: boolean;
-  googleEnabled: boolean;
-  passwordMode: PortalPasswordMode;
-  selfRegistrationMode: PortalSelfRegistrationMode;
-  ssoNewPersonMode: PortalSsoNewPersonMode;
-  ssoSessionMaxHours: number;
-}
-
-/** One owner's own row; null = inherit (org) / Breeze default (partner). */
-export type PortalAccessPolicyRowValues = { [K in PortalAccessPolicyField]: PortalAccessPolicyValues[K] | null };
-
-export interface PortalSignInCapabilities { entra: boolean; google: boolean; selfRegistration: boolean }
-export type PortalPolicySource = 'org' | 'partner' | 'default';
-
-export interface PortalAccessPolicyView {
-  owner: { kind: 'org' | 'partner'; id: string };
-  values: PortalAccessPolicyRowValues;
-  /** What a blank field resolves to. */
-  inherited: { [K in PortalAccessPolicyField]: { value: PortalAccessPolicyValues[K]; source: Exclude<PortalPolicySource, 'org'> } };
-  effective: { [K in PortalAccessPolicyField]: { value: PortalAccessPolicyValues[K]; source: PortalPolicySource } };
-  passwordModeFallback: boolean;
-  capabilities: PortalSignInCapabilities;
-  /** Partner view: full partner access. Org view: true. */
-  canEdit: boolean;
-}
-
-export const PORTAL_ACCESS_POLICY_ERROR_CODES = {
-  METHOD_UNAVAILABLE: 'PORTAL_ACCESS_POLICY_METHOD_UNAVAILABLE',
-  SSO_ONLY_NEEDS_SSO: 'PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO',
-} as const;
-export type PortalAccessPolicyErrorCode =
-  (typeof PORTAL_ACCESS_POLICY_ERROR_CODES)[keyof typeof PORTAL_ACCESS_POLICY_ERROR_CODES];
+import type {
+  PortalAccessPolicyField,
+  PortalAccessPolicyRowValues,
+  PortalAccessPolicyValues,
+  PortalAccessPolicyView,
+} from '@breeze/shared';
 
 /** Unsaved edits: only fields whose value differs from `view.values`. */
 export type PortalAccessPolicyDraft = Partial<PortalAccessPolicyRowValues>;
 
+/** Matches `PortalAccessRequestSource` / `PortalAccessRequestStatus` in the API schema. */
 export type PortalAccessRequestSource = 'self' | 'entra' | 'google' | 'addin_user';
 export type PortalAccessRequestStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
+/** One row of an org's access-request list (`listPortalAccessRequests` in the API). */
 export interface PortalAccessRequestListItem {
   id: string;
   email: string;
@@ -78,12 +37,6 @@ export interface PortalAccessRequestListItem {
   portalUserId: string | null;
   accountExists: boolean;
 }
-
-export type PortalAccessRequestErrorCode =
-  | 'PORTAL_ACCESS_REQUEST_NOT_FOUND'
-  | 'PORTAL_ACCESS_REQUEST_NOT_PENDING'
-  | 'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS'
-  | 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED';
 
 /** One row of `POST …/portal-access-requests/decide`: 'approved' | 'denied' | an error code. */
 export interface PortalAccessRequestDecideResult { requestId: string; result: string }

@@ -4,7 +4,7 @@ import type {
   PortalAccessPolicyView,
   PortalPolicySource,
   PortalSignInCapabilities,
-} from './types';
+} from '@breeze/shared';
 
 /** Test fixture: a policy view as the W03a routes return it. */
 export const BREEZE_DEFAULTS: PortalAccessPolicyValues = {

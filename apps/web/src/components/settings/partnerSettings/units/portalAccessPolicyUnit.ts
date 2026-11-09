@@ -1,12 +1,8 @@
 import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
 import { runAction } from '@/lib/runAction';
 import { i18n } from '@/lib/i18n';
-import {
-  PORTAL_ACCESS_POLICY_ERROR_CODES,
-  isPortalAccessPolicyView,
-  type PortalAccessPolicyDraft,
-  type PortalAccessPolicyView,
-} from '../../portalAccess/types';
+import { PORTAL_ACCESS_POLICY_ERROR_CODES, type PortalAccessPolicyView } from '@breeze/shared';
+import { isPortalAccessPolicyView, type PortalAccessPolicyDraft } from '../../portalAccess/types';
 import { saveSlice, useDraftSaveUnit, useDraftSlice, type Loader } from '../partnerSettingsDraftStore';
 
 /**
