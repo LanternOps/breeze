@@ -621,11 +621,176 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(result.outcome.assessmentSkipped).toEqual(['readiness_slot_held']);
     });
 
-    it('writes nothing when every check is serviceable, or the run is not an onboarding one', async () => {
+    it('creates nothing when every check is serviceable, or the run is not an onboarding one', async () => {
       const allGood = { ...readiness, checks: [readiness.checks[0]!], missingIntegrations: [] };
       await finalizeAssessment(makeCtx(assessmentCtx({ reason: { kind: 'onboarding' }, readiness: allGood })), makeResult());
       await finalizeAssessment(makeCtx(assessmentCtx({ reason: { kind: 'tick' }, readiness })), makeResult());
       expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    });
+  });
+
+  // #11429: the note used to be written on onboarding only, then touched by
+  // every run and never closed. Every run now re-evaluates it.
+  describe('readiness note lifecycle on every run (#11429)', () => {
+    const SUMMARY = "I can watch tickets here. I can't watch backups (no backup integration configured).";
+    const gaps = {
+      orgId: ORG_ID, orgName: 'Acme',
+      checks: [
+        { watchKind: 'ticket_waiting' as const, serviceable: true, reason: null },
+        { watchKind: 'backup_health' as const, serviceable: false, reason: 'no backup integration configured' },
+      ],
+      missingIntegrations: ['backup'],
+    };
+    const allServiceable = {
+      ...gaps,
+      checks: [gaps.checks[0]!, { watchKind: 'backup_health' as const, serviceable: true, reason: null }],
+      missingIntegrations: [],
+    };
+    // As read back from jsonb: key order is not the order it was written in.
+    const storedEvidence = {
+      readiness: {
+        missingIntegrations: ['backup'],
+        checks: gaps.checks.map((c) => ({ reason: c.reason, serviceable: c.serviceable, watchKind: c.watchKind })),
+      },
+    };
+    const note = (o: Partial<Concern> = {}) => concern({
+      id: C2, subject: { kind: 'readiness', id: ORG_ID }, severity: 'info', signature: `readiness:${ORG_ID}`,
+      summary: SUMMARY, evidence: storedEvidence, ...o,
+    });
+    const run = (o: Partial<AssessmentRunContext>) => makeCtx(assessmentCtx({ reason: { kind: 'tick' }, ...o }));
+
+    it('a later run whose checks are all serviceable resolves the live note with all_checks_serviceable', async () => {
+      const result = makeResult();
+      expect(await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note()] }), result)).toBeNull();
+      expect(concerns.resolveConcern).toHaveBeenCalledTimes(1);
+      // System automation: no grant, so no concern_outcome memory block.
+      expect(concerns.resolveConcern).toHaveBeenCalledWith(C2, {}, 'all_checks_serviceable');
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toBeUndefined();
+    });
+
+    it('stamps the run on the note before resolving it, so the next no-changes probe does not count the close as news', async () => {
+      await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C2, { lastAssessedRunId: RUN_ID });
+      expect(concerns.updateConcern.mock.invocationCallOrder[0]!)
+        .toBeLessThan(concerns.resolveConcern.mock.invocationCallOrder[0]!);
+    });
+
+    it('an onboarding run whose checks are all serviceable resolves a live note too', async () => {
+      await finalizeAssessment(
+        makeCtx(assessmentCtx({ reason: { kind: 'onboarding' }, readiness: allServiceable, openConcerns: [note()] })),
+        makeResult(),
+      );
+      expect(concerns.resolveConcern).toHaveBeenCalledWith(C2, {}, 'all_checks_serviceable');
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+    });
+
+    it('a tick never writes the note when its gaps are unchanged (no updated_at bump), but still touches the others', async () => {
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [concern({ id: C1 }), note()] }), makeResult());
+      expect(concerns.updateConcern.mock.calls).toEqual([[C1, { lastAssessedRunId: RUN_ID }]]);
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+    });
+
+    it('a tick refreshes the note, stamped with the run, when its gaps changed', async () => {
+      const older = {
+        readiness: {
+          checks: [{ watchKind: 'ticket_waiting', serviceable: false, reason: 'no tickets in 90 days' }, gaps.checks[1]],
+          missingIntegrations: ['backup'],
+        },
+      };
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [note({ summary: 'older text', evidence: older })] }), makeResult());
+      expect(concerns.updateConcern.mock.calls).toEqual([[C2, {
+        summary: SUMMARY,
+        evidence: { readiness: { checks: gaps.checks, missingIntegrations: ['backup'] } },
+        lastAssessedRunId: RUN_ID,
+      }]]);
+    });
+
+    // The store trims what it writes; a rendered summary with edge whitespace
+    // must still compare equal to what the last refresh stored.
+    it('a rendered summary with edge whitespace compares equal to the trimmed one stored', async () => {
+      renderReadinessSummary.mockReturnValue(`${SUMMARY}  `);
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a missing integration was added', { ...gaps, missingIntegrations: ['backup', 'psa'] }],
+      ['a check\'s reason changed', { ...gaps, checks: [gaps.checks[0]!, { ...gaps.checks[1]!, reason: 'backup vendor not synced yet' }] }],
+    ])('a tick refreshes the note when only its evidence changed (%s), the summary being the same', async (_l, changed) => {
+      await finalizeAssessment(run({ readiness: changed, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).toHaveBeenCalledTimes(1);
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C2, {
+        summary: SUMMARY,
+        evidence: { readiness: { checks: changed.checks, missingIntegrations: changed.missingIntegrations } },
+        lastAssessedRunId: RUN_ID,
+      });
+    });
+
+    it.each([
+      ['no readiness key', {}],
+      ['an empty readiness object', { readiness: {} }],
+      ['checks that are not an array', { readiness: { checks: 'x', missingIntegrations: ['backup'] } }],
+      ['missingIntegrations null', { readiness: { checks: gaps.checks, missingIntegrations: null } }],
+      ['a null check', { readiness: { checks: [null, gaps.checks[1]], missingIntegrations: ['backup'] } }],
+    ])('a stored note with %s reads as changed and is refreshed once, keeping its other evidence', async (_l, stored) => {
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [note({ evidence: { ...stored, href: '/x' } })] }), makeResult());
+      expect(concerns.updateConcern.mock.calls).toEqual([[C2, {
+        summary: SUMMARY,
+        evidence: { href: '/x', readiness: { checks: gaps.checks, missingIntegrations: ['backup'] } },
+        lastAssessedRunId: RUN_ID,
+      }]]);
+    });
+
+    it('a failed stamp leaves the note unresolved and the run partially applied', async () => {
+      concerns.updateConcern.mockRejectedValueOnce(new Error('db down'));
+      const result = makeResult();
+      expect(await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note()] }), result))
+        .toBe('assessment_partially_applied');
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    });
+
+    it('a refresh keeps the approval card on the note', async () => {
+      const intent = '00000000-0000-4000-8000-0000000000e1';
+      await finalizeAssessment(run({
+        readiness: gaps,
+        openConcerns: [note({ summary: 'older text', evidence: { ...storedEvidence, approvalIntentId: intent }, approvalIntentId: intent })],
+      }), makeResult());
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C2, expect.objectContaining({
+        evidence: { readiness: { checks: gaps.checks, missingIntegrations: ['backup'] }, approvalIntentId: intent },
+      }));
+    });
+
+    it('a tick never re-creates a note that is not live (one the user dismissed stays dismissed)', async () => {
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [] }), makeResult());
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+
+    it('no readiness inventory this run (it failed) leaves the note alone', async () => {
+      await finalizeAssessment(run({ readiness: null, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    });
+
+    it('only the run org\'s own note under the run\'s partner is resolved; the no-agent note is not this one', async () => {
+      const noAgent = note({
+        id: '00000000-0000-4000-8000-0000000000c3', signature: `wisp-readiness:no-effective-agent:${ORG_ID}`,
+      });
+      const otherPartner = note({ id: '00000000-0000-4000-8000-0000000000c4', partnerId: OTHER_PARTNER });
+      await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [noAgent, otherPartner] }), makeResult());
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+
+    it('a failed resolve is recorded as partially applied and does not stop the touch', async () => {
+      concerns.resolveConcern.mockRejectedValue(new Error('db down'));
+      const result = makeResult();
+      expect(await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note(), concern({ id: C1 })] }), result))
+        .toBe('assessment_partially_applied');
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { lastAssessedRunId: RUN_ID });
     });
   });
 });
