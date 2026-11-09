@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { PortalAccessPolicyForm } from './PortalAccessPolicyForm';
 import { makePolicyView } from './viewFixture';
 import type { PortalAccessPolicyView } from '@breeze/shared';
@@ -44,7 +44,7 @@ describe('PortalAccessPolicyForm', () => {
   });
 
   it('sso_only option is enabled once the draft turns an available SSO method on', () => {
-    renderForm(makePolicyView({ capabilities: { entra: true } }), { entraEnabled: true });
+    renderForm(makePolicyView({ capabilities: { entra: true }, entraTenantProven: true }), { entraEnabled: true });
     expect(radio('portal-access-policy-password-sso_only').disabled).toBe(false);
   });
 
@@ -111,5 +111,51 @@ describe('PortalAccessPolicyForm', () => {
   it('shows a server field error under its row', () => {
     renderForm(makePolicyView(), {}, { fieldErrors: { passwordMode: 'Turn on Microsoft or Google sign-in first.' } });
     expect(screen.getByTestId('portal-access-policy-passwordMode-error')).toHaveTextContent('Turn on Microsoft or Google sign-in first.');
+  });
+
+  // W4 (#11381)
+  it('session hours row hidden without an SSO capability and saves a number', () => {
+    renderForm(makePolicyView());
+    expect(screen.queryByTestId('portal-access-policy-session-hours')).toBeNull();
+    cleanup();
+
+    const view = makePolicyView({ capabilities: { entra: true }, inherited: { ssoSessionMaxHours: 12 } });
+    const onChange = renderForm(view);
+    const input = screen.getByTestId('portal-access-policy-session-hours') as HTMLInputElement;
+    expect(input.value).toBe('');
+    expect(input.placeholder).toContain('12');
+    fireEvent.change(input, { target: { value: '8' } });
+    expect(onChange).toHaveBeenLastCalledWith({ ssoSessionMaxHours: 8 });
+  });
+
+  it('session hours: clearing inherits (null); out-of-range or fractional values stay out of the draft', () => {
+    const view = makePolicyView({ capabilities: { entra: true }, values: { ssoSessionMaxHours: 4 } });
+    const onChange = renderForm(view);
+    const input = screen.getByTestId('portal-access-policy-session-hours') as HTMLInputElement;
+    expect(input.value).toBe('4');
+    fireEvent.change(input, { target: { value: '' } });
+    expect(onChange).toHaveBeenLastCalledWith({ ssoSessionMaxHours: null });
+    onChange.mockClear();
+    fireEvent.change(input, { target: { value: '169' } });
+    fireEvent.change(input, { target: { value: '2.5' } });
+    fireEvent.change(input, { target: { value: '0' } });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByTestId('portal-access-policy-ssoSessionMaxHours-error')).toHaveTextContent('Enter a whole number of hours from 1 to 168.');
+  });
+
+  it('renders the entra slot under the Microsoft row only when the row is visible', () => {
+    renderForm(makePolicyView(), {}, { entraSlot: <div data-testid="slot">tenant</div> });
+    expect(screen.queryByTestId('slot')).toBeNull();
+    cleanup();
+    renderForm(makePolicyView({ capabilities: { entra: true } }), {}, { entraSlot: <div data-testid="slot">tenant</div> });
+    expect(screen.getByTestId('slot')).toBeInTheDocument();
+  });
+
+  it('sso_only stays disabled while Microsoft is on but the org tenant is not proven', () => {
+    renderForm(makePolicyView({ capabilities: { entra: true }, inherited: { entraEnabled: true }, entraTenantProven: false }));
+    expect(radio('portal-access-policy-password-sso_only').disabled).toBe(true);
+    cleanup();
+    renderForm(makePolicyView({ capabilities: { entra: true }, inherited: { entraEnabled: true }, entraTenantProven: true }));
+    expect(radio('portal-access-policy-password-sso_only').disabled).toBe(false);
   });
 });

@@ -2328,7 +2328,8 @@
     "actions": {
       "resend": "Resend",
       "reactivate": "Reactivate",
-      "sendInvite": "Send invite"
+      "sendInvite": "Send invite",
+      "grantBrowserAccess": "Give browser access"
     },
     "fields": {
       "nameOptional": "Name (optional)",
@@ -2350,7 +2351,8 @@
       "inviteResent": "Invite resent",
       "reactivated": "User reactivated",
       "disabled": "User disabled",
-      "removed": "User removed"
+      "removed": "User removed",
+      "browserAccessGranted": "Browser access granted"
     },
     "errors": {
       "load": "Portal users failed to load.",
@@ -6937,7 +6939,8 @@
         "pam_open_actuation": "The organization being merged away has privileged-access (PAM) sessions that have not finished cleanup. Wait for them to close, then try the merge again.",
         "pam_evidence": "The organization being merged away has privileged-access (PAM) history, and moving PAM history between organizations is not enabled on this deployment. Merge in the opposite direction, or do not merge these organizations.",
         "payment_in_flight": "A payment for the organization being merged away is still in flight. Wait for it to settle, then try the merge again.",
-        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth."
+        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth.",
+        "entra_tenant_conflict": "The organization being merged away has a proven Microsoft tenant, and the surviving organization is also linked to a Microsoft tenant. Remove one of the tenant links, then try the merge again."
       }
     },
     "archive": {
@@ -8355,10 +8358,97 @@
       "load": "Couldn't load sign-in settings.",
       "save": "Couldn't save sign-in settings.",
       "methodUnavailable": "This sign-in method isn't available on this Breeze deployment yet.",
-      "ssoOnlyNeedsSso": "Turn on Microsoft or Google sign-in before turning off password sign-in."
+      "ssoOnlyNeedsSso": "Turn on Microsoft or Google sign-in before turning off password sign-in.",
+      "tenantNotProven": "Prove this organization's Microsoft tenant before turning on Microsoft sign-in.",
+      "sessionHours": "Enter a whole number of hours from 1 to 168."
     },
     "toasts": {
       "saved": "Sign-in settings saved."
+    },
+    "sessionHours": {
+      "label": "Microsoft / Google session length (hours)",
+      "help": "Microsoft and Google sign-ins end after this many hours, however active the person is. From 1 to 168."
+    },
+    "entraTenant": {
+      "title": "Microsoft tenant",
+      "loading": "Loading the Microsoft tenant…",
+      "loadError": "Couldn't load the Microsoft tenant.",
+      "status": {
+        "none": "No Microsoft tenant is linked yet. Microsoft sign-in stays off for this organization until its tenant is proven.",
+        "unproven": "Tenant {{tenantId}} is linked but not proven. Microsoft sign-in stays off for this organization until it is.",
+        "proven": "Tenant {{tenantId}} proven {{date}} via {{method}}."
+      },
+      "via": {
+        "m365_connection": "the Microsoft 365 connection",
+        "proof_run": "an admin sign-in"
+      },
+      "proveConnection": "Use Microsoft 365 connection (tenant {{tenantId}})",
+      "tenantLabel": "Tenant ID or domain",
+      "tenantHelp": "Create a link and send it to a Global Administrator or Privileged Role Administrator of the customer's tenant. The link works for 72 hours.",
+      "createLink": "Create proof link",
+      "linkLabel": "Proof link",
+      "linkExpires": "Expires {{date}}. Works only for tenant {{tenantId}}.",
+      "consentLabel": "Admin consent link",
+      "consentHelp": "The tenant's admin opens this once so everyone at the organization can sign in.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "remove": "Remove tenant link",
+      "removeConfirm": {
+        "title": "Remove the Microsoft tenant link?",
+        "message": "Microsoft sign-in stops for this organization and its Microsoft sessions end. This also removes the organization's AI for Office tenant mapping, so AI for Office stops working here until a tenant is linked again."
+      },
+      "toasts": {
+        "proven": "Microsoft tenant proven.",
+        "linkCreated": "Proof link created.",
+        "removed": "Microsoft tenant link removed.",
+        "copyFailed": "Couldn't copy the link. Select it and copy it yourself."
+      },
+      "errors": {
+        "prove": "Couldn't prove the tenant from the Microsoft 365 connection.",
+        "createLink": "Couldn't create the proof link.",
+        "remove": "Couldn't remove the tenant link.",
+        "provenElsewhere": "This Microsoft tenant is already proven for another organization. Only a proof link completed by the tenant's admin can move it.",
+        "orgHasOtherTenant": "This organization is linked to a different Microsoft tenant. Remove that link first.",
+        "noVerifiedConnection": "This organization has no Microsoft 365 connection whose tenant was verified by an admin sign-in.",
+        "hintRequired": "Enter the customer's Microsoft tenant ID or one of its verified domains.",
+        "hintInvalid": "That isn't a Microsoft tenant ID or a domain verified by a Microsoft tenant.",
+        "hintLookupFailed": "Couldn't reach Microsoft to look up that domain. Try again, or enter the tenant ID.",
+        "protectedOrg": "This organization can't be linked to a Microsoft tenant."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Turn off password sign-in?",
+      "intro": "Saving turns off password sign-in for the organizations below.",
+      "partnerIntro": "Saving this partner default turns off password sign-in for these organizations. Each organization's page lists the accounts that can't sign in yet.",
+      "explain": "People already connected to Microsoft lose their password and are signed out. People without a Microsoft connection can't sign in until they accept a Microsoft sign-in invite.",
+      "columns": {
+        "org": "Organization",
+        "passwordsToClear": "Passwords removed",
+        "strandedTotal": "Can't sign in yet"
+      },
+      "openOrg": "Open",
+      "strandedTitle": "Can't sign in yet",
+      "strandedMore": "and {{count}} more",
+      "strandedLoadError": "Couldn't load the names of these accounts.",
+      "sendInvites": "Send Microsoft sign-in invites to these accounts after saving",
+      "confirm": "Turn off password sign-in",
+      "changed": "The impact changed since you opened this. Review the new numbers."
+    },
+    "stranded": {
+      "title": "Can't sign in yet ({{count}})",
+      "description": "These accounts have no Microsoft connection, so they can't sign in while password sign-in is off. Send each one a Microsoft sign-in invite.",
+      "loadError": "Couldn't load the accounts that can't sign in.",
+      "invite": "Send Microsoft sign-in invite",
+      "inviteAll": "Invite all",
+      "more": "Showing {{shown}} of {{count}}.",
+      "toasts": {
+        "invited": "Sent {{count}} Microsoft sign-in invite(s).",
+        "partial": "Sent {{invited}} of {{total}} Microsoft sign-in invites. The rest were already connected or couldn't be invited."
+      },
+      "errors": {
+        "invite": "Couldn't send Microsoft sign-in invites.",
+        "unavailable": "Microsoft sign-in isn't available for this organization, so there is nothing to invite with."
+      }
     }
   },
   "portalAccessRequests": {
@@ -8389,7 +8479,8 @@
       "notPending": "No longer pending",
       "notFound": "Request not found",
       "identityLinked": "Sign-in already linked to another account",
-      "failed": "Couldn't decide this request"
+      "failed": "Couldn't decide this request",
+      "entraTenantNotProven": "This organization's Microsoft tenant is no longer proven"
     },
     "denyDialog": {
       "title": "Deny access request",

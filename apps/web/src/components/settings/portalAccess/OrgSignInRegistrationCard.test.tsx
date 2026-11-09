@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import OrgSignInRegistrationCard from './OrgSignInRegistrationCard';
 import { makePolicyView } from './viewFixture';
 
@@ -101,7 +101,7 @@ describe('OrgSignInRegistrationCard', () => {
   });
 
   it('a 400 SSO_ONLY_NEEDS_SSO shows the field error, not a generic toast', async () => {
-    const view = makePolicyView({ capabilities: { entra: true }, inherited: { entraEnabled: true } });
+    const view = makePolicyView({ capabilities: { entra: true }, inherited: { entraEnabled: true }, entraTenantProven: true });
     mockRoutes({
       view,
       patch: () => json({ error: 'needs sso', code: 'PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO', field: 'passwordMode' }, 400),
@@ -208,5 +208,184 @@ describe('OrgSignInRegistrationCard', () => {
     fetchWithAuthMock.mockImplementation(() => json({ error: 'unauthorized' }, 401));
     renderCard();
     await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true }));
+  });
+});
+
+// ── W4 (#11381): tenant proof panel, TENANT_NOT_PROVEN, sso_only confirmation, stranded list ──
+
+const TENANT_URL = `/orgs/organizations/${ORG}/portal-entra-tenant`;
+const STRANDED = `/orgs/organizations/${ORG}/portal-access-policy/stranded`;
+const SSO_INVITE = `/orgs/organizations/${ORG}/portal-users/sso-invite`;
+
+type FlowRoutes = {
+  view?: ReturnType<typeof makePolicyView>;
+  patch?: (url: string, init: RequestInit) => Promise<Response>;
+  stranded?: () => Promise<Response>;
+  ssoInvite?: (init: RequestInit) => Promise<Response>;
+  tenant?: () => Promise<Response>;
+};
+
+function mockFlow({ view = makePolicyView(), patch, stranded, ssoInvite, tenant }: FlowRoutes) {
+  fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+    const method = init?.method ?? 'GET';
+    if (url === POLICY && method === 'GET') return json({ data: view });
+    if (url.startsWith(POLICY) && method === 'PATCH') return patch ? patch(url, init!) : json({ data: view });
+    if (url === REQUESTS) return json({ data: [], hasMore: false });
+    if (url === STRANDED) return stranded ? stranded() : json({ data: { items: [], total: 0 } });
+    if (url === SSO_INVITE && method === 'POST') return ssoInvite ? ssoInvite(init!) : json({ data: [] });
+    if (url === TENANT_URL) return tenant ? tenant() : json({ error: 'x', code: 'PORTAL_ENTRA_NOT_CONFIGURED' }, 404);
+    return json({ error: `unexpected ${method} ${url}` }, 500);
+  });
+}
+
+const flip = (passwordsToClear: number, strandedTotal: number) => ({ orgId: ORG, orgName: 'Acme', passwordsToClear, strandedTotal });
+const confirmRequired = (digest: string, passwordsToClear = 3, strandedTotal = 2) => json({
+  error: 'confirm', code: 'PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED',
+  impact: { flips: [flip(passwordsToClear, strandedTotal)], impactDigest: digest },
+}, 409);
+const strandedBody = (ids: string[], total = ids.length) => json({
+  data: { items: ids.map((id, i) => ({ portalUserId: id, email: `${id}@acme.test`, name: i === 0 ? 'Pat Doe' : null, status: 'active' })), total },
+});
+const ssoCapableView = (over: Parameters<typeof makePolicyView>[0] = {}) =>
+  makePolicyView({ capabilities: { entra: true }, inherited: { entraEnabled: true }, entraTenantProven: true, ...over });
+
+describe('OrgSignInRegistrationCard — W4', () => {
+  beforeEach(() => {
+    fetchWithAuthMock.mockReset();
+    navigateToMock.mockReset();
+    showToastMock.mockReset();
+  });
+
+  it('renders the tenant panel under the Microsoft row', async () => {
+    mockFlow({
+      view: makePolicyView({ capabilities: { entra: true } }),
+      tenant: () => json({ data: { tenantId: null, state: 'none', provenAt: null, provenVia: null, connectionTenantId: null, consentUrl: null } }),
+    });
+    renderCard();
+    expect(await screen.findByTestId('entra-tenant-panel')).toBeInTheDocument();
+    expect(await screen.findByTestId('entra-tenant-status')).toHaveTextContent('No Microsoft tenant is linked yet');
+  });
+
+  it('TENANT_NOT_PROVEN shows the field error on the Microsoft row', async () => {
+    mockFlow({
+      view: makePolicyView({ capabilities: { entra: true } }),
+      patch: () => json({ error: 'x', code: 'PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN', field: 'entraEnabled' }, 400),
+    });
+    renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-microsoft-on'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    expect(await screen.findByTestId('portal-access-policy-entraEnabled-error')).toHaveTextContent(
+      "Prove this organization's Microsoft tenant before turning on Microsoft sign-in.",
+    );
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('save that flips to sso_only opens the dialog with counts and stranded names', async () => {
+    mockFlow({ view: ssoCapableView(), patch: () => confirmRequired('d1'), stranded: () => strandedBody(['u1', 'u2']) });
+    const { onSave } = renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-password-sso_only'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    const dialog = await screen.findByTestId('sso-only-confirm-dialog');
+    expect(within(dialog).getByTestId(`sso-only-confirm-flip-${ORG}`)).toHaveTextContent('3');
+    expect(await within(dialog).findByTestId('sso-only-confirm-stranded')).toHaveTextContent('Pat Doe');
+    // The 409 is the dialog, not an error toast; nothing saved yet.
+    expect(showToastMock).not.toHaveBeenCalled();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('confirm sends the impact digest and then batches sso-invite when ticked', async () => {
+    const ids = Array.from({ length: 150 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    let acknowledged = false;
+    mockFlow({
+      view: ssoCapableView(),
+      patch: (url) => {
+        if (url === `${POLICY}?acknowledge=d1`) {
+          acknowledged = true;
+          return json({ data: ssoCapableView({ values: { passwordMode: 'sso_only' } }) });
+        }
+        return confirmRequired('d1', 3, 150);
+      },
+      stranded: () => strandedBody(ids),
+      ssoInvite: (init) => {
+        const { portalUserIds } = JSON.parse(init.body as string) as { portalUserIds: string[] };
+        return json({ data: portalUserIds.map((portalUserId) => ({ portalUserId, result: 'invited', emailSent: true })) });
+      },
+    });
+    const { onSave } = renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-password-sso_only'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    fireEvent.click(await screen.findByTestId('sso-only-confirm-send-invites'));
+    fireEvent.click(screen.getByTestId('sso-only-confirm'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(acknowledged).toBe(true);
+    const inviteCalls = () => fetchWithAuthMock.mock.calls.filter(([u]) => u === SSO_INVITE);
+    await waitFor(() => expect(inviteCalls()).toHaveLength(2));
+    const batches = inviteCalls().map(([, init]) => (JSON.parse((init as RequestInit).body as string) as { portalUserIds: string[] }).portalUserIds);
+    expect(batches[0]).toHaveLength(100);
+    expect(batches[1]).toHaveLength(50);
+    expect([...batches[0], ...batches[1]]).toEqual(ids);
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'success', message: 'Sent 150 Microsoft sign-in invite(s).',
+    })));
+    expect(screen.queryByTestId('sso-only-confirm-dialog')).toBeNull();
+  });
+
+  it('a 409 with a new digest re-opens the dialog with fresh counts', async () => {
+    mockFlow({
+      view: ssoCapableView(),
+      patch: (url) => (url === `${POLICY}?acknowledge=d1` ? confirmRequired('d2', 7, 4) : confirmRequired('d1', 3, 2)),
+      stranded: () => strandedBody(['u1']),
+    });
+    const { onSave } = renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-password-sso_only'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    fireEvent.click(await screen.findByTestId('sso-only-confirm'));
+    expect(await screen.findByTestId('sso-only-confirm-changed')).toBeInTheDocument();
+    expect(screen.getByTestId(`sso-only-confirm-flip-${ORG}`)).toHaveTextContent('7');
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('sso-only-confirm'));
+    await waitFor(() => expect(patchCalls().map(([u]) => u)).toContain(`${POLICY}?acknowledge=d2`));
+  });
+
+  it('cancel writes nothing', async () => {
+    mockFlow({ view: ssoCapableView(), patch: () => confirmRequired('d1') });
+    const { onSave } = renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-password-sso_only'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    const dialog = await screen.findByTestId('sso-only-confirm-dialog');
+    fireEvent.click(within(dialog.closest('[role="dialog"]') as HTMLElement).getByRole('button', { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByTestId('sso-only-confirm-dialog')).toBeNull());
+    expect(patchCalls()).toHaveLength(1); // only the unacknowledged attempt, which the server refused
+    expect(patchCalls()[0][0]).toBe(POLICY);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(fetchWithAuthMock.mock.calls.some(([u]) => u === SSO_INVITE)).toBe(false);
+    // The draft survives.
+    expect(screen.getByTestId('org-sign-in-card-save')).not.toBeDisabled();
+  });
+
+  it('stranded list shows when sso_only is effective', async () => {
+    const view = ssoCapableView({ values: { passwordMode: 'sso_only' } });
+    view.effective.passwordMode = { value: 'sso_only', source: 'org' };
+    mockFlow({
+      view,
+      stranded: () => strandedBody(['u1', 'u2']),
+      ssoInvite: () => json({ data: [{ portalUserId: 'u1', result: 'invited', emailSent: true }] }),
+    });
+    renderCard();
+    const list = await screen.findByTestId('portal-access-stranded');
+    expect(list).toHaveTextContent("Can't sign in yet (2)");
+    expect(list).toHaveTextContent('Pat Doe');
+    fireEvent.click(screen.getByTestId('portal-access-stranded-invite-u1'));
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.filter(([u]) => u === SSO_INVITE)).toHaveLength(1));
+    const [, init] = fetchWithAuthMock.mock.calls.find(([u]) => u === SSO_INVITE)!;
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ portalUserIds: ['u1'] });
+  });
+
+  it('no stranded list while password sign-in is effectively allowed', async () => {
+    mockFlow({ view: ssoCapableView(), stranded: () => strandedBody(['u1']) });
+    renderCard();
+    await screen.findByTestId('portal-access-policy-form');
+    expect(screen.queryByTestId('portal-access-stranded')).toBeNull();
+    expect(fetchWithAuthMock.mock.calls.some(([u]) => u === STRANDED)).toBe(false);
   });
 });

@@ -32,6 +32,7 @@ const RESULT_LABEL_KEYS: Record<string, string> = {
   PORTAL_ACCESS_REQUEST_NOT_PENDING: 'portalAccessRequests.results.notPending',
   PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS: 'portalAccessRequests.results.accountExists',
   PORTAL_ACCESS_REQUEST_IDENTITY_LINKED: 'portalAccessRequests.results.identityLinked',
+  PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN: 'portalAccessRequests.results.entraTenantNotProven',
 };
 const RESULT_FAILED_KEY = 'portalAccessRequests.results.failed';
 
