@@ -73,13 +73,25 @@ tracking_issue: LanternOps/breeze#11377
 
   `base` is `PORTAL_ENTRA_CALLBACK_BASE_URL`, falling back to the origin of `PUBLIC_URL || PUBLIC_APP_URL || PUBLIC_API_URL`, the same order as `m365ControlPlane/runtimeConfig.ts`. Self-hosters register exactly these two redirect URIs.
 - **D5: Host binding is enforced, but there is no cross-host session handoff.**
-  - At start, the state records `hostOrgId`: the org whose **verified** custom domain matches the request host, or null on the shared host. At callback, a non-null `hostOrgId` that differs from the resolved org is denied (inv. 1).
+  - **Where the host comes from.** The portal calls the API same-origin: Caddy routes `/portal` and `/api` on one host (`docker/Caddyfile.prod:458`), and `reverse_proxy` keeps `Host`. So the API's `Host` header *is* the portal host the browser used.
+  - At start, the state records `hostOrgId`: the org whose **verified** custom domain equals that `Host` (`resolvePortalHostOrgId`), or null on the shared host.
+  - At callback, a non-null `hostOrgId` that differs from the resolved org is denied (inv. 1).
+  - On the shared host the check is a no-op by design. The spec takes the org from the proof alone there.
   - Portal custom-domain serving is not available yet (`apps/docs/src/content/docs/features/portal.mdx:19`). So a session handoff from the canonical callback host to a custom domain is out of scope until it is.
 - **D6: The proof run uses the portal app plus a live Graph role check. `wids` is never read.**
-  - **Sign-in.** The authority is the org's mapped tenant if one exists, otherwise `organizations`. Scope is `openid profile Directory.Read.All` (OD2), with PKCE and nonce.
+  - **Tenant pin.** A proof link is always pinned to a tenant. The MSP gives a tenant hint when creating the link: a GUID, or a domain resolved to its tid through Microsoft's public `/{domain}/v2.0/.well-known/openid-configuration`. The default is the org's mapped tenant, or else its M365 connection's tenant. A hint is **not** proof (inv. 2). It only stops a link that was forwarded or leaked from binding some other tenant whose admin opened it. The callback requires `tid === expectedTenantId`.
+  - **Sign-in.** The authority is the pinned tenant. Scope is `openid profile Directory.Read.All` (OD2), with PKCE and nonce.
   - **Role check.** It reuses `checkMailboxConsentAdminRoleViaGraph(accessToken, { tid, oid })` (`services/ticketMailbox/microsoftIdentity.ts:259`). That check is bound to the token's principal and tenant and accepts Global Administrator and Privileged Role Administrator.
-  - **Run link.** It is a 72 h capability, consumed by GET+DEL only at the moment the proof is recorded. A failed sign-in does not burn it, and a double callback records one proof.
-  - **Consent.** After the proof, the admin is sent to the v2 `/{tid}/v2.0/adminconsent` with `scope=openid profile email`. Only those scopes are granted tenant-wide. The consent return reads no parameter as authority and records nothing, because Microsoft enforces consent itself.
+  - **Run link.** It is a 72 h capability, consumed by GET+DEL right before the proof is recorded.
+    - A failed sign-in or a failed admin check does not burn it.
+    - A double callback records one proof.
+    - A refused record (`PortalEntraProofError`) has already consumed it, so the MSP fixes the cause and creates a new link.
+  - **Re-authorization at record time.** The org must still be active (`getActiveOrgTenant`). The link's creator must still be an `active` user in the org's partner. Otherwise the result is `invalid`.
+  - **Consent.** After the proof, the admin is sent to the v2 `/{tid}/v2.0/adminconsent` with `scope=openid profile email`. The consent return reads no parameter as authority and records nothing, because Microsoft enforces consent itself.
+  - **Least privilege is not guaranteed.** In the proof sign-in the admin still sees Microsoft's "consent on behalf of your organization" box for `Directory.Read.All`, and Breeze cannot hide it. If they tick it, the tenant grants that delegated scope to the portal app.
+    - Breeze requests the scope only in proof-run sign-ins, and a delegated scope acts only as the signed-in admin.
+    - The docs tell the admin to leave the box unticked.
+    - OD2 is resolved before W04a Task 4, not in the lab leg.
 - **D7: Transfer rules (spec §5.4).**
   - A `proof_run` displaces any mapping of the same tenant in another org, proven or not.
   - An `m365_connection` proof displaces only an **unproven** mapping. Otherwise it gets 409 `TENANT_PROVEN_ELSEWHERE` (OD4).
@@ -90,9 +102,11 @@ tracking_issue: LanternOps/breeze#11377
 
     After commit it emails the displaced partner's active admins (`listActivePartnerAdmins`).
   - The org that is proving must not hold a mapping for a different tenant. That gets 409 `ORG_HAS_OTHER_TENANT`, and the MSP removes it first (Task 8 `DELETE`).
+  - **Concurrency.** The transaction takes `pg_advisory_xact_lock(hashtext('portal-entra-tenant:' || tid))` before any read. That serializes two orgs proving the same fresh tenant: `FOR UPDATE` locks nothing when no row exists yet. A stray `client_ai_tenant_mappings_tenant_uniq` 23505 maps to `TENANT_PROVEN_ELSEWHERE`, never a 500.
 - **D8: Org merge.**
   - `client_ai_tenant_mappings` stays `keep-survivor`. A proven loser mapping is adopted when the survivor has none, and the trigger keeps the proof because the tenant does not change.
   - A new pre-walk blocker `entra_tenant_conflict` refuses the merge when the loser's mapping is proven **and** the survivor holds any mapping (spec §5.4).
+    - This reads the spec's "if both hold one" as "both hold a mapping". Otherwise `keep-survivor` would drop the loser's **proven** mapping in favour of an unproven one and strand the repointed identities. See OD7.
 - **D9: Session caps.**
   - **Browser.** An `entra` browser session dies when `now - createdAt ≥ effective.ssoSessionMaxHours × 1 h`. The check runs per request against the **current** policy, so lowering the cap takes effect at once.
   - **Tenant pin.** An `entra` session also stores its `entraTenantId` and dies when that is no longer the org's proven tenant.
@@ -105,10 +119,13 @@ tracking_issue: LanternOps/breeze#11377
 - **D11: Purpose conflicts deny.** An identity already bound to a different account than an `invite` or `link` purpose names is denied (`identity_conflict`). It never signs in as the other account and never consumes the invite.
 - **D12: `sso_only` save flow.**
   - Hash clearing runs only on a policy **save** (org or partner PATCH) that flips some org from effective `allowed` to effective `sso_only`.
-  - Without `?acknowledge=sso-only` the PATCH returns 409 `PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED` with the impact.
+  - **Acknowledgement.** The impact preview returns an `impactDigest`: sha256 over the sorted `(orgId, passwordsToClear, strandedTotal)` list. The PATCH must carry `?acknowledge=<impactDigest>`.
+    - A missing ack, or a digest that no longer matches the impact recomputed inside the transaction, returns 409 `PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED` with the fresh impact and digest.
+    - Neither a script nor a stale dialog can clear hashes the MSP never saw.
   - With it, the policy upsert and the hash clearing commit in one transaction. Hashes are cleared and epochs bumped only for accounts that have an identity. Session purge after commit is cleanup.
   - Flips caused by a proof or a deploy-time capability change clear nothing. W3's refusal at use is the control (inv. 11).
   - Linking an identity while the org is effectively `sso_only` clears that account's hash in the same transaction.
+  - **Lazy convergence.** A successful Entra sign-in also clears that account's hash while the org is effectively `sso_only`, without bumping the epoch. An org that became `sso_only` through a proof, not a PATCH, still sheds hashes as people sign in. A later fallback to `allowed` therefore cannot revive a leaver's old password for anyone who has signed in with Microsoft since.
 - **D13: An invite accepted through Microsoft keeps `auth_method` unchanged** (OD6).
   - The account stays password-eligible, so under `allowed` the person can still set a password later.
   - Instant-mode and approved SSO accounts stay identity-only (W3 D2).
@@ -122,12 +139,13 @@ tracking_issue: LanternOps/breeze#11377
 
 - **OD1: Add-in absolute cap default.** Plan default: **12 h**, matching the SSO browser default. Re-exchange is silent, so the cost is near zero, and a leaver's Entra disable bites within 12 h. Alternative: 24 h. Spec §5.11 asks for this number in the W4 PR.
 - **OD2: Admin-check scope.** Plan default: request `Directory.Read.All` (delegated) **only** in the proof-run sign-in, the same as the ticket-mailbox flow, with roles GA and PRA. The tenant-wide admin consent asks only for `openid profile email`.
-  - The lab leg (Task 14) checks whether a lower scope such as `RoleManagement.Read.Directory` returns `roleTemplateId` for `/me/transitiveMemberOf/microsoft.graph.directoryRole`. If one does, swap it in.
+  - **Resolve before W04a Task 4.** Run a short lab check: does a lower scope such as `RoleManagement.Read.Directory` return `roleTemplateId` for `/me/transitiveMemberOf/microsoft.graph.directoryRole`? If one does, use it. Either scope can be granted tenant-wide by a ticked box, so D6 does not claim least privilege.
   - Alternative: also accept Cloud Application Administrator and Application Administrator, who can grant the delegated consent this app needs.
 - **OD3: Removing an org's tenant (Task 8 `DELETE`) also removes its AI for Office mapping**, because D1 shares one row. Plan default: allow it, behind a confirm dialog that names the add-in impact.
 - **OD4: An M365-connection proof cannot displace a tenant proven elsewhere** (D7). Only a fresh proof run can. Reason: an old connection held by a former MSP must not take a tenant back from the current one. Spec §5.4 reads "a newer proof from a different org" and does not distinguish the two.
 - **OD5 (carry-over from W3 OD4): delete the W2 legacy-invite branch.** Task 7 Step 6 does this only if the dispatch brief confirms #11408 has been in production in every region for at least 7 days, and W3 did not already delete it.
 - **OD6: An invite accepted with Microsoft keeps `auth_method='password'`** (D13). Alternative: make it identity-only, so a password added later cannot outlive a leaver's IdP disable under `allowed`.
+- **OD7: Merge refusal reads spec §5.4 "if both hold one" as "both hold a mapping"** (D8). The other reading is "both hold a **proven** mapping". Under that reading a proven loser would merge into a survivor with an unproven mapping, and the loser's proven mapping would be dropped.
 
 ## Settings rule 9 statement (copy into both PR bodies)
 
@@ -152,7 +170,12 @@ tracking_issue: LanternOps/breeze#11377
   - `iss === entraIssuer(tid)` and `nonce` equal (constant time).
   - Freshness: `iat` no older than 10 min. Clock tolerance 60 s.
   - `tid` is a GUID and not the consumer tenant `9188040d-6c67-4c5b-b112-36a304b66dad`.
-  - **Guest refusal:** refuse when `idp` is present and differs from both `iss` and `https://sts.windows.net/{tid}/`, or when `acct === 1`.
+  - Also `ver === '2.0'` and `oid` is a GUID.
+  - **Guest refusal, structural.** User sign-in always uses the `organizations` authority, never a tenant-specific one. Microsoft then issues the token in the user's **home** tenant, so a B2B guest token cannot be minted for a sign-in.
+  - **Guest refusal, defence in depth.** Refuse when `idp` is present and differs from both `iss` and `https://sts.windows.net/{tid}/`, or when `acct === 1`.
+    - `acct` and `xms_edov` are optional claims. The self-hoster steps (Task 14) add `acct`, `email` and `xms_edov` to the app's ID-token optional claims.
+    - A token **without** `acct` is accepted. The structural rule is the guarantee, and a test pins that behaviour.
+  - **Proof run.** It pins the tenant authority (D6). A guest who holds Global Administrator in the customer's tenant is an admin there, and the Graph role check binds to `tid`/`oid`.
 - **Authority and scopes:**
   - Sign-in: authority `organizations`, scope `openid profile email`, `prompt=select_account`, `response_mode=query`, PKCE S256. PKCE comes from `generatePKCEChallenge` (`services/sso.ts:58`).
   - State and nonce: 32 random bytes each, base64url.
@@ -174,16 +197,20 @@ tracking_issue: LanternOps/breeze#11377
   - The portal auth audit wrapper (`routes/portal/auth.ts:84-130`) covers POST only, so the GET callback writes its own rows.
 - **New error codes** (UPPER_SNAKE):
   - In shared `PORTAL_ACCESS_POLICY_ERROR_CODES`: `PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN` and `PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED`.
-  - In `portalEntraTenantProof.ts`: `PORTAL_ENTRA_NOT_CONFIGURED`, `PORTAL_ENTRA_TENANT_PROVEN_ELSEWHERE`, `PORTAL_ENTRA_ORG_HAS_OTHER_TENANT`, `PORTAL_ENTRA_NO_VERIFIED_CONNECTION`, `PORTAL_ENTRA_PROTECTED_ORG`.
+  - In `portalEntraTenantProof.ts`: `PORTAL_ENTRA_TENANT_PROVEN_ELSEWHERE`, `PORTAL_ENTRA_ORG_HAS_OTHER_TENANT`, `PORTAL_ENTRA_NO_VERIFIED_CONNECTION`, `PORTAL_ENTRA_PROTECTED_ORG`.
+  - In `routes/orgPortalEntraTenant.ts`: `PORTAL_ENTRA_NOT_CONFIGURED` (route-level 404), `PORTAL_ENTRA_TENANT_HINT_REQUIRED` and `PORTAL_ENTRA_TENANT_HINT_INVALID` (422).
   - In the SSO invite route: `PORTAL_SSO_INVITE_UNAVAILABLE`.
 - **Secrets:** env only. `.env.example` carries blank placeholders.
   - `PORTAL_ENTRA_CLIENT_ID`
   - `PORTAL_ENTRA_CLIENT_SECRET`
   - `PORTAL_ENTRA_CALLBACK_BASE_URL` (optional)
 
-  They are passed through in `docker-compose.yml` and `deploy/docker-compose.prod.yml` like `CLIENT_AI_ENTRA_CLIENT_ID`, and validated as optional strings in `config/validate.ts`. No secret, token, code or token-endpoint body is ever logged or audited.
+  - Compose: pass them through in `docker-compose.yml` and `deploy/docker-compose.prod.yml`, like `CLIENT_AI_ENTRA_CLIENT_ID`.
+  - Validation: add new optional-string entries in `config/validate.ts`. `CLIENT_AI_ENTRA_CLIENT_ID` has none, so there is no precedent to copy. No secret, token, code or token-endpoint body is ever logged or audited.
 - **Migration:** `apps/api/migrations/2027-01-22-2330xx-portal-entra-tenant-proof.sql`.
-  - **The `xx` is assigned at enqueue.** The file must sort after the newest file on `origin/main`. Today that is `2027-01-22-232100-backup-snapshot-files-kind.sql`, with W03a's `…-232200-portal-access-policies-requests.sql` landing ahead of it.
+  - **The `xx` is assigned at enqueue.** The file must sort after the newest file on `origin/main`.
+    - Today that is `2027-01-22-232100-backup-snapshot-files-kind.sql`.
+    - W03a adds `2027-01-22-232200-portal-access-policies-requests.sql`, which merges first, so W4 must sort after it too.
   - Re-run the `localeCompare` check from `apps/api/migrations/README.md` before every push. If overtaken, rename the file and the test's path constant. Never rename a shipped migration.
   - The file is idempotent, has no inner `BEGIN;/COMMIT;`, and its first statement is `SELECT set_config('breeze.scope', 'system', true);`.
 - **Tenancy:**
@@ -222,11 +249,12 @@ tracking_issue: LanternOps/breeze#11377
    - the same `state` used twice;
    - a callback without the binding cookie, or with another browser's cookie;
    - a mismatched nonce, or an id_token older than 10 min;
-   - two concurrent callbacks for one proof-run link.
+   - two concurrent callbacks for one proof-run link;
+   - two orgs proving the same fresh tenant at once.
 
-   Expected: each refused callback is `unavailable` / `failed`. The concurrent pair records exactly one proof.
+   Expected: each refused callback is `unavailable` / `failed`. Each concurrent pair records exactly one proof, and the losing org gets `failed`, never a 500.
 
-   *(Task 4 state-store and verifier tests. Task 7: `callback replay → unavailable`, `callback from a different browser → unavailable`. Task 8: `concurrent proof callbacks record one proof`.)*
+   *(Task 4 state-store and verifier tests. Task 7: `callback replay → unavailable`, `callback from a different browser → unavailable`. Task 8: `concurrent proof callbacks record one proof`. Task 2: `two orgs proving one fresh tenant concurrently: one proof, the other TENANT_PROVEN_ELSEWHERE`.)*
 4. **A policy change while sessions are outstanding** (feature RF4). Cases and expected results:
    - **`ssoSessionMaxHours` lowered from 12 to 1:** a 2 h-old Entra session dies on its next request.
    - **Microsoft turned off:** Entra sessions die.
@@ -247,12 +275,12 @@ tracking_issue: LanternOps/breeze#11377
 | Create `services/portalEntraTenantProof.ts` (+ `.test.ts`); modify `services/orgMerge.ts` (blocker), `services/email.ts`, `services/emailDomains/mailPurposes.ts` (+ test) | Proof record, transfer, lookup, merge refusal, displacement email | a |
 | Modify `services/portalAccessPolicy.ts`, `services/portalAccessPolicyWrites.ts`, `packages/shared/src/validators/portalAccessPolicy.ts` (+ tests) | Capability flip, tenant masking, `TENANT_NOT_PROVEN` | a |
 | Create `services/portalOidc/stateStore.ts`, `services/portalOidc/entraClient.ts`, `services/portalOidc/types.ts` (+ tests); modify `services/m365ControlPlane/microsoftAuthorization.ts` (optional `scope`) | OIDC common layer + Entra client | a |
-| Create `services/portalOidc/accountResolution.ts`, `services/portalIdentityAccounts.ts` (+ tests); modify `services/portalAccountState.ts`, `services/portalUserIdentities.ts`, `services/portalAccessRequests.ts`, `__tests__/portalAccountWriters.contract.test.ts` | §5.6 resolution, identity link with the D4 fence, new state writers | a |
+| Create `services/portalOidc/accountResolution.ts`, `services/portalIdentityAccounts.ts` (+ tests); modify `services/portalAccountState.ts`, `services/portalUserIdentities.ts`, `services/portalAccessRequests.ts`, `__tests__/portalAccountWriters.contract.test.ts` | §5.6 resolution, identity link with the W3 D4 fence, new state writers | a |
 | Modify `routes/portal/browserSession.ts`, `routes/portal/auth.ts`, `routes/portal/schemas.ts`, `middleware/clientAiAuth.ts`, `routes/clientAi/schemas.ts` | Shared session mint, Entra session gate, absolute caps | a |
 | Create `routes/portal/oidc.ts` (+ test); modify `routes/portal/index.ts`, `routes/portal/capabilityTokens.ts`, `routes/portal/branding.ts` (export host→org) | Portal sign-in routes (start, callback, discovery, invite methods, link status) | a |
 | Create `routes/orgPortalEntraTenant.ts` (+ test); modify `routes/orgs.ts` | MSP tenant-proof routes; proof-run link | a |
 | Create `services/portalSsoOnly.ts` (+ test); modify `routes/orgPortalAccessPolicy.ts`, `routes/orgPortalUsers.ts`, `services/email.ts` (`sendPortalInvite`) | `sso_only` impact/ack/clear, SSO invite variant, bulk SSO invite, MSP browser-access grant | a |
-| Create integration tests `portalEntraTenantProofMigration`, `portalEntraTenantProof`, `portalOidcSignIn`, `portalSessionCaps`, `portalSsoOnly` (`*.integration.test.ts`); add each to `.github/scripts/integration-suites.txt` | Real-DB proofs | a |
+| Create integration tests `portalEntraTenantProofMigration`, `portalEntraTenantProof`, `portalOidcSignIn`, `portalSessionCaps`, `portalSsoOnly` (`*.integration.test.ts`; the `suite portal tests …/portal[!a-z0-9]*` glob in `.github/scripts/integration-suites.txt` already owns them); add `suite portal sources <file>` lines for new imported sources (W03a pattern) | Real-DB proofs | a |
 | Modify `apps/web/src/components/settings/portalAccess/{types.ts,PortalAccessPolicyForm.tsx,OrgSignInRegistrationCard.tsx}`, `partnerSettings/PartnerCustomerPortalTab.tsx`; create `portalAccess/EntraTenantPanel.tsx`, `portalAccess/SsoOnlyConfirmDialog.tsx` (+ tests); locale keys | MSP UI | b |
 | Modify `settings/OrgPortalUsersEditor.tsx` (+ test) | Grant browser access action, stranded list hook-up | b |
 | Modify `apps/portal/src/components/portal/{LoginForm,AcceptInviteForm}.tsx`, the profile page component; create `apps/portal/src/components/portal/MicrosoftSignInButton.tsx`, `apps/portal/src/pages/entra-setup.astro`, `apps/portal/src/lib/oidc.ts` (+ tests); modify `apps/portal/src/middleware.ts` / `lib/protectedPaths.ts` as needed | Portal UI | b |
@@ -352,9 +380,11 @@ CREATE TRIGGER client_ai_tenant_mappings_clear_proof_on_repoint
 
 **Files:**
 - Create: `services/portalEntraTenantProof.ts`, `services/portalEntraTenantProof.test.ts` (unit, mocked db)
-- Modify: `services/orgMerge.ts`:
-  - `collectMergeBlockers(loserOrgId, pamTransfer?, survivorOrgId?)`. Add a direct check after the `device_network_isolations` one (`:363`), and thread `survivorOrgId` from the preview (`:1267`), the pre-fence (`:1306`) and the Phase-B call sites.
-  - Add blocker code `entra_tenant_conflict` beside `payment_in_flight` (`:196`), with operator text "Both organizations are linked to a Microsoft tenant and the merged-away one is proven. Remove one tenant link first."
+- Modify: `services/orgMerge.ts`. Four places need the new check, all keyed by both the loser and the survivor:
+  - `collectMergeBlockers(loserOrgId, pamTransfer?, survivorOrgId?)`: a direct check after the `device_network_isolations` one (`:363`). It is used by the pre-fence call (`:1306`).
+  - the Phase-B recheck: `assertMergeIsolationSafe` (`:1261`) and its caller (`:1420`) gain `survivorOrgId`;
+  - the preview: its inline blocker list (`:1733`) runs the same check, so a preview never shows a mergeable pair that then refuses;
+  - the code list: `MergeBlockerCode` (`:181`) gains `entra_tenant_conflict`. `mergeBlockerCodes` (`:190-199`) maps the `client_ai_tenant_mappings` blocker to it. `buildMergeBlockedMessage` (`:204+`) gets the operator text "Both organizations are linked to a Microsoft tenant and the merged-away one is proven. Remove one tenant link first."
 - Modify: `services/email.ts`. Add `sendPortalEntraTenantDisplaced({ to, partnerName, orgName, tenantId })`. Template: `services/partnerTrustPartnerMail.ts`, which is platform mail to partner admins.
 - Modify: `services/emailDomains/mailPurposes.ts` and its test. Register `'partner.portal_entra_tenant.displaced'` with the lane that `partnerTrustPartnerMail` uses.
 - Test (real DB): `__tests__/integration/portalEntraTenantProof.integration.test.ts`. Also append the merge cases to `orgMergeRegistry.integration.test.ts`, or to whichever merge integration file holds the `device_network_isolations` blocker cases.
@@ -380,6 +410,7 @@ export interface RecordEntraProofOutcome { displaced: { orgId: string; partnerId
 export type PortalEntraProofErrorCode = 'PORTAL_ENTRA_TENANT_PROVEN_ELSEWHERE' | 'PORTAL_ENTRA_ORG_HAS_OTHER_TENANT'
   | 'PORTAL_ENTRA_NO_VERIFIED_CONNECTION' | 'PORTAL_ENTRA_PROTECTED_ORG';
 export class PortalEntraProofError extends Error { constructor(readonly code: PortalEntraProofErrorCode, readonly httpStatus: 409 | 422, message: string); }
+// PROTECTED_ORG → 409 with the existing PROTECTED_ORG_ERROR body (routes/clientAi/admin.ts:117); NO_VERIFIED_CONNECTION → 422; the rest → 409.
 /** One withSystemDbAccessContext + withDbTransaction. Callers inside a request call it through runOutsideDbContext. */
 export async function recordEntraTenantProof(input: RecordEntraProofInput, now?: Date): Promise<RecordEntraProofOutcome>;
 export async function proveEntraTenantFromM365Connection(orgId: string, actorUserId: string): Promise<RecordEntraProofOutcome & { tenantId: string }>;
@@ -387,8 +418,11 @@ export async function removePortalEntraTenant(orgId: string): Promise<{ removed:
 ```
 
 Rules for `recordEntraTenantProof` (D7). All steps run in one transaction under system scope. That is justified: the evidence is verified, not MSP input, and displacement crosses partners.
-1. **Holding org.** `isHoldingOrg(orgId)` → `PROTECTED_ORG` (422), the same refusal as `routes/clientAi/admin.ts`.
-2. **Lock.** `SELECT … FOR UPDATE` the mapping rows `WHERE org_id = $org OR entra_tenant_id = $tid`.
+1. **Holding org.** `isHoldingOrg(orgId)` → `PROTECTED_ORG` (409), the same refusal as `routes/clientAi/admin.ts:117`.
+2. **Lock.**
+   - First `pg_advisory_xact_lock(hashtext('portal-entra-tenant:' || $tid))` (D7).
+   - Then `SELECT … FOR UPDATE` the mapping rows `WHERE org_id = $org OR entra_tenant_id = $tid`.
+   - A 23505 on `client_ai_tenant_mappings_tenant_uniq` → `TENANT_PROVEN_ELSEWHERE`.
 3. **Own row.** If this org's row has a different tenant → `ORG_HAS_OTHER_TENANT` (409).
 4. **Another org's row for `$tid`.**
    - It is proven and `via = 'm365_connection'` → `TENANT_PROVEN_ELSEWHERE` (409). This is OD4.
@@ -405,7 +439,7 @@ Rules for `recordEntraTenantProof` (D7). All steps run in one transaction under 
 - `org_id = $org AND user_id IS NULL AND tenant_id IS NOT NULL`;
 - `profile IN ('customer-graph-read','customer-graph-actions')`.
 
-The bound `tenant_id` there is set only by the identity-first consent flow (spec F13, `connectionService.ts:871-925`). With no such row → `NO_VERIFIED_CONNECTION` (422). Otherwise call `recordEntraTenantProof({ via: 'm365_connection', evidence: { connectionId, profile }, … })`.
+The bound `tenant_id` there is set only by the identity-first consent flow's finalization (spec F13; `applyConsentFinalizationResult`, `services/m365ControlPlane/connectionService.ts:~1042-1090`). With no such row → `NO_VERIFIED_CONNECTION` (422). Otherwise call `recordEntraTenantProof({ via: 'm365_connection', evidence: { connectionId, profile }, … })`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -424,6 +458,8 @@ it('m365_connection proof uses the identity-bound tenant of the org\'s connectio
 it('findOrgByProvenEntraTenant ignores unproven mappings');                                         // inv. 2
 it('the AI for Office PUT upsert to a new tenant leaves the mapping unproven');                         // inv. 3, via the real route
 it('displacement emails the displaced partner\'s active admins after commit; a send failure keeps the proof');
+it('two orgs proving one fresh tenant concurrently: one proof, the other TENANT_PROVEN_ELSEWHERE');      // Review Focus 3, D7
+it('merge: a proof recorded between preview and execute is refused in Phase B (entra_tenant_conflict)');
 // merge (append to the merge integration file)
 it('merge refuses entra_tenant_conflict when the loser mapping is proven and the survivor has a mapping');
 it('merge adopts a proven loser mapping when the survivor has none, keeping the proof');
@@ -443,7 +479,7 @@ it('merge drops an unproven loser mapping when the survivor has one (unchanged b
 - Create: `apps/api/src/config/portalEntra.ts` and `portalEntra.test.ts`.
 - Modify: `config/validate.ts` to add optional strings for the three env vars. Modify `.env.example`, `docker-compose.yml` and `deploy/docker-compose.prod.yml`, adding blank placeholders and passthrough next to `CLIENT_AI_ENTRA_CLIENT_ID`.
 - Modify: `services/portalAccessPolicy.ts`.
-  - `DEPLOYMENT_CAPABILITIES` becomes the function `getPortalSignInCapabilities()`, with `entra: getPortalEntraConfig() !== null`. The `__testOnly` override keeps precedence.
+  - `getPortalSignInCapabilities()` (already a function in W3, returning `capabilityOverride ?? DEPLOYMENT_CAPABILITIES`) computes `entra: getPortalEntraConfig() !== null` at call time instead of reading the frozen constant. The `__testOnly` override keeps precedence.
   - The resolver and pick gain the tenant fact.
 - Modify: `services/portalAccessPolicyWrites.ts`. Org writes refuse an explicit `entraEnabled: true` without a proven tenant. The would-be-effective computation for `sso_only` passes the tenant fact.
 - Modify: `packages/shared/src/validators/portalAccessPolicy.ts`. `PORTAL_ACCESS_POLICY_ERROR_CODES` gains `TENANT_NOT_PROVEN` and `SSO_ONLY_CONFIRM_REQUIRED`, and `PortalAccessPolicyView` gains `entraTenantProven: boolean | null`.
@@ -468,7 +504,9 @@ export interface ResolvedPortalAccessPolicy { /* W3 fields */ entraTenant: { ten
 Rules:
 - **Masking order.** Pick, then capability mask, then tenant mask (`entraEnabled = picked && caps.entra && facts.entraTenantProven`), then W3's `sso_only` fallback. The source stays the picked source.
 - **Partner views** and partner would-be-effective computations pass `{ entraTenantProven: true }`.
-- **One query.** `resolvePortalAccessPolicy` reads the proven mapping in the same query as the policy rows: a `LEFT JOIN client_ai_tenant_mappings m ON m.org_id = $org AND m.proven_at IS NOT NULL`. Do not add a second round trip.
+- **No extra round trip.** W3's resolver already reads `organizations` for `partner_id` before `readPortalAccessPolicyRows`. Add the proven mapping to **that** read: `organizations o LEFT JOIN client_ai_tenant_mappings m ON m.org_id = o.id AND m.proven_at IS NOT NULL`.
+  - Do not join it onto the policy-rows query. That query returns no rows when there are no policy rows, which would hide a proven tenant.
+  - `readPortalAccessPolicyRows` is shared with the settings views, so leave it unchanged.
 - **The fingerprint** includes `entraTenant?.tenantId`, so W6 tokens die when the tenant changes.
 - **Write validation for org writes.** `patch.entraEnabled === true` while the org has no proven tenant → `PortalAccessPolicyValidationError(TENANT_NOT_PROVEN, 'entraEnabled', 'Prove the organization\'s Microsoft tenant before turning on Microsoft sign-in.')`.
 
@@ -482,6 +520,7 @@ it('getPortalSignInCapabilities().entra follows the portal Entra config');
 it('entra on (org row) but no proven tenant → effective false with source org');
 it('sso_only falls back to allowed when the tenant proof is removed');                    // Review Focus 1
 it('fingerprint changes when the proven tenant changes');
+it('an org with a proven tenant and NO policy rows resolves entraTenant (not hidden by the rows query)');
 // portalAccessPolicyWrites.test.ts
 it('org entraEnabled true without a proven tenant → 400 TENANT_NOT_PROVEN (field entraEnabled)');
 it('org passwordMode sso_only is refused (SSO_ONLY_NEEDS_SSO) when entra is inherited on but the tenant is unproven');
@@ -515,8 +554,10 @@ export type PortalOidcPurpose =
   | { kind: 'tenant_proof'; runTokenHash: string; orgId: string; expectedTenantId: string | null };
 export interface PortalOidcState { v: 1; provider: PortalOidcProvider; purpose: PortalOidcPurpose; nonce: string; codeVerifier: string;
   bindingHash: string; hostOrgId: string | null; authority: string; createdAt: number }
+/** Field names match ClientAiEntraClaims (clientAiEntraJwt.ts) so resolveLinkableEntraAddress accepts it structurally:
+ *  `emailClaim` is the raw email claim (trusted only with emailDomainOwnerVerified), never a linking key. */
 export interface PortalOidcVerifiedIdentity { provider: PortalOidcProvider; issuer: string; subject: string; entraTenantId: string | null;
-  upn: string | null; email: string | null; emailDomainOwnerVerified: boolean; name: string | null }
+  upn: string | null; emailClaim: string | null; emailDomainOwnerVerified: boolean; name: string | null }
 
 // services/portalOidc/stateStore.ts
 export const PORTAL_OIDC_STATE_TTL_SECONDS = 600;
@@ -545,7 +586,10 @@ Rules:
 - **State** is a JSON value under `PORTAL_REDIS_KEYS.oidcState(sha256(state))`, written with `setex` for the TTL. Consume uses the W2 capability Lua script (`capabilityTokens.ts:~95`): extract it to a shared `luaGetDel(redis, key)` in `routes/portal/helpers.ts`, and keep the capability tokens on it.
 - **The binding cookie value** is 32 random bytes in base64url. `bindingHash = sha256(value)`, and the comparison uses `timingSafeEqual`.
 - **The code exchange** posts to `/{authority}/oauth2/v2.0/token` with `client_secret`. Any non-2xx or malformed body throws `PortalEntraTokenError('token_endpoint')`. Log the status only (D14).
-- **id_token verification** follows the Global Constraints list exactly. `email` is set only when the claim is present. `emailDomainOwnerVerified` is `xms_edov === true`, and `upn` is `preferred_username` lowercased.
+- **id_token verification** follows the Global Constraints list exactly.
+  - `emailClaim` is set only when the claim is present.
+  - `emailDomainOwnerVerified` is `xms_edov === true`.
+  - `upn` is `preferred_username`, lowercased.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -562,9 +606,10 @@ it('admin consent URL is v2 adminconsent for the tenant with scope openid profil
 it('verify accepts a well-formed token and returns issuer = entraIssuer(tid), subject = oid');
 it.each([
   ['wrong audience'], ['issuer for another tenant'], ['nonce mismatch'], ['iat older than 10 minutes'],
-  ['tid is the consumer tenant'], ['idp is another tenant (guest)'], ['acct = 1'], ['missing oid'], ['HS256 algorithm'],
+  ['tid is the consumer tenant'], ['idp is another tenant (guest)'], ['acct = 1'], ['missing oid'], ['oid not a GUID'], ['ver 1.0'], ['HS256 algorithm'],
 ])('verify refuses: %s');                                                                   // inv. 13, Review Focus 3
 it('verify refuses a tid different from expectedTenantId when one is pinned');
+it('verify accepts a token with no acct and no idp claim (structural guest rule; documented)');
 it('token endpoint 400 throws PortalEntraTokenError without logging the body');
 it('buildMicrosoftIdentityAuthorizationUrl without scope still sends "openid profile"');   // existing callers
 ```
@@ -574,14 +619,17 @@ it('buildMicrosoftIdentityAuthorizationUrl without scope still sends "openid pro
 - [ ] **Step 4: Run** both new test files, the existing `microsoftAuthorization` tests and `src/routes/portal/capabilityTokens.test.ts`, which proves the Lua extraction. All must PASS.
 - [ ] **Step 5: Commit**: `feat(portal): OIDC state store and Entra client for portal sign-in (W4)`
 
-### Task 5: State writers, identity linking with the D4 fence, account resolution (§5.6)
+### Task 5: State writers, identity linking with the W3 D4 fence, account resolution (§5.6)
 
 **Files:**
 - Modify `services/portalAccountState.ts` and its `.test.ts`:
   - New writers: `'sso_invite_accept'`, `'sso_instant_grant'` and `'msp_grant_browser_access'`.
   - New initial state: `'sso_instant'`.
 - Modify `services/portalUserIdentities.ts` to add `linkPortalUserIdentity`.
-- Create `services/portalIdentityAccounts.ts` (+ `.test.ts`). Move W3's private `createIdentityAccount` out of `services/portalAccessRequests.ts` and export it as `createIdentityOnlyAccount`, so approve and instant mode share one writer. `portalAccessRequests.ts` imports it.
+- Create `services/portalIdentityAccounts.ts` (+ `.test.ts`).
+  - Extract and rewrite W3's private `createIdentityAccount(request: LockedRequest, deciderUserId)` from `services/portalAccessRequests.ts` as `createIdentityOnlyAccount(tx, input)`, so approve and instant mode share one writer.
+  - The W3 original is bound to a locked request row, uses the module `db`, and throws `PortalAccessRequestError`. The new function takes the transaction and returns a discriminated outcome.
+  - The approve path then maps `account_exists` → `ACCOUNT_EXISTS` and `identity_linked` → `IDENTITY_LINKED`. Its behaviour must stay byte-identical.
 - Create `services/portalOidc/accountResolution.ts` (+ `.test.ts`).
 - Modify `__tests__/portalAccountWriters.contract.test.ts`: classify `portalIdentityAccounts.ts` and `portalOidc/accountResolution.ts` as `state-module`.
 - Test (real DB): `__tests__/integration/portalOidcSignIn.integration.test.ts`.
@@ -598,6 +646,9 @@ it('buildMicrosoftIdentityAuthorizationUrl without scope still sends "openid pro
 ```ts
 // services/portalAccountState.ts (additions)
 export type PortalAccountWriter = /* W2 + W3 */ | 'sso_invite_accept' | 'sso_instant_grant' | 'msp_grant_browser_access';
+// Aliases, not new rules: 'sso_instant_grant' and 'msp_grant_browser_access' share W3's 'access_request_approve' case
+// (active+none → granted, no epoch bump; disabled/invited refused); initialPortalAccountState('sso_instant') shares
+// 'sso_request_approved' ({ active, granted }). Separate names exist only so the writer census and audits say which path wrote.
 // initialPortalAccountState('sso_instant') → { active, granted }   (caller sets auth_method = provider; identity-only, W3 D2)
 // planPortalAccountTransition rows:
 //   sso_invite_accept:        invited+granted → { active, granted, bumpEpoch: true }   (same epoch rule as accept_invite); anything else → REFUSED
@@ -646,10 +697,11 @@ Resolution order. It is spec §5.6, and every branch is a test:
    - For `invite`/`link` whose target is a different account → `identity_conflict` (D11).
    - For `link` on the same account → `linked`, which is idempotent.
    - The account is not `active` → `account_inactive`.
-   - `browser_access='granted'` → touch `last_used_at`, then `session` (`via: 'identity'`).
+   - `browser_access='granted'` → touch `last_used_at`, and while the org is effectively `sso_only` also null `password_hash` with no epoch bump (D12 lazy convergence). Then `session` (`via: 'identity'`).
    - `browser_access='none'` is step 5.
 2. **`invite`.**
    - `inviteConsumer(hash)` returns nothing, its org ≠ the resolved org, or the account already has an entra identity → `invite_invalid`.
+     - The token is consumed **before** the transaction, the same as password accept-invite (W2). Any later failure has therefore spent it, and the MSP resends. "Rolled back" below covers database writes only.
    - Otherwise, in one transaction:
      - `linkPortalUserIdentity` with `linkedVia 'invite'` and `clearPasswordHash` = (effective `sso_only`, D12);
      - `sso_invite_accept`, with an `auth_epoch = <payload epoch>` guard;
@@ -693,6 +745,8 @@ it('add-in account, instant → browser granted without an epoch bump');        
 it('invite via Microsoft activates the invited account, links (linked_via invite) and keeps auth_method password'); // D13
 it('invite for another account than the identity\'s → identity_conflict, invite not consumed');      // D11
 it('link adds self_link to a signed-in password user; under sso_only it also clears the hash');      // D12
+it('known identity signing in while the org is effectively sso_only (via a proof, no PATCH) loses its hash, epoch unchanged'); // D12
+it('invite consumed, then the identity link conflicts → invite spent, no account change, invite_invalid');
 it('concurrent instant first sign-ins create one account');                                         // Review Focus 5
 it('invite consumed twice via Microsoft activates once; the second → invite_invalid');              // Review Focus 5
 it('W3 approve of an entra request still passes after createIdentityOnlyAccount moved');
@@ -712,7 +766,7 @@ it('W3 approve of an entra request still passes after createIdentityOnlyAccount 
 - Modify `routes/portal/browserSession.ts` (+ test) to add `mintPortalBrowserSession` and extend the parse and the gate.
 - Modify `routes/portal/auth.ts`. Use `mintPortalBrowserSession` at the login mint (`:519-570`) and the accept-invite mint (`:857-875`), with byte-identical behaviour. Pass `Date.now()` into the policy gate.
 - Modify `routes/portal/schemas.ts`. `PortalSession` gains `entraTenantId?: string`.
-- Modify `middleware/clientAiAuth.ts:~120-137` and `routes/clientAi/schemas.ts` (`CLIENT_AI_SESSION_MAX_AGE_SECONDS`), plus `middleware/clientAiAuth.test.ts`.
+- Modify `middleware/clientAiAuth.ts` (the cap check goes after the epoch check at `:86-94`, before the sliding `expire` at `:124-129`), `routes/clientAi/schemas.ts` (`CLIENT_AI_SESSION_MAX_AGE_SECONDS`), and `middleware/clientAiAuth.test.ts`.
 - Test (real DB + router): `__tests__/integration/portalSessionCaps.integration.test.ts`.
 
 **Interfaces — Produces** (`routes/portal/browserSession.ts`):
@@ -773,7 +827,7 @@ it('an entra session never satisfies a password-only gate and vice versa');     
   - `consumePortalCapabilityTokenByHash(purpose, hash)`;
   - `peekPortalCapabilityToken(purpose, raw)`, a GET with no DEL;
   - `validatePortalCapability(purpose, consumed, opts?: { requirePasswordMethod?: boolean })`. The default `true` keeps every W3 caller unchanged.
-- Modify `routes/portal/branding.ts`. Export `resolvePortalHostOrgId(host: string): Promise<string | null>`, built on `resolveBrandingByDomain`: a verified custom domain gives its org id, anything else null.
+- Modify `routes/portal/branding.ts`. Export `resolvePortalHostOrgId(host: string): Promise<string | null>`, built on `resolveBrandingByDomain`: a verified custom domain gives its org id, anything else null. The caller passes the request's `Host` header with the port stripped and lowercased (D5). Never use a client-supplied body or query value.
 - Test (real DB + router): append to `portalOidcSignIn.integration.test.ts`.
 
 **Interfaces — Produces** (all under `/api/v1/portal`):
@@ -842,16 +896,19 @@ it('custom-domain host for org A + token for tenant proven in org B → unavaila
 |---|---|---|
 | `GET /orgs/organizations/:id/portal-entra-tenant` | `requireScope('partner','system')`, `requireOrgRead` | `{ data: PortalEntraTenantStatus & { consentUrl: string \| null } }`. `consentUrl` = `buildPortalAppAdminConsentUrl` for a proven tenant. Not configured → 404 `PORTAL_ENTRA_NOT_CONFIGURED`. |
 | `POST /orgs/organizations/:id/portal-entra-tenant/prove-from-connection` | partner/system scope, `requireOrgWrite`, `requireMfa()` | `{ data: PortalEntraTenantStatus }`. `PortalEntraProofError` → `{ error, code }` with its status. |
-| `POST /orgs/organizations/:id/portal-entra-tenant/proof-links` | same | `{ data: { url, expiresAt } }`. The URL is `{base}/api/v1/portal/auth/oidc/entra/proof?run=<token>`. Audit `.link_created`. |
+| `POST /orgs/organizations/:id/portal-entra-tenant/proof-links` body `{ tenant?: string }` (GUID or domain) | same | `{ data: { url, expiresAt, expectedTenantId } }`. The URL is `{base}/api/v1/portal/auth/oidc/entra/proof?run=<token>`. With no hint and no mapping or connection tenant → 422 `PORTAL_ENTRA_TENANT_HINT_REQUIRED`. Audit `.link_created`. |
 | `DELETE /orgs/organizations/:id/portal-entra-tenant` | same | `{ data: { removed, tenantId } }`. Audit `.removed` (OD3). |
-| `GET /api/v1/portal/auth/oidc/entra/proof?run=<token>` | public, proof limiter | Peek the run → `createPortalOidcState({ purpose: tenant_proof, authority: expectedTenantId ?? 'organizations' })` → 302 to authorize with `PORTAL_ENTRA_PROOF_SCOPE`. A bad or expired run → 302 `/entra-setup?status=invalid`. |
+| `GET /api/v1/portal/auth/oidc/entra/proof?run=<token>` | public, proof limiter | Peek the run → `createPortalOidcState({ purpose: tenant_proof, authority: expectedTenantId })` → 302 to authorize with `PORTAL_ENTRA_PROOF_SCOPE`. A bad or expired run → 302 `/entra-setup?status=invalid`. |
 
 Rules:
-- **The run record** lives under `PORTAL_REDIS_KEYS.entraProofRun(sha256(token))`: `{ v: 1, runId, orgId, partnerId, createdByUserId, expectedTenantId, createdAt }`, TTL 72 h. `expectedTenantId` is the org's current mapping tenant, or null.
+- **The run record** lives under `PORTAL_REDIS_KEYS.entraProofRun(sha256(token))`: `{ v: 1, runId, orgId, partnerId, createdByUserId, expectedTenantId, createdAt }`, TTL 72 h.
+  - `expectedTenantId` is never null (D6). Its source, in order: the org's mapped tenant, the body hint, then the org's M365 connection tenant.
+  - The org's mapped tenant always wins: a hint for a different tenant → 409 `ORG_HAS_OTHER_TENANT`.
+  - A domain hint resolves through `resolveEntraTenantIdFromDomain(domain)`. It fetches the public openid-configuration with a timeout and reads the tid from `issuer`. A failure → 422 `PORTAL_ENTRA_TENANT_HINT_INVALID`.
 - **MSP routes** authorize the org through `resolveAccessibleOrg`, then call the Task 2 service through `runOutsideDbContext`.
 - **The `tenant_proof` callback branch**, in order:
   1. `checkMailboxConsentAdminRoleViaGraph(accessToken, { tid, oid })` must be `ok`. Otherwise → `failed`, with the reason in audit and log.
-  2. GET+DEL the run by hash. Gone → `invalid`.
+  2. GET+DEL the run by hash. Gone → `invalid`. Re-authorize (D6): the org passes `getActiveOrgTenant`, and the creator is an `active` user who still belongs to the org's partner. Otherwise → `invalid`.
   3. `recordEntraTenantProof({ via: 'proof_run', evidence: { adminOid: oid, runId }, provenByUserId: run.createdByUserId })`. A `PortalEntraProofError` → `failed`.
   4. 302 to `buildPortalAppAdminConsentUrl(tid)`.
 
@@ -868,6 +925,9 @@ it('DELETE removes the mapping and audits removed');
 it('proof run end-to-end with a stubbed token endpoint + Graph role check: mapping proven via proof_run, redirect to adminconsent');
 it('proof run by a non-admin (Graph check fails) → failed, run still usable');
 it('proof run pinned to the org\'s mapped tenant refuses a token from another tenant');
+it('a forwarded link opened by the admin of a different tenant → failed (tid ≠ expectedTenantId), nothing recorded'); // D6
+it('proof-links with a domain hint pins the tid from the openid-configuration; no hint and no tenant → 422');
+it('creator deactivated after creating the link → invalid at callback, nothing recorded');
 it('concurrent proof callbacks record one proof');                                             // Review Focus 3
 it('a used run link → invalid');
 ```
@@ -907,14 +967,16 @@ export async function computeSsoOnlyFlips(owner: { kind: 'org'; orgId: string; p
 export async function listSsoOnlyStranded(orgId: string, limit?: number /* 200 */): Promise<{ items: StrandedPortalAccount[]; total: number }>;
 /** On the caller's transaction: password_hash = NULL, auth_epoch + 1 WHERE org_id = ANY(orgIds) AND password_hash IS NOT NULL AND identity exists. */
 export async function clearPasswordsForSsoOnly(tx: DbTx, orgIds: string[]): Promise<{ clearedUserIds: string[] }>;
+/** sha256 hex over the flips sorted by orgId as `${orgId}:${passwordsToClear}:${strandedTotal}` lines (D12). */
+export function ssoOnlyImpactDigest(flips: SsoOnlyOrgImpact[]): string;
 ```
 
 | Method + path | Middleware | Response |
 |---|---|---|
-| `POST /orgs/organizations/:id/portal-access-policy/sso-only-impact` body = patch | partner/system scope, `requireOrgRead` | `{ data: { flips: SsoOnlyOrgImpact[], stranded: { items, total } } }` |
-| `POST /orgs/partners/me/portal-access-policy/sso-only-impact` body = patch | `requireScope('partner')`, `requirePartner`, `requireOrgRead` | `{ data: { flips } }` |
+| `POST /orgs/organizations/:id/portal-access-policy/sso-only-impact` body = patch | partner/system scope, `requireOrgRead` | `{ data: { flips: SsoOnlyOrgImpact[], impactDigest, stranded: { items, total } } }` |
+| `POST /orgs/partners/me/portal-access-policy/sso-only-impact` body = patch | `requireScope('partner')`, `requirePartner`, `requireOrgRead` | `{ data: { flips, impactDigest } }` |
 | `GET /orgs/organizations/:id/portal-access-policy/stranded` | partner/system scope, `requireOrgRead` | `{ data: { items, total } }` |
-| `PATCH …/portal-access-policy[?acknowledge=sso-only]` (both owners) | unchanged | A flip without ack → 409 `{ error, code: SSO_ONLY_CONFIRM_REQUIRED, impact: { flips } }`. With ack: upsert + `clearPasswordsForSsoOnly` in one `withDbTransaction`. After commit, `purgePortalSessionsForUsers` + `purgeClientAiSessionsForUsers` (cleanup). Audit `details.ssoOnly = { orgIds, passwordsCleared }`. |
+| `PATCH …/portal-access-policy[?acknowledge=<impactDigest>]` (both owners) | unchanged | A flip with no ack, or with a digest that differs from the impact recomputed inside the transaction, → 409 `{ error, code: SSO_ONLY_CONFIRM_REQUIRED, impact: { flips, impactDigest } }`. With ack: upsert + `clearPasswordsForSsoOnly` in one `withDbTransaction`. After commit, `purgePortalSessionsForUsers` + `purgeClientAiSessionsForUsers` (cleanup). Audit `details.ssoOnly = { orgIds, passwordsCleared }`. |
 | `POST /orgs/organizations/:id/portal-users/sso-invite` body `{ portalUserIds: uuid[1..100] }` | partner/system scope, `requireOrgWrite`, `requireMfa()` | `{ data: Array<{ portalUserId, result: 'invited' \| 'not_stranded' \| <error code> }> }`. Processed sequentially through the existing `msp_invite` path. Microsoft not effective → 409 `PORTAL_SSO_INVITE_UNAVAILABLE`. |
 | `POST /orgs/organizations/:id/portal-users/:userId/browser-access` | same | `{ data: { browserAccess: 'granted' } }`. Uses the `msp_grant_browser_access` writer, with no epoch bump. Audit `organization.portal_user.browser_access.grant`. |
 
@@ -935,6 +997,7 @@ it('computeSsoOnlyFlips: org sso_only with entra on and proven → one flip; alr
 it('computeSsoOnlyFlips: partner entra on flips every inheriting org that already holds an sso_only override in fallback');
 it('saving sso_only clears hashes only for identity accounts and lists the stranded');      // Review Focus 4, inv. 11
 it('PATCH without acknowledge → 409 with impact and nothing written');                       // Review Focus 4
+it('PATCH with a stale digest (a new identity account appeared since the preview) → 409 with the fresh digest'); // D12
 it('PATCH with acknowledge commits policy + clearing together; a forced failure rolls back both');
 it('a flip caused by a proof (no PATCH) clears no hashes but password login is refused');  // D12
 it('partner PATCH with acknowledge clears across its orgs only (another partner untouched)');
@@ -967,7 +1030,9 @@ cd apps/api && npx vitest run --pool=forks --poolOptions.forks.maxForks=4 src/se
   - `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`;
   - `pnpm --filter @breeze/api test:integration-suite-coverage`.
 
-  Every new integration file must be listed in `.github/scripts/integration-suites.txt`.
+  - `.github/scripts/integration-suites.txt`: the `portal` suite's test glob already matches the new `portal*.integration.test.ts` files.
+  - Add `suite portal sources <file>` lines for each newly imported source file the portal suite does not own yet, as W03a did. Likely candidates: `routes/orgPortalEntraTenant.ts`, `config/portalEntra.ts`, `services/portalEntraTenantProof.ts`, `services/portalOidc/*`, `services/portalSsoOnly.ts`, `services/clientAiEntraAddress.ts`, `services/tenantStatus.ts`.
+  - `test:integration-suite-coverage` names any line that is missing.
 - [ ] **Step 3: Migration slot.** Run `git fetch origin main` and the `localeCompare` check from the migrations README. Rename if the slot was overtaken.
 - [ ] **Step 4: Review.** Run one independent review round (`superpowers:requesting-code-review`) and the advisor quorum on D1–D15. Then `pnpm test-stack down` and say so.
 - [ ] **Step 5: Open the PR.** The body must contain:
@@ -1001,7 +1066,10 @@ Test commands:
 **Interfaces:**
 - Consumes: the Task 8 routes.
 - Produces: `EntraTenantPanel({ orgId, onChanged })`. Behaviour by state:
-  - `none` / `unproven`: actions *Use Microsoft 365 connection (tenant …)*, shown only when `connectionTenantId` is set, and *Create proof link*. The link shows with *Copy* and its expiry.
+  - `none` / `unproven`:
+    - *Use Microsoft 365 connection (tenant …)*, shown only when `connectionTenantId` is set.
+    - *Create proof link*, with a tenant field (GUID or domain) prefilled from the mapped or connection tenant. It is required when neither exists.
+    - The link shows with *Copy*, its expiry and the pinned tenant.
   - `proven`: "Proven {date} via {M365 connection | admin sign-in}", the admin-consent link (*Copy*), and *Remove tenant link*.
   - *Remove tenant link* uses `ConfirmDialog` with the AI for Office warning (OD3).
   - Every mutation goes through `runAction`, with the `PORTAL_ENTRA_*` codes mapped in `friendly`.
@@ -1026,7 +1094,7 @@ Test commands:
 - Create `portalAccess/SsoOnlyConfirmDialog.tsx` and `SsoOnlyConfirmDialog.test.tsx`.
 - Modify `OrgSignInRegistrationCard.tsx`:
   - On a 409 `SSO_ONLY_CONFIRM_REQUIRED`, open the dialog with `impact`.
-  - Confirm → PATCH with `?acknowledge=sso-only`. If *Send Microsoft sign-in invites* is ticked, then POST `sso-invite` in batches of 100.
+  - Confirm → PATCH with `?acknowledge=<impactDigest>`. On a fresh 409 (the impact changed), re-open the dialog with the new numbers. If *Send Microsoft sign-in invites* is ticked, then POST `sso-invite` in batches of 100.
   - When the effective mode is `sso_only`, show a *Stranded (n)* list (`GET …/stranded`) with *Send Microsoft sign-in invite*.
 - Modify `partnerSettings/units/portalAccessPolicyUnit.ts`. The partner header Save goes through the same dialog, which lists the per-org flips with links. There is no bulk invite from the partner level.
 - Modify `OrgPortalUsersEditor.tsx`. Add a *Give browser access* row action for `browserAccess === 'none'`, testid `portal-user-grant-browser-<id>`.
@@ -1034,7 +1102,8 @@ Test commands:
 
 - [ ] **Step 1: Write the failing tests**:
   - `save that flips to sso_only opens the dialog with counts and stranded names`
-  - `confirm sends acknowledge and then batches sso-invite when ticked`
+  - `confirm sends the impact digest and then batches sso-invite when ticked`
+  - `a 409 with a new digest re-opens the dialog with fresh counts`
   - `cancel writes nothing`
   - `partner save lists affected orgs`
   - `stranded list shows when sso_only is effective`
@@ -1094,7 +1163,9 @@ Test commands:
   - register a multi-tenant web app;
   - add the two redirect URIs (D4);
   - add a client secret;
-  - add the delegated permissions `openid profile email`, plus `Directory.Read.All` for the proof run (OD2). **Do not** grant tenant-wide consent for `Directory.Read.All`.
+  - add the delegated permissions `openid profile email`, plus `Directory.Read.All` for the proof run (OD2). **Do not** grant tenant-wide consent for `Directory.Read.All`;
+  - add the ID-token optional claims `acct`, `email` and `xms_edov`;
+  - note that the portal and the API must share one site (the default Caddy layout). The OIDC binding cookie is `SameSite=Lax`.
   - Use generic placeholders only.
 - Regenerate the index from the repo root with `npx tsx scripts/build-docs-index.ts`.
 
@@ -1116,7 +1187,7 @@ Steps:
   6. A personal Microsoft account is refused.
   7. An Entra session dies after a 1 h cap.
   8. An add-in session re-exchanges silently after the 12 h cap, verified with a shortened cap in the lab.
-  9. OD2: check whether a lower scope returns `roleTemplateId`.
+  9. Optional claims: `acct=1` is emitted for a guest in a pinned-tenant proof sign-in, and `xms_edov` is present.
 - [ ] **Step 4: Gate.**
   - Web and portal: `astro check` and `tsc` exit 0, and `npx vitest run --pool=forks --poolOptions.forks.maxForks=4 --changed origin/main` green.
   - API: the docs-index tests.
@@ -1171,9 +1242,9 @@ Steps:
 - **W3 capability assumptions.** Flipping `entra` to env-gated leaves tests false (no env in test). Any test that sets the env must restore it, and must prefer `__testOnly.setCapabilities`.
 - **No network in tests.** Inject `fetch` and the `jose` verification key. A test that reaches `login.microsoftonline.com` hangs CI.
 - **Redis Lua.** The GET+DEL extraction must keep the in-memory twin. Run `capabilityTokens.test.ts`, and the race test under real Redis.
-- **Binding cookie SameSite.** It must stay `Lax` regardless of `PORTAL_COOKIE_SAME_SITE`. A `Strict` cookie is not sent on Microsoft's redirect, and every callback reads `unavailable`.
+- **Binding cookie SameSite.** It must stay `Lax` regardless of `PORTAL_COOKIE_SAME_SITE`. A `Strict` cookie is not sent on Microsoft's redirect, and every callback reads `unavailable`. A deployment whose portal and API sit on different sites drops the `Lax` Set-Cookie from the start `fetch`. Same-site is a documented requirement (Task 14).
 - **Audit coverage.** The callback is a GET, so the portal auth audit wrapper (POST-only, `auth.ts:84-130`) skips it. Write the rows explicitly.
-- **Integration suite list.** New `*.integration.test.ts` files go into `.github/scripts/integration-suites.txt`, or `test:integration-suite-coverage` fails.
+- **Integration suite map.** `.github/scripts/integration-suites.txt` maps suites to globs. The new tests already match `portal[!a-z0-9]*`, but newly imported sources need `suite portal sources <file>` lines, or `test:integration-suite-coverage` fails.
 - **New service files.** `parkedFanout.contract.test.ts` must not discover them (none reads `devices`).
 - **Migration slot.** The slot is assigned at enqueue. A sibling migration landing first poisons the merge queue (Check Migrations). Run `pnpm db:check-drift`.
 - **Typecheck heap.** API `tsc` needs a 20 GB heap. Check `exit=$?`, never `| tail`.
