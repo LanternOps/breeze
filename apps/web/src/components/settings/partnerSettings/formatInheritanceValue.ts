@@ -16,6 +16,7 @@ const VALUE_LABEL_KEYS: Readonly<Record<string, Readonly<Record<string, string>>
     auto_approve: 'partnerAiBudgets.modes.autoApprove',
     hybrid_plan: 'partnerAiBudgets.modes.hybridPlan',
   },
+  'aiBudgets.enabled': { true: 'aiUsagePage.enabled', false: 'aiUsagePage.disabled' },
   'notifications.pushoverDefaultPriority': {
     '-2': 'partnerNotifications.priorities.lowest',
     '-1': 'partnerNotifications.priorities.low',

@@ -284,7 +284,7 @@
     "alertThresholds": "Avisar em (% do orçamento)",
     "alertThresholdsHelp": "Administradores parceiros com acesso a cobrança recebem um alerta no aplicativo em cada nível e um e-mail para alertas mensais e de limite atingido. Deixe em branco para herdar 50, 80, 95.",
     "notSet": "Não definido, as organizações configuram individualmente",
-    "description": "Os valores definidos aqui se aplicam a todas as organizações filhas e bloqueiam o campo correspondente da organização. Deixe um campo vazio para que as organizações o configurem.",
+    "description": "Um valor definido aqui se aplica a todas as organizações e as bloqueia. Um campo deixado vazio é configurado por organização. Os valores em dólares são armazenados internamente em centavos.",
     "modes": {
       "perStep": "Por etapa",
       "actionPlan": "Plano de ação",
@@ -1198,6 +1198,7 @@
       "badge": {
         "locks": "Bloqueia organizações",
         "locksConditional": "Bloqueia organizações quando ativado",
+        "locksWhenSet": "Bloqueia organizações quando definido",
         "overridable": "A organização pode alterar",
         "overridableCap": "A organização pode alterar, até {{limit}}",
         "partnerOnly": "Para todo o parceiro"
@@ -1205,6 +1206,7 @@
       "badgeHelp": {
         "locks": "Enquanto estiver definido, todas as organizações usam o seu valor. O valor próprio da organização é ignorado.",
         "locksConditional": "Quando ativado, todas as organizações usam o seu valor em vez do próprio. Quando desativado, usam o próprio.",
+        "locksWhenSet": "Depois que você define um valor, todas as organizações o usam e o valor próprio é ignorado. Enquanto estiver vazio, cada organização configura o seu.",
         "overridable": "O seu valor é o padrão. Uma organização que define o próprio valor usa esse no lugar.",
         "overridableCap": "O seu valor é o padrão. Uma organização pode definir o próprio valor, até {{limit}}.",
         "partnerOnly": "As organizações não têm uma configuração própria. O seu valor se aplica a todas."

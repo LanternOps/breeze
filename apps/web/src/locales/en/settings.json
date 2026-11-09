@@ -284,7 +284,7 @@
     "alertThresholds": "Warn at (% of budget)",
     "alertThresholdsHelp": "Partner admins with billing access get an in-app alert at each rung and an email for monthly and cap-reached alerts. Leave empty to inherit 50, 80, 95.",
     "notSet": "Not set, orgs configure individually",
-    "description": "Values set here apply to every child organization and lock the matching organization field. Leave a field empty to let organizations configure it.",
+    "description": "A value you set here applies to every organization and locks it. A field you leave empty is configured per organization. Dollar amounts are stored in cents internally.",
     "modes": {
       "perStep": "Per Step",
       "actionPlan": "Action Plan",
@@ -1198,6 +1198,7 @@
       "badge": {
         "locks": "Locks orgs",
         "locksConditional": "Locks orgs when enabled",
+        "locksWhenSet": "Locks orgs when set",
         "overridable": "Org can override",
         "overridableCap": "Org can override, up to {{limit}}",
         "partnerOnly": "Partner-wide"
@@ -1205,6 +1206,7 @@
       "badgeHelp": {
         "locks": "While this is set, every organization uses your value. An organization's own value is ignored.",
         "locksConditional": "While enabled, every organization uses your value instead of its own. While disabled, organizations use their own.",
+        "locksWhenSet": "Once you set a value, every organization uses it and its own value is ignored. While empty, each organization configures its own.",
         "overridable": "Your value is the default. An organization that sets its own value uses that instead.",
         "overridableCap": "Your value is the default. An organization can set its own value, up to {{limit}}.",
         "partnerOnly": "Organizations have no setting of their own. Your value applies to all of them."
