@@ -126,6 +126,19 @@ describe('upstream request headers', () => {
     expect(up(`${TUNNEL_ORIGIN}/%5F%5Fbz/enter?t=TICKET`)).toBeUndefined();
     expect(up(`${TUNNEL_ORIGIN}/a/../__bz/enter?t=TICKET`)).toBeUndefined();
     expect(up(`${TUNNEL_ORIGIN}/__bz`)).toBeUndefined();
+    // Every spelling the router treats as reserved is dropped here too.
+    for (const path of ['//__bz/enter', '/%255F%255Fbz/enter', '/__bz%2Fenter', '/%5C__bz/enter', '/__Bz%2fenter']) {
+      expect(up(`${TUNNEL_ORIGIN}${path}?t=TICKET`), path).toBeUndefined();
+    }
+  });
+
+  it('rewrites Referer independently of Origin: a null Origin is not forwarded beside a same-tunnel Referer', () => {
+    const headers = buildHostModeUpstreamHeaders(
+      { origin: 'null', referer: `${TUNNEL_ORIGIN}/login.htm` },
+      { tunnelOrigin: TUNNEL_ORIGIN, targetOrigin: TARGET },
+    );
+    expect(headers.origin).toBeUndefined();
+    expect(headers.referer).toEqual(['http://192.168.1.50/login.htm']);
   });
 });
 

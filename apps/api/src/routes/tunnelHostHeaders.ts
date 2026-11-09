@@ -83,12 +83,13 @@ export function rewriteHostModeReferer(referer: string | undefined, opts: { tunn
 /**
  * Headers forwarded to the device. Starts from the shared allowlist (never
  * `cookie`, `authorization`, `referer`, `origin` or any forwarding header),
- * then adds the device's own cookies and, only when they name this tunnel's
- * own origin, `Origin` and `Referer` rewritten to the device's origin, so
- * device-side CSRF checks pass. The app origin is never forwarded. Browsers
- * send `Referer` only where the page's referrer policy allows. The proxy's own
- * policy is `no-referrer`, so in practice one arrives only when an operator
- * relaxes that policy at the edge (#11458).
+ * then adds the device's own cookies and, only when the request's `Origin` /
+ * `Referer` name this tunnel's own origin, those headers rewritten to the
+ * device's origin, so device-side CSRF checks pass. The app origin is never
+ * forwarded. The proxy's response policy is `no-referrer`, so a `Referer`
+ * normally arrives only when the device page overrides it (a referrer meta
+ * tag or element `referrerpolicy`) or an operator relaxes it at the edge
+ * (#11458).
  */
 export function buildHostModeUpstreamHeaders(
   reqHeaders: Record<string, string>,

@@ -4,7 +4,8 @@
  * (and sibling tunnel hosts are same-site until PSL inclusion), so a page on
  * tunnel A can send a request to tunnel B that carries B's partitioned cookie
  * (W00 confirmed this in every engine). Rules apply to GET too: device GET
- * endpoints often have side effects (reboot links, config toggles). Pure.
+ * endpoints often have side effects (reboot links, config toggles). Also home
+ * to `isReservedTunnelPath`, shared by the router and the Referer rewrite. Pure.
  */
 export interface TunnelAdmissionInput {
   method: string;
@@ -27,6 +28,7 @@ export type TunnelAdmissionResult =
 
 export const TUNNEL_ENTER_PATH = '/__bz/enter';
 
+const ASCII_ESCAPE = /%([0-7][0-9a-f])/gi;
 /**
  * `/__bz` and everything under it, however it is spelled: case, ASCII
  * percent-escapes (decoded repeatedly — `_`, `b`, `z` and `/` are all ASCII),
@@ -34,7 +36,6 @@ export const TUNNEL_ENTER_PATH = '/__bz/enter';
  * sequences are left alone so a device path like `/100%` still works. A path
  * that keeps changing after a few rounds is treated as reserved.
  */
-const ASCII_ESCAPE = /%([0-7][0-9a-f])/gi;
 export function isReservedTunnelPath(rawPathname: string): boolean {
   let current = rawPathname;
   for (let round = 0; round < 4; round += 1) {
