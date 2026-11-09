@@ -313,7 +313,43 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const storedEmailRecipients = Array.isArray(config.emailRecipients)
     ? config.emailRecipients.filter((email): email is string => typeof email === 'string')
     : [];
+  // #9728: the custom builder's own state (data source, columns, record
+  // filters, grouping, chart, checked formats) lives on `config`; PUT replaces
+  // `config`, so a form that opens blank writes the blank back. Each key is
+  // restored only when it was stored with the right shape.
+  const isRecord = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  const builderTypes = ['devices', 'alerts', 'patches', 'compliance', 'activity'];
+  const chartTypes = ['table', 'bar', 'line', 'pie'];
+  const formatValues = ['csv', 'pdf', 'excel'];
+  const storedBuilderState: Partial<ReportBuilderFormValues> = {
+    ...(typeof config.builderType === 'string' && builderTypes.includes(config.builderType)
+      ? { builderType: config.builderType as ReportBuilderFormValues['builderType'] }
+      : {}),
+    ...(isRecord(config.dataSource)
+      ? { dataSource: config.dataSource as ReportBuilderFormValues['dataSource'] }
+      : {}),
+    ...(Array.isArray(config.columns) && config.columns.every((c) => typeof c === 'string')
+      ? { columns: config.columns as string[] }
+      : {}),
+    ...(Array.isArray(config.filterConditions) && config.filterConditions.every(isRecord)
+      ? { filterConditions: config.filterConditions as ReportBuilderFormValues['filterConditions'] }
+      : {}),
+    ...(typeof config.groupBy === 'string' ? { groupBy: config.groupBy } : {}),
+    ...(isRecord(config.aggregation) && typeof config.aggregation.type === 'string'
+      ? { aggregation: config.aggregation as ReportBuilderFormValues['aggregation'] }
+      : {}),
+    ...(typeof config.chartType === 'string' && chartTypes.includes(config.chartType)
+      ? { chartType: config.chartType as ReportBuilderFormValues['chartType'] }
+      : {}),
+    ...(Array.isArray(config.exportFormats)
+      && config.exportFormats.length > 0
+      && config.exportFormats.every((f) => typeof f === 'string' && formatValues.includes(f))
+      ? { exportFormats: config.exportFormats as ReportBuilderFormValues['exportFormats'] }
+      : {}),
+  };
   const defaultValues: Partial<ReportBuilderFormValues> = {
+    ...(isBusiness || isSelectorlessOrgReportType(report.type) ? {} : storedBuilderState),
     name: report.name,
     type: report.type as ReportType,
     schedule: report.schedule,
