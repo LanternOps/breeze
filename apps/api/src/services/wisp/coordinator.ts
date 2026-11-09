@@ -92,7 +92,7 @@ export type SpecialistRequestInput = {
 };
 
 export type RequestSpecialistResult =
-  | { admitted: true; runId?: string; taskId?: string; report?: unknown }
+  | { admitted: true; runId?: string; taskId?: string; report?: unknown; message?: string }
   | { needsApproval: true; intentId: string }
   | { refused: SpecialistRefusal; detail?: string; message?: string; report?: unknown };
 

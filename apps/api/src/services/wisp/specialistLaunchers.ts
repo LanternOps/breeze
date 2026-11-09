@@ -35,6 +35,7 @@ import { getRecipe } from '../aiOperator/recipes';
 import { admitTask } from '../aiOperator/taskService';
 import type { GrantCeiling } from './grantAuthority';
 import type { SpecialistKind } from './specialistPolicy';
+import { assessmentParamsSchema, launchAssessment, type AssessmentLaunchReport } from './specialists/assessmentLaunch';
 import { executeBulkTicketReply, type BulkTicketReplyReport } from './specialists/bulkTicketReply';
 import { agentOffMessage, type AgentOffReason } from './specialistRefusalMessages';
 import { buildContinuationSeed, continuationDedupeKey, continuationOf } from './troubleshootContinuation';
@@ -59,8 +60,9 @@ export type SpecialistRefusal =
   | 'continuation_refused';
 
 export type LaunchResult =
-  | { admitted: true; runId?: string; taskId?: string; report?: BulkTicketReplyReport }
-  | { refused: SpecialistRefusal; detail?: string; message?: string; report?: BulkTicketReplyReport };
+  /** `message`: the sentence the model reads back, when the launcher has one (#10406). */
+  | { admitted: true; runId?: string; taskId?: string; report?: BulkTicketReplyReport | AssessmentLaunchReport; message?: string }
+  | { refused: SpecialistRefusal; detail?: string; message?: string; report?: BulkTicketReplyReport | AssessmentLaunchReport };
 
 export interface LaunchContext {
   orgId: string;
@@ -116,15 +118,6 @@ export const troubleshootParamsSchema = z.strictObject({
   deviceId: z.uuid(),
   goal: z.string().trim().min(5).max(500),
   continueFromRunId: z.uuid().optional(),
-});
-
-/**
- * #10406: `org` assesses the anchor org; `orgs_with_open_alerts` expands to up
- * to ONBOARDING_ORG_LIMIT assessable ceiling orgs with open alerts, most
- * severe first (launchAssessment).
- */
-export const assessmentParamsSchema = z.strictObject({
-  scope: z.enum(['org', 'orgs_with_open_alerts']).default('org'),
 });
 
 const PARAMS_SCHEMAS: Readonly<Record<SpecialistKind, z.ZodType>> = Object.freeze({
@@ -675,11 +668,6 @@ export async function launchBulkTicketReply(ctx: LaunchContext): Promise<LaunchR
     return { refused: 'bulk_reply_incomplete', detail: 'uncertain', report };
   }
   return { admitted: true, report };
-}
-
-/** #10406 — Wisp's own assessment from chat. Filled in by W03 Task 4. */
-export async function launchAssessment(_ctx: LaunchContext): Promise<LaunchResult> {
-  return { refused: 'admission_skipped', detail: 'not_implemented' };
 }
 
 export const SPECIALIST_LAUNCHERS: Readonly<Record<SpecialistKind, (ctx: LaunchContext) => Promise<LaunchResult>>> = Object.freeze({

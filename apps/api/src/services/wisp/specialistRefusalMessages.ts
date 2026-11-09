@@ -44,7 +44,7 @@ const MESSAGES: Readonly<Record<SpecialistRefusal, string>> = Object.freeze({
   budget_exhausted: "This Wisp grant has used today's AI budget. Try again tomorrow.",
   permission_missing: 'This specialist needs a permission that the Wisp grant or the person asking does not hold.',
   workspace_execute_required: 'Sandbox analysis needs the ai_workspace:execute permission, in the Wisp grant and for the person asking.',
-  unknown_kind: 'That is not a specialist kind. Use sweep, analysis, operator_recipe, patch_plan, remediation_research, bulk_ticket_reply or device_troubleshooting.',
+  unknown_kind: 'That is not a specialist kind. Use sweep, analysis, operator_recipe, patch_plan, remediation_research, bulk_ticket_reply, device_troubleshooting or assessment.',
   invalid_params: 'The params do not fit this specialist kind (see detail). Correct the call and try again.',
   device_not_in_org: 'That device is not in this organization.',
   no_sweep_schedule: `No enabled health-sweep schedule covers this organization. Turn one on under ${AGENTS_SETTINGS}, then ask again.`,
@@ -83,6 +83,10 @@ const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Recor
     analysis_not_available: 'Sandbox analysis is not available on this server.',
     enqueue_failed: 'The run could not be queued. Try again in a minute.',
     grant_refused: 'The Wisp grant no longer allows this run.',
+    // #10406: the on-demand assessment launcher.
+    no_open_alerts: 'No organization this Wisp grant can assess has open alerts, so there is nothing to go through.',
+    no_assessable_orgs: 'This Wisp grant cannot assess that organization: it reaches it only through specific sites, or a needed permission is missing.',
+    queue_unavailable: 'The assessments could not be queued. Try again in a minute.',
   },
 });
 
