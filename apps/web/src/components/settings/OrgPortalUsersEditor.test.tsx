@@ -2,7 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: any[]) => fetchWithAuth(...a) }));
+// The embedded access-request list fetches on mount; answer it separately so the
+// per-test mockResolvedValueOnce sequences below only describe portal-users calls.
+let requestsHandler: (url: string, init?: RequestInit) => Promise<unknown> = async () => ({
+  ok: true, status: 200, json: async () => ({ data: [], hasMore: false }),
+});
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...a: any[]) =>
+    String(a[0]).includes('/portal-access-requests') ? requestsHandler(a[0], a[1]) : fetchWithAuth(...a),
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 // runAction surfaces success/warning/error toasts via showToast from ../shared/Toast.
@@ -16,9 +24,43 @@ import OrgPortalUsersEditor from './OrgPortalUsersEditor';
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const ok = (data: unknown) => ({ ok: true, status: 200, json: async () => (data) });
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  requestsHandler = async () => ({ ok: true, status: 200, json: async () => ({ data: [], hasMore: false }) });
+});
 
 describe('OrgPortalUsersEditor', () => {
+  it('badges show identity providers and no browser access', async () => {
+    fetchWithAuth.mockResolvedValue(ok({ data: [
+      { id: 'pu-1', email: 'a@acme.example', name: 'A', status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null, browserAccess: 'none', identityProviders: ['entra', 'google'] },
+      { id: 'pu-2', email: 'b@acme.example', name: null, status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null, browserAccess: 'granted', identityProviders: [] }
+    ] }));
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    await waitFor(() => expect(screen.getByTestId('portal-user-badge-entra-pu-1')).toHaveTextContent('Microsoft sign-in'));
+    expect(screen.getByTestId('portal-user-badge-google-pu-1')).toHaveTextContent('Google sign-in');
+    expect(screen.getByTestId('portal-user-badge-no-browser-pu-1')).toHaveTextContent('No browser access');
+    expect(screen.queryByTestId('portal-user-badge-no-browser-pu-2')).toBeNull();
+    expect(screen.queryByTestId('portal-user-badge-entra-pu-2')).toBeNull();
+  });
+
+  it('an approval reloads the users table without unmounting the request list', async () => {
+    let users = [] as unknown[];
+    let pending = [{ id: 'r1', email: 'new@acme.example', name: null, source: 'self', status: 'pending', requestedAt: '2026-11-01T00:00:00Z', lastRequestedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false }];
+    requestsHandler = async (url: string) => {
+      if (url.endsWith('/r1/approve')) {
+        pending = [];
+        users = [{ id: 'pu-9', email: 'new@acme.example', name: null, status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null }];
+        return ok({ data: { outcome: 'account_created', portalUserId: 'pu-9' } });
+      }
+      return ok({ data: pending, hasMore: false });
+    };
+    fetchWithAuth.mockImplementation(async () => ok({ data: users }));
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    fireEvent.click(await screen.findByTestId('portal-access-request-approve-r1'));
+    await waitFor(() => expect(screen.getByTestId('portal-user-row-pu-9')).toBeInTheDocument());
+    expect(screen.queryByText(/loading/i)).toBeNull();
+  });
+
   it('renders portal users with status badges', async () => {
     fetchWithAuth.mockResolvedValueOnce(ok({ data: [
       { id: 'pu-1', email: 'a@acme.example', name: 'A', status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null },

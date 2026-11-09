@@ -37,6 +37,7 @@ const PORTAL_STATUS_LABEL_KEYS: Record<ContactPortalStatus, string> = {
   invited: 'contactsCard.portal.status.invited',
   active: 'contactsCard.portal.status.active',
   disabled: 'contactsCard.portal.status.disabled',
+  requested: 'contactsCard.portal.status.requested',
 };
 
 type Contact = {

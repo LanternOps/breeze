@@ -609,6 +609,14 @@ const TARGET_GLOBS = [
   'src/components/aiOperator/RecipeCard.tsx',
   // The draft preview and the admission that starts a four-eyes offboarding.
   'src/components/aiOperator/StartRecipeForm.tsx',
+  // Portal registration W3 (#11380): the sign-in policy writes (org card, partner unit) and the
+  // access-request approve/deny/decide calls, plus the portal-user and contact surfaces they touch.
+  'src/components/settings/portalAccess/OrgSignInRegistrationCard.tsx',
+  'src/components/settings/partnerSettings/units/portalAccessPolicyUnit.ts',
+  'src/components/settings/partnerSettings/PartnerCustomerPortalTab.tsx',
+  'src/components/settings/portalAccess/PortalAccessRequestsList.tsx',
+  'src/components/settings/OrgPortalUsersEditor.tsx',
+  'src/components/settings/contactPortalAccess.ts',
 ];
 
 // Ratchet floor, not a total: adding an entry above never touches this line.
