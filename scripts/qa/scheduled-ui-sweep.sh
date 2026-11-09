@@ -56,7 +56,9 @@ ENVVALS="$QA_HOME/.envvals"   # literal .env values; outside RUN_DIR so the agen
 body_ok() {
   [ -s "$1" ] && [ "$(wc -c < "$1")" -le 60000 ] || return 1
   grep -Eq "$SECRET_RE" "$1" && return 1
-  grep -Eq '[A-Za-z0-9+/=_-]{48,}' "$1" && return 1                 # long high-entropy runs
+  # long token-like runs: 40+ chars mixing upper, lower AND digits (JWT/base64/API
+  # keys). Hyphenated slugs and 40-hex SHAs don't trip it.
+  grep -oE '[A-Za-z0-9+/=_-]{40,}' "$1" | grep '[A-Z]' | grep '[a-z]' | grep -q '[0-9]' && return 1
   grep -Eq '[a-z][a-z0-9+.-]*://[^/[:space:]:@]+:[^/[:space:]@]+@' "$1" && return 1  # creds in URLs
   [ -s "$ENVVALS" ] && grep -qF -f "$ENVVALS" "$1" && return 1       # any literal .env value
   return 0
