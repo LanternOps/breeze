@@ -1484,6 +1484,11 @@ export function createAgentRunPreToolUse(args: {
           return { allowed: false, error: fresh.ok ? denial : fresh.error };
         }
       }
+      // #10428 W06: an effect that matches a standing instruction never runs
+      // unattended; a human decides it, with the conflict on the card.
+      if (standingConflictText) {
+        return recordProposal(check, toolName, input, 'matches a standing instruction', standingConflictText);
+      }
       // Same pure resolver `checkAgentGuardrails` already called to reach
       // 'act' — deterministic on the same (toolName, input), so this can
       // only be non-null. The null branch below is defense in depth, never

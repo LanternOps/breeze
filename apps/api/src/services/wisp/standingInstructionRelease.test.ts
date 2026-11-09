@@ -45,7 +45,7 @@ describe('checkStandingInstructionsForRelease', () => {
 
   it('an intent with no arguments is checked with an empty input', async () => {
     evaluate.mockResolvedValue({ action: 'none' });
-    await checkStandingInstructionsForRelease({ ...intent, arguments: null }, ceiling);
+    await checkStandingInstructionsForRelease({ ...intent, arguments: null as never }, ceiling);
     expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ input: {} }));
   });
 
