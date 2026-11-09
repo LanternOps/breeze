@@ -4,11 +4,34 @@ export type ReauthTier = 'passkey' | 'totp' | 'password';
 
 /** Strongest-available-factor tiering — mirrors the server gate
  * (`userHasStrongerReauthFactor`): passkey → TOTP → password. SMS-method
- * accounts fall to password (no authenticated step-up SMS sender; spec #2707). */
-export function pickReauthTier(passkeyCount: number, mfaMethod: string | null): ReauthTier {
+ * accounts fall to password (no authenticated step-up SMS sender; spec #2707).
+ *
+ * #10650: `totpEnrolled` (from `GET /users/me`) is true for an authenticator
+ * app held as the primary OR as the backup beside a primary passkey. Only an
+ * explicit `true` counts: `undefined` (a session from before the field) is
+ * treated as "not enrolled", the fail-safe direction — no new option is
+ * offered, and the server stays authoritative either way. */
+export function pickReauthTier(
+  passkeyCount: number,
+  mfaMethod: string | null,
+  totpEnrolled?: boolean,
+): ReauthTier {
   if (passkeyCount > 0) return 'passkey';
-  if (mfaMethod === 'totp') return 'totp';
+  if (mfaMethod === 'totp' || totpEnrolled === true) return 'totp';
   return 'password';
+}
+
+/** #10650: the proof a step-up prompt offers as "Use authenticator app
+ * instead" beside the passkey. A user who lost the passkey and signed in with
+ * the authenticator would otherwise be stranded on a passkey-only prompt. */
+export function alternateReauthTier(
+  passkeyCount: number,
+  mfaMethod: string | null,
+  totpEnrolled?: boolean,
+): ReauthTier | null {
+  return pickReauthTier(passkeyCount, mfaMethod, totpEnrolled) === 'passkey' && totpEnrolled === true
+    ? 'totp'
+    : null;
 }
 
 type Props = {

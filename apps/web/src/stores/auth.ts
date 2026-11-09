@@ -100,6 +100,13 @@ export interface User {
   // UNKNOWN, never as "has a password" — always compare with `=== false`, never
   // `!user?.hasPassword`.
   hasPassword?: boolean;
+  // #10650: whether an authenticator app (TOTP) is enrolled — as the primary
+  // (`mfaMethod: 'totp'`) or as the BACKUP beside a primary passkey
+  // (`mfaMethod: 'passkey'`). `mfaMethod` alone cannot say which, because it
+  // only names the primary. Populated by `GET /users/me`; absent on sessions
+  // persisted before the field. Compare with `=== true`: absent means unknown,
+  // and the UI must not offer an authenticator proof it cannot vouch for.
+  totpEnrolled?: boolean;
   preferences?: UserPreferences;
 }
 
@@ -2186,6 +2193,11 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     }
     if (typeof data.canManagePartnerWide === 'boolean') {
       useAuthStore.getState().updateUser({ canManagePartnerWide: data.canManagePartnerWide });
+    }
+    // #10650: same rationale as hasPassword — /auth/login's `user` carries no
+    // factor detail, so this refresh is what makes the field real.
+    if (typeof data.totpEnrolled === 'boolean') {
+      useAuthStore.getState().updateUser({ totpEnrolled: data.totpEnrolled });
     }
     if (data.preferences) {
       useAuthStore.getState().updateUser({ preferences: data.preferences });

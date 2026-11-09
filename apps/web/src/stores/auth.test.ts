@@ -2334,6 +2334,34 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     expect(useAuthStore.getState().user?.hasPassword).toBe(true);
   });
 
+  // #10650: whether an authenticator app is enrolled (as the primary, or as the
+  // backup beside a primary passkey). Hydrated the same way as hasPassword so
+  // a session persisted before the field picks it up on its next refresh.
+  it.each([true, false])('hydrates totpEnrolled=%s from /users/me', async (totpEnrolled) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        mfaMethod: 'passkey',
+        totpEnrolled,
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBeUndefined();
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(totpEnrolled);
+  });
+
   // A server that has not shipped the field yet must leave the store value
   // ABSENT (unknown), never coerce it to false — false is what flips the UI
   // onto the identity-provider road.
