@@ -321,6 +321,10 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Portal registration W4 (#11381, 2027-01-22-233000-portal-entra-tenant-proof.sql):
+  // clears the Entra tenant proof only when entra_tenant_id changes; an org_id
+  // repoint (keep-survivor adoption, plan D8) keeps the proof.
+  'client_ai_tenant_mappings.client_ai_tenant_mappings_clear_proof_on_repoint': 'clears the proof only when entra_tenant_id changes; an org_id repoint keeps it',
   // #10521 W1 (2027-01-12-200000): RAISEs only on a partner_id change or an
   // org_id NULL↔NOT NULL flip, so the merge's org_id → org_id repoint passes.
   'device_groups.device_groups_owner_immutable': 'freezes partner_id and owner kind only; an org-owned group may repoint org_id to another non-null org_id',

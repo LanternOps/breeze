@@ -111,6 +111,10 @@ export const PORTAL_REDIS_KEYS = {
   userSessions: (userId: string) => `portal:user-sessions:${userId}`,
   resetToken: (hash: string) => `portal:reset:${hash}`,
   inviteToken: (hash: string) => `portal:invite:${hash}`,
+  /** Portal OIDC flow state (W4), keyed by sha256(state); TTL 600 s. */
+  oidcState: (hash: string) => `portal:oidc:state:${hash}`,
+  /** Entra tenant proof-run link (W4), keyed by sha256(run token); TTL 72 h. */
+  entraProofRun: (hash: string) => `portal:entra:proof-run:${hash}`,
   rlAttempts: PORTAL_RATE_LIMIT_REDIS_KEYS.attempts,
   rlBlock: PORTAL_RATE_LIMIT_REDIS_KEYS.block,
 };

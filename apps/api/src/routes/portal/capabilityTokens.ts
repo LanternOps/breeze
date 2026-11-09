@@ -51,7 +51,7 @@ import {
   RESET_TTL_MS,
   RESET_TTL_SECONDS,
 } from './schemas';
-import { capMapByOldest, normalizeEmail, portalInviteTokens, portalResetTokens, type PortalTokenEntry } from './helpers';
+import { capMapByOldest, luaGetDel, normalizeEmail, portalInviteTokens, portalResetTokens, type PortalTokenEntry } from './helpers';
 import { isPasswordSignInAllowedForOrg } from './browserSession';
 
 export type PortalCapabilityPurpose = 'invite' | 'reset';
@@ -93,9 +93,6 @@ export type CapabilityCheck =
   | { ok: true; user: CapabilityUserRow }
   | { ok: false; reason: 'invalid' | 'org_unavailable' };
 
-/** GET then DEL in one server-side step: exactly one concurrent consumer sees the value. */
-const CONSUME_LUA = "local v=redis.call('GET',KEYS[1]) if v then redis.call('DEL',KEYS[1]) end return v";
-
 function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex');
 }
@@ -106,9 +103,9 @@ function storage(purpose: PortalCapabilityPurpose) {
     : { key: PORTAL_REDIS_KEYS.resetToken, ttlSeconds: RESET_TTL_SECONDS, ttlMs: RESET_TTL_MS, map: portalResetTokens, cap: PORTAL_RESET_TOKEN_CAP };
 }
 
+/** The shared Lua GET+DEL (./helpers `luaGetDel`): exactly one concurrent consumer sees the value. */
 async function consumeFromRedis(redis: Redis, key: string): Promise<string | null> {
-  const value = await redis.eval(CONSUME_LUA, 1, key);
-  return typeof value === 'string' ? value : null;
+  return luaGetDel(redis, key);
 }
 
 function consumeFromMemory(map: Map<string, PortalTokenEntry>, tokenHash: string): string | null {

@@ -24,6 +24,8 @@ const mockState = vi.hoisted(() => ({
   insertedId: 'merge-event-1',
   ticketCandidates: [] as Array<{ id: string }>,
   isolationRows: [] as Array<{ isolationId: string; deviceId: string }>,
+  /** Rows the entra_tenant_conflict blocker read sees (portal registration W4, D8). */
+  entraMappingRows: [] as Array<{ org_id: string; proven: boolean }>,
   revalidateTicketAssignee: vi.fn(),
   /** >0 while a mocked withSystemDbAccessContext callback runs. */
   txDepth: 0,
@@ -112,6 +114,9 @@ vi.mock('../db', () => ({
       const compiled = new PgDialect().sqlToQuery(q as never);
       if (/^\s*select/i.test(compiled.sql) && compiled.sql.includes('device_network_isolations')) {
         return Promise.resolve(mockState.isolationRows);
+      }
+      if (/^\s*select/i.test(compiled.sql) && /from\s+client_ai_tenant_mappings/i.test(compiled.sql) && compiled.sql.includes('proven_at')) {
+        return Promise.resolve(mockState.entraMappingRows);
       }
       if (mockState.failExecuteMatching?.test(text)) {
         return Promise.reject(new Error('stamp write exploded'));
@@ -1190,5 +1195,117 @@ describe('network isolation org-merge blockers', () => {
 
   it.each(['released', 'expired', 'failed', 'uninstalled', 'acknowledged'])('allows the merge after isolation is %s', async () => {
     expect(await orgMergeModule.collectMergeBlockers('11111111-1111-4111-8111-111111111111', false)).toEqual([]);
+  });
+});
+
+describe('entra_tenant_conflict org-merge blocker (portal registration W4, plan D8 / OD7)', () => {
+  const LOSER = '11111111-1111-4111-8111-111111111111';
+  const SURVIVOR = '44444444-4444-4444-8444-444444444444';
+  const MESSAGE = 'Both organizations are linked to a Microsoft tenant and the merged-away one is proven. Remove one tenant link first.';
+  const isEntraRead = (s: string) => /client_ai_tenant_mappings/.test(s) && /proven_at/.test(s);
+
+  beforeEach(() => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.executedParams = [];
+    mockState.failExecuteMatching = null;
+    mockState.isolationRows = [];
+    mockState.entraMappingRows = [];
+  });
+  afterEach(() => { mockState.entraMappingRows = []; vi.restoreAllMocks(); });
+
+  it('blocks when the loser mapping is proven and the survivor holds any mapping', async () => {
+    mockState.entraMappingRows = [{ org_id: LOSER, proven: true }, { org_id: SURVIVOR, proven: false }];
+    const blockers = await orgMergeModule.collectMergeBlockers(LOSER, false, SURVIVOR);
+    expect(blockers).toEqual([{ table: 'client_ai_tenant_mappings', loserRows: 1 }]);
+    expect(orgMergeModule.mergeBlockerCodes(blockers, false)).toEqual(['entra_tenant_conflict']);
+    expect(orgMergeModule.buildMergeBlockedMessage(blockers)).toBe(MESSAGE);
+  });
+
+  it("locks both orgs' mapping rows while it reads them, so a proof cannot land between the check and the walk", async () => {
+    await orgMergeModule.collectMergeBlockers(LOSER, false, SURVIVOR);
+    const index = mockState.executedSql.findIndex(isEntraRead);
+    expect(index).toBeGreaterThan(-1);
+    expect(mockState.executedSql[index]).toMatch(/FOR UPDATE/);
+    expect(mockState.executedParams[index]).toEqual(expect.arrayContaining([LOSER, SURVIVOR]));
+  });
+
+  it.each([
+    ['the survivor holds no mapping (the proven mapping is adopted)', [{ org_id: LOSER, proven: true }]],
+    ['the loser mapping is unproven', [{ org_id: LOSER, proven: false }, { org_id: SURVIVOR, proven: true }]],
+    ['only the survivor holds a mapping', [{ org_id: SURVIVOR, proven: true }]],
+    ['neither holds a mapping', []],
+  ])('does not block when %s', async (_label, rows) => {
+    mockState.entraMappingRows = rows;
+    expect(await orgMergeModule.collectMergeBlockers(LOSER, false, SURVIVOR)).toEqual([]);
+  });
+
+  it('a loser-only call (no survivor) never runs the pair check', async () => {
+    mockState.entraMappingRows = [{ org_id: LOSER, proven: true }, { org_id: SURVIVOR, proven: true }];
+    expect(await orgMergeModule.collectMergeBlockers(LOSER, false)).toEqual([]);
+    expect(mockState.executedSql.some(isEntraRead)).toBe(false);
+  });
+
+  it('puts network isolation first and the tenant link second in a combined refusal', () => {
+    const blockers = [
+      { table: 'client_ai_tenant_mappings', loserRows: 1 },
+      { table: 'device_network_isolations', loserRows: 2 },
+    ];
+    expect(orgMergeModule.buildMergeBlockedMessage(blockers)).toBe(`Release network isolation first. ${MESSAGE}`);
+    expect(orgMergeModule.mergeBlockerCodes(blockers, false).sort()).toEqual(['entra_tenant_conflict', 'isolation_unresolved']);
+  });
+
+  it('the preview reports it and execution refuses it before fencing agents', async () => {
+    mockState.entraMappingRows = [{ org_id: LOSER, proven: true }, { org_id: SURVIVOR, proven: false }];
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({
+      loser: org({ id: LOSER }),
+      survivor: org({ id: SURVIVOR }),
+    });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'resolveMergePamTransfer').mockResolvedValue(false);
+    vi.spyOn(orgMergeModule, 'writeMergeAudit').mockResolvedValue(undefined);
+    const fence = vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+
+    const preview = await orgMergeModule.previewOrgMerge(LOSER, SURVIVOR, 'partner-1');
+    expect(preview).toMatchObject({ verdict: 'blocked', blockers: [MESSAGE], blockerCodes: ['entra_tenant_conflict'] });
+    // The preview is read-only: its copy of the check takes no row lock.
+    const previewRead = mockState.executedSql.find(isEntraRead);
+    expect(previewRead).toBeDefined();
+    expect(previewRead).not.toMatch(/FOR UPDATE/);
+
+    await expect(orgMergeModule.executeOrgMerge({
+      loserOrgId: LOSER, survivorOrgId: SURVIVOR, partnerId: 'partner-1', performedBy: 'user-1',
+    })).rejects.toMatchObject({ blockerCodes: ['entra_tenant_conflict'], message: MESSAGE });
+    expect(fence).not.toHaveBeenCalled();
+  });
+
+  it('the Phase-B recheck is keyed by the survivor too: a proof recorded after the pre-fence check refuses in the transaction', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({
+      loser: org({ id: LOSER }),
+      survivor: org({ id: SURVIVOR }),
+    });
+    vi.spyOn(orgMergeModule, 'resolveMergePamTransfer').mockResolvedValue(false);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    vi.spyOn(orgMergeModule, 'writeMergeAudit').mockResolvedValue(undefined);
+    const unfence = vi.spyOn(orgMergeModule, 'unfenceLoser').mockResolvedValue(undefined);
+    const assertSafe = vi.spyOn(orgMergeModule, 'assertMergeIsolationSafe');
+    // Pre-fence: the loser's mapping is still unproven. The proof lands while
+    // the loser is being fenced.
+    mockState.entraMappingRows = [{ org_id: LOSER, proven: false }, { org_id: SURVIVOR, proven: false }];
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockImplementation(async () => {
+      mockState.entraMappingRows = [{ org_id: LOSER, proven: true }, { org_id: SURVIVOR, proven: false }];
+    });
+
+    const error = await orgMergeModule.executeOrgMerge({
+      loserOrgId: LOSER, survivorOrgId: SURVIVOR, partnerId: 'partner-1', performedBy: 'user-1',
+    }).then(() => null, (err: unknown) => err);
+
+    expect(error).toMatchObject({ code: 'ORG_MERGE_BLOCKED', blockerCodes: ['entra_tenant_conflict'] });
+    expect(assertSafe).toHaveBeenCalledWith(LOSER, false, SURVIVOR);
+    expect(orgMergeModule.runPolicy).not.toHaveBeenCalled();
+    expect(unfence).toHaveBeenCalledTimes(1);
   });
 });

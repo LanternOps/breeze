@@ -38,6 +38,10 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // login (planPortalAccountTransition, epoch-guarded).
   'apps/api/src/services/portalAccessRequests.ts': { kind: 'state-module' },
   'apps/api/src/routes/portal/profile.ts': { kind: 'no-state', reason: 'name / receiveNotifications / passwordHash only' },
+  // Portal registration W4 (#11381, plan D7): a tenant proof that displaces
+  // another org's mapping bumps auth_epoch (+ updated_at) on that org's
+  // accounts with an Entra identity in the tenant. Never status / browserAccess.
+  'apps/api/src/services/portalEntraTenantProof.ts': { kind: 'no-state', reason: 'authEpoch / updatedAt bump on displacement only' },
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');

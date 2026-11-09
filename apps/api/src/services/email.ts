@@ -185,6 +185,19 @@ export interface PortalAccessApprovedEmailParams extends PortalAccessDecisionEma
 
 export type PortalAccessDeclinedEmailParams = PortalAccessDecisionEmailParams;
 
+/**
+ * Portal registration W4 (#11381, plan D7): another organization proved the
+ * Microsoft tenant one of this partner's orgs was linked to, so the link was
+ * removed. Platform mail from Breeze to the partner's active admins; it never
+ * names the organization that proved the tenant.
+ */
+export interface PortalEntraTenantDisplacedEmailParams {
+  to: string | string[];
+  partnerName: string;
+  orgName: string;
+  tenantId: string;
+}
+
 export interface VerificationEmailParams {
   to: string | string[];
   name?: string;
@@ -671,6 +684,17 @@ export class EmailService {
       purpose: 'portal.access_request.declined',
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
+    });
+  }
+
+  async sendPortalEntraTenantDisplaced(params: PortalEntraTenantDisplacedEmailParams): Promise<void> {
+    const template = buildPortalEntraTenantDisplacedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'partner.portal_entra_tenant.displaced',
     });
   }
 }
@@ -1207,6 +1231,36 @@ export function buildPortalAccessDeclinedTemplate(params: PortalAccessDeclinedEm
     brandName: params.partnerName?.trim() || undefined,
   });
   return { subject, html, text: copy };
+}
+
+/**
+ * Microsoft tenant link removed (portal registration W4 #11381, plan D7): sent
+ * after commit to the displaced partner's active admins. A notice, not a call
+ * to action: no link, and the org that proved the tenant is never named.
+ * Breeze-branded (platform mail to MSP staff), same idiom as
+ * partnerTrustPartnerMail.ts.
+ */
+export function buildPortalEntraTenantDisplacedTemplate(params: PortalEntraTenantDisplacedEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const subject = `Microsoft tenant link removed from ${orgName}`;
+  const lead = `${orgName} was linked to the Microsoft tenant ${params.tenantId}. An administrator of that tenant proved it for another organization in Breeze, so the link was removed from ${orgName}.`;
+  const impact = `Microsoft sign-in to the ${orgName} portal and Breeze AI for Office no longer work for that tenant, and people signed in through it were signed out.`;
+  const next = "If you didn't expect this, contact the tenant's administrator.";
+  const why = `You're receiving this because you administer ${params.partnerName} in Breeze.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: `The Microsoft tenant link was removed from ${orgName}.`,
+    heading: 'Microsoft tenant link removed',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(impact)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(next)}</p>
+      <p style="${MUTED_PARA}">${escapeHtml(why)}</p>
+    `,
+    footer: supportFooter(undefined, 'Need help? Contact'),
+  });
+  const text = [lead, impact, next, why].join('\n');
+  return { subject, html, text };
 }
 
 function buildVerificationTemplate(params: VerificationEmailParams): EmailTemplate {

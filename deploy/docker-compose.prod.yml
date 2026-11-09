@@ -222,6 +222,12 @@ x-api-env: &api-env
   # stays dark (env.ts defaults to ''). Threaded through compose so the feature
   # can be enabled from .env. Same gap class as IS_HOSTED above.
   CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+  # Customer portal "Sign in with Microsoft" (the portal's own Entra app). Off
+  # unless both the client ID and secret are set; the callback base is optional
+  # (defaults to the origin of PUBLIC_URL).
+  PORTAL_ENTRA_CLIENT_ID: ${PORTAL_ENTRA_CLIENT_ID:-}
+  PORTAL_ENTRA_CLIENT_SECRET: ${PORTAL_ENTRA_CLIENT_SECRET:-}
+  PORTAL_ENTRA_CALLBACK_BASE_URL: ${PORTAL_ENTRA_CALLBACK_BASE_URL:-}
   # QuickBooks Online accounting integration. All optional: unset leaves the
   # integration dark. Mapped explicitly because Compose only interpolates vars
   # listed in this block — a value in .env alone is never seen by the API
