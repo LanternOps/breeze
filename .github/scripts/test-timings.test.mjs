@@ -76,6 +76,14 @@ test('a log that does not reconcile with its own summary is rejected', () => {
 
 const synth = lines => lines.map(([at, body]) => `2026-11-08T20:${at}Z ${body}`).join('\n');
 
+test('a failed file (❯) is a file result too, so its log still reconciles', () => {
+  // Shape from a real retried shard (run 42534887950, shard 4): the failed file's line.
+  assert.deepEqual(parseJobLog(synth([['00:00.000', ' RUN  v4.1.12 /r/apps/api'],
+    ['00:06.500', ' ❯ src/__tests__/integration/agentCommandRelayShards.integration.test.ts (7 tests | 1 failed) 6082ms'],
+    ['00:06.600', '     × a second consumer for a shard another consumer holds refuses to start 1123ms'],
+    ['00:07.000', ' Test Files  1 failed (1)']])).files, { 'apps/api/src/__tests__/integration/agentCommandRelayShards.integration.test.ts': 6.1 });
+});
+
 test('a one-file shard weighs its reported duration; a skipped file weighs its wall span', () => {
   assert.deepEqual(parseJobLog(synth([['00:00.000', ' RUN  v4.1.12 /r/apps/api'], ['01:00.000', ' ✓ src/a.integration.test.ts (2 tests) 12345ms'],
     ['01:01.000', ' Test Files  1 passed (1)']])), { files: { 'apps/api/src/a.integration.test.ts': 12.3 }, count: 1 });

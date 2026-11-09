@@ -42,8 +42,9 @@ const ANSI = /(?:\x1b|\^\[)\[[0-9;]*m/g;
 // A raw API log line, or `gh run view --log`'s `<job>\t<step>\t<line>`.
 const LINE = /(?:^|\t)\uFEFF?(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
 const RUN_BANNER = /^\s*RUN\s+v\d/;
-// A file result is indented one space; slow-test lines under it are indented more.
-const FILE_RESULT = /^ ?([✓×↓]) (src\/\S+\.test\.ts) \([^)]*\)(?: +(\d+(?:\.\d+)?)(ms|s))?\s*$/;
+// A file result is indented one space (✓ passed, ↓ skipped, ❯ or × failed);
+// slow-test lines under it are indented more.
+const FILE_RESULT = /^ ?([✓×↓❯]) (src\/\S+\.test\.ts) \([^)]*\)(?: +(\d+(?:\.\d+)?)(ms|s))?\s*$/;
 const SUMMARY = /^\s*Test Files\s.*\((\d+)\)\s*$/;
 const SHARD_JOB = /^Integration Tests \(shard (\d+)\/(\d+)\)$/;
 // Each workflow step opens with a `##[group]Run <command>` marker. Shard 1 runs
