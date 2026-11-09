@@ -1097,6 +1097,7 @@
       "platform_admin": "Administrateur de la plateforme",
       "plugin": "Module externe",
       "policy": "Politique",
+      "portal_access_request": "Demande d'accès au portail",
       "portal_auth": "Connexion au portail",
       "portal_user": "Utilisateur du portail",
       "psa_connection": "Connexion PSA",

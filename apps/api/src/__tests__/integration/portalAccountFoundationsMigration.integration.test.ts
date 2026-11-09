@@ -44,11 +44,15 @@ async function inRolledBackTx(body: (tx: Tx, notices: string[]) => Promise<void>
   }
 }
 
-/** Puts portal_users back in its pre-W2 shape (inside the rolled-back transaction). */
+/**
+ * Puts portal_users back in its pre-W2 shape (inside the rolled-back transaction).
+ * CASCADE on the (id, org_id) index also drops the composite FKs later migrations
+ * point at it (e.g. portal_access_requests_user_org_fk); the ROLLBACK restores them.
+ */
 async function dropW2Objects(tx: Tx): Promise<void> {
   await tx.unsafe(`
     DROP TABLE IF EXISTS public.portal_user_identities;
-    DROP INDEX IF EXISTS public.portal_users_id_org_uq;
+    DROP INDEX IF EXISTS public.portal_users_id_org_uq CASCADE;
     DROP TRIGGER IF EXISTS portal_users_browser_access_fill ON public.portal_users;
     DROP FUNCTION IF EXISTS public.breeze_portal_users_fill_browser_access();
     ALTER TABLE public.portal_users DROP CONSTRAINT IF EXISTS portal_users_status_chk;

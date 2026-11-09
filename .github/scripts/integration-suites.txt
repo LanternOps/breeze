@@ -330,8 +330,10 @@ suite portal tests apps/api/src/services/portal/performanceReadModel.integration
 suite portal sources apps/api/src/services/portal*
 suite portal sources apps/api/src/routes/portal*
 # import evidence: owned by another suite and imported by a test here
+suite portal sources apps/api/src/routes/orgPortalAccessRequests.ts
 suite portal sources apps/api/src/routes/orgPortalUsers.ts
 suite portal sources apps/api/src/services/orgMerge.ts
+suite portal sources apps/api/src/services/orgMergeRegistry.ts
 suite portal sources apps/api/src/services/quoteAcceptService.ts
 suite portal sources apps/api/src/services/quoteLifecycle.ts
 suite portal sources apps/api/src/services/quoteService.ts
