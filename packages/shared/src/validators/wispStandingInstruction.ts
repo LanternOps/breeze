@@ -50,7 +50,7 @@ export type CapturedInstructionDto = {
   capturedAt: string;
   text: string;
   status: 'unconfirmed' | 'confirmed' | 'retracted';
-  /** An unconditional, unexpired deny on resolved devices (the only form W06 enforces). */
+  /** An unconditional, unexpired deny on resolved devices: the only form ever enforced (spec §5.3). */
   enforceable: boolean;
   verb: StandingVerb | null;
   targetLabels: string[];

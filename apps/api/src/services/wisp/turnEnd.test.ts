@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   wispEnabled: vi.fn(() => true),
   beginInstructionCapture: vi.fn(),
+  finishInstructionCapture: vi.fn(),
   extractStandingInstructions: vi.fn(),
   maybeNotifyChatCrossedBudget: vi.fn(),
   previousReplyRows: [] as Array<{ content: string | null }>,
@@ -16,7 +17,10 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../../config/env', () => ({ wispEnabled: h.wispEnabled }));
-vi.mock('./instructionCaptureStatus', () => ({ beginInstructionCapture: h.beginInstructionCapture }));
+vi.mock('./instructionCaptureStatus', () => ({
+  beginInstructionCapture: h.beginInstructionCapture,
+  finishInstructionCapture: h.finishInstructionCapture,
+}));
 vi.mock('./instructionExtractor', () => ({ extractStandingInstructions: h.extractStandingInstructions }));
 vi.mock('./chatSpendCheck', () => ({ maybeNotifyChatCrossedBudget: h.maybeNotifyChatCrossedBudget }));
 vi.mock('./grantAuthority', () => ({ inSystemContext: vi.fn((fn: () => unknown) => fn()) }));
@@ -54,6 +58,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.wispEnabled.mockReturnValue(true);
   h.beginInstructionCapture.mockResolvedValue(true);
+  h.finishInstructionCapture.mockResolvedValue(undefined);
   h.extractStandingInstructions.mockResolvedValue('saved');
   h.maybeNotifyChatCrossedBudget.mockResolvedValue('under');
   h.previousReplyRows = [{ content: 'These need a restart: PC-01, PC-02.' }];
@@ -159,6 +164,33 @@ describe('scheduleWispTurnEndAfterDone', () => {
     expect(h.extractStandingInstructions.mock.calls[0]![0]).toMatchObject({
       userMessage: "you can reboot those but don't reboot PC-01", sourceMessageId: 'm-1',
     });
+  });
+
+  it('a tool outcome recorded after scheduling does not change what is extracted', async () => {
+    const s = session();
+    scheduleWispTurnEndAfterDone(s, { wispInstructionCapture: { captureId: 'cap-1' } });
+    recordWispToolOutcome((s as unknown as { currentTurn: ReturnType<typeof beginWispTurn> }).currentTurn, {
+      toolName: 'remember', isError: false, output: '{"id":"late"}',
+      input: { ownerKind: 'user', blockType: 'standing_instruction', subjectKey: 'k', content: { text: 'late one' } },
+    });
+    await vi.waitFor(() => expect(h.extractStandingInstructions).toHaveBeenCalled());
+    expect(h.extractStandingInstructions.mock.calls[0]![0]).toMatchObject({ alreadyRemembered: [] });
+  });
+
+  it('a capture that cannot be started is recorded failed (the chip stops polling) and reported', async () => {
+    const s = session();
+    Object.defineProperty((s as unknown as { currentTurn: object }).currentTurn, 'toolOutcomes', {
+      get: () => { throw new Error('broken record'); },
+    });
+    scheduleWispTurnEndAfterDone(s, { wispInstructionCapture: { captureId: 'cap-1' } });
+    await vi.waitFor(() => expect(h.finishInstructionCapture).toHaveBeenCalledWith('cap-1', 'failed'));
+    expect(h.extractStandingInstructions).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalled();
+  });
+
+  it('a capture id with no turn record is recorded failed', async () => {
+    scheduleWispTurnEndAfterDone(session({ currentTurn: undefined }), { wispInstructionCapture: { captureId: 'cap-2' } });
+    await vi.waitFor(() => expect(h.finishInstructionCapture).toHaveBeenCalledWith('cap-2', 'failed'));
   });
 
   it('no capture id: no extraction, but the grant spend notice still fires', async () => {

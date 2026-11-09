@@ -11,8 +11,9 @@
  *
  * Human side, request context: RLS isolates, and memoryService.ts restricts
  * every read and write to the caller's own captured user blocks (another
- * person's instructionId is `not_found`). This module only shapes the chip's
- * DTO and reads the target devices' orgs (under RLS) for the share check.
+ * person's instructionId is `not_found`). This module shapes the chip's DTO,
+ * reads the target devices' orgs (under RLS) and decides the single-org check,
+ * and delegates every write to memoryService.ts.
  */
 import {
   standingInstructionContentSchema,
@@ -97,7 +98,7 @@ async function toDtos(blocks: CapturedInstructionBlock[], now: Date = new Date()
       capturedAt: capturedAt.toISOString(),
       text: content.text,
       status,
-      enforceable: isEnforceableDeny(content, now),
+      enforceable: status !== 'retracted' && isEnforceableDeny(content, now),
       verb: content.verb,
       targetLabels: content.targetLabels,
       until: content.until,

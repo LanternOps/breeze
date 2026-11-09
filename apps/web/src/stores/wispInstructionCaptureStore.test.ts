@@ -53,16 +53,29 @@ describe('trackCapture', () => {
     expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
-  it('stops silently on a 404 and on a network error', async () => {
+  it('stops silently on a 404 (unknown or not yours)', async () => {
     fetchMock.mockResolvedValue(json({ error: 'nope' }, 404));
     store().trackCapture('s1', 'c-1');
     await vi.advanceTimersByTimeAsync(120_000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    fetchMock.mockReset();
-    fetchMock.mockRejectedValue(new Error('offline'));
-    store().trackCapture('s1', 'c-2');
+  });
+
+  it('retries through a 502 and a network error, then shows the saved instruction', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ error: 'bad gateway' }, 502))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(json({ status: 'saved', instructions: [dto()] }));
+    store().trackCapture('s1', 'c-1');
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(store().bySession.s1).toEqual([dto()]);
+  });
+
+  it('a persistent 5xx still stops after the sixth request', async () => {
+    fetchMock.mockResolvedValue(json({ error: 'down' }, 503));
+    store().trackCapture('s1', 'c-1');
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
   it('never polls the same captureId twice concurrently', async () => {

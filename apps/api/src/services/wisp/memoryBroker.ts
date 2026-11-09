@@ -250,19 +250,6 @@ function assertOwnerWithinCeiling(ceiling: GrantCeiling, owner: MemoryOwner): vo
 }
 
 /**
- * Write one block for the grant: status 'unconfirmed', stamped with the grant
- * and revision that authored it, anchored on the ceiling's partner. Then, in
- * the same transaction, supersede the previous live UNCONFIRMED block with the
- * same (owner, blockType, subjectKey). A per-key advisory lock serialises
- * concurrent writers so two racing writes cannot both stay live.
- *
- * An agent write never supersedes a human-confirmed block (spec §8.3: a person
- * confirms, Wisp proposes): the confirmed block stays live beside the new
- * proposal and recalls first; only a human confirm of the proposal
- * (memoryService.confirmBlock) replaces it. Otherwise a prompt-injected
- * `remember` could silently drop a technician's confirmed preference.
- */
-/**
  * The per-key advisory lock every writer of one (tenant, owner, block_type,
  * subject_key) takes — rememberForGrant here, confirmBlock and recordHumanBlock
  * in memoryService.ts — so an agent write and a human write on one key
@@ -276,6 +263,19 @@ export function memoryKeyLock(key: {
   return sql`SELECT pg_advisory_xact_lock(hashtext('wisp.memory.remember'), hashtext(${lockKey}))`;
 }
 
+/**
+ * Write one block for the grant: status 'unconfirmed', stamped with the grant
+ * and revision that authored it, anchored on the ceiling's partner. Then, in
+ * the same transaction, supersede the previous live UNCONFIRMED block with the
+ * same (owner, blockType, subjectKey). A per-key advisory lock serialises
+ * concurrent writers so two racing writes cannot both stay live.
+ *
+ * An agent write never supersedes a human-confirmed block (spec §8.3: a person
+ * confirms, Wisp proposes): the confirmed block stays live beside the new
+ * proposal and recalls first; only a human confirm of the proposal
+ * (memoryService.confirmBlock) replaces it. Otherwise a prompt-injected
+ * `remember` could silently drop a technician's confirmed preference.
+ */
 export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInput): Promise<MemoryBlock> {
   assertActive(ceiling);
   validateRememberInput(block);

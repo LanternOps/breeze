@@ -56,13 +56,17 @@ export async function beginInstructionCapture(input: { captureId: string; userId
   return ok === 'OK';
 }
 
-/** Record the extractor's outcome, keeping the owner. A missing record (expired, or Redis lost it) stays missing. */
+/**
+ * Record the extractor's outcome, keeping the owner. Only `pending` moves: a
+ * terminal status is final, and a missing record (expired, or Redis lost it)
+ * stays missing.
+ */
 export async function finishInstructionCapture(captureId: string, status: WispInstructionCaptureTerminalStatus): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   const key = instructionCaptureStatusKey(captureId);
   const current = decode(await redis.get(key));
-  if (!current) return;
+  if (!current || current.status !== 'pending') return;
   await redis.set(key, encode({ ...current, status }), 'EX', INSTRUCTION_CAPTURE_STATUS_TTL_SECONDS);
 }
 

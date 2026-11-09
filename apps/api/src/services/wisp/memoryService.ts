@@ -408,7 +408,8 @@ export async function recordHumanBlock(auth: AuthContext, input: RecordHumanBloc
 // #10428 (W05): standing instructions captured at turn end. The extractor
 // writes one user-owned block per target device, all sharing
 // `content.instructionId`; the chip acts on that group. Every read and write
-// here is restricted to the CALLER's own user blocks (on top of RLS), and only
+// here is restricted to the CALLER's own user blocks (on top of RLS) — apart
+// from the confirmed org copy that keep-for-org creates — and only
 // to captured blocks (`content.captureId` set): a block the model wrote itself
 // with `remember` stays on the memory page's per-block controls.
 // ---------------------------------------------------------------------------
@@ -441,10 +442,11 @@ export async function listCapturedInstructionBlocks(
   for (const value of Object.values(filter)) {
     if (typeof value !== 'string' || !UUID_RE.test(value)) return [];
   }
-  const rows = await db.select().from(aiMemoryBlocks)
+  // The newest blocks win the limit; returned oldest first.
+  const rows = (await db.select().from(aiMemoryBlocks)
     .where(capturedWhere(auth, filter))
-    .orderBy(asc(aiMemoryBlocks.createdAt), asc(aiMemoryBlocks.id))
-    .limit(CAPTURED_INSTRUCTION_LIST_LIMIT);
+    .orderBy(desc(aiMemoryBlocks.createdAt), desc(aiMemoryBlocks.id))
+    .limit(CAPTURED_INSTRUCTION_LIST_LIMIT)).reverse();
   const supersederIds = [...new Set(rows.map((r) => r.supersededById).filter((id): id is string => id !== null))];
   const kinds = new Map<string, MemoryOwner['kind']>();
   if (supersederIds.length > 0) {
@@ -491,10 +493,11 @@ export async function retractInstructionGroupBlocks(auth: AuthContext, instructi
   return out;
 }
 
-/** The device ids a live group targets, for the caller to resolve to one org. */
+/** The device ids a live, not-forgotten group targets, for the caller to resolve to one org. */
 export async function instructionGroupDeviceIds(auth: AuthContext, instructionId: string): Promise<Array<string | null>> {
-  const rows = await liveInstructionGroup(auth, instructionId);
-  return rows.filter((r) => r.status !== 'retracted').map((r) => {
+  const rows = (await liveInstructionGroup(auth, instructionId)).filter((r) => r.status !== 'retracted');
+  if (rows.length === 0) throw new MemoryServiceError('retracted', 'A forgotten instruction cannot be shared');
+  return rows.map((r) => {
     const deviceId = (r.content as { deviceId?: unknown }).deviceId;
     return typeof deviceId === 'string' ? deviceId : null;
   });
@@ -525,14 +528,18 @@ export async function promoteInstructionGroupBlocksToOrg(
       authoredByGrantId: row.authoredByGrantId,
       sourceSessionId: row.sourceSessionId,
     });
-    await db.update(aiMemoryBlocks)
+    const [pointed] = await db.update(aiMemoryBlocks)
       .set({ supersededById: orgBlock.id, updatedAt: sql`now()` })
       .where(and(
         eq(aiMemoryBlocks.id, row.id),
         eq(aiMemoryBlocks.ownerKind, 'user'),
         eq(aiMemoryBlocks.ownerUserId, auth.user.id),
         isNull(aiMemoryBlocks.supersededById),
-      ));
+      ))
+      .returning({ id: aiMemoryBlocks.id });
+    // A concurrent write replaced the user block meanwhile: refuse, and the
+    // route's transaction drops the org copy with it (never two live copies).
+    if (!pointed) throw new MemoryServiceError('superseded', 'A newer memory block already replaced this one');
     promoted.push(orgBlock);
   }
   return promoted;

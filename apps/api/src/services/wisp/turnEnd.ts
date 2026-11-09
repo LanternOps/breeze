@@ -6,8 +6,9 @@
  *  - `runWispTurnEndBeforeDone` (awaited): deterministic and cheap. The
  *    standing-instruction prefilter over the technician's own message and, on
  *    a hit, a `pending` capture status whose id rides on `done`
- *    (`wispInstructionCapture`) so the chip knows to poll. Bounded by a short
- *    timeout; never throws. W08 adds its promise-linter correction here.
+ *    (`wispInstructionCapture`) so the chip knows to poll. The Redis write is
+ *    bounded by a short timeout; failures are swallowed (reported), never
+ *    thrown.
  *  - `scheduleWispTurnEndAfterDone` (fire-and-forget, after `done`): the grant
  *    spend notice (#10414; budget.chatNeverBlocks.contract.test.ts) and the
  *    extraction itself (instructionExtractor.ts). Everything it needs is
@@ -18,6 +19,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import type { AiStreamEvent } from '@breeze/shared';
 import { wispEnabled } from '../../config/env';
 import { db } from '../../db';
 import { aiMessages } from '../../db/schema/ai';
@@ -26,12 +28,12 @@ import { captureException } from '../sentry';
 import type { ActiveSession } from '../streamingSessionManager';
 import { maybeNotifyChatCrossedBudget } from './chatSpendCheck';
 import { inSystemContext } from './grantAuthority';
-import { beginInstructionCapture } from './instructionCaptureStatus';
+import { beginInstructionCapture, finishInstructionCapture } from './instructionCaptureStatus';
 import { prefilterInstruction } from './instructionPrefilter';
 import type { WispTurnToolOutcome } from './turnRecord';
 
-/** What `done` carries for a Wisp turn. */
-export type WispDoneExtras = { wispInstructionCapture?: { captureId: string } };
+/** What `done` carries for a Wisp turn (the shared event's Wisp fields). */
+export type WispDoneExtras = Pick<Extract<AiStreamEvent, { type: 'done' }>, 'wispInstructionCapture'>;
 
 /** The before-`done` work gives up after this long rather than hold the reply back. */
 export const WISP_TURN_END_BEFORE_DONE_TIMEOUT_MS = 1_500;
@@ -41,10 +43,13 @@ const ALREADY_REMEMBERED_MAX = 10;
 
 type Session = Pick<ActiveSession, 'breezeSessionId' | 'orgId' | 'auth' | 'wispGrant' | 'turnUserMessageId' | 'currentTurn'>;
 
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, onTimeout: () => void): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<T>((resolve) => {
-    timer = setTimeout(() => resolve(fallback), ms);
+    timer = setTimeout(() => {
+      onTimeout();
+      resolve(fallback);
+    }, ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -60,18 +65,19 @@ export async function runWispTurnEndBeforeDone(session: Session): Promise<WispDo
       beginInstructionCapture({ captureId, userId: session.auth.user.id, sessionId: session.breezeSessionId }),
       WISP_TURN_END_BEFORE_DONE_TIMEOUT_MS,
       false,
+      () => console.warn('[wisp] turn-end instruction capture not started: Redis too slow', { sessionId: session.breezeSessionId }),
     );
     return begun ? { wispInstructionCapture: { captureId } } : {};
   } catch (err) {
-    console.warn('[wisp] turn-end instruction capture not started', { sessionId: session.breezeSessionId, error: safeErrorMessage(err) });
+    report('wisp.instruction_capture.begin', err, session.orgId);
     return {};
   }
 }
 
 /**
  * The standing instructions the model saved itself this turn with a successful
- * `remember`. The extractor skips those clauses and keeps the rest (per clause,
- * not per turn).
+ * `remember`. The extractor's prompt asks it to skip those clauses and keep the
+ * rest (per clause, not per turn); best-effort, not enforced.
  */
 export function rememberedStandingInstructions(outcomes: readonly WispTurnToolOutcome[]): string[] {
   const out: string[] = [];
@@ -114,9 +120,9 @@ async function loadPreviousAssistantReply(sessionId: string, userMessageId: stri
   return row?.content ?? null;
 }
 
-function report(op: string, err: unknown, orgId: string): void {
-  console.warn(`[wisp] ${op} failed`, { error: safeErrorMessage(err) });
-  captureException(err, undefined, { op, org_id: orgId });
+function report(op: string, err: unknown, orgId: string, captureId?: string): void {
+  console.warn(`[wisp] ${op} failed`, { captureId, error: safeErrorMessage(err) });
+  captureException(err, undefined, { op, org_id: orgId, ...(captureId ? { capture_id: captureId } : {}) });
 }
 
 export function scheduleWispTurnEndAfterDone(session: Session, extras: WispDoneExtras): void {
@@ -131,10 +137,24 @@ export function scheduleWispTurnEndAfterDone(session: Session, extras: WispDoneE
 
   const captureId = extras.wispInstructionCapture?.captureId;
   const turn = session.currentTurn;
-  if (!captureId || !turn) return;
+  if (!captureId) return;
+  // Anything that stops the extraction from starting records `failed`, so the
+  // chip stops polling instead of waiting out the status key's hour.
+  const fail = (op: string, err: unknown) => {
+    report(op, err, orgId, captureId);
+    void finishInstructionCapture(captureId, 'failed').catch((finishErr: unknown) => {
+      console.warn('[wisp] instruction capture status not recorded', { captureId, error: safeErrorMessage(finishErr) });
+    });
+  };
+  if (!turn) {
+    fail('wisp.instruction_capture.schedule', new Error('no turn record for a started capture'));
+    return;
+  }
 
   // Snapshot now: the next turn may replace currentTurn and the anchor at once.
-  const snapshot = {
+  let snapshot;
+  try {
+    snapshot = {
     captureId,
     grantId: grant.grantId,
     revisionId: grant.revisionId,
@@ -144,14 +164,26 @@ export function scheduleWispTurnEndAfterDone(session: Session, extras: WispDoneE
     userMessage: prefilterInstruction(turn.userMessage).text,
     alreadyRemembered: rememberedStandingInstructions(turn.toolOutcomes),
     sourceMessageId: session.turnUserMessageId ?? null,
-  };
+    };
+  } catch (err) {
+    fail('wisp.instruction_capture.schedule', err);
+    return;
+  }
+  const work = snapshot;
   void (async () => {
-    const previousReply = await loadPreviousAssistantReply(snapshot.sessionId, snapshot.sourceMessageId).catch((err: unknown) => {
-      console.warn('[wisp] previous reply not read for instruction capture', { error: safeErrorMessage(err) });
+    const previousReply = await loadPreviousAssistantReply(work.sessionId, work.sourceMessageId).catch((err: unknown) => {
+      console.warn('[wisp] previous reply not read for instruction capture', { captureId, error: safeErrorMessage(err) });
       return null;
     });
     // Loaded lazily: the model-call graph is needed only on a prefilter hit.
-    const { extractStandingInstructions } = await import('./instructionExtractor');
-    await extractStandingInstructions({ ...snapshot, previousReply });
-  })().catch((err: unknown) => report('wisp.instruction_capture', err, orgId));
+    let extract;
+    try {
+      ({ extractStandingInstructions: extract } = await import('./instructionExtractor'));
+    } catch (err) {
+      fail('wisp.instruction_capture.load', err);
+      return;
+    }
+    // Never throws; records its own outcome.
+    await extract({ ...work, previousReply });
+  })().catch((err: unknown) => report('wisp.instruction_capture', err, orgId, captureId));
 }

@@ -14,14 +14,15 @@
  * ref `wisp_instruction_extract:<grantId>`, which `GRANT_OVERHEAD_SOURCE_REF_PREFIXES`
  * counts on the grant's background line. It is skipped when the grant or the
  * org budget is spent, and capped at INSTRUCTION_EXTRACT_DAILY_CAP calls per
- * grant per UTC day by an atomic Redis INCR taken before any spend (Redis down
- * fails closed). Never retried; a failure leaves nothing behind.
+ * grant per UTC day by an atomic Redis INCR taken just before the reservation
+ * (Redis down fails closed). Never retried; a failure saves nothing (a model
+ * call that ran is still settled or held, as for any spend).
  *
  * Trust: the model only reads and classifies. Device ids come ONLY from
  * `resolveDeviceNamesInCeiling` (exact, case-insensitive name match inside the
  * ceiling); a model output carrying any other key is dropped whole. When any
  * named device does not resolve to exactly one device, the instruction is
- * saved as one free-text note (deviceId null), which W06 never enforces. The
+ * saved as one free-text note (deviceId null), which is never enforced. The
  * input is the prefilter's text (quoted and fenced lines already removed) and
  * the previous assistant reply, for referents only; tool payloads never go in.
  */
@@ -180,6 +181,12 @@ export async function resolveDeviceNamesInCeiling(
       ),
     ))
     .limit(DEVICE_MATCH_LIMIT));
+  // A cut-off match set could make an ambiguous name look unique and bind a
+  // rule to the wrong device: resolve nothing, so every instruction is a note.
+  if (rows.length >= DEVICE_MATCH_LIMIT) {
+    console.warn('[wisp] instruction capture: too many device name matches; saving as notes', { grantId: ceiling.grantId });
+    return result;
+  }
 
   const inReach = rows.filter((row) => {
     try {
@@ -202,12 +209,18 @@ export async function resolveDeviceNamesInCeiling(
 /** Atomic per-grant, per-UTC-day count. False (skip) over the cap, or when Redis is down or the count is unreadable. */
 async function takeDailySlot(grantId: string, now: Date): Promise<boolean> {
   const redis = getRedis();
-  if (!redis) return false;
+  if (!redis) {
+    console.warn('[wisp] instruction extract cap unavailable (no Redis); skipping', { grantId });
+    return false;
+  }
   const key = `wisp:instr-extract:${grantId}:${utcDayWindow(now).key}`;
   try {
     const results = await redis.multi().incr(key).expire(key, CAP_KEY_TTL_SECONDS).exec();
     const [err, raw] = results?.[0] ?? [new Error('no result'), null];
-    if (err) return false;
+    if (err) {
+      console.warn('[wisp] instruction extract cap unreadable; skipping', { grantId, error: safeErrorMessage(err) });
+      return false;
+    }
     const count = typeof raw === 'number' ? raw : Number(raw);
     return Number.isFinite(count) && count <= INSTRUCTION_EXTRACT_DAILY_CAP;
   } catch (err) {
@@ -237,20 +250,27 @@ function buildPrompt(input: ExtractStandingInstructionsInput, now: Date): string
   return parts.join('\n\n');
 }
 
-/** The model's JSON, or null when there is none or it does not match the schema exactly. */
-function parseModelOutput(content: ReadonlyArray<{ type: string; text?: string }>): ExtractedInstruction[] | null {
+/**
+ * The model's JSON, or why there is none: no JSON object, unparsable JSON, or
+ * a shape that does not match the schema exactly (`issues` are paths only,
+ * never content).
+ */
+function parseModelOutput(
+  content: ReadonlyArray<{ type: string; text?: string }>,
+): { ok: true; instructions: ExtractedInstruction[] } | { ok: false; reason: 'no_json' | 'bad_json' | 'schema'; issues?: string[] } {
   const text = content.filter((b) => b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
+  if (start < 0 || end <= start) return { ok: false, reason: 'no_json' };
   let raw: unknown;
   try {
     raw = JSON.parse(text.slice(start, end + 1));
   } catch {
-    return null;
+    return { ok: false, reason: 'bad_json' };
   }
   const parsed = extractedOutputSchema.safeParse(raw);
-  return parsed.success ? parsed.data.instructions : null;
+  if (parsed.success) return { ok: true, instructions: parsed.data.instructions };
+  return { ok: false, reason: 'schema', issues: parsed.error.issues.slice(0, 5).map((i) => `${i.path.join('.')}:${i.code}`) };
 }
 
 /**
@@ -313,7 +333,6 @@ async function extract(input: ExtractStandingInstructionsInput, now: Date): Prom
   // User memory belongs to the grantor; anyone else's words are not theirs to keep.
   if (ceiling.grantorUserId !== input.userId) return 'skipped';
 
-  if (!(await takeDailySlot(input.grantId, now))) return 'skipped';
   const charge = await chargeableUnderGrant(input.grantId, INSTRUCTION_EXTRACT_ESTIMATE_CENTS, now);
   if (!charge.ok) return 'skipped';
 
@@ -322,7 +341,7 @@ async function extract(input: ExtractStandingInstructionsInput, now: Date): Prom
     maxTokens: INSTRUCTION_EXTRACT_MAX_TOKENS, transport: 'messages_api',
   });
   if (!resolved.ok) {
-    console.warn('[wisp] instruction capture skipped: no model for the triage role', { orgId: input.orgId, reason: resolved.reason });
+    console.warn('[wisp] instruction capture skipped: no model for the triage role', { captureId: input.captureId, orgId: input.orgId, reason: resolved.reason });
     return 'skipped';
   }
   let client;
@@ -334,9 +353,18 @@ async function extract(input: ExtractStandingInstructionsInput, now: Date): Prom
   }
   // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate.
   if (await checkBudgetDetailed(input.orgId, resolved.funding)) return 'skipped';
+  // The daily cap is taken last before the reservation, so a skip for budget
+  // or model never uses up one of the day's slots.
+  if (!(await takeDailySlot(input.grantId, now))) return 'skipped';
 
   const orgId = input.orgId;
   const binding = turnBindingFrom(resolved);
+  // Built before the reservation, so nothing between reserving and sending can throw.
+  const body: MessagesBody = {
+    max_tokens: INSTRUCTION_EXTRACT_MAX_TOKENS,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: buildPrompt(input, now) }],
+  };
   let reservation;
   try {
     reservation = await reserveAiBudget({
@@ -386,11 +414,6 @@ async function extract(input: ExtractStandingInstructionsInput, now: Date): Prom
     }
   };
 
-  const body: MessagesBody = {
-    max_tokens: INSTRUCTION_EXTRACT_MAX_TOKENS,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: buildPrompt(input, now) }],
-  };
   let outcome;
   try {
     outcome = await createMessage(client, resolved, body, {
@@ -409,16 +432,19 @@ async function extract(input: ExtractStandingInstructionsInput, now: Date): Prom
       // The request may have been processed: hold, never release as if nothing ran.
       await holdIndeterminate();
     }
-    console.warn('[wisp] instruction extract model call failed', { orgId, error: safeErrorMessage(cause) });
+    console.warn('[wisp] instruction extract model call failed', { captureId: input.captureId, orgId, error: safeErrorMessage(cause) });
     return 'failed';
   }
   await settle(outcome.attempts, false);
 
-  const instructions = parseModelOutput(outcome.message.content as ReadonlyArray<{ type: string; text?: string }>);
-  if (instructions === null) {
-    console.warn('[wisp] instruction extract output did not match the schema; nothing saved', { orgId });
+  const parsed = parseModelOutput(outcome.message.content as ReadonlyArray<{ type: string; text?: string }>);
+  if (!parsed.ok) {
+    console.warn('[wisp] instruction extract output rejected; nothing saved', {
+      captureId: input.captureId, orgId, reason: parsed.reason, issues: parsed.issues, stopReason: outcome.message.stop_reason,
+    });
     return 'failed';
   }
+  const { instructions } = parsed;
   if (instructions.length === 0) return 'none';
 
   const names = [...new Set(instructions.flatMap((i) => i.targets.map((t) => t.trim())).filter((t) => t !== ''))];
@@ -450,7 +476,7 @@ export async function extractStandingInstructions(
     outcome = await runOutsideDbContext(() => extract(input, now));
   } catch (err) {
     console.error('[wisp] instruction capture failed', { captureId: input.captureId, error: safeErrorMessage(err) });
-    captureException(err, undefined, { op: 'wisp.instruction_capture', org_id: input.orgId });
+    captureException(err, undefined, { op: 'wisp.instruction_capture', org_id: input.orgId, capture_id: input.captureId });
     outcome = 'failed';
   }
   try {

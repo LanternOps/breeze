@@ -13,6 +13,8 @@ import { registerLogoutHook } from './logoutHooks';
 
 /** Waits before each poll: the first request goes out 2 s after the turn ends. */
 const POLL_DELAYS_MS = [2000, 4000, 8000, 16000, 30000, 30000];
+/** Answers that will not change on a retry: unknown or not yours (404), or no longer signed in. */
+const FINAL_HTTP_STATUSES = new Set([401, 403, 404]);
 
 interface WispInstructionCaptureState {
   bySession: Record<string, CapturedInstructionDto[]>;
@@ -55,7 +57,7 @@ export const useWispInstructionCaptureStore = create<WispInstructionCaptureState
   const mutate = async (sessionId: string, instructionId: string, action: 'keep' | 'forget' | 'keep-for-org') => {
     const gen = generation;
     const res = await runAction<{ instructions: CapturedInstructionDto[] }>({
-      request: () => fetchWithAuth(`/wisp/memory/captures/${instructionId}/${action}`, { method: 'POST' }),
+      request: () => fetchWithAuth(`/wisp/memory/captures/${encodeURIComponent(instructionId)}/${action}`, { method: 'POST' }),
       errorFallback: i18n.t('ai:wisp.instruction.actionFailed'),
       friendly: (code) => (code === 'cross_org' ? i18n.t('ai:wisp.instruction.crossOrg') : undefined),
     });
@@ -73,23 +75,28 @@ export const useWispInstructionCaptureStore = create<WispInstructionCaptureState
           if (gen !== generation) return;
           let terminal = false;
           try {
-            const res = await fetchWithAuth(`/wisp/memory/captures/status/${captureId}`);
+            const res = await fetchWithAuth(`/wisp/memory/captures/status/${encodeURIComponent(captureId)}`);
             if (gen !== generation) return;
             if (!res.ok) {
-              console.warn('[wispInstructionCapture] status poll stopped', res.status);
-              polling.delete(captureId);
-              return;
-            }
-            const body = (await res.json()) as WispInstructionCaptureStatusResponse;
-            if (gen !== generation) return;
-            if (body.status !== 'pending') {
-              terminal = true;
-              if (body.status === 'saved') get().applyInstructions(sessionId, body.instructions ?? []);
+              if (FINAL_HTTP_STATUSES.has(res.status)) {
+                console.warn('[wispInstructionCapture] status poll stopped', res.status);
+                polling.delete(captureId);
+                return;
+              }
+              // A 5xx or 429 (a deploy, a busy API) may clear: try again on the next step.
+              console.warn('[wispInstructionCapture] status poll will retry', res.status);
+            } else {
+              const body = (await res.json()) as WispInstructionCaptureStatusResponse;
+              if (gen !== generation) return;
+              if (body.status !== 'pending') {
+                terminal = true;
+                if (body.status === 'saved') get().applyInstructions(sessionId, body.instructions ?? []);
+              }
             }
           } catch (err) {
-            console.warn('[wispInstructionCapture] status poll failed', err);
-            if (gen === generation) polling.delete(captureId);
-            return;
+            // A network blip: try again on the next step.
+            console.warn('[wispInstructionCapture] status poll failed; will retry', err);
+            if (gen !== generation) return;
           }
           if (terminal || index + 1 >= POLL_DELAYS_MS.length) {
             polling.delete(captureId);

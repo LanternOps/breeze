@@ -117,6 +117,47 @@ describe('captured standing instructions: group operations (#10428)', () => {
     expect((await blocksOf(other.instructionId)).map((b) => b.status)).toEqual(['unconfirmed']);
   });
 
+  it('Review Focus 2: confirming one clause on a device and verb never supersedes a different clause on the same pair', async () => {
+    const f = await seedMemoryFixture();
+    const session = await insertAiSession(f.orgA1, f.uA1);
+    const d1 = await device(f.orgA1, 'PC-01');
+    const hours = await capture(f, f.uA1, session, [d1], { condition: 'during business hours', text: 'never reboot PC-01 during business hours' });
+    const friday = await capture(f, f.uA1, session, [d1], { until: '2027-02-05T17:00:00+00:00', text: "don't reboot PC-01 until Friday" });
+    const me = partnerSession(f.uA1, f.partnerA, [f.orgA1, f.orgA2]);
+
+    await as(me, (auth) => confirmInstructionGroup(auth, hours.instructionId));
+    const [hoursRow] = await blocksOf(hours.instructionId);
+    const [fridayRow] = await blocksOf(friday.instructionId);
+    expect(hoursRow).toMatchObject({ status: 'confirmed', supersededById: null });
+    expect(fridayRow).toMatchObject({ status: 'unconfirmed', supersededById: null });
+
+    // And the other way round: confirming the second leaves the first confirmed and live.
+    await as(me, (auth) => confirmInstructionGroup(auth, friday.instructionId));
+    expect((await blocksOf(hours.instructionId))[0]).toMatchObject({ status: 'confirmed', supersededById: null });
+    expect((await blocksOf(friday.instructionId))[0]).toMatchObject({ status: 'confirmed', supersededById: null });
+  });
+
+  it('confirming a restated clause replaces the older confirmed copy, and the older group is then gone', async () => {
+    const f = await seedMemoryFixture();
+    const session = await insertAiSession(f.orgA1, f.uA1);
+    const d1 = await device(f.orgA1, 'PC-01');
+    const first = await capture(f, f.uA1, session, [d1]);
+    const me = partnerSession(f.uA1, f.partnerA, [f.orgA1, f.orgA2]);
+    await as(me, (auth) => confirmInstructionGroup(auth, first.instructionId));
+    const again = await capture(f, f.uA1, session, [d1]);
+    await as(me, (auth) => confirmInstructionGroup(auth, again.instructionId));
+
+    const [old] = await blocksOf(first.instructionId);
+    const [fresh] = await blocksOf(again.instructionId);
+    expect(old!.supersededById).toBe(fresh!.id);
+    expect(fresh).toMatchObject({ status: 'confirmed', supersededById: null });
+    expect((await as(me, (auth) => listCapturedInstructions(auth, session))).map((d) => d.instructionId))
+      .toEqual([again.instructionId]);
+    // A group whose blocks were all replaced cannot be acted on any more.
+    expect(await code(as(me, (auth) => retractInstructionGroup(auth, first.instructionId)))).toBe('not_found');
+    expect((await blocksOf(first.instructionId))[0]).toMatchObject({ status: 'confirmed', supersededById: fresh!.id });
+  });
+
   it("another user's instructionId is not found on every operation", async () => {
     const f = await seedMemoryFixture();
     const session = await insertAiSession(f.orgA1, f.uA1);
@@ -185,6 +226,15 @@ describe('captured standing instructions: group operations (#10428)', () => {
     expect((await blocksOf(group.instructionId)).map((b) => b.status)).toEqual(['retracted', 'retracted']);
     expect(await as(me, (auth) => listCapturedInstructions(auth, session)))
       .toEqual([expect.objectContaining({ status: 'retracted' })]);
+  });
+
+  it('keep for everyone on a forgotten instruction is refused retracted, not cross_org', async () => {
+    const f = await seedMemoryFixture();
+    const session = await insertAiSession(f.orgA1, f.uA1);
+    const group = await capture(f, f.uA1, session, [await device(f.orgA1, 'PC-01')]);
+    const me = partnerSession(f.uA1, f.partnerA, [f.orgA1, f.orgA2]);
+    await as(me, (auth) => retractInstructionGroup(auth, group.instructionId));
+    expect(await code(as(me, (auth) => promoteInstructionGroupToOrg(auth, group.instructionId)))).toBe('retracted');
   });
 
   it('lists only this session\'s captures, never model-authored remember blocks', async () => {

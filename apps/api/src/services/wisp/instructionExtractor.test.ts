@@ -238,11 +238,31 @@ describe('extractStandingInstructions', () => {
     expect(h.createMessage).not.toHaveBeenCalled();
   });
 
-  it('an org budget denial is skipped, no model call', async () => {
+  it('an org budget denial is skipped, no model call, and uses up no daily slot', async () => {
     h.checkBudgetDetailed.mockResolvedValue({ code: 'budget_exceeded', message: 'over' });
     await expect(extractStandingInstructions(input)).resolves.toBe('skipped');
     expect(h.createMessage).not.toHaveBeenCalled();
     expect(h.reserveAiBudget).not.toHaveBeenCalled();
+    expect(h.capExec).not.toHaveBeenCalled();
+  });
+
+  it('an exhausted grant budget or a missing model uses up no daily slot either', async () => {
+    h.chargeableUnderGrant.mockResolvedValueOnce({ ok: false, reason: 'budget_exhausted' });
+    await extractStandingInstructions(input);
+    h.resolveModel.mockResolvedValueOnce({ ok: false, reason: 'not_permitted', message: 'no' });
+    await extractStandingInstructions(input);
+    expect(h.capExec).not.toHaveBeenCalled();
+  });
+
+  it('settles the usage the provider reported for the attempts it made', async () => {
+    const reply = modelReply(REBOOT_DENY);
+    h.createMessage.mockResolvedValue(reply);
+    h.messagesUsage.mockReturnValueOnce({ usage: [{ tokens: { input: 7 } }], outcome: { served: 'm' } } as never);
+    await extractStandingInstructions(input);
+    expect(h.messagesUsage).toHaveBeenCalledWith({ binding: true }, reply.attempts);
+    expect(h.settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      usage: [{ tokens: { input: 7 } }], outcome: { served: 'm' },
+    }));
   });
 
   it('a speaker who is not the grantor is skipped (user memory belongs to the grantor)', async () => {
@@ -359,6 +379,14 @@ describe('resolveDeviceNamesInCeiling', () => {
 
   it('drops a device outside the ceiling site term', async () => {
     const map = await resolveDeviceNamesInCeiling(ceiling({ siteIds: new Set(['cccccccc-cccc-4ccc-8ccc-cccccccccccc']) }), ['PC-01']);
+    expect(map.get('PC-01')).toEqual([]);
+  });
+
+  it('a match set at the row limit resolves nothing (a cut-off set could hide an ambiguity)', async () => {
+    h.deviceRows = Array.from({ length: 500 }, (_, i) => ({
+      id: `dddddddd-dddd-4ddd-8ddd-${String(i).padStart(12, '0')}`, orgId: ORG, siteId: SITE, hostname: i === 0 ? 'PC-01' : `X-${i}`, displayName: null,
+    }));
+    const map = await resolveDeviceNamesInCeiling(ceiling(), ['PC-01']);
     expect(map.get('PC-01')).toEqual([]);
   });
 

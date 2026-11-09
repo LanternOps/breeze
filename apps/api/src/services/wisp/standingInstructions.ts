@@ -1,8 +1,9 @@
 /**
  * Standing-instruction subject keys and enforceability (spec §5.3).
  *
- * The subject key carries clause identity: restating the same clause
- * supersedes its own earlier unconfirmed copy, while two DIFFERENT clauses on
+ * The subject key carries clause identity: a capture with the same normalised
+ * effect, verb, condition, until and text (the extractor's wording) supersedes
+ * its own earlier unconfirmed copy, while two DIFFERENT clauses on
  * the same device+verb (e.g. "never reboot PC-01 during business hours" vs
  * "don't reboot PC-01 until Friday") get different keys and coexist, even
  * under the human confirm's same-key supersede.
