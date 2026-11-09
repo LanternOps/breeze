@@ -52,12 +52,15 @@ Each one changes a predicate. Executors follow this plan where the two differ.
 
 1. **`scriptMonitor` keys on `(monitor_id, device_id)`, not `(device_id, script_id)`.** `services/alertConditions/handlers/scriptMonitor.ts:124-139` orders by `completed_at DESC NULLS LAST`, and `jobs/monitorScriptWorker.ts:152` takes the newest by `created_at` for the same key. `services/scriptLastRun.ts:62-66` reads `max(created_at)` per script with no window. W2 keeps the newest terminal row per `(monitor_id, device_id)` and per `script_id`.
 2. **`script_execution_batches` never reaches a terminal status.** The only status write is `'queued'` (`services/scriptExecution.ts:470`), and nothing writes `completed_at`. W2 ages batches by `created_at` at the row window (365 d).
-3. **Three `device_commands` readers take the newest row per device and type, with no window:** `routes/devices/patches.ts:375-395` (`patch_scan`), `services/logsNotArriving.ts:60-76` (`set_log_level`), `services/deviceUninstallState.ts:75-90` (`self_uninstall`). W1 keeps the newest terminal row per `(device_id, type)` for those three types.
+3. **Three `device_commands` readers take the newest row per device, with no window, and each uses its own filter and ordering.** W1 keeps exactly the row each reader would return (`KEEP_NEWEST_COMMAND_READERS`):
+   - `routes/devices/patches.ts:375-395` — `patch_scan`, status in (completed, failed, timeout), newest by `COALESCE(completed_at, created_at)`.
+   - `services/logsNotArriving.ts:60-76` — `set_log_level`, `completed_at IS NOT NULL`, newest by `completed_at`.
+   - `services/deviceUninstallState.ts:72-90` — `self_uninstall` with `uninstall_reasons @> {device_remove}`, any status, newest by `created_at`.
 4. **Alert links are three tables, not two.** `ticket_alert_links`, `psa_ticket_mappings` and `alert_external_refs` (partner-principal ticket refs) all CASCADE on alert delete. W3 exempts an alert linked by any of them.
 5. **Keep-newest keys must be NULL-safe.** `alerts.device_id` is nullable (non-device owners), so the guard uses `IS NOT DISTINCT FROM`. Otherwise every NULL-keyed row counts as "newest" and is kept forever.
 6. **Abandoned `active` AI sessions.** A session whose process died, or that never loaded into memory, stays `active` (`streamingSessionManager.ts:2620-2640` expires only evicted in-memory sessions). Under §3.3's "closed or expired" such a session would never be purged. W4 also treats `active` sessions idle past the window as eligible, and sets them `expired` when it stubs them.
 7. **The session row has more content columns** than §3.3 lists: `system_prompt` and `context_snapshot` (`db/schema/ai.ts:48-49`). The technician detail route returns every column (`routes/ai.ts:338-355`). W4 nulls both, and also the free-text `ai_tool_executions.error_message`, which is not on §3.3's list of columns to keep. `options` is model configuration and stays.
-8. **Screenshots are files, not rows.** Deleting an `ai_screenshots` row orphans `SCREENSHOT_DIR/…/<uuid>.jpg` (`services/screenshotStorage.ts:1-18`). W4 *expires* a session's screenshots (`expires_at = LEAST(expires_at, now())`) so `helperScreenshotRetention` removes the file and then the row. The stub hard-delete waits until none remain.
+8. **Screenshots are files, not rows.** Deleting an `ai_screenshots` row orphans `SCREENSHOT_DIR/…/<uuid>.jpg` (`services/screenshotStorage.ts:1-18`). W4 *expires* a session's screenshots (`expires_at = LEAST(expires_at, <now as UTC wall time>)`) so `helperScreenshotRetention` removes the file and then the row. The stub hard-delete waits until none remain.
 9. **The topology audit filter fails open** on a missing session (`routes/ai.ts:123-140`, `NOT EXISTS (… hidden)`). W4 rewrites it to fail closed, as §3.3 asks.
 10. **Existing partner `ai_data_policies` rows would read the new column as "keep forever".** A partner row present means "its value", and NULL means forever. W4's migration therefore backfills `transcript_retention_days = 365` on existing partner rows, inside the same guarded block that adds the column. The partner PUT also writes 365 on insert when the field is absent, mirroring `toolOutputRetentionDays` (`routes/partnerAiDataPolicy.ts:93`).
 11. **`file_transfers` no longer exists.** `migrations/2026-07-12-drop-file-transfers.sql:23` dropped it, and `remote_sessions` has no inbound FK. OD 8's "cascade file transfers" half is therefore moot. W5 has no FK migration.
@@ -68,17 +71,20 @@ Each one changes a predicate. Executors follow this plan where the two differ.
 
     W5 excludes runs referenced by any of the four.
 13. **`patch_job_results` has unwindowed readers.**
-    - `services/patchInstallFailures.ts:199-240` reads the latest attempt per `(device_id, patch_id)`.
-    - `services/patchAlerts.ts:323-340` reads reboot-pending rows.
+    - `services/patchInstallFailures.ts:199-240` reads the latest attempt per `(device_id, patch_id)`. `patch_id` is nullable (`db/schema/patches.ts:301`), so the key is compared with `IS NOT DISTINCT FROM`.
+    - `services/patchAlerts.ts:323-340` takes `MIN(completed_at)` over completed `reboot_required` rows without consulting `rebooted_at`. Its caller runs only while `devices.pending_reboot` is true.
 
-    W5 keeps the newest row per `(device_id, patch_id)`, and every reboot-pending row. (`patchEvidence.ts` lives at `services/aiAgents/patchEvidence.ts` and reads 30 days.)
+    W5 keeps the newest row per `(device_id, patch_id)`. It also keeps every `reboot_required` row of a device that is still pending a reboot. (`patchEvidence.ts` lives at `services/aiAgents/patchEvidence.ts` and reads 30 days.)
 14. **Unread `approval` notifications are still actionable.** `services/actionIntents/intentService.ts:1290-1303` calls the notification the only channel a phoneless approver has. W5 exempts unread `approval` rows from the 365-day rule.
 15. **Newest-per-key readers with no window:**
-    - Device posture: `services/securityPosture.ts` `row_number() … rn = 1` at `:678`, `:972`, `:1111`, `:1178`, `:1199`.
+    - Device posture: `services/securityPosture.ts` `row_number() over (partition by device_id …)` at `:694`, `:988`, `:1114`, `:1181`.
     - Report runs: the per-report run list.
 
     W5 keeps the newest snapshot per device and the newest run per report, so a device or schedule that went quiet a year ago does not vanish from its screen. The maximum trend window is 90 days (`routes/security/compliance.ts:41`, `portal/securityReadModel.ts:181`), under the 365-day window.
 16. **`network_change_events`' handler is dead code.** It uses the bare `db` and skips `profile_id IS NULL`. W5 replaces it with a target and deletes the unused `prune-change-events` type, case and handler (`jobs/networkBaselineWorker.ts:63`, `:96-97`, `:386-408`).
+17. **The auth `sessions` table has a reader.** `services/userRiskScoring.ts:655-665` reads rows with `created_at >= now − 30 d`, and rows expire 7 days after creation (`services/session.ts:7`). W5 ages them by `created_at`, with a 30-day default and a 30-day floor, and requires `expires_at` to have passed.
+18. **The `remote_sessions.recording_url` column is a link the user types in.** It is not stored media: `routes/remote/sessions.ts:1352` (`normalizeRecordingUrl`), and Breeze does not record sessions. Deleting the row orphans no file. The release note says the link goes with the session.
+19. **One metric name per target.** `breeze_retention_backlog_incomplete` and the new `rows_eligible` gauge are `.set()` per `job_name`. Two targets sharing a name would overwrite each other's G1 evidence. W2 and W3 therefore register a name per target, as W5 does.
 
 ## Rollout gates (every wave)
 
@@ -96,7 +102,7 @@ Each wave ships as **two PRs**:
 
 | Wave | Placeholder | Kind | Content |
 |---|---|---|---|
-| W1 | `2027-01-22-230700-retention-w1-indexes.sql` | `-- @no-transaction` | 3 partial/composite indexes, CONCURRENTLY, plus an INVALID guard |
+| W1 | `2027-01-22-230700-retention-w1-indexes.sql` | `-- @no-transaction` | 4 partial/composite indexes, CONCURRENTLY, plus an INVALID guard |
 | W2 | `2027-01-22-230710-script-executions-output-purged-at.sql` | transactional | `ADD COLUMN IF NOT EXISTS output_purged_at timestamptz` |
 | W2 | `2027-01-22-230711-script-executions-terminal-age-idx.sql` | `-- @no-transaction` | 1 partial index plus a guard |
 | W3 | `2027-01-22-230720-alert-retention-fk-set-null.sql` | transactional | `log_correlations.alert_id`, `network_change_events.alert_id` → SET NULL |
@@ -141,7 +147,7 @@ The contract test is authoritative. If it rejects a slot, take the next free ≡
 
 1. **Report and enforce drift.** If the count and the delete use different SQL, Gate G1 approves something other than what runs. Pinned in W0.T2: the rendered SQL of the count's `where` equals the rendered SQL of the prune's `where`, byte for byte.
 2. **A malformed `_ENFORCE` value.** `ENFORCE=yes`, `ENFORCE=TRUE `, or an empty string from `${VAR:-}` in compose must never enable deletion by accident. Only `true`/`1` (case-insensitive, trimmed) enforce, and anything unrecognised logs a warning and reports. Pinned in W0.T1.
-3. **NULL-keyed keep-newest guards.** Alerts with `device_id IS NULL`, and monitor rows without a device, must still age out except for the newest. A plain `=` silently keeps them all. Pinned in W3.T2 (integration) with `IS NOT DISTINCT FROM`.
+3. **NULL-keyed keep-newest guards.** Alerts with `device_id IS NULL`, and patch summary results with `patch_id IS NULL`, must still age out, except for the newest. A plain `=` silently keeps them all. Pinned in W3.T4 and W5.T8 (integration) with `IS NOT DISTINCT FROM`.
 4. **Abandoned `active` AI sessions.** A transcript retention promise that skips sessions left `active` by a crashed process is false. Pinned in W4.T3 (integration): such a session is stubbed and set to `expired`.
 5. **tz-less cutoffs.** A connection `TimeZone` other than UTC must not shift a cutoff by hours. Pinned in W0.T1: `utcWallTime` renders `AT TIME ZONE 'UTC'`. Every wave's unit test asserts its predicate uses it for `timestamp without time zone` columns.
 
@@ -167,14 +173,14 @@ The contract test is authoritative. If it rejects a slot, take the next free ≡
 
 ### Execution split and parallelism (W0)
 - One branch `feature/4342-retention/w0`, one PR `feat(api): report-first retention runner (#4342 W0)`, body `Refs #4342`. No migrations, no web.
-- T1 → T2 → T3, sequential (T2 consumes T1, T3 consumes T2's types). T1 and T2 → Opus (they are the safety gate for every later delete). T3 → Sonnet (metric plumbing to a given interface).
+- Order **T1 → T3 → T2**, sequential: T2 consumes T1's primitives and T3's `rowsEligible` field. T1 and T2 → Opus (they are the safety gate for every later delete). T3 → Sonnet (metric plumbing to a given interface).
 - One independent review over the branch (Opus).
 
 ### Task W0.T1: Batch primitives — count, scrub, enforce flag, UTC wall time
 
 **Files:**
 - Modify: `apps/api/src/jobs/retentionBatch.ts`
-- Modify: `apps/api/src/jobs/aiToolOutputRetention.ts` (import `utcWallTime` from `retentionBatch` instead of its local copy at `:139`)
+- Modify: `apps/api/src/jobs/aiToolOutputRetention.ts` (import `utcWallTime` from `retentionBatch` instead of its local copy at `:144`)
 - Test: `apps/api/src/jobs/retentionBatch.test.ts`
 
 **Interfaces — Produces:**
@@ -205,7 +211,7 @@ export async function updateInCtidBatches(o: { table: string; set: SQL; where: S
 - Create: `apps/api/src/jobs/retentionTarget.ts`
 - Test: `apps/api/src/jobs/retentionTarget.test.ts`
 
-**Interfaces — Consumes:** W0.T1 exports; `pruneInCtidBatches`, `warnOnRetentionBacklog`; `recordRetentionRun` + the `rowsEligible` field from W0.T3. T2 may land first with T3's field typed locally; T3 then replaces it.
+**Interfaces — Consumes:** W0.T1 exports; `pruneInCtidBatches`, `warnOnRetentionBacklog`; `recordRetentionRun` + the `rowsEligible` field from W0.T3 (which lands before this task).
 
 **Interfaces — Produces:**
 ```ts
@@ -269,26 +275,29 @@ Behaviour:
 
 | Job file | Table | Eligible (all hold) | Default / max | Knob prefix |
 |---|---|---|---|---|
-| `deviceCommandRetention.ts` (`device_command_retention`) | `device_commands` | `status IN ('completed','failed','timeout','cancelled')` AND `COALESCE(completed_at, created_at) < utcWallTime(cutoff)` AND NOT (`type IN KEEP_NEWEST_COMMAND_TYPES` AND no newer terminal row exists for the same `(device_id, type)`) | 120 / 365, **floor 90** | `DEVICE_COMMAND_RETENTION_` |
+| `deviceCommandRetention.ts` (`device_command_retention`) | `device_commands` | `status IN ('completed','failed','timeout','cancelled')` AND `COALESCE(completed_at, created_at) < utcWallTime(cutoff)` AND the row is not the one any `KEEP_NEWEST_COMMAND_READERS` entry would return for its device | 120 / 365, **floor 90** | `DEVICE_COMMAND_RETENTION_` |
 | `filesystemSnapshotRetention.ts` (`filesystem_snapshot_retention`) | `device_filesystem_snapshots` | `captured_at < utcWallTime(cutoff)` AND EXISTS a newer row for the same `(device_id, scan_path)` | 7 / 365 | `FILESYSTEM_SNAPSHOT_RETENTION_` |
 | `networkMonitorResultRetention.ts` (`network_monitor_result_retention`) | `network_monitor_results` | `"timestamp" < utcWallTime(cutoff)` AND EXISTS a newer row for the same `monitor_id` | 30 / 365 | `NETWORK_MONITOR_RESULT_RETENTION_` |
 | `deviceSessionRetention.ts` (`device_session_retention`) | `device_sessions` | `is_active = false` AND `COALESCE(logout_at, updated_at) < utcWallTime(cutoff)` | 365 / 1095 | `DEVICE_SESSION_RETENTION_` |
 
-- `KEEP_NEWEST_COMMAND_TYPES = ['patch_scan', 'set_log_level', 'self_uninstall'] as const`. Each entry carries a comment naming its reader (correction 3).
-- The device-command floor is `DEVICE_INSTALL_LOOKBACK_DAYS`, a new export from `services/patchInstallFailures.ts` defined as `DEVICE_INSTALL_LOOKBACK_MS / DAY_MS` (90). A configured value below it is raised to it with a `console.warn`. That links the two constants (§3.2).
+- `KEEP_NEWEST_COMMAND_READERS: ReadonlyArray<{ type: string; filter: SQL; orderBy: SQL; reader: string }>` has one entry per reader in correction 3. Each entry uses the reader's exact filter and ordering, and `reader` names its file:line. The guard for an entry is `NOT (device_commands.type = <type> AND <filter on device_commands> AND NOT EXISTS (SELECT 1 FROM device_commands n WHERE n.device_id = device_commands.device_id AND n.type = <type> AND <filter on n> AND <n's order key> > <outer order key>))`.
+  - Before writing the entries, read `services/oemUpdates/rebootSweep.ts:160-172` and `services/oemUpdates/releaseSweep.ts:96-108`. Any of them that reads the newest row of a type with no lower age bound gets its own entry, built the same way.
+- **Floor.** The device-command floor is `DEVICE_INSTALL_LOOKBACK_DAYS`, a new export from `services/patchInstallFailures.ts` defined as `DEVICE_INSTALL_LOOKBACK_MS / DAY_MS` (90). That links the two constants (§3.2).
+  - A configured value below the floor is raised to it with a `console.warn`.
+  - The same clamp, floor included, applies to a BullMQ payload's `retentionDays`. The webhook precedent clamps only to the max.
 - Batch defaults: 1000 × 100, except `device_filesystem_snapshots` at 100 × 50 (≈200 KB rows).
 - All four are tz-less columns, so every predicate uses `utcWallTime`.
 - The existing indexes already serve the snapshot keep-newest (`idx_device_filesystem_snapshots_device_path_captured`). That table holds only thousands of rows, so it needs no new index.
 
 **W1 migration** `…230700-retention-w1-indexes.sql` (`-- @no-transaction`):
 - `idx_device_commands_terminal_age ON device_commands ((COALESCE(completed_at, created_at))) WHERE status IN ('completed','failed','timeout','cancelled')`
-- `idx_device_commands_keep_newest ON device_commands (device_id, type, (COALESCE(completed_at, created_at)) DESC) WHERE type IN ('patch_scan','set_log_level','self_uninstall') AND status IN ('completed','failed','timeout','cancelled')`
+- `idx_device_commands_keep_newest ON device_commands (device_id, type, created_at DESC) WHERE type IN (<the KEEP_NEWEST_COMMAND_READERS types>)`. The existing `idx_device_commands_set_log_level_device_completed` already serves the `completed_at` ordering.
 - `network_monitor_results_monitor_ts_idx ON network_monitor_results (monitor_id, "timestamp" DESC)`
 - `device_sessions_closed_age_idx ON device_sessions ((COALESCE(logout_at, updated_at))) WHERE is_active = false`
 - Plus one DO block raising on any of the four that is INVALID. Declare all four in the Drizzle schema (`db/schema/devices.ts`, `monitors.ts`, `sessions.ts`).
 
 **Guard check SQL (Gate G1):**
-- `device_commands`: for each type in `KEEP_NEWEST_COMMAND_TYPES`, count the devices whose newest terminal row is older than the window. That is the number of rows the guard retains, and it should equal the drop between `eligible` with the guard and without it.
+- `device_commands`: for each `KEEP_NEWEST_COMMAND_READERS` entry, count the devices whose newest terminal row is older than the window. That is the number of rows the guard retains, and it should equal the drop between `eligible` with the guard and without it.
 - Monitors: `SELECT count(DISTINCT monitor_id) FROM network_monitor_results WHERE "timestamp" < cutoff AND monitor_id NOT IN (SELECT monitor_id FROM network_monitor_results WHERE "timestamp" >= cutoff)` gives the paused monitors whose last row must survive.
 
 ### Execution split and parallelism (W1)
@@ -309,7 +318,7 @@ Behaviour:
 
 ### Task W1.T2: `device_commands` retention
 
-**Files:** Create `apps/api/src/jobs/deviceCommandRetention.ts` + `.test.ts`. Modify `apps/api/src/services/patchInstallFailures.ts` (export `DEVICE_INSTALL_LOOKBACK_DAYS`). Modify the four stale "pruned independently" comments (`db/schema/filesystem.ts:66`, `oemUpdates.ts:45`, `endpointConversations.ts:56`, `endpointMessages.ts:102`) to point at the new job.
+**Files:** Create `apps/api/src/jobs/deviceCommandRetention.ts` + `.test.ts`. Modify `apps/api/src/services/patchInstallFailures.ts` (export `DEVICE_INSTALL_LOOKBACK_DAYS`). Update the four comments that claim `device_commands` already has retention (`db/schema/filesystem.ts:66`, `oemUpdates.ts:45`, `endpointConversations.ts:56`, `endpointMessages.ts:102`) to point at the new job. The wording differs at each site, so edit by meaning rather than by matching the quote.
 
 **Interfaces — Produces** (the same shape for every W1–W3/W5 job file):
 ```ts
@@ -324,7 +333,8 @@ A job payload has no way to turn enforcement on. The only payload switch is `for
 
 - [ ] **Step 1: Write the failing test**, following `webhookDeliveryRetention.test.ts` (mock `./retentionTarget`'s `runRetentionTarget`, capture the target, render `target.where(cutoff)` with `PgDialect`):
   - The rendered predicate contains `status IN ('completed', 'failed', 'timeout', 'cancelled')` and `COALESCE(completed_at, created_at) <`, and `AT TIME ZONE 'UTC'`. It does not match `/'pending'|'sent'/`.
-  - The keep-newest clause names all three `KEEP_NEWEST_COMMAND_TYPES` and the `(device_id, type)` correlation.
+  - For each `KEEP_NEWEST_COMMAND_READERS` entry, the rendered guard contains its type, its filter (`uninstall_reasons @>` for `self_uninstall`, `completed_at IS NOT NULL` for `set_log_level`, the status list for `patch_scan`) and its order key. A test also asserts that every entry's `reader` names an existing file.
+  - `runDeviceCommandRetention({ retentionDays: 30 })` → `knobs.retentionDays === 90` (the payload is floored too).
   - Defaults: `DEFAULT_RETENTION_DAYS === 120`, `MAX_RETENTION_DAYS === 365`, `MIN_RETENTION_DAYS === DEVICE_INSTALL_LOOKBACK_DAYS === 90`, `ENFORCE === false`.
   - Floor: with `DEVICE_COMMAND_RETENTION_DAYS=30` set before a fresh `vi.resetModules()` import, `__testOnly.DEFAULT_RETENTION_DAYS === 90`, with a warning.
   - With env `DEVICE_COMMAND_RETENTION_ENFORCE` unset, `runDeviceCommandRetention()` → `runRetentionTarget` receives `knobs.enforce === false`. With it set to `true`, `runDeviceCommandRetention({ forceReport: true })` → `knobs.enforce === false`.
@@ -355,7 +365,7 @@ A job payload has no way to turn enforcement on. The only payload switch is `for
 **Files:** Create `apps/api/src/__tests__/integration/deviceTelemetryRetention.integration.test.ts`.
 
 - [ ] **Step 1: Write the tests.** Seed through `getTestDb()`. Call each `run*Retention({ … })` with `ENFORCE=true` in `process.env` (set before import via `vi.stubEnv` + dynamic import), with a fixed small window:
-  - `device_commands`: an old `completed` row is deleted. An old `pending` row survives. Old `patch_scan` rows on one device: all but the newest are deleted. An old `install_patches` row inside 90 days survives at window 90. A `backup_storage_sessions` row pointing at a deleted command is cascade-deleted.
+  - `device_commands`: an old `completed` row is deleted. An old `pending` row survives. Old `patch_scan` rows on one device: all but the newest are deleted. Old `self_uninstall` rows: the newest with the `device_remove` reason survives even when a newer one without that reason exists, and `loadDeviceUninstallState`'s reader returns the same row before and after. An old `install_patches` row inside 90 days survives at window 90. A `backup_storage_sessions` row pointing at a deleted command is cascade-deleted.
   - Snapshots: three old rows for `(d, 'C:\\')` leave exactly the newest. A single old row for `(d, 'D:\\')` survives.
   - Monitor results: a paused monitor whose rows are all old keeps exactly its newest row.
   - Device sessions: an old inactive row is deleted. An old `is_active = true` row survives.
@@ -370,7 +380,7 @@ A job payload has no way to turn enforcement on. The only payload switch is `for
 
 ## W2 — Script executions (scrub output, then delete rows)
 
-**Targets** (one job file `scriptExecutionRetention.ts`, one worker, three targets run in order via `runRetentionTargets`; metric `script_execution_retention`):
+**Targets.** One job file, `scriptExecutionRetention.ts`, with one worker. It runs three targets in order through `runRetentionTargets`. Each target has its own metric (correction 19): `script_execution_output_retention`, `script_execution_retention` and `script_execution_batch_retention`.
 
 | # | Table | Action | Eligible | Default / max | Knobs |
 |---|---|---|---|---|---|
@@ -413,7 +423,7 @@ A job payload has no way to turn enforcement on. The only payload switch is `for
 - [ ] **Step 5: Commit** — `feat(api): report-first script execution retention (#4342 W2)`.
 
 ### Task W2.T3: Registrations, compose, docs
-Same checklist as W1.T6, for 1 worker and 6 variables (`SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_DAYS`, `_BATCH_SIZE`, `_MAX_BATCHES`, `_ENFORCE`; the output and row windows share the batch knobs). One `workerRegistry.scriptExecutionRetention.test.ts`.
+Same checklist as W1.T6, for 1 worker, 3 metric names, and 5 variables: `SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_BATCH_SIZE`, `SCRIPT_EXECUTION_RETENTION_MAX_BATCHES` and `SCRIPT_EXECUTION_RETENTION_ENFORCE`. The output and row windows share the batch knobs. Add one `workerRegistry.scriptExecutionRetention.test.ts`.
 - [ ] Steps as W1.T6. Commit `chore(api): register script execution retention (#4342 W2)`.
 
 ### Task W2.T4: Output-removed note (web)
@@ -438,14 +448,14 @@ Same checklist as W1.T6, for 1 worker and 6 variables (`SCRIPT_EXECUTION_OUTPUT_
 
 ## W3 — Alerts family
 
-**Targets** (one job file `alertRetention.ts`, metric `alert_retention`, two targets in order):
+**Targets** (one job file `alertRetention.ts`, two targets in order, metrics `alert_retention` and `alert_correlation_group_retention`):
 
 | # | Table | Eligible | Default / max | Knobs |
 |---|---|---|---|---|
 | 1 | `alerts` (`a.` = `alerts.`) | `a.status IN ('resolved','dismissed')` AND `COALESCE(a.resolved_at, a.dismissed_at) < utcWallTime(cutoff)` AND (`a.rule_id IS NULL` OR EXISTS a newer closed alert `n` with `n.rule_id = a.rule_id AND n.device_id IS NOT DISTINCT FROM a.device_id AND COALESCE(n.subject_key,'') = COALESCE(a.subject_key,'')`) AND NOT EXISTS in `ticket_alert_links`, `psa_ticket_mappings`, `alert_external_refs` for `a.id` | 365 / 1095 | `ALERT_RETENTION_` |
 | 2 | `alert_correlation_groups` | `root_alert_id IS NULL` AND NOT EXISTS `alert_correlation_members` for the group AND `last_seen_at < utcWallTime(cutoff)` | follows #1 | — |
 
-- "Newer" for alerts means a strictly greater `COALESCE(resolved_at, dismissed_at)`, ties broken by `id`, matching the ordering `services/alertLifecycle/cursor.ts:37-69` reads.
+- "Newer" for alerts means a strictly greater `COALESCE(resolved_at, dismissed_at)`, the ordering `services/alertLifecycle/cursor.ts:37-69` reads (it has no tiebreak). Rows that tie on the newest timestamp are all kept, a safe superset.
 - On delete, these cascade: `alert_notifications`, `alert_correlations`, `alert_correlation_members`, `alert_external_refs` (exempted above anyway) and `ai_alert_verdicts`. These SET NULL: `remediation_suggestions`, `metric_anomalies`, `metric_anomaly_episodes`, `ai_agent_runs`, `ai_agent_fix_watches`, `fix_outcomes`.
 - After the W3 FK migration, `log_correlations` and `network_change_events` also SET NULL.
 - `siteOwnedAlerts.ts:75-84` nulls those two FKs by hand. That code stays; it becomes redundant but is harmless.
@@ -484,7 +494,7 @@ Same checklist as W1.T6, for 1 worker and 6 variables (`SCRIPT_EXECUTION_OUTPUT_
 - [ ] **Step 5: Commit** — `feat(api): report-first closed-alert retention (#4342 W3)`.
 
 ### Task W3.T3: Registrations, compose, docs
-W1.T6 checklist for 1 worker and 4 variables (`ALERT_RETENTION_DAYS`, `_BATCH_SIZE`, `_MAX_BATCHES`, `_ENFORCE`), plus the two docs notes above. Commit `chore(api): register alert retention (#4342 W3)`.
+W1.T6 checklist for 1 worker, 2 metric names and 4 variables (`ALERT_RETENTION_DAYS`, `_BATCH_SIZE`, `_MAX_BATCHES`, `_ENFORCE`), plus the two docs notes above. Commit `chore(api): register alert retention (#4342 W3)`.
 
 ### Task W3.T4: Integration guards
 **Files:** Create `apps/api/src/__tests__/integration/alertRetention.integration.test.ts`.
@@ -515,13 +525,14 @@ W1.T6 checklist for 1 worker and 4 variables (`ALERT_RETENTION_DAYS`, `_BATCH_SI
 **Stub eligibility (phases 1–2; all hold):**
 - `org_id = $org`, `transcript_purged_at IS NULL`, `flagged_at IS NULL` (OD 2).
 - `last_activity_at < utcWallTime(cutoff)`.
-- `status IN ('closed','expired')`, OR (`status = 'active'` AND `last_activity_at < utcWallTime(now − LIVE_SESSION_MAX_DEFER_MS)`) (correction 6).
+- `status IN ('closed','expired')`, OR (`status = 'active'` AND `last_activity_at < utcWallTime(cutoff − LIVE_SESSION_MAX_DEFER_MS)`) (correction 6). An abandoned active session gets the same 24 h allowance past its window that `aiToolOutputRetention.ts:289` gives a live session.
+- A stub can never gain new messages: `aiAgentSdk.ts:637-651` refuses any session that is not `active`, and nothing sets a session back to `active`. So `transcript_purged_at IS NULL` never leaves fresh content unpurged.
 - NOT EXISTS an `ai_messages` row for the session with `created_at >= utcWallTime(now − LIVE_SESSION_QUIET_MS)`.
 
 **Stub batch** (`stubSessionsBatch`, inside one `inFreshSystemContext`, statements in this order):
 1. `SELECT id, sdk_session_id … LIMIT n FOR UPDATE SKIP LOCKED`.
 2. `DELETE FROM ai_messages WHERE session_id = ANY($ids)`; `DELETE FROM ai_action_plans WHERE session_id = ANY($ids)`.
-3. `UPDATE ai_screenshots SET expires_at = LEAST(expires_at, now()) WHERE session_id = ANY($ids)` (correction 8).
+3. `UPDATE ai_screenshots SET expires_at = LEAST(expires_at, utcWallTime(nowIso)) WHERE session_id = ANY($ids)` (correction 8; `expires_at` is tz-less).
 4. `UPDATE ai_tool_executions SET tool_input = $marker, tool_output = $marker, error_message = NULL WHERE session_id = ANY($ids)`. `$marker` is `tombstone(now)` from `aiToolOutputRetention.ts`; `tool_input` is NOT NULL, so it gets the marker, never NULL.
 5. `UPDATE ai_sessions SET title = NULL, system_prompt = NULL, context_snapshot = NULL, workbook_name = NULL, flag_reason = NULL, sdk_session_id = NULL, transcript_purged_at = now(), status = CASE WHEN status = 'active' THEN 'expired' ELSE status END, updated_at = now() WHERE id = ANY($ids)`.
 6. Return `{ stubbed, clearedSdkSessionIds }`. After commit, call `deleteSdkTranscript` per id, as in `runAiToolOutputRetention`.
@@ -567,7 +578,7 @@ W1.T6 checklist for 1 worker and 4 variables (`ALERT_RETENTION_DAYS`, `_BATCH_SI
   - The three preview endpoints' `{ eligible, enforced }`.
 - **PARALLEL GROUPS** after T1:
   - API, file-disjoint: {T2 resolvers + routes + previews + shared predicates, T4 topology filter}. T3 (job + its integration tests) imports T2's predicate module, so it starts when T2's `aiTranscriptRetentionPredicates.ts` is committed.
-  - Web, file-disjoint: {T5 settings cards + locales, T6 viewers}. These start once T1 fixes the seam, and use mocked fetches until T2 lands.
+  - Web: T5 (settings cards + locales), **then** T6 (viewers). Both edit `locales/*/ai.json` in all 8 locales, so they run in sequence; parallel edits across 8 files are how a locale gets silently dropped. They start once T1 fixes the seam, and use mocked fetches until T2 lands.
   - T7 (registrations + docs) after T3.
 - T1, T2, T3, T4 → Opus (tenant-visible deletion, partner-ceiling semantics, audit visibility). T5, T6, T7 → Sonnet, each handed the seam above and its copy.
 - Full rigor: TDD, one review (Opus) over the branch. Before the PR, take a browser pass of both cards and both viewers on a `worktree-stack` (screenshots in the PR).
@@ -613,7 +624,7 @@ Tests: `routes/partnerAiDataPolicy.test.ts`, `routes/ai/dataPolicy.test.ts`, `ro
 - [ ] **Step 5: Commit** — `feat(ai): transcript retention settings and previews (#4342 W4)`.
 
 ### Task W4.T3: `aiTranscriptRetention.ts`
-**Files:** Create `apps/api/src/jobs/aiTranscriptRetention.ts` + `.test.ts`; Create `apps/api/src/__tests__/integration/aiTranscriptRetention.integration.test.ts`.
+**Files:** Create `apps/api/src/jobs/aiTranscriptRetention.ts` + `.test.ts`; Create `apps/api/src/__tests__/integration/aiTranscriptRetention.integration.test.ts`; Modify `apps/api/src/services/auditRetentionPolicyService.ts` (export `DEFAULT_RETENTION_DAYS`, today a module `const` at `:11`).
 **Interfaces — Produces:**
 ```ts
 export async function loadTranscriptWindowsByOrg(): Promise<Map<string, { technicianDays: number | null; clientDays: number | null; auditDays: number }>>; // ONE system read of orgs, ai_data_policies, client_ai_org_policies, audit_retention_policies
@@ -683,7 +694,7 @@ Commit `chore(ai): register transcript retention (#4342 W4)`, then open Part A, 
 | Metric / file | Table (shorthand for the bare name) | Eligible (all hold) | Default / max | Knob prefix |
 |---|---|---|---|---|
 | `ai_agent_run_retention` / `aiAgentRuns.ts` | `ai_agent_runs` (r) | `status IN ('completed','failed','cancelled','expired','skipped','blocked')` AND `finished_at < cutoff::timestamptz` AND NOT EXISTS `action_intents` on `(requesting_agent_run_id, org_id)` AND NOT EXISTS `ticket_drafts` on its run FK columns (`ticketDrafts.ts:89-91`) AND NOT EXISTS `ai_run_artifacts` / `ai_run_workspaces` for the run (correction 12) | 400 / 1095 | `AI_AGENT_RUN_RETENTION_` |
-| `patch_job_result_retention` / `patchAndPosture.ts` | `patch_job_results` (p) | `p.status IN ('completed','failed','skipped')` AND `p.created_at < utcWallTime` AND parent `patch_jobs.status IN ('completed','failed','cancelled')` AND NOT (`reboot_required` AND `rebooted_at IS NULL`) AND EXISTS a newer row for the same `(device_id, patch_id)` | 365 / 1095 | `PATCH_JOB_RESULT_RETENTION_` |
+| `patch_job_result_retention` / `patchAndPosture.ts` | `patch_job_results` (p) | `p.status IN ('completed','failed','skipped')` AND `p.created_at < utcWallTime` AND parent `patch_jobs.status IN ('completed','failed','cancelled')` AND NOT (`reboot_required` AND EXISTS `devices d` with `d.id = p.device_id AND d.pending_reboot`) AND EXISTS a newer row `n` with `n.device_id = p.device_id AND n.patch_id IS NOT DISTINCT FROM p.patch_id` (correction 13) | 365 / 1095 | `PATCH_JOB_RESULT_RETENTION_` |
 | `security_posture_snapshot_retention` / `patchAndPosture.ts` | `security_posture_snapshots` | `captured_at < utcWallTime` AND EXISTS a newer row for the same `device_id` | 365 / 1095 | `SECURITY_POSTURE_SNAPSHOT_RETENTION_` |
 | `cis_baseline_result_retention` / `patchAndPosture.ts` | `cis_baseline_results` | `checked_at < utcWallTime` AND EXISTS a newer row for the same `(org_id, device_id, baseline_id)` | 365 / 1095 | `CIS_BASELINE_RESULT_RETENTION_` |
 | `automation_run_retention` / `runHistory.ts` | `automation_runs` | `status IN ('completed','failed','partial','cancelled')` AND `completed_at < utcWallTime` | 180 / 1095 | `AUTOMATION_RUN_RETENTION_` |
@@ -692,7 +703,7 @@ Commit `chore(ai): register transcript retention (#4342 W4)`, then open Part A, 
 | `user_notification_retention` / `accessHistory.ts` | `user_notifications` | `created_at < utcWallTime` AND NOT (`type = 'approval'` AND `read = false`) | 365 / 1095 | `USER_NOTIFICATION_RETENTION_` |
 | `remote_session_retention` / `accessHistory.ts` | `remote_sessions` | `status IN ('disconnected','failed','denied')` AND `COALESCE(ended_at, created_at) < utcWallTime` | 365 / 1095 | `REMOTE_SESSION_RETENTION_` |
 | `support_session_retention` / `accessHistory.ts` | `support_sessions` | `status IN ('ended','expired')` AND `COALESCE(ended_at, created_at) < cutoff::timestamptz` | 365 / 1095 | `SUPPORT_SESSION_RETENTION_` |
-| `auth_session_retention` / `accessHistory.ts` | `sessions` | `expires_at < utcWallTime` | 7 / 90 | `AUTH_SESSION_RETENTION_` |
+| `auth_session_retention` / `accessHistory.ts` | `sessions` | `created_at < utcWallTime(cutoff)` AND `expires_at < utcWallTime(nowIso)` (correction 17) | 30 / 365, **floor 30** | `AUTH_SESSION_RETENTION_` |
 | `network_change_event_retention` / `networkChangeEvents.ts` | `network_change_events` (e) | `e.detected_at < (nowIso::timestamptz AT TIME ZONE 'UTC') - make_interval(days => <per-row days>)`. Per-row days = the profile's `alert_settings->>'changeRetentionDays'` when it matches `'^[0-9]{1,3}$'`, clamped 1..365; otherwise the env default. It also applies when `profile_id IS NULL` or the profile has alerts disabled. | 90 / 365 | `NETWORK_CHANGE_EVENT_RETENTION_` |
 
 - **Cascades on delete, verified:**
@@ -701,7 +712,8 @@ Commit `chore(ai): register transcript retention (#4342 W4)`, then open Part A, 
   - `report_runs` → `report_run_deliveries` (CASCADE); `ai_agent_runs.report_run_id`, `device_function_assessments.report_run_id` (SET NULL). Report output is `result` jsonb plus an API path, with no blob (`artifact_id` is SET NULL, and the artifact keeps its own TTL).
   - `support_sessions` → `enrollment_keys.support_session_id` (CASCADE). The quick-support reaper purges the device 6 h after the session ends, long before 365 d.
   - `user_notifications` → `wisp_thread_posts.notification_id` (SET NULL).
-- **Sessions:** the auth `sessions` table is still written by SSO login (`services/session.ts:36`). Nothing reads it (`validateSession` has no caller), so 7 days past expiry is safe.
+- **Sessions:** the auth `sessions` table is still written by SSO login (`services/session.ts:36`). `validateSession` has no caller. The one reader is `userRiskScoring`'s 30-day window (`services/userRiskScoring.ts:655-665`), so the floor is 30 days from creation. The floor is named `USER_RISK_SESSION_LOOKBACK_DAYS` and exported from `userRiskScoring.ts`, and the target imports it.
+- **Remote sessions:** `recording_url` is a link the user typed in, not a stored file (correction 18). It goes with the row.
 
 **W5 migration** `…230740-history-retention-indexes.sql` (`-- @no-transaction`). Each index is declared in its Drizzle schema:
 - `ai_agent_runs_finished_idx ON ai_agent_runs (finished_at) WHERE finished_at IS NOT NULL`
@@ -710,7 +722,7 @@ Commit `chore(ai): register transcript retention (#4342 W4)`, then open Part A, 
 - `report_runs_terminal_age_idx ON report_runs ((COALESCE(completed_at, created_at))) WHERE status IN ('completed','failed')`
 - `user_notifications_read_at_idx ON user_notifications (read_at) WHERE read = true`
 - `remote_sessions_terminal_age_idx ON remote_sessions ((COALESCE(ended_at, created_at))) WHERE status IN ('disconnected','failed','denied')`
-- `sessions_expires_at_idx ON sessions (expires_at)`
+- `sessions_created_at_idx ON sessions (created_at)`
 
 Existing indexes already serve the other predicates: posture `(device_id, captured_at)`, CIS `(org_id, device_id, checked_at)`, change events `detected_at`, patch results `(device_id, patch_id, created_at)`. `support_sessions` is small.
 
@@ -723,7 +735,10 @@ Existing indexes already serve the other predicates: posture `(device_id, captur
 - evidence-backed report runs;
 - unread approvals.
 
-**Release notes.** Automation and report run lists and totals shorten to their windows (`routes/automations.ts:1210-1225` counts every run). Change-event history now honours the profile setting, also for profiles with alerts disabled.
+**Release notes.**
+- Automation and report run lists and totals shorten to their windows (`routes/automations.ts:1210-1225` counts every run).
+- Change-event history now honours the profile setting, also for profiles with alerts disabled.
+- A remote session's recording link is removed with the session after 365 days.
 
 ### Execution split and parallelism (W5)
 - Branch `feature/4342-retention/w5`. Part A `feat(api): report-only retention for run and access history (#4342 W5)`. Part B after G2; it may flip only the targets Todd approved. API only.
@@ -740,7 +755,7 @@ Existing indexes already serve the other predicates: posture `(device_id, captur
 - [ ] Steps as W1.T1. Commit `feat(db): retention indexes for run and access history (#4342 W5)`.
 
 ### Tasks W5.T2–T6: Target modules (PARALLEL GROUP A)
-**Files (one task each):** Create `apps/api/src/jobs/historyRetention/{aiAgentRuns,patchAndPosture,runHistory,accessHistory,networkChangeEvents}.ts`, each with a `.test.ts`. T6 also modifies `apps/api/src/jobs/networkBaselineWorker.ts` (removing the dead prune type, case and handler) and its test, if one asserts the case.
+**Files (one task each):** Create `apps/api/src/jobs/historyRetention/{aiAgentRuns,patchAndPosture,runHistory,accessHistory,networkChangeEvents}.ts`, each with a `.test.ts`. T5 also modifies `apps/api/src/services/userRiskScoring.ts`, to export `USER_RISK_SESSION_LOOKBACK_DAYS = 30` and use it in its own `since30d`. T6 also modifies `apps/api/src/jobs/networkBaselineWorker.ts`, removing the dead prune type, case and handler, and its test if one asserts the case.
 
 **Interfaces — Produces** (each module):
 ```ts
@@ -771,8 +786,8 @@ Also, per the W1.T6 checklist: 1 slot, 1 registry entry (`historyRetention`), 1 
     - An unreferenced old `completed` run is deleted, and its `ai_alert_verdicts` go with it.
     - An old `running` run survives.
   - **`patch_job_results`:**
-    - Only the newest per `(device, patch)` survives.
-    - A reboot-pending old row survives.
+    - Only the newest per `(device, patch)` survives, including for `patch_id IS NULL` summary rows (the older NULL row is deleted).
+    - An old `reboot_required` row of a device with `pending_reboot = true` survives. `loadOldestRebootRequiredSince` returns the same date before and after. The same row on a device with no pending reboot is deleted.
     - A row under a `running` job survives.
   - **Posture and CIS:** the newest per key survives a long silence.
   - **`report_runs`:**
@@ -780,6 +795,7 @@ Also, per the W1.T6 checklist: 1 slot, 1 registry entry (`historyRetention`), 1 
     - So does the newest run of a dormant report.
     - Its `report_run_deliveries` go with a deleted run.
   - **Notifications:** an unread `approval` older than 365 d survives; a read one at 91 d is deleted.
+  - **Auth sessions:** a row created 20 d ago, already expired, survives the 30-day floor. A row created 31 d ago is deleted.
   - **`network_change_events`:**
     - An event under a profile with `changeRetentionDays: 30` is deleted at 31 d.
     - An event with `profile_id IS NULL` at 91 d is deleted.
