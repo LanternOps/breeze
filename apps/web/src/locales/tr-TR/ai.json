@@ -617,7 +617,11 @@
     "thinking": "Düşünme"
   },
   "aiThinking": {
-    "label": "Düşünüyor… {{seconds}} sn"
+    "label": "Düşünüyor… {{seconds}} sn",
+    "waitingApproval": "Onayınız bekleniyor",
+    "waitingApprovalPhone": "Onayınız bekleniyor (telefonunuza gönderildi)",
+    "waitingOthers": "Başka bir onaylayıcı bekleniyor",
+    "openApprovals": "Onayları aç"
   },
   "aiTurnModel": {
     "answeredBy": "Yanıtlayan: {{model}}",

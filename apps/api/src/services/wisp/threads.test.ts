@@ -450,6 +450,13 @@ describe('seedContextForSession', () => {
     expect(WISP_BEHAVIOUR_BLOCK).toMatch(/does not grant|never grants/i);
   });
 
+  it('tells the model to say when a step waited on an approval (#10416)', () => {
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n')).toContain(
+      '- If a tool result carries approvalWaitSeconds, say that the step waited that long for approval.',
+    );
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
+  });
+
   it('tells the model how to name an owner on a partner-wide grant (#11432)', () => {
     const line = WISP_BEHAVIOUR_BLOCK.split('\n').find((l) => l.includes('ownerScope'));
     expect(line).toBeDefined();

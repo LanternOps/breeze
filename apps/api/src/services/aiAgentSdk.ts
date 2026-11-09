@@ -173,10 +173,14 @@ export const TERMINAL_READBACK_BUDGET_MS = 3_000;
  * StreamingSessionManager.startTurnTimeout() at each message_start — the same
  * point the 6-minute turn timeout resets — preserving the invariant that a
  * cycle's approval waits always end before the turn timeout fires.
+ *
+ * `startedAt` (#10416) is when this wait began, so a caller can measure how
+ * long the step waited for its decision.
  */
 function beginApprovalWait(session: ActiveSession): {
   timeoutMs: number;
   signal: AbortSignal;
+  startedAt: number;
   end: () => void;
 } {
   const now = Date.now();
@@ -196,6 +200,7 @@ function beginApprovalWait(session: ActiveSession): {
   return {
     timeoutMs,
     signal,
+    startedAt: now,
     end: () => {
       if (ended) return;
       ended = true;
@@ -1346,6 +1351,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
     let createdIntentId: string | undefined;
+    // #10416: how long this call waited on its approval card (tier-2 or a
+    // tier-3 intent). Set whenever such a wait completes; returned only on a
+    // Wisp session's allowed exit (denials and timeouts discard it).
+    let approvalWaitMs: number | undefined;
 
     // #10400: the stream stopped this turn at its work-turn limit; a call it
     // emitted on the way out gets no gate, intent or approval card.
@@ -1736,6 +1745,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           input,
           description: guardrailCheck.description ?? `Execute ${toolName}`,
           requiresAdminApproval: true,
+          // #10416: PAM policy or an administrator decides, never the requester.
+          waitingOn: 'other_approvers',
         });
 
         let approved: boolean;
@@ -2470,6 +2481,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             description: pinnedCard ? pinnedCard.description : description,
             deviceContext,
             intentBacked: true,
+            // #10416: the requester can decide only an intent that fanned a
+            // row out to them; otherwise someone else must (four-eyes).
+            waitingOn: intent.requesterApprovalRequestId ? 'you' : 'other_approvers',
           });
           }
 
@@ -2495,6 +2509,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 approvalWait.signal,
               );
               intentOutcome = intentDecisionOutcome(decisionStatus);
+              approvalWaitMs = Date.now() - approvalWait.startedAt;
             } finally {
               approvalWait.end();
             }
@@ -3095,6 +3110,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           }
 
           // Best-effort push notification to the user's mobile device(s).
+          // #10416: the card says whether at least one push was accepted for
+          // delivery by a push provider (not proof the phone received it).
+          let pushedToPhone = false;
           if (approvalRequestId) {
             try {
               // Token read happens INSIDE the org DB context; the push network
@@ -3110,11 +3128,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 },
                 () => getUserPushTokens(session.auth.user.id),
               );
-              await dispatchApprovalPushToTokens(tokens, {
+              const push = await dispatchApprovalPushToTokens(tokens, {
                 approvalId: approvalRequestId,
                 actionLabel,
                 requestingClientLabel: chatApprovalClientLabel(session),
               });
+              pushedToPhone = (push?.dispatched ?? 0) > 0;
             } catch (err) {
               console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
             }
@@ -3138,6 +3157,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             deviceContext,
             scriptRunContext,
             ...(scriptProposal ? { scriptProposal } : {}),
+            pushedToPhone,
+            waitingOn: 'you',
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval
@@ -3152,6 +3173,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               approvalWait.signal,
             );
             cardOutcome = approvalWaitOutcome(approved, approvalWait.signal);
+            approvalWaitMs = Date.now() - approvalWait.startedAt;
           } finally {
             resolveApprovalCard(session, approvalExec.id, cardOutcome);
           }
@@ -3257,7 +3279,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       // or the tier-2 lightweight card (user clicked Approve).
       lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
     }
-    return { allowed: true, intentId: createdIntentId, context: verifiedToolContext };
+    // #10416: a Wisp session's handler adds the wait to the tool result
+    // (aiAgentSdkTools withApprovalWait); every other session is unchanged.
+    return {
+      allowed: true,
+      intentId: createdIntentId,
+      context: verifiedToolContext,
+      ...(session.wispGrant && approvalWaitMs !== undefined ? { approvalWaitMs } : {}),
+    };
   };
 }
 

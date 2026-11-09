@@ -40,5 +40,11 @@ Last release: **v0.127.0** (2026-11-08).
 - The system prompt now holds only the fixed description of the loop, so it no longer changes between turns.
 - Wisp is told to answer "what needs my attention" from the partner picture and the snapshot first, and to keep "keep it short" to about three tool calls. No migration required.
 
+### Chat shows when a step is waiting on an approval
+
+- While a tool call waits for an approval, the chat (the AI sidebar and the Wisp home column) shows "Waiting for your approval", "Waiting for your approval (sent to your phone)" when a push went to your phone, or "Waiting for another approver" for a four-eyes request, with a link to Approvals for intent-backed requests. Before, it showed only a generic thinking spinner.
+- The `approval_required` stream event gains two optional fields, `pushedToPhone` and `waitingOn` (`you` | `other_approvers`).
+- In Wisp chats, a step that waited 30 seconds or more carries `approvalWaitSeconds` on its tool result, and Wisp is told to mention the wait in its reply. Other chats are unchanged. No migration required.
+
 ## Migrations
 

@@ -218,6 +218,24 @@ describe('approval_required — selfApprovalRequestId passthrough', () => {
  * ceremony at all. Dropping it here silently forces every supervised approve
  * through a passkey prompt the server stopped requiring.
  */
+describe('approval_required — pushedToPhone / waitingOn passthrough (#10416)', () => {
+  it('carries pushedToPhone and waitingOn into pendingApproval', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'file_operations',
+        input: { action: 'read' }, description: 'Read a file',
+        pushedToPhone: true, waitingOn: 'other_approvers',
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval).toMatchObject({ pushedToPhone: true, waitingOn: 'other_approvers' });
+  });
+});
+
 describe('approval_required — approvalScope passthrough (#5600)', () => {
   it('carries approvalScope into pendingApproval', () => {
     const state = makeState();

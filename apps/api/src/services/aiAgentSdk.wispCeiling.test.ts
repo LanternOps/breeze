@@ -1597,3 +1597,81 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
     expect(wisp.lookupWispGrant).not.toHaveBeenCalled();
   });
 });
+
+// #10416: a Wisp step that waited on an approval tells the handler how long,
+// so the tool result (aiAgentSdkTools withApprovalWait) can tell the model.
+describe('createSessionPreToolUse — approval wait duration (#10416)', () => {
+  let now = 0;
+  let dateNow: { mockRestore: () => void };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    now = Date.now();
+    dateNow = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: CEILING, permissionKeys: ['devices:read'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    mockInsertReturning({ id: 'exec-wait' });
+  });
+  afterEach(() => dateNow.mockRestore());
+
+  /** The tier-2 card is approved after `ms` of (mocked) wall-clock time. */
+  function approveTier2After(ms: number) {
+    allowTier(2);
+    vi.mocked(waitForApproval).mockImplementation(async () => {
+      now += ms;
+      return true;
+    });
+  }
+
+  it('a Wisp tier-2 call approved after 290 s carries approvalWaitMs on the allowed result', async () => {
+    approveTier2After(290_000);
+    const result = await createSessionPreToolUse(wispSession())('take_screenshot', { deviceId: 'd-1' });
+    expect(result).toMatchObject({ allowed: true, approvalWaitMs: 290_000, toolAuth: { narrowedFor: 'session-1' } });
+  });
+
+  it('a Wisp tier-3 intent released after 290 s carries approvalWaitMs beside its intent id', async () => {
+    allowTier(3);
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} } as IntentReleaseRevalidation);
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-wait', approvalRequestIds: ['appr-w'] }));
+    mockWaitForIntentDecision.mockImplementation(async () => {
+      now += 290_000;
+      return 'approved';
+    });
+    mockTransitionIntent.mockResolvedValue(true);
+
+    const result = await createSessionPreToolUse(wispSession())('execute_command', { command: 'whoami' });
+
+    expect(result).toMatchObject({ allowed: true, intentId: 'intent-wait', approvalWaitMs: 290_000 });
+  });
+
+  it('an ordinary (non-Wisp) session never carries approvalWaitMs, however long it waited', async () => {
+    approveTier2After(290_000);
+    const result = await createSessionPreToolUse(makeActiveSession())('take_screenshot', { deviceId: 'd-1' });
+    expect(result.allowed).toBe(true);
+    expect(result).not.toHaveProperty('approvalWaitMs');
+  });
+
+  it('a Wisp call that never waited on a card carries no approvalWaitMs', async () => {
+    allowTier(1);
+    const read = await createSessionPreToolUse(wispSession())('get_device_details', { deviceId: 'd-1' });
+    expect(read).not.toHaveProperty('approvalWaitMs');
+
+    allowTier(2);
+    mockInsertValues();
+    const autoApproved = await createSessionPreToolUse(wispSession({ approvalMode: 'auto_approve' }))('take_screenshot', { deviceId: 'd-1' });
+    expect(autoApproved.allowed).toBe(true);
+    expect(autoApproved).not.toHaveProperty('approvalWaitMs');
+    expect(waitForApproval).not.toHaveBeenCalled();
+  });
+});
