@@ -12,7 +12,10 @@ LABEL="io.lanternops.breeze-qa-sweep"
 QA_HOME="${QA_HOME:-$HOME/.breeze-qa}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(cd "$SRC_DIR/../.." && pwd)"
+CHECKOUT="$(cd "$SRC_DIR/../.." && pwd)"            # checkout we bundle the skill from
+# Source repo for fetch/worktree = the MAIN repo behind this checkout, so running
+# the installer from a throwaway worktree doesn't point the job at a temp path.
+REPO="$(cd "$(git -C "$CHECKOUT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
 HOURS="1"
 AUTH_DIR="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-}"   # pin the login profile this is run from
 MINUTE="30"
@@ -31,7 +34,7 @@ done
 mkdir -p "$QA_HOME/bin" "$QA_HOME/runs"
 install -m 0755 "$SRC_DIR/scheduled-ui-sweep.sh" "$QA_HOME/bin/scheduled-ui-sweep.sh"
 install -m 0644 "$SRC_DIR/qa-mcp.json" "$QA_HOME/bin/qa-mcp.json"
-install -m 0644 "$REPO/.claude/skills/ui-qa-sweep/SKILL.md" "$QA_HOME/bin/ui-qa-sweep.SKILL.md"   # contract travels with the runner
+install -m 0644 "$CHECKOUT/.claude/skills/ui-qa-sweep/SKILL.md" "$QA_HOME/bin/ui-qa-sweep.SKILL.md"   # contract travels with the runner
 
 INTERVALS=""
 for h in $HOURS; do
@@ -69,5 +72,5 @@ case "$AUTH" in claude.ai*) echo "auth: $AUTH" ;; *) echo "ERROR: no claude.ai s
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "installed $LABEL: hours=[$HOURS] minute=$MINUTE, runner=$QA_HOME/bin/scheduled-ui-sweep.sh"
+echo "installed $LABEL: hours=[$HOURS] minute=$MINUTE, source repo=$REPO, skill from $CHECKOUT"
 echo "run now:  launchctl kickstart gui/$(id -u)/$LABEL"
