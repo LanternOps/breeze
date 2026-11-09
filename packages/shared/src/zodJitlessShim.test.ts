@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -35,8 +35,9 @@ describe('zod jitless shim (#9972)', () => {
     '%s aliases bare zod to the shim for every browser entry',
     (rel) => {
       const src = read(rel);
-      expect(src).toContain('zodJitlessAlias');
-      expect(src).toMatch(/alias[\s\S]*zodJitlessAlias|zodJitlessAlias[\s\S]*alias/);
+      expect(src).toMatch(/import \{ zodJitlessAlias \}/);
+      // Must sit inside vite.resolve.alias (array form), not just be imported.
+      expect(src).toMatch(/resolve:\s*\{[\s\S]*?alias:\s*\[[\s\S]*?\bzodJitlessAlias\b[\s\S]*?\]/);
     }
   );
 
@@ -46,5 +47,6 @@ describe('zod jitless shim (#9972)', () => {
     expect(zodJitlessAlias.find.test('zod')).toBe(true);
     expect(zodJitlessAlias.find.test('zod/v4')).toBe(false);
     expect(zodJitlessAlias.replacement).toMatch(/zodJitlessShim\.ts$/);
+    expect(existsSync(zodJitlessAlias.replacement)).toBe(true);
   });
 });
