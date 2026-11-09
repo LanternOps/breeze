@@ -8303,7 +8303,7 @@
   "portalAccessPolicy": {
     "title": "Inicio de sesión y registro",
     "orgDescription": "Cómo inician sesión en el portal del cliente las personas de esta organización y cómo obtienen acceso por navegador las personas nuevas. Un campo en Heredar sigue el valor predeterminado del socio.",
-    "partnerDescription": "El valor predeterminado para todas las organizaciones cliente. Cada organización puede reemplazar cualquier campo en su pestaña Portal.",
+    "partnerDescription": "El valor predeterminado para todas las organizaciones cliente. Cada organización puede reemplazar cualquier campo en su pestaña Portal del cliente.",
     "loading": "Cargando la configuración de inicio de sesión…",
     "readOnly": "Puede ver esta configuración, pero no cambiarla. Cambiar el valor predeterminado del socio requiere acceso completo de socio.",
     "save": "Guardar configuración de inicio de sesión",

@@ -8303,7 +8303,7 @@
   "portalAccessPolicy": {
     "title": "Connexion et inscription",
     "orgDescription": "Comment les personnes de cette organisation se connectent au portail client, et comment les nouvelles personnes obtiennent un accès par navigateur. Un champ laissé sur Hériter suit la valeur par défaut du partenaire.",
-    "partnerDescription": "La valeur par défaut de toutes les organisations clientes. Chaque organisation peut remplacer n’importe quel champ dans son onglet Portail.",
+    "partnerDescription": "La valeur par défaut de toutes les organisations clientes. Chaque organisation peut remplacer n’importe quel champ dans son onglet Portail client.",
     "loading": "Chargement des paramètres de connexion…",
     "readOnly": "Vous pouvez consulter ces paramètres, mais pas les modifier. Modifier la valeur par défaut du partenaire nécessite un accès complet au partenaire.",
     "save": "Enregistrer les paramètres de connexion",

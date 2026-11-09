@@ -8303,7 +8303,7 @@
   "portalAccessPolicy": {
     "title": "Accesso e registrazione",
     "orgDescription": "Come accedono al portale clienti le persone di questa organizzazione e come ottengono l’accesso da browser le nuove persone. Un campo lasciato su Eredita segue il valore predefinito del partner.",
-    "partnerDescription": "Il valore predefinito per ogni organizzazione cliente. Ogni organizzazione può sostituire qualsiasi campo nella propria scheda Portale.",
+    "partnerDescription": "Il valore predefinito per ogni organizzazione cliente. Ogni organizzazione può sostituire qualsiasi campo nella propria scheda Portale clienti.",
     "loading": "Caricamento delle impostazioni di accesso…",
     "readOnly": "Puoi visualizzare queste impostazioni ma non modificarle. Modificare il valore predefinito del partner richiede l’accesso completo al partner.",
     "save": "Salva impostazioni di accesso",

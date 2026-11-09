@@ -8303,7 +8303,7 @@
   "portalAccessPolicy": {
     "title": "Sign-in & registration",
     "orgDescription": "How people at this organization sign in to the customer portal, and how new people get browser access. A field left on Inherit follows your partner default.",
-    "partnerDescription": "The default for every customer organization. Each organization can override any field on its Portal tab.",
+    "partnerDescription": "The default for every customer organization. Each organization can override any field on its Customer Portal tab.",
     "loading": "Loading sign-in settings…",
     "readOnly": "You can view these settings but not change them. Changing the partner default needs full partner access.",
     "save": "Save sign-in settings",

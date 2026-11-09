@@ -8303,7 +8303,7 @@
   "portalAccessPolicy": {
     "title": "Oturum açma ve kayıt",
     "orgDescription": "Bu kuruluştaki kişilerin müşteri portalında nasıl oturum açtığı ve yeni kişilerin tarayıcı erişimini nasıl aldığı. Devral olarak bırakılan bir alan, iş ortağı varsayılanını izler.",
-    "partnerDescription": "Tüm müşteri kuruluşları için varsayılan. Her kuruluş, Portal sekmesinde herhangi bir alanı geçersiz kılabilir.",
+    "partnerDescription": "Tüm müşteri kuruluşları için varsayılan. Her kuruluş, Müşteri Portalı sekmesinde herhangi bir alanı geçersiz kılabilir.",
     "loading": "Oturum açma ayarları yükleniyor…",
     "readOnly": "Bu ayarları görüntüleyebilir ancak değiştiremezsiniz. İş ortağı varsayılanını değiştirmek için tam iş ortağı erişimi gerekir.",
     "save": "Oturum açma ayarlarını kaydet",

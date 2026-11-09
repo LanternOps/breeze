@@ -8303,7 +8303,7 @@
   "portalAccessPolicy": {
     "title": "Login e cadastro",
     "orgDescription": "Como as pessoas desta organização fazem login no portal do cliente e como novas pessoas obtêm acesso pelo navegador. Um campo deixado em Herdar segue o padrão do parceiro.",
-    "partnerDescription": "O padrão para todas as organizações clientes. Cada organização pode substituir qualquer campo na sua aba Portal.",
+    "partnerDescription": "O padrão para todas as organizações clientes. Cada organização pode substituir qualquer campo na sua aba Portal do Cliente.",
     "loading": "Carregando configurações de login…",
     "readOnly": "Você pode ver estas configurações, mas não alterá-las. Alterar o padrão do parceiro exige acesso total de parceiro.",
     "save": "Salvar configurações de login",
