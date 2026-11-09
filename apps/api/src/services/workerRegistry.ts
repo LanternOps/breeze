@@ -366,7 +366,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     name: 'policyEvaluationWorker',
     placement: 'global',
     load: async () => {
@@ -914,7 +914,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // org-lifecycle Wave 2, Task 4 (#4111): Phase C (audit + erasure handoff)
     // of a completed org merge. Added during the 3.5d-b merge with main —
     // main's static array placed it exactly here, before desktopSessionFinalization.
-    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     name: 'orgMerge',
     placement: 'global',
     load: async () => {
@@ -1303,7 +1303,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // #6263 W01. Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // #6263 W01. Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     name: 'securityScanWorker',
     placement: 'global',
     load: async () => {
@@ -1483,7 +1483,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'offboardingDrainReaper',
-    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     placement: 'global',
     load: async () => {
       const m = await import('../jobs/offboardingDrainReaper');
@@ -1516,7 +1516,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // #5205 W06 (#5211): consumes the `ai-operator-coordinator` queue the W05
     // publisher feeds, plus its own 15s reconciler tick.
     name: 'aiOperatorTaskWorker',
-    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     placement: 'global',
     load: async () => {
       const m = await import('../jobs/aiOperatorTaskWorker');
@@ -1529,7 +1529,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     name: 'pamActuationWorker',
     // Immediate delivery uses the canonical command claim; the relay delivers to agents owned by another API.
-    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     placement: 'global',
     load: async () => {
       const m = await import('../jobs/pamActuationWorker');
@@ -1796,7 +1796,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // admits a verdict run for an alert that stays open and uncorrelated for
     // UNGROUPED_VERDICT_DELAY_MINUTES. Its closure reaches
     // `enqueueVerdictRunForAlert` (alertVerdictSubscriber.ts) ->
-    // `createAndEnqueueAgentRun` (runService.ts). Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // `createAndEnqueueAgentRun` (runService.ts). Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     name: 'alertVerdictScheduler',
     placement: 'global',
     load: async () => {
@@ -1914,7 +1914,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // W03 (#5612): evaluates a proposal's verification claim after its
-    // execution lands. Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // execution lands. Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     name: 'scriptVerifyWorker',
     placement: 'global',
     load: async () => {
@@ -2006,7 +2006,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Tool catalog W04 (#5219), Task A8 — executes flow run slices
     // (flow-runs queue). Runs with the flag off too, so a queued run ends
-    // `flows_disabled` instead of waiting. Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // `flows_disabled` instead of waiting. Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     name: 'flowRunner',
     placement: 'global',
     load: async () => {
@@ -2017,7 +2017,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Task A8 — 60 s sweep re-enqueueing runs whose wake was lost and
     // pausing event flows when event delivery stops being durable.
-    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     name: 'flowRunReconciler',
     placement: 'global',
     load: async () => {
@@ -2037,7 +2037,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Task A9 — 60 s schedule-trigger tick (one global repeatable over the
     // enabled schedule flows; partner-wide flows fan out per live org).
-    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    // Global since #4142 W2: its closure no longer reaches agentWs (workerEntrypointClosure.contract.test.ts).
     name: 'flowScheduleTick',
     placement: 'global',
     load: async () => {

@@ -253,6 +253,10 @@ export async function prepareAgentDrainForOrgIds(
   // i.e. after the unsuspend below is visible: it reads presence leases then,
   // so a device that reconnected once the auth gate re-opened is closed too,
   // and the reaper's periodic re-sweep bounds anything that connects later.
+  // That ordering needs a held DB context, which every caller has (a request,
+  // or the reaper's system context). With none, runAfterDbContextCommit starts
+  // the sever at once and it may run before the unsuspend; the re-sweep
+  // covers that too.
   // The tenant cache is dropped once more right after it (see the end of this
   // function). Callers (begin*Offboarding) await this whole function before
   // queueDrainUninstalls, so the unsuspend still lands before any

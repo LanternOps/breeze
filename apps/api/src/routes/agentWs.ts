@@ -5558,7 +5558,9 @@ export function disconnectAgent(agentId: string, code: number = 4040, reason: st
  * the producer's read) answers `token_mismatch` and stays open. Synchronous by
  * design: nothing awaits between the compare and `close()`, so no reconnect can
  * slip in between them on this process. Outcomes otherwise match
- * {@link disconnectAgent}; the map entry is left to onClose the same way.
+ * {@link disconnectAgent}; the map entry is left to onClose the same way. A
+ * throwing `close()` is logged here and reported to Sentry by the relay
+ * consumer, once per job, so a fleet sever cannot raise one event per socket.
  */
 export function disconnectAgentConnection(
   agentId: string,
@@ -5573,7 +5575,6 @@ export function disconnectAgentConnection(
     conn.ws.close(code, reason);
   } catch (error) {
     console.error(`disconnectAgentConnection(${agentId.slice(0, 12)}) close threw:`, error);
-    captureException(error instanceof Error ? error : new Error(String(error)));
     return 'close-failed';
   }
   return 'closed';

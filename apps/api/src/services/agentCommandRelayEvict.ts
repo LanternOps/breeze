@@ -20,8 +20,11 @@
  * Nothing secret travels, so the job is not sealed. The job deliberately has
  * no top-level `agentId` / `commandId` / `sealedCommand`: a consumer from
  * before this operation existed reads it as a send job, finds no socket for an
- * undefined agent and acks `offline`, which the producer maps to
- * `indeterminate` for every entry (rolling deploys).
+ * undefined agent, closes nothing and acks `offline`. An awaiting producer
+ * maps that to `indeterminate` for every entry; a queued eviction
+ * (`awaitAck: false`) never reads the ack, so on such an instance it is
+ * reported `queued` and simply does not happen (rolling deploys; see
+ * docs/deploy/worker-split.md).
  *
  * Call it after the transaction that made the change commits
  * (`runAfterDbContextCommit`), or outside any DB context: like the command
@@ -76,7 +79,11 @@ export interface EvictRequest {
 }
 
 export type EvictOutcome =
-  /** `close()` succeeded on that exact connection (not "the agent is offline everywhere"). */
+  /**
+   * `close()` succeeded on the live socket (not "the agent is offline
+   * everywhere"). Via `relay` it is fenced to the lease's connection; the
+   * local path closes whatever this process holds for the agent (at most one).
+   */
   | { status: 'closed'; via: 'local' | 'relay' }
   /** `close()` threw: the channel plausibly stayed live. */
   | { status: 'close_failed'; via: 'local' | 'relay' }
@@ -125,10 +132,29 @@ export interface RelayEvictAck {
 }
 
 /** A request (producer) or job entry (consumer) the eviction may act on. */
-export function isValidEvictRequest(r: { agentId?: unknown; code?: unknown; reason?: unknown }): boolean {
+export function isValidEvictRequest<T extends { agentId?: unknown; code?: unknown; reason?: unknown }>(
+  r: T,
+): r is T & EvictRequest {
   return typeof r.agentId === 'string' && r.agentId.length > 0
     && typeof r.code === 'number' && AGENT_EVICT_CLOSE_CODES.has(r.code)
     && typeof r.reason === 'string' && r.reason.length <= RELAY_EVICT_REASON_MAX_LENGTH;
+}
+
+/**
+ * The job-level shape of a `relay-evict` payload read back from Redis, or
+ * null when it is not one this build can act on. Entries are only checked to
+ * be a bounded list here: the consumer validates each entry on its own, so
+ * one bad entry never voids the rest.
+ */
+export function parseRelayEvictJob(raw: unknown): RelayEvictJobData | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const d = raw as Partial<RelayEvictJobData>;
+  if (typeof d.relayId !== 'string' || d.relayId.length === 0) return null;
+  if (typeof d.targetInstanceId !== 'string') return null;
+  if (typeof d.expiresAt !== 'number' || !Number.isFinite(d.expiresAt)) return null;
+  if (typeof d.awaitAck !== 'boolean') return null;
+  if (!Array.isArray(d.entries) || d.entries.length > RELAY_EVICT_MAX_ENTRIES) return null;
+  return d as RelayEvictJobData;
 }
 
 export async function writeRelayEvictAck(relayId: string, outcomes: Record<string, EvictOutcome>): Promise<void> {
@@ -225,8 +251,9 @@ async function evictUnguarded(
 ): Promise<void> {
   const valid: EvictRequest[] = [];
   for (const request of requests) {
+    const { agentId } = request;
     if (isValidEvictRequest(request)) valid.push(request);
-    else outcomes.set(request.agentId, { status: 'unavailable', reason: 'invalid_request' });
+    else outcomes.set(agentId, { status: 'unavailable', reason: 'invalid_request' });
   }
   if (valid.length === 0) return;
 
@@ -383,6 +410,15 @@ async function enqueueEvictJob(
   }
 
   const raw = await beforeTransportDeadline(pollRelayAck(relayId, Math.max(0, deadlineAt - Date.now())), deadlineAt);
-  const mapped = outcomesFromAck(raw === TRANSPORT_DEADLINE ? undefined : raw, entries.map((e) => e.agentId));
+  const ack = raw === TRANSPORT_DEADLINE ? undefined : raw;
+  // The evidence for an `indeterminate` the caller only sees as a status: no
+  // consumer answered in time (dead consumer, backlog, Redis), or the answer
+  // is not an evict ack (a consumer from before relay-evict, mid-deploy).
+  if (ack === undefined) {
+    logRelayDispatchIssue('eviction ack did not arrive within the transport deadline', `instance ${instanceId}, ${entries.length} agent(s)`);
+  } else if ((ack as Partial<RelayEvictAck> | null)?.kind !== 'evict') {
+    logRelayDispatchIssue('eviction ack is not an evict ack (consumer predates relay-evict?)', `instance ${instanceId}, ${entries.length} agent(s)`);
+  }
+  const mapped = outcomesFromAck(ack, entries.map((e) => e.agentId));
   for (const [agentId, outcome] of mapped) outcomes.set(agentId, outcome);
 }

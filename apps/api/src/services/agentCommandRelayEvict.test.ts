@@ -338,3 +338,107 @@ describe('evictAgentSockets (#4142 W2)', () => {
     expect(disconnectAgent).not.toHaveBeenCalled();
   });
 });
+
+describe('evictAgentSockets across instances, awaited (#4142 W2)', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  /** relayId -> the job data the producer enqueued under it. */
+  const jobsByRelay = new Map<string, { targetInstanceId: string; entries: Array<{ agentId: string }> }>();
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    __resetRelayRedisFailureLogForTests();
+    await shutdownAgentCommandRelayQueue();
+    queues.clear();
+    jobsByRelay.clear();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(breezeRole).mockReturnValue('all');
+    vi.mocked(hasDbAccessContext).mockReturnValue(false);
+    vi.mocked(disconnectAgent).mockReturnValue('not-connected');
+    vi.mocked(createInstrumentedQueue).mockImplementation(((name: string) => {
+      const q = {
+        add: vi.fn(async (_name: string, data: { relayId: string; targetInstanceId: string; entries: Array<{ agentId: string }> }) => {
+          jobsByRelay.set(data.relayId, data);
+          return {};
+        }),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      queues.set(name, q);
+      return q;
+    }) as never);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    vi.useRealTimers();
+  });
+
+  /** Each instance's consumer answers its own jobs; `null` = it never answers. */
+  function consumers(answer: Record<string, ((agentIds: string[]) => unknown) | null>) {
+    redisMock.get.mockImplementation(async (key: string) => {
+      const job = jobsByRelay.get(key.replace('agent-relay-ack:', ''));
+      if (!job) return null;
+      const reply = answer[job.targetInstanceId];
+      return reply ? JSON.stringify(reply(job.entries.map((e) => e.agentId))) : null;
+    });
+  }
+  const evictAck = (status: Record<string, unknown>) => (ids: string[]) =>
+    ({ kind: 'evict', outcomes: Object.fromEntries(ids.map((id) => [id, status])) });
+
+  it('keeps every instance\'s outcome its own: closed, dead shard, no answer and no lease in one call', async () => {
+    vi.useFakeTimers();
+    leasesFor({ a1: lease('inst-a'), b1: lease('inst-b'), c1: lease('inst-c') });
+    redisMock.exists.mockImplementation(async (key: string) => (key === 'agent-relay-shard:inst-b' ? 0 : 1));
+    consumers({ 'inst-a': evictAck({ status: 'closed', via: 'relay' }), 'inst-c': null });
+
+    const pending = evictAgentSockets([req('a1'), req('b1'), req('c1'), req('gone')]);
+    await vi.advanceTimersByTimeAsync(RELAY_TRANSPORT_DEADLINE_MS + 200);
+    const out = await pending;
+
+    expect(Object.fromEntries(out)).toEqual({
+      a1: { status: 'closed', via: 'relay' },
+      b1: { status: 'unavailable', reason: 'shard_dead' },
+      c1: { status: 'indeterminate' },
+      gone: { status: 'not_connected' },
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('eviction ack did not arrive within the transport deadline'),
+      'instance inst-c, 1 agent(s)',
+    );
+  });
+
+  it('over RELAY_EVICT_MAX_ENTRIES on one instance: each job maps from its own ack, and a silent job is only its own entries', async () => {
+    vi.useFakeTimers();
+    const ids = Array.from({ length: RELAY_EVICT_MAX_ENTRIES + 100 }, (_, i) => `a-${i}`);
+    leasesFor(Object.fromEntries(ids.map((id) => [id, lease('inst-a')])));
+    redisMock.exists.mockResolvedValue(1);
+    // The consumer answers the full job and never the 100-entry tail job.
+    redisMock.get.mockImplementation(async (key: string) => {
+      const job = jobsByRelay.get(key.replace('agent-relay-ack:', ''));
+      if (!job || job.entries.length !== RELAY_EVICT_MAX_ENTRIES) return null;
+      return JSON.stringify(evictAck({ status: 'closed', via: 'relay' })(job.entries.map((e) => e.agentId)));
+    });
+
+    const pending = evictAgentSockets(ids.map((id) => req(id)));
+    await vi.advanceTimersByTimeAsync(RELAY_TRANSPORT_DEADLINE_MS + 200);
+    const out = await pending;
+
+    expect(jobsByRelay.size).toBe(2);
+    const statuses = [...out.values()].map((o) => o.status);
+    expect(statuses.filter((s) => s === 'closed')).toHaveLength(RELAY_EVICT_MAX_ENTRIES);
+    expect(statuses.filter((s) => s === 'indeterminate')).toHaveLength(100);
+  });
+
+  it('logs an ack that is not an evict ack (a consumer from before relay-evict)', async () => {
+    leasesFor({ a1: lease('inst-old') });
+    redisMock.exists.mockResolvedValue(1);
+    consumers({ 'inst-old': () => ({ status: 'offline' }) });
+
+    const out = await evictAgentSockets([req('a1')]);
+
+    expect(out.get('a1')).toEqual({ status: 'indeterminate' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('eviction ack is not an evict ack'),
+      'instance inst-old, 1 agent(s)',
+    );
+  });
+});

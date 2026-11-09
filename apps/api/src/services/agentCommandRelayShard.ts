@@ -9,11 +9,13 @@
  *     it with SET NX before it starts and refreshes it while it runs. A second
  *     consumer for the same shard finds the key held and refuses to start. Two
  *     consumers on one shard would compete for jobs exactly as the old shared
- *     queue did. Producers read the key too: no key, no consumer, so they
- *     answer `offline` instead of enqueuing.
+ *     queue did. Producers read the key too: no key, no consumer, so a send
+ *     answers `offline` and an eviction `unavailable` instead of enqueuing.
  *   - The drain: pause the queue, ack every job that never started
- *     `owner_mismatch` (its send claim was never taken, so nothing was sent),
- *     then obliterate the queue, which removes its BullMQ keys.
+ *     `owner_mismatch` (its send claim was never taken, so nothing was sent;
+ *     a `relay-evict` job gets one `owner_mismatch` per entry, or nothing
+ *     when nobody waits on it), then obliterate the queue, which removes its
+ *     BullMQ keys.
  *   - The sweep: INSTANCE_ID changes on every boot, so every restart leaves a
  *     queue behind. A graceful shutdown drains its own; a crash cannot. Live
  *     consumers remove a relay queue (a shard, or the pre-#4134 shared queue)
@@ -35,7 +37,7 @@ import {
   writeRelayAck,
   type RelayQueueJobData,
 } from './agentCommandRelay';
-import { RELAY_EVICT_JOB_NAME, writeRelayEvictAck, type EvictOutcome } from './agentCommandRelayEvict';
+import { parseRelayEvictJob, RELAY_EVICT_JOB_NAME, writeRelayEvictAck, type EvictOutcome } from './agentCommandRelayEvict';
 
 export const RELAY_SHARD_OWNER_TTL_MS = 30_000;
 export const RELAY_SHARD_REFRESH_INTERVAL_MS = 10_000;
@@ -114,12 +116,6 @@ export async function releaseRelayShard(instanceId: string, token: string): Prom
   return (await redis.eval(RELEASE_LUA, 1, relayShardOwnerKey(instanceId), token)) === 1;
 }
 
-/** The fields of a `relay-evict` job the drain reads; it trusts none of them. */
-interface RelayEvictJobShape {
-  awaitAck: boolean;
-  entries: Array<{ agentId?: unknown } | null>;
-}
-
 export type RelayQueueDrainResult =
   | { removed: true; acked: number }
   | { removed: false; reason: 'consumer_connected' | 'consumer_check_failed' };
@@ -160,20 +156,31 @@ export async function drainRelayQueue(
     await queue.pause();
     const jobs = await queue.getJobs(['waiting', 'prioritized', 'paused', 'delayed'], 0, RELAY_DRAIN_MAX_ACKS - 1);
     const pendingAcks: Array<() => Promise<void>> = [];
+    let droppedQueuedEvictions = 0;
     for (const job of jobs) {
       const relayId = job?.data?.relayId;
       if (typeof relayId !== 'string' || relayId.length === 0) continue;
-      const data = job.data as Partial<RelayEvictJobShape>;
-      if (job.name === RELAY_EVICT_JOB_NAME && Array.isArray(data.entries)) {
-        if (data.awaitAck === false) continue;
-        const outcomes: Record<string, EvictOutcome> = {};
-        for (const entry of data.entries) {
+      const evict = job.name === RELAY_EVICT_JOB_NAME ? parseRelayEvictJob(job.data) : null;
+      if (evict && !evict.awaitAck) {
+        droppedQueuedEvictions += 1;
+      } else if (evict) {
+        // Keys are agent ids from the wire: no prototype for one to land on.
+        const outcomes: Record<string, EvictOutcome> = Object.create(null);
+        for (const entry of evict.entries) {
           if (typeof entry?.agentId === 'string') outcomes[entry.agentId] = { status: 'owner_mismatch' };
         }
         pendingAcks.push(() => writeRelayEvictAck(relayId, outcomes));
       } else {
+        // A send, or an evict job this build cannot read: the scalar answer,
+        // which an evict producer maps to `indeterminate`.
         pendingAcks.push(() => writeRelayAck(relayId, { status: 'owner_mismatch' }));
       }
+    }
+    if (droppedQueuedEvictions > 0) {
+      // Nobody waits on these, so nothing else records that they never ran.
+      console.warn(
+        `[AgentRelayShard] ${droppedQueuedEvictions} queued relay-evict job(s) on ${queueName} dropped unrun by the drain`,
+      );
     }
     const acks = await Promise.allSettled(pendingAcks.map((write) => write()));
     const failed = acks.filter((ack) => ack.status === 'rejected');

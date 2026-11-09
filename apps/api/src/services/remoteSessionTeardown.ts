@@ -39,13 +39,18 @@ export type DisconnectedSession = {
 /** Tunnel rows torn down at once; each may wait on a relay ack. */
 const TUNNEL_TEARDOWN_CONCURRENCY = 8;
 
-/** Run `fn` over `items`, at most `limit` at a time. Never rejects: per-item failures are the caller's to log. */
+/**
+ * Run `fn` over `items`, at most `limit` at a time. Never rejects: `fn` logs
+ * its own failures, and anything it lets escape is logged here.
+ */
 async function forEachBounded<T>(items: readonly T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
   const lane = async () => {
     while (next < items.length) {
       const item = items[next++]!;
-      await fn(item).catch(() => {});
+      await fn(item).catch((err: unknown) => {
+        console.error('[remoteSessionTeardown] teardown step threw unexpectedly:', err);
+      });
     }
   };
   await Promise.allSettled(Array.from({ length: Math.min(limit, items.length) }, lane));

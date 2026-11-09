@@ -35,7 +35,7 @@ import { createInstrumentedQueue } from './bullmqQueue';
 import { probeAgentPresence, readAgentPresence } from './agentPresence';
 import { captureException } from './sentry';
 import type { AgentCommand, AgentWsDisconnectResult } from '../routes/agentWs';
-import type { RelayEvictJobData } from './agentCommandRelayEvict';
+import type { AgentEvictCloseCode, RelayEvictJobData } from './agentCommandRelayEvict';
 
 // Socket-local dispatch, loaded LAZILY (#4141). The static value-import of
 // routes/agentWs.ts was the single edge pinning every facade caller
@@ -60,7 +60,7 @@ async function socketLocal(): Promise<{
  * holds no sockets and must never load the socket map.
  */
 export async function closeLocalAgentSockets(
-  requests: ReadonlyArray<{ agentId: string; code: number; reason: string }>,
+  requests: ReadonlyArray<{ agentId: string; code: AgentEvictCloseCode; reason: string }>,
 ): Promise<Map<string, AgentWsDisconnectResult> | null> {
   if (breezeRole() !== 'worker') {
     const local = await socketLocal();
@@ -391,8 +391,11 @@ export async function pollRelayAck(relayId: string, deadlineMs: number): Promise
     try {
       const raw = await redis.get(ackKey(relayId));
       if (raw) return JSON.parse(raw) as unknown;
-    } catch {
-      // transient read failure — keep polling until the deadline
+    } catch (err) {
+      // Transient read failure or an unparsable body: keep polling until the
+      // deadline. Logged (rate-limited), or a Redis outage reads as a
+      // consumer that never answered.
+      logRelayRedisFailure('relay ack read', err);
     }
     if (Date.now() >= deadline) return undefined;
     await new Promise((resolve) => setTimeout(resolve, ACK_POLL_INTERVAL_MS));

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // construction / concurrency wiring is not under test here.
 
 vi.mock('../services/instanceIdentity', () => ({ INSTANCE_ID: 'inst-1' }));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
 vi.mock('../services/agentPresence', () => ({
   readAgentPresence: vi.fn(),
@@ -43,6 +44,7 @@ import {
 } from '../services/agentCommandRelay';
 import { disconnectAgentConnection, isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
 import { writeRelayEvictAck } from '../services/agentCommandRelayEvict';
+import { captureException } from '../services/sentry';
 import { processAgentCommandRelayJob } from './agentCommandRelayWorker';
 
 const BASE_DATA = {
@@ -315,8 +317,65 @@ describe('processAgentCommandRelayJob: relay-evict', () => {
     expect(writeRelayEvictAck).not.toHaveBeenCalled();
     expect(writeRelayAck).toHaveBeenCalledTimes(2);
     expect(writeRelayAck).toHaveBeenCalledWith('relay-e', {
-      status: 'infrastructure_error', message: 'relay-evict job rejected: invalid entry list',
+      status: 'infrastructure_error', message: 'relay-evict job rejected: invalid job data',
     });
+  });
+
+  it.each([
+    ['expiresAt is not a number', { expiresAt: '9999999999999' }],
+    ['awaitAck is missing', { awaitAck: undefined }],
+    ['targetInstanceId is not a string', { targetInstanceId: 7 }],
+  ])('a job whose %s closes nothing (a never-expiring job is refused)', async (_label, overrides) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await processAgentCommandRelayJob(evictJob([entry('a1')], overrides));
+
+    expect(disconnectAgentConnection).not.toHaveBeenCalled();
+    expect(writeRelayAck).toHaveBeenCalledWith('relay-e', {
+      status: 'infrastructure_error', message: 'relay-evict job rejected: invalid job data',
+    });
+    warn.mockRestore();
+  });
+
+  it('a job with no relayId closes nothing and writes no ack under a bogus key', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await processAgentCommandRelayJob(evictJob([entry('a1')], { relayId: undefined }));
+
+    expect(disconnectAgentConnection).not.toHaveBeenCalled();
+    expect(writeRelayAck).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('a queued eviction logs what it could not close, since nobody reads its ack', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(disconnectAgentConnection).mockImplementation((agentId) => (
+      { a1: 'closed', a2: 'token_mismatch', a3: 'not-connected' } as const)[agentId as 'a1']);
+
+    await processAgentCommandRelayJob(evictJob([entry('a1'), entry('a2'), entry('a3')], { awaitAck: false }));
+
+    expect(writeRelayEvictAck).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/queued relay-evict relay-e: owner_mismatch=1 \(of 3\)/));
+    warn.mockRestore();
+  });
+
+  it('close() failures are reported to Sentry once per job, with the count', async () => {
+    vi.mocked(disconnectAgentConnection).mockReturnValue('close-failed');
+
+    await processAgentCommandRelayJob(evictJob([entry('a1'), entry('a2'), entry('a3')]));
+
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureException).mock.calls[0]![0]).toMatchObject({
+      message: expect.stringContaining('close() threw for 3 of 3 socket(s)'),
+    });
+  });
+
+  it('an agent id of "__proto__" keeps its own outcome', async () => {
+    await processAgentCommandRelayJob(evictJob([entry('__proto__')]));
+
+    const outcomes = vi.mocked(writeRelayEvictAck).mock.calls[0]![1];
+    expect(Object.keys(outcomes)).toEqual(['__proto__']);
+    expect(JSON.stringify(outcomes)).toBe('{"__proto__":{"status":"closed","via":"relay"}}');
   });
 
   it('a queued eviction (awaitAck:false) closes but writes no ack', async () => {
@@ -327,7 +386,10 @@ describe('processAgentCommandRelayJob: relay-evict', () => {
   });
 
   it('an unknown job name acks infrastructure_error and sends nothing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await processAgentCommandRelayJob({ name: 'relay-teleport', data: { ...BASE_DATA } } as any);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('relay-teleport'));
+    warn.mockRestore();
 
     expect(writeRelayAck).toHaveBeenCalledWith('relay-1', {
       status: 'infrastructure_error', message: 'unknown relay job name relay-teleport: nothing was sent',

@@ -186,6 +186,17 @@ describe('drainRelayQueue', () => {
     expect(redisMock.set).toHaveBeenCalledWith('agent-relay-ack:r-s', JSON.stringify({ status: 'owner_mismatch' }), 'PX', 30_000);
     expect(redisMock.set).not.toHaveBeenCalledWith('agent-relay-ack:r-q', expect.anything(), 'PX', 30_000);
     expect(redisMock.set).toHaveBeenCalledTimes(2);
+    // Nobody waits on the queued one, so the drain is the only record that it never ran.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('1 queued relay-evict job(s) on agent-command-relay-inst-1 dropped unrun'));
+  });
+
+  it('an evict job this build cannot read gets the scalar answer (its producer reads indeterminate)', async () => {
+    const queue = fakeQueue([{ name: 'relay-evict', data: { relayId: 'r-bad', entries: 'nope' } }]);
+    vi.mocked(createInstrumentedQueue).mockReturnValue(queue as never);
+
+    await expect(drainRelayQueue('agent-command-relay-inst-1')).resolves.toEqual({ removed: true, acked: 1 });
+
+    expect(redisMock.set).toHaveBeenCalledWith('agent-relay-ack:r-bad', JSON.stringify({ status: 'owner_mismatch' }), 'PX', 30_000);
   });
 
   it('a failed ack write is counted out and logged, and the queue is still removed', async () => {
