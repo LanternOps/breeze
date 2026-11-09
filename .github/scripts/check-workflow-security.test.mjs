@@ -1770,7 +1770,11 @@ const GATE_MUTATIONS = [
   ['uploading the whole checkout as the selection', inStep(SELECTION_UPLOAD, 'path: ci-gate-selection.json', 'path: .'), /must set path: ci-gate-selection\.json/u],
   ['a selection artifact name CI would not find', inStep(SELECTION_UPLOAD, 'name: ci-gate-selection-attempt-${{ github.run_attempt }}', 'name: selection'), /must set name: ci-gate-selection-attempt-/u],
   ['a longer selection retention', inStep(SELECTION_UPLOAD, 'retention-days: 7', 'retention-days: 90'), /must set retention-days: 7/u],
-  ['the selection upload on pull_request', inStep(SELECTION_UPLOAD, "if: github.event_name == 'merge_group'", "if: github.event_name == 'pull_request'"), /step key continue-on-error is not allowed|must set name: ci-gate-anchor-attempt-/u],
+  ['the selection upload on pull_request', inStep(SELECTION_UPLOAD, "if: github.event_name == 'merge_group'", "if: github.event_name == 'pull_request'"), /step key continue-on-error is not allowed/u],
+  ['a second selection upload', (t) => t.replace(stepText(t, SELECTION_UPLOAD), `${stepText(t, SELECTION_UPLOAD)}${stepText(t, SELECTION_UPLOAD)}`), /the upload-selection step must appear once/u],
+  ['an extra select env', inStep(SELECT, THIN_QUEUE_LINE, `${THIN_QUEUE_LINE}          NODE_OPTIONS: --require ./x.js\n`), /the select step env must be exactly/u],
+  ['a variable in bracket form', inStep(JUDGE, "if: github.event_name == 'merge_group'", "if: github.event_name == 'merge_group' && vars['X'] == '1'"), /vars are allowed only as THIN_QUEUE/u],
+  ['a variable in an if', inStep(ANCHOR_UPLOAD, "if: github.event_name == 'pull_request'", "if: github.event_name == 'pull_request' && vars.X"), /vars are allowed only as THIN_QUEUE/u],
   ['an upload with no if', inStep(SELECTION_UPLOAD, "        if: github.event_name == 'merge_group'\n", ''), /actions\/upload-artifact must have if: github\.event_name == 'pull_request' or if: github\.event_name == 'merge_group'/u],
 ];
 

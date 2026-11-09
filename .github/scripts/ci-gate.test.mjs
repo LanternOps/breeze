@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 import { after, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as gate from './ci-gate.mjs';
 import * as thin from './ci-gate-thin.mjs';
@@ -575,9 +575,11 @@ function fakeReplay(samples, { unfetchable = new Set(), oracle = {}, apiDown = n
         return JSON.stringify([{ artifacts: g?.selection ? [{ name: 'ci-gate-selection-attempt-1', expired: !!g.expired }] : [] }]);
       }
       if (args[0] === 'run' && args[1] === 'download' && Number(args[2]) >= GATE_RUN_BASE) {
-        writeFileSync(join(args[args.indexOf('--dir') + 1], 'ci-gate-selection.json'), JSON.stringify(gateSelection(Number(args[2]) - GATE_RUN_BASE)));
+        const i = Number(args[2]) - GATE_RUN_BASE;
+        writeFileSync(join(args[args.indexOf('--dir') + 1], 'ci-gate-selection.json'), gates[i].corrupt ? '{"truncated":' : JSON.stringify(gateSelection(i)));
         return '';
       }
+      if ((match = endpoint.match(/^repos\/o\/r\/actions\/runs\/(\d+)$/))) return JSON.stringify(runs[Number(match[1]) - 1000]);
       if ((match = endpoint.match(/workflows\/ci\.yml\/runs\?.*page=(\d+)/))) {
         const page = Number(match[1]);
         return JSON.stringify({ total_count: runs.length, workflow_runs: runs.slice((page - 1) * 100, page * 100) });
@@ -618,7 +620,7 @@ function fakeReplay(samples, { unfetchable = new Set(), oracle = {}, apiDown = n
     if (s.throws) throw new gate.GateError(s.throws);
     return { ...contextOf(s.fixture), ...s.over };
   };
-  return { io, calls, runs, run: opts => gate.replay(io, { repository: 'o/r', limit: 50, minEvaluated: 15, widenTo: 200, prepare, ...opts }) };
+  return { io, calls, runs, prepare, run: opts => gate.replay(io, { repository: 'o/r', limit: 50, minEvaluated: 15, widenTo: 200, prepare, ...opts }) };
 }
 const sample = (fixture, over = {}) => ({ fixture, jobs: fixture.jobs, ...over });
 
@@ -2224,9 +2226,9 @@ test('select: the kill switch unset, off or anything but enforce or shadow is th
     assert.equal(gate.select(io, env, selectDeps()), 0);
     const out = publishedBy(io);
     assert.deepEqual([out.mode, out.reason, out.thin_queue], ['full', 'thin_disabled', value ?? ''], String(value));
-    assert.deepEqual(out.thin_skip, ['test-web'], 'the list it would publish, for the shadow record');
+    assert.deepEqual(out.thin_skip, [], 'a full file lists nothing, so no reader can skip while the switch is off');
     assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=full reason=thin_disabled thin_queue=/);
-    assert.match(selectionLines(io)[0], / would_reason="" /, 'and what enforce would have done');
+    assert.match(selectionLines(io)[0], / would_reason="" would_thin_skip=\["test-web"\] /, 'what enforce would have done, logged only');
   }
 });
 
@@ -2248,8 +2250,9 @@ for (const [index, [reason, { io: ioOver, env, deps }]] of SELECT_FALLBACKS.entr
     assert.equal(runSelect(io, { env, ...deps }), 0);
     const out = publishedBy(io);
     assert.deepEqual([out.mode, out.reason], ['full', reason]);
-    assert.deepEqual(out.thin_skip, reason === 'audit_sample' ? ['test-web'] : [], 'only the audit sample still carries its list');
+    assert.deepEqual(out.thin_skip, [], 'a full file lists nothing');
     assert.match(selectionLines(io)[0], new RegExp(`^ci-gate-selection: mode=full reason=${reason} .* would_reason="${reason}" `));
+    if (reason === 'audit_sample') assert.match(selectionLines(io)[0], / would_thin_skip=\["test-web"\] /, 'the audit sample logs the list it would have skipped');
   });
 }
 
@@ -2371,6 +2374,7 @@ test('select: a previous attempt\'s file is removed first, so a failed write lea
   assert.equal(runSelect(io), 0);
   assert.equal(io.files.has(thin.SELECTION_FILE), false);
   assert.equal(selectionLines(io).length, 1, 'still logged');
+  assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=full reason=error .*selection not written: ENOSPC/, 'and the line does not claim a list that was never written');
   assert.ok(io.err.some(line => /^ci-gate-detail: selection not written: .*ENOSPC/.test(line)));
 });
 
@@ -2388,8 +2392,8 @@ test('select: one ci-gate-selection line, its fields in order, and the shadow fi
   const lines = selectionLines(io);
   assert.equal(lines.length, 1);
   const keys = [...lines[0].matchAll(/ (\w+)=/g)].map(match => match[1]);
-  assert.deepEqual(keys, ['mode', 'reason', 'thin_queue', 'thin_skip', 'source_attempt', 'would_reason', ...queueSelection.SHADOW_FIELDS]);
-  assert.match(lines[0], /^ci-gate-selection: mode=thin reason= thin_queue="enforce" thin_skip=\["test-web"\] source_attempt=1 would_reason="" pr=7 /);
+  assert.deepEqual(keys, ['mode', 'reason', 'thin_queue', 'thin_skip', 'source_attempt', 'would_reason', 'would_thin_skip', ...queueSelection.SHADOW_FIELDS]);
+  assert.match(lines[0], /^ci-gate-selection: mode=thin reason= thin_queue="enforce" thin_skip=\["test-web"\] source_attempt=1 would_reason="" would_thin_skip=\["test-web"\] pr=7 /);
   assert.match(lines[0], /would_skip=\["test-web","smoke-test"\]/);
 });
 
@@ -2421,11 +2425,9 @@ test('select: the CLI exits 0 and leaves a full selection, even with no usable e
   assert.deepEqual(gate.runCLI(verifyIo(), ['select'], { PATH: process.env.PATH }), 0);
 });
 
-test('verify: no longer computes or logs a selection itself', () => {
+test('verify: no longer logs a selection line itself', () => {
   const io = verifyIo();
-  let asked = false;
-  assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => { asked = true; return SHADOW_THIN; } }), 0);
-  assert.equal(asked, false);
+  assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing() }), 0);
   assert.deepEqual(selectionLines(io), []);
 });
 
@@ -2538,15 +2540,15 @@ const thinSample = (fixture, jobs) => sample(fixture, { jobs, over: thinGreen })
 const replayGates = gates => ({ gates });
 
 test('replay: a W05 base is judged with its gate run\'s published list; one whose list is unknown is excluded and counted', () => {
-  const samples = [...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED), ...Array.from({ length: 4 }, () => thinSample(GREEN, webSkipped))];
+  const samples = [...Array.from({ length: 27 }, () => sample(GREEN)), sample(RED), ...Array.from({ length: 4 }, () => thinSample(GREEN, webSkipped))];
   const out = fakeReplay(samples, replayGates({
-    16: { selection: {} },
-    17: { run: true },
-    18: { selection: {}, expired: true },
-    19: { selection: {}, workflowId: LISTED_REPLAY_GATE_ID },
+    28: { selection: {} },
+    29: { run: true },
+    30: { selection: {}, expired: true },
+    31: { selection: {}, workflowId: LISTED_REPLAY_GATE_ID },
   })).run();
   assert.equal(out.ok, true, JSON.stringify(out.problems));
-  assert.equal(out.evaluated, 17);
+  assert.equal(out.evaluated, 29);
   assert.equal(out.thinUnknown, 3, 'no artifact, an expired one, and a run under a listed workflow id');
   assert.equal(out.disagreements.length, 0);
 });
@@ -2574,6 +2576,119 @@ test('replay: today\'s bases never look for a gate run', () => {
   assert.equal(run().ok, true);
   assert.ok(!calls.some(call => /actions\/runs\?event=merge_group|actions\/workflows\?/.test(call)), calls.join('\n'));
 });
+
+// ── W05a review: the gaps the PR review found ────────────────────────────
+
+const HIST_HEAD = sha(101), HIST_BASE = sha(102);
+const HIST_WORKFLOWS = [{ id: 11, path: '.github/workflows/ci-gate.yml' }, { id: 12, path: '.github/workflows/ci.yml' }];
+const HIST_ARTIFACT = [{ name: 'ci-gate-selection-attempt-1', expired: false }];
+const gateRunOf = over => ({ id: 7001, path: '.github/workflows/ci-gate.yml', event: 'merge_group', head_sha: HIST_HEAD, workflow_id: 99, ...over });
+const boundSelection = over => ({ schema: 1, repository: 'o/r', head_sha: HIST_HEAD, base_sha: HIST_BASE, head_ref: 'refs/heads/gh-readonly-queue/main/pr-1-x',
+  policy_digest: null, gate_run: 7001, gate_attempt: 1, source_attempt: 1, mode: 'thin', reason: '', thin_skip: ['test-web'], would_skip: ['test-web'],
+  thin_queue: 'enforce', ...over });
+const history = ({ runs, artifacts = {}, files = {} }, workflows = HIST_WORKFLOWS) => {
+  const io = {
+    gh(args) {
+      if (args[0] === 'run') {
+        const body = files[args[2]];
+        writeFileSync(join(args[args.indexOf('--dir') + 1], thin.SELECTION_FILE), typeof body === 'string' ? body : JSON.stringify(body));
+        return '';
+      }
+      if (/actions\/runs\?event=merge_group&head_sha=/.test(args[1])) return JSON.stringify({ workflow_runs: runs });
+      return JSON.stringify([{ artifacts: artifacts[args[1].match(/runs\/(\d+)\/artifacts/)?.[1]] ?? [] }]);
+    },
+    temp: () => tempDir(), remove: () => {}, read: path => readFileSync(path, 'utf8'), sleep: () => {},
+  };
+  return gate.historicalThinSkip(io, 'o/r', { headSha: HIST_HEAD, baseSha: HIST_BASE }, workflows);
+};
+
+test('historicalThinSkip: the newest pinned gate run for the head, its attempt-1 file, and only a thin list', () => {
+  const runs = [gateRunOf({ id: 7000 }), gateRunOf()];
+  const files = { 7000: boundSelection({ gate_run: 7000, mode: 'full', thin_skip: [] }), 7001: boundSelection() };
+  assert.deepEqual(history({ runs, artifacts: { 7000: HIST_ARTIFACT, 7001: HIST_ARTIFACT }, files }), ['test-web'], 'the newest run governs');
+  assert.deepEqual(history({ runs: [gateRunOf()], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: boundSelection({ mode: 'shadow' }) } }), [], 'shadow hands over nothing');
+});
+
+test('historicalThinSkip: a run that is not the pinned gate for this entry is never read', () => {
+  const read = run => history({ runs: [gateRunOf(run)], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: boundSelection() } });
+  for (const [name, run] of [['another path', { path: CI_PATH }], ['another event', { event: 'pull_request' }],
+    ['another head', { head_sha: sha(103) }], ['a listed workflow id', { workflow_id: 11 }], ['no workflow id', { workflow_id: undefined }]]) {
+    assert.equal(read(run), null, name);
+  }
+  assert.equal(history({ runs: [gateRunOf()], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: boundSelection() } }, [HIST_WORKFLOWS[1]]), null,
+    'with no listed gate workflow an unlisted id proves nothing');
+});
+
+test('historicalThinSkip: a file not bound to its run and entry is unknown; one that will not parse is an error, not unknown', () => {
+  for (const [name, over] of [['another run', { gate_run: 7002 }], ['attempt 2', { gate_attempt: 2 }], ['another head', { head_sha: sha(103) }],
+    ['another base', { base_sha: sha(104) }], ['another repository', { repository: 'x/y' }]]) {
+    assert.equal(history({ runs: [gateRunOf()], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: boundSelection(over) } }), null, name);
+  }
+  assert.equal(history({ runs: [gateRunOf()], artifacts: { 7001: [{ ...HIST_ARTIFACT[0], expired: true }] } }), null, 'expired');
+  assert.throws(() => history({ runs: [gateRunOf()], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: '{"truncated":' } }), SyntaxError);
+});
+
+test('replay: a gate selection that exists but cannot be read fails the replay, and so does one missing for many runs', () => {
+  const base = [...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED)];
+  const corrupt = fakeReplay([...base, thinSample(GREEN, webSkipped)], replayGates({ 16: { selection: {}, corrupt: true } })).run();
+  assert.equal(corrupt.thinUnreadable, 1);
+  assert.equal(corrupt.ok, false);
+  assert.match(corrupt.problems.join(), /1 gate selection\(s\) unreadable/);
+  const missing = fakeReplay([...base, thinSample(GREEN, webSkipped), thinSample(GREEN, webSkipped)]).run();
+  assert.equal(missing.thinUnknown, 2);
+  assert.equal(missing.ok, false);
+  assert.match(missing.problems.join(), /no gate selection for 2 of 18 runs/);
+});
+
+test('recordFixture: a W05 base records the list its entry was judged with; an unknown list is not recordable', () => {
+  const { io, prepare } = fakeReplay([thinSample(GREEN, webSkipped), thinSample(GREEN, webSkipped), sample(GREEN)], replayGates({ 0: { selection: {} } }));
+  assert.deepEqual(gate.recordFixture(io, { repository: 'o/r', runId: '1000', prepare }).fixture.thin_skip, ['test-web']);
+  assert.throws(() => gate.recordFixture(io, { repository: 'o/r', runId: '1001', prepare }), /not_recordable/);
+  assert.deepEqual(gate.recordFixture(io, { repository: 'o/r', runId: '1002', prepare }).fixture.thin_skip, [], 'a base without THIN_SKIP saw no list');
+});
+
+test('select: a re-run checks every field of attempt 1\'s file before it carries the list over', () => {
+  const good = JSON.parse(attempt1Of(verifyIo()));
+  const missingKey = { ...good };
+  delete missingKey.thin_queue;
+  for (const [name, body] of [['another base', { ...good, base_sha: 'd'.repeat(40) }], ['another head ref', { ...good, head_ref: 'refs/heads/main' }],
+    ['another repository', { ...good, repository: 'x/y' }], ['another schema', { ...good, schema: 2 }], ['a bad digest', { ...good, policy_digest: 'zz' }],
+    ['a would_skip that is not a list', { ...good, would_skip: 'test-web' }], ['a reason with spaces', { ...good, reason: 'a b' }],
+    ['a switch that is not text', { ...good, thin_queue: 1 }], ['run 0', { ...good, gate_run: 0 }], ['a fractional source attempt', { ...good, source_attempt: 1.5 }],
+    ['a missing key', missingKey]]) {
+    const io = verifyIo();
+    runSelect(io, { env: { GITHUB_RUN_ATTEMPT: '2' }, readArtifact: () => body });
+    assert.equal(publishedBy(io).reason, 'attempt1_selection_missing', name);
+  }
+});
+
+test('select: the CLI prints a full selection line and exits 0 even when the gate cannot start; verify exits 1', () => {
+  const dir = tempDir();
+  const preload = join(dir, 'break-cwd.mjs');
+  writeFileSync(preload, "process.cwd = () => { throw new Error('no working directory'); };\n");
+  const run = subcommand => {
+    try {
+      const out = execFileSync(process.execPath, ['--import', pathToFileURL(preload).href, join(REPO_ROOT, '.github/scripts/ci-gate.mjs'), subcommand],
+        { cwd: dir, env: { PATH: process.env.PATH }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return { status: 0, out };
+    } catch (error) { return { status: error.status, out: String(error.stdout ?? ''), err: String(error.stderr ?? '') }; }
+  };
+  const selected = run('select');
+  assert.equal(selected.status, 0, JSON.stringify(selected));
+  assert.match(selected.out, /^ci-gate-selection: mode=full reason=error$/m);
+  assert.equal(run('verify').status, 1);
+});
+
+test('verify: through the real judge, a skip under a shadow selection is red and under thin it passes', () => {
+  for (const [mode, code] of [['thin', 0], ['shadow', 1]]) {
+    const io = verifyIo();
+    io.files.set(thin.SELECTION_FILE, JSON.stringify(selectionOf({ mode })));
+    const decide = (_, args) => ({ ...gate.judge(judgeIo, contextOf(GREEN, { ...thinGreen, thinSkip: args.thinSkip }), webSkipped), flags: GREEN.flags, policyPaths: [] });
+    assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: decide }), code, mode);
+    if (mode === 'shadow') assert.match(gateLines(io)[0], /reason=thin_skip_unjustified:test-web /);
+  }
+});
+
 
 test('limitTime: bounds every child and sleep on the gate io, and an unlimited io is unchanged', () => {
   const cwd = tempDir();
@@ -2663,6 +2778,35 @@ test('select: end to end, the reads are the base revision\'s, though the checkou
   assert.throws(() => readFileSync(join(r.clone, CI_PATH)));
   gate.select(r.io, selectOf(r)());
   assert.match(r.lines.find(line => /^ci-gate-selection:/.test(line)), /would_reason="thin_unsupported_at_base"/);
+});
+
+// The PR's own CI run, as the real classifier says it ran for these files.
+const prRunJobs = files => {
+  const flags = Object.fromEntries(execFileSync('bash', [join(REPO_ROOT, SCRIPTS, 'classify-pr-paths.sh'), '--pull-request'],
+    { input: `${files.join('\n')}\n`, encoding: 'utf8' }).trim().split('\n').map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+  return gate.extractAggregator(realCi).needs.flatMap(id => {
+    const { template, expected } = gate.jobInstances(realCi, id);
+    const condition = gate.workflowJobsOf(realCi)[id].condition;
+    let runs;
+    try { runs = !condition || evaluateIf(condition, flags); } catch { runs = true; }
+    // Native iOS follows mobile-native-changes, which says no for a path outside apps/mobile.
+    if (id === 'build-mobile-ios') runs = files.some(path => path.startsWith('apps/mobile/'));
+    return runs ? expected.map(name => ({ name, conclusion: 'success', status: 'completed' })) : [{ name: template, conclusion: 'skipped', status: 'completed' }];
+  });
+};
+
+test('select: end to end, a web entry on a W05 base publishes the real W04 selection\'s thinnable part', () => {
+  const files = ['apps/web/src/thin-e2e.ts'];
+  const r = queueEntryRig({ headFiles: { [files[0]]: 'export {};\n' }, baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: thinCi } });
+  const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
+  r.addAnchor({ anchor: { files, policy_digest: digest } });
+  r.addCi({ attempts: [prRunJobs(files)] });
+  // shadow, not enforce: the entry sha is random, and enforce would run one in five as the audit sample.
+  assert.equal(gate.select(r.io, selectOf(r)({ THIN_QUEUE: 'shadow' })), 0);
+  const value = publishedIn(r);
+  assert.deepEqual([value.mode, value.reason], ['shadow', ''], r.lines.filter(line => /ci-gate-(selection|detail)/.test(line)).join('\n'));
+  assert.ok(value.thin_skip.includes('test-web'), JSON.stringify(value.thin_skip));
+  for (const job of value.thin_skip) assert.ok(thin.THINNABLE.includes(job) && value.would_skip.includes(job), job);
 });
 
 for (const [reason, setup] of [

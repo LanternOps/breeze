@@ -1654,6 +1654,7 @@ function pinnedGateViolations(file, lines) {
       if (condition !== (spec.if ?? null)) {
         flag(step[0].line, `${action} must have ${specs.map((candidate) => (candidate.if ? `if: ${candidate.if}` : 'no if:')).join(' or ')}`);
       }
+      if (spec.order && order.includes(spec.order)) flag(step[0].line, `the ${spec.order} step must appear once`);
       if (spec.order) order.push(spec.order);
       for (const [key, fixed] of Object.entries(spec.step ?? {})) {
         const entry = field(key);

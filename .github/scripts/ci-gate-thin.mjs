@@ -105,12 +105,13 @@ export function fullSelection(env, reason, extra = {}) {
   const { repository, head_sha, base_sha, head_ref, gate_run, gate_attempt } = bindingOf(env);
   return { published: { schema: 1, repository, head_sha, base_sha, head_ref, policy_digest: null, gate_run, gate_attempt,
     source_attempt: gate_attempt, mode: 'full', reason, thin_skip: [], would_skip: [], thin_queue: env.THIN_QUEUE ?? '' },
-  shadow: {}, wouldReason: null, ...extra };
+  shadow: {}, wouldReason: null, wouldThinSkip: null, ...extra };
 }
 
 // Attempt 1 decides. Each check runs only if the ones before it passed; the
-// first that fails is the reason. `wouldReason` is what enforce would say, for
-// the log, while the kill switch keeps the published mode full.
+// first that fails is the reason. `wouldReason` and `wouldThinSkip` are what
+// enforce would publish, for the log only: a full selection publishes no list,
+// so nothing that reads the file can skip a job while the kill switch is off.
 function decide(io, env, gate) {
   const out = fullSelection(env, '');
   const { published } = out;
@@ -134,8 +135,8 @@ function decide(io, env, gate) {
     const aggregator = gate.aggregatorAt(io, base);
     const labels = aggregator ? thinnableAtBase(aggregator) : [];
     if (!labels.length) return { reason: 'thin_unsupported_at_base' };
-    published.thin_skip = [...new Set(shadow.would_skip.filter(job => THINNABLE.includes(job) && labels.includes(job)))].sort();
-    if (!published.thin_skip.length) return { reason: 'nothing_to_skip' };
+    out.wouldThinSkip = [...new Set(shadow.would_skip.filter(job => THINNABLE.includes(job) && labels.includes(job)))].sort();
+    if (!out.wouldThinSkip.length) return { reason: 'nothing_to_skip' };
     if (inAuditSample(head)) return { reason: 'audit_sample' };
     return { reason: '' };
   };
@@ -145,9 +146,7 @@ function decide(io, env, gate) {
   if (detail) out.detail = detail;
   if (!THIN_QUEUE_ON.includes(queue)) published.reason = 'thin_disabled';
   else if (reason && !(reason === 'audit_sample' && queue === 'shadow')) published.reason = reason;
-  else published.mode = queue === 'enforce' ? 'thin' : 'shadow';
-  // Only the audit sample (and the shadow record above) keeps its list on a full selection.
-  if (published.mode === 'full' && !['thin_disabled', 'audit_sample'].includes(published.reason)) published.thin_skip = [];
+  else Object.assign(published, { mode: queue === 'enforce' ? 'thin' : 'shadow', thin_skip: out.wouldThinSkip });
   return out;
 }
 
@@ -162,7 +161,7 @@ function republish(io, env, gate, attempt) {
   why ??= first === null ? 'not found' : selectionFailure(first, { ...binding, gate_attempt: 1, source_attempt: 1 });
   if (why) return fullSelection(env, 'attempt1_selection_missing', { detail: `attempt 1 selection: ${why}` });
   return { published: { ...first, gate_attempt: attempt, source_attempt: 1 },
-    shadow: { would_skip: first.would_skip, policy_digest: first.policy_digest }, wouldReason: null };
+    shadow: { would_skip: first.would_skip, policy_digest: first.policy_digest }, wouldReason: null, wouldThinSkip: null };
 }
 
 // gate: { pinFailure, fetchFailure, flagsAt, queueSelection, aggregatorAt, readArtifact }.
