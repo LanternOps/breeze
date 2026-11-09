@@ -14,6 +14,7 @@ import {
 import { compileMonitorInTx } from '../../services/monitors/monitorCompiler';
 import { checkAllAutoResolve, evaluateDeviceAlerts, getApplicableRules } from '../../services/alertService';
 import { eventLogHandler } from '../../services/alertConditions/handlers/eventLog';
+import { closedCursorsQuery, readClosedCursors } from '../../services/alertLifecycle/cursor';
 import * as eventBus from '../../services/eventBus';
 import { closeRedis, getRedis, isRedisAvailable } from '../../services/redis';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -201,18 +202,39 @@ describe('event-log alert re-arm lifecycle', () => {
     expect(resolutions).toHaveLength(2);
     expect(resolutions.map(([, , payload]) => (payload as { alertId: string }).alertId).sort()).toEqual([aId, b.id].sort());
 
-    const plan = await system(() => db.transaction(async tx => {
-      // Small fixtures favor seq scans; disabling them proves this predicate matches the index.
+    // The re-arm lookup returns the newest closed episode (B, frozen at its
+    // recovery), not A's older one for the same rule and device.
+    const closed = await system(() => readClosedCursors(f.deviceId, [ruleId]));
+    const closedB = (await readAlerts()).find(row => row.id === b.id)!;
+    expect([...closed.keys()]).toEqual([ruleId]);
+    expect(closed.get(ruleId)).toEqual({
+      cursors: (closedB.context as { lifecycle: { cursor: unknown } }).lifecycle.cursor,
+      closedAt: closedB.resolvedAt, legacy: false,
+    });
+    expect(Object.values(closed.get(ruleId)!.cursors!)).toEqual([recoveryB]);
+
+    // The lookup's predicate implies alerts_rule_device_subject_closed_idx's,
+    // and the index's key order serves its DISTINCT ON ... ORDER BY.
+    // Turning off seq scans alone did not pin the plan: on a few rows,
+    // alerts_rule_id_idx and alerts_device_triggered_at_idx cost within a page
+    // of this index, so the winner depended on stats left by earlier files
+    // (#11532). With sorts off as well, every other path needs a disabled node
+    // (a seq scan, or a sort for the ORDER BY), so this index wins whatever the
+    // stats are. If the predicate or key order stops matching, the plan grows a
+    // Sort or drops the index, and this fails.
+    // EXPLAIN runs on the superuser test connection, which bypasses RLS. Under
+    // RLS, Postgres treats COALESCE(subject_key, '') = '' as leaky (COALESCE is
+    // not on its leakproof node list), so the index serves only rule_id and
+    // device_id, and every path sorts. No plan is then unique, so the check
+    // cannot be deterministic as breeze_app.
+    const plan = JSON.stringify(await getTestDb().transaction(async tx => {
       await tx.execute(sql`SET LOCAL enable_seqscan = off`);
-      return tx.execute(sql`EXPLAIN
-        SELECT DISTINCT ON (rule_id) rule_id AS "ruleId", context->'lifecycle'->'cursor' AS "cursor",
-          COALESCE(resolved_at, dismissed_at) AT TIME ZONE 'UTC' AS "closedAt"
-        FROM alerts WHERE device_id = ${f.deviceId}
-          AND rule_id = ANY(${sql.param([ruleId])}::uuid[]) AND rule_id IS NOT NULL
-          AND status IN ('resolved', 'dismissed') AND COALESCE(subject_key, '') = ''
-        ORDER BY rule_id, COALESCE(resolved_at, dismissed_at) DESC`);
+      await tx.execute(sql`SET LOCAL enable_sort = off`);
+      await tx.execute(sql`SET LOCAL enable_incremental_sort = off`);
+      return tx.execute(sql`EXPLAIN ${closedCursorsQuery(f.deviceId, [ruleId])}`);
     }));
-    expect(JSON.stringify(plan)).toContain('alerts_rule_device_subject_closed_idx');
+    expect(plan).toContain('alerts_rule_device_subject_closed_idx');
+    expect(plan).not.toContain('Sort');
   });
 
   it('exists-after-cursor probe stays under 20 ms on a device with 50k event rows', async () => {

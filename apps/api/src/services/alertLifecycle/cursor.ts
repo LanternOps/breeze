@@ -26,24 +26,18 @@ function asCursors(value: unknown): LeafCursors | null {
 }
 
 /**
- * One indexed lookup for the newest non-subject closed episode per rule.
+ * One indexed lookup (alerts_rule_device_subject_closed_idx) for the newest
+ * non-subject closed episode per rule.
  * Re-arm is device-subject only: org-level owners (#10725) are sourced, never
  * rule-backed, and have no device, so `owner_kind = 'device'` is explicit
  * rather than implied by `device_id = $1`.
  * resolved_at/dismissed_at are tz-less and stored as UTC (as Drizzle maps
  * them); AT TIME ZONE 'UTC' hands the raw driver a timestamptz so it does not
  * parse them in the process's local zone.
+ * Exported so the integration test can EXPLAIN this exact statement.
  */
-export async function readClosedCursors(
-  deviceId: string,
-  ruleIds: string[],
-): Promise<Map<string, ClosedCursorEntry>> {
-  if (ruleIds.length === 0) return new Map();
-  const rows = await db.execute<{
-    ruleId: string;
-    cursor: unknown;
-    closedAt: Date | string;
-  }>(sql`
+export function closedCursorsQuery(deviceId: string, ruleIds: string[]): SQL {
+  return sql`
     SELECT DISTINCT ON (${alerts.ruleId}) ${alerts.ruleId} AS "ruleId",
       ${alerts.context}->'lifecycle'->'cursor' AS "cursor",
       COALESCE(${alerts.resolvedAt}, ${alerts.dismissedAt}) AT TIME ZONE 'UTC' AS "closedAt"
@@ -55,7 +49,19 @@ export async function readClosedCursors(
       AND ${alerts.status} IN ('resolved', 'dismissed')
       AND COALESCE(${alerts.subjectKey}, '') = ''
     ORDER BY ${alerts.ruleId}, COALESCE(${alerts.resolvedAt}, ${alerts.dismissedAt}) DESC
-  `);
+  `;
+}
+
+export async function readClosedCursors(
+  deviceId: string,
+  ruleIds: string[],
+): Promise<Map<string, ClosedCursorEntry>> {
+  if (ruleIds.length === 0) return new Map();
+  const rows = await db.execute<{
+    ruleId: string;
+    cursor: unknown;
+    closedAt: Date | string;
+  }>(closedCursorsQuery(deviceId, ruleIds));
   return new Map(rows.map(row => {
     const cursors = asCursors(row.cursor);
     return [row.ruleId, {
