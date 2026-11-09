@@ -172,6 +172,15 @@ describe('OrgSignInRegistrationCard', () => {
     expect(await screen.findByTestId('portal-access-policy-form')).toBeInTheDocument();
   });
 
+  it('a malformed 200 body shows the load error instead of crashing', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url === POLICY) return json({ data: [] });
+      return json({ data: [], hasMore: false });
+    });
+    renderCard();
+    expect(await screen.findByTestId('org-sign-in-card-load-error')).toBeInTheDocument();
+  });
+
   it('a 401 on load sends the user to login', async () => {
     fetchWithAuthMock.mockImplementation(() => json({ error: 'unauthorized' }, 401));
     renderCard();

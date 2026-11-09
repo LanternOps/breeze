@@ -93,6 +93,18 @@ export interface PortalAccessRequestSummary {
   orgs: Array<{ orgId: string; orgName: string; pending: number }>;
 }
 
+/**
+ * A shape check on a policy view from the API, so a malformed 200 body lands in
+ * the caller's load-error state instead of crashing the panel that renders it.
+ */
+export function isPortalAccessPolicyView(value: unknown): value is PortalAccessPolicyView {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  const isObject = (x: unknown) => !!x && typeof x === 'object';
+  return isObject(v.owner) && isObject(v.values) && isObject(v.inherited) && isObject(v.effective)
+    && isObject(v.capabilities) && typeof v.canEdit === 'boolean' && typeof v.passwordModeFallback === 'boolean';
+}
+
 /** The value a field shows: the draft edit, else the owner's own row value. */
 export function ownValue<K extends PortalAccessPolicyField>(
   view: PortalAccessPolicyView,

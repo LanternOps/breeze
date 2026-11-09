@@ -3,6 +3,7 @@ import { runAction } from '@/lib/runAction';
 import { i18n } from '@/lib/i18n';
 import {
   PORTAL_ACCESS_POLICY_ERROR_CODES,
+  isPortalAccessPolicyView,
   type PortalAccessPolicyDraft,
   type PortalAccessPolicyView,
 } from '../../portalAccess/types';
@@ -20,7 +21,8 @@ const POLICY_URL = '/orgs/partners/me/portal-access-policy';
 export const loadPortalAccessPolicy: Loader<PortalAccessPolicyUnitValue> = async () => {
   const res = await fetchWithAuth(POLICY_URL);
   if (!res.ok) throw new Error(`Portal access policy load failed: ${res.status}`);
-  const body = (await res.json()) as { data: PortalAccessPolicyView };
+  const body = (await res.json()) as { data?: unknown };
+  if (!isPortalAccessPolicyView(body.data)) throw new Error('Portal access policy load returned an unexpected body');
   return { value: { view: body.data, draft: {} } };
 };
 

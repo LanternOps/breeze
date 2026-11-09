@@ -9,6 +9,7 @@ import { PortalAccessPolicyForm, visiblePolicyFields } from './PortalAccessPolic
 import {
   PORTAL_ACCESS_POLICY_ERROR_CODES,
   PORTAL_ACCESS_POLICY_FIELDS,
+  isPortalAccessPolicyView,
   type PortalAccessPolicyDraft,
   type PortalAccessPolicyField,
   type PortalAccessPolicyView,
@@ -77,8 +78,9 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
       if (mine !== seq.current) return;
       if (res.status === 401) { toLogin(); return; }
       if (!res.ok) throw new Error(`portal access policy load failed: ${res.status}`);
-      const body = (await res.json()) as { data: PortalAccessPolicyView };
+      const body = (await res.json()) as { data?: unknown };
       if (mine !== seq.current) return;
+      if (!isPortalAccessPolicyView(body.data)) throw new Error('portal access policy load returned an unexpected body');
       setView(body.data);
       setDraft({});
       setFieldErrors({});
