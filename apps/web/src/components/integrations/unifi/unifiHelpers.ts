@@ -1,5 +1,6 @@
-// Pure helpers for the UniFi integration panel, split out of
-// UnifiIntegration.tsx (#2382) — no behavior change, verbatim moves.
+// Pure helpers for the UniFi integration panel. Most were split out of
+// UnifiIntegration.tsx (#2382) as verbatim moves; groupSitesByOrg and
+// defaultControllerSiteId are newer (#11502).
 
 import { fetchAllDevices } from "@/lib/devicesFetch";
 import type {

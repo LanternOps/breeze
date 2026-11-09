@@ -1,5 +1,5 @@
 // Sync-run ledger, newest first (cloud). Split out of UnifiIntegration.tsx
-// (#2382) — verbatim move, no behavior change.
+// (#2382); the unmapped-sites column was added in #11502.
 
 import { History } from "lucide-react";
 import { useTranslation } from "react-i18next";

@@ -12,7 +12,11 @@ import { navigateTo } from "@/lib/navigation";
 import { loginPathWithNext, getJwtClaims } from "../../../lib/authScope";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { groupSitesByOrg, loadAgentDevices } from "./unifiHelpers";
+import {
+  defaultControllerSiteId,
+  groupSitesByOrg,
+  loadAgentDevices,
+} from "./unifiHelpers";
 import {
   mapKey,
   type AgentDevice,
@@ -520,7 +524,12 @@ export function useUnifiIntegration() {
         successMessage: t("unifiIntegration.controllerRegistered"),
         onUnauthorized,
       });
-      setControllerDraft(emptyControllerDraft);
+      // The next controller starts from the same default location: the card's
+      // preselect only re-runs when that default changes.
+      setControllerDraft({
+        ...emptyControllerDraft,
+        siteId: defaultControllerSiteId(sitesByOrg) ?? "",
+      });
       await loadSelfHosted();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
@@ -532,7 +541,7 @@ export function useUnifiIntegration() {
     } finally {
       setRegisteringController(false);
     }
-  }, [controllerDraft, onUnauthorized, loadSelfHosted]);
+  }, [controllerDraft, sitesByOrg, onUnauthorized, loadSelfHosted]);
 
   // Map each agent-discovered controller site to a Breeze site via the shared
   // PUT /unifi/mappings, using the collector id as the sentinel unifiHostId.

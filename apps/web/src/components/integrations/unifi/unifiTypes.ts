@@ -58,8 +58,9 @@ export interface SyncRun {
   devicesUnchanged: number;
   devicesRemoved: number;
   error: string | null;
-  // Cloud sites with no mapping at the end of the run; null = not recorded
-  // (older runs, failed runs, runs with zero mappings).
+  // Cloud sites listed with no mapping when the run read them; null = not
+  // recorded (older runs, failed runs, runs with zero mappings or an
+  // incomplete site list).
   sitesUnmapped?: number | null;
 }
 

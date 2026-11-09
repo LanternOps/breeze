@@ -26,27 +26,6 @@ export interface MappingHostList {
  * Empty host IDs cannot be mapped or synced; count them in sitesWithoutHostId.
  * Real host rows do not emit unknownConsole.
  */
-/**
- * How many listed sites have no mapping row. Keyed by host and site: a UniFi site
- * id is only unique within its host. Sites without a host id are left out, as in
- * buildMappingHostList: the mapping list cannot offer them, so counting them
- * would report work nobody can do. A site listed twice counts once.
- */
-export function countUnmappedSites(
-  sites: ReadonlyArray<{ hostId: string; id: string }>,
-  mappings: ReadonlyArray<{ unifiHostId: string; unifiSiteId: string }>,
-): number {
-  const key = (hostId: string, siteId: string) => JSON.stringify([hostId, siteId]);
-  const mapped = new Set(mappings.map((m) => key(m.unifiHostId, m.unifiSiteId)));
-  const unmapped = new Set<string>();
-  for (const site of sites) {
-    if (!site.hostId) continue;
-    const k = key(site.hostId, site.id);
-    if (!mapped.has(k)) unmapped.add(k);
-  }
-  return unmapped.size;
-}
-
 export function buildMappingHostList(hosts: UnifiHost[], sites: UnifiSite[]): MappingHostList {
   const sitesByHost = new Map<string, MappingHostRow['sites']>();
   const omitted = { hostsWithoutSites: 0, sitesWithoutHostId: 0 };
@@ -78,4 +57,25 @@ export function buildMappingHostList(hosts: UnifiHost[], sites: UnifiSite[]): Ma
     });
   }
   return { hosts: rows, omitted };
+}
+
+/**
+ * How many listed sites have no mapping row. Keyed by host and site: a UniFi site
+ * id is only unique within its host. Sites without a host id are left out, as in
+ * buildMappingHostList: the mapping list cannot offer them, so counting them
+ * would report work nobody can do. A site listed twice counts once.
+ */
+export function countUnmappedSites(
+  sites: ReadonlyArray<{ hostId: string; id: string }>,
+  mappings: ReadonlyArray<{ unifiHostId: string; unifiSiteId: string }>,
+): number {
+  const key = (hostId: string, siteId: string) => JSON.stringify([hostId, siteId]);
+  const mapped = new Set(mappings.map((m) => key(m.unifiHostId, m.unifiSiteId)));
+  const unmapped = new Set<string>();
+  for (const site of sites) {
+    if (!site.hostId) continue;
+    const k = key(site.hostId, site.id);
+    if (!mapped.has(k)) unmapped.add(k);
+  }
+  return unmapped.size;
 }

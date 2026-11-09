@@ -1,5 +1,6 @@
 // Self-hosted controller registration + list. Split out of
-// UnifiIntegration.tsx (#2382) — verbatim move, no behavior change.
+// UnifiIntegration.tsx (#2382); the collector-agent-location copy and default
+// site were added in #11502.
 
 import { useEffect, type Dispatch, type SetStateAction } from "react";
 import { Loader2, Plug } from "lucide-react";

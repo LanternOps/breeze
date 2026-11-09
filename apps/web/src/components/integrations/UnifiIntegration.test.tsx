@@ -923,3 +923,71 @@ describe("SyncHistoryCard unmapped sites column", () => {
     expect(cells.map((c) => c.textContent)).toEqual(["3", "—", "—"]);
   });
 });
+
+describe("UnifiIntegration collector agent location default", () => {
+  // Self-hosted view: one internal org with one site, one customer org.
+  function routeInternalOrg() {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/unifi")
+        return Promise.resolve(
+          res({ connected: true, status: "connected", connectionType: "self_hosted" }),
+        );
+      if (url.startsWith("/orgs/sites"))
+        return Promise.resolve(
+          res({
+            data: [
+              { id: "site-cust", name: "Branch", orgId: "org-cust" },
+              { id: "site-int", name: "Office", orgId: "org-int" },
+            ],
+          }),
+        );
+      if (url.startsWith("/orgs/organizations"))
+        return Promise.resolve(
+          res({
+            data: [
+              { id: "org-cust", name: "Acme", type: "customer" },
+              { id: "org-int", name: "Our MSP", type: "internal" },
+            ],
+          }),
+        );
+      if (url === "/unifi/mappings") return Promise.resolve(res({ mappings: [] }));
+      if (url === "/unifi/collectors") return Promise.resolve(res({ collectors: [] }));
+      if (url === "/unifi/controller-sites") return Promise.resolve(res({ sites: [] }));
+      if (url.startsWith("/devices"))
+        return Promise.resolve(
+          res(devicesBody([{ id: "agent-1", hostname: "edge-01", displayName: "Edge", siteId: "site-int" }])),
+        );
+      return Promise.resolve(res({ success: true }));
+    });
+  }
+  const siteSelect = () => screen.getByTestId("unifi-controller-site") as HTMLSelectElement;
+
+  it("preselects the internal org's only site from the org rows' type", async () => {
+    routeInternalOrg();
+    render(<UnifiIntegration />);
+    await waitFor(() => expect(siteSelect().value).toBe("site-int"));
+  });
+
+  it("preselects it again for the next controller after a registration", async () => {
+    routeInternalOrg();
+    render(<UnifiIntegration />);
+    await waitFor(() => expect(siteSelect().value).toBe("site-int"));
+    fireEvent.change(screen.getByTestId("unifi-controller-url"), {
+      target: { value: "https://controller.example:8443" },
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("unifi-controller-agent").querySelector('option[value="agent-1"]')).not.toBeNull(),
+    );
+    fireEvent.change(screen.getByTestId("unifi-controller-agent"), { target: { value: "agent-1" } });
+    fireEvent.change(screen.getByTestId("unifi-controller-key"), { target: { value: "K" } });
+    fireEvent.click(screen.getByTestId("unifi-controller-register"));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((c) => c[0] === "/unifi/controllers")).toBe(true),
+    );
+    await waitFor(() =>
+      expect((screen.getByTestId("unifi-controller-url") as HTMLInputElement).value).toBe(""),
+    );
+    expect(siteSelect().value).toBe("site-int");
+  });
+});

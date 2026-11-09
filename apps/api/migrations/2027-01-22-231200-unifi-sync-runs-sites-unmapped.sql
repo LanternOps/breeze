@@ -4,7 +4,8 @@
 -- unifi_sync_runs is partner-axis (partner_id, no org_id): no org cascade,
 -- org-merge or tenant-export registration applies, and its RLS policies are
 -- unchanged. Nullable on purpose: NULL means "not recorded" (runs before this
--- column, failed runs, and runs with no mappings, which read no site list).
+-- column, failed runs, runs with no mappings, which read no site list, and runs
+-- whose site list had dropped or hostless rows, so the count is unknown).
 --
 -- Idempotent (ADD COLUMN IF NOT EXISTS); no inner BEGIN/COMMIT.
 -- DDL only: it writes no rows, so it needs no breeze.scope system election.

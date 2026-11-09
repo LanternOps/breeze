@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { syncIntegration, isUnifiDeviceOnline, collectSyncData } from './unifiSyncService';
+import { syncIntegration, isUnifiDeviceOnline, collectSyncData, applySyncData } from './unifiSyncService';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
 import { createUnifiClient, type UnifiClient } from './unifiClient';
 import type { DbExecutor } from './unifiConnectionService';
@@ -1086,5 +1086,41 @@ describe('sync run sitesUnmapped', () => {
   it('collectSyncData carries the count from the sites it already read', async () => {
     const result = await collectSyncData(threeHostClient(), [BASE_MAPPING]);
     expect(result.sitesUnmapped).toBe(2);
+  });
+
+  it('a run that fails after the sites were read still records null', async () => {
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], {
+      hostsSeen: 3, sitesUnmapped: 2, fatalError: 'UniFi /v1/devices read failed: timeout', byMapping: new Map(),
+    });
+    expect(result.status).toBe('failed');
+    expect(runUpdate(writes)).toMatchObject({ status: 'failed', sitesUnmapped: null });
+  });
+
+  it('a failed /v1/sites read records null', async () => {
+    const client: UnifiClient = {
+      ...threeHostClient(),
+      listSitesForSync: async () => { throw new Error('sites timeout'); },
+    };
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await syncIntegration({ db, client }, BASE_INTEGRATION, 'manual');
+    expect(runUpdate(writes)).toMatchObject({ status: 'failed', sitesUnmapped: null });
+  });
+
+  it.each([
+    ['a dropped site row', { hostsWithDroppedRows: new Set(['h2']), rowsWithoutHostId: 0 }],
+    ['a site row with no host id', { hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 1 }],
+  ])('%s makes the site list incomplete, so the count is not recorded', async (_label, read) => {
+    const client: UnifiClient = {
+      ...threeHostClient(),
+      async listSitesForSync() {
+        return { sites: await this.listSites(), ...read };
+      },
+    };
+    const collected = await collectSyncData(client, [BASE_MAPPING]);
+    expect(collected.sitesUnmapped).toBeUndefined();
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], collected);
+    expect(runUpdate(writes)).toMatchObject({ sitesUnmapped: null });
   });
 });

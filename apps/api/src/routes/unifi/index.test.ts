@@ -1233,7 +1233,41 @@ describe('unifi routes', () => {
           siteId: SITE_ID, collectorDeviceId: DEVICE_ID,
         }),
       }));
-      expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain('/network');
+      const auditJson = JSON.stringify(vi.mocked(writeRouteAudit).mock.calls);
+      expect(auditJson).not.toContain('/network');
+      expect(auditJson).not.toContain('SECRET-LOCAL-KEY');
+    });
+
+    it.each([
+      ['PUT', '/collectors', { unifiHostId: 'h1' }, 'cloud'],
+      ['PUT', '/controllers', {}, 'self_hosted'],
+    ])('a refused %s %s (collector agent in another org) writes no audit', async (method, path, extra, connectionType) => {
+      vi.mocked(svc.getConnection).mockResolvedValue({ ...CLOUD_CONN, connectionType } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID }))
+        .mockReturnValueOnce(rowLookup({ id: DEVICE_ID, orgId: OTHER_ORG }));
+
+      const res = await unifiRoutes.request(path, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...extra, siteId: SITE_ID, collectorDeviceId: DEVICE_ID, controllerUrl: 'https://controller.example:8443', apiKey: 'K' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(collectorSvc.upsertCollector).not.toHaveBeenCalled();
+      expect(collectorSvc.upsertSelfHostedController).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('a PUT /mappings refused for a holding org writes no audit', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(CLOUD_CONN as any);
+      vi.mocked(db.select).mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }));
+      vi.mocked(isHoldingOrg).mockResolvedValueOnce(true);
+
+      const res = await putMappings({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }] });
+
+      expect(res.status).toBe(409);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('no audit details contain the api key', async () => {
