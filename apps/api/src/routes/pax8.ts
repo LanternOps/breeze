@@ -27,6 +27,13 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
 import { urlOriginChanged } from '../services/credentialOriginBinding';
+import { loadMappableOrgs } from '../services/mappableOrgs';
+import {
+  buildPax8CompanySuggestions,
+  summarizePax8Companies,
+  verifyPax8SuggestionSource,
+  type Pax8CompanyRowForMatch,
+} from '../services/pax8CompanyMapping';
 
 export const pax8Routes = new Hono();
 
@@ -87,6 +94,7 @@ const companyMapSchema = z.object({
   pax8CompanyId: z.string().min(1).max(64),
   orgId: z.string().guid().nullable(),
   ignored: z.boolean().optional(),
+  source: z.enum(['manual', 'suggestion']).optional(),
 });
 
 const subscriptionQuerySchema = z.object({
@@ -343,18 +351,32 @@ pax8Routes.get('/companies', partnerScopes, readPerm, zValidator('query', compan
       ignored: pax8CompanyMappings.ignored,
       lastSeenAt: pax8CompanyMappings.lastSeenAt,
       updatedAt: pax8CompanyMappings.updatedAt,
+      createdAt: pax8CompanyMappings.createdAt,
       metadata: pax8CompanyMappings.metadata,
     })
     .from(pax8CompanyMappings)
     .leftJoin(organizations, eq(pax8CompanyMappings.orgId, organizations.id))
     .where(eq(pax8CompanyMappings.integrationId, integration.id))
     .orderBy(pax8CompanyMappings.pax8CompanyName, pax8CompanyMappings.pax8CompanyId);
+  // Suggestions are read-only: nothing here writes a mapping.
+  const orgs = await loadMappableOrgs(db, partner.partnerId);
+  const matchRows: Pax8CompanyRowForMatch[] = rows.map((row) => ({
+    pax8CompanyId: row.pax8CompanyId,
+    pax8CompanyName: row.pax8CompanyName,
+    mappedOrgId: row.mappedOrgId,
+    ignored: row.ignored,
+    createdAt: row.createdAt,
+  }));
+  const suggestions = buildPax8CompanySuggestions(matchRows, orgs);
   return c.json({
-    data: rows.map(({ metadata, ...row }) => ({
+    data: rows.map(({ metadata, createdAt, ...row }) => ({
       ...row,
+      firstSeenAt: createdAt ? createdAt.toISOString() : null,
+      suggestion: suggestions.get(row.pax8CompanyId) ?? null,
       ...pax8CompanyOrderReadiness(row.status, metadata),
     })),
     integrationId: integration.id,
+    summary: summarizePax8Companies(matchRows, suggestions, new Date()),
   });
 });
 
@@ -372,6 +394,41 @@ pax8Routes.post('/companies/map', partnerScopes, writePerm, requireMfa(), zValid
   if (body.orgId && !auth.canAccessOrg(body.orgId)) return c.json({ error: 'Access to target organization denied' }, 403);
 
   try {
+    const [previous] = await db
+      .select({ orgId: pax8CompanyMappings.orgId })
+      .from(pax8CompanyMappings)
+      .where(and(
+        eq(pax8CompanyMappings.integrationId, integration.id),
+        eq(pax8CompanyMappings.partnerId, integration.partnerId),
+        eq(pax8CompanyMappings.pax8CompanyId, body.pax8CompanyId),
+      ))
+      .limit(1);
+    const previousOrgId = previous?.orgId ?? null;
+
+    let verified = verifyPax8SuggestionSource(undefined, body.pax8CompanyId, body.orgId, new Map());
+    if (body.source === 'suggestion' && body.orgId) {
+      const companyRows = await db
+        .select({
+          pax8CompanyId: pax8CompanyMappings.pax8CompanyId,
+          pax8CompanyName: pax8CompanyMappings.pax8CompanyName,
+          mappedOrgId: pax8CompanyMappings.orgId,
+          ignored: pax8CompanyMappings.ignored,
+          createdAt: pax8CompanyMappings.createdAt,
+        })
+        .from(pax8CompanyMappings)
+        .where(and(
+          eq(pax8CompanyMappings.integrationId, integration.id),
+          eq(pax8CompanyMappings.partnerId, integration.partnerId),
+        ));
+      const orgs = await loadMappableOrgs(db, integration.partnerId);
+      verified = verifyPax8SuggestionSource(
+        body.source,
+        body.pax8CompanyId,
+        body.orgId,
+        buildPax8CompanySuggestions(companyRows, orgs),
+      );
+    }
+
     const mapped = await mapPax8Company({
       integrationId: integration.id,
       partnerId: integration.partnerId,
@@ -380,11 +437,19 @@ pax8Routes.post('/companies/map', partnerScopes, writePerm, requireMfa(), zValid
       ignored: body.ignored,
     });
     writeRouteAudit(c, {
-      orgId: body.orgId,
+      orgId: body.orgId ?? previousOrgId,
       action: body.orgId ? 'pax8.company.map' : 'pax8.company.unmap',
       resourceType: 'pax8_company_mapping',
       resourceName: body.pax8CompanyId,
-      details: { integrationId: integration.id, partnerId: integration.partnerId, ignored: body.ignored ?? false },
+      details: {
+        integrationId: integration.id,
+        partnerId: integration.partnerId,
+        ignored: body.ignored ?? false,
+        previousOrgId,
+        source: verified.source,
+        matchTier: verified.matchTier,
+        matchKey: verified.matchKey,
+      },
     });
     return c.json({ data: mapped });
   } catch (err) {

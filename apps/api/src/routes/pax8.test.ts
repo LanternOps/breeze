@@ -70,6 +70,7 @@ vi.mock('../db/schema', () => ({
     ignored: 'pax8_company_mappings.ignored',
     lastSeenAt: 'pax8_company_mappings.last_seen_at',
     updatedAt: 'pax8_company_mappings.updated_at',
+    createdAt: 'pax8_company_mappings.created_at',
     metadata: 'pax8_company_mappings.metadata',
     integrationId: 'pax8_company_mappings.integration_id',
     partnerId: 'pax8_company_mappings.partner_id',
@@ -156,7 +157,12 @@ vi.mock('../services/pax8SyncService', () => ({
   unlinkPax8Subscription: vi.fn(),
 }));
 
+vi.mock('../services/mappableOrgs', () => ({
+  loadMappableOrgs: vi.fn(async () => []),
+}));
+
 import { db } from '../db';
+import { loadMappableOrgs } from '../services/mappableOrgs';
 import { pax8Routes } from './pax8';
 import { encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -529,6 +535,7 @@ describe('pax8 routes', () => {
       partnerId: authState.partnerId,
       name: 'Pax8',
     }]);
+    mockSelectOnce([{ orgId: ORG_A }]);
 
     const res = await app.request('/pax8/companies/map', {
       method: 'POST',
@@ -541,6 +548,114 @@ describe('pax8 routes', () => {
     });
 
     expect(res.status).toBe(200);
+  });
+
+  describe('company suggestions', () => {
+    const integration = { id: INTEGRATION_ID, partnerId: '11111111-1111-1111-1111-111111111111' };
+    const recent = new Date();
+    const companyRow = (over: Record<string, unknown>) => ({
+      pax8CompanyId: 'company-1', pax8CompanyName: 'Acme Inc', status: 'Active', mappedOrgId: null,
+      mappedOrgName: null, ignored: false, lastSeenAt: null, updatedAt: null, createdAt: recent, metadata: {}, ...over,
+    });
+    function mockCompaniesSelect(rows: unknown[]) {
+      mockCompanySelectOnce([integration], rows);
+    }
+    function mockMapLookups(previousOrgId: string | null, companyRows?: unknown[]) {
+      mockSelectOnce([integration]);
+      mockSelectOnce([{ orgId: previousOrgId }]);
+      if (companyRows) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(async () => companyRows) })),
+        } as any);
+      }
+    }
+    const postMap = (extra: Record<string, unknown>) => app.request('/pax8/companies/map', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ integrationId: INTEGRATION_ID, pax8CompanyId: 'company-1', ...extra }),
+    });
+
+    it('GET /companies returns suggestion and summary', async () => {
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Acme, Inc.' }]);
+      mockCompaniesSelect([companyRow({})]);
+
+      const res = await app.request('/pax8/companies');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as any;
+      expect(loadMappableOrgs).toHaveBeenCalledWith(db, authState.partnerId);
+      expect(body.data[0].suggestion).toMatchObject({ status: 'match', orgId: ORG_B, orgName: 'Acme, Inc.' });
+      expect(body.data[0].firstSeenAt).toBe(recent.toISOString());
+      expect(body.summary).toEqual({ unmapped: 1, suggested: 1, newUnmapped: 1 });
+    });
+
+    it('hidden, archived, merging, quick_support and holding orgs are never candidates', async () => {
+      // loadMappableOrgs owns that predicate; an org it does not return can never be suggested.
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Other Co' }]);
+      mockCompaniesSelect([companyRow({ pax8CompanyName: 'Quick Support' })]);
+
+      const res = await app.request('/pax8/companies');
+
+      const body = await res.json() as any;
+      expect(loadMappableOrgs).toHaveBeenCalledTimes(1);
+      expect(loadMappableOrgs).toHaveBeenCalledWith(db, authState.partnerId);
+      expect(body.data[0].suggestion).toBeNull();
+      expect(body.summary.suggested).toBe(0);
+    });
+
+    it('map with source=suggestion that no longer matches is audited as manual', async () => {
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Renamed Co' }]);
+      mockMapLookups(null, [{ pax8CompanyId: 'company-1', pax8CompanyName: 'Acme Inc', mappedOrgId: null, ignored: false, createdAt: recent }]);
+
+      const res = await postMap({ orgId: ORG_B, source: 'suggestion' });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ source: 'manual', matchTier: null, matchKey: null }),
+      }));
+    });
+
+    it('map with a still-matching suggestion records source, tier and key', async () => {
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Acme Inc' }]);
+      mockMapLookups(null, [{ pax8CompanyId: 'company-1', pax8CompanyName: 'Acme Inc', mappedOrgId: null, ignored: false, createdAt: recent }]);
+
+      const res = await postMap({ orgId: ORG_B, source: 'suggestion' });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ source: 'suggestion', matchTier: 'exact', matchKey: expect.any(String) }),
+      }));
+    });
+
+    it('map audit carries previousOrgId', async () => {
+      mockMapLookups(ORG_A);
+
+      const res = await postMap({ orgId: null });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_A,
+        action: 'pax8.company.unmap',
+        details: expect.objectContaining({ previousOrgId: ORG_A, source: 'manual', matchTier: null, matchKey: null }),
+      }));
+    });
+
+    it('rename-capture: renaming an org to match an unmapped company writes nothing until a map request', async () => {
+      const rows = [companyRow({ pax8CompanyName: 'Globex' })];
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Initech' }]);
+      mockCompaniesSelect(rows);
+      const before = await (await app.request('/pax8/companies')).json() as any;
+      expect(before.data[0].suggestion).toBeNull();
+
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Globex' }]);
+      mockCompaniesSelect(rows);
+      const after = await (await app.request('/pax8/companies')).json() as any;
+
+      expect(after.data[0].suggestion).toMatchObject({ status: 'match', orgId: ORG_B });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects an organization-scope caller (Pax8 is partner-scoped)', async () => {
