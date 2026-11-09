@@ -550,6 +550,32 @@ describe('POST /ai/sessions/:id/messages — fired Wisp check-ins (#10995)', () 
       expect(turn.endsWith('\n\nhi there')).toBe(true);
     });
 
+    it('instruction capture (#10428) gets only the technician text, never the blocks Wisp adds to the turn', async () => {
+      active.pendingRunResults = [{ runId: 'run-1', status: 'completed', summary: 'All clear.', artifacts: [] }];
+      preflight({ ...DB_SESSION, continuedFromSessionId: '33333333-3333-4333-8333-333333333333' });
+      cont.load.mockResolvedValueOnce('Earlier: the disk was full.');
+      await (await post(app)).text();
+      // Every injected block really is on the turn the model reads...
+      const turn = pushed();
+      for (const marker of ['[breeze:analysis-results]', '<wisp_standing_state', '<wisp_check_ins>', '<prior_conversation_summary>']) {
+        expect(turn).toContain(marker);
+      }
+      // ...and none of them reaches the turn record the capture reads.
+      const opts = vi.mocked(streamingSessionManager.tryTransitionToProcessing).mock.calls[0]![2]!;
+      expect(opts.userMessage).toBe('hi there');
+    });
+
+    it('a topology turn hands instruction capture nothing', async () => {
+      preflight({ ...DB_SESSION, type: 'topology' });
+      topo.prepare.mockResolvedValueOnce({
+        ok: true,
+        prepared: { kind: 'live', runtime: { abort: topo.abort }, prompt: 'TOPOLOGY PROMPT', systemPrompt: 'TOPOLOGY SYSTEM', allowedMcpTools: [] },
+      });
+      await (await post(app)).text();
+      const opts = vi.mocked(streamingSessionManager.tryTransitionToProcessing).mock.calls[0]![2]!;
+      expect(opts).not.toHaveProperty('userMessage');
+    });
+
     it('a failure to record it after dispatch still streams the turn', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       ss.markSent.mockRejectedValueOnce(new Error('unexpected'));

@@ -14,7 +14,9 @@ import AiThinkingIndicator, { approvalWaitFromPending } from '../ai/AiThinkingIn
 import AiContinuationPrompt from '../ai/AiContinuationPrompt';
 import AiModelPicker from '../ai/AiModelPicker';
 import BuyCreditsLink from '../ai/BuyCreditsLink';
+import { useWispInstructionCaptureStore } from '@/stores/wispInstructionCaptureStore';
 import WispCheckInChip from './WispCheckInChip';
+import WispInstructionChip from './WispInstructionChip';
 import WispEntityPicker from './WispEntityPicker';
 import WispPost from './WispPost';
 import WispWelcome from './WispWelcome';
@@ -276,8 +278,14 @@ export default function WispHomeThread({
     [checkIns],
   );
   const runNowMessage = t('wisp.checkIn.runNowMessage');
+  // Standing instructions Wisp remembered from this session's turns (chip under the reply).
+  const loadSessionCaptures = useWispInstructionCaptureStore((s) => s.loadSessionCaptures);
+  const sessionInstructions = useWispInstructionCaptureStore((s) => (storeSessionId ? s.bySession[storeSessionId] : undefined));
+  useEffect(() => {
+    if (live && storeSessionId) void loadSessionCaptures(storeSessionId);
+  }, [live, storeSessionId, loadSessionCaptures]);
   const extras = useMemo(
-    () => timeline.posts.map((post) => {
+    () => [...timeline.posts.map((post) => {
       const checkInId = post.kind === 'check_in' && live ? checkInIdFromLink(post.link) : null;
       const runnable = checkInId !== null && firedIds.has(checkInId);
       return {
@@ -292,7 +300,12 @@ export default function WispHomeThread({
         ),
       };
     }),
-    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming, isLoading],
+    ...(storeSessionId ? (sessionInstructions ?? []) : []).map((instruction) => ({
+      id: `wisp-instruction-${instruction.instructionId}`,
+      at: new Date(instruction.capturedAt),
+      render: () => <WispInstructionChip sessionId={storeSessionId as string} instruction={instruction} />,
+    }))],
+    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming, isLoading, storeSessionId, sessionInstructions],
   );
 
   // The bell's deep link (`#checkin=<id>`): bring its post into view once, the

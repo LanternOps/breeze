@@ -86,6 +86,7 @@ vi.mock('../ai/BuyCreditsLink', () => ({ default: () => null }));
 
 import WispHomeThread from './WispHomeThread';
 import { ActionError } from '@/lib/runAction';
+import { useWispInstructionCaptureStore } from '@/stores/wispInstructionCaptureStore';
 
 const onLinksChange = vi.fn();
 const extra = { scopeLabel: 'All organizations', links: [] as never[], onLinksChange };
@@ -109,6 +110,7 @@ const reset = (over: Record<string, unknown> = {}) => {
 describe('WispHomeThread (W08 Task 9)', () => {
   beforeEach(() => {
     reset();
+    useWispInstructionCaptureStore.getState().reset();
     fetchMock.mockReset();
     fetchMock.mockImplementation(route());
   });
@@ -1001,5 +1003,24 @@ describe('WispHomeThread check-ins (W05 #10996)', () => {
     expect(screen.queryByTestId('wisp-post-run-now')).toBeNull();
     expect(screen.queryByTestId('wisp-check-in-chip')).toBeNull();
     expect(checkInsApi.listWispCheckIns).not.toHaveBeenCalled();
+  });
+
+  it('loads the live session’s captured instructions once and renders them as chips', async () => {
+    useWispInstructionCaptureStore.getState().reset();
+    const instruction = {
+      instructionId: 'i-1', captureId: 'c-1', capturedAt: '2026-11-08T10:00:00.000Z', text: "don't reboot PC-01",
+      status: 'unconfirmed', enforceable: false, verb: null, targetLabels: [], until: null,
+      orgId: null, orgName: null, unmatched: false, keptForOrg: false,
+    };
+    fetchMock.mockImplementation(async (url: string) => (
+      url.includes('/wisp/memory/captures?') ? json({ instructions: [instruction] }) : route()(url)
+    ));
+    reset({ wisp, sessionId: 's-live' });
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
+    expect(await screen.findByTestId('wisp-instruction-chip')).toBeInTheDocument();
+    const loads = fetchMock.mock.calls.map((c) => c[0] as string).filter((u) => u.includes('/wisp/memory/captures?'));
+    expect(loads).toEqual(['/wisp/memory/captures?sessionId=s-live']);
+    const ids = (kit.messages.at(-1)?.extras as Array<{ id: string }>).map((e) => e.id);
+    expect(ids).toContain('wisp-instruction-i-1');
   });
 });

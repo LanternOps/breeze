@@ -55,6 +55,7 @@ import { aiInvocations } from '../../db/schema/aiInvocations';
 import { wispGrants } from '../../db/schema/wisp';
 import {
   GRANT_OVERHEAD_SOURCE_REF_PREFIXES,
+  INSTRUCTION_EXTRACT_SOURCE_REF_PREFIX,
   GrantNotFoundForBudgetError,
   SUMMARY_REFINE_SOURCE_REF_PREFIX,
   WISP_BUDGET_DEFAULT_BY_PLAN,
@@ -185,9 +186,10 @@ describe('combineSpendLines', () => {
 });
 
 describe('grant overhead source refs', () => {
-  it('starts with the session-summary prefix and keys every prefix by grant id', () => {
-    expect(GRANT_OVERHEAD_SOURCE_REF_PREFIXES).toEqual([SUMMARY_REFINE_SOURCE_REF_PREFIX]);
-    expect(grantOverheadSourceRefs(GRANT)).toEqual([summaryRefineSourceRef(GRANT)]);
+  it('lists the session-summary and instruction-extract prefixes and keys every prefix by grant id', () => {
+    expect(GRANT_OVERHEAD_SOURCE_REF_PREFIXES).toEqual([SUMMARY_REFINE_SOURCE_REF_PREFIX, INSTRUCTION_EXTRACT_SOURCE_REF_PREFIX]);
+    expect(INSTRUCTION_EXTRACT_SOURCE_REF_PREFIX).toBe('wisp_instruction_extract:');
+    expect(grantOverheadSourceRefs(GRANT)).toEqual([summaryRefineSourceRef(GRANT), `wisp_instruction_extract:${GRANT}`]);
   });
 });
 
@@ -269,6 +271,17 @@ describe('spentUnderGrant', () => {
     expect(q.params).toEqual(expect.arrayContaining([
       `wisp_thread_summary:${GRANT}`, '2027-01-05T00:00:00.000Z', '2027-01-06T00:00:00.000Z',
     ]));
+  });
+
+  // #10428 (W05): a turn-end instruction extraction is sessionless overhead,
+  // charged to the grant's BACKGROUND line by its grant-keyed source_ref.
+  it("counts the grant's instruction-extract ledger rows on the background line", async () => {
+    h.results.push([{ total: '0' }], [{ total: '1.5' }], [{ total: '0' }]);
+    const now = new Date('2027-01-05T00:30:00.000Z');
+    const b = await spendBreakdownUnderGrant(GRANT, now);
+    expect(b).toEqual({ backgroundCents: 2, chatCents: 0, totalCents: 2 });
+    const q = compile(h.whereArgs[1]);
+    expect(q.params).toEqual(expect.arrayContaining([`wisp_instruction_extract:${GRANT}`]));
   });
 
   it('summaryRefineSourceRef is the grant-keyed ledger ref', () => {

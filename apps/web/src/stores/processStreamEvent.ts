@@ -513,6 +513,18 @@ export function processStreamEvent(
         isStreaming: false, thinking: false, joinedMidResponse: false,
         ...(s.pendingApproval?.resolution ? { pendingApproval: null } : {}),
       }));
+      // #10428: the API extracts a standing instruction after `done`; follow it
+      // so the chip can show under the reply. Loaded lazily: only a Wisp turn
+      // carries a capture, and this module also loads on the topology island.
+      if (event.wispInstructionCapture) {
+        const sid = get().sessionId;
+        const { captureId } = event.wispInstructionCapture;
+        if (typeof sid === 'string') {
+          void import('./wispInstructionCaptureStore')
+            .then(({ useWispInstructionCaptureStore }) => useWispInstructionCaptureStore.getState().trackCapture(sid, captureId))
+            .catch((err: unknown) => console.warn('[processStreamEvent] instruction capture not tracked', err));
+        }
+      }
       return null;
 
     // #9427: the first frame of an attach. Applies the snapshot of the

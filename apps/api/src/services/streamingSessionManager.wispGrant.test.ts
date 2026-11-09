@@ -101,6 +101,16 @@ vi.mock('./toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () =>
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: vi.fn(async () => []) }));
 // #10414: the turn-end grant spend notice (behaviour pinned in wisp/chatSpendCheck.test.ts).
 vi.mock('./wisp/chatSpendCheck', () => ({ maybeNotifyChatCrossedBudget: maybeNotifyChatCrossedBudgetMock }));
+// #10428: the real turn-end hooks, with the before-done half spied so a test can
+// hand back a capture id without Redis.
+vi.mock('./wisp/turnEnd', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./wisp/turnEnd')>();
+  return {
+    ...real,
+    runWispTurnEndBeforeDone: vi.fn(real.runWispTurnEndBeforeDone),
+    scheduleWispTurnEndAfterDone: vi.fn(real.scheduleWispTurnEndAfterDone),
+  };
+});
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
@@ -108,6 +118,7 @@ import { buildOrgAccessClosures, type AuthContext } from '../middleware/auth';
 import { WispSessionUnavailableError } from './wisp/chatCeiling';
 import { captureException } from './sentry';
 import { scriptedQuery, sdkResult } from './__testutils__/streamingSessionManagerHarness';
+import { runWispTurnEndBeforeDone, scheduleWispTurnEndAfterDone } from './wisp/turnEnd';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
 const ORG_B = 'bbbbbbbb-1111-4222-8333-444455556666';
@@ -288,5 +299,67 @@ describe('turn end — the Wisp grant spend notice (#10414)', () => {
     await vi.waitFor(() => expect(maybeNotifyChatCrossedBudgetMock).toHaveBeenCalled());
     rejectNotice(new Error('db down'));
     await vi.waitFor(() => expect(captureException).toHaveBeenCalled());
+  });
+});
+
+describe('turn end — Wisp standing-instruction capture (#10428)', () => {
+  let manager: StreamingSessionManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    wispSessionToolFilterMock.mockReset();
+    wispSessionToolFilterMock.mockResolvedValue(() => true);
+    maybeNotifyChatCrossedBudgetMock.mockReset();
+    maybeNotifyChatCrossedBudgetMock.mockResolvedValue('under');
+    manager = new StreamingSessionManager();
+  });
+
+  afterEach(() => {
+    manager.shutdown();
+  });
+
+  async function runTurn(id: string, userMessage?: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    queryMock.mockImplementation(() => scriptedQuery([sdkResult()], gate));
+    const session = await manager.getOrCreate(id, DB_SESSION, partnerAuth(), undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    expect(manager.tryTransitionToProcessing(session, undefined, userMessage === undefined ? {} : { userMessage })).toBe(true);
+    const recorded = session.currentTurn;
+    release();
+    await session.processorPromise;
+    return { session, recorded };
+  }
+
+  it('a Wisp turn records the technician\'s text; `done` carries the capture id the hook returned', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    vi.mocked(runWispTurnEndBeforeDone).mockResolvedValueOnce({ wispInstructionCapture: { captureId: 'cap-1' } });
+    const { session, recorded } = await runTurn('sess-wisp-capture', "don't reboot PC-01");
+    expect(recorded?.userMessage).toBe("don't reboot PC-01");
+    const done = session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done');
+    expect(done).toEqual([expect.objectContaining({ type: 'done', wispInstructionCapture: { captureId: 'cap-1' } })]);
+    expect(scheduleWispTurnEndAfterDone).toHaveBeenCalledWith(session, { wispInstructionCapture: { captureId: 'cap-1' } });
+  });
+
+  it('`done` has no capture field when the hook returns nothing', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    const { session } = await runTurn('sess-wisp-no-capture', 'What changed on PC-01?');
+    const done = session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done');
+    expect(done).toHaveLength(1);
+    expect(done[0]).not.toHaveProperty('wispInstructionCapture');
+  });
+
+  it('an ordinary session records no turn and never runs the Wisp hooks', async () => {
+    lookupWispGrantMock.mockResolvedValue(null);
+    const { recorded } = await runTurn('sess-plain-capture', "don't reboot PC-01");
+    expect(recorded).toBeUndefined();
+    expect(runWispTurnEndBeforeDone).not.toHaveBeenCalled();
+    expect(scheduleWispTurnEndAfterDone).not.toHaveBeenCalled();
+  });
+
+  it('a failing before-done hook never costs the turn its `done`', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    vi.mocked(runWispTurnEndBeforeDone).mockRejectedValueOnce(new Error('module broke'));
+    const { session } = await runTurn('sess-wisp-hook-throws', "don't reboot PC-01");
+    expect(session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done')).toHaveLength(1);
   });
 });

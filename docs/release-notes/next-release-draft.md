@@ -59,6 +59,12 @@ Last release: **v0.127.0** (2026-11-08).
 - The check-in fires on the matching event, on the 5-minute Wisp tick, or straight away if the event has already happened when it is scheduled. Each time, Breeze re-reads the device, script, command or run, so a stale event fires nothing. Device commands have no event and are checked on the tick only.
 - A check-in whose device, script, command or run is deleted, or moves outside the grant, is cancelled with a reason instead of firing.
 - Migration `2027-01-22-233100-wisp-check-ins-event-triggers.sql` adds four columns to `wisp_check_ins`: `trigger_kind`, `trigger_subject_id`, `fire_reason` and `cancel_reason`. Existing rows become time check-ins. It writes no rows.
+### Wisp remembers standing instructions from chat
+
+- When a Wisp chat message gives a standing instruction ("don't reboot PC-01 and PC-02", "never patch the CEO laptop"), Wisp saves it to the technician's own memory as unconfirmed, and a chip under the reply offers **Keep**, **Keep for everyone at &lt;org&gt;** (only when every named device is in one organization) and **Forget**. For an instruction Wisp could enforce later, the chip shows the exact form ("Wisp will not propose: reboot · PC-01, PC-02 · no end date").
+- Quoted lines and fenced blocks (pasted emails, tickets) are never read as instructions. Device names are matched to devices inside the grant only; a name that does not match exactly one device saves the instruction as a note instead.
+- The extraction is one small model call per matching message, charged to the grant's background line and capped at 20 per grant per UTC day. It is skipped when the grant or org budget is spent. This release captures instructions only; Wisp does not yet refuse actions that match them.
+- New routes under `/api/v1/wisp/memory/captures`. Migration `2027-01-22-233400-wisp-standing-instruction-capture.sql` adds an egress surface and a partial index; no new table or column.
 
 ## Migrations
 
