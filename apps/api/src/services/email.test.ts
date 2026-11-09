@@ -773,3 +773,189 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP" <no-reply@2breeze.app>');
   });
 });
+
+/**
+ * Outbound-email Prometheus series, recorded in `deliverRaw` (the platform
+ * transport choke point). Alert rules are written against these exact names
+ * and label values, so the assertions pin them literally.
+ */
+describe('email send metrics', () => {
+  const MESSAGE = {
+    from: 'Breeze <no-reply@2breeze.app>',
+    to: 'customer@example.test',
+    subject: 's',
+    html: '<p>h</p>',
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    process.env = { ...originalEnv };
+    resetEmailEnv();
+    process.env.EMAIL_PROVIDER = 'resend';
+    process.env.RESEND_API_KEY = 're_test_123';
+    process.env.EMAIL_FROM = 'no-reply@2breeze.app';
+    createTransportMock.mockReturnValue({ sendMail: smtpSendMailMock });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  // Same module graph as the `./email` import (vi.resetModules gives each test
+  // a fresh registry), so the series read here are the ones deliverRaw wrote.
+  async function setup() {
+    const { EmailService, EmailTransportError } = await import('./email');
+    const { metricsRegistry } = await import('./metricsRegistry');
+    async function values(name: string) {
+      const metric = metricsRegistry.getSingleMetric(name);
+      return metric ? (await metric.get()).values : [];
+    }
+    async function value(name: string, labels: Record<string, string>) {
+      return (await values(name)).find((v) => Object.entries(labels).every(([k, l]) => v.labels[k] === l))?.value;
+    }
+    async function sendTotal() {
+      return (await values('breeze_email_send_total')).reduce((sum, v) => sum + v.value, 0);
+    }
+    return { svc: new EmailService(), EmailTransportError, value, sendTotal };
+  }
+
+  const USED = 'breeze_email_provider_monthly_used';
+  const USED_AT = 'breeze_email_provider_monthly_used_updated_timestamp_seconds';
+
+  it('counts a Resend success once and sets the monthly-used gauge from x-resend-monthly-quota', async () => {
+    resendSendMock.mockResolvedValue({ data: { id: 'e1' }, error: null, headers: { 'x-resend-monthly-quota': '1234' } });
+    const { svc, value, sendTotal } = await setup();
+    const before = Date.now() / 1000;
+    await expect(svc.deliverRaw(MESSAGE)).resolves.toBeUndefined();
+    const after = Date.now() / 1000;
+
+    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'success', error: 'none' })).toBe(1);
+    expect(await sendTotal()).toBe(1);
+    expect(await value(USED, { provider: 'resend' })).toBe(1234);
+    const at = await value(USED_AT, { provider: 'resend' });
+    expect(at).toBeGreaterThanOrEqual(Math.floor(before));
+    expect(at).toBeLessThanOrEqual(Math.ceil(after));
+  });
+
+  it.each([
+    ['rate_limit_exceeded', 429],
+    ['daily_quota_exceeded', 429],
+    ['monthly_quota_exceeded', 429],
+    ['validation_error', 403],
+    ['invalid_from_address', 422],
+  ] as const)('labels a Resend %s failure with its error name and throws the same EmailTransportError', async (name, statusCode) => {
+    const resendError = { name, message: `Resend said ${name}`, statusCode };
+    resendSendMock.mockResolvedValue({ data: null, error: resendError, headers: { 'x-resend-monthly-quota': '3000' } });
+    const { svc, EmailTransportError, value, sendTotal } = await setup();
+
+    const raised = await svc.deliverRaw(MESSAGE).catch((e: unknown) => e);
+    expect(raised).toBeInstanceOf(EmailTransportError);
+    expect((raised as Error).message).toBe(`Resend error: Resend said ${name}`);
+    expect((raised as { cause?: unknown }).cause).toBe(resendError);
+    expect(raised).toMatchObject({ transport: 'resend', providerErrorName: name, statusCode });
+
+    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'failure', error: name })).toBe(1);
+    expect(await sendTotal()).toBe(1);
+    // An error response still reports usage, which is exactly when it matters.
+    expect(await value(USED, { provider: 'resend' })).toBe(3000);
+  });
+
+  it.each([
+    ['an unlisted name', { name: 'internal_server_error', message: 'x', statusCode: 500 }],
+    ['no name at all', { message: 'boom' }],
+    ['free text in the name', { name: 'user@example.com said no', message: 'x' }],
+  ])('labels a Resend failure with %s as error="other"', async (_label, resendError) => {
+    resendSendMock.mockResolvedValue({ data: null, error: resendError, headers: null });
+    const { svc, EmailTransportError, value, sendTotal } = await setup();
+
+    await expect(svc.deliverRaw(MESSAGE)).rejects.toBeInstanceOf(EmailTransportError);
+    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'failure', error: 'other' })).toBe(1);
+    expect(await sendTotal()).toBe(1);
+  });
+
+  it('counts a Resend SDK that rejects outright as a failure and rethrows the same error', async () => {
+    const thrown = new TypeError('sdk blew up');
+    resendSendMock.mockRejectedValue(thrown);
+    const { svc, value, sendTotal } = await setup();
+
+    await expect(svc.deliverRaw(MESSAGE)).rejects.toBe(thrown);
+    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'failure', error: 'other' })).toBe(1);
+    expect(await sendTotal()).toBe(1);
+  });
+
+  it('leaves the gauge and its timestamp unchanged when the header is missing or not a non-negative integer', async () => {
+    resendSendMock.mockResolvedValueOnce({ data: { id: 'e1' }, error: null, headers: { 'x-resend-monthly-quota': '100' } });
+    const { svc, value, sendTotal } = await setup();
+    await svc.deliverRaw(MESSAGE);
+    const setAt = await value(USED_AT, { provider: 'resend' });
+    expect(await value(USED, { provider: 'resend' })).toBe(100);
+
+    const garbage = [
+      undefined,
+      null,
+      {},
+      { 'x-resend-monthly-quota': '' },
+      { 'x-resend-monthly-quota': 'abc' },
+      { 'x-resend-monthly-quota': '-5' },
+      { 'x-resend-monthly-quota': '12.5' },
+      { 'x-resend-monthly-quota': '1e3' },
+      { 'x-resend-monthly-quota': 'NaN' },
+      { 'x-resend-monthly-quota': '99999999999999999999' },
+    ];
+    for (const headers of garbage) {
+      resendSendMock.mockResolvedValueOnce({ data: { id: 'e2' }, error: null, headers });
+      await expect(svc.deliverRaw(MESSAGE)).resolves.toBeUndefined();
+    }
+
+    expect(await value(USED, { provider: 'resend' })).toBe(100);
+    expect(await value(USED_AT, { provider: 'resend' })).toBe(setAt);
+    expect(await sendTotal()).toBe(1 + garbage.length);
+  });
+
+  it('never creates the gauge series from a garbage header', async () => {
+    resendSendMock.mockResolvedValue({ data: { id: 'e1' }, error: null, headers: { 'x-resend-monthly-quota': 'oops' } });
+    const { svc, value } = await setup();
+    await svc.deliverRaw(MESSAGE);
+    expect(await value(USED, { provider: 'resend' })).toBeUndefined();
+    expect(await value(USED_AT, { provider: 'resend' })).toBeUndefined();
+    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'success', error: 'none' })).toBe(1);
+  });
+
+  it('counts SMTP success and failure (error="other") and rethrows the SMTP failure unchanged', async () => {
+    resetEmailEnv();
+    process.env.EMAIL_PROVIDER = 'smtp';
+    process.env.SMTP_HOST = 'smtp.example.test';
+    process.env.SMTP_FROM = 'no-reply@2breeze.app';
+    smtpSendMailMock.mockResolvedValueOnce({ messageId: 'm1' });
+    smtpSendMailMock.mockRejectedValueOnce(Object.assign(new Error('550 nope'), { responseCode: 550 }));
+    const { svc, EmailTransportError, value, sendTotal } = await setup();
+
+    await svc.deliverRaw(MESSAGE);
+    const raised = await svc.deliverRaw(MESSAGE).catch((e: unknown) => e);
+    expect(raised).toBeInstanceOf(EmailTransportError);
+    expect((raised as Error).message).toBe('550 nope');
+
+    expect(await value('breeze_email_send_total', { provider: 'smtp', result: 'success', error: 'none' })).toBe(1);
+    expect(await value('breeze_email_send_total', { provider: 'smtp', result: 'failure', error: 'other' })).toBe(1);
+    expect(await sendTotal()).toBe(2);
+  });
+
+  it('counts Mailgun success and failure (error="other") and rethrows the Mailgun failure unchanged', async () => {
+    resetEmailEnv();
+    process.env.EMAIL_PROVIDER = 'mailgun';
+    process.env.MAILGUN_API_KEY = 'mg-key';
+    process.env.MAILGUN_DOMAIN = 'mg.example.test';
+    process.env.MAILGUN_FROM = 'no-reply@2breeze.app';
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, text: vi.fn().mockResolvedValue('ok') });
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 429, text: vi.fn().mockResolvedValue('') });
+    const { svc, value, sendTotal } = await setup();
+
+    await svc.deliverRaw(MESSAGE);
+    const raised = (await svc.deliverRaw(MESSAGE).catch((e: unknown) => e)) as Error;
+    expect(raised.message).toBe('Mailgun API error (429)');
+
+    expect(await value('breeze_email_send_total', { provider: 'mailgun', result: 'success', error: 'none' })).toBe(1);
+    expect(await value('breeze_email_send_total', { provider: 'mailgun', result: 'failure', error: 'other' })).toBe(1);
+    expect(await sendTotal()).toBe(2);
+  });
+});
