@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { useWispInstructionCaptureStore } from './wispInstructionCaptureStore';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AiStreamEvent } from '@breeze/shared';
@@ -833,5 +834,30 @@ describe('turn_model staleness', () => {
     const set = (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; };
     processStreamEvent({ type: 'message_start', messageId: 'm2' } as AiStreamEvent, set, () => h.state, null);
     expect(h.state.turnModel).toBeNull();
+  });
+});
+
+describe('wisp instruction capture (done)', () => {
+  function harness() {
+    const h = { state: { ...makeState() } as StreamableState };
+    return {
+      set: (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; },
+      get: () => h.state,
+    };
+  }
+  it('tracks the capture on done when the event carries one', async () => {
+    const spy = vi.spyOn(useWispInstructionCaptureStore.getState(), 'trackCapture').mockImplementation(() => {});
+    const h = harness();
+    processStreamEvent({ type: 'done', wispInstructionCapture: { captureId: 'c-9' } }, h.set, h.get, null);
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledWith('s1', 'c-9'));
+    spy.mockRestore();
+  });
+  it('does not track on a plain done', async () => {
+    const spy = vi.spyOn(useWispInstructionCaptureStore.getState(), 'trackCapture').mockImplementation(() => {});
+    const h = harness();
+    processStreamEvent({ type: 'done' }, h.set, h.get, null);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

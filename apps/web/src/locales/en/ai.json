@@ -982,6 +982,26 @@
       "newDescription": "Breeze AI with every tool you have access to. Not Wisp.",
       "wispDescription": "Wisp, under your grant",
       "label": "Breeze AI · not Wisp"
+    },
+    "instruction": {
+      "remembered": "Remembered: {{text}}",
+      "enforcedForm": "Wisp will not propose: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "no end date",
+      "keep": "Keep",
+      "keepForOrg": "Keep for everyone at {{org}}",
+      "forget": "Forget",
+      "unmatched": "Saved as a note: I couldn't match every device name.",
+      "kept": "Kept",
+      "keptForOrg": "Kept for everyone at {{org}}",
+      "crossOrg": "These devices are in more than one organization, so this can only be kept for you.",
+      "actionFailed": "That didn't work. Try again.",
+      "verb": {
+        "reboot": "reboot",
+        "shutdown": "shut down",
+        "run_script": "run a script",
+        "patch_install": "install patches",
+        "any_change": "make any change"
+      }
     }
   },
   "wispConcerns": {
