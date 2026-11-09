@@ -2935,5 +2935,8 @@
   "featureLock": {
     "lockedLabel": "Kilitli",
     "upgrade": "Planları gör"
+  },
+  "inheritChoice": {
+    "inherit": "Devral — {{value}} ({{source}})"
   }
 }
