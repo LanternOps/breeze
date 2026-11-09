@@ -205,7 +205,7 @@ const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ce
     // caller's own reach. Another partner's subject reads as not found.
     const { event, subjectId } = input.trigger;
     const subject = await loadTriggerSubject(event, subjectId);
-    const scope = triggerSubjectScope(subject, ceiling, { withPermission: true });
+    const scope = triggerSubjectScope(subject, ceiling);
     if (scope === 'subject_deleted') return SUBJECT_NOT_FOUND;
     if (scope === 'outside_ceiling' || !callerReaches(auth, subject!, subjectId)) return SUBJECT_OUTSIDE_GRANT;
     orgId = subject!.orgId;

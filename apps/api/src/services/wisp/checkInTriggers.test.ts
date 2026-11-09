@@ -231,11 +231,28 @@ describe('triggerSubjectScope', () => {
     kind: 'script_finished', orgId: ORG, partnerId: PARTNER, siteId: SITE, status: 'running', at: null, exitCode: null, output: null, lastSeenAt: null, ...over,
   });
 
-  it('with withPermission, the kind\'s read permission must be in the ceiling too', () => {
-    expect(triggerSubjectScope(subject(), ceiling(), { withPermission: true })).toBeNull();
-    expect(triggerSubjectScope(subject(), ceiling({ permissionKeys: new Set(['devices:read']) }), { withPermission: true })).toBe('outside_ceiling');
-    // The fire-time re-check is about reach only.
-    expect(triggerSubjectScope(subject(), ceiling({ permissionKeys: new Set(['devices:read']) }))).toBeNull();
+  // The fire-time re-check used to be org and site only, so a grant revised to
+  // drop the read permission still delivered the subject's evidence. Every
+  // check, at scheduling and at fire time, now requires it (fail closed).
+  it("the kind's read permission must be in the ceiling: without it the subject is outside_ceiling, at scheduling and at fire time", () => {
+    expect(triggerSubjectScope(subject(), ceiling())).toBeNull();
+    const cases = [
+      ['device_online', 'devices:read'],
+      ['script_finished', 'scripts:read'],
+      ['command_finished', 'devices:read'],
+      ['run_settled', 'ai_agents:read'],
+    ] as const;
+    for (const [kind, needed] of cases) {
+      const without = new Set(['devices:read', 'scripts:read', 'ai_agents:read'].filter((p) => p !== needed));
+      expect(triggerSubjectScope(subject({ kind }), ceiling({ permissionKeys: without })), kind).toBe('outside_ceiling');
+      expect(triggerSubjectScope(subject({ kind }), ceiling({ permissionKeys: new Set([needed]) })), kind).toBeNull();
+    }
+  });
+
+  it('a met subject under a ceiling without its read permission is gone/outside_ceiling, never met (no evidence)', async () => {
+    h.rows = [{ orgId: ORG, partnerId: PARTNER, siteId: SITE, status: 'completed', completedAt: FINISHED, exitCode: 0, stdout: 'secret', stderr: null }];
+    expect(await evaluateCheckInTrigger(row('script_finished'), ceiling({ permissionKeys: new Set(['devices:read', 'ai_agents:read']) }), NOW))
+      .toEqual({ state: 'gone', reason: 'outside_ceiling' });
   });
 
   it('an org-scoped grant never reaches another org of its partner', () => {

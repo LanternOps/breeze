@@ -191,21 +191,18 @@ export async function subjectOrgId(kind: WispCheckInTriggerEvent, subjectId: str
 }
 
 /**
- * Whether the subject is inside the ceiling: its partner, then its org and
- * site, and with `withPermission` the kind's read permission too (scheduling
- * checks it; the fire-time re-check is about reach). null when inside.
+ * Whether the subject is inside the ceiling: its partner, then its org, its
+ * site and the kind's read permission. null when inside. Scheduling and the
+ * fire-time re-check apply the same rule, so a grant revised to drop the
+ * permission cancels a pending check-in instead of delivering its evidence.
  */
-export function triggerSubjectScope(
-  subject: TriggerSubject | null,
-  ceiling: GrantCeiling,
-  opts: { withPermission?: boolean } = {},
-): TriggerGoneReason | null {
+export function triggerSubjectScope(subject: TriggerSubject | null, ceiling: GrantCeiling): TriggerGoneReason | null {
   if (!subject || subject.partnerId !== ceiling.partnerId) return 'subject_deleted';
   try {
     assertWithinCeiling(ceiling, {
       orgId: subject.orgId,
       siteId: subject.siteId,
-      ...(opts.withPermission ? { permission: TRIGGER_SUBJECT_PERMISSION[subject.kind] } : {}),
+      permission: TRIGGER_SUBJECT_PERMISSION[subject.kind],
     });
   } catch (err) {
     if (err instanceof CeilingViolationError) return 'outside_ceiling';

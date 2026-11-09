@@ -130,6 +130,25 @@ async function seed() {
 }
 type Fx = Awaited<ReturnType<typeof seed>>;
 
+/**
+ * Revise the grant (a new current revision with `permissionKeys`) after
+ * scheduling, and make the stubbed live ceiling that revision's. The
+ * scheduling ceiling (`fx.ceiling`) is left as it was.
+ */
+async function reviseGrant(fx: Fx, permissionKeys: string[]) {
+  const revisionId = await withSystemDbAccessContext(async () => {
+    const [revision] = await db.insert(wispGrantRevisions).values({
+      grantId: fx.grantId, partnerId: fx.partner.id, revision: 2,
+      ceilingSnapshot: { version: 1, permissionKeys, orgIds: [fx.org.id], siteIds: null, toolAllowlist: null, deniedTools: [] },
+      factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
+    }).returning({ id: wispGrantRevisions.id });
+    await db.update(wispGrants).set({ currentRevisionId: revision!.id }).where(eq(wispGrants.id, fx.grantId));
+    return revision!.id;
+  });
+  h.ceiling = { ...fx.ceiling, revisionId, permissionKeys: new Set(permissionKeys) } as GrantCeiling;
+  return revisionId;
+}
+
 const setDevice = (id: string, values: Partial<typeof devices.$inferInsert>) => withSystemDbAccessContext(() =>
   db.update(devices).set(values).where(eq(devices.id, id)));
 
@@ -297,6 +316,22 @@ describe('the event fast path (handleCheckInTriggerEvent)', () => {
     expect((await rowOf(row.id)).status).toBe('scheduled');
   });
 
+  runDb('a grant revised to drop scripts:read after scheduling: the script finishing cancels with outside_ceiling, nothing delivered', async () => {
+    const fx = await seed();
+    const exec = await scriptExecution(fx, 'running');
+    const row = await schedule(fx, new Date(), { kind: 'script_finished', subjectId: exec });
+    expect(row.status).toBe('scheduled');
+    const narrowed = await reviseGrant(fx, ['ai_sessions:use', 'devices:read', 'ai_agents:read']);
+    await withSystemDbAccessContext(() => db.update(scriptExecutions).set({ status: 'completed', exitCode: 0, stdout: 'scan ok', completedAt: new Date() }).where(eq(scriptExecutions.id, exec)));
+    await handleCheckInTriggerEvent(busEvent('script.completed', fx.org.id, { executionId: exec, deviceId: fx.device.id }));
+    // The live revision decided, not the one pinned at scheduling.
+    expect(h.resolveGrantCeiling).toHaveBeenLastCalledWith(fx.grantId, narrowed);
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'outside_ceiling', fireReason: null });
+    expect(notifyUser).not.toHaveBeenCalled();
+    expect(await postsFor(fx.thread.id)).toHaveLength(0);
+    expect(await notificationsFor(fx.user.id)).toHaveLength(0);
+  });
+
   runDb('Review Focus 4: a device moved to an org outside the ceiling is cancelled with outside_ceiling, never fired', async () => {
     const fx = await seed();
     const row = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id });
@@ -328,6 +363,19 @@ describe('the tick reconcile (reconcileCheckInTriggers)', () => {
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', fireReason: 'event' });
     expect((await rowOf(timeRow.id)).status).toBe('scheduled');
     expect((await rowOf(past.id)).status).toBe('scheduled');
+  });
+
+  runDb('a grant revised to drop devices:read: a completed command cancels with outside_ceiling on the tick, nothing delivered', async () => {
+    const fx = await seed();
+    const now = new Date();
+    const cmd = await command(fx, 'sent');
+    const row = await schedule(fx, now, { kind: 'command_finished', subjectId: cmd });
+    await reviseGrant(fx, ['ai_sessions:use', 'scripts:read', 'ai_agents:read']);
+    await withSystemDbAccessContext(() => db.update(deviceCommands).set({ status: 'completed', completedAt: now }).where(eq(deviceCommands.id, cmd)));
+    expect(await reconcileCheckInTriggers(now)).toEqual({ fired: 0, cancelled: 1 });
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'outside_ceiling', fireReason: null });
+    expect(notifyUser).not.toHaveBeenCalled();
+    expect(await postsFor(fx.thread.id)).toHaveLength(0);
   });
 
   runDb('Review Focus 4: a deleted subject cancels with subject_deleted on the tick', async () => {
@@ -378,6 +426,16 @@ describe('the deadline (the delayed job at due_at)', () => {
     expect(await fireCheckIn(row.id, new Date(row.dueAt.getTime() + 1000))).toBe('cancelled');
     expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'outside_ceiling' });
     expect(notifyUser).not.toHaveBeenCalled();
+  });
+
+  runDb('a grant revised to drop devices:read is cancelled at the deadline with outside_ceiling, not reported as "did not happen"', async () => {
+    const fx = await seed();
+    const row = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id }, { deadlineMs: 30 * MIN });
+    await reviseGrant(fx, ['ai_sessions:use', 'scripts:read', 'ai_agents:read']);
+    expect(await fireCheckIn(row.id, new Date(row.dueAt.getTime() + 1000))).toBe('cancelled');
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'outside_ceiling', fireReason: null });
+    expect(notifyUser).not.toHaveBeenCalled();
+    expect(await postsFor(fx.thread.id)).toHaveLength(0);
   });
 
   runDb('a grant no longer usable cancels with grant_inactive; the live ceiling refusing cancels the same way', async () => {

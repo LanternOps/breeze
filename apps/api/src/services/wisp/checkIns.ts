@@ -406,7 +406,9 @@ type EventDecision =
  * the job path, so the event path leaves it. The subject is read first and a
  * deleted one cancels; a still-pending state on the event path stops there,
  * without resolving the grant. Anything that would post (the state holds, the
- * deadline, a re-fire) re-checks the subject against the LIVE ceiling first.
+ * deadline, a re-fire) re-checks the subject against the LIVE ceiling first:
+ * org, site and the kind's read permission, as at scheduling, so a revision
+ * that dropped any of them cancels with `outside_ceiling`.
  */
 async function decideEventFire(read: FireRead, path: CheckInFirePath, now: Date): Promise<EventDecision> {
   const { row } = read;
