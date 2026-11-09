@@ -5,9 +5,37 @@
  * against real Postgres in
  * __tests__/integration/wispCheckInTriggers.integration.test.ts.
  */
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { WISP_CHECK_IN_CANCEL_REASON_MAX, WISP_CHECK_IN_FIRE_REASONS, WISP_CHECK_IN_TRIGGER_KINDS } from '@breeze/shared';
 import type { WispCheckInRow } from '../../db/schema/wispCheckIns';
 import { checkInPostBody, toCheckInDto } from './checkIns';
+
+const MIGRATIONS = resolve(import.meta.dirname, '../../../migrations');
+
+/** The value list of the LAST `ADD CONSTRAINT <name> CHECK (<col> IN (…))` across all migrations. */
+function lastCheckList(name: string): string[] {
+  let last: string | null = null;
+  for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql')).sort()) {
+    for (const line of readFileSync(join(MIGRATIONS, file), 'utf8').split('\n')) {
+      if (line.includes(`ADD CONSTRAINT ${name} CHECK`)) last = line;
+    }
+  }
+  expect(last, name).not.toBeNull();
+  const list = /IN \(([^)]*)\)/.exec(last!)?.[1] ?? '';
+  return [...list.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
+}
+
+describe('wisp_check_ins CHECKs mirror the shared constants', () => {
+  it('trigger kinds, fire reasons and the cancel-reason length', () => {
+    expect(lastCheckList('wisp_check_ins_trigger_kind_chk')).toEqual([...WISP_CHECK_IN_TRIGGER_KINDS]);
+    expect(lastCheckList('wisp_check_ins_fire_reason_chk')).toEqual([...WISP_CHECK_IN_FIRE_REASONS]);
+    const lenLine = readdirSync(MIGRATIONS).sort().map((f) => (f.endsWith('.sql') ? readFileSync(join(MIGRATIONS, f), 'utf8') : ''))
+      .join('\n').split('\n').filter((l) => l.includes('ADD CONSTRAINT wisp_check_ins_cancel_reason_len_chk')).at(-1);
+    expect(lenLine).toContain(`char_length(cancel_reason) <= ${WISP_CHECK_IN_CANCEL_REASON_MAX}`);
+  });
+});
 
 const ID = '00000000-0000-4000-8000-000000000a01';
 const SUBJECT = '00000000-0000-4000-8000-000000000b01';

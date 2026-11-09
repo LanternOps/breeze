@@ -42,7 +42,9 @@ import {
   resolveConcernToolSchema,
   scheduleCheckInSchema,
   snoozeConcernToolSchema,
+  WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES,
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
+  wispCheckInTriggerSchema,
 } from '@breeze/shared';
 import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
@@ -455,19 +457,26 @@ export const listLinksShape = {
  * Wisp check-in timers (#10991 W03; services/wisp/checkInTools.ts). The shared
  * validators (packages/shared/src/validators/wispCheckIns.ts) are the source
  * of truth, as for the concern and link tools; checkInTools.test.ts pins the
- * key parity. The delayMinutes / at XOR lives in the shared schema's
- * superRefine (toolInputSchemas uses it as-is), so the descriptions say it
- * too. `list_check_ins` = the shared empty strict object plus the tool-only
- * output budget (A-W05).
+ * key parity. The delayMinutes / at / trigger XOR lives in the shared
+ * schema's superRefine (toolInputSchemas uses it as-is), so the descriptions
+ * say it too. `trigger` (W04 #11493) is the shared trigger object with its
+ * fields described. `list_check_ins` = the shared empty strict object plus the
+ * tool-only output budget (A-W05).
  */
 export const LIST_CHECK_INS_DEFAULT_LIMIT = 20;
 export const LIST_CHECK_INS_MAX_LIMIT = 50;
 const sci = scheduleCheckInSchema.shape;
+const scit = wispCheckInTriggerSchema.shape;
 export const scheduleCheckInShape = {
-  delayMinutes: sci.delayMinutes.describe(`Minutes from now until it is due (1 to ${WISP_CHECK_IN_MAX_DELAY_MINUTES}). Give this or at, not both`),
-  at: sci.at.describe('When it is due: ISO 8601 datetime with offset, 1 minute to 7 days ahead. Give this or delayMinutes, not both'),
+  delayMinutes: sci.delayMinutes.describe(`Minutes from now until it is due (1 to ${WISP_CHECK_IN_MAX_DELAY_MINUTES}). Give exactly one of delayMinutes, at or trigger`),
+  at: sci.at.describe('When it is due: ISO 8601 datetime with offset, 1 minute to 7 days ahead. Give exactly one of delayMinutes, at or trigger'),
   instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars)'),
   subject: sci.subject.describe('Optional: the Breeze object it is about (kind + UUID); its org is read from the object'),
+  trigger: z.object({
+    event: scit.event.describe('device_online, script_finished, command_finished or run_settled'),
+    subjectId: scit.subjectId.describe('UUID of the device, script execution, device command or agent run'),
+    deadlineMinutes: scit.deadlineMinutes.describe(`Fire anyway after this many minutes, saying it did not happen (default ${WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES}, max ${WISP_CHECK_IN_MAX_DELAY_MINUTES})`),
+  }).optional().describe('Fire when an event happens instead of at a time. Give exactly one of delayMinutes, at or trigger'),
 };
 export const listCheckInsInputSchema = listCheckInsToolSchema.extend({
   limit: z.number().int().min(1).max(LIST_CHECK_INS_MAX_LIMIT).optional(),

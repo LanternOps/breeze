@@ -27,6 +27,13 @@
  * taken FROM THE OBJECT. Instructions are model-written text derived from tool
  * output, so `list_check_ins` sanitizes each and fences the list.
  *
+ * W04 (#11493, #10410): `trigger` schedules an event check-in instead (a device
+ * comes online, a script / command finishes, a run settles), with a deadline
+ * (default 24 h). Its subject is read by id (checkInTriggers.ts), must be
+ * inside the live ceiling with the kind's read permission and inside the
+ * caller's own reach, and the row's org is the subject's. Another partner's
+ * subject reads as not found.
+ *
  * The per-call ceiling gate (tool allowlist, denied tools, permission) is
  * `createSessionPreToolUse`, which runs before any handler; it is not repeated.
  */
@@ -34,8 +41,10 @@ import { z } from 'zod';
 import {
   cancelCheckInSchema,
   scheduleCheckInSchema,
+  WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES,
   WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD,
   type WispCheckInContext,
+  type WispCheckInTriggerEvent,
 } from '@breeze/shared';
 import type { AuthContext } from '../../middleware/auth';
 import type { WispCheckInRow } from '../../db/schema/wispCheckIns';
@@ -57,6 +66,7 @@ import {
   listCheckIns,
   threadForGrant,
 } from './checkIns';
+import { loadTriggerSubject, triggerSubjectScope, type TriggerSubject } from './checkInTriggers';
 import { isResolveFailure, resolveEntityRef } from './entityRefs';
 import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 
@@ -72,6 +82,8 @@ type Handler = (input: Record<string, unknown>, auth: AuthContext) => Promise<st
 const GRANT_REQUIRED = JSON.stringify({ error: 'wisp_grant_required' });
 const THREAD_NOT_FOUND = JSON.stringify({ error: 'thread_not_found' });
 const CHECK_IN_NOT_FOUND = JSON.stringify({ error: 'check_in_not_found' });
+const SUBJECT_NOT_FOUND = JSON.stringify({ error: 'subject_not_found' });
+const SUBJECT_OUTSIDE_GRANT = JSON.stringify({ error: 'subject_outside_grant' });
 const FENCE_SOURCE = 'wisp_check_ins';
 
 function inputSchemaFor(shape: z.ZodRawShape): AiTool['definition']['input_schema'] {
@@ -145,20 +157,65 @@ function renderCheckIns(rows: WispCheckInRow[]): string {
   return wrapUntrustedData(FENCE_SOURCE, lines.join('\n'));
 }
 
+/**
+ * The caller's own reach over a trigger subject's org, on top of the ceiling
+ * (resolveEntityRef steps 3 and 5): an org-scoped token reaches only its own
+ * org, `canAccessOrg` when the context carries it, and a device-pinned
+ * principal only its allowlisted devices (and no other kind).
+ */
+function callerReaches(auth: AuthContext, subject: TriggerSubject, subjectId: string): boolean {
+  if (auth.scope === 'organization' && subject.orgId !== auth.orgId) return false;
+  if (typeof auth.canAccessOrg === 'function' && !auth.canAccessOrg(subject.orgId)) return false;
+  if (auth.allowedDeviceIds !== undefined && (subject.kind !== 'device_online' || !auth.allowedDeviceIds.includes(subjectId))) return false;
+  return true;
+}
+
+/** What the scheduling reply says the check-in waits for. */
+const TRIGGER_WAITS_FOR: Readonly<Record<WispCheckInTriggerEvent, string>> = Object.freeze({
+  device_online: 'the device comes online',
+  script_finished: 'the script finishes',
+  command_finished: 'the command finishes',
+  run_settled: 'the run settles',
+});
+/** What the scheduling reply says when the event had already happened. */
+const TRIGGER_ALREADY: Readonly<Record<WispCheckInTriggerEvent, string>> = Object.freeze({
+  device_online: 'The device has already come online',
+  script_finished: 'The script has already finished',
+  command_finished: 'The command has already finished',
+  run_settled: 'The run has already settled',
+});
+
 const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ceiling, threadId, auth) => {
   // One clock for the delay, the window check and `created_at` (the DB CHECK
   // bounds due_at by the row's own created_at).
   const now = new Date();
-  const dueAt = input.delayMinutes !== undefined
-    ? new Date(now.getTime() + input.delayMinutes * 60_000)
-    : new Date(input.at!);
+  const dueAt = input.trigger
+    ? new Date(now.getTime() + (input.trigger.deadlineMinutes ?? WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES) * 60_000)
+    : input.delayMinutes !== undefined
+      ? new Date(now.getTime() + input.delayMinutes * 60_000)
+      : new Date(input.at!);
 
   let orgId = ceiling.scopeOrgId;
+  let trigger: { kind: WispCheckInTriggerEvent; subjectId: string } | null = null;
+  if (input.trigger) {
+    // The subject's org is read FROM THE SUBJECT, and the subject must be
+    // inside the live ceiling (org, site, the kind's read permission) and the
+    // caller's own reach. Another partner's subject reads as not found.
+    const { event, subjectId } = input.trigger;
+    const subject = await loadTriggerSubject(event, subjectId);
+    const scope = triggerSubjectScope(subject, ceiling, { withPermission: true });
+    if (scope === 'subject_deleted') return SUBJECT_NOT_FOUND;
+    if (scope === 'outside_ceiling' || !callerReaches(auth, subject!, subjectId)) return SUBJECT_OUTSIDE_GRANT;
+    orgId = subject!.orgId;
+    trigger = { kind: event, subjectId };
+  }
+
   let context: WispCheckInContext | null = null;
   if (input.subject) {
     const resolved = await resolveEntityRef({ auth, ceiling }, input.subject);
     if (isResolveFailure(resolved)) return JSON.stringify({ error: 'subject_not_resolvable', reason: resolved.reason });
-    orgId = resolved.orgId;
+    // A trigger pins the org to its own subject; a context subject alone decides it otherwise.
+    if (!trigger) orgId = resolved.orgId;
     context = { subject: { kind: input.subject.kind, id: input.subject.id } };
   }
 
@@ -169,8 +226,15 @@ const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ce
     instruction: input.instruction,
     orgId,
     context,
+    trigger,
   }, now);
-  return `Check-in scheduled (ID: ${row.id}) for ${row.dueAt.toISOString()}. Breeze will notify the user then, and the instruction comes back to you with their next message in this thread.`;
+  if (!trigger) {
+    return `Check-in scheduled (ID: ${row.id}) for ${row.dueAt.toISOString()}. Breeze will notify the user then, and the instruction comes back to you with their next message in this thread.`;
+  }
+  if (row.status === 'fired') {
+    return `${TRIGGER_ALREADY[trigger.kind]}, so check-in ${row.id} fired now: Breeze notified the user, and the instruction comes back to you with their next message in this thread.`;
+  }
+  return `Check-in scheduled (ID: ${row.id}): it fires when ${TRIGGER_WAITS_FOR[trigger.kind]}, or at ${row.dueAt.toISOString()} if it has not by then. Breeze will notify the user, and the instruction comes back to you with their next message in this thread.`;
 });
 
 const listCheckInsHandler = grantTool(listCheckInsInputSchema, async (input, ceiling) => {
@@ -198,7 +262,7 @@ export function registerWispCheckInTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'set a timer to follow up later in this conversation: re-check a device, ticket or job in a few minutes or hours',
     definition: {
       name: 'schedule_check_in',
-      description: 'Schedule a check-in on this Wisp thread instead of asking the user to come back later. When it is due (1 minute to 7 days), the user is notified and your instruction returns to you with their next message. Write it as a self-contained imperative: what to verify, then what to do. Max 5 pending.',
+      description: 'Schedule a check-in on this Wisp thread instead of asking the user to come back later: after a delay, or when a device comes online, a script/command finishes or a run settles (with a deadline). The user is notified and your instruction returns with their next message. Max 5 pending.',
       input_schema: inputSchemaFor(scheduleCheckInShape),
     },
     handler: scheduleCheckInHandler,

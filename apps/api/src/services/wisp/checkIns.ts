@@ -37,6 +37,7 @@ import {
   type WispCheckIn,
   type WispCheckInContext,
   type WispCheckInFireReason,
+  type WispCheckInTriggerEvent,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { wispGrants } from '../../db/schema/wisp';
@@ -119,6 +120,10 @@ export async function threadForGrant(grantId: string): Promise<{ id: string; par
  * The job is enqueued after the insert has committed. If that enqueue fails
  * the row is still returned: the tick's reconcile fires it within the grace
  * plus one tick of its due time.
+ *
+ * `trigger` (W04 #11493) makes it an event check-in: `dueAt` is then the
+ * deadline, and `orgId` must be the trigger subject's own org (the tool reads
+ * it from the subject and checks the subject against the ceiling first).
  */
 export async function createCheckIn(
   ceiling: GrantCeiling,
@@ -129,9 +134,12 @@ export async function createCheckIn(
     instruction: string;
     orgId: string | null;
     context: WispCheckInContext | null;
+    trigger: { kind: WispCheckInTriggerEvent; subjectId: string } | null;
   },
   now: Date = new Date(),
 ): Promise<WispCheckInRow> {
+  // An event's subject always belongs to an org; a partner-level event row would have no org to re-check at fire time.
+  if (input.trigger && input.orgId === null) throw new Error('createCheckIn: an event check-in needs its subject\'s org');
   // Status gate always; the org term only for an org-scoped check-in (a
   // partner-level thread's check-in is about the thread, not a partner-wide
   // subject).
@@ -187,6 +195,8 @@ export async function createCheckIn(
         status: 'scheduled',
         jobId: checkInJobId(id),
         createdAt: now,
+        triggerKind: input.trigger?.kind ?? 'time',
+        triggerSubjectId: input.trigger?.subjectId ?? null,
       })
       .returning();
     if (!inserted) throw new Error('wisp_check_ins insert returned no row');
