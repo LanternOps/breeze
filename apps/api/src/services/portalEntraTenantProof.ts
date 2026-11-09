@@ -386,7 +386,6 @@ async function recordInTransaction(
       details: { tenantId, displacedByOrgId: input.orgId, wasProven },
       result: 'success',
     });
-    markRequestAuditWritten();
     displaced = {
       orgId: other.orgId,
       partnerId: other.partnerId,
@@ -423,6 +422,8 @@ async function recordInTransaction(
   if (!mapping) {
     throw new PortalEntraProofError('PORTAL_ENTRA_ORG_HAS_OTHER_TENANT', 409, ORG_HAS_OTHER_TENANT_MESSAGE);
   }
+  // Only past the last throw: a rolled-back displacement row must not suppress the fallback audit.
+  if (displaced) markRequestAuditWritten();
 
   await db.insert(auditLogs).values({
     orgId: input.orgId,
