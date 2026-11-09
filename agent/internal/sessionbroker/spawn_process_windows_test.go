@@ -289,6 +289,7 @@ func TestRunProcessInSessionWithArgsTimesOut(t *testing.T) {
 		}
 	})
 	orig := createProcessAsUser
+	t.Cleanup(func() { createProcessAsUser = orig })
 	createProcessAsUser = func(token windows.Token, appName *uint16, cmdLine *uint16, ps *windows.SecurityAttributes, ts *windows.SecurityAttributes, inherit bool, flags uint32, env *uint16, dir *uint16, si *windows.StartupInfo, pi *windows.ProcessInformation) error {
 		err := orig(token, appName, cmdLine, ps, ts, inherit, flags, env, dir, si, pi)
 		pid = pi.ProcessId
@@ -297,12 +298,22 @@ func TestRunProcessInSessionWithArgsTimesOut(t *testing.T) {
 
 	start := time.Now()
 	_, err := RunProcessInSessionWithArgs(exe, childArgs(), 1, 200*time.Millisecond)
+	elapsed := time.Since(start)
 
 	if !errors.Is(err, ErrProcessWaitTimeout) {
 		t.Fatalf("err = %v, want ErrProcessWaitTimeout", err)
 	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Fatalf("waited %s; the timeout must bound the wait", elapsed)
+	if elapsed < 150*time.Millisecond || elapsed > 10*time.Second {
+		t.Fatalf("waited %s; want about the 200ms timeout", elapsed)
+	}
+	// The timed-out process is left running, not killed.
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		t.Fatalf("OpenProcess(%d): %v", pid, err)
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	if event, _ := windows.WaitForSingleObject(h, 0); event != uint32(windows.WAIT_TIMEOUT) {
+		t.Fatalf("child pid %d already exited (wait event %#x); a timeout must leave it running", pid, event)
 	}
 }
 

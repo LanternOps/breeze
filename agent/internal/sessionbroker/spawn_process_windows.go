@@ -23,9 +23,10 @@ var createProcessAsUser = windows.CreateProcessAsUser
 // never falls back to SYSTEM: with nobody signed in it returns
 // ErrNoInteractiveUser and launches nothing (#10379).
 //
-// The target is launched directly. It used to run under
-// `cmd.exe /c start "" <binary>`, so the logged PID was cmd.exe's and the
-// helper watcher could not track the real process (#6923).
+// The target is launched directly, not via cmd.exe /c start, so the returned
+// PID is the target's own and the helper watcher can track it (#6923). The
+// "Access is denied" that once motivated the cmd.exe wrapper (#220) was seen
+// with a SYSTEM token; this path only ever launches with the user's token.
 func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32) (uint32, error) {
 	process, pid, err := startProcessInSession(binaryPath, args, sessionID)
 	if err != nil {

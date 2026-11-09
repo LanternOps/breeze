@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1432,14 +1431,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 					}
 				}
 
-				sessionNum, err := strconv.ParseUint(sessionKey, 10, 32)
-				if err != nil {
-					return 0, fmt.Errorf("invalid session key %q: %w", sessionKey, err)
-				}
-				// #6923: the direct launch returns Assist's own PID, so the
-				// watcher tracks the real process.
-				pid, err := sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
-				return int(pid), err
+				return spawnAssistDirect(sessionKey, binaryPath, args)
 			}),
 		)
 	} else {
