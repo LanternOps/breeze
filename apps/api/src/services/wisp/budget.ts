@@ -72,6 +72,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** The `ai_invocations.source_ref` prefix of a model-written session summary; the grant id follows it. */
 export const SUMMARY_REFINE_SOURCE_REF_PREFIX = 'wisp_thread_summary:';
 
+/** The `ai_invocations.source_ref` prefix of a turn-end standing-instruction extraction (#10428); the grant id follows it. */
+export const INSTRUCTION_EXTRACT_SOURCE_REF_PREFIX = 'wisp_instruction_extract:';
+
 /** The ledger ref that charges a model-written session summary to its grant's daily budget. */
 export function summaryRefineSourceRef(grantId: string): string {
   return `${SUMMARY_REFINE_SOURCE_REF_PREFIX}${grantId}`;
@@ -83,7 +86,11 @@ export function summaryRefineSourceRef(grantId: string): string {
  * follows the prefix). A sessionless model call this feature adds registers
  * its prefix here; anything not listed is not grant spend.
  */
-export const GRANT_OVERHEAD_SOURCE_REF_PREFIXES: readonly string[] = [SUMMARY_REFINE_SOURCE_REF_PREFIX];
+export const GRANT_OVERHEAD_SOURCE_REF_PREFIXES: readonly string[] = [
+  SUMMARY_REFINE_SOURCE_REF_PREFIX,
+  // #10428 (W05): the turn-end standing-instruction extractor (instructionExtractor.ts).
+  INSTRUCTION_EXTRACT_SOURCE_REF_PREFIX,
+];
 
 /** Every overhead ledger ref for one grant, one per registered prefix. */
 export function grantOverheadSourceRefs(grantId: string): string[] {

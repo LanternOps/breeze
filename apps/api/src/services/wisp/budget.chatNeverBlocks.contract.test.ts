@@ -53,6 +53,7 @@ const BACKGROUND_ADMISSIONS: Record<string, string> = {
   'services/wisp/coordinator.ts': 'specialist launches, including one requested from chat via launch_specialist (the launch is refused; the chat turn is not)',
   'services/wisp/threadSummaryRefine.ts': 'model-written session summaries (sessionless overhead)',
   'services/wisp/specialists/assessmentLaunch.ts': 'the on-demand Wisp assessment launch (#10406): N orgs x the per-run estimate, requested from chat via launch_specialist (the launch is refused budget_exhausted; the chat turn is not)',
+  'services/wisp/instructionExtractor.ts': 'turn-end standing-instruction extraction (#10428): sessionless overhead, run after `done` and never awaited by the turn; a refusal skips the capture, never the chat turn',
 };
 
 /** The chat request and turn path: the route, the SDK session wiring, the turn loop, and the Wisp chat gate. */

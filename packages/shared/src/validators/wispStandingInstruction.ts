@@ -30,3 +30,37 @@ export const standingInstructionContentSchema = z.object({
 }).strict();
 
 export type StandingInstructionContent = z.infer<typeof standingInstructionContentSchema>;
+
+/**
+ * The turn-end capture's lifecycle, kept in a short-lived status key the chip
+ * polls: `pending` until the extractor finishes, then `saved` (blocks
+ * written), `none` (nothing to keep), `skipped` (daily cap, budget, no model)
+ * or `failed`. Never retried.
+ */
+export const WISP_INSTRUCTION_CAPTURE_STATUSES = ['pending', 'saved', 'none', 'skipped', 'failed'] as const;
+export type WispInstructionCaptureStatus = (typeof WISP_INSTRUCTION_CAPTURE_STATUSES)[number];
+export type WispInstructionCaptureTerminalStatus = Exclude<WispInstructionCaptureStatus, 'pending'>;
+
+/** One captured instruction (all blocks sharing an `instructionId`) as the chip shows it. */
+export type CapturedInstructionDto = {
+  instructionId: string;
+  text: string;
+  status: 'unconfirmed' | 'confirmed' | 'retracted';
+  /** An unconditional, unexpired deny on resolved devices (the only form W06 enforces). */
+  enforceable: boolean;
+  verb: StandingVerb | null;
+  targetLabels: string[];
+  until: string | null;
+  /** The one org every target device is in; null for a note or for targets across orgs ("Keep for everyone" is hidden). */
+  orgId: string | null;
+  orgName: string | null;
+  /** Named devices that did not all resolve: saved as a free-text note, never enforced. */
+  unmatched: boolean;
+  /** "Keep for everyone" was used: the instruction now lives in the org's memory. */
+  keptForOrg: boolean;
+};
+
+export type WispInstructionCaptureStatusResponse = {
+  status: WispInstructionCaptureStatus;
+  instructions: CapturedInstructionDto[];
+};
