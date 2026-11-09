@@ -132,7 +132,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'topologyDiagnosticWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/topologyDiagnosticWorker');
       return { init: m.initializeTopologyDiagnosticWorker, shutdown: m.shutdownTopologyDiagnosticWorker };
