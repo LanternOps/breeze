@@ -337,17 +337,6 @@ describe('requestAssessment — on_demand upgrade (#10406)', () => {
     }
   });
 
-  // #11424 × #10406: the watch's hit-set is recorded only when a run is
-  // admitted FOR the watch. An upgraded job no longer carries the watch
-  // reason, so its watchRecord is dropped and the next cadence asks again.
-  it('upgrading a waiting watch job drops its watchRecord along with the watch reason', async () => {
-    const watchRecord = { watchId: '00000000-0000-4000-8000-0000000000d1', previousHash: null, hash: 'a'.repeat(64), count: 1 };
-    seed('delayed', { grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord });
-    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
-    expect(h.updates).toEqual([{ id: wakeJobId(G1, O1), data: { grantId: G1, orgId: O1, reason: OD } }]);
-    expect(h.jobs.get(wakeJobId(G1, O1))!.data).not.toHaveProperty('watchRecord');
-  });
-
   it('an active job gets a successor job (-od) with the on_demand reason and delay 0; the active job is untouched', async () => {
     seed('active');
     expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
@@ -388,6 +377,21 @@ describe('requestAssessment — on_demand upgrade (#10406)', () => {
       expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason });
       expect(assessAdds().map((a) => a.opts.jobId)).toEqual([onDemandSuccessorJobId(G1, O1)]);
     }
+  });
+
+  // #11424 × #10406: processAssessJob records a watch's hit-set only when a run
+  // is admitted FOR that watch. The watch job keeps its reason and its
+  // watchRecord; the on-demand successor carries none, so admitting it can
+  // never mark the watch's change as seen.
+  it('a watch job keeps its watchRecord; the on_demand successor carries none', async () => {
+    const watchRecord = { watchId: '00000000-0000-4000-8000-0000000000d1', previousHash: null, hash: 'a'.repeat(64), count: 1 };
+    const data = { grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord };
+    seed('delayed', data);
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(h.updates).toEqual([]);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toEqual(data);
+    expect(assessAdds()).toHaveLength(1);
+    expect(assessAdds()[0]!.data).toEqual({ grantId: G1, orgId: O1, reason: OD });
   });
 
   it('an onboarding job is upgraded in place like a tick', async () => {

@@ -283,12 +283,8 @@ async function requestOnDemandAssessment(input: WispAssessJobData): Promise<Requ
  * still carries the reason and runs when its delay ends (at most 60 s).
  */
 async function upgradeToOnDemand(job: Job<WakeQueueData>, state: string, reason: AssessmentReason): Promise<boolean> {
-  // A watch job's `watchRecord` (#11424) is dropped: the run no longer carries
-  // the watch reason, so admitting it must not record the watch's hit-set —
-  // the next cadence then asks for the watch again, as for a coalesced request.
-  const { watchRecord: _dropped, ...rest } = job.data as WispAssessJobData;
   try {
-    await job.updateData({ ...rest, reason });
+    await job.updateData({ ...(job.data as WispAssessJobData), reason });
   } catch (err) {
     console.warn('[wisp-wake] could not upgrade the assess job to on_demand; adding a successor', { jobId: job.id, state, err });
     return false;
