@@ -32,6 +32,9 @@ export const LLM_EGRESS_SURFACES = [
   // #10390: the model-written Wisp session summary.
   // CHECK re-issued in 2027-01-22-190100-wisp-threads-picture.sql.
   'one_shot_wisp_thread_summary',
+  // #10428 (W05): the Wisp turn-end standing-instruction extractor.
+  // CHECK re-issued in 2027-01-22-231800-wisp-standing-instruction-capture.sql.
+  'one_shot_wisp_instruction_extract',
 ] as const;
 
 export type LlmEgressSurface = (typeof LLM_EGRESS_SURFACES)[number];
