@@ -1,19 +1,27 @@
 /**
  * External identities of portal accounts (`portal_user_identities`, portal
- * registration W2 / spec §5.2). This module owns every runtime identity write and the
- * drift report between the table and the legacy `portal_users.entra_*`
- * columns.
+ * registration W2 / spec §5.2). This module owns every runtime identity write,
+ * the readers every other module uses, and the drift report between the table
+ * and the legacy `portal_users.entra_*` columns.
  *
- * Release A (this wave): the table is backfilled from `portal_users.entra_*`
+ * Release A (W2): the table was backfilled from `portal_users.entra_*`
  * (2027-01-22-230200-portal-account-foundations.sql) and the AI for Office
- * exchange dual-writes it (services/clientAiExchange.ts). **Nothing reads it
- * for authorization yet** — reads stay on `portal_users.entra_tenant_id /
- * entra_oid` until identities release B (W3), which switches reads and turns
- * the drift report below into a repair job. Release C drops the columns.
+ * exchange started dual-writing it.
+ *
+ * Release B (W3, now): **every read of external identity lives here** —
+ * `portalUserHasIdentitySql` (identity-managed / bulk-invite / capability
+ * facts), `findPortalUserIdByEntraIdentity` (the add-in exchange's lookup) and
+ * `listIdentityProvidersByUser` (the portal-user list). Nothing reads
+ * `portal_users.entra_*` for a decision any more. Writers still dual-write those
+ * columns (plan D4 writer fence) so a rolling-deploy release-A instance, which
+ * still reads them, finds every account. The deploy migration
+ * (2027-01-22-231500-portal-access-policies-requests.sql §4) re-ran the
+ * backfill; the daily job (jobs/portalIdentityReconcile.ts) REPORTS drift and
+ * never repairs it (plan D10). Release C drops the columns.
  */
-import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
-import { portalUserIdentities } from '../db/schema/portal';
+import { portalUserIdentities, type PortalIdentityProvider } from '../db/schema/portal';
 
 /** `db` or a transaction handle (same shape as `ContactExecutor`, services/contacts/compat.ts). */
 export type IdentityExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -21,6 +29,86 @@ export type IdentityExecutor = typeof db | Parameters<Parameters<typeof db.trans
 /** The Entra v2.0 issuer for a tenant — the `iss` an Entra v2 ID token carries. */
 export function entraIssuer(tid: string): string {
   return `https://login.microsoftonline.com/${tid}/v2.0`;
+}
+
+// ---------------------------------------------------------------------------
+// Readers (identities release B)
+// ---------------------------------------------------------------------------
+
+/**
+ * `EXISTS` over `portal_user_identities` for the OUTER `portal_users` row:
+ * true when the account has any external identity (Entra or Google).
+ *
+ * Spells `"portal_users"."id"` as text on purpose. In a single-table select
+ * drizzle rewrites every column chunk of a selection `sql` to a bare
+ * identifier (#9692), so `${portalUsers.id}` would render `"id"` and bind to
+ * the subquery's own `id` — every account would read as having no identity,
+ * silently. The inner table is aliased so the outer name stays unambiguous.
+ * Consequence: the outer query must reference `portal_users` by its table
+ * name (no alias), which every caller does today.
+ *
+ * Usable in a selection and, negated, in a WHERE
+ * (`sql\`not ${portalUserHasIdentitySql()}\``). A fresh object per call.
+ */
+export function portalUserHasIdentitySql(): SQL<boolean> {
+  return sql<boolean>`exists (select 1 from "portal_user_identities" "pui_has" where "pui_has"."portal_user_id" = "portal_users"."id")`;
+}
+
+/**
+ * The Entra identity key — provider, issuer derived from the tenant, subject =
+ * oid — as a `WHERE` over `portal_user_identities`. Shared by
+ * {@link findPortalUserIdByEntraIdentity} and the add-in exchange, which joins
+ * the identity to its login in one statement.
+ */
+export function entraIdentityMatch(input: { tid: string; oid: string }): SQL {
+  return and(
+    eq(portalUserIdentities.provider, 'entra'),
+    eq(portalUserIdentities.issuer, entraIssuer(input.tid)),
+    eq(portalUserIdentities.subject, input.oid),
+  )!;
+}
+
+/**
+ * The account an Entra identity belongs to, or null. Its `orgId` is the
+ * account's org too (composite same-org FK), so a caller can compare it with
+ * the org a tenant maps to before touching the account (spec §6 inv. 4).
+ * Runs in the caller's DB context: under RLS it only sees identities the
+ * context may read.
+ */
+export async function findPortalUserIdByEntraIdentity(
+  exec: IdentityExecutor,
+  input: { tid: string; oid: string },
+): Promise<{ portalUserId: string; orgId: string } | null> {
+  const [row] = await exec
+    .select({ portalUserId: portalUserIdentities.portalUserId, orgId: portalUserIdentities.orgId })
+    .from(portalUserIdentities)
+    .where(entraIdentityMatch(input))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Providers per account, sorted, for the accounts given. Accounts with no
+ * identity are absent from the map. No query for an empty list.
+ */
+export async function listIdentityProvidersByUser(
+  exec: IdentityExecutor,
+  portalUserIds: string[],
+): Promise<Map<string, PortalIdentityProvider[]>> {
+  const out = new Map<string, PortalIdentityProvider[]>();
+  if (portalUserIds.length === 0) return out;
+  const rows = await exec
+    .select({ portalUserId: portalUserIdentities.portalUserId, provider: portalUserIdentities.provider })
+    .from(portalUserIdentities)
+    .where(inArray(portalUserIdentities.portalUserId, portalUserIds))
+    .orderBy(portalUserIdentities.portalUserId, portalUserIdentities.provider);
+  for (const row of rows) {
+    const list = out.get(row.portalUserId);
+    if (list) list.push(row.provider);
+    else out.set(row.portalUserId, [row.provider]);
+  }
+  for (const list of out.values()) list.sort();
+  return out;
 }
 
 /**
@@ -58,7 +146,8 @@ export type EnsureIdentityOutcome = 'inserted' | 'present' | 'conflict';
  *   - `present`  — it already belonged to this user; `last_used_at` bumped;
  *   - `conflict` — the `(issuer, subject)` belongs to another user, or this
  *     user already holds a different Entra subject. Drift: the caller reports
- *     it and, in release A, does not deny (reads are still on the columns).
+ *     it. Since release B the exchange finds the login THROUGH this identity,
+ *     so on that path `conflict` only means the identity moved mid-exchange.
  */
 export async function ensureEntraIdentity(
   exec: IdentityExecutor,
@@ -125,9 +214,11 @@ async function bucket<T>(query: SQL, map: (row: Record<string, unknown>) => T): 
 
 /**
  * Report (never repair) drift between `portal_user_identities` and
- * `portal_users.entra_*`. Run after each deploy of release A via
- * `scripts/portal-identity-reconcile.ts`; W3 turns it into the repair job that
- * gates the read switch.
+ * `portal_users.entra_*`. Run on demand via `scripts/portal-identity-reconcile.ts`
+ * (prints the samples) and daily by `jobs/portalIdentityReconcile.ts` (counts
+ * only). Repair happens once, at deploy, in the migration (plan D10): a
+ * scheduled repair could resurrect an identity a later unlink writer removed
+ * while the legacy columns were still set.
  *
  * Opens its own system context and refuses to run inside one that is already
  * held, so it is never nested inside a request transaction. The four buckets

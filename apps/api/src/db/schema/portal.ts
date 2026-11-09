@@ -200,8 +200,9 @@ export const portalUsers = pgTable('portal_users', {
  * release B on. Tenancy shape 1 (direct org_id, forced RLS).
  *
  * Release A (W2): backfilled from portal_users.entra_* and dual-written by the
- * AI for Office exchange (services/portalUserIdentities.ts). Reads for
- * authorization stay on portal_users.entra_tenant_id/entra_oid until W3.
+ * AI for Office exchange. Release B (W3): every read of external identity
+ * comes from this table (services/portalUserIdentities.ts); writers still
+ * dual-write portal_users.entra_* until release C drops them.
  *
  * The real tenancy constraint lives in SQL only — the composite FK
  * `portal_user_identities_user_org_fk` (portal_user_id, org_id) →

@@ -38,7 +38,7 @@ vi.mock('../../db', () => ({
 // discoveredAssetTypeEnum: networkBaseline.ts (transitive import of the portal
 // route graph) reads its .enumValues at module load, so the full-module mock
 // must provide it or the suite fails to load.
-vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, organizations: { id: 'id', partnerId: 'partnerId' }, partners: { id: 'id', name: 'name' }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', authEpoch: 'authEpoch', receiveNotifications: 'receiveNotifications', status: 'status', browserAccess: 'browserAccess', entraOid: 'entraOid' }, portalBranding: { orgId: 'orgId', enablePasswordReset: 'enablePasswordReset' } }));
+vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, organizations: { id: 'id', partnerId: 'partnerId' }, partners: { id: 'id', name: 'name' }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', authEpoch: 'authEpoch', receiveNotifications: 'receiveNotifications', status: 'status', browserAccess: 'browserAccess' }, portalBranding: { orgId: 'orgId', enablePasswordReset: 'enablePasswordReset' } }));
 vi.mock('../../services/email', () => ({ getEmailService: () => ({ sendPasswordReset: sendPasswordResetSpy }) }));
 
 import { createHash } from 'crypto';
@@ -67,7 +67,7 @@ const mintReset = (over: Partial<{ authEpoch: number }> = {}) => issuePortalCapa
 const sha = (raw: string) => createHash('sha256').update(raw).digest('hex');
 const invited = (over: Record<string, unknown> = {}) => ({
   id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password',
-  receiveNotifications: true, status: 'invited', authEpoch: 4, browserAccess: 'granted', entraOid: null, ...over,
+  receiveNotifications: true, status: 'invited', authEpoch: 4, browserAccess: 'granted', hasExternalIdentity: false, ...over,
 });
 
 beforeEach(() => {
@@ -119,7 +119,7 @@ describe('portal authentication lifecycle audit', () => {
   });
 
   it('records an attributable handler exception as failure and rethrows it', async () => {
-    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password', authEpoch: 1, receiveNotifications: true, status: 'invited', browserAccess: 'granted', entraOid: null };
+    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password', authEpoch: 1, receiveNotifications: true, status: 'invited', browserAccess: 'granted', hasExternalIdentity: false };
     const token = await mintInvite();
     updateSpy.mockImplementationOnce(() => { throw new Error('synthetic update failure'); });
     expect((await post({ token, password: 'Str0ngPass!' })).status).toBe(500);
@@ -135,7 +135,7 @@ describe('portal authentication lifecycle audit', () => {
 
 describe('POST /auth/accept-invite', () => {
   it('activates an invited user and issues a session', async () => {
-    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password', receiveNotifications: true, status: 'invited', authEpoch: 4, browserAccess: 'granted', entraOid: null };
+    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password', receiveNotifications: true, status: 'invited', authEpoch: 4, browserAccess: 'granted', hasExternalIdentity: false };
     const token = await mintInvite();
     const res = await post({ token, password: 'Str0ngPass!', name: 'Cust Omer' });
     expect(res.status).toBe(200);
@@ -159,7 +159,7 @@ describe('POST /auth/accept-invite', () => {
   });
 
   it('fails closed when a concurrent status transition advances the checked generation', async () => {
-    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password', receiveNotifications: true, status: 'invited', authEpoch: 4, browserAccess: 'granted', entraOid: null };
+    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password', receiveNotifications: true, status: 'invited', authEpoch: 4, browserAccess: 'granted', hasExternalIdentity: false };
     updateRows.current = [];
     const token = await mintInvite();
 
@@ -180,7 +180,7 @@ describe('POST /auth/accept-invite', () => {
   });
 
   it('rejects an Entra identity even when staff minted it an invite token', async () => {
-    userRow.current = invited({ email: 'entra@acme.example', authMethod: 'entra', status: 'active', browserAccess: 'none', entraOid: 'oid-1' });
+    userRow.current = invited({ email: 'entra@acme.example', authMethod: 'entra', status: 'active', browserAccess: 'none', hasExternalIdentity: true });
     const token = await mintInvite();
     const res = await post({ token, password: 'Str0ngPass!' });
     expect(res.status).toBe(400);

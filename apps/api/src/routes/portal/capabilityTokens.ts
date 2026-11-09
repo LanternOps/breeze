@@ -39,6 +39,7 @@ import { organizations, portalUsers } from '../../db/schema';
 import { getRedis } from '../../services/redis';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { isPasswordEligible } from '../../services/portalAccountState';
+import { portalUserHasIdentitySql } from '../../services/portalUserIdentities';
 import {
   INVITE_TTL_MS,
   INVITE_TTL_SECONDS,
@@ -81,7 +82,8 @@ export interface CapabilityUserRow {
   status: string;
   authEpoch: number;
   browserAccess: string;
-  entraOid: string | null;
+  /** Any `portal_user_identities` row (identities release B, W3). */
+  hasExternalIdentity: boolean;
   orgName: string | null;
 }
 
@@ -231,12 +233,13 @@ export async function validatePortalCapability(
         status: portalUsers.status,
         authEpoch: portalUsers.authEpoch,
         browserAccess: portalUsers.browserAccess,
-        entraOid: portalUsers.entraOid,
+        hasExternalIdentity: portalUserHasIdentitySql(),
         orgName: organizations.name,
       })
       .from(portalUsers)
       // A join, not a correlated subquery: drizzle strips table qualifiers in
-      // single-table selections (#9692).
+      // single-table selections (#9692). (portalUserHasIdentitySql spells its
+      // outer column out, so it is correct with or without this join.)
       .leftJoin(organizations, eq(organizations.id, portalUsers.orgId))
       .where(eq(portalUsers.id, portalUserId))
       .limit(1),

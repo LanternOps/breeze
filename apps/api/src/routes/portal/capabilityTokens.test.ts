@@ -5,14 +5,16 @@ import { createHash } from 'crypto';
 // NODE_ENV=test). The Redis path and its atomic consume are proved in
 // __tests__/integration/portalCapabilityTokens.integration.test.ts.
 
-const { rowRef, activeOrgMock } = vi.hoisted(() => ({
+const { rowRef, activeOrgMock, selectCols } = vi.hoisted(() => ({
   rowRef: { current: null as Record<string, unknown> | null },
   activeOrgMock: vi.fn(),
+  selectCols: { current: null as Record<string, unknown> | null },
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: () => {
+    select: (cols: Record<string, unknown>) => {
+      selectCols.current = cols;
       const chain: any = { from: () => chain, leftJoin: () => chain, where: () => chain, limit: () => Promise.resolve(rowRef.current ? [rowRef.current] : []) };
       return chain;
     },
@@ -29,6 +31,9 @@ import {
   type ConsumedCapability,
 } from './capabilityTokens';
 import { portalInviteTokens, portalResetTokens } from './helpers';
+import { QueryBuilder } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { portalUsers } from '../../db/schema/portal';
 
 const ORG = '7c0a1f7e-1111-4222-8333-444455556666';
 const OTHER_ORG = '7c0a1f7e-9999-4222-8333-444455556666';
@@ -38,7 +43,7 @@ const sha = (raw: string) => createHash('sha256').update(raw).digest('hex');
 
 const invitedRow = (over: Record<string, unknown> = {}) => ({
   id: USER, orgId: ORG, email: EMAIL, name: null, passwordHash: null, authMethod: 'password',
-  receiveNotifications: true, status: 'invited', authEpoch: 3, browserAccess: 'granted', entraOid: null, orgName: 'Acme',
+  receiveNotifications: true, status: 'invited', authEpoch: 3, browserAccess: 'granted', hasExternalIdentity: false, orgName: 'Acme',
   ...over,
 });
 
@@ -156,6 +161,24 @@ describe('validatePortalCapability — invite', () => {
     expect((await validatePortalCapability('invite', { format: 'legacy', portalUserId: USER })).ok).toBe(false);
     rowRef.current = invitedRow({ browserAccess: 'none' });
     expect((await validatePortalCapability('invite', { format: 'legacy', portalUserId: USER })).ok).toBe(false);
+  });
+});
+
+describe('validatePortalCapability — external identity (W3 identities release B)', () => {
+  it('reads hasExternalIdentity from portal_user_identities (EXISTS correlated to the row), never entra_oid', async () => {
+    await validatePortalCapability('invite', v2());
+    const cols = selectCols.current!;
+    expect(cols).not.toHaveProperty('entraOid');
+    expect(cols).toHaveProperty('hasExternalIdentity');
+    // Rendered single-table on purpose: the correlation must survive drizzle's qualifier stripping (#9692).
+    const text = new QueryBuilder().select({ id: portalUsers.id, has: cols.hasExternalIdentity as SQL }).from(portalUsers).toSQL().sql;
+    expect(text).toMatch(/exists \(select 1 from "portal_user_identities" "\w+" where "\w+"\."portal_user_id" = "portal_users"\."id"\)/);
+  });
+
+  it('an account with an identity row is identity-managed even when entra_oid is NULL (the fact reaches the caller)', async () => {
+    rowRef.current = invitedRow({ entraOid: null, hasExternalIdentity: true });
+    const check = await validatePortalCapability('invite', v2());
+    expect(check).toMatchObject({ ok: true, user: { hasExternalIdentity: true } });
   });
 });
 

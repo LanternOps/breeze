@@ -828,7 +828,7 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
       browserAccess: user.browserAccess,
       authMethod: user.authMethod,
       hasPasswordHash: Boolean(user.passwordHash),
-      hasExternalIdentity: user.entraOid !== null,
+      hasExternalIdentity: user.hasExternalIdentity,
     }, 'accept_invite');
   } catch (error) {
     if (error instanceof PortalAccountTransitionError) {

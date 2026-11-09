@@ -27,6 +27,7 @@ const {
   selectResult,
   insertReturning,
   whereSpy,
+  joinSpy,
   ensureIdentityMock,
 } = vi.hoisted(() => ({
   // Identity of the executor handed to a nested `db.transaction` callback, so a
@@ -42,13 +43,14 @@ const {
   selectResult: vi.fn(),
   insertReturning: vi.fn(),
   whereSpy: vi.fn(),
+  joinSpy: vi.fn(),
   ensureIdentityMock: vi.fn(),
 }));
 
 vi.mock('../db', () => {
   const chain: any = {
     from: () => chain,
-    innerJoin: () => chain,
+    innerJoin: (table: unknown, on: unknown) => { joinSpy(table, on); return chain; },
     where: (w: unknown) => { whereSpy(w); return chain; },
     limit: () => selectResult(),
   };
@@ -237,15 +239,17 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
     expect(outcome.audit.details).toMatchObject({ reason: 'account_inactive', contactLink: 'not-attempted' });
   });
 
-  it('fails closed when an Entra identity was reclassified as a password login', async () => {
-    seedSelects([activeUser({ authMethod: 'password' })]);
+  it('mints for an account found by its entra identity regardless of auth_method', async () => {
+    // Identities release B (plan D5): the identity lookup IS the gate. The
+    // account the Entra identity resolves to gets the add-in session whatever
+    // its auth_method (W4 links identities to password accounts).
+    seedSelects([activeUser({ authMethod: 'password', contactId: 'ct-1' })]);
 
     const outcome = await resolveAndMintClientSession(claims(), redis);
 
-    expect(outcome.kind).toBe('denied');
-    expect(linkLoginToContactMock).not.toHaveBeenCalled();
-    expect(resolveAddressMock).not.toHaveBeenCalled();
-    expect(outcome.audit.details).toMatchObject({ reason: 'identity_method_mismatch' });
+    expect(outcome.kind).toBe('resolved');
+    expect(outcome.audit.details).not.toMatchObject({ reason: 'identity_method_mismatch' });
+    expect(redisMock.setex).toHaveBeenCalledTimes(1);
   });
 
   // ---- S1: only an address the customer demonstrably owns may link ----
@@ -425,18 +429,50 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
     expect(outcome.audit.details).toMatchObject({ contactLink: 'kept', contactId: 'ct-1' });
   });
 
-  it('rejects a concurrent provisioning winner with the wrong identity method', async () => {
+  it('re-selects the concurrent provisioning winner through its identity too, and re-asserts the org', async () => {
     selectResult
       .mockResolvedValueOnce([{ orgId: ORG_ID, partnerId: PARTNER_ID, partnerEnabled: true }])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([activeUser({ id: 'pu-winner', authMethod: 'password' })]);
+      .mockResolvedValueOnce([activeUser({ id: 'pu-winner', orgId: 'aaaaaaaa-0000-4000-8000-000000000000' })]);
     insertReturning.mockRejectedValueOnce(Object.assign(new Error('dup'), { cause: { code: '23505' } }));
 
     const outcome = await resolveAndMintClientSession(claims(), redis);
 
-    expect(outcome.kind).toBe('denied');
-    expect(outcome.audit.details).toMatchObject({ reason: 'identity_method_mismatch' });
+    expect(outcome).toMatchObject({ kind: 'denied', status: 403, body: { error: 'org_mismatch' } });
     expect(linkLoginToContactMock).not.toHaveBeenCalled();
+    // [0] mapping, [1] first lookup, [2] the re-select: both lookups go through the identity.
+    for (const i of [1, 2]) {
+      const rendered = new PgDialect().sqlToQuery(whereSpy.mock.calls[i]![0] as never);
+      expect(rendered.sql).toContain('"portal_user_identities"."issuer"');
+      expect(rendered.sql).not.toContain('entra_oid');
+    }
+  });
+
+  it('an existing login whose identity row is missing fails closed (provisioning_failed) and is reported as drift', async () => {
+    // Release B reads identities only. A login that still holds the legacy
+    // entra_* columns but lost its identity is not found, the JIT insert hits
+    // the login's own unique index, and the re-select (by identity) finds
+    // nothing: denied, never a second login, never a silent fallback to the
+    // columns.
+    selectResult
+      .mockResolvedValueOnce([{ orgId: ORG_ID, partnerId: PARTNER_ID, partnerEnabled: true }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    insertReturning.mockRejectedValueOnce(Object.assign(new Error('dup'), {
+      cause: { code: '23505', constraint_name: 'portal_users_entra_identity_uniq' },
+    }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const outcome = await resolveAndMintClientSession(claims(), redis);
+      expect(outcome).toMatchObject({ kind: 'denied', status: 403, body: { error: 'provisioning_failed' } });
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({ eventCode: 'client_ai_identity_drift' }),
+      );
+      expect(redisMock.setex).not.toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it('records not-attempted on the partner-entitlement denial', async () => {
@@ -533,7 +569,8 @@ describe('resolveAndMintClientSession — portal_user_identities dual-write (W2 
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const outcome = await resolveAndMintClientSession(claims(), redis);
-      // Release A: reads are still on the columns, so drift is reported, not enforced.
+      // The login was found THROUGH its identity; a conflict on the use-stamp
+      // (an identity moved mid-exchange) is reported, not enforced.
       expect(outcome.kind).toBe('resolved');
       expect(captureExceptionMock).toHaveBeenCalledWith(
         expect.any(Error),
@@ -587,14 +624,39 @@ describe('resolveAndMintClientSession — portal_user_identities dual-write (W2 
     }
   });
 
-  it('still resolves the login by portal_users entra columns, not identities', async () => {
+});
+
+describe('resolveAndMintClientSession — identities release B (W3 read switch)', () => {
+  it('resolves the login through portal_user_identities (issuer/subject), not portal_users entra columns', async () => {
     seedSelects([activeUser({ contactId: 'ct-1' })]);
     await resolveAndMintClientSession(claims(), redis);
     // [0] = tenant mapping lookup, [1] = the login lookup.
     const rendered = new PgDialect().sqlToQuery(whereSpy.mock.calls[1]![0] as never);
-    expect(rendered.sql).toContain('"portal_users"."entra_tenant_id"');
-    expect(rendered.sql).toContain('"portal_users"."entra_oid"');
-    expect(rendered.sql).not.toContain('portal_user_identities');
-    expect(rendered.params).toEqual(['tenant-guid', 'oid-guid']);
+    expect(rendered.sql).toContain('"portal_user_identities"."provider"');
+    expect(rendered.sql).toContain('"portal_user_identities"."issuer"');
+    expect(rendered.sql).toContain('"portal_user_identities"."subject"');
+    expect(rendered.sql).not.toContain('entra_oid');
+    expect(rendered.sql).not.toContain('"portal_users"."entra_tenant_id"');
+    expect(rendered.params).toEqual(['entra', entraIssuer('tenant-guid'), 'oid-guid']);
+    // The login is the identity's account: joined on portal_user_id = portal_users.id.
+    const loginJoin = joinSpy.mock.calls.find((c) => c[0] === portalUserIdentities);
+    expect(loginJoin).toBeDefined();
+    const on = new PgDialect().sqlToQuery(loginJoin![1] as never);
+    expect(on.sql).toBe('"portal_user_identities"."portal_user_id" = "portal_users"."id"');
+  });
+
+  it('identity in org B for a tenant mapped to org A → org_mismatch denial, before any write', async () => {
+    // The identity (and so its account — composite FK) sits in org B; the
+    // token's tenant maps to org A. Never mint against B, never JIT into A.
+    seedSelects([activeUser({ orgId: 'bbbbbbbb-0000-4000-8000-000000000000', contactId: 'ct-1' })]);
+
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+
+    expect(outcome).toMatchObject({ kind: 'denied', status: 403, body: { error: 'org_mismatch' } });
+    expect(outcome.audit.details).toMatchObject({ reason: 'org_mismatch', loginOrgId: 'bbbbbbbb-0000-4000-8000-000000000000' });
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    expect(ensureIdentityMock).not.toHaveBeenCalled();
+    expect(redisMock.setex).not.toHaveBeenCalled();
   });
 });

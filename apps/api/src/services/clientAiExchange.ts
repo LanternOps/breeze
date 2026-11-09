@@ -1,8 +1,8 @@
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import type Redis from 'ioredis';
 import { db, withDbTransaction, withSystemDbAccessContext } from '../db';
-import { portalUsers } from '../db/schema';
+import { portalUserIdentities, portalUsers } from '../db/schema';
 import { clientAiTenantMappings } from '../db/schema/clientAi';
 import { organizations, partners } from '../db/schema/orgs';
 import { getOrgPolicy, isClientUserPermitted } from './clientAiPolicy';
@@ -10,7 +10,7 @@ import { linkLoginToContact, type LoginContactOutcome } from './contacts/loginLi
 import { resolveLinkableEntraAddress } from './clientAiEntraAddress';
 import { isPgUniqueViolation, pgErrorConstraint } from '@breeze/shared/pgErrors';
 import { captureException } from './sentry';
-import { ensureEntraIdentity, insertEntraIdentity } from './portalUserIdentities';
+import { ensureEntraIdentity, entraIdentityMatch, insertEntraIdentity } from './portalUserIdentities';
 import { initialPortalAccountState } from './portalAccountState';
 import type { ClientAiEntraClaims } from './clientAiEntraJwt';
 import {
@@ -146,17 +146,38 @@ const USER_COLUMNS = {
   email: portalUsers.email,
   name: portalUsers.name,
   status: portalUsers.status,
-  authMethod: portalUsers.authMethod,
   authEpoch: portalUsers.authEpoch,
   contactId: portalUsers.contactId,
 };
+
+/**
+ * The login a verified Entra token belongs to: the account its identity in
+ * `portal_user_identities` points at (identities release B, spec §5.2). Never
+ * the legacy `portal_users.entra_*` columns — those are still dual-written
+ * for release-A instances (plan D4) but no longer read. One statement (a
+ * join), so the identity and its login are read together.
+ *
+ * A login that still holds the columns but has lost its identity row is not
+ * found: the JIT insert below then hits the login's own unique index and the
+ * exchange fails closed as `provisioning_failed` (never a second login).
+ */
+async function selectLoginByEntraIdentity(claims: ClientAiEntraClaims) {
+  const [row] = await db
+    .select(USER_COLUMNS)
+    .from(portalUsers)
+    .innerJoin(portalUserIdentities, eq(portalUserIdentities.portalUserId, portalUsers.id))
+    .where(entraIdentityMatch({ tid: claims.tid, oid: claims.oid }))
+    .limit(1);
+  return row;
+}
 
 /**
  * S2 - a login found by (tenant, oid) may sit in a DIFFERENT org than the one
  * the tenant currently maps to.
  *
  * `portal_users` is looked up by the Entra identity alone, because that is the
- * only stable key the token carries. Re-pointing a `client_ai_tenant_mappings`
+ * only stable key the token carries. The identity's org always equals its
+ * login's org (composite FK, spec §6 inv. 4). Re-pointing a `client_ai_tenant_mappings`
  * row at another organization (a customer moved between tenants, an MSP fixed a
  * mis-mapping) leaves the old logins behind under the OLD org. Without this
  * check the exchange would mint a session against that stale org - and, worse,
@@ -325,13 +346,7 @@ export async function resolveAndMintClientSession(
 
     const now = new Date();
     let provisioned = false;
-    let [user] = await db
-      .select(USER_COLUMNS)
-      .from(portalUsers)
-      .where(
-        and(eq(portalUsers.entraTenantId, claims.tid), eq(portalUsers.entraOid, claims.oid))
-      )
-      .limit(1);
+    let user = await selectLoginByEntraIdentity(claims);
 
     // Before ANY write: the backfill below would otherwise land in a stale org.
     const mismatched = orgMismatchDenial(user, mapping.orgId, claims);
@@ -351,11 +366,13 @@ export async function resolveAndMintClientSession(
         // `db.transaction` issues a SAVEPOINT, so the duplicate rolls back just
         // the insert and leaves the transaction usable.
         //
-        // The external identity (portal_user_identities, W2 release A) is
-        // written in the SAME savepoint: a 23505 from either insert rolls back
-        // both, so there is never a login without its identity or vice versa.
-        // An identity collision with a DIFFERENT login (drift) leaves the
-        // re-select below empty and fails closed as provisioning_failed.
+        // The external identity (portal_user_identities) is written in the
+        // SAME savepoint: a 23505 from either insert rolls back both, so there
+        // is never a login without its identity or vice versa. The legacy
+        // entra_* columns are still written too (plan D4 writer fence): a
+        // rolling-deploy release-A instance reads them, and the login's own
+        // unique index on them is what refuses a second login for a (tid, oid)
+        // whose identity row has gone missing.
         const inserted = await db.transaction(async (tx) => {
           const rows = await tx
             .insert(portalUsers)
@@ -388,29 +405,25 @@ export async function resolveAndMintClientSession(
         user = inserted[0];
         provisioned = true;
       } catch (err) {
-        // Concurrent first-exchange race: portal_users_entra_identity_uniq
-        // makes the loser 23505 — re-select the winner's row.
+        // Concurrent first-exchange race: the winner committed its login and
+        // identity, the loser 23505s — re-select the winner through its
+        // identity.
         if (!isPgUniqueViolation(err)) throw err;
         const constraintName = pgErrorConstraint(err);
-        // A 23505 on portal_user_identities (not the login's own unique index)
-        // is drift: this Entra subject already belongs to ANOTHER login. The
-        // savepoint rolled back both inserts, the re-select below finds
-        // nothing, and the exchange fails closed as provisioning_failed —
-        // report it so the denial is explainable.
-        if (constraintName?.startsWith('portal_user_identities_')) {
-          console.error('[client-ai] portal identity drift: JIT identity collides with another login', {
+        user = await selectLoginByEntraIdentity(claims);
+        if (!user) {
+          // Not a race (a race leaves the winner findable): drift. Either the
+          // login's own unique index refused a second login for a (tid, oid)
+          // whose identity row is missing, or the identity insert collided
+          // with an identity the lookup could not see. The savepoint rolled
+          // back both inserts and the exchange fails closed as
+          // provisioning_failed below; report it so the denial is explainable.
+          console.error('[client-ai] portal identity drift: JIT refused and no login holds this Entra identity', {
             orgId: mapping.orgId,
             constraint: constraintName,
           });
           captureException(err, { eventCode: 'client_ai_identity_drift' } as never);
         }
-        [user] = await db
-          .select(USER_COLUMNS)
-          .from(portalUsers)
-          .where(
-            and(eq(portalUsers.entraTenantId, claims.tid), eq(portalUsers.entraOid, claims.oid))
-          )
-          .limit(1);
         // The winner's row is found by (tenant, oid) alone, so re-assert the org.
         const stale = orgMismatchDenial(user, mapping.orgId, claims);
         if (stale) return stale;
@@ -428,18 +441,10 @@ export async function resolveAndMintClientSession(
       };
     }
 
-    // The Entra identity tuple must never resolve to a password login. This
-    // also covers the concurrent-insert winner selected in the 23505 branch.
-    if (user.authMethod !== 'entra') {
-      return {
-        denied: {
-          status: 403,
-          error: 'identity_method_mismatch',
-          orgId: mapping.orgId,
-          details: { reason: 'identity_method_mismatch', portalUserId: user.id, ...NOT_ATTEMPTED },
-        },
-      };
-    }
+    // No `auth_method` gate (identities release B, plan D5): the identity
+    // lookup above IS the gate. An account is reached only through an Entra
+    // identity it holds, whatever its auth_method; in W3 every such account is
+    // an add-in JIT row or an approved `entra` request (both 'entra').
 
     if (!provisioned) {
       await db
@@ -447,14 +452,14 @@ export async function resolveAndMintClientSession(
         .set({ lastLoginAt: now, updatedAt: now, ...(claims.name ? { name: claims.name } : {}) })
         .where(eq(portalUsers.id, user.id));
 
-      // Release A self-heal: a login inserted by an older binary during the
-      // deploy window has no identity row yet — give it one, and record the
-      // use otherwise. A conflict is drift (the subject belongs to another
-      // login, or this login holds a different one): reported, NOT denied,
-      // because authorization still reads the entra_* columns. For the same
-      // reason any other failure of this write must not cost the user their
-      // sign-in: it runs in a savepoint (withDbTransaction) with the catch
-      // outside, so it cannot poison the exchange transaction.
+      // Record the identity's use (`last_used_at`). The login was found
+      // through this identity, so it is normally `present`; `inserted` or
+      // `conflict` mean the identity moved between the read and this write —
+      // drift, reported but not denied, because the session about to be
+      // minted belongs to the account the identity resolved to. Any failure
+      // of this bookkeeping write must not cost the user their sign-in: it
+      // runs in a savepoint (withDbTransaction) with the catch outside, so it
+      // cannot poison the exchange transaction.
       let identity: 'inserted' | 'present' | 'conflict' | 'failed';
       try {
         identity = await withDbTransaction(() => ensureEntraIdentity(db, {
