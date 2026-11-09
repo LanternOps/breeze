@@ -7,6 +7,7 @@ import {
   getSupportEmail,
   renderButton,
   renderLayout,
+  renderLinkRow,
 } from './emailLayout';
 import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
 import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
@@ -163,6 +164,17 @@ export interface PortalInviteEmailParams {
   partnerName?: string;
   /** Partner-saved template override; null/absent uses code defaults. */
   custom?: PartnerEmailCustom | null;
+  /**
+   * Portal registration W4 (#11381), spec §5.5: the invitation-bound "Sign in
+   * with Microsoft" link (the invite link with `&method=microsoft`), present
+   * only when Microsoft is effective for the org. It becomes the primary button.
+   */
+  microsoftUrl?: string;
+  /**
+   * Whether the org's effective policy allows password sign-in. False
+   * (`sso_only`): the email never offers a password.
+   */
+  passwordAllowed: boolean;
 }
 
 /**
@@ -184,6 +196,19 @@ export interface PortalAccessApprovedEmailParams extends PortalAccessDecisionEma
 }
 
 export type PortalAccessDeclinedEmailParams = PortalAccessDecisionEmailParams;
+
+/**
+ * Portal registration W4 (#11381, plan D7): another organization proved the
+ * Microsoft tenant one of this partner's orgs was linked to, so the link was
+ * removed. Platform mail from Breeze to the partner's active admins; it never
+ * names the organization that proved the tenant.
+ */
+export interface PortalEntraTenantDisplacedEmailParams {
+  to: string | string[];
+  partnerName: string;
+  orgName: string;
+  tenantId: string;
+}
 
 export interface VerificationEmailParams {
   to: string | string[];
@@ -673,6 +698,17 @@ export class EmailService {
       partnerName: params.partnerName ?? null,
     });
   }
+
+  async sendPortalEntraTenantDisplaced(params: PortalEntraTenantDisplacedEmailParams): Promise<void> {
+    const template = buildPortalEntraTenantDisplacedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'partner.portal_entra_tenant.displaced',
+    });
+  }
 }
 
 let cachedService: EmailService | null = null;
@@ -1132,6 +1168,16 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
   return { subject, html, text };
 }
 
+/**
+ * The portal invite. Which sign-in methods it offers follows the org's
+ * effective policy (W4 #11381, spec §5.5):
+ *  - password only (Microsoft off): unchanged — one "Set your password" button;
+ *  - Microsoft and password: "Sign in with Microsoft" is the button, and
+ *    "Or set a password" a secondary link;
+ *  - `sso_only`: Microsoft only; no password line, link or wording.
+ * The subject never changes. A partner's custom button label was written for
+ * the password button, so it never relabels the Microsoft one.
+ */
 export function buildPortalInviteTemplate(params: PortalInviteEmailParams): EmailTemplate {
   const orgName = params.orgName?.trim();
   const inviter = params.inviterName?.trim();
@@ -1140,26 +1186,41 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>`
     : '';
   const custom = params.custom ?? null;
+  const microsoftUrl = params.microsoftUrl || undefined;
+  const passwordOnly = !microsoftUrl && params.passwordAllowed;
+  // No password and no Microsoft: an SSO-only org whose method is not Microsoft
+  // (Google, W7). The plain invite link; its page offers what the org allows.
+  const primary = microsoftUrl
+    ? { url: microsoftUrl, label: 'Sign in with Microsoft', preheader: 'Sign in with Microsoft to access your support portal.' }
+    : passwordOnly
+      ? { url: params.inviteUrl, label: undefined, preheader: 'Set your password to access your support portal.' }
+      : { url: params.inviteUrl, label: 'Accept your invite', preheader: 'Accept your invite to access your support portal.' };
+  const passwordSecondary = Boolean(microsoftUrl) && params.passwordAllowed;
   const rendered = renderPartnerEmail({
     id: 'portal_invite',
-    custom,
+    custom: !passwordOnly && custom ? { ...custom, buttonLabel: null } : custom,
     vars: {
       requester_name: inviter ?? '',
       partner_name: params.partnerName ?? '',
-      invite_url: params.inviteUrl,
+      // A custom body's `{{invite_url}}` is the link that works for this invitee.
+      invite_url: params.passwordAllowed ? params.inviteUrl : primary.url,
       org_name: orgName ?? '',
     },
-    ctaUrl: params.inviteUrl,
+    ctaUrl: primary.url,
+    ctaLabel: primary.label,
     footer: supportFooter(params.supportEmail, 'Need help? Contact'),
-    preheader: 'Set your password to access your support portal.',
+    preheader: primary.preheader,
     bodyBeforeCta: messageBlock,
-    bodyAfterCta: '',
+    bodyAfterCta: passwordSecondary ? renderLinkRow([{ label: 'Or set a password', url: params.inviteUrl }]) : '',
   });
   const support = getSupportEmail(params.supportEmail);
+  const actionLines = microsoftUrl
+    ? [`Sign in with Microsoft: ${microsoftUrl}`, passwordSecondary ? `Or set a password: ${params.inviteUrl}` : null]
+    : [passwordOnly ? `Set your password: ${params.inviteUrl}` : `Accept your invite: ${params.inviteUrl}`];
   const text = [
     orgName ? `You're invited to the ${orgName} support portal.` : `You're invited to your support portal.`,
     customMessage || null,
-    `Set your password: ${params.inviteUrl}`,
+    ...actionLines,
     'This invite link expires in 7 days.',
     support ? `Need help? Contact ${support}.` : null
   ].filter(Boolean).join('\n');
@@ -1207,6 +1268,36 @@ export function buildPortalAccessDeclinedTemplate(params: PortalAccessDeclinedEm
     brandName: params.partnerName?.trim() || undefined,
   });
   return { subject, html, text: copy };
+}
+
+/**
+ * Microsoft tenant link removed (portal registration W4 #11381, plan D7): sent
+ * after commit to the displaced partner's active admins. A notice, not a call
+ * to action: no link, and the org that proved the tenant is never named.
+ * Breeze-branded (platform mail to MSP staff), same idiom as
+ * partnerTrustPartnerMail.ts.
+ */
+export function buildPortalEntraTenantDisplacedTemplate(params: PortalEntraTenantDisplacedEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const subject = `Microsoft tenant link removed from ${orgName}`;
+  const lead = `${orgName} was linked to the Microsoft tenant ${params.tenantId}. An administrator of that tenant proved it for another organization in Breeze, so the link was removed from ${orgName}.`;
+  const impact = `Microsoft sign-in to the ${orgName} portal and Breeze AI for Office no longer work for that tenant, and people signed in through it were signed out.`;
+  const next = "If you didn't expect this, contact the tenant's administrator.";
+  const why = `You're receiving this because you administer ${params.partnerName} in Breeze.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: `The Microsoft tenant link was removed from ${orgName}.`,
+    heading: 'Microsoft tenant link removed',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(impact)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(next)}</p>
+      <p style="${MUTED_PARA}">${escapeHtml(why)}</p>
+    `,
+    footer: supportFooter(undefined, 'Need help? Contact'),
+  });
+  const text = [lead, impact, next, why].join('\n');
+  return { subject, html, text };
 }
 
 function buildVerificationTemplate(params: VerificationEmailParams): EmailTemplate {

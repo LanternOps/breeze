@@ -63,6 +63,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'staff.access_review_notice': { lane: 'platform' },
       'staff.trust_access_request': { lane: 'platform' },
       'staff.connection_health_digest': { lane: 'platform' },
+      'partner.portal_entra_tenant.displaced': { lane: 'platform' },
       'deployment.invite': { lane: 'platform' },
       'ticket.staff_notification': { lane: 'platform' },
       'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },

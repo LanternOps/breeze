@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import type Redis from 'ioredis';
 import { envStr } from '../../utils/envStr';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { isRequestConnectionSecure } from '../auth/helpers';
@@ -46,6 +47,16 @@ export const portalSessions = new Map<string, PortalSession>();
 export type PortalTokenEntry = { payload: string; expiresAt: Date; createdAt: Date };
 export const portalResetTokens = new Map<string, PortalTokenEntry>();
 export const portalInviteTokens = new Map<string, PortalTokenEntry>();
+/**
+ * In-memory twins (Redis off) of the portal OIDC flow state and the Entra
+ * tenant proof-run links (W4), keyed by the sha256 of the raw value, the same
+ * entry shape as the capability tokens. Written and consumed by
+ * services/portalOidc/stateStore.ts and the proof-run link routes.
+ */
+export const portalOidcStates = new Map<string, PortalTokenEntry>();
+export const portalEntraProofRuns = new Map<string, PortalTokenEntry>();
+export const PORTAL_OIDC_STATE_CAP = 20000;
+export const PORTAL_ENTRA_PROOF_RUN_CAP = 5000;
 let lastStateSweepAtMs = 0;
 
 // ============================================
@@ -335,9 +346,38 @@ export function sweepPortalState(nowMs: number = Date.now()) {
     }
   }
 
+  for (const map of [portalOidcStates, portalEntraProofRuns]) {
+    for (const [hash, entry] of map.entries()) {
+      if (entry.expiresAt.getTime() <= nowMs) {
+        map.delete(hash);
+      }
+    }
+  }
+
   capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (session) => session.createdAt.getTime());
   capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
   capMapByOldest(portalInviteTokens, PORTAL_INVITE_TOKEN_CAP, (token) => token.createdAt.getTime());
+  capMapByOldest(portalOidcStates, PORTAL_OIDC_STATE_CAP, (entry) => entry.createdAt.getTime());
+  capMapByOldest(portalEntraProofRuns, PORTAL_ENTRA_PROOF_RUN_CAP, (entry) => entry.createdAt.getTime());
+}
+
+// ============================================
+// Single-use values on Redis
+// ============================================
+
+/** GET then DEL in one server-side step: exactly one concurrent consumer sees the value. */
+const GET_DEL_LUA = "local v=redis.call('GET',KEYS[1]) if v then redis.call('DEL',KEYS[1]) end return v";
+
+/**
+ * Atomically read and delete `key`: of any number of concurrent callers,
+ * exactly one gets the value and the rest get null. The consume step of every
+ * single-use portal value on Redis — capability tokens (./capabilityTokens.ts),
+ * OIDC flow state and proof-run links (W4). The in-memory twins get the same
+ * guarantee from a get + delete in one synchronous tick.
+ */
+export async function luaGetDel(redis: Redis, key: string): Promise<string | null> {
+  const value = await redis.eval(GET_DEL_LUA, 1, key);
+  return typeof value === 'string' ? value : null;
 }
 
 // ============================================
