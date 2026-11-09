@@ -37,7 +37,7 @@ beforeEach(() => {
 });
 
 import LoginPage from './LoginPage';
-import { apiLogin } from '../../stores/auth';
+import { apiLogin, apiVerifyMFA } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 
 const baseLoginSuccess = {
@@ -125,5 +125,33 @@ describe('LoginPage passkey MFA', () => {
 
     expect(await screen.findByTestId('mfa-digit-0')).toBeTruthy();
     expect(screen.queryByTestId('mfa-passkey-alternate')).toBeNull();
+  });
+
+  // #11420: passkey-primary account with a TOTP backup.
+  it('offers an authenticator-app fallback and verifies it with method totp', async () => {
+    vi.mocked(apiLogin).mockResolvedValueOnce({
+      success: true,
+      mfaRequired: true,
+      tempToken: 'temp-pk-totp',
+      mfaMethod: 'passkey',
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      recoveryAvailable: false,
+      passkeyAvailable: true,
+    } as any);
+    vi.mocked(apiVerifyMFA).mockResolvedValueOnce(baseLoginSuccess as any);
+
+    render(<LoginPage next="/" />);
+    await fillAndSubmit();
+
+    const select = (await screen.findByTestId('mfa-method-select')) as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['totp', 'passkey']);
+    expect(select.value).toBe('passkey');
+
+    fireEvent.change(select, { target: { value: 'totp' } });
+    fireEvent.change(await screen.findByTestId('mfa-digit-0'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByTestId('mfa-submit'));
+
+    await waitFor(() => expect(apiVerifyMFA).toHaveBeenCalled());
+    expect(apiVerifyMFA).toHaveBeenCalledWith('123456', 'temp-pk-totp', 'totp');
   });
 });
