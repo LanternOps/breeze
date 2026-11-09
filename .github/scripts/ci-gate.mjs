@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url';
 
 import { isPolicyPath } from './ci-policy.mjs';
 import { CLASSIFIER_KEYS, SHADOW_FIELDS, createIO, nonGatingJobs, policyDigest, shadowCore, workflowJobs } from './queue-selection.mjs';
+import { SELECTION_FILE, THINNABLE, bindingOf, choose, fullSelection, readsThinSkip, selectionArtifact, selectionFailure, thinSkipValue } from './ci-gate-thin.mjs';
 
 const CLASSIFIER = '.github/scripts/classify-pr-paths.sh';
 const CLASSIFIER_SIDECARS = ['qemu-gate-paths.txt', 'integration-floor-paths.txt', 'path-reader-map.txt'];
@@ -358,6 +359,8 @@ export function prepare(io, { baseSha, headSha, event }) {
 }
 
 // The base script's own answer; the blame list only explains a red one.
+// ctx.thinSkip is the list the gate published for this entry (W05): the base
+// script reads it as THIN_SKIP, and a base that does not read it ignores it.
 export function judge(io, ctx, apiJobs) {
   let results;
   try {
@@ -366,7 +369,8 @@ export function judge(io, ctx, apiJobs) {
     if (!(error instanceof GateError)) throw error;
     return { verdict: 'fail', reason: error.code, detail: error.message, results: {}, stdout: '' };
   }
-  const run = values => runAggregator(io, ctx.aggregator, { results: values, flags: ctx.flags,
+  const thinSkip = ctx.thinSkip ?? [];
+  const run = values => runAggregator(io, ctx.aggregator, { results: values, flags: { ...ctx.flags, thin_skip: thinSkipValue(thinSkip) },
     outputs: { 'mobile-native-changes.mobile': ctx.mobile }, isPr: ctx.event === 'pull_request' });
   const first = run(results);
   if (first.passed) return { verdict: 'pass', reason: 'required_jobs_passed', results, stdout: first.stdout };
@@ -379,11 +383,15 @@ export function judge(io, ctx, apiJobs) {
       if (run({ ...repaired, [job]: repaired[job] === 'success' ? 'skipped' : 'success' }).passed) blamed.add(job);
     }
   }
-  return { verdict: 'fail', reason: blamed.size ? `required_jobs_failed:${[...blamed].join(',')}` : 'required_jobs_failed',
-    results, stdout: first.stdout };
+  if (!blamed.size) return { verdict: 'fail', reason: 'required_jobs_failed', results, stdout: first.stdout };
+  // Only skipped thinnable jobs the list did not cover: a selection fault (a skip
+  // nothing authorized), not a test failure.
+  const jobs = [...blamed];
+  const unjustified = jobs.every(job => results[job] === 'skipped' && THINNABLE.includes(job) && !thinSkip.includes(job));
+  return { verdict: 'fail', reason: `${unjustified ? 'thin_skip_unjustified' : 'required_jobs_failed'}:${jobs.join(',')}`, results, stdout: first.stdout };
 }
 
-export function verdict(io, { baseSha, headSha, apiJobs, event }) {
+export function verdict(io, { baseSha, headSha, apiJobs, event, thinSkip = [] }) {
   let ctx;
   try {
     ctx = prepare(io, { baseSha, headSha, event });
@@ -391,7 +399,7 @@ export function verdict(io, { baseSha, headSha, apiJobs, event }) {
     if (!(error instanceof GateError)) throw error;
     return { verdict: 'fail', reason: error.code, detail: error.message, flags: null, policyPaths: [], results: {}, stdout: '' };
   }
-  return { ...judge(io, ctx, apiJobs), flags: ctx.flags, policyPaths: ctx.policyPaths, mobile: ctx.mobile };
+  return { ...judge(io, { ...ctx, thinSkip }, apiJobs), flags: ctx.flags, policyPaths: ctx.policyPaths, mobile: ctx.mobile };
 }
 
 // ── Replay controls ──────────────────────────────────────────────────────
@@ -466,16 +474,39 @@ export function compareOracle(oracle, results, mobile) {
   return diffs;
 }
 
-function readOracle(io, repository, run) {
-  const name = `ci-needs-oracle-attempt-${run.run_attempt}`;
-  const pages = ghJson(io, ['api', `repos/${repository}/actions/runs/${run.id}/artifacts?name=${name}&per_page=100`, '--paginate', '--slurp']);
+// One JSON file from a run's artifact, or null when no unexpired artifact has that name.
+function readArtifactJson(io, repository, runId, name, file) {
+  const pages = ghJson(io, ['api', `repos/${repository}/actions/runs/${runId}/artifacts?name=${name}&per_page=100`, '--paginate', '--slurp']);
   if (!pages.flatMap(page => page.artifacts ?? []).some(artifact => artifact.name === name && !artifact.expired)) return null;
   const dir = io.temp();
   try {
-    io.gh(['run', 'download', String(run.id), '--repo', repository, '--name', name, '--dir', dir]);
-    return JSON.parse(io.read(join(dir, 'ci-needs-oracle.json')));
+    io.gh(['run', 'download', String(runId), '--repo', repository, '--name', name, '--dir', dir]);
+    return JSON.parse(io.read(join(dir, file)));
   } finally { io.remove(dir); }
 }
+
+const readOracle = (io, repository, run) => readArtifactJson(io, repository, run.id, `ci-needs-oracle-attempt-${run.run_attempt}`, 'ci-needs-oracle.json');
+
+// The list a past queue entry was judged with: its pinned gate run's attempt-1
+// selection, which every later attempt re-publishes. The run is found the way
+// W05b's consumer finds it (repository-wide, at the gate's path, under a workflow
+// id the repository does not list) and the file must bind to that run and entry.
+// Returns null when that cannot be known. Read only for a base whose ci-success
+// reads THIN_SKIP; any other base never saw a list.
+export function historicalThinSkip(io, repository, { headSha, baseSha }, workflows) {
+  if (!workflows.some(workflow => workflow.path === GATE_WORKFLOW)) return null;
+  const list = ghJson(io, ['api', `repos/${repository}/actions/runs?event=merge_group&head_sha=${headSha}&per_page=100`]);
+  if (!Array.isArray(list?.workflow_runs)) throw new GateError('api_error', 'workflow runs: no list in the response');
+  const run = list.workflow_runs.filter(candidate => candidate.path === GATE_WORKFLOW && candidate.event === 'merge_group' &&
+    candidate.head_sha === headSha && Number.isSafeInteger(candidate.workflow_id) &&
+    !workflows.some(workflow => workflow.id === candidate.workflow_id)).sort((a, b) => b.id - a.id)[0];
+  if (!run) return null;
+  const value = readArtifactJson(io, repository, run.id, selectionArtifact(1), SELECTION_FILE);
+  if (value === null || selectionFailure(value, { repository, head_sha: headSha, base_sha: baseSha, gate_run: run.id, gate_attempt: 1 })) return null;
+  return value.mode === 'thin' ? value.thin_skip : [];
+}
+
+const listedWorkflows = (io, repository) => listAll(io, `repos/${repository}/actions/workflows?per_page=100`, 'workflows').flatMap(page => page.workflows);
 
 // ── Replay against real merge-queue runs ─────────────────────────────────
 
@@ -519,8 +550,25 @@ function queueSample(io, repository, run) {
 export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo = 200, prepare: prep = prepare }) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) throw new GateError('invalid_repository', String(repository));
   const out = { evaluated: 0, red: 0, unfetchable: 0, excluded: 0, apiErrors: 0, oracleCompared: 0, oracleUnreadable: 0,
-    controlsRun: 0, controlKinds: {},
+    thinUnknown: 0, thinUnreadable: 0, controlsRun: 0, controlKinds: {},
     considered: 0, disagreements: [], controlFailures: [], problems: [] };
+  let workflows = null;
+  // The list a W05 base judged this entry with. undefined: excluded, never judged with an empty list.
+  // No gate selection to find is thinUnknown; one found that cannot be read, or a bug, is thinUnreadable.
+  const thinSkipFor = (s, ctx) => {
+    if (!readsThinSkip(ctx.aggregator)) return [];
+    try {
+      workflows ??= listedWorkflows(io, repository);
+      const list = historicalThinSkip(io, repository, s, workflows);
+      if (list) return list;
+      out.thinUnknown++;
+      io.stderr(`ci-gate-replay: head ${s.headSha}: no gate selection bound to this entry; excluded`);
+    } catch (error) {
+      if (error?.code === 'api_error') out.apiErrors++; else out.thinUnreadable++;
+      io.stderr(`ci-gate-replay: head ${s.headSha}: gate selection unreadable: ${String(error.message ?? error).split('\n')[0]}`);
+    }
+    return undefined;
+  };
   const evaluate = run => {
     let s;
     try { s = queueSample(io, repository, run); } catch (error) {
@@ -532,6 +580,9 @@ export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo 
     let ctx = null, result;
     try {
       ctx = prep(io, { baseSha: s.baseSha, headSha: s.headSha, event: 'merge_group' });
+      const thinSkip = thinSkipFor(s, ctx);
+      if (thinSkip === undefined) return;
+      ctx = { ...ctx, thinSkip };
       result = judge(io, ctx, s.jobs);
     } catch (error) {
       if (!(error instanceof GateError)) throw error;
@@ -542,7 +593,7 @@ export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo 
     // A red sample agrees only when the verdict blames jobs; a gate error that
     // happens to be red would otherwise satisfy the "found a red" bar.
     const agrees = s.recorded === 'success' ? result.verdict === 'pass'
-      : result.verdict === 'fail' && result.reason.startsWith('required_jobs_failed');
+      : result.verdict === 'fail' && /^(?:required_jobs_failed|thin_skip_unjustified:)/.test(result.reason);
     if (!agrees) out.disagreements.push({ kind: 'verdict', run: run.id, pr: s.pr, recorded: s.recorded, verdict: result.verdict, reason: result.reason });
     let controls = '';
     if (agrees && s.recorded === 'success' && ctx) {
@@ -585,6 +636,9 @@ export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo 
   if (out.controlFailures.length) out.problems.push(`${out.controlFailures.length} control(s) stayed green`);
   if (!out.controlKinds.three_branch) out.problems.push('three_branch control never ran');
   if (out.oracleUnreadable) out.problems.push(`${out.oracleUnreadable} oracle artifact(s) unreadable`);
+  // A W05 entry's selection is uploaded by the gate and kept 7 days; missing on many is a fault, not noise.
+  if (out.thinUnreadable) out.problems.push(`${out.thinUnreadable} gate selection(s) unreadable`);
+  if (out.thinUnknown * 10 > out.considered) out.problems.push(`no gate selection for ${out.thinUnknown} of ${out.considered} runs`);
   // Unfetchable heads are expected (ejected groups); API errors are not, past a few.
   if (out.apiErrors * 10 > out.considered) out.problems.push(`API errors on ${out.apiErrors} of ${out.considered} runs`);
   return { ...out, ok: out.problems.length === 0 };
@@ -612,18 +666,21 @@ export function trimWorkflow(ciYml) {
   return `${out.join('\n')}\n`;
 }
 
-export function recordFixture(io, { repository, runId }) {
+export function recordFixture(io, { repository, runId, prepare: prep = prepare }) {
   const run = ghJson(io, ['api', `repos/${repository}/actions/runs/${runId}`]);
   const s = queueSample(io, repository, run);
   if (s.skip) throw new GateError('not_recordable', `${runId}: ${s.skip}`);
-  const ctx = prepare(io, { baseSha: s.baseSha, headSha: s.headSha, event: 'merge_group' });
+  const ctx = prep(io, { baseSha: s.baseSha, headSha: s.headSha, event: 'merge_group' });
+  // The list it was judged with (W05). Unknown is not recordable: [] would be a guess.
+  const thinSkip = readsThinSkip(ctx.aggregator) ? historicalThinSkip(io, repository, s, listedWorkflows(io, repository)) : [];
+  if (!thinSkip) throw new GateError('not_recordable', `${runId}: no readable gate selection for a base that reads THIN_SKIP`);
   const snapshots = {};
   const snap = revision => {
     const name = `ci-${io.git(['rev-parse', `${revision}:${CI_YML}`]).trim().slice(0, 12)}.yml`;
     snapshots[name] = trimWorkflow(showAt(io, revision, CI_YML));
     return name;
   };
-  const fixture = { source: { run_id: run.id, pr: s.pr }, changed: ctx.changed, flags: ctx.flags, mobile: ctx.mobile,
+  const fixture = { source: { run_id: run.id, pr: s.pr }, changed: ctx.changed, flags: ctx.flags, mobile: ctx.mobile, thin_skip: thinSkip,
     jobs: s.jobs.filter(job => job.name !== 'CI Success').map(({ name, conclusion }) => ({ name, conclusion })),
     ci_success: s.recorded, base_ci: snap(s.baseSha), head_ci: snap(s.headSha),
     expect: { verdict: s.recorded === 'success' ? 'pass' : 'fail' } };
@@ -679,9 +736,9 @@ const logValue = value => JSON.stringify(value).replaceAll('##[', '#\\u0023[');
 const commandData = text => text.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
 const logSha = value => isSha(value) ? value : 'none';
 
-function gateLine({ verdict: outcome, reason, event, base, head, ciRun = 'none', attempt = 'none', policyPaths = [], flags = null, oracle = 'none' }) {
+function gateLine({ verdict: outcome, reason, event, base, head, ciRun = 'none', attempt = 'none', policyPaths = [], flags = null, oracle = 'none', thin = 'none' }) {
   return `ci-gate: verdict=${outcome} reason=${reason} event=${/^\w+$/.test(event ?? '') ? event : 'none'} base=${logSha(base)} head=${logSha(head)} ` +
-    `ci_run=${ciRun} attempt=${attempt} policy_paths=${logValue(policyPaths)} flags=${logValue(flags)} oracle=${oracle}`;
+    `ci_run=${ciRun} attempt=${attempt} policy_paths=${logValue(policyPaths)} flags=${logValue(flags)} oracle=${oracle} thin=${thin}`;
 }
 
 // What E2 records. Verbatim, and never compared to anything: the shape of the
@@ -917,28 +974,75 @@ export function queueSelection(io, env, flags) {
   return shadowCore(baseRevisionIO(io, env.BASE_SHA), { event: env.GITHUB_EVENT_NAME, headRef: env.HEAD_REF, headSha: env.HEAD_SHA, baseSha: env.BASE_SHA, full: flags });
 }
 
+// ── select: publish the entry's queue selection (W05, #10749) ────────────
+//
+// Runs before CI fans out; the next step uploads the file and `verify` judges
+// against it. Always exits 0 and leaves exactly one ci-gate-selection line and a
+// file: anything that goes wrong is mode=full, which skips nothing. Its children
+// and sleeps get three minutes, so it cannot eat the wait verify needs.
+
 const SELECTION_MS = 3 * MINUTE;
-// From the start of verify. The job allows 145, and that also covers the steps before verify.
-const SELECTION_ENDS_BY_MS = 141 * MINUTE;
 
-const selectionLine = out => `ci-gate-selection: mode=${out.mode} reason=${out.reason} ${SHADOW_FIELDS.map(key => `${key}=${logValue(out[key] ?? null)}`).join(' ')}`;
-
-// One line, the verdict already decided. It gets neither `line` nor the exit code,
-// and whatever goes wrong in here, including running long, stays in here. The limit
-// covers children and sleeps, which is where this code spends its time.
-function logSelection(io, env, flags, select, started) {
+// The gate's own checks, which the decision in ci-gate-thin.mjs is given.
+const flagsAt = (io, baseSha, headSha) => {
+  try { return baseFlags(io, baseSha, headSha).flags; } catch (error) { if (error instanceof GateError) return null; throw error; }
+};
+// Unreadable or unparseable at the base: no W05 block there. Anything else is a bug, so reason=error.
+const aggregatorAt = (io, baseSha) => {
   let text;
+  try { text = showAt(io, baseSha, CI_YML); } catch { return null; }
+  try { return extractAggregator(text); } catch (error) { if (error instanceof GateError) return null; throw error; }
+};
+const SELECT_STEPS = { pinFailure, fetchFailure, flagsAt, queueSelection, aggregatorAt, readArtifact: readArtifactJson };
+
+const selectionLine = ({ published: p, shadow, wouldReason, wouldThinSkip }) => `ci-gate-selection: mode=${p.mode} reason=${p.reason} ` +
+  `thin_queue=${logValue(p.thin_queue)} thin_skip=${logValue(p.thin_skip)} source_attempt=${logValue(p.source_attempt)} ` +
+  `would_reason=${logValue(wouldReason)} would_thin_skip=${logValue(wouldThinSkip)} ` +
+  `${SHADOW_FIELDS.map(key => `${key}=${logValue(shadow[key] ?? null)}`).join(' ')}`;
+
+const quietly = write => { try { write(); } catch { /* the selection is already decided */ } };
+
+export function select(io, env, deps = {}) {
+  let out;
   try {
-    if (!flags) text = selectionLine({ mode: 'full', reason: 'no_base_flags' });
-    else {
-      io.limitTime?.(Math.min(io.now() + SELECTION_MS, started + SELECTION_ENDS_BY_MS));
-      text = selectionLine(select(io, env, flags));
-    }
-  } catch (error) { text = selectionLine({ mode: 'full', reason: 'error', error: failureText(error) }); }
+    io.remove(SELECTION_FILE); // A re-run must never upload a previous attempt's file.
+    io.limitTime?.(io.now() + SELECTION_MS);
+    out = choose(io, env, { ...SELECT_STEPS, ...deps });
+  } catch (error) {
+    out = fullSelection(env, 'error', { shadow: { error: failureText(error) } });
+  } finally { quietly(() => io.limitTime?.(Infinity)); }
+  const errored = error => fullSelection(env, 'error', { shadow: { error: failureText(error) } });
+  let text, body;
   try {
-    io.limitTime?.(Infinity);
-    io.stdout(text);
-  } catch { /* the verdict is unaffected, and is already logged */ }
+    text = selectionLine(out);
+    body = `${JSON.stringify(out.published, null, 2)}\n`;
+  } catch (error) {
+    out = errored(error);
+    text = selectionLine(out);
+    body = `${JSON.stringify(out.published, null, 2)}\n`;
+  }
+  if (out.detail) quietly(() => io.stderr(`ci-gate-detail: ${logValue(out.detail)}`));
+  try { io.write(SELECTION_FILE, body); } catch (error) {
+    // No file means verify and CI both run everything; the line must not claim otherwise.
+    quietly(() => io.stderr(`ci-gate-detail: selection not written: ${logValue(failureText(error))}`));
+    text = selectionLine(errored(Error(`selection not written: ${failureText(error)}`)));
+  }
+  quietly(() => io.stdout(text));
+  return 0;
+}
+
+// The list `verify` judges with: the one `select` published in this job, when it
+// is this entry's, this run's and this attempt's, and says thin. Anything else
+// judges the entry as full, as before W05.
+function publishedThinSkip(io, env) {
+  let value, why;
+  try { value = JSON.parse(io.read(SELECTION_FILE)); } catch (error) { why = `${SELECTION_FILE}: ${failureText(error)}`; }
+  why ??= selectionFailure(value, bindingOf(env));
+  if (why) {
+    io.stderr(`ci-gate-detail: selection unusable: ${logValue(why)}`);
+    return [];
+  }
+  return value.mode === 'thin' ? value.thin_skip : [];
 }
 
 // ── verify: the verdict for one queue entry ──────────────────────────────
@@ -999,6 +1103,8 @@ function judgeEntry(io, env, { waitForCi: wait, verdict: decide }, line) {
   if (env.GITHUB_EVENT_NAME !== 'merge_group') return { reason: 'wrong_event' };
   const repository = env.GITHUB_REPOSITORY;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) return { reason: 'invalid_repository' };
+  const thinSkip = publishedThinSkip(io, env);
+  line.thin = thinSkip.length;
   const unpinned = pinFailure(io, env.GITHUB_WORKFLOW_SHA);
   if (unpinned) return { reason: 'not_pinned', detail: unpinned };
   if (!isSha(env.BASE_SHA) || !isSha(env.HEAD_SHA)) return { reason: 'base_unreadable', detail: 'invalid revision' };
@@ -1012,7 +1118,7 @@ function judgeEntry(io, env, { waitForCi: wait, verdict: decide }, line) {
   if (waited.run) Object.assign(line, { ciRun: waited.run.id, attempt: waited.run.run_attempt });
   if (waited.reason) return waited;
 
-  const out = decide(io, { baseSha: env.BASE_SHA, headSha: env.HEAD_SHA, apiJobs: waited.jobs, event: 'merge_group' });
+  const out = decide(io, { baseSha: env.BASE_SHA, headSha: env.HEAD_SHA, apiJobs: waited.jobs, event: 'merge_group', thinSkip });
   Object.assign(line, { policyPaths: out.policyPaths ?? [], flags: out.flags ?? null, oracle: checkOracle(io, repository, waited.run, out) });
   if (Object.keys(out.results ?? {}).length) io.stdout(`ci-gate-results: ${logValue(out.results)}`);
   if (out.verdict !== 'pass') for (const text of nonEmptyLines(out.stdout ?? '')) io.stdout(`ci-gate-script: ${text}`);
@@ -1022,8 +1128,7 @@ function judgeEntry(io, env, { waitForCi: wait, verdict: decide }, line) {
 // Exit 0 only on verdict=pass. Everything else, a thrown exception included, is
 // a fail with exactly one ci-gate line. The token reaches git and gh only.
 export function verify(io, env, deps = {}) {
-  const started = io.now();
-  const line = { verdict: 'fail', reason: 'error', event: env.GITHUB_EVENT_NAME, base: env.BASE_SHA, head: env.HEAD_SHA };
+  const line = { verdict: 'fail', reason: 'error', event: env.GITHUB_EVENT_NAME, base: env.BASE_SHA, head: env.HEAD_SHA, thin: 0 };
   try {
     logIdentity(io, env);
     const out = judgeEntry(io, env, { waitForCi, verdict, ...deps }, line);
@@ -1037,7 +1142,6 @@ export function verify(io, env, deps = {}) {
     io.stderr(`ci-gate-detail: ${logValue(failureText(error))}`);
   }
   io.stdout(gateLine(line));
-  logSelection(io, env, line.flags, deps.selection ?? queueSelection, started);
   return line.verdict === 'pass' ? 0 : 1;
 }
 
@@ -1094,6 +1198,7 @@ export function anchor(io, env) {
 
 export function runCLI(io, args, env) {
   const repository = env.GITHUB_REPOSITORY;
+  if (args[0] === 'select') return select(io, env);
   if (args[0] === 'verify') return verify(io, env);
   if (args[0] === 'anchor') return anchor(io, env);
   if (args[0] === 'replay') {
@@ -1101,7 +1206,7 @@ export function runCLI(io, args, env) {
     io.stdout(`ci-gate-replay: evaluated=${out.evaluated} red=${out.red} disagreements=${out.disagreements.length} ` +
       `controlFailures=${out.controlFailures.length} oracleCompared=${out.oracleCompared} unfetchable=${out.unfetchable} ` +
       `excluded=${out.excluded} apiErrors=${out.apiErrors} oracleUnreadable=${out.oracleUnreadable} considered=${out.considered} ` +
-      `controlsRun=${out.controlsRun} controlKinds=${JSON.stringify(out.controlKinds)}`);
+      `thinUnknown=${out.thinUnknown} thinUnreadable=${out.thinUnreadable} controlsRun=${out.controlsRun} controlKinds=${JSON.stringify(out.controlKinds)}`);
     for (const d of out.disagreements) io.stderr(`::error title=ci-gate replay disagreement::${JSON.stringify(d)}`);
     for (const c of out.controlFailures) io.stderr(`::error title=ci-gate replay control stayed green::${JSON.stringify(c)}`);
     for (const p of out.problems) io.stderr(`ci-gate-replay: FAIL ${p}`);
@@ -1115,10 +1220,17 @@ export function runCLI(io, args, env) {
     io.write(join(dir, `${name}.json`), `${JSON.stringify({ name, ...fixture }, null, 2)}\n`);
     return 0;
   }
-  throw new GateError('usage', 'ci-gate.mjs verify | anchor | replay | record-fixture <run-id> <dir> <name>');
+  throw new GateError('usage', 'ci-gate.mjs verify | anchor | select | replay | record-fixture <run-id> <dir> <name>');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  try { process.exitCode = runCLI(createGateIO(), process.argv.slice(2), process.env); }
-  catch (error) { process.stderr.write(`ci-gate: ${String(error.message ?? error)}\n`); process.exitCode = 1; }
+  const args = process.argv.slice(2);
+  try { process.exitCode = runCLI(createGateIO(), args, process.env); }
+  catch (error) {
+    process.stderr.write(`ci-gate: ${String(error.message ?? error)}\n`);
+    // select never fails its step: a failed step would skip verify, and the gate with it.
+    // With no file written, verify and CI both run everything.
+    if (args[0] === 'select') process.stdout.write('ci-gate-selection: mode=full reason=error\n');
+    process.exitCode = args[0] === 'select' ? 0 : 1;
+  }
 }
