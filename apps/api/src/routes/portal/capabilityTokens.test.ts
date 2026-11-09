@@ -23,6 +23,12 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: <T>(fn: () => T) => fn(),
 }));
 vi.mock('../../services/tenantStatus', () => ({ getActiveOrgTenant: activeOrgMock }));
+// W3: the access-policy resolver is mocked at its boundary (the pick stays real).
+const resolvePolicy = vi.hoisted(() => vi.fn());
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/portalAccessPolicy')>()),
+  resolvePortalAccessPolicy: resolvePolicy,
+}));
 
 import {
   consumePortalCapabilityToken,
@@ -30,6 +36,13 @@ import {
   validatePortalCapability,
   type ConsumedCapability,
 } from './capabilityTokens';
+import { PortalAccessPolicyOrgNotFoundError, pickEffectivePortalAccessPolicy } from '../../services/portalAccessPolicy';
+
+const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
+function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
+  const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
+  return { orgId, partnerId: 'p-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+}
 import { portalInviteTokens, portalResetTokens } from './helpers';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -58,6 +71,8 @@ beforeEach(() => {
   rowRef.current = invitedRow();
   activeOrgMock.mockReset();
   activeOrgMock.mockResolvedValue({ orgId: ORG, partnerId: 'p-1' });
+  resolvePolicy.mockReset();
+  resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
 });
 
 describe('issue + consume', () => {
@@ -212,5 +227,41 @@ describe('validatePortalCapability — reset', () => {
 
   it('refuses a v2 payload validated under the other purpose', async () => {
     expect(await validatePortalCapability('reset', v2())).toEqual({ ok: false, reason: 'invalid' });
+  });
+});
+
+// Portal registration W3 (#11380): a token outstanding when password sign-in
+// is switched off is refused at consume with the generic invalid (inv. 7 / 8).
+describe('validatePortalCapability — access policy (W3)', () => {
+  const reset = () => v2({ purpose: 'reset' });
+
+  it('consults the policy of the row\'s org and accepts while password is allowed (no rows)', async () => {
+    expect((await validatePortalCapability('invite', v2())).ok).toBe(true);
+    expect(resolvePolicy).toHaveBeenCalledWith(ORG);
+  });
+
+  it('invite and reset under sso_only → invalid, before the org gate (no org state learned)', async () => {
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    activeOrgMock.mockResolvedValue(null);
+    expect(await validatePortalCapability('invite', v2())).toEqual({ ok: false, reason: 'invalid' });
+    rowRef.current = invitedRow({ status: 'active', passwordHash: 'h' });
+    expect(await validatePortalCapability('reset', reset())).toEqual({ ok: false, reason: 'invalid' });
+    expect(activeOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('a legacy invite under sso_only → invalid', async () => {
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    expect(await validatePortalCapability('invite', { format: 'legacy', portalUserId: USER })).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('an org the resolver cannot find → invalid', async () => {
+    resolvePolicy.mockRejectedValue(new PortalAccessPolicyOrgNotFoundError(ORG));
+    expect(await validatePortalCapability('invite', v2())).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('never consults the policy for a token the row already refuses', async () => {
+    rowRef.current = invitedRow({ authEpoch: 9 });
+    expect(await validatePortalCapability('invite', v2())).toEqual({ ok: false, reason: 'invalid' });
+    expect(resolvePolicy).not.toHaveBeenCalled();
   });
 });

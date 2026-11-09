@@ -40,11 +40,26 @@ vi.mock('../../db', () => ({
 // must provide it or the suite fails to load.
 vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, organizations: { id: 'id', partnerId: 'partnerId' }, partners: { id: 'id', name: 'name' }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', authEpoch: 'authEpoch', receiveNotifications: 'receiveNotifications', status: 'status', browserAccess: 'browserAccess' }, portalBranding: { orgId: 'orgId', enablePasswordReset: 'enablePasswordReset' } }));
 vi.mock('../../services/email', () => ({ getEmailService: () => ({ sendPasswordReset: sendPasswordResetSpy }) }));
+// W3: the access-policy resolver is mocked at its boundary (the pick stays real).
+const resolvePolicy = vi.hoisted(() => vi.fn());
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/portalAccessPolicy')>()),
+  resolvePortalAccessPolicy: resolvePolicy,
+}));
 
 import { createHash } from 'crypto';
 import { authRoutes } from './auth';
 import { issuePortalCapabilityToken } from './capabilityTokens';
 import { portalInviteTokens, portalRateLimitBuckets, portalResetTokens } from './helpers';
+import { pickEffectivePortalAccessPolicy } from '../../services/portalAccessPolicy';
+
+const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
+/** Built by the real pick with entra runnable: 'sso_only' is effective (entra on), 'allowed' is today's default. */
+function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
+  const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
+  return { orgId, partnerId: 'p-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+}
+const ssoOnly = () => resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const USER_ID = '11111111-2222-4333-8444-555566667777';
@@ -79,6 +94,7 @@ beforeEach(() => {
   portalInviteTokens.clear();
   portalResetTokens.clear();
   portalRateLimitBuckets.clear();
+  resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
 });
 
 describe('portal authentication lifecycle audit', () => {
@@ -336,5 +352,89 @@ describe('POST /auth/forgot-password', () => {
     const res = await forgot({ email: 'entra@acme.example', orgId: ORG_ID });
     expect(res.status).toBe(200);
     expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Portal registration W3 (#11380): the access policy on every password path
+// (inv. 7 / 8 / 11, Review Focus 1). Each refusal is today's failure exactly.
+// ---------------------------------------------------------------------------
+
+describe('access policy on forgot-password, reset and accept-invite (W3)', () => {
+  const activeRow = (over: Record<string, unknown> = {}) => invited({ status: 'active', passwordHash: 'old-hash', ...over });
+
+  it('forgot-password, policy allowed: a password row with browser access gets a token and an email (control)', async () => {
+    userRow.current = activeRow();
+    const res = await forgot({ email: 'cust@acme.example', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    expect(portalResetTokens.size).toBe(1);
+    expect(sendPasswordResetSpy).toHaveBeenCalledTimes(1);
+    expect(resolvePolicy).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it('forgot-password under sso_only returns the uniform 200 and issues no token', async () => {
+    userRow.current = null; // an unknown address: the uniform answer to compare against
+    const control = await (await forgot({ email: 'nobody@acme.example', orgId: ORG_ID })).text();
+    portalRateLimitBuckets.clear();
+    userRow.current = activeRow();
+    ssoOnly();
+    const res = await forgot({ email: 'cust@acme.example', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(control);
+    expect(portalResetTokens.size).toBe(0);
+    expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+  });
+
+  it('forgot-password issues no token for a password row without browser access', async () => {
+    userRow.current = activeRow({ browserAccess: 'none' });
+    const res = await forgot({ email: 'cust@acme.example', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    expect(portalResetTokens.size).toBe(0);
+    expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+  });
+
+  it('reset token consumed under sso_only → 400 Invalid or expired reset token, hash unchanged', async () => {
+    userRow.current = activeRow();
+    const token = await mintReset();
+    ssoOnly();
+    const res = await reset({ token, password: 'Str0ngPass!' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid or expired reset token' });
+    expect(updateSpy).not.toHaveBeenCalled();
+    // The token was burned: a later retry is the same 400, even once password is allowed again.
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
+    expect((await reset({ token, password: 'Str0ngPass!' })).status).toBe(400);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it('invite consumed under sso_only → generic 400, account stays invited', async () => {
+    userRow.current = invited();
+    const token = await mintInvite();
+    ssoOnly();
+    const res = await post({ token, password: 'Str0ngPass!' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid or expired invite' });
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(userRow.current.status).toBe('invited');
+  });
+
+  it('the policy refusal hides org state: sso_only plus an unavailable org is still the generic invite 400', async () => {
+    userRow.current = invited();
+    const token = await mintInvite();
+    ssoOnly();
+    activeOrgMock.mockResolvedValue(null);
+    const res = await post({ token, password: 'Str0ngPass!' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid or expired invite' });
+  });
+
+  it('an accepted invite mints a password session', async () => {
+    userRow.current = invited();
+    const token = await mintInvite();
+    const res = await post({ token, password: 'Str0ngPass!' });
+    expect(res.status).toBe(200);
+    const { portalSessions } = await import('./helpers');
+    const { accessToken } = await res.json();
+    expect(portalSessions.get(accessToken)).toMatchObject({ portalUserId: USER_ID, orgId: ORG_ID, method: 'password' });
   });
 });

@@ -103,10 +103,18 @@ vi.mock('../../services/tenantStatus', () => ({
   isUsableOrgStatus: (s: string) => s === 'active' || s === 'trial',
   invalidateAgentTenantCache: vi.fn(async () => undefined),
 }));
+// W3: the access-policy resolver is the boundary under test here; the pick,
+// isSignInMethodAllowed and the error class stay real.
+const resolvePolicy = vi.hoisted(() => vi.fn());
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/portalAccessPolicy')>()),
+  resolvePortalAccessPolicy: resolvePolicy,
+}));
 
 import { Hono } from 'hono';
 import { authRoutes, portalAuthMiddleware } from './auth';
 import { portalRateLimitBuckets, portalSessions } from './helpers';
+import { PortalAccessPolicyOrgNotFoundError, pickEffectivePortalAccessPolicy } from '../../services/portalAccessPolicy';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { verifyPassword } from '../../services/password';
 import { PORTAL_LOGIN_CANDIDATE_CAP } from './loginCandidates';
@@ -150,7 +158,15 @@ beforeEach(() => {
     authEpoch: 1,
   };
   activeOrgResult.current = { orgId: ORG_ID, partnerId: 'partner-1' };
+  resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
 });
+
+const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
+/** A resolved policy built by the real pick with entra runnable: 'sso_only' is effective, 'allowed' is today's default. */
+function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
+  const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
+  return { orgId, partnerId: 'partner-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+}
 
 describe('portalAuthMiddleware partner context', () => {
   it('surfaces the active organization owning partner on portalAuth', async () => {
@@ -437,5 +453,78 @@ describe('POST /auth/login — uniform failure for an email with several account
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Invalid email or password' });
     expect(vi.mocked(verifyPassword)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Portal registration W3 (#11380): the access policy at login (inv. 8 / 11,
+// Review Focus 1). A password login refused by policy is the bad-password 401.
+// ---------------------------------------------------------------------------
+
+describe('POST /auth/login — access policy (W3)', () => {
+  const login = (password: string) => {
+    const app = new Hono();
+    app.route('/', authRoutes);
+    return app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'cust@acme.example', password, orgId: ORG_ID }),
+    });
+  };
+  const rateKeys = () => rateSpies.check.mock.calls.map((c) => String(c[0]));
+  const buckets = () => [...portalRateLimitBuckets.entries()].map(([k, b]) => [k, b.count]);
+
+  beforeEach(() => {
+    portalUserRow.current = { ...portalUserRow.current, passwordHash: 'hash:Right1!', orgName: 'Acme' };
+    vi.mocked(verifyPassword).mockImplementation(async (hash: string, pw: string) => hash === `hash:${pw}`);
+  });
+
+  it('login under sso_only equals a bad password (status, body, rate-limit buckets, no clear)', async () => {
+    const bad = await login('Wrong1!');
+    const badText = await bad.text();
+    const badKeys = rateKeys();
+    const badBuckets = buckets();
+    expect(resolvePolicy).not.toHaveBeenCalled(); // a wrong password never reaches the policy
+
+    rateSpies.check.mockClear();
+    portalRateLimitBuckets.clear();
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    const refused = await login('Right1!');
+
+    expect(bad.status).toBe(401);
+    expect(refused.status).toBe(401);
+    expect(await refused.text()).toBe(badText);
+    expect(JSON.parse(badText)).toEqual({ error: 'Invalid email or password' });
+    expect(badKeys).toHaveLength(2);
+    expect(rateKeys()).toEqual(badKeys);
+    expect(buckets()).toEqual(badBuckets);
+    expect(rateSpies.clear).not.toHaveBeenCalled();
+    expect(refused.headers.get('set-cookie')).toBeNull();
+    expect(portalSessions.size).toBe(0);
+    expect(resolvePolicy).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it('the policy refusal comes before the org-unavailable 403 (it never reveals org state)', async () => {
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    activeOrgResult.current = null;
+    const res = await login('Right1!');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid email or password' });
+  });
+
+  it('an org the resolver cannot find is refused with the same 401', async () => {
+    resolvePolicy.mockRejectedValue(new PortalAccessPolicyOrgNotFoundError(ORG_ID));
+    const res = await login('Right1!');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid email or password' });
+    expect(portalSessions.size).toBe(0);
+  });
+
+  it('policy allowed (no rows): signs in and mints a password session', async () => {
+    const res = await login('Right1!');
+    expect(res.status).toBe(200);
+    const [session] = [...portalSessions.values()];
+    expect(session).toMatchObject({ portalUserId: USER_ID, orgId: ORG_ID, method: 'password' });
+    expect(rateSpies.clear).toHaveBeenCalledTimes(1);
   });
 });

@@ -11,6 +11,19 @@ const { supportUsageForOrgMock } = vi.hoisted(() => ({
   supportUsageForOrgMock: vi.fn(),
 }));
 
+// Portal registration W3 (#11380): portalAuthMiddleware re-checks the portal
+// access policy on every request. Not under test here, so it resolves like an
+// org with no policy rows: password allowed, today's behaviour (the gate itself
+// is covered in authOrgStatusGate.test.ts and auth.logout.test.ts).
+vi.mock('../services/portalAccessPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/portalAccessPolicy')>();
+  return {
+    ...actual,
+    resolvePortalAccessPolicy: async (orgId: string) => ({
+      orgId, partnerId: 'partner-1', ...actual.pickEffectivePortalAccessPolicy(null, null, actual.getPortalSignInCapabilities()),
+    }),
+  };
+});
 vi.mock('../services/portal/supportUsage', () => ({
   supportUsageForOrg: supportUsageForOrgMock,
 }));
@@ -390,7 +403,7 @@ describe('portal routes', () => {
             id: 'portal-user-1',
             email: 'portal@example.com',
             orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
-            authMethod: 'password',
+            authMethod: 'password', browserAccess: 'granted',
             partnerId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620777',
             partnerName: 'CloudWise',
           }
@@ -427,7 +440,7 @@ describe('portal routes', () => {
           id: 'portal-user-1',
           email: 'portal@example.com',
           orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
-          authMethod: 'password',
+          authMethod: 'password', browserAccess: 'granted',
         }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: false }]) as any);
 
@@ -455,7 +468,7 @@ describe('portal routes', () => {
             id: 'portal-user-1',
             email: 'portal@example.com',
             orgId: 'org-123',
-            authMethod: 'password',
+            authMethod: 'password', browserAccess: 'granted',
             authEpoch: 1
           }
         ]) as any)
@@ -524,7 +537,7 @@ describe('portal routes', () => {
           id: 'portal-user-reset-disabled',
           email: 'reset-disabled@example.com',
           orgId: 'org-reset-disabled',
-          authMethod: 'password',
+          authMethod: 'password', browserAccess: 'granted',
           authEpoch: 1,
         }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: true }]) as any);

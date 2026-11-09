@@ -11,7 +11,8 @@
  *     nothing (exactly one activation);
  *   - re-validated against the row at consume (`validatePortalCapability`):
  *     the same org, the same address, the same durable `auth_epoch`, the right
- *     lifecycle state, and an active org. A disable, a password change, an
+ *     lifecycle state, an org whose access policy still allows password
+ *     sign-in (W3), and an active org. A disable, a password change, an
  *     accepted invite, or a re-invite that changes the row's state bumps the
  *     epoch and so invalidates every earlier token; resending to an
  *     already-invited row does not (both links stay valid until one is used).
@@ -51,6 +52,7 @@ import {
   RESET_TTL_SECONDS,
 } from './schemas';
 import { capMapByOldest, normalizeEmail, portalInviteTokens, portalResetTokens, type PortalTokenEntry } from './helpers';
+import { isPasswordSignInAllowedForOrg } from './browserSession';
 
 export type PortalCapabilityPurpose = 'invite' | 'reset';
 
@@ -256,6 +258,12 @@ export async function validatePortalCapability(
   } else if (user.status !== 'active' && user.status !== 'invited') {
     return invalid;
   }
+
+  // Access policy (W3, inv. 7 / 8): a token outstanding when the org's
+  // effective policy switched password sign-in off is refused with the generic
+  // invalid, before the org gate, so it learns nothing about the org either.
+  // No DB context is held (public routes), so the resolver opens its own.
+  if (!(await isPasswordSignInAllowedForOrg(user.orgId))) return invalid;
 
   if (!(await getActiveOrgTenant(user.orgId))) return { ok: false, reason: 'org_unavailable' };
 
