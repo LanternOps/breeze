@@ -1,7 +1,7 @@
 /**
  * Portal registration W4 (#11381): Entra tenant proof columns on the org's
  * tenant mapping + the clear-on-repoint trigger
- * (2027-01-22-233000-portal-entra-tenant-proof.sql; plan D1, spec §5.4, inv. 3).
+ * (2027-01-22-233400-portal-entra-tenant-proof.sql; plan D1, spec §5.4, inv. 3).
  *
  * Every case runs inside ONE superuser postgres.js transaction that is always
  * rolled back (template: portalAccessPolicyMigration.integration.test.ts).
@@ -18,7 +18,7 @@ import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
-const MIGRATION = '2027-01-22-233000-portal-entra-tenant-proof.sql';
+const MIGRATION = '2027-01-22-233400-portal-entra-tenant-proof.sql';
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 type Tx = postgres.TransactionSql<Record<string, unknown>>;
 class Rollback extends Error { constructor() { super('intentional rollback'); } }
@@ -74,7 +74,7 @@ async function proofOf(tx: Tx, id: string): Promise<ProofRow> {
   return row!;
 }
 
-describe('2027-01-22-233000-portal-entra-tenant-proof.sql', () => {
+describe('2027-01-22-233400-portal-entra-tenant-proof.sql', () => {
   it('starts with the system-scope line', async () => {
     const text = await loadMigration();
     const firstStatement = text
