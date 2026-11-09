@@ -834,11 +834,18 @@ const published = (overrides = {}) => ({ schema: 1, repository: REPO, head_sha: 
   thin_skip: ['test-web', 'build-web'], would_skip: ['build-web', 'test-web', 'smoke-test'], thin_queue: 'enforce', ...overrides });
 // A fake clock: sleep advances it. runsAt / artifactAt say from which second each
 // is visible, so the 60 s and 180 s deadlines can be tested at their boundaries.
-function consumeIO({ runs = [gateRun()], runsAt = 0, artifactAt = 0, body = published(), workflows } = {}) {
+const SELECTION_ARTIFACT = { name: 'ci-gate-selection-attempt-1', expired: false };
+// failing: { workflows | runs | artifacts: n } makes the first n such calls throw, as a 5xx would.
+function consumeIO({ runs = [gateRun()], runsAt = 0, artifactAt = 0, body = published(), workflows,
+  artifacts = [SELECTION_ARTIFACT], failing = {} } = {}) {
   let now = 1_000_000;
   const start = now, calls = [], logs = [], errors = [], writes = new Map(), removed = [];
   const at = () => (now - start) / 1000;
   const listed = workflows ?? [{ id: LISTED_GATE, path: GATE_PATH }, { id: LISTED_CI, path: '.github/workflows/ci.yml' }];
+  const flaky = kind => {
+    if ((failing[kind] ?? 0) > 0) { failing[kind]--; throw Object.assign(Error(`Command failed: gh api ${kind}`), { stderr: 'HTTP 502: Bad Gateway\n' }); }
+  };
+  const paginated = args => assert.ok(args.includes('--paginate') && args.includes('--slurp'), `not paginated: ${args.join(' ')}`);
   const io = {
     calls, logs, errors, writes, removed,
     now: () => now, sleep: ms => { now += ms; },
@@ -852,14 +859,18 @@ function consumeIO({ runs = [gateRun()], runsAt = 0, artifactAt = 0, body = publ
     gh: args => {
       calls.push(args);
       const endpoint = args[0] === 'api' ? args.find(arg => arg.startsWith('repos/')) : null;
-      if (endpoint === `repos/${REPO}/actions/workflows?per_page=100`) return JSON.stringify([{ workflows: listed }]);
+      if (endpoint === `repos/${REPO}/actions/workflows?per_page=100`) {
+        paginated(args); flaky('workflows');
+        return JSON.stringify([{ workflows: listed }]);
+      }
       if (endpoint === `repos/${REPO}/actions/runs?event=merge_group&head_sha=${M}&per_page=100`) {
+        flaky('runs');
         return JSON.stringify({ workflow_runs: at() >= runsAt ? runs : [] });
       }
-      const artifacts = endpoint?.match(/^repos\/LanternOps\/breeze\/actions\/runs\/(\d+)\/artifacts\?name=ci-gate-selection-attempt-1&per_page=100$/);
-      if (artifacts) {
-        return JSON.stringify([{ artifacts: at() >= artifactAt && Number(artifacts[1]) === GATE_RUN
-          ? [{ name: 'ci-gate-selection-attempt-1', expired: false }] : [] }]);
+      const run = endpoint?.match(/^repos\/LanternOps\/breeze\/actions\/runs\/(\d+)\/artifacts\?name=ci-gate-selection-attempt-1&per_page=100$/);
+      if (run) {
+        paginated(args); flaky('artifacts');
+        return JSON.stringify([{ artifacts: at() >= artifactAt && Number(run[1]) === GATE_RUN ? artifacts : [] }]);
       }
       if (args[0] === 'run' && args[1] === 'download') {
         assert.deepEqual(args, ['run', 'download', String(GATE_RUN), '--repo', REPO, '--name', 'ci-gate-selection-attempt-1', '--dir', FAKE_TEMP]);
@@ -929,6 +940,55 @@ test('consume: the selection must appear within 180 s of the start', async () =>
   const late = consumeIO({ runsAt: 30, artifactAt: 181 });
   assert.deepEqual(await consumeWith(late), { thin_skip: '', selection_mode: 'full', selection_reason: 'no_gate_selection' });
   assert.ok(!late.calls.some(args => args[0] === 'run'), 'nothing is downloaded');
+});
+
+test('consume: only this gate\'s attempt-1 artifact, unexpired, counts as published', async () => {
+  for (const [name, artifacts] of [
+    ['expired', [{ ...SELECTION_ARTIFACT, expired: true }]],
+    ['another name', [{ name: 'ci-gate-selection-attempt-2', expired: false }]],
+    ['none', []],
+  ]) {
+    const io = consumeIO({ artifacts });
+    assert.deepEqual(await consumeWith(io), { thin_skip: '', selection_mode: 'full', selection_reason: 'no_gate_selection' }, name);
+    assert.ok(!io.calls.some(args => args[0] === 'run'), `${name}: nothing is downloaded`);
+  }
+});
+
+test('consume: a transient API error is retried at the next poll, until the deadline', async () => {
+  for (const kind of ['workflows', 'runs', 'artifacts']) {
+    const io = consumeIO({ failing: { [kind]: 2 } });
+    assert.equal((await consumeWith(io)).selection_mode, 'thin', kind);
+    assert.match(io.logs[0], / waited_s=20 /, kind);
+  }
+  // Still failing at the deadline: full error, and the cause gh printed is kept.
+  const down = consumeIO({ failing: { runs: 99 } });
+  assert.equal((await consumeWith(down)).selection_reason, 'error');
+  assert.match(down.logs[0], / waited_s=60 thin_skip="" detail="Command failed: gh api runs: HTTP 502: Bad Gateway"$/);
+  const late = consumeIO({ failing: { artifacts: 99 } });
+  assert.equal((await consumeWith(late)).selection_reason, 'error');
+  assert.match(late.logs[0], / waited_s=180 thin_skip="" detail="Command failed: gh api artifacts: HTTP 502: Bad Gateway"$/);
+});
+
+test('consume: a failed download keeps gh\'s cause; a failed cleanup does not discard a good selection', async () => {
+  const io = consumeIO();
+  const gh = io.gh;
+  io.gh = args => {
+    if (args[0] === 'run') throw Object.assign(Error('Command failed: gh run download 4242'), { stderr: 'HTTP 404: Not Found\n' });
+    return gh(args);
+  };
+  assert.equal((await consumeWith(io)).selection_reason, 'error');
+  assert.match(io.logs[0], / detail="Command failed: gh run download 4242: HTTP 404: Not Found"$/);
+  const tidy = consumeIO();
+  tidy.remove = () => { throw Error('EBUSY'); };
+  assert.equal((await consumeWith(tidy)).selection_mode, 'thin');
+});
+
+test('consume: once the switch is on, the gate\'s published mode decides (a flip mid-entry drains)', async () => {
+  // The gate published thin under enforce; the switch moved to shadow before changes read
+  // it. In-flight entries keep their published list (plan D3), and the gate judges with it.
+  assert.equal((await consumeWith(consumeIO(), consumeEnv({ THIN_QUEUE: 'shadow' }))).selection_mode, 'thin');
+  // Off is read at once and runs everything, which the gate's list always permits.
+  assert.equal((await consumeWith(consumeIO(), consumeEnv({ THIN_QUEUE: 'off' }))).selection_reason, 'thin_disabled');
 });
 
 test('consume: only a pinned gate run counts (repository-wide, gate path, unlisted workflow id)', async () => {

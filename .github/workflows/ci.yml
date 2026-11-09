@@ -94,8 +94,10 @@ jobs:
       # W05 (#10749): the jobs the pinned CI Gate's selection lets this queue entry
       # skip, as ",a,b,", or '' (skip nothing). Only the 27 thinnable jobs read it, each
       # for its own id, and CI Success counts a listed job that was skipped as
-      # satisfied. Empty on every PR, on a failed or skipped step, and while the
-      # CI_THIN_QUEUE repository variable is not `enforce`.
+      # satisfied. Empty on every PR, on a failed or skipped step, when the
+      # CI_THIN_QUEUE repository variable is unset or `off`, and whenever the gate's
+      # published selection is not `mode=thin` (the gate publishes that only under
+      # `enforce`; an entry already running when the variable flips keeps its list).
       thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}
       code: ${{ steps.classify.outputs.code }}
       docs: ${{ steps.classify.outputs.docs }}

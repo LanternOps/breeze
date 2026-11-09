@@ -454,6 +454,11 @@ export const GATE_SELECTION_KEYS = Object.freeze(['schema', 'repository', 'head_
 const JOB_ID = /^[a-z0-9-]+$/;
 const logValue = value => JSON.stringify(value ?? null).replaceAll('##[', '#\\u0023[');
 const firstLine = error => String(error?.message ?? error).split('\n')[0].slice(0, 300);
+// execFileSync's message names only the command; what gh printed says why it failed.
+const cause = error => {
+  const stderr = String(error?.stderr ?? '').trim();
+  return stderr ? `${firstLine(error)}: ${firstLine(stderr)}` : firstLine(error);
+};
 
 // What THIN_SKIP holds: '' for none, else ",a,b," so ',<id>,' cannot match part of another id.
 export function skipValue(list) {
@@ -505,33 +510,51 @@ async function consumeCore(io, env, out, started) {
   if (!/^\.github\/workflows\/[\w.-]+\.ya?ml$/.test(workflow) || !/^[\w.-]+$/.test(name) || !/^[\w.-]+\.json$/.test(file)) {
     throw Error('invalid GATE_WORKFLOW, GATE_SELECTION_ARTIFACT or GATE_SELECTION_FILE');
   }
-  const waited = () => io.now() - started;
-  const pages = ghJson(io, ['api', `repos/${repository}/actions/workflows?per_page=100`, '--paginate', '--slurp']);
-  if (!Array.isArray(pages) || !pages.every(page => Array.isArray(page?.workflows))) throw Error('workflows: no list in the response');
-  const workflows = pages.flatMap(page => page.workflows);
-  // With no listed entry at the gate's path to tell it from, an unlisted id proves nothing.
-  if (!workflows.some(entry => entry.path === workflow)) return { reason: 'no_gate_run', detail: `no listed workflow at ${workflow}` };
-  const listed = new Set(workflows.map(entry => entry.id));
-
-  let run;
-  while (!(run = pinnedGateRun(io, { repository, head, workflow, listed }))) {
-    if (waited() >= CONSUME_RUN_MS) return { reason: 'no_gate_run' };
-    await io.sleep(CONSUME_POLL_MS);
-  }
+  // One probe per poll until the deadline. A call that fails (a 5xx) is retried at the
+  // next poll; only a failure at the deadline is the answer, and it is `error`.
+  const poll = async (deadline, probe) => {
+    for (;;) {
+      let failure = null;
+      try {
+        const value = probe();
+        if (value) return value;
+      } catch (error) { failure = error; }
+      if (io.now() - started >= deadline) {
+        if (failure) throw failure;
+        return null;
+      }
+      await io.sleep(CONSUME_POLL_MS);
+    }
+  };
+  let listed = null;
+  const found = await poll(CONSUME_RUN_MS, () => {
+    if (!listed) {
+      const pages = ghJson(io, ['api', `repos/${repository}/actions/workflows?per_page=100`, '--paginate', '--slurp']);
+      if (!Array.isArray(pages) || !pages.every(page => Array.isArray(page?.workflows))) throw Error('workflows: no list in the response');
+      const workflows = pages.flatMap(page => page.workflows);
+      // With no listed entry at the gate's path to tell it from, an unlisted id proves nothing.
+      if (!workflows.some(entry => entry.path === workflow)) return { unverifiable: true };
+      listed = new Set(workflows.map(entry => entry.id));
+    }
+    return pinnedGateRun(io, { repository, head, workflow, listed });
+  });
+  if (found?.unverifiable) return { reason: 'no_gate_run', detail: `no listed workflow at ${workflow}` };
+  if (!found) return { reason: 'no_gate_run' };
+  const run = found;
   out.gate_run = run.id;
   // Attempt 1's artifact only: a re-run of the gate re-publishes attempt 1's list.
-  const ready = () => ghJson(io, ['api', `repos/${repository}/actions/runs/${run.id}/artifacts?name=${name}&per_page=100`, '--paginate', '--slurp'])
-    .flatMap(page => page?.artifacts ?? []).some(artifact => artifact.name === name && !artifact.expired);
-  while (!ready()) {
-    if (waited() >= CONSUME_TOTAL_MS) return { reason: 'no_gate_selection' };
-    await io.sleep(CONSUME_POLL_MS);
-  }
+  const ready = await poll(CONSUME_TOTAL_MS, () => ghJson(io,
+    ['api', `repos/${repository}/actions/runs/${run.id}/artifacts?name=${name}&per_page=100`, '--paginate', '--slurp'])
+    .flatMap(page => page?.artifacts ?? []).some(artifact => artifact.name === name && !artifact.expired));
+  if (!ready) return { reason: 'no_gate_selection' };
   const dir = io.temp();
   let text;
   try {
     io.gh(['run', 'download', String(run.id), '--repo', repository, '--name', name, '--dir', dir]);
     text = io.read(join(dir, file));
-  } finally { io.remove(dir); }
+  } finally {
+    try { io.remove(dir); } catch { /* a leftover temp dir changes nothing */ }
+  }
   let value;
   try { value = JSON.parse(text); } catch { return { reason: 'gate_selection_invalid', detail: 'not JSON' }; }
   const why = gateSelectionProblem(value, { repository, head_sha: head, base_sha: base, head_ref: env.HEAD_REF ?? '',
@@ -548,7 +571,7 @@ export async function consume(io, env, { output } = {}) {
   try {
     Object.assign(out, await consumeCore(io, env, out, started));
   } catch (error) {
-    Object.assign(out, { mode: 'full', reason: 'error', thin_skip: '', detail: firstLine(error) });
+    Object.assign(out, { mode: 'full', reason: 'error', thin_skip: '', detail: cause(error) });
   }
   if (out.mode !== 'thin') out.thin_skip = '';
   const waited = Math.max(0, Math.round((io.now() - started) / 1000));
