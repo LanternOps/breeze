@@ -53,6 +53,9 @@ const h = vi.hoisted(() => {
     // false = not local, so the teardown falls back to signalling the agent.
     closeTerminalSession: vi.fn().mockReturnValue(false),
     closeTunnelSession: vi.fn().mockReturnValue(false),
+    // Depth of runOutsideDbContext calls in progress (#4142: the relay refuses
+    // to run inside a held DB context, so every stop must be sent outside it).
+    outside: { depth: 0 },
   };
 });
 
@@ -74,7 +77,10 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('../db', () => ({
   db: h.chain,
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  runOutsideDbContext: (fn: () => unknown) => fn(),
+  runOutsideDbContext: async (fn: () => unknown) => {
+    h.outside.depth += 1;
+    try { return await fn(); } finally { h.outside.depth -= 1; }
+  },
 }));
 
 vi.mock('../db/schema', () => ({
@@ -203,6 +209,33 @@ describe('terminateUserRemoteSessions', () => {
     expect(statusPredicate.vals).toEqual(['pending', 'connecting', 'active']);
     expect(statusPredicate.vals).not.toContain('failed');
     expect(statusPredicate.vals).not.toContain('disconnected');
+  });
+
+  // #4142: teardown runs inline in request handlers; the relay refuses to run
+  // inside a held DB context, so a cross-instance stop sent from inside it
+  // would never reach the agent.
+  it('sends stop_desktop and terminal_stop outside any held DB context', async () => {
+    const depthAtSend: number[] = [];
+    h.dispatchCommandToAgent.mockImplementation(async () => {
+      depthAtSend.push(h.outside.depth);
+      return { status: 'sent', via: 'relay' };
+    });
+    h.closeTerminalSession.mockReturnValue(false);
+    seed(
+      [
+        { id: 's1', type: 'desktop', deviceId: 'd1' },
+        { id: 's2', type: 'terminal', deviceId: 'd2' },
+      ],
+      [
+        { id: 'd1', agentId: 'agent-1' },
+        { id: 'd2', agentId: 'agent-2' },
+      ],
+    );
+
+    await terminateUserRemoteSessions('u1');
+
+    expect(depthAtSend).toHaveLength(2);
+    expect(depthAtSend.every((d) => d > 0)).toBe(true);
   });
 
   it('disconnects two desktop sessions: revokes each viewer token and signals stop_desktop per session, returns 2', async () => {

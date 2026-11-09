@@ -11,6 +11,7 @@ import {
   claimRelaySend,
   markRelaySendComplete,
   openRelayCommand,
+  releaseRelaySendClaim,
   writeRelayAck,
   type DispatchOutcome,
   type RelayJobData,
@@ -87,7 +88,19 @@ export async function processAgentCommandRelayJob(job: Job<RelayJobData>): Promi
     return ack({ status: 'infrastructure_error', message: 'relay envelope failed to open (tamper or key mismatch)' });
   }
 
-  if (!sendCommandToAgent(d.agentId, command)) return ack({ status: 'offline' });
+  // Re-checked here, not only on entry (#4142): the presence read and the
+  // claim are Redis round trips, and once `expiresAt` passes the producer may
+  // already have answered its caller, which then acts on that answer.
+  if (Date.now() > d.expiresAt) {
+    await releaseRelaySendClaim(d.agentId, d.commandId);
+    return ack({ status: 'expired' });
+  }
+
+  if (!sendCommandToAgent(d.agentId, command)) {
+    // Nothing was sent: give the claim back so a retry of this command can take it.
+    await releaseRelaySendClaim(d.agentId, d.commandId);
+    return ack({ status: 'offline' });
+  }
   await markRelaySendComplete(d.agentId, d.commandId);
   return ack({ status: 'sent', via: 'relay' });
 }

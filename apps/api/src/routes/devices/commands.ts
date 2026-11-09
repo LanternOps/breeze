@@ -256,7 +256,7 @@ commandsRoutes.post(
         // records as INSERT_FAILED for that device rather than 500-ing the whole
         // batch and losing every prior success.
         let command: QueuedCommand | undefined;
-        let delivery: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
+        let delivery: 'delivered' | 'indeterminate' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
         try {
           // `wake` never reaches here — it returns from its own relay path above.
           const res = await dispatchDeviceCommand({ deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id });

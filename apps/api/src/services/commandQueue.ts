@@ -222,11 +222,13 @@ export interface QueueCommandForExecutionResult {
   refusal?: CommandDispatchRefusal;
   trust?: { capability: 'device_execute'; reason: string };
   /**
-   * #5128. `delivered` = pushed over the live socket. `queued_live` = device
-   * online, waiting for the next heartbeat. `queued_offline` = the device was
-   * not online and the command is waiting for it to come back.
+   * #5128. `delivered` = pushed over the live socket. `indeterminate` = the
+   * push may have reached the agent; the row stays `sent` and the result or
+   * the reaper settles it (#4142). `queued_live` = device online, waiting for
+   * the next heartbeat. `queued_offline` = the device was not online and the
+   * command is waiting for it to come back.
    */
-  delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+  delivery?: 'delivered' | 'indeterminate' | 'queued_offline' | 'queued_live';
   /**
    * #5128. The instant after which the row expires undelivered. NULL for a
    * `reject` policy — those rows stay on the legacy execution clock.
