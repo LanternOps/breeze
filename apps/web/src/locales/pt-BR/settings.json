@@ -5658,8 +5658,9 @@
     "deletePasskeySsoVerified": "Identidade verificada. Escolha Excluir na chave de acesso que deseja remover.",
     "authenticatorBackupAdded": "Aplicativo autenticador adicionado como backup. Seus códigos de recuperação não foram alterados",
     "authenticatorAppRemoved": "Aplicativo autenticador removido. Você entrará com sua chave de acesso",
-    "authenticatorCodeRejectedWaitForNext": "Esse código não foi aceito. Cada código funciona apenas uma vez, então aguarde o próximo código do seu aplicativo autenticador.",
+    "authenticatorCodeRejectedWaitForNext": "Esse código não foi aceito. Cada código funciona apenas uma vez; se você acabou de usá-lo, aguarde o próximo código do seu aplicativo autenticador.",
     "passkeyConfirmationCanceled": "A confirmação com chave de acesso foi cancelada ou expirou.",
+    "passkeyProofRejected": "Não foi possível verificar sua chave de acesso. Tente novamente.",
     "failedToRemoveAuthenticatorApp": "Falha ao remover o aplicativo autenticador"
   },
   "roleManager": {

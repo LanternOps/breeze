@@ -5651,8 +5651,9 @@
     "deletePasskeySsoVerified": "Identità verificata. Scegli Elimina sulla passkey che vuoi rimuovere.",
     "authenticatorBackupAdded": "App di autenticazione aggiunta come backup. I tuoi codici di recupero non sono cambiati",
     "authenticatorAppRemoved": "App di autenticazione rimossa. Accederai con la tua passkey",
-    "authenticatorCodeRejectedWaitForNext": "Codice non accettato. Ogni codice funziona una sola volta, quindi attendi il prossimo codice della tua app di autenticazione.",
+    "authenticatorCodeRejectedWaitForNext": "Codice non accettato. Ogni codice funziona una sola volta: se lo hai appena usato, attendi il prossimo codice della tua app di autenticazione.",
     "passkeyConfirmationCanceled": "La conferma con passkey è stata annullata o è scaduta.",
+    "passkeyProofRejected": "Impossibile verificare la passkey. Riprova.",
     "failedToRemoveAuthenticatorApp": "Impossibile rimuovere l’app di autenticazione"
   },
   "roleManager": {

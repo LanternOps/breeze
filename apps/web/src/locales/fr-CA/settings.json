@@ -5651,8 +5651,9 @@
     "deletePasskeySsoVerified": "Identité vérifiée. Choisissez Supprimer sur la clé d'accès à retirer.",
     "authenticatorBackupAdded": "Application d’authentification ajoutée comme méthode de secours. Vos codes de récupération n’ont pas changé",
     "authenticatorAppRemoved": "Application d’authentification retirée. Vous vous connecterez avec votre clé d’accès",
-    "authenticatorCodeRejectedWaitForNext": "Ce code n’a pas été accepté. Chaque code ne fonctionne qu’une fois: attendez le prochain code de votre application d’authentification.",
+    "authenticatorCodeRejectedWaitForNext": "Ce code n’a pas été accepté. Chaque code ne fonctionne qu’une fois: si vous venez de l’utiliser, attendez le prochain code de votre application d’authentification.",
     "passkeyConfirmationCanceled": "La confirmation par clé d’accès a été annulée ou a expiré.",
+    "passkeyProofRejected": "Votre clé d’accès n’a pas pu être vérifiée. Veuillez réessayer.",
     "failedToRemoveAuthenticatorApp": "Impossible de retirer l’application d’authentification"
   },
   "roleManager": {

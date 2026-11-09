@@ -5658,8 +5658,9 @@
     "deletePasskeySsoVerified": "Identität bestätigt. Wählen Sie beim zu entfernenden Passkey „Löschen“.",
     "authenticatorBackupAdded": "Authentifizierungs-App als Backup hinzugefügt. Ihre Wiederherstellungscodes haben sich nicht geändert",
     "authenticatorAppRemoved": "Authentifizierungs-App entfernt. Sie melden sich mit Ihrem Passkey an",
-    "authenticatorCodeRejectedWaitForNext": "Dieser Code wurde nicht akzeptiert. Jeder Code funktioniert nur einmal. Warten Sie daher auf den nächsten Code Ihrer Authentifizierungs-App.",
+    "authenticatorCodeRejectedWaitForNext": "Dieser Code wurde nicht akzeptiert. Jeder Code funktioniert nur einmal. Wenn Sie ihn gerade verwendet haben, warten Sie auf den nächsten Code Ihrer Authentifizierungs-App.",
     "passkeyConfirmationCanceled": "Die Passkey-Bestätigung wurde abgebrochen oder es kam zu einer Zeitüberschreitung.",
+    "passkeyProofRejected": "Ihr Passkey konnte nicht überprüft werden. Bitte versuchen Sie es erneut.",
     "failedToRemoveAuthenticatorApp": "Die Authentifizierungs-App konnte nicht entfernt werden"
   },
   "roleManager": {

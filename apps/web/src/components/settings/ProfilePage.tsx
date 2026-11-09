@@ -103,13 +103,29 @@ type User = {
  * #10650: a step-up grant the server validated but did NOT spend — the
  * confirm was refused for another reason (a mistyped code or password), so
  * the retry can present it again instead of asking for the passkey twice.
- * Bound to the session generation it was minted in; a re-login drops it.
+ * Bound to the session generation it was minted in (a re-login drops it) and
+ * to its mint time: the server keeps grants for 300 s, so one held longer
+ * than the reuse window is minted afresh rather than sent to die.
  */
-type RetryableGrant = { grantId: string; sessionGeneration: number };
+type RetryableGrant = { grantId: string; sessionGeneration: number; mintedAt: number };
 
-/** The server spent the grant, or refused it: either way it cannot be reused. */
-function grantStillUsable(errorData: { error?: unknown; stepUpGrantConsumed?: unknown }): boolean {
-  return errorData.stepUpGrantConsumed !== true && errorData.error !== 'existing_factor_step_up_required';
+const GRANT_REUSE_WINDOW_MS = 4 * 60 * 1000;
+
+function reusableGrant(grant: RetryableGrant | null, generation: number): RetryableGrant | null {
+  return grant && grant.sessionGeneration === generation && Date.now() - grant.mintedAt < GRANT_REUSE_WINDOW_MS
+    ? grant
+    : null;
+}
+
+/**
+ * Whether a refused request left its grant usable. Not when the server says
+ * it spent the grant or refused it, and not after a server error: a 5xx can
+ * come from past the point where the grant was consumed, and says nothing.
+ */
+function grantStillUsable(status: number, errorData: { error?: unknown; stepUpGrantConsumed?: unknown }): boolean {
+  return status < 500
+    && errorData.stepUpGrantConsumed !== true
+    && errorData.error !== 'existing_factor_step_up_required';
 }
 
 type AvatarChange = { kind: 'replace'; file: File; previewUrl: string } | { kind: 'remove' };
@@ -868,13 +884,17 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           : {};
       const generation = useAuthStore.getState().sessionGeneration;
       let stepUpGrantId: string | undefined;
+      let grantMintedAt = 0;
       if (addingBackup) {
         // Minted at Verify, not before setup: grants live 300 s and scanning a
         // QR code can take longer. A grant a previous attempt left unspent (a
         // mistyped code) is presented again rather than prompting twice.
-        stepUpGrantId = totpBackupGrant?.sessionGeneration === generation ? totpBackupGrant.grantId : undefined;
+        const held = reusableGrant(totpBackupGrant, generation);
+        stepUpGrantId = held?.grantId;
+        grantMintedAt = held?.mintedAt ?? 0;
         if (!stepUpGrantId) {
           try {
+            grantMintedAt = Date.now();
             stepUpGrantId = await mintStepUpGrant({ operation: 'add_factor', reauth: { method: 'passkey' } });
           } catch (err) {
             // Nothing reached /mfa/enable, so the typed code is unspent.
@@ -901,7 +921,19 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         if (stepUpGrantId) {
           // The server validates the grant before the code and spends it only
           // after the code verifies, so a rejected code leaves it usable.
-          setTotpBackupGrant(grantStillUsable(errorData) ? { grantId: stepUpGrantId, sessionGeneration: generation } : null);
+          setTotpBackupGrant(grantStillUsable(response.status, errorData)
+            ? { grantId: stepUpGrantId, sessionGeneration: generation, mintedAt: grantMintedAt }
+            : null);
+        }
+        if (errorData.code === 'factor_state_changed') {
+          // The account changed shape under the staged setup (another tab, an
+          // admin reset): this QR can never be confirmed. Back to the status
+          // card, where the row now reflects whatever the user does next.
+          setMfaError(errorData.error ?? errorData.message ?? t('profilePage.failedToEnableMFA'));
+          setQrCodeDataUrl(undefined);
+          setTotpSecret(undefined);
+          setSsoSetupReady(false);
+          return 'restart';
         }
         if (errorData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
           // See requestMfaSetup — same dead-grant handling on the terminal write.
@@ -1105,9 +1137,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMfaLoading(true);
-      let stepUpGrantId = totpRemoveGrant?.sessionGeneration === generation ? totpRemoveGrant.grantId : undefined;
+      const held = reusableGrant(totpRemoveGrant, generation);
+      let stepUpGrantId = held?.grantId;
+      let grantMintedAt = held?.mintedAt ?? 0;
       if (!stepUpGrantId) {
         try {
+          grantMintedAt = Date.now();
           stepUpGrantId = await mintStepUpGrant({
             operation: 'remove_totp',
             reauth: factor.method === 'totp' ? { method: 'totp', code: factor.code } : { method: 'passkey' },
@@ -1128,7 +1163,17 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (!response.ok) {
         // Refusals raised before the grant is spent (a mistyped password, a
         // state the pre-check refused) leave it usable for the retry.
-        setTotpRemoveGrant(grantStillUsable(data) ? { grantId: stepUpGrantId, sessionGeneration: generation } : null);
+        setTotpRemoveGrant(grantStillUsable(response.status, data)
+          ? { grantId: stepUpGrantId, sessionGeneration: generation, mintedAt: grantMintedAt }
+          : null);
+        if (data.code === 'totp_not_enrolled') {
+          // The authenticator is already gone (removed from another tab or by
+          // an admin reset): stop showing a Remove that cannot succeed.
+          if (useAuthStore.getState().sessionGeneration === generation) {
+            useAuthStore.getState().updateUser({ totpEnrolled: false });
+          }
+          setUser(prev => (prev ? { ...prev, totpEnrolled: false } : null));
+        }
         throw new Error(
           deadManageGrantMessage(data)
             ?? (data.error === 'existing_factor_step_up_required' ? t('profilePage.passkeyStepUpVerificationExpired') : null)
@@ -1292,6 +1337,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const mapFactorStepUpError = (err: unknown, method: 'passkey' | 'totp'): string => {
     if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
       return t('profilePage.passkeyConfirmationCanceled');
+    }
+    // A refused assertion is not a mistyped code: nothing was typed.
+    if (method === 'passkey' && err instanceof StepUpMintError
+      && (err.responseCode === 'mfa_proof_invalid' || err.status === 400)) {
+      return t('profilePage.passkeyProofRejected');
     }
     if (err instanceof StepUpMintError) return mapPasskeyStepUpMintError(err, method);
     return err instanceof Error ? err.message : t('profilePage.failedToVerifyCurrentFactor');

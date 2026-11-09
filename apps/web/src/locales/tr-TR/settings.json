@@ -5658,8 +5658,9 @@
     "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin.",
     "authenticatorBackupAdded": "Kimlik doğrulama uygulaması yedek olarak eklendi. Kurtarma kodlarınız değişmedi",
     "authenticatorAppRemoved": "Kimlik doğrulama uygulaması kaldırıldı. Geçiş anahtarınızla oturum açacaksınız",
-    "authenticatorCodeRejectedWaitForNext": "Bu kod kabul edilmedi. Her kod yalnızca bir kez çalışır, bu yüzden kimlik doğrulama uygulamanızdaki bir sonraki kodu bekleyin.",
+    "authenticatorCodeRejectedWaitForNext": "Bu kod kabul edilmedi. Her kod yalnızca bir kez çalışır; az önce kullandıysanız kimlik doğrulama uygulamanızdaki bir sonraki kodu bekleyin.",
     "passkeyConfirmationCanceled": "Geçiş anahtarı onayı iptal edildi veya zaman aşımına uğradı.",
+    "passkeyProofRejected": "Geçiş anahtarınız doğrulanamadı. Lütfen tekrar deneyin.",
     "failedToRemoveAuthenticatorApp": "Kimlik doğrulama uygulaması kaldırılamadı"
   },
   "roleManager": {

@@ -21,9 +21,11 @@ export type TotpRemovalProof = { method: 'passkey' } | { method: 'totp'; code: s
  * #10650 adds two: `'backup-added'` = the authenticator was added as a backup
  * beside a passkey (the server issues NO recovery codes, so no dialog), and
  * `'not-sent'` = the passkey confirmation never completed, so the request
- * never went out and the typed code is still unspent.
+ * never went out and the typed code is still unspent. `'restart'` = the
+ * server says the account changed under the staged setup, so this QR can
+ * never be confirmed: back to the status card (the parent shows why).
  */
-export type MfaEnableVerdict = void | boolean | 'backup-added' | 'not-sent';
+export type MfaEnableVerdict = void | boolean | 'backup-added' | 'not-sent' | 'restart';
 
 type MfaManageIntent = 'recovery_codes' | 'disable_mfa' | 'remove_totp';
 
@@ -402,6 +404,13 @@ export default function MFASettings({
     // server and the typed code is unspent. Keep it, and the view, for a retry
     // — and do not claim the code was rejected: it was never checked.
     if (verdict === 'not-sent') return;
+    if (verdict === 'restart') {
+      resetDigits();
+      setEnrollCodeRejected(false);
+      setCurrentPassword('');
+      setView('status');
+      return;
+    }
     const succeeded = verdict !== false;
     // Clear the digits either way: on success they are spent, on failure the
     // user needs an empty field for the NEXT 30-second code.

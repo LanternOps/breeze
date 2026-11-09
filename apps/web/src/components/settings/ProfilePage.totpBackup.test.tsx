@@ -20,6 +20,7 @@ const {
   commitMfaStateIfCurrentMock,
   commitMfaDisableIfCurrentMock,
   updateUserMock,
+  authState,
 } = vi.hoisted(() => ({
   fetchWithAuthMock: vi.fn(),
   createPasskeyCredentialMock: vi.fn(),
@@ -31,6 +32,8 @@ const {
   commitMfaStateIfCurrentMock: vi.fn(() => true),
   commitMfaDisableIfCurrentMock: vi.fn(() => true),
   updateUserMock: vi.fn(),
+  // Mutable so a test can simulate a logout/re-login between two attempts.
+  authState: { sessionGeneration: 0 },
 }));
 
 vi.mock('../../stores/auth', () => ({
@@ -43,7 +46,7 @@ vi.mock('../../stores/auth', () => ({
     {
       getState: () => ({
         updateUser: updateUserMock,
-        sessionGeneration: 0,
+        sessionGeneration: authState.sessionGeneration,
         user: { id: 'user-1' },
         commitReissuedSessionIfCurrent: commitReissuedSessionIfCurrentMock,
         commitMfaEnrollmentIfCurrent: commitMfaEnrollmentIfCurrentMock,
@@ -139,6 +142,8 @@ const REAL_LOCATION = window.location;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
+  authState.sessionGeneration = 0;
   commitReissuedSessionIfCurrentMock.mockReturnValue(true);
   commitMfaStateIfCurrentMock.mockReturnValue(true);
   commitMfaEnrollmentIfCurrentMock.mockReturnValue(true);
@@ -227,12 +232,9 @@ describe('ProfilePage — adding the authenticator backup', () => {
     mockApi((u) => {
       if (u !== '/auth/mfa/enable') return undefined;
       enableCalls += 1;
+      // W01's issuance-admission refusal after the grant was spent.
       return enableCalls === 1
-        ? makeJsonResponse({
-          error: 'Your sign-in methods changed while this was in progress. Please start again.',
-          code: 'factor_state_changed',
-          stepUpGrantConsumed: true,
-        }, false, 409)
+        ? makeJsonResponse({ error: 'Authentication issuance unavailable', stepUpGrantConsumed: true }, false, 409)
         : makeJsonResponse({ success: true, backup: true, tokens: TOKENS });
     });
     mintStepUpGrantMock.mockResolvedValueOnce('grant-a').mockResolvedValueOnce('grant-b');
@@ -241,7 +243,7 @@ describe('ProfilePage — adding the authenticator backup', () => {
     await openBackupQr();
     fillDigits('111111');
     fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
-    await screen.findByText(/Your sign-in methods changed/i);
+    await screen.findByText('Authentication issuance unavailable');
     fillDigits('222222');
     fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
 
@@ -496,5 +498,234 @@ describe('ProfilePage — "Use authenticator app instead" on step-up prompts', (
     expect(bodyOf('/auth/mfa/step-up')).toEqual({ method: 'totp', code: '123456', operation: 'rotate_recovery_codes' });
     expect(callsTo('/auth/mfa/step-up/options')).toHaveLength(0);
     expect(getPasskeyCredentialMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProfilePage — review hardening (#11486)', () => {
+  it('leaves the initial TOTP enrollment road untouched: no step-up, codes shown, primary becomes TOTP', async () => {
+    mockApi((u) => (u === '/auth/mfa/enable'
+      ? makeJsonResponse({ success: true, recoveryCodes: ['AAAA-1111', 'BBBB-2222'], tokens: TOKENS })
+      : undefined), []);
+
+    render(<ProfilePage initialUser={{ ...PASSKEY_PRIMARY, mfaEnabled: false, mfaMethod: null }} />);
+    fireEvent.click(await screen.findByTestId('mfa-setup-start'));
+    fireEvent.change(screen.getByTestId('mfa-current-password'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText(/Set up authenticator/i);
+    fillDigits('123456');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and enable' }));
+
+    expect(await screen.findByText('AAAA-1111')).toBeTruthy();
+    expect(mintStepUpGrantMock).not.toHaveBeenCalled();
+    expect(bodyOf('/auth/mfa/enable')).toEqual({ code: '123456', currentPassword: 'pw' });
+    expect(commitMfaEnrollmentIfCurrentMock).toHaveBeenCalledWith(0, 'totp', TOKENS);
+    expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();
+    expect(apiGetMfaEnrollmentOptionsMock).not.toHaveBeenCalled();
+  });
+
+  it('a grant refused as stale on /mfa/enable is dropped, says so, and the retry mints again', async () => {
+    let enableCalls = 0;
+    mockApi((u) => {
+      if (u !== '/auth/mfa/enable') return undefined;
+      enableCalls += 1;
+      return enableCalls === 1
+        ? makeJsonResponse({ error: 'existing_factor_step_up_required' }, false, 403)
+        : makeJsonResponse({ success: true, backup: true, tokens: TOKENS });
+    });
+    mintStepUpGrantMock.mockResolvedValueOnce('grant-a').mockResolvedValueOnce('grant-b');
+
+    render(<ProfilePage initialUser={PASSKEY_PRIMARY} />);
+    await openBackupQr();
+    fillDigits('111111');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+    expect(await screen.findByText('Verification expired. Please verify again.')).toBeTruthy();
+    expect(screen.queryByText('existing_factor_step_up_required')).toBeNull();
+    fillDigits('222222');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+
+    await screen.findByText("Authenticator app added as a backup. Your recovery codes haven't changed");
+    expect(mintStepUpGrantMock).toHaveBeenCalledTimes(2);
+    expect(bodyOf('/auth/mfa/enable', 1)).toMatchObject({ stepUpGrantId: 'grant-b' });
+  });
+
+  it('does not reuse a grant across a re-login (session generation moved)', async () => {
+    let enableCalls = 0;
+    mockApi((u) => {
+      if (u !== '/auth/mfa/enable') return undefined;
+      enableCalls += 1;
+      return enableCalls === 1
+        ? makeJsonResponse({ error: 'Invalid MFA code', code: 'mfa_code_invalid' }, false, 400)
+        : makeJsonResponse({ success: true, backup: true, tokens: TOKENS });
+    });
+    mintStepUpGrantMock.mockResolvedValueOnce('grant-a').mockResolvedValueOnce('grant-b');
+
+    render(<ProfilePage initialUser={PASSKEY_PRIMARY} />);
+    await openBackupQr();
+    fillDigits('111111');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+    await screen.findByText(/Invalid MFA code/i);
+    authState.sessionGeneration = 1;
+    fillDigits('222222');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+
+    await screen.findByText(/Authenticator app added as a backup/);
+    expect(mintStepUpGrantMock).toHaveBeenCalledTimes(2);
+    expect(bodyOf('/auth/mfa/enable', 1)).toMatchObject({ stepUpGrantId: 'grant-b' });
+  });
+
+  it('does not reuse a grant older than its server lifetime', async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let enableCalls = 0;
+    mockApi((u) => {
+      if (u !== '/auth/mfa/enable') return undefined;
+      enableCalls += 1;
+      return enableCalls === 1
+        ? makeJsonResponse({ error: 'Invalid MFA code', code: 'mfa_code_invalid' }, false, 400)
+        : makeJsonResponse({ success: true, backup: true, tokens: TOKENS });
+    });
+    mintStepUpGrantMock.mockResolvedValueOnce('grant-a').mockResolvedValueOnce('grant-b');
+
+    render(<ProfilePage initialUser={PASSKEY_PRIMARY} />);
+    await openBackupQr();
+    fillDigits('111111');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+    await screen.findByText(/Invalid MFA code/i);
+    now += 5 * 60 * 1000;
+    fillDigits('222222');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+
+    await screen.findByText(/Authenticator app added as a backup/);
+    expect(mintStepUpGrantMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not reuse a grant after a server error (it may have been spent)', async () => {
+    let enableCalls = 0;
+    mockApi((u) => {
+      if (u !== '/auth/mfa/enable') return undefined;
+      enableCalls += 1;
+      return enableCalls === 1
+        ? makeJsonResponse({ error: 'Internal Server Error' }, false, 500)
+        : makeJsonResponse({ success: true, backup: true, tokens: TOKENS });
+    });
+    mintStepUpGrantMock.mockResolvedValueOnce('grant-a').mockResolvedValueOnce('grant-b');
+
+    render(<ProfilePage initialUser={PASSKEY_PRIMARY} />);
+    await openBackupQr();
+    fillDigits('111111');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+    await screen.findByText(/Internal Server Error/);
+    fillDigits('222222');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+
+    await screen.findByText(/Authenticator app added as a backup/);
+    expect(mintStepUpGrantMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns to the status card when the factors changed mid-flight (the staged QR is dead)', async () => {
+    mockApi((u) => (u === '/auth/mfa/enable'
+      ? makeJsonResponse({
+        error: 'Your sign-in methods changed while this was in progress. Please start again.',
+        code: 'factor_state_changed',
+        stepUpGrantConsumed: false,
+      }, false, 409)
+      : undefined));
+    mintStepUpGrantMock.mockResolvedValueOnce('grant-a');
+
+    render(<ProfilePage initialUser={PASSKEY_PRIMARY} />);
+    await openBackupQr();
+    fillDigits('111111');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+
+    expect(await screen.findByText(/Your sign-in methods changed/)).toBeTruthy();
+    expect(screen.getByTestId('mfa-authenticator-row')).toBeTruthy();
+    expect(screen.queryByText(/Set up authenticator/i)).toBeNull();
+    expect(screen.queryByTestId('mfa-code-rejected-hint')).toBeNull();
+  });
+
+  it('says the passkey could not be verified (not "incorrect code") when the assertion is refused', async () => {
+    mockApi();
+    mintStepUpGrantMock.mockRejectedValueOnce(new StepUpMintError('invalid_factor', 'Invalid passkey', 400, 'mfa_proof_invalid'));
+
+    render(<ProfilePage initialUser={PASSKEY_PRIMARY} />);
+    await openBackupQr();
+    fillDigits('123456');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+
+    expect(await screen.findByText("Your passkey couldn't be verified. Please try again.")).toBeTruthy();
+    expect(screen.queryByText('Incorrect code. Please try again.')).toBeNull();
+    expect(callsTo('/auth/mfa/enable')).toHaveLength(0);
+  });
+
+  it('a spent remove grant is dropped and the retry mints a fresh one', async () => {
+    let removeCalls = 0;
+    mockApi((u) => {
+      if (u !== '/auth/mfa/totp/remove') return undefined;
+      removeCalls += 1;
+      return removeCalls === 1
+        ? makeJsonResponse({
+          error: 'Your sign-in methods changed while this was in progress. Please start again.',
+          code: 'factor_state_changed',
+          stepUpGrantConsumed: true,
+        }, false, 409)
+        : makeJsonResponse({ success: true, mfaMethod: 'passkey', tokens: TOKENS });
+    });
+    mintStepUpGrantMock.mockResolvedValueOnce('remove-a').mockResolvedValueOnce('remove-b');
+
+    render(<ProfilePage initialUser={PASSKEY_WITH_BACKUP} />);
+    fireEvent.click(await screen.findByTestId('mfa-totp-backup-remove-start'));
+    fireEvent.change(screen.getByTestId('mfa-totp-remove-password'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByTestId('mfa-totp-remove-submit'));
+    await screen.findByText(/Your sign-in methods changed/);
+    fireEvent.click(screen.getByTestId('mfa-totp-remove-submit'));
+
+    await screen.findByText("Authenticator app removed. You'll sign in with your passkey");
+    expect(mintStepUpGrantMock).toHaveBeenCalledTimes(2);
+    expect(bodyOf('/auth/mfa/totp/remove', 1)).toMatchObject({ stepUpGrantId: 'remove-b' });
+  });
+
+  it('a cancelled passkey prompt on remove keeps the view and the typed password', async () => {
+    mockApi();
+    mintStepUpGrantMock.mockRejectedValueOnce(Object.assign(new Error('cancelled'), { name: 'NotAllowedError' }));
+
+    render(<ProfilePage initialUser={PASSKEY_WITH_BACKUP} />);
+    fireEvent.click(await screen.findByTestId('mfa-totp-backup-remove-start'));
+    fireEvent.change(screen.getByTestId('mfa-totp-remove-password'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByTestId('mfa-totp-remove-submit'));
+
+    expect(await screen.findByText('Passkey confirmation was canceled or timed out.')).toBeTruthy();
+    expect(callsTo('/auth/mfa/totp/remove')).toHaveLength(0);
+    expect((screen.getByTestId('mfa-totp-remove-password') as HTMLInputElement).value).toBe('pw');
+  });
+
+  it('corrects a stale "Backup" row when the server says no authenticator is enrolled', async () => {
+    mockApi((u) => (u === '/auth/mfa/totp/remove'
+      ? makeJsonResponse({ error: 'No authenticator app is set up on this account', code: 'totp_not_enrolled' }, false, 400)
+      : undefined));
+    mintStepUpGrantMock.mockResolvedValueOnce('remove-grant');
+
+    render(<ProfilePage initialUser={PASSKEY_WITH_BACKUP} />);
+    fireEvent.click(await screen.findByTestId('mfa-totp-backup-remove-start'));
+    fireEvent.change(screen.getByTestId('mfa-totp-remove-password'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByTestId('mfa-totp-remove-submit'));
+
+    expect(await screen.findByText('No authenticator app is set up on this account')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(status()).toBe('Not set up');
+  });
+
+  it('asks the user to sign in again when the backup add could not hand back a session', async () => {
+    mockApi((u) => (u === '/auth/mfa/enable'
+      ? makeJsonResponse({ success: true, backup: true })
+      : undefined));
+    mintStepUpGrantMock.mockResolvedValueOnce('grant-a');
+
+    render(<ProfilePage initialUser={PASSKEY_PRIMARY} />);
+    await openBackupQr();
+    fillDigits('123456');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and add backup' }));
+
+    expect(await screen.findByText("Authenticator app added as a backup. Your recovery codes haven't changed. Sign in again to continue.")).toBeTruthy();
+    expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();
   });
 });

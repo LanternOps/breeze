@@ -5658,8 +5658,9 @@
     "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove.",
     "authenticatorBackupAdded": "Authenticator app added as a backup. Your recovery codes haven't changed",
     "authenticatorAppRemoved": "Authenticator app removed. You'll sign in with your passkey",
-    "authenticatorCodeRejectedWaitForNext": "That code wasn't accepted. Each code works once, so wait for the next code from your authenticator app.",
+    "authenticatorCodeRejectedWaitForNext": "That code wasn't accepted. Each code works only once, so if you just used it, wait for the next code from your authenticator app.",
     "passkeyConfirmationCanceled": "Passkey confirmation was canceled or timed out.",
+    "passkeyProofRejected": "Your passkey couldn't be verified. Please try again.",
     "failedToRemoveAuthenticatorApp": "Failed to remove the authenticator app"
   },
   "roleManager": {
