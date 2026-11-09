@@ -134,8 +134,9 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
           });
           for (const r of body?.data ?? []) results.set(r.requestId, r.result);
         } catch (err) {
-          // Nothing decided yet: keep the selection for another try.
-          if (results.size === 0) throw err;
+          // Nothing decided yet: keep the selection for another try. A 401 hands
+          // off to the login redirect, so no partial-result summary either.
+          if (results.size === 0 || (err instanceof ActionError && err.status === 401)) throw err;
           if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('portalAccessRequests.errors.bulk') });
           break;
         }

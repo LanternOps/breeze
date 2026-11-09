@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -7,6 +7,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const showToastMock = vi.fn();
 vi.mock('../../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToastMock(...a) }));
 
+import { navigateTo } from '@/lib/navigation';
 import { PortalAccessRequestsList } from './PortalAccessRequestsList';
 import type { PortalAccessRequestListItem } from './types';
 
@@ -156,6 +157,35 @@ describe('PortalAccessRequestsList', () => {
       expect.objectContaining({ type: 'success', message: '150 requests decided.' })));
     const sizes = posts().map(([, init]) => (JSON.parse((init as RequestInit).body as string) as { requestIds: string[] }).requestIds.length);
     expect(sizes).toEqual([100, 50]);
+  });
+
+  it('a bulk decide that fails outright decides nothing and keeps the rows selected', async () => {
+    mockApi([[req('r1'), req('r2')]], () => res({ error: 'boom' }, 500));
+    render(<PortalAccessRequestsList orgId={ORG} />);
+    fireEvent.click(await screen.findByLabelText('Select all requests'));
+    fireEvent.click(screen.getByTestId('portal-access-requests-bulk-approve'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+    expect(screen.getByTestId('portal-access-request-row-r1')).toBeInTheDocument();
+    expect(screen.getByLabelText('Select the request from r1@acme.test')).toBeChecked();
+  });
+
+  it('a 401 on a later batch hands off to the login redirect without a partial-result toast', async () => {
+    const many = Array.from({ length: 150 }, (_, i) => req(`r${i}`));
+    let batch = 0;
+    mockApi([many, []], (_url, init) => {
+      batch += 1;
+      if (batch > 1) return res({ error: 'unauthorized' }, 401);
+      const { requestIds } = JSON.parse((init as RequestInit).body as string) as { requestIds: string[] };
+      return res({ data: requestIds.map((requestId) => ({ requestId, result: 'approved' })) });
+    });
+    render(<PortalAccessRequestsList orgId={ORG} />);
+    fireEvent.click(await screen.findByLabelText('Select all requests'));
+    fireEvent.click(screen.getByTestId('portal-access-requests-bulk-approve'));
+    await waitFor(() => expect(vi.mocked(navigateTo)).toHaveBeenCalledWith('/login', { replace: true }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 
   it('a failed refresh after a decision keeps the rows and says the list may be stale', async () => {

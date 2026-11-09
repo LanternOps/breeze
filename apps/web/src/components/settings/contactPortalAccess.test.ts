@@ -116,13 +116,28 @@ describe('useContactPortalAccess', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(4);
   });
 
-  it('loads pending requests into the status; a failed requests fetch keeps portal access available', async () => {
+  it('loads pending requests into the status, asking for the whole pending cap in one page', async () => {
     fetchWithAuthMock.mockImplementation((url: string) =>
       url.includes('portal-access-requests') ? json({ data: [{ email: 'New@Acme.test' }], hasMore: false }) : json({ data: [] }));
     const { result } = renderHook(() => useContactPortalAccess(ORG));
     await waitFor(() => expect(result.current.available).toBe(true));
     await waitFor(() => expect(result.current.statusFor({ id: 'c9', email: 'new@acme.test' }).status).toBe('requested'));
-    expect(fetchWithAuthMock).toHaveBeenCalledWith(`/orgs/organizations/${ORG}/portal-access-requests?status=pending`);
+    // An org holds at most 200 pending requests; the list route defaults to 100 per page.
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(`/orgs/organizations/${ORG}/portal-access-requests?status=pending&limit=200`);
+  });
+
+  it.each([
+    ['a 500', () => json({ error: 'boom' }, 500)],
+    ['a thrown fetch', () => Promise.reject(new Error('network down'))],
+  ])('keeps portal access available when the requests fetch fails with %s', async (_label, failRequests) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      url.includes('portal-access-requests') ? failRequests() : json({ data: [login({})] }));
+    const { result } = renderHook(() => useContactPortalAccess(ORG));
+    await waitFor(() => expect(result.current.available).toBe(true));
+    expect(result.current.statusFor({ id: 'c1', email: 'ada@acme.test' }).status).toBe('active');
+    expect(warn).toHaveBeenCalledWith('[useContactPortalAccess] access requests load failed', expect.anything());
+    warn.mockRestore();
   });
 
   it('treats a 403 requests fetch as empty without hiding portal access', async () => {

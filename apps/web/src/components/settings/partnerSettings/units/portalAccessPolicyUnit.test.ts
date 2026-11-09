@@ -59,4 +59,18 @@ describe('portal access policy save unit', () => {
     expect(slice().draft?.draft).toEqual({ passwordMode: 'sso_only' });
     expect(result.current.isDirty()).toBe(true);
   });
+
+  it.each([
+    ['a 403 from the partner-wide write gate', () => fetchWithAuth.mockResolvedValueOnce(json(403, { error: 'Forbidden', code: 'ACCESS_DENIED' }))],
+    ['a network error', () => fetchWithAuth.mockRejectedValueOnce(new TypeError('Failed to fetch'))],
+    ['a 200 without a policy view', () => fetchWithAuth.mockResolvedValueOnce(json(200, { data: { owner: null } }))],
+  ])('%s is a failed outcome and keeps the draft', async (_label, arrange) => {
+    arrange();
+    store().setDraft<PortalAccessPolicyUnitValue>('portalAccessPolicy', v => ({ ...v, draft: { selfRegistrationMode: 'approval' } }));
+    const { result } = renderHook(() => usePortalAccessPolicyUnit());
+    expect(await result.current.save()).toEqual({ status: 'failed' });
+    expect(slice().draft?.draft).toEqual({ selfRegistrationMode: 'approval' });
+    expect(slice().baseline).toEqual({ view, draft: {} });
+    expect(result.current.isDirty()).toBe(true);
+  });
 });

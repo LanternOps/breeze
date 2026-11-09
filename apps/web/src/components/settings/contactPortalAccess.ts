@@ -89,7 +89,9 @@ export function derivePortalStatus(
 }
 
 const base = (orgId: string) => `/orgs/organizations/${orgId}/portal-users`;
-const requestsUrl = (orgId: string) => `/orgs/organizations/${orgId}/portal-access-requests?status=pending`;
+// An org holds at most 200 pending requests (the API cap), and the list route
+// takes up to 200 per page, so one page covers every pending email.
+const requestsUrl = (orgId: string) => `/orgs/organizations/${orgId}/portal-access-requests?status=pending&limit=200`;
 
 async function fetchPendingEmails(orgId: string): Promise<Set<string>> {
   try {
