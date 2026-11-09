@@ -1418,7 +1418,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'staleCommandReaper',
-    placement: 'socket-owner',
+    placement: 'global',
     // #7105: the reaper needs only Postgres, and without it silent commands
     // and backup jobs never terminalise — keep it running when Redis is down.
     runsWithoutRedis: true,
