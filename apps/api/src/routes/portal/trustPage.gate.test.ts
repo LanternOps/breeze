@@ -29,7 +29,7 @@ vi.mock('../../db', () => ({
         where: () => ({
           limit: () => Promise.resolve([{
             id: 'pu-1', orgId: '11111111-1111-4111-8111-111111111111', email: 'customer@example.com',
-            name: 'Customer', contactId: 'contact-1', authMethod: 'password', receiveNotifications: true,
+            name: 'Customer', contactId: 'contact-1', authMethod: 'password', browserAccess: 'granted', receiveNotifications: true,
             status: 'active', authEpoch: 1,
           }]),
         }),

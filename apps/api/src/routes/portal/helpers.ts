@@ -1,6 +1,5 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
-import { nanoid } from 'nanoid';
 import { envStr } from '../../utils/envStr';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { isRequestConnectionSecure } from '../auth/helpers';
@@ -22,8 +21,6 @@ import {
   STATE_SWEEP_INTERVAL_MS,
   PORTAL_USE_REDIS,
   PORTAL_REDIS_KEYS,
-  INVITE_TTL_MS,
-  INVITE_TTL_SECONDS,
   PORTAL_INVITE_TOKEN_CAP,
 } from './schemas';
 import {
@@ -41,8 +38,14 @@ export { capMapByOldest, checkRateLimit, portalRateLimitBuckets };
 // ============================================
 
 export const portalSessions = new Map<string, PortalSession>();
-export const portalResetTokens = new Map<string, { userId: string; expiresAt: Date; createdAt: Date }>();
-export const portalInviteTokens = new Map<string, { portalUserId: string; expiresAt: Date; createdAt: Date }>();
+/**
+ * In-memory capability-token store (used only when Redis is off), keyed by the
+ * sha256 of the raw token. `payload` is the serialized purpose-bound payload
+ * written and consumed by ./capabilityTokens.ts.
+ */
+export type PortalTokenEntry = { payload: string; expiresAt: Date; createdAt: Date };
+export const portalResetTokens = new Map<string, PortalTokenEntry>();
+export const portalInviteTokens = new Map<string, PortalTokenEntry>();
 let lastStateSweepAtMs = 0;
 
 // ============================================
@@ -509,7 +512,7 @@ function safeCompareTokens(headerToken: string, cookieToken: string): boolean {
 }
 
 // ============================================
-// Portal URL + invite tokens
+// Portal URL
 // ============================================
 
 /**
@@ -523,35 +526,7 @@ export function buildPortalUrl(path: string): string {
   return `${portalBase()}${suffix}`;
 }
 
-export async function storePortalInviteToken(portalUserId: string): Promise<string | null> {
-  const rawToken = nanoid(48);
-  const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-  if (PORTAL_USE_REDIS) {
-    const redis = getRedis();
-    if (!redis) return null; // redis required but unavailable — don't mint an unredeemable token
-    await redis.setex(PORTAL_REDIS_KEYS.inviteToken(tokenHash), INVITE_TTL_SECONDS, JSON.stringify({ portalUserId }));
-  } else {
-    portalInviteTokens.set(tokenHash, { portalUserId, expiresAt: new Date(Date.now() + INVITE_TTL_MS), createdAt: new Date() });
-    capMapByOldest(portalInviteTokens, PORTAL_INVITE_TOKEN_CAP, (t) => t.createdAt.getTime());
-  }
-  return rawToken;
-}
-
-export async function consumePortalInviteToken(rawToken: string): Promise<string | null> {
-  const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-  if (PORTAL_USE_REDIS) {
-    const redis = getRedis();
-    if (!redis) return null;
-    const raw = await redis.get(PORTAL_REDIS_KEYS.inviteToken(tokenHash));
-    if (!raw) return null;
-    await redis.del(PORTAL_REDIS_KEYS.inviteToken(tokenHash));
-    try { return JSON.parse(raw).portalUserId ?? null; } catch { return null; }
-  }
-  const stored = portalInviteTokens.get(tokenHash);
-  portalInviteTokens.delete(tokenHash);
-  if (stored && stored.expiresAt.getTime() > Date.now()) return stored.portalUserId;
-  return null;
-}
+// Invite and reset tokens: see ./capabilityTokens.ts (purpose-bound, atomically consumed).
 
 /**
  * Drop every live portal session belonging to a set of portal users, across

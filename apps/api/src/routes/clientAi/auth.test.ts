@@ -61,7 +61,11 @@ vi.mock('../../db', () => {
     insert: dbInsertMock,
     update: dbUpdateMock,
   };
-  return { db: dbMock, withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()) };
+  return {
+    db: dbMock,
+    withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+    withDbTransaction: vi.fn((fn: () => unknown) => fn()),
+  };
 });
 
 // #3258: the exchange resolves the login's CONTACT. The resolver's own rules
@@ -76,6 +80,13 @@ vi.mock('../../services/clientAiEntraAddress', () => ({
   resolveLinkableEntraAddress: resolveAddressMock,
 }));
 
+// W2 release A: the existing-login self-heal of portal_user_identities is
+// proved in services/clientAiExchange.test.ts and the identities integration
+// suite; stubbed here so this suite stays about the route's wire shape.
+vi.mock('../../services/portalUserIdentities', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/portalUserIdentities')>()),
+  ensureEntraIdentity: vi.fn(async () => 'present'),
+}));
 vi.mock('../../services/redis', () => ({ getRedis: getRedisMock }));
 vi.mock('../../services/rate-limit', () => ({ rateLimiter: rateLimiterMock }));
 // Partial mock: only the IP SOURCE is stubbed. rateLimitIpKey (the IPv6 /64

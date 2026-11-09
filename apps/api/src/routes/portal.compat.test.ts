@@ -7,6 +7,7 @@ vi.mock('nanoid', () => ({
 }));
 
 vi.mock('../services/password', () => ({
+  getDummyPasswordHash: vi.fn(async () => 'dummy-hash'),
   hashPassword: vi.fn().mockResolvedValue('hashed-password'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
   verifyPassword: vi.fn()
@@ -115,6 +116,7 @@ vi.mock('../db/schema', () => ({
     name: 'portalUsers.name',
     passwordHash: 'portalUsers.passwordHash',
     authMethod: 'portalUsers.authMethod',
+    browserAccess: 'portalUsers.browserAccess',
     receiveNotifications: 'portalUsers.receiveNotifications',
     status: 'portalUsers.status',
     lastLoginAt: 'portalUsers.lastLoginAt',
@@ -137,6 +139,7 @@ const portalUser = {
   name: 'Portal User',
   passwordHash: 'hash',
   authMethod: 'password',
+  browserAccess: 'granted',
   receiveNotifications: true,
   status: 'active'
 };

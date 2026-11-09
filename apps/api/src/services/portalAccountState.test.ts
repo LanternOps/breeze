@@ -1,0 +1,146 @@
+import { describe, expect, it } from 'vitest';
+import {
+  PORTAL_ACCOUNT_TRANSITION_REFUSED,
+  PORTAL_USER_IDENTITY_MANAGED,
+  PortalAccountTransitionError,
+  initialPortalAccountState,
+  isBulkInviteEligible,
+  isPasswordEligible,
+  planPortalAccountTransition,
+  type PortalAccountFacts,
+  type PortalAccountWriter,
+} from './portalAccountState';
+
+/** Facts of a password-method row awaiting setup (the common invite shape). */
+const f = (over: Partial<PortalAccountFacts> = {}): PortalAccountFacts => ({
+  status: 'invited',
+  browserAccess: 'granted',
+  authMethod: 'password',
+  hasPasswordHash: false,
+  hasExternalIdentity: false,
+  ...over,
+});
+
+const ACTIVE_WITH_HASH = f({ status: 'active', hasPasswordHash: true });
+const ACTIVE_CREDENTIAL_LESS = f({ status: 'active', hasPasswordHash: false });
+const DISABLED_WITH_HASH = f({ status: 'disabled', hasPasswordHash: true });
+const DISABLED_CREDENTIAL_LESS = f({ status: 'disabled' });
+const ENTRA = f({ status: 'active', authMethod: 'entra', browserAccess: 'none', hasExternalIdentity: true });
+const DISABLED_ENTRA = f({ status: 'disabled', authMethod: 'entra', browserAccess: 'none', hasExternalIdentity: true });
+const PASSWORD_WITH_IDENTITY = f({ status: 'invited', hasExternalIdentity: true });
+
+type Allowed = [string, PortalAccountFacts, PortalAccountWriter, { status: string; browserAccess: string; bumpEpoch: boolean }];
+type Refused = [string, PortalAccountFacts, PortalAccountWriter, { code: string; httpStatus: number; message: string }];
+
+// One row per line of the transition table in the W2 plan (Task 5).
+const ALLOWED: Allowed[] = [
+  ['invite: invited → invited (granted, +1)', f(), 'msp_invite', { status: 'invited', browserAccess: 'granted', bumpEpoch: true }],
+  ['bulk invite: invited → invited (granted, +1)', f(), 'msp_bulk_invite', { status: 'invited', browserAccess: 'granted', bumpEpoch: true }],
+  ['invite: legacy active credential-less → invited (+1)', ACTIVE_CREDENTIAL_LESS, 'msp_invite', { status: 'invited', browserAccess: 'granted', bumpEpoch: true }],
+  ['bulk invite: legacy active credential-less → invited (+1)', ACTIVE_CREDENTIAL_LESS, 'msp_bulk_invite', { status: 'invited', browserAccess: 'granted', bumpEpoch: true }],
+  ['resend: invited stays invited, browser access unchanged, no epoch bump', f({ browserAccess: 'granted' }), 'msp_resend_invite', { status: 'invited', browserAccess: 'granted', bumpEpoch: false }],
+  ['resend: active credential-less → invited (granted, +1) so the token is redeemable', ACTIVE_CREDENTIAL_LESS, 'msp_resend_invite', { status: 'invited', browserAccess: 'granted', bumpEpoch: true }],
+  ['disable: invited → disabled (+1)', f(), 'msp_disable', { status: 'disabled', browserAccess: 'granted', bumpEpoch: true }],
+  ['disable: active → disabled (+1)', ACTIVE_WITH_HASH, 'msp_disable', { status: 'disabled', browserAccess: 'granted', bumpEpoch: true }],
+  ['disable: disabled → disabled (+1)', DISABLED_WITH_HASH, 'msp_disable', { status: 'disabled', browserAccess: 'granted', bumpEpoch: true }],
+  ['disable: an add-in login keeps browser_access none', ENTRA, 'msp_disable', { status: 'disabled', browserAccess: 'none', bumpEpoch: true }],
+  ['reactivate: disabled with a password → active (+1)', DISABLED_WITH_HASH, 'msp_reactivate', { status: 'active', browserAccess: 'granted', bumpEpoch: true }],
+  ['reactivate: disabled with an identity → active (+1), browser access unchanged', DISABLED_ENTRA, 'msp_reactivate', { status: 'active', browserAccess: 'none', bumpEpoch: true }],
+  ['reactivate: disabled credential-less → invited (D4)', DISABLED_CREDENTIAL_LESS, 'msp_reactivate', { status: 'invited', browserAccess: 'granted', bumpEpoch: true }],
+  ['reactivate: active is a no-op', ACTIVE_WITH_HASH, 'msp_reactivate', { status: 'active', browserAccess: 'granted', bumpEpoch: false }],
+  ['accept-invite: invited → active (+1)', f(), 'accept_invite', { status: 'active', browserAccess: 'granted', bumpEpoch: true }],
+];
+
+const REFUSED: Refused[] = [
+  ['invite: an add-in (entra) login is identity-managed', ENTRA, 'msp_invite', { code: PORTAL_USER_IDENTITY_MANAGED, httpStatus: 409, message: 'This identity is managed by an external sign-in provider.' }],
+  ['invite: a password row that carries an identity is identity-managed', PASSWORD_WITH_IDENTITY, 'msp_invite', { code: PORTAL_USER_IDENTITY_MANAGED, httpStatus: 409, message: 'This identity is managed by an external sign-in provider.' }],
+  ['invite: identity check wins over the disabled check (today\'s order)', DISABLED_ENTRA, 'msp_invite', { code: PORTAL_USER_IDENTITY_MANAGED, httpStatus: 409, message: 'This identity is managed by an external sign-in provider.' }],
+  ['invite: active with a password', ACTIVE_WITH_HASH, 'msp_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 409, message: 'This email already has an active portal account.' }],
+  ['invite: disabled', DISABLED_CREDENTIAL_LESS, 'msp_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 409, message: 'This user is disabled. Reactivate them before inviting.' }],
+  ['bulk invite: active with a password', ACTIVE_WITH_HASH, 'msp_bulk_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 409, message: 'This email already has an active portal account.' }],
+  ['bulk invite: an add-in login', ENTRA, 'msp_bulk_invite', { code: PORTAL_USER_IDENTITY_MANAGED, httpStatus: 409, message: 'This identity is managed by an external sign-in provider.' }],
+  ['resend: an add-in login', ENTRA, 'msp_resend_invite', { code: PORTAL_USER_IDENTITY_MANAGED, httpStatus: 409, message: 'This identity is managed by an external sign-in provider.' }],
+  ['resend: disabled', DISABLED_CREDENTIAL_LESS, 'msp_resend_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 409, message: 'This user is disabled. Reactivate them first.' }],
+  ['resend: already set up', ACTIVE_WITH_HASH, 'msp_resend_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 409, message: 'This account is already set up.' }],
+  ['reactivate: invited (never via PATCH)', f(), 'msp_reactivate', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 409, message: 'This user has not accepted their invite yet. Resend the invite instead.' }],
+  ['accept-invite: active', ACTIVE_CREDENTIAL_LESS, 'accept_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 400, message: 'Invalid or expired invite' }],
+  ['accept-invite: disabled', DISABLED_CREDENTIAL_LESS, 'accept_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 400, message: 'Invalid or expired invite' }],
+  ['accept-invite: an add-in login', f({ authMethod: 'entra', browserAccess: 'none', hasExternalIdentity: true }), 'accept_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 400, message: 'Invalid or expired invite' }],
+  ['accept-invite: browser_access none', f({ browserAccess: 'none' }), 'accept_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 400, message: 'Invalid or expired invite' }],
+];
+
+describe('planPortalAccountTransition — allowed transitions', () => {
+  it.each(ALLOWED)('%s', (_name, facts, writer, target) => {
+    expect(planPortalAccountTransition(facts, writer)).toEqual(target);
+  });
+});
+
+describe('planPortalAccountTransition — refusals', () => {
+  it.each(REFUSED)('%s', (_name, facts, writer, refusal) => {
+    let caught: unknown;
+    try {
+      planPortalAccountTransition(facts, writer);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PortalAccountTransitionError);
+    const err = caught as PortalAccountTransitionError;
+    expect({ code: err.code, httpStatus: err.httpStatus, message: err.message }).toEqual(refusal);
+    expect(err.writer).toBe(writer);
+    expect(typeof err.rule).toBe('string');
+  });
+});
+
+describe('planPortalAccountTransition — fail closed on unknown input', () => {
+  it('throws on an unknown stored status rather than guessing', () => {
+    expect(() => planPortalAccountTransition(f({ status: 'pending' }), 'msp_disable')).toThrow(PortalAccountTransitionError);
+    expect(() => planPortalAccountTransition(f({ status: ' Active ' }), 'msp_reactivate')).toThrow(PortalAccountTransitionError);
+  });
+
+  it('throws on an unknown stored browser_access', () => {
+    expect(() => planPortalAccountTransition(f({ browserAccess: 'maybe' }), 'msp_disable')).toThrow(PortalAccountTransitionError);
+  });
+
+  it('throws on an unknown writer', () => {
+    expect(() => planPortalAccountTransition(f(), 'scim_provision' as PortalAccountWriter)).toThrow(PortalAccountTransitionError);
+  });
+
+  it('no W2 writer moves a none row to granted', () => {
+    const noneRow = f({ status: 'disabled', authMethod: 'entra', browserAccess: 'none', hasExternalIdentity: true });
+    for (const writer of ['msp_invite', 'msp_bulk_invite', 'msp_resend_invite', 'msp_disable', 'msp_reactivate', 'accept_invite'] as const) {
+      try {
+        expect(planPortalAccountTransition(noneRow, writer).browserAccess).toBe('none');
+      } catch (error) {
+        expect(error).toBeInstanceOf(PortalAccountTransitionError);
+      }
+    }
+  });
+});
+
+describe('initialPortalAccountState', () => {
+  it('an MSP invite starts invited with browser access', () => {
+    expect(initialPortalAccountState('msp_invite')).toEqual({ status: 'invited', browserAccess: 'granted' });
+  });
+
+  it('add-in JIT never starts with browser access', () => {
+    expect(initialPortalAccountState('addin_jit')).toEqual({ status: 'active', browserAccess: 'none' });
+  });
+});
+
+describe('isPasswordEligible / isBulkInviteEligible', () => {
+  it('password-eligible means auth_method password', () => {
+    expect(isPasswordEligible({ authMethod: 'password' })).toBe(true);
+    expect(isPasswordEligible({ authMethod: 'entra' })).toBe(false);
+  });
+
+  it('bulk invite excludes identity, entra, disabled and passworded rows', () => {
+    expect(isBulkInviteEligible(f())).toBe(true);
+    expect(isBulkInviteEligible(ACTIVE_CREDENTIAL_LESS)).toBe(true);
+    expect(isBulkInviteEligible(ENTRA)).toBe(false);
+    expect(isBulkInviteEligible(PASSWORD_WITH_IDENTITY)).toBe(false);
+    expect(isBulkInviteEligible(DISABLED_CREDENTIAL_LESS)).toBe(false);
+    expect(isBulkInviteEligible(ACTIVE_WITH_HASH)).toBe(false);
+    expect(isBulkInviteEligible(f({ hasPasswordHash: true }))).toBe(false);
+    expect(isBulkInviteEligible(f({ status: 'pending' }))).toBe(false);
+  });
+});

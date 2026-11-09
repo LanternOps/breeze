@@ -168,6 +168,7 @@ beforeEach(() => {
     receiveNotifications: true,
     status: 'active',
     authMethod: 'password',
+    browserAccess: 'granted',
     authEpoch: 1,
     sessionRevoked: false,
   };

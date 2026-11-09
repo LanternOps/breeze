@@ -906,6 +906,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'plugin_instances',
   'plugins',
   'portal_branding',
+  // Child of portal_users (composite FK, ON DELETE CASCADE) — before its parent.
+  'portal_user_identities',
   'portal_users',
   'provision_credential_handles',
   'psa_connections',

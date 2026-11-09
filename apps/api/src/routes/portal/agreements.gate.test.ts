@@ -32,7 +32,7 @@ vi.mock('../../services/tenantStatus', () => ({
 vi.mock('../../db', () => {
   const portalUser = {
     id: 'pu-1', orgId: '11111111-1111-4111-8111-111111111111', email: 'customer@example.com',
-    name: 'Customer', contactId: null, authMethod: 'password', receiveNotifications: true, status: 'active', authEpoch: 1,
+    name: 'Customer', contactId: null, authMethod: 'password', browserAccess: 'granted', receiveNotifications: true, status: 'active', authEpoch: 1,
   };
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'where', 'limit', 'orderBy', 'innerJoin']) chain[m] = vi.fn(() => chain);
