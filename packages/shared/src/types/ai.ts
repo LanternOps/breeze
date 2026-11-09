@@ -240,6 +240,14 @@ export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'vali
  */
 export type AiApprovalOutcome = 'approved' | 'not_approved' | 'ended';
 
+/**
+ * #10416: who an `approval_required` card is waiting on. `'you'` means the
+ * requester can decide it (a Tier-2 card, or an intent that fanned an approval
+ * row out to them); `'other_approvers'` means the requester holds no row and
+ * someone else must decide (a four-eyes intent in a multi-approver org).
+ */
+export type AiApprovalWaitingOn = 'you' | 'other_approvers';
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   /**
@@ -316,8 +324,12 @@ export type AiStreamEvent =
    * leaving the value buried in the collapsed parameter JSON. Letting an
    * assistant choose SYSTEM for a user-context script is a privilege
    * decision, and the human deciding it has to be told.
+   *
+   * #10416: `pushedToPhone` (Tier-2 only) is true when at least one push was
+   * dispatched to the requester's phone; `waitingOn` says who must decide.
+   * The thinking indicator shows the wait from these while the card is open.
    */
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
   /**
    * W03 (#5612): a proposal outcome delivered into the author's chat session —
    * request-changes findings + note, or a verification result. The durable
