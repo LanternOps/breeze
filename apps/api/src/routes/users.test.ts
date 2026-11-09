@@ -1473,6 +1473,38 @@ describe('user routes', () => {
       expect(await res.json()).toMatchObject({ hasPassword: false });
     });
 
+    // #10650: the profile page decides whether to offer "Add backup" or
+    // "Remove" for the authenticator app off this flag. It is computed in SQL
+    // (the predicate's twin), so the secret column itself is never selected.
+    it('reports totpEnrolled from the SQL predicate without ever selecting the secret', async () => {
+      for (const totpEnrolled of [true, false]) {
+        vi.mocked(db.select).mockClear();
+        mockMeRow(meRow({ mfaEnabled: true, mfaMethod: 'passkey', passwordHash: 'hash', totpEnrolled }));
+
+        const res = await app.request('/users/me', {
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+        const body = await res.json() as Record<string, unknown>;
+        expect(body.totpEnrolled).toBe(totpEnrolled);
+        expect(body).not.toHaveProperty('mfaSecret');
+
+        const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+        expect(projection).toBeDefined();
+        expect(projection).toHaveProperty('totpEnrolled');
+        expect(projection).not.toHaveProperty('mfaSecret');
+      }
+    });
+
+    it('reports totpEnrolled false when the row predicate is null', async () => {
+      mockMeRow(meRow({ passwordHash: 'hash', totpEnrolled: null }));
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json() as Record<string, unknown>).totpEnrolled).toBe(false);
+    });
+
     it('reports hasPassword true for a password user and never leaks the hash', async () => {
       mockMeRow(meRow({ passwordHash: '$argon2id$v=19$m=65536$abc' }));
 

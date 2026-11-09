@@ -7,7 +7,8 @@
  * `profile: 'assessment'`.
  *
  * Everything the assessment reads about the org — the thread summary, the
- * concerns, the changes digest, readiness, the person's nudge feedback — is
+ * concerns, the changes digest, the metric anomalies, readiness, the person's
+ * nudge feedback — is
  * tenant- or model-authored text, so each goes inside its own
  * `wrapUntrustedData` fence (fence markers neutralised, size capped) AND each
  * free-text field is single-lined first. Nothing here moves authority: the
@@ -50,6 +51,19 @@ export interface AgentRunAssessmentPromptContext {
 }
 
 export const ASSESSMENT_NO_CHANGES_LINE = 'No changes since the last assessment.';
+export const ASSESSMENT_NO_ANOMALIES_LINE = 'No open metric anomalies.';
+/** #11425: the section was not read (no devices:read, or the read failed) — never "none". */
+export const ASSESSMENT_ANOMALIES_NOT_READ_LINE =
+  'Metric anomalies were not read for this assessment, so this list says nothing about whether any are open.';
+
+/**
+ * #11425: the model read "incident" (connection-health rows, then the
+ * anomaly wake) as a security incident and called list_incidents, found
+ * nothing, and raised a "can't verify" concern for every anomaly wake.
+ */
+const ANOMALY_TOOLS_LINE =
+  '`list_incidents` covers security/IR incidents only; metric anomalies appear in the Metric anomalies section. '
+  + "For a device's anomaly rows, call manage_device_anomalies with action list and that device id.";
 export const ASSESSMENT_FIRST_LOOK_EMPTY_LINE =
   'No open alerts and nothing else changed recently in this digest — check the current state with your tools.';
 
@@ -72,11 +86,15 @@ function reasonLine(reason: AssessmentReason): string {
     case 'event': {
       // #10388: name the event's subject, never the bus event id — the model
       // took that id for an alert id and its lookup failed.
-      const alert = reason.alertId ? ` for alert ${sanitizeSweepText(reason.alertId, 64)}` : '';
+      const subject = reason.alertId
+        ? ` for alert ${sanitizeSweepText(reason.alertId, 64)}`
+        : reason.anomalyIncidentId
+          ? ` for metric anomaly incident ${sanitizeSweepText(reason.anomalyIncidentId, 64)}`
+          : '';
       const device = reason.deviceId
-        ? `${alert ? ' on' : ' for'} device ${sanitizeSweepText(reason.deviceId, 64)}`
+        ? `${subject ? ' on' : ' for'} device ${sanitizeSweepText(reason.deviceId, 64)}`
         : '';
-      return `event ${sanitizeSweepText(reason.eventType, 64)}${alert}${device}`;
+      return `event ${sanitizeSweepText(reason.eventType, 64)}${subject}${device}`;
     }
     case 'watch':
       return `watch ${sanitizeSweepText(reason.watchId, 64)}`;
@@ -116,10 +134,30 @@ function digestLines(d: AssessmentDigest): string[] {
   return [
     ...d.alerts.map((a) => `alert ${a.id} | ${t(a.severity, 16)} | ${t(a.status, 32)} | ${t(a.title) || 'untitled'} | ${a.at}`),
     ...d.tickets.map((k) => `ticket ${t(k.number, 32) || k.id} | ${t(k.status, 32)} | ${t(k.title) || 'untitled'} | ${k.updatedAt}`),
-    ...d.incidents.map((i) => `incident ${i.id} | ${t(i.sourceKind, 48)} | ${t(i.condition)} | ${i.openedAt}`),
+    // #11425: prefixed "integration" so a connection-health row is not read
+    // as a security incident (list_incidents).
+    ...d.incidents.map((i) => `integration incident ${i.id} | ${t(i.sourceKind, 48)} | ${t(i.condition)} | ${i.openedAt}`),
     ...d.runs.map((r) => `run ${r.id} | ${t(r.profile, 32)} | ${t(r.status, 32)} | ${t(r.summary) || '(no summary)'}`),
     ...d.intents.map((x) => `approval ${x.id} | ${t(x.toolName, 64)} | ${t(x.status, 32)}`),
   ];
+}
+
+/** Peak scores are unbounded magnitudes; two decimals is enough to compare them. */
+function formatScore(score: number): string {
+  return Number.isFinite(score) ? String(Math.round(score * 100) / 100) : 'unknown';
+}
+
+function anomalyLines(anomalies: NonNullable<AssessmentDigest['anomalies']>): string[] {
+  const t = (value: string | null | undefined, max = TITLE_MAX) => sanitizeSweepText(value ?? '', max);
+  return anomalies.map((x) => [
+    `anomaly incident ${x.id}`,
+    `${t(x.deviceName, 120) || '(unnamed device)'} (device ${x.deviceId})`,
+    t(x.anomalyType, 40),
+    x.metricNames.map((m) => t(m, 120)).filter(Boolean).join(', ') || '(no metric names)',
+    `peak score ${formatScore(x.peakScore)}`,
+    `opened ${x.openedAt}`,
+    t(x.status, 20),
+  ].join(' | '));
 }
 
 function readinessLines(r: OrgReadiness): string[] {
@@ -154,7 +192,8 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     lines.push(wrapUntrustedData('wisp-org-name', sanitizeSweepText(a.org.name ?? '', ORG_NAME_MAX) || '(no name)'));
   }
   lines.push('- New problem worth tracking → record_concern (one subject per call, at most 10 per run).');
-  lines.push('- Known concern changed or is fixed → update_concern (resolve it with an outcome when it is fixed).');
+  lines.push("- Known concern changed or is fixed → update_concern. To close it send status: 'resolved' with an "
+    + 'outcome; a summary edit alone keeps it open.');
   lines.push('- The person should act now → nudge (one concern, one next step).');
   lines.push('- A Tier-2/3 change would help → propose_action (it becomes an approval request; nothing runs).');
   lines.push('- Needs a specialist → request_specialist (recorded now; Wisp\'s coordinator handles it after this '
@@ -192,6 +231,24 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     changes.length > 0
       ? changes.join('\n')
       : a?.firstLook ? ASSESSMENT_FIRST_LOOK_EMPTY_LINE : ASSESSMENT_NO_CHANGES_LINE,
+  ));
+
+  // Metric anomalies (#11425): current state, not a since-watermark change —
+  // the org's open anomaly incidents plus the one that triggered this run.
+  // Always rendered, so the pointer line never names a missing section.
+  const anomalyRows = a?.digest.anomalies ?? [];
+  const anomalies = anomalyLines(anomalyRows);
+  lines.push('');
+  lines.push(
+    'Metric anomalies (open now, plus the one that triggered this assessment; '
+    + 'id | device | type | metrics | peak score | opened | status):',
+  );
+  lines.push(ANOMALY_TOOLS_LINE);
+  lines.push(wrapUntrustedData(
+    'wisp-metric-anomalies',
+    a && a.digest.anomalies === null
+      ? ASSESSMENT_ANOMALIES_NOT_READ_LINE
+      : anomalies.length > 0 ? anomalies.join('\n') : ASSESSMENT_NO_ANOMALIES_LINE,
   ));
 
   // Amendments (w00 A33/A34): readiness, then the person's nudge feedback.

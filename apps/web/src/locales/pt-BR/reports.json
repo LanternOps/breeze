@@ -1350,8 +1350,7 @@
         "series": "Um relatório por organização",
         "seriesHint": "Uma definição, com uma cópia separada para cada organização abrangida, enviada aos contatos dessa organização.",
         "combined": "Todas as organizações combinadas",
-        "combinedHint": "Um relatório combinado de todas as suas organizações, para a sua própria equipe.",
-        "seriesUnavailableType": "Este tipo de relatório não pode ser enviado como um relatório por organização."
+        "combinedHint": "Um relatório combinado de todas as suas organizações, para a sua própria equipe."
       },
       "schedule": {
         "label": "Com que frequência a cópia de cada organização é enviada",

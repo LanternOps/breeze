@@ -694,6 +694,7 @@
     "settings": {
       "title": "Orçamento e verificação periódica",
       "budget": "Orçamento diário",
+      "budgetHelp": "Inclui o chat. Quando acaba, as verificações em segundo plano ficam em pausa até as 00:00 UTC e o chat continua funcionando com um aviso. O orçamento de IA da organização continua valendo para o chat.",
       "tick": "Verificar a cada (minutos)",
       "save": "Salvar",
       "unattendedReads": {
@@ -760,6 +761,7 @@
     },
     "spend": {
       "meter": "{{spent}} de {{budget}} hoje",
+      "breakdown": "Segundo plano {{background}} · Chat {{chat}} · {{spent}} de {{budget}} hoje",
       "resets": "reinicia em {{hours}} h",
       "raise": "Aumentar o orçamento de hoje",
       "atCeiling": "O orçamento de hoje está no limite do seu plano.",
@@ -772,8 +774,8 @@
       "byYou": "Você pausou o Wisp. Ele não fará verificações nem enviará lembretes até você retomar.",
       "partnerDisabled": "O Wisp está desativado para o seu parceiro. Um administrador pode reativá-lo.",
       "system": {
-        "budgetExhausted": "Pausado pelo Breeze: o orçamento de hoje acabou. O orçamento reinicia em {{hours}} h.",
-        "budgetExhaustedNoTime": "Pausado pelo Breeze: o orçamento de hoje acabou.",
+        "budgetExhausted": "O orçamento do Wisp de hoje foi excedido: as verificações em segundo plano ficam em pausa até as {{time}} UTC. O chat continua funcionando.",
+        "budgetExhaustedNoTime": "O orçamento do Wisp de hoje foi excedido: as verificações em segundo plano ficam em pausa até as 00:00 UTC. O chat continua funcionando.",
         "grantorAccessLost": "Pausado pelo Breeze: seu acesso não cobre mais esta permissão. O Wisp retoma sozinho quando seu acesso voltar.",
         "grantorSuspended": "Pausado pelo Breeze: sua conta está suspensa. O Wisp retoma sozinho quando a suspensão for removida.",
         "factorExpired": "Pausado pelo Breeze: sua verificação de login para esta permissão expirou.",
@@ -896,6 +898,7 @@
     "post": {
       "brief": "Resumo da manhã",
       "nudge": "Lembrete",
+      "nudgeResolved": "Resolvido",
       "digest": "Compilado",
       "checkIn": "Verificação agendada",
       "summary": "Resumo",

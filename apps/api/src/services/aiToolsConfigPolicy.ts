@@ -6,7 +6,7 @@ import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignment
 import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { mfaGatedToolError } from './aiToolMfaGate';
-import type { AiTool } from './aiTools';
+import type { AiTool, PreFilingVerdict } from './aiTools';
 import {
   complianceInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
@@ -31,7 +31,8 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import { INLINE_SETTINGS_EXAMPLES } from './aiToolsConfigPolicyExamples';
-import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { CONFIG_POLICY_ORG_ID_DESCRIPTION, CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION } from './aiToolSchemas';
+import { resolveWritableToolOrgId, withOwnerScopeOption } from './aiToolWriteOrg';
 import { describeMaintenanceSchedule } from './maintenanceWindowProjection';
 import {
   resolveEffectiveConfig,
@@ -347,6 +348,43 @@ const FEATURE_POLICY_ID_HINTS: Partial<Record<ConfigFeatureType, string>> = {
   software_policy: 'featurePolicyId → existing software policy UUID',
   peripheral_control: 'featurePolicyId → existing peripheral policy UUID',
 };
+
+/** Who owns a configuration policy a create would write (#1724, #6667). */
+type ConfigPolicyCreateOwner = { partnerId: string } | { orgId: string };
+
+/**
+ * The owner of a `manage_configuration_policy` create, or the refusal its
+ * handler returns. Shared by the handler and `validateBeforeFiling` (#11432),
+ * so a create filed for approval resolves the same owner when it runs.
+ *
+ * A partner-owned ("all orgs") policy is owned by the caller's OWN partner,
+ * never a client-supplied value, and needs full partner org access
+ * (orgAccess 'all', or system scope): it pushes config to every org under the
+ * partner, the same gate the HTTP route enforces. Otherwise the owner org comes
+ * from `resolveWritableToolOrgId`, which never guesses one (#6667); its
+ * ambiguous refusal names both owners the model can choose.
+ */
+function resolveConfigPolicyCreateOwner(input: Record<string, unknown>, auth: AuthContext): ConfigPolicyCreateOwner | { error: string } {
+  if (!canMutateOrgWideGovernance(auth)) return { error: SITE_CEILING_WRITE_DENIED_MESSAGE };
+  if (!input.name) return { error: 'name is required for create' };
+  if (input.ownerScope === 'partner') {
+    if (!auth.partnerId) return { error: 'Partner-wide policies require partner scope' };
+    if (!canManagePartnerWidePolicies(auth)) {
+      return { error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' };
+    }
+    return { partnerId: auth.partnerId };
+  }
+  const resolved = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+  if (!resolved.orgId) return { error: withOwnerScopeOption(resolved.error ?? 'Organization context required') };
+  return { orgId: resolved.orgId };
+}
+
+/** `validateBeforeFiling` for manage_configuration_policy: only a create's owner is judged. */
+function validateConfigPolicyBeforeFiling(input: Record<string, unknown>, auth: AuthContext): PreFilingVerdict {
+  if (input.action !== 'create') return { ok: true };
+  const owner = resolveConfigPolicyCreateOwner(input, auth);
+  return 'error' in owner ? { ok: false, error: owner.error } : { ok: true };
+}
 
 function retiredFeatureRefusal(featureType: string): string {
   return JSON.stringify({
@@ -802,8 +840,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Create only. Ownership: organization (default, one org) or partner (unassigned library policy; requires full partner org access). Not accepted on update.' },
-          orgId: { type: 'string', description: 'Create only. Org UUID to own the policy; required unless you access exactly one org. Ignored for ownerScope "partner". Cannot be set on update.' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION },
+          orgId: { type: 'string', description: CONFIG_POLICY_ORG_ID_DESCRIPTION },
         },
         required: ['action'],
       },
@@ -819,27 +857,18 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'create') {
-        if (!input.name) return JSON.stringify({ error: 'name is required for create' });
+        // The same owner `validateBeforeFiling` judged before any approval card.
+        const owner = resolveConfigPolicyCreateOwner(input, auth);
+        if ('error' in owner) return JSON.stringify({ error: owner.error });
 
-        // Partner-wide ("all orgs") policy (#1724). The partner is ALWAYS derived
-        // from the caller's own token — never a client-supplied value — so a
-        // caller cannot create a policy owned by another partner. A partner-wide
-        // policy pushes config to EVERY org under the partner, so only callers
-        // with full partner org access (orgAccess='all', or system scope) may
-        // create one — the same gate the HTTP route enforces.
-        if (input.ownerScope === 'partner') {
-          if (!auth.partnerId) {
-            return JSON.stringify({ error: 'Partner-wide policies require partner scope' });
-          }
-          if (!canManagePartnerWidePolicies(auth)) {
-            return JSON.stringify({ error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' });
-          }
-
+        // Partner-wide ("all orgs") policy (#1724), owned by the caller's own
+        // partner (see resolveConfigPolicyCreateOwner).
+        if ('partnerId' in owner) {
           // Duplicate-name check within the partner's own partner-wide policies.
           const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
             .from(configurationPolicies)
             .where(and(
-              eq(configurationPolicies.partnerId, auth.partnerId),
+              eq(configurationPolicies.partnerId, owner.partnerId),
               eq(configurationPolicies.name, input.name as string),
             ))
             .limit(1);
@@ -849,7 +878,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
             });
           }
 
-          const policy = await createConfigPolicy({ partnerId: auth.partnerId }, {
+          const policy = await createConfigPolicy({ partnerId: owner.partnerId }, {
             name: input.name as string,
             description: input.description as string | undefined,
             status: (input.status as 'active' | 'inactive' | 'archived') ?? 'active',
@@ -864,16 +893,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ success: true, policy });
         }
 
-        // Never `accessibleOrgIds[0]` (#6667): for a multi-org caller that is an
-        // arbitrary customer org. The resolver refuses rather than guesses.
-        const resolvedOrg = resolveWritableToolOrgId(
-          auth,
-          typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined,
-        );
-        if (!resolvedOrg.orgId) {
-          return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
-        }
-        const orgId = resolvedOrg.orgId;
+        // Never `accessibleOrgIds[0]` (#6667): the resolver refused rather than guessed.
+        const orgId = owner.orgId;
 
         // Check for duplicate name in same org
         const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
@@ -967,6 +988,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
     }),
+    validateBeforeFiling: validateConfigPolicyBeforeFiling,
   });
 
   // 8. configuration_policy_compliance — Tier 1 (read)

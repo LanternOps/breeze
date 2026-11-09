@@ -142,11 +142,37 @@ beforeEach(() => {
     contactId: CONTACT_ID,
     receiveNotifications: true,
     authMethod: 'password',
+    browserAccess: 'granted',
     status: 'active',
     authEpoch: 1,
   };
   activeOrgResult.current = { orgId: ORG_ID, partnerId: 'partner-1' };
   portalUserLookupError.current = null;
+});
+
+// Portal registration W2 (spec §6 invariant 9): a browser session requires
+// browser_access='granted' as well as a password-method login, re-checked on
+// every request. Same refusal as a non-password login: 401, session purged,
+// and no logout exemption.
+describe('portalAuthMiddleware browser_access gate (W2)', () => {
+  it('session middleware: password row with browser_access none → 401 and session purged', async () => {
+    seedSession();
+    portalUserRow.current = { ...portalUserRow.current, browserAccess: 'none' };
+
+    const res = await call();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Portal user not found' });
+    expect(portalSessions.has(TOKEN)).toBe(false);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+  });
+
+  it('session middleware: password row with browser_access granted → unchanged 200 path', async () => {
+    seedSession();
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(portalSessions.has(TOKEN)).toBe(true);
+  });
 });
 
 describe('portalAuthMiddleware org-status gate', () => {

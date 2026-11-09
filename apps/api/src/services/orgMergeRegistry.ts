@@ -1037,6 +1037,7 @@ const REPOINT_TABLES: readonly string[] = [
   // SET CONSTRAINTS ALL DEFERRED lets parents and this row repoint in separate
   // statements; breeze_network_isolation_device_moved skips a merging org.
   "device_network_isolations",
+  "device_oem_policy_side",
   "device_oem_update_status",
   "device_patches",
   "device_process_samples",
@@ -1221,6 +1222,10 @@ const REPOINT_TABLES: readonly string[] = [
   "playbook_executions",
   "plugin_instances",
   "plugins",
+  // Plain repoint, no dedupe: both unique keys ((issuer, subject) and
+  // (portal_user_id, provider)) are org-free, so a re-tenant can never collide,
+  // and the composite (portal_user_id, org_id) FK is deferred by the merge.
+  "portal_user_identities",
   "portal_users",
   "provision_credential_handles",
   "psa_connections",

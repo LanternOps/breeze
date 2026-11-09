@@ -611,9 +611,9 @@ All mutating portal actions are recorded in the audit log with an `actorType` of
 
 ## Troubleshooting
 
-### Portal login returns "Multiple portal accounts found"
+### Portal login with an email that exists in several organizations
 
-This error occurs when the same email address exists in multiple organizations and no `orgId` was provided in the login request. The portal frontend should prompt the user to select their organization or include the `orgId` field in the login payload.
+Portal login with an email that exists in several organizations succeeds only when exactly one of those accounts has the entered password; otherwise it returns the ordinary invalid-credentials error. The response never reveals that the address has more than one account. If the same person uses the same password in two organizations, they can sign in by including that organization's `orgId` in the login request, or by setting different passwords.
 
 ### Custom domain branding returns 404
 

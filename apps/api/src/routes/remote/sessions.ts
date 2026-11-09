@@ -1486,10 +1486,15 @@ sessionRoutes.post(
       // a failed delivery (see DispatchOutcome in services/agentCommandRelay).
       // A bare catch would therefore have been silent for every real
       // non-delivery, so branch on the status explicitly.
-      void dispatchCommandToAgent(
-        device.agentId,
+      //
+      // Outside the request's DB context: the relay refuses to run inside a
+      // held one (#4142), and this send does not wait on the commit (the row
+      // update is already final). Nothing here touches the database.
+      const stopAgentId = device.agentId;
+      void runOutsideDbContext(() => dispatchCommandToAgent(
+        stopAgentId,
         buildStopDesktopCommand(sessionId, terminalGeneration),
-      ).then((outcome) => {
+      )).then((outcome) => {
         if (outcome.status === 'sent') return;
         const detail = outcome.status === 'infrastructure_error' ? ` (${outcome.message})` : '';
         console.warn(

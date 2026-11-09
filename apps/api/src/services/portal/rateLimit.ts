@@ -6,7 +6,7 @@ import { getRedis } from '../redis';
  * Lives in the SERVICES layer on purpose. `services/portal/reportsSelfService`
  * rate-limits report generation, and a service importing
  * `routes/portal/helpers` for it dragged `routes/auth/helpers` → the services
- * barrel → `commandQueue` → `agentWs` → the discovery worker into every module
+ * barrel → the command-queue graph → the discovery worker into every module
  * graph that touches portal flags (#4562 W10 broke `orgPortalSettings.test.ts`
  * that way). Routes keep importing these names from `routes/portal/helpers` /
  * `routes/portal/schemas`, which re-export them.

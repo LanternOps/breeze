@@ -161,6 +161,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/auth/password.ts': 'writes the acting user\'s own password hash',
   'routes/auth/ssoLinkCompletion.ts': 'SSO login completion (#4067): stamps the signing-in user\'s own last-login column',
   'routes/auth/phone.ts': 'writes the acting user\'s own phone factor',
+  'routes/auth/totpFactor.ts': 'writes the acting user\'s own authenticator-app factor (#10650)',
   'routes/auth/verifyEmail.ts': 'writes the acting user\'s own email-verification state',
   'routes/system.ts': 'platform-admin/system bootstrap surface, gated on isPlatformAdmin',
   'routes/admin/abuse.ts': 'platform-admin abuse containment (suspend/flag), gated on isPlatformAdmin',

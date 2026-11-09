@@ -13,8 +13,11 @@ export const WISP_TIMELINE_MAX_LIMIT = 100;
  * What kind of proactive output a post carries. Mirrored by the
  * `wisp_thread_posts_kind_chk` CHECK (migration and Drizzle schema); change
  * all together (pinned by apps/api threadPostKinds.contract.test.ts).
+ * `nudge_resolved` (#11427) is the follow-up to a nudge whose concern closed.
  */
-export const WISP_TIMELINE_POST_KINDS = ['brief', 'nudge', 'digest', 'check_in', 'specialist_result', 'first_look'] as const;
+export const WISP_TIMELINE_POST_KINDS = [
+  'brief', 'nudge', 'digest', 'check_in', 'specialist_result', 'first_look', 'nudge_resolved',
+] as const;
 export type WispTimelinePostKind = (typeof WISP_TIMELINE_POST_KINDS)[number];
 
 /**

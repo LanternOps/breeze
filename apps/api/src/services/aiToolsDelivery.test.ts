@@ -19,6 +19,8 @@ import { readInheritedRails } from './delivery/inheritedRails';
 import { upsertDefaultRow, escalationPolicyCompatible } from './delivery/routingRuleWrites';
 import { registerDeliveryTools } from './aiToolsDelivery';
 import type { AiTool } from './aiTools';
+import { WRITE_OWNER_AMBIGUOUS_ERROR } from './aiToolWriteOrg';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 const ORG = '10000000-0000-4000-8000-000000000001', OTHER = '10000000-0000-4000-8000-000000000002';
 const ID = '20000000-0000-4000-8000-000000000001', CH = '30000000-0000-4000-8000-000000000001';
 const auth = (patch: Partial<AuthContext> = {}) => ({ principal: { kind: 'user_session' }, user: { id: OTHER, email: 'operator@example.com' }, scope: 'organization',
@@ -248,5 +250,108 @@ describe('delivery write audit parity', () => {
       resourceId: ID, resourceName: row.name, result: 'success',
       details: expect.objectContaining({ tool_name: 'manage_delivery' }),
     }));
+  });
+});
+
+// #11432: on a partner-wide session list_routing named no org and the model
+// was told only "orgId is required"; it never learned ownerScope "partner".
+describe('owner resolution for a caller that reaches several orgs (#11432)', () => {
+  const PARTNER = '40000000-0000-4000-8000-000000000001';
+  const both = [ORG, OTHER];
+  const partnerWide = (patch: Partial<AuthContext> = {}) => auth({
+    scope: 'partner', orgId: null, partnerId: PARTNER, partnerOrgAccess: 'all',
+    accessibleOrgIds: both, canAccessOrg: (id: string) => both.includes(id), ...patch,
+  });
+  const validate = (input: Record<string, unknown>, identity: AuthContext) =>
+    registry.get('manage_delivery')!.validateBeforeFiling!(input, identity);
+  const routing = { name: 'High', priority: 1, conditions: { severities: ['high'] }, channelIds: [CH] };
+
+  it('list_routing with no orgId names both owners (a read needs no card)', async () => {
+    for (const action of ['list_routing', 'list_escalation']) {
+      expect(await call({ action }, partnerWide())).toEqual({ error: WRITE_OWNER_AMBIGUOUS_ERROR, status: 400 });
+    }
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('a read never borrows the write default', async () => {
+    expect(await call({ action: 'list_routing' }, partnerWide({ aiWriteDefaultOrgId: ORG }))).toEqual({ error: WRITE_OWNER_AMBIGUOUS_ERROR, status: 400 });
+  });
+
+  it('list_routing with ownerScope "partner" reads the partner rows', async () => {
+    const limit = vi.fn(async () => [row]);
+    vi.mocked(db.select).mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }) } as never);
+    expect(await call({ action: 'list_routing', ownerScope: 'partner' }, partnerWide())).toEqual({ data: [row] });
+  });
+
+  it('refuses an owner-less write before filing, naming both owners', () => {
+    for (const [action, data] of [['create_routing', routing], ['set_default', { channelIds: [] }],
+      ['create_escalation', { name: 'On-call', steps: [{ delayMinutes: 15, channelIds: [CH] }] }]] as const) {
+      expect(validate({ action, data }, partnerWide())).toEqual({ ok: false, error: WRITE_OWNER_AMBIGUOUS_ERROR });
+    }
+  });
+
+  it('a write with no orgId lands in the write default, as every other AI write does', async () => {
+    expect(validate({ action: 'create_routing', data: routing }, partnerWide({ aiWriteDefaultOrgId: OTHER }))).toEqual({ ok: true });
+    channels([CH]); const values = insertReturning(row);
+    expect(await call({ action: 'create_routing', data: routing }, partnerWide({ aiWriteDefaultOrgId: OTHER }))).toEqual({ data: row });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: OTHER, partnerId: null }));
+  });
+
+  it('a partner-owned write needs full partner org access, checked before filing', () => {
+    const input = { action: 'create_routing', ownerScope: 'partner', data: routing };
+    expect(validate(input, partnerWide())).toEqual({ ok: true });
+    expect(validate(input, partnerWide({ partnerOrgAccess: 'selected' }))).toEqual({ ok: false, error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+  });
+
+  it('passes what it cannot judge from the input (a row named by id, an invalid shape) and refuses a foreign org', () => {
+    expect(validate({ action: 'update_routing', id: ID, data: { name: 'x' } }, partnerWide())).toEqual({ ok: true });
+    expect(validate({ action: 'create_routing' }, partnerWide())).toEqual({ ok: true });
+    expect(validate({ action: 'create_routing', orgId: ID, data: routing }, partnerWide()))
+      .toEqual({ ok: false, error: 'Access denied to this organization' });
+  });
+
+  it('describes orgId and ownerScope for the model', () => {
+    const properties = (registry.get('manage_delivery')!.definition.input_schema as { properties: Record<string, { description?: string }> }).properties;
+    expect(properties.ownerScope!.description).toMatch(/partner/i);
+    expect(properties.orgId!.description).toMatch(/never the partner id/i);
+  });
+});
+
+describe('the pre-filing check agrees with the handler (#11432)', () => {
+  const PARTNER = '40000000-0000-4000-8000-000000000001';
+  const both = [ORG, OTHER];
+  const partnerWide = (patch: Partial<AuthContext> = {}) => auth({
+    scope: 'partner', orgId: null, partnerId: PARTNER, partnerOrgAccess: 'all',
+    accessibleOrgIds: both, canAccessOrg: (id: string) => both.includes(id), ...patch,
+  });
+  const validate = (input: Record<string, unknown>, identity: AuthContext) =>
+    registry.get('manage_delivery')!.validateBeforeFiling!(input, identity);
+  const writes = [
+    ['create_routing', { name: 'High', priority: 1, conditions: { severities: ['high'] }, channelIds: [CH] }],
+    ['set_default', { channelIds: [CH] }],
+    ['create_escalation', { name: 'On-call', steps: [{ delayMinutes: 15, channelIds: [CH] }] }],
+  ] as const;
+
+  it.each(writes)('%s: an owner-less write is refused by both, in the same words', async (action, data) => {
+    const verdict = validate({ action, data }, partnerWide());
+    expect(verdict).toEqual({ ok: false, error: WRITE_OWNER_AMBIGUOUS_ERROR });
+    expect(await call({ action, data }, partnerWide())).toEqual({ error: WRITE_OWNER_AMBIGUOUS_ERROR, status: 400 });
+    expect(db.insert).not.toHaveBeenCalled(); expect(upsertDefaultRow).not.toHaveBeenCalled();
+  });
+
+  it.each(writes)('%s: a write the check passes runs, in the write-default org', async (action, data) => {
+    expect(validate({ action, data }, partnerWide({ aiWriteDefaultOrgId: OTHER }))).toEqual({ ok: true });
+    channels([CH]); const values = insertReturning(row);
+    expect(await call({ action, data }, partnerWide({ aiWriteDefaultOrgId: OTHER }))).not.toHaveProperty('error');
+    if (action === 'set_default') expect(upsertDefaultRow).toHaveBeenCalledWith({ orgId: OTHER, partnerId: null }, expect.anything(), expect.anything());
+    else expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: OTHER, partnerId: null }));
+  });
+
+  it('an org-scoped token writes in its own org and is refused another, before filing and in the handler', async () => {
+    const data = writes[0][1];
+    expect(validate({ action: 'create_routing', data }, auth())).toEqual({ ok: true });
+    expect(validate({ action: 'create_routing', orgId: OTHER, data }, auth())).toEqual({ ok: false, error: 'Cannot access another organization' });
+    expect(await call({ action: 'create_routing', orgId: OTHER, data })).toEqual({ error: 'Cannot access another organization', status: 403 });
+    expect(await call({ action: 'list_routing' }, auth({ orgId: null }))).toEqual({ error: 'Organization context required', status: 403 });
   });
 });

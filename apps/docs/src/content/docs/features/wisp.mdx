@@ -201,7 +201,7 @@ Wisp writes notes; **people confirm, correct or retract them**. Open **Settings 
 
 ## Budgets
 
-Everything Wisp does under a grant (assessments, specialist runs, tasks) is metered against that grant's daily budget, in cents of AI spend.
+Everything Wisp does under a grant is metered against that grant's daily budget, in cents of AI spend: background work (assessments, specialist runs, tasks and model-written session notes) and your chat with Wisp. The thread's spend meter shows both lines, for example "Background $0.30 · Chat $1.70 · $2.00 of $5.00 today".
 
 | Plan | Default daily budget per grant |
 |---|---|
@@ -209,13 +209,13 @@ Everything Wisp does under a grant (assessments, specialist runs, tasks) is mete
 | Enterprise | 500 ¢ |
 | Unlimited | 1000 ¢ |
 
-A partner admin can raise a grant's budget up to **5x the plan default**, never beyond the plan ceiling. The budget window is the UTC day. When a budget is exhausted, Wisp makes **no further model calls** under that grant until the window resets: assessments and specialist requests are skipped, while events are still recorded as concern updates by plain code and appear in your digest. The grant itself stays on (it is not paused), and the thread's spend meter shows the budget as used up.
+A partner admin can raise a grant's budget up to **5x the plan default**, never beyond the plan ceiling. The budget window is the UTC day. When a budget is exhausted, Wisp makes **no further background model calls** under that grant until the window resets: assessments and specialist requests (including ones you ask for in chat) are skipped, while events are still recorded as concern updates by plain code and appear in your digest. **Chat keeps working**, with a warning in the thread header; the budget is a soft limit for chat, and the organization's AI budget and credits still apply to it. The grant itself stays on (it is not paused), and the grantor is told once per UTC day.
 
 ### Session notes
 
 When a conversation closes, Wisp leaves a plain digest on the thread: what was asked, what was checked and the last answer. **Model-written session notes** is a switch on your grant, off by default, under **Budget and check-in settings** in the Wisp header. When it is on, each close also makes one model call that replaces the digest with what was concluded and what is still open. The grantor or a partner admin can change it.
 
-Each note counts against the grant's daily budget and shows on the spend meter. Once the budget is spent, Wisp skips the call and keeps the digest. A close can happen with nobody watching, because an idle session is closed for you, so these calls can spend budget while you are away.
+Each note counts against the grant's daily budget and shows on the spend meter's background line. Once the budget is spent, Wisp skips the call and keeps the digest. A close can happen with nobody watching, because an idle session is closed for you, so these calls can spend budget while you are away.
 
 ## Specialists
 

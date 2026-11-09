@@ -276,6 +276,13 @@ export async function loadLivePartnerOrgs(partnerId: string): Promise<{ id: stri
  * that ended `awaiting_approval` (it minted an intent) assessed the org as
  * much as a `completed` one; counting only `completed` would leave that org
  * "never assessed" and starve every other org of the round-robin.
+ *
+ * #11423: a `skipped / no_changes` run (the no-changes gate in
+ * assessment.ts) looked at the org too. Without it here the unchanged org
+ * would stay the oldest, and every floor tick would pick it and skip it.
+ * The watermark still ignores those rows (assessment.ts lastAssessmentWatermark).
+ * 'no_changes' is assessment.ts NO_CHANGES_ERROR_CODE (this module imports
+ * assessment types only); keep the two spellings equal.
  */
 export async function loadLastAssessedByOrg(grantId: string): Promise<Map<string, Date>> {
   const result = await sys(() => rows<{ org_id: string; last_assessed_at: unknown }>(sql`
@@ -283,7 +290,8 @@ export async function loadLastAssessedByOrg(grantId: string): Promise<Map<string
       FROM ai_agent_runs
      WHERE grant_id = ${grantId}
        AND profile = 'assessment'
-       AND status IN ('completed', 'awaiting_approval')
+       AND (status IN ('completed', 'awaiting_approval')
+            OR (status = 'skipped' AND error_code = 'no_changes'))
      GROUP BY org_id`), 'wisp-wake-last-assessed');
   const out = new Map<string, Date>();
   for (const r of result) {
@@ -380,6 +388,12 @@ function digestHintFor(event: BreezeEvent): DeterministicDigestHint {
  * onto a live job keeps the FIRST event's reason (requestAssessment), so a
  * later event's subject can be lost here; the changes digest (alerts
  * triggered OR resolved since the watermark) is what covers it.
+ *
+ * #11425: `anomaly.incident_opened` sends ids only (`{ incidentId, deviceId }`,
+ * metricAnomalyIncidentPublisher.ts). Its `incidentId` is carried as
+ * `anomalyIncidentId` so the assessment can load that anomaly incident.
+ * Only this event's `incidentId` is read that way: `integration.health_opened`
+ * also sends an `incidentId`, but it names a connection-health incident.
  */
 function eventReason(event: BreezeEvent): AssessmentReason {
   const p = (event.payload ?? {}) as Record<string, unknown>;
@@ -389,6 +403,7 @@ function eventReason(event: BreezeEvent): AssessmentReason {
     eventId: event.id,
     ...(isUuid(p.alertId) ? { alertId: p.alertId } : {}),
     ...(isUuid(p.deviceId) ? { deviceId: p.deviceId } : {}),
+    ...(event.type === 'anomaly.incident_opened' && isUuid(p.incidentId) ? { anomalyIncidentId: p.incidentId } : {}),
   };
 }
 

@@ -807,6 +807,8 @@ All user and role management actions are recorded in the audit log. Key audit ev
 | `auth.mfa.setup` | MFA is enabled for an account. |
 | `auth.mfa.disable` | MFA is disabled. |
 | `auth.mfa.recovery_codes.rotate` | Recovery codes are regenerated. |
+| `auth.mfa.totp.register` | An authenticator app is added as a backup beside a passkey. |
+| `auth.mfa.totp.remove` | An authenticator app is removed without switching MFA off. |
 | `auth.mfa.passkey.register` | A passkey is registered. |
 | `auth.mfa.passkey.delete` | A passkey is deleted. |
 | `sso.provider.create` | An SSO provider is created. |

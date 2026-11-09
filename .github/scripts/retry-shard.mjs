@@ -28,8 +28,10 @@
 // and the change touched neither it nor its sibling source — see
 // flaky-ledger.mjs. No $CI_BASE_SHA → no quarantine.
 //
-// When the first attempt fails it writes flake-report-<label>.json
-// ({label, attempts, flaky, quarantined, exitCode}) in the working directory,
+// When the first attempt fails it writes flake-report-<label>.json (schema 2:
+// the schema-1 {label, attempts, flaky, quarantined, exitCode} plus runner,
+// each attempt's failure ids, why no retry ran, and the run's provenance — see
+// buildReport) in the working directory,
 // appends a table to $GITHUB_STEP_SUMMARY and prints a `::warning` per flaky
 // test. The exit code is decide().exitCode.
 
@@ -268,7 +270,7 @@ export function ledgerRunner(runner, label) {
 // Repo-relative path mapping for failureTouched: vitest files are relative to
 // the package (vitest-api/-integration run in apps/api, vitest-web in
 // apps/web); go packages map through the module path in <go-dir>/go.mod.
-function ledgerPaths(ledger, { repoRoot, goDir }) {
+export function ledgerPaths(ledger, { repoRoot, goDir }) {
   if (ledger === 'vitest-api') return { prefix: 'apps/api/' };
   // An integration test exercises far beyond its sibling: without a declared
   // `covers`, any non-test change under apps/api/src/ touches it.
@@ -439,8 +441,67 @@ function runAttempt(command, { cwd, runner }) {
 
 const escapeData = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
 
-function writeReport({ label, attempts, verdict, firstFailures }) {
-  const report = { label, attempts, flaky: verdict.flaky, quarantined: verdict.quarantined, exitCode: verdict.exitCode };
+// ── Flake report (schema 2, W06a #10750) ─────────────────────────────────
+
+const MAX_REPORT_IDS = 200;
+
+// Why attempt 1 was not retried, in decide()'s order; null when it was (or
+// when attempt 1 passed). `budgetSkipped`: decide() wanted a retry and
+// --budget-minutes refused it.
+export function noRetryReason(first, { budgetSkipped = false } = {}) {
+  if (first.code === 0) return null;
+  if (first.code === null) return 'signal';
+  if (first.buildFailed) return 'build_failed';
+  if (first.raceDetected) return 'race';
+  if (first.timedOut) return 'go_timeout';
+  if (first.failures.length === 0) return 'no_parsed_failures';
+  if (budgetSkipped) return 'budget';
+  return null;
+}
+
+const reportAttempt = (a) => {
+  const ids = [...new Set(a.failures.map((f) => f.id))];
+  return {
+    code: a.code,
+    failures: ids.slice(0, MAX_REPORT_IDS),
+    truncated: ids.length > MAX_REPORT_IDS,
+    unattributed: Boolean(a.unattributed),
+    buildFailed: Boolean(a.buildFailed),
+    raceDetected: Boolean(a.raceDetected),
+    timedOut: Boolean(a.timedOut),
+  };
+};
+
+// Pure. The schema-1 fields (label, attempts, flaky, quarantined, exitCode)
+// keep their meaning; `first`/`second` name each attempt's failures so a
+// reader can tell a flake (disjoint ids) from a repeat (the same id twice).
+export function buildReport({ label, runner, attempts, verdict, first, second, noRetry, env }) {
+  const v = (k) => env[k] ?? null;
+  return {
+    schema: 2,
+    label,
+    runner,
+    attempts,
+    exitCode: verdict.exitCode,
+    flaky: verdict.flaky,
+    quarantined: verdict.quarantined,
+    first: reportAttempt(first),
+    second: second ? reportAttempt(second) : null,
+    noRetry,
+    provenance: {
+      runId: v('GITHUB_RUN_ID'),
+      runAttempt: v('GITHUB_RUN_ATTEMPT'),
+      job: v('GITHUB_JOB'),
+      sha: v('GITHUB_SHA'),
+      event: v('GITHUB_EVENT_NAME'),
+      ref: v('GITHUB_REF'),
+    },
+  };
+}
+
+function writeReport({ label, runner, attempts, verdict, first, second, noRetry }) {
+  const firstFailures = first.failures;
+  const report = buildReport({ label, runner, attempts, verdict, first, second, noRetry, env: process.env });
   writeFileSync(`flake-report-${label}.json`, `${JSON.stringify(report, null, 2)}\n`);
   const summary = process.env.GITHUB_STEP_SUMMARY;
   if (!summary) return;
@@ -495,11 +556,14 @@ async function main(argv) {
   }
   let verdict = decide({ first: firstResult, second: null });
   let attempts = 1;
+  let secondResult = null;
+  let budgetSkipped = false;
   if (verdict.retry) {
     const why = budgetSkipReason({ budgetMinutes: opts.budgetMinutes, elapsedMs: now(), attemptMs: firstMs });
     if (why) {
       process.stdout.write(`::error title=Retry skipped::${escapeData(`${label}: ${why}`)}\n`);
       verdict = { ...verdict, retry: false };
+      budgetSkipped = true;
     }
   }
 
@@ -512,13 +576,16 @@ async function main(argv) {
     const second = await runAttempt(retryCommand, { cwd, runner });
     attempts = 2;
     const p2 = parseFailures(runner, second.output);
-    const secondResult = { code: second.code, ...p2 };
+    secondResult = { code: second.code, ...p2 };
     // The ledger is consulted only when the second attempt failed too.
     const ctx = second.code === 0 ? {} : quarantineContext({ runner, label, goDir: cwd });
     verdict = decide({ first: firstResult, second: secondResult, ...ctx });
   }
 
-  if (first.code !== 0) writeReport({ label, attempts, verdict, firstFailures: p1.failures });
+  if (first.code !== 0) {
+    const noRetry = attempts === 2 ? null : noRetryReason(firstResult, { budgetSkipped });
+    writeReport({ label, runner, attempts, verdict, first: firstResult, second: secondResult, noRetry });
+  }
   for (const id of verdict.flaky) process.stdout.write(`::warning title=Flaky test::${escapeData(id)}\n`);
   for (const id of verdict.quarantined) process.stdout.write(`::warning title=Quarantined test::${escapeData(id)}\n`);
   return verdict.exitCode;

@@ -1,9 +1,51 @@
 import { defineConfig } from 'vitest/config';
+import { BaseSequencer, type TestSpecification } from 'vitest/node';
 import { config } from 'dotenv';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { TIMINGS_PATH, timingShard } from '../../.github/scripts/shard-partition.mjs';
 
 // Load test environment variables
 config({ path: '../../.env.test', quiet: true });
+
+const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
+
+// W07a (#10751): `--shard=i/n` packs files by recorded seconds (the committed
+// table at .github/ci-timings/integration.json, rebuilt by
+// `.github/scripts/test-timings.mjs refresh`) instead of vitest's equal file
+// counts. Every shard computes the same whole plan and keeps its slice; the
+// plan's digest is logged and, in CI, written to shard-plan-<i>.json. A missing
+// or invalid table falls back to vitest's own sharding with a warning; a file in
+// no shard or in two throws before any test runs. Order within a shard is
+// still BaseSequencer.sort.
+class TimingSequencer extends BaseSequencer {
+  override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {
+    const shard = this.ctx.config.shard;
+    if (!shard) return super.shard(files);
+    let timingsText: string | null = null;
+    let timingsError: string | undefined;
+    try {
+      timingsText = readFileSync(path.join(REPO_ROOT, TIMINGS_PATH), 'utf8');
+    } catch (error) {
+      // Absent or unreadable: timingShard warns with this reason and falls back.
+      timingsError = (error as NodeJS.ErrnoException).code ?? String(error);
+    }
+    return timingShard(files, {
+      index: shard.index,
+      count: shard.count,
+      repoRoot: REPO_ROOT,
+      timingsText,
+      timingsError,
+      fallback: () => super.shard(files),
+      writePlan: process.env.CI
+        ? (plan: { index: number }) => writeFileSync(
+          path.join(this.ctx.config.root, `shard-plan-${plan.index}.json`),
+          `${JSON.stringify(plan, null, 2)}\n`,
+        )
+        : undefined,
+    });
+  }
+}
 
 export default defineConfig({
   resolve: {
@@ -421,7 +463,8 @@ export default defineConfig({
     // time (not just the tests within a file) so setup.ts / autoMigrate
     // / seed don't race each other across workers.
     sequence: {
-      concurrent: false
+      concurrent: false,
+      sequencer: TimingSequencer,
     },
     fileParallelism: false,
     // Longer timeouts for database operations

@@ -694,6 +694,7 @@
     "settings": {
       "title": "Bütçe ve kontrol aralığı",
       "budget": "Günlük bütçe",
+      "budgetHelp": "Sohbeti de içerir. Bütçe tükendiğinde arka plan kontrolleri 00:00 UTC'ye kadar duraklatılır ve sohbet bir uyarıyla çalışmaya devam eder. Kuruluşun yapay zeka bütçesi sohbet için geçerli olmaya devam eder.",
       "tick": "Kontrol aralığı (dakika)",
       "save": "Kaydet",
       "unattendedReads": {
@@ -760,6 +761,7 @@
     },
     "spend": {
       "meter": "Bugün {{budget}} içinden {{spent}}",
+      "breakdown": "Arka plan {{background}} · Sohbet {{chat}} · Bugün {{budget}} içinden {{spent}}",
       "resets": "{{hours}} saat içinde sıfırlanır",
       "raise": "Bugünün bütçesini artır",
       "atCeiling": "Bugünün bütçesi planınızın sınırında.",
@@ -772,8 +774,8 @@
       "byYou": "Wisp'i duraklattınız. Siz devam ettirene kadar kontrol yapmaz ve size hatırlatma göndermez.",
       "partnerDisabled": "Wisp iş ortağınız için kapalı. Bir yönetici yeniden açabilir.",
       "system": {
-        "budgetExhausted": "Breeze tarafından duraklatıldı: bugünün bütçesi tükendi. Bütçe {{hours}} saat içinde sıfırlanır.",
-        "budgetExhaustedNoTime": "Breeze tarafından duraklatıldı: bugünün bütçesi tükendi.",
+        "budgetExhausted": "Wisp'in bugünkü bütçesi aşıldı: arka plan kontrolleri {{time}} UTC'ye kadar duraklatıldı. Sohbet çalışmaya devam eder.",
+        "budgetExhaustedNoTime": "Wisp'in bugünkü bütçesi aşıldı: arka plan kontrolleri 00:00 UTC'ye kadar duraklatıldı. Sohbet çalışmaya devam eder.",
         "grantorAccessLost": "Breeze tarafından duraklatıldı: erişiminiz artık bu yetkiyi kapsamıyor. Erişiminiz geri geldiğinde Wisp kendiliğinden devam eder.",
         "grantorSuspended": "Breeze tarafından duraklatıldı: hesabınız askıya alındı. Askıya alma kaldırıldığında Wisp kendiliğinden devam eder.",
         "factorExpired": "Breeze tarafından duraklatıldı: bu yetki için oturum açma doğrulamanızın süresi doldu.",
@@ -896,6 +898,7 @@
     "post": {
       "brief": "Sabah özeti",
       "nudge": "Hatırlatma",
+      "nudgeResolved": "Çözüldü",
       "digest": "Derleme",
       "checkIn": "Planlı kontrol",
       "summary": "Özet",

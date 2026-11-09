@@ -9,7 +9,9 @@
  *   - a grant past its first day or a paused grant posts nothing;
  *   - #11145: a batch nothing finished posts one couldn't-look post, which a later
  *     look does not block;
- *   - the browser zone lands in its own column and the resolver reads it.
+ *   - the browser zone lands in its own column and the resolver reads it;
+ *   - #11428: the brief's Overnight counts split the grant's real runs into ran
+ *     and skipped-because-nothing-changed.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -34,6 +36,7 @@ import {
   postFirstLookIfDone,
   resweepFirstLookPosts,
 } from '../../services/wisp/firstLook';
+import { buildBrief } from '../../services/wisp/brief';
 import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { buildHomeSections } from '../../services/wisp/home';
 import { loadBriefSchedule, saveBrowserTimezone, upsertNudgePrefs } from '../../services/wisp/nudgePreferences';
@@ -464,5 +467,49 @@ describe('brief timezone (real Postgres)', () => {
     expect(schedule).toEqual({ timeLocal: '08:00', timezone: 'Asia/Tokyo', browserTimezone: 'Europe/Berlin' });
     const [row] = await sys(() => db.select().from(wispNudgePreferences).where(eq(wispNudgePreferences.userId, t.grantorId)));
     expect(row!.briefTimezone).toBe('Asia/Tokyo');
+  });
+});
+
+describe('brief overnight assessment counts (real Postgres, #11428)', () => {
+  it('splits the grant\'s runs since the last brief into ran and skipped-because-nothing-changed', async () => {
+    const t = await seedTenant(2);
+    const since = new Date(Date.now() - 60 * 60_000);
+    await seedRun(t, t.orgs[0]!, 'completed');
+    await seedRun(t, t.orgs[1]!, 'failed', 'model_error');
+    // A skip with no error code is not #11423's nothing-changed gate (FILTER must not drop the NULL).
+    await seedRun(t, t.orgs[0]!, 'skipped');
+    await seedRun(t, t.orgs[0]!, 'skipped', 'no_changes');
+    await seedRun(t, t.orgs[1]!, 'skipped', 'no_changes');
+    await seedRun(t, t.orgs[0]!, 'queued'); // no finished_at: placed by its queued_at
+    const run = (o: Record<string, unknown>) => sys(() => db.insert(aiAgentRuns).values({
+      agentId: t.agentId, orgId: t.orgs[0]!, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
+      policySnapshot: {} as never, profile: 'assessment', status: 'skipped', errorCode: 'no_changes', finishedAt: new Date(),
+      grantId: t.grantId, grantRevisionId: t.revisionId, ...o,
+    } as never));
+    // None of these counts: before the last brief, not an assessment, an org outside the ceiling, another grant's run.
+    await run({ queuedAt: new Date(since.getTime() - 120_000), finishedAt: new Date(since.getTime() - 60_000) });
+    await run({ profile: 'full' });
+    const outside = await createOrganization({ partnerId: t.partnerId });
+    await run({ orgId: outside.id });
+    const otherGrantor = await createUser({ partnerId: t.partnerId, email: `wisp-brief-other-${randomUUID()}@wisp.test` });
+    const other = await sys(async () => {
+      const [g] = await db.insert(wispGrants).values({
+        partnerId: t.partnerId, orgId: null, grantorUserId: otherGrantor.id, status: 'active', expiresAt: new Date(Date.now() + 86_400_000),
+      }).returning({ id: wispGrants.id });
+      const [r] = await db.insert(wispGrantRevisions).values({
+        grantId: g!.id, partnerId: t.partnerId, revision: 1,
+        ceilingSnapshot: { version: 1, permissionKeys: ['ai_sessions:use'], orgIds: t.orgs, siteIds: null, toolAllowlist: null, deniedTools: [] },
+        factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
+      }).returning({ id: wispGrantRevisions.id });
+      return { grantId: g!.id, revisionId: r!.id };
+    });
+    await run({ grantId: other.grantId, grantRevisionId: other.revisionId });
+    await run({ grantId: other.grantId, grantRevisionId: other.revisionId, status: 'completed', errorCode: null });
+
+    const brief = await buildBrief(t.grantId, new Date(), { since });
+    expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines).toEqual([
+      '4 assessments run',
+      '2 assessments skipped — nothing had changed',
+    ]);
   });
 });

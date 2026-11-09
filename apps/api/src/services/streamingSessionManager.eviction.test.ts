@@ -145,11 +145,23 @@ import {
   StreamingSessionManager,
   SessionEventBus,
   PROCESSING_STALL_TIMEOUT_MS,
+  turnTimeoutMsFor,
   type ActiveSession,
   type SessionState,
 } from './streamingSessionManager';
+import { LONGEST_TURN_MS } from './aiSessionExpiry';
+import { AI_APPROVAL_TIMEOUT_MAX_MINUTES } from '@breeze/shared';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import type { AuthContext } from '../middleware/auth';
+
+// #11430: the out-of-band expiry paths treat a session's unsettled budget
+// reservation as a running turn for LONGEST_TURN_MS after admission. If a turn
+// could outlive that, the read or the idle sweep could retire it mid-answer.
+describe('LONGEST_TURN_MS (aiSessionExpiry) covers the longest turn this manager allows', () => {
+  it('is at least the turn timeout at the largest configurable approval wait', () => {
+    expect(LONGEST_TURN_MS).toBeGreaterThanOrEqual(turnTimeoutMsFor(AI_APPROVAL_TIMEOUT_MAX_MINUTES * 60_000));
+  });
+});
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;

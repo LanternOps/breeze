@@ -1,14 +1,17 @@
 import { and, eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import type Redis from 'ioredis';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { portalUsers } from '../db/schema';
 import { clientAiTenantMappings } from '../db/schema/clientAi';
 import { organizations, partners } from '../db/schema/orgs';
 import { getOrgPolicy, isClientUserPermitted } from './clientAiPolicy';
 import { linkLoginToContact, type LoginContactOutcome } from './contacts/loginLink';
 import { resolveLinkableEntraAddress } from './clientAiEntraAddress';
+import { isPgUniqueViolation, pgErrorConstraint } from '@breeze/shared/pgErrors';
 import { captureException } from './sentry';
+import { ensureEntraIdentity, insertEntraIdentity } from './portalUserIdentities';
+import { initialPortalAccountState } from './portalAccountState';
 import type { ClientAiEntraClaims } from './clientAiEntraJwt';
 import {
   CLIENT_AI_REDIS_KEYS,
@@ -347,8 +350,14 @@ export async function resolveAndMintClientSession(
         // recovery below therefore could not work without this. A nested
         // `db.transaction` issues a SAVEPOINT, so the duplicate rolls back just
         // the insert and leaves the transaction usable.
-        const inserted = await db.transaction((tx) =>
-          tx
+        //
+        // The external identity (portal_user_identities, W2 release A) is
+        // written in the SAME savepoint: a 23505 from either insert rolls back
+        // both, so there is never a login without its identity or vice versa.
+        // An identity collision with a DIFFERENT login (drift) leaves the
+        // re-select below empty and fails closed as provisioning_failed.
+        const inserted = await db.transaction(async (tx) => {
+          const rows = await tx
             .insert(portalUsers)
             .values({
               orgId: mapping.orgId,
@@ -358,17 +367,43 @@ export async function resolveAndMintClientSession(
               entraOid: claims.oid,
               entraTenantId: claims.tid,
               authMethod: 'entra',
+              // active + browser_access none: an add-in login never grants the
+              // browser portal (spec §6 invariant 9).
+              ...initialPortalAccountState('addin_jit'),
               lastLoginAt: now,
             })
-            .returning(USER_COLUMNS)
-        );
+            .returning(USER_COLUMNS);
+          if (rows[0]) {
+            await insertEntraIdentity(tx, {
+              orgId: mapping.orgId,
+              portalUserId: rows[0].id,
+              tid: claims.tid,
+              oid: claims.oid,
+              linkedVia: 'jit',
+              usedAt: now,
+            });
+          }
+          return rows;
+        });
         user = inserted[0];
         provisioned = true;
       } catch (err) {
         // Concurrent first-exchange race: portal_users_entra_identity_uniq
         // makes the loser 23505 — re-select the winner's row.
-        // eslint-disable-next-line breeze/no-direct-sqlstate -- Existing guard explicitly reads the Drizzle driver cause.
-        if ((err as { cause?: { code?: string } }).cause?.code !== '23505') throw err;
+        if (!isPgUniqueViolation(err)) throw err;
+        const constraintName = pgErrorConstraint(err);
+        // A 23505 on portal_user_identities (not the login's own unique index)
+        // is drift: this Entra subject already belongs to ANOTHER login. The
+        // savepoint rolled back both inserts, the re-select below finds
+        // nothing, and the exchange fails closed as provisioning_failed —
+        // report it so the denial is explainable.
+        if (constraintName?.startsWith('portal_user_identities_')) {
+          console.error('[client-ai] portal identity drift: JIT identity collides with another login', {
+            orgId: mapping.orgId,
+            constraint: constraintName,
+          });
+          captureException(err, { eventCode: 'client_ai_identity_drift' } as never);
+        }
         [user] = await db
           .select(USER_COLUMNS)
           .from(portalUsers)
@@ -411,6 +446,42 @@ export async function resolveAndMintClientSession(
         .update(portalUsers)
         .set({ lastLoginAt: now, updatedAt: now, ...(claims.name ? { name: claims.name } : {}) })
         .where(eq(portalUsers.id, user.id));
+
+      // Release A self-heal: a login inserted by an older binary during the
+      // deploy window has no identity row yet — give it one, and record the
+      // use otherwise. A conflict is drift (the subject belongs to another
+      // login, or this login holds a different one): reported, NOT denied,
+      // because authorization still reads the entra_* columns. For the same
+      // reason any other failure of this write must not cost the user their
+      // sign-in: it runs in a savepoint (withDbTransaction) with the catch
+      // outside, so it cannot poison the exchange transaction.
+      let identity: 'inserted' | 'present' | 'conflict' | 'failed';
+      try {
+        identity = await withDbTransaction(() => ensureEntraIdentity(db, {
+          orgId: user!.orgId,
+          portalUserId: user!.id,
+          tid: claims.tid,
+          oid: claims.oid,
+          usedAt: now,
+        }));
+      } catch (err) {
+        identity = 'failed';
+        console.error('[client-ai] portal identity self-heal failed:', {
+          portalUserId: user.id,
+          orgId: user.orgId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, { eventCode: 'client_ai_identity_write_failed' } as never);
+      }
+      if (identity === 'conflict') {
+        console.error('[client-ai] portal identity drift: Entra subject does not resolve to this login', {
+          portalUserId: user.id,
+          orgId: user.orgId,
+        });
+        captureException(new Error('portal_user_identities drift on the Entra exchange'), {
+          eventCode: 'client_ai_identity_drift',
+        } as never);
+      }
     }
 
     if (user.status !== 'active') {

@@ -370,9 +370,28 @@ jobs:
       - name: Test shard retry wrapper
         run: node --test .github/scripts/retry-shard.test.mjs
 
+      # Timing-based integration sharding: the refresh script (W07a, #10751).
+      # The partition suite runs after `pnpm install` (it drives vitest).
+      - name: Test integration timing refresh
+        run: node --test .github/scripts/test-timings.test.mjs
+
+      # Named integration suite map and its import evidence (W07b1, #10751).
+      - name: Test integration suite map
+        run: node --test .github/scripts/integration-suites.test.mjs
+
+      # postgres-versions.json ↔ ci.yml's Postgres 18 smoke ↔ the scheduled
+      # postgres-compat.yml (parity with integration-test) (#11417).
+      - name: Test Postgres compatibility contract
+        run: node --test .github/scripts/postgres-compat.test.mjs
+
       # Also validates the committed .github/flaky-tests.json (W1, #10744).
       - name: Test flaky-test ledger
         run: node --test .github/scripts/flaky-ledger.test.mjs
+
+      # The merge-queue shepherd (W06, #10750). One glob: a suite under
+      # scripts/ci-shepherd/ runs only through this step.
+      - name: Test CI shepherd
+        run: node --test scripts/ci-shepherd/*.test.mjs
 
       # security-audit's base/head advisory comparison (W1, #10744).
       - name: Test dependency audit comparison
@@ -402,6 +421,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Timing-based integration sharding and its committed table (W07a,
+      # #10751). After the install: one case drives the real TimingSequencer
+      # through apps/api's vitest, offline.
+      - name: Test integration shard partition
+        run: node --test .github/scripts/shard-partition.test.mjs
 
       - name: Run ESLint
         run: pnpm lint
@@ -781,6 +806,24 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      # Postgres 18 smoke (#11417): the newest supported major, on :5434. Its
+      # tag must equal `prSmoke` in .github/scripts/postgres-versions.json, and
+      # every step that talks to it is suffixed "(Postgres 18)" and re-points
+      # every :5432 URL (postgres-compat.test.mjs). The stock 16 service above
+      # stays exactly as it is until the default moves (#11416 W3).
+      postgres-newest:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: breeze
+          POSTGRES_PASSWORD: breeze
+          POSTGRES_DB: breeze
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U breeze"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       DATABASE_URL: postgresql://breeze:breeze@localhost:5432/breeze
       POSTGRES_PASSWORD: breeze
@@ -855,6 +898,38 @@ jobs:
       - name: Check for schema drift
         run: pnpm --filter @breeze/api run db:check-drift
 
+      # ── Postgres 18 smoke (#11417) ──────────────────────────────────────
+      # The same replay (multi-tenant fixture included) and drift check on an
+      # empty Postgres 18, so a migration that breaks the newest supported
+      # major is blocked here rather than found by the scheduled
+      # postgres-compat.yml run the next morning. The assertion comes first so
+      # a moved image tag can never silently test 16.
+      - name: Assert the server major (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://breeze:breeze@localhost:5434/breeze
+        run: pnpm --filter @breeze/api exec tsx scripts/assert-postgres-major.ts 18
+
+      - name: Apply migrations against empty Postgres (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://breeze:breeze@localhost:5434/breeze
+        run: pnpm --filter @breeze/api run check:migrations
+
+      - name: Check for schema drift (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://breeze:breeze@localhost:5434/breeze
+        run: pnpm --filter @breeze/api run db:check-drift
+
+      # The pg_catalog RLS contract on the database just migrated (~3 s of
+      # tests). On 16 it runs in integration shard 1. breeze_app was created by
+      # the replay with POSTGRES_PASSWORD (ensureAppRole), hence its password.
+      - name: Run RLS coverage contract test (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://breeze:breeze@localhost:5434/breeze
+          DATABASE_URL_APP: postgresql://breeze_app:breeze@localhost:5434/breeze
+          NODE_ENV: test
+          DB_CONTEXTLESS_WRITE_STRICT: 'true'
+        run: pnpm --filter=@breeze/api test:rls-coverage
+
   # Real-Postgres apply of every migration as a NON-SUPERUSER role that mirrors
   # a managed-Postgres admin (DigitalOcean doadmin / AWS RDS). The class-complete
   # guard against superuser-only DDL: `check-migrations` above (and every
@@ -877,6 +952,22 @@ jobs:
           POSTGRES_DB: postgres
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      # Postgres 18 smoke (#11417), its own cluster on :5434: roles are
+      # cluster-wide, and a breeze_app left by the 16 run would be one the
+      # migrator holds no ADMIN option on. See check-migrations above.
+      postgres-newest:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5434:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -924,6 +1015,20 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Apply migrations as a non-superuser role
+        run: pnpm --filter @breeze/api run check:migrations:nonsuperuser
+
+      # Postgres 18 smoke (#11417). The assertion connects as the superuser:
+      # the migrator role does not exist until the next step creates it.
+      - name: Assert the server major (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5434/postgres
+        run: pnpm --filter @breeze/api exec tsx scripts/assert-postgres-major.ts 18
+
+      - name: Apply migrations as a non-superuser role (Postgres 18)
+        env:
+          SUPERUSER_DATABASE_URL: postgresql://postgres:postgres@localhost:5434/postgres
+          DATABASE_URL: postgresql://breeze_migrator:migrator@localhost:5434/breeze
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_app_ci@localhost:5434/breeze
         run: pnpm --filter @breeze/api run check:migrations:nonsuperuser
 
   test-web:
@@ -3857,6 +3962,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
           # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
+
+      # The timing sequencer's plan for this shard (W07a, #10751): its files and
+      # the digest of the whole 16-shard plan, which must match across shards.
+      # Absent when the table was unusable and vitest's own sharding ran.
+      - name: Upload shard plan
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: shard-plan-integration-${{ matrix.shard }}
+          path: apps/api/shard-plan-*.json
+          if-no-files-found: ignore
+          retention-days: 14
           overwrite: true
 
       # ee/workspace's integration suite expects its own tables

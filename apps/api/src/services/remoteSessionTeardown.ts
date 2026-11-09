@@ -190,7 +190,12 @@ export async function teardownDisconnectedSessions(
           captureException(invariant);
           throw invariant;
         }
-        await dispatchCommandToAgent(agentId, buildStopDesktopCommand(row.id, row.terminalGeneration));
+        // Outside any held DB context: the relay refuses to run inside one
+        // (#4142), and this teardown runs inline in request handlers. The
+        // send itself touches no database. The request transaction still
+        // waits on the ack (known limitation; tracked in #4142).
+        const generation = row.terminalGeneration;
+        await runOutsideDbContext(() => dispatchCommandToAgent(agentId, buildStopDesktopCommand(row.id, generation)));
       } catch (err) {
         console.error(
           `[remoteSessionTeardown] Failed to send stop_desktop for session ${row.id}:`,
@@ -225,11 +230,12 @@ export async function teardownDisconnectedSessions(
         try {
           // Same durable-relay reasoning as stop_desktop above: this fallback
           // exists precisely for the case where the socket is NOT local.
-          await dispatchCommandToAgent(agentId, {
+          // Outside any held DB context, as stop_desktop above (#4142).
+          await runOutsideDbContext(() => dispatchCommandToAgent(agentId, {
             id: `term-stop-${row.id}`,
             type: 'terminal_stop',
             payload: { sessionId: row.id },
-          });
+          }));
         } catch (err) {
           console.error(
             `[remoteSessionTeardown] Failed to send terminal_stop for session ${row.id}:`,

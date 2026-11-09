@@ -289,6 +289,56 @@ describe('recordStripePayment', () => {
     expect(capture).toHaveBeenCalledWith(expect.any(Error));
   });
 
+  // #3803 item 8: the overpayment check rounded the BALANCE to the currency's
+  // minor unit before comparing, so a JPY 1001 capture against a legacy 1000.50
+  // balance compared 1001 > 1001, passed, and was recorded — leaving the invoice
+  // paid with a -0.50 balance. The comparison is now exact.
+  it('a zero-decimal capture above a fractional legacy balance is a TERMINAL overpayment, not a recorded one', async () => {
+    const mapping = { id: 'm9', invoiceId: 'inv9', invoicePaymentId: null, stripeAccountId: 'acct_1', stripeObjectType: 'checkout_session', status: 'pending', feeAmount: '0.00', amount: '1001.00', currency: 'JPY', stripePaymentIntentId: 'pi_9' };
+    queueResult([mapping]);
+    queueResult([{ id: 'inv9', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '1000.50', currencyCode: 'JPY' }]);
+    queueResult([mapping]);
+    // markMapping('failed') ignores its result; the rounded path would consume these
+    // as the payment insert, mapping link and re-read, and record the capture.
+    queueResult([{ id: 'pay9' }]); queueResult([{ id: 'm9' }]); queueResult([{ status: 'paid' }]);
+
+    await recordStripePayment({ stripeObjectId: 'cs_9', stripePaymentIntentId: 'pi_9', stripeAccountId: 'acct_1', amount: '1001', currency: 'JPY' });
+
+    expect(insertValues.calls).toHaveLength(0);
+    expect(recompute).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.failed', invoiceId: 'inv9' }));
+  });
+
+  it('a zero-decimal capture equal to a whole balance is still recorded', async () => {
+    const mapping = { id: 'm10', invoiceId: 'inv10', invoicePaymentId: null, stripeAccountId: 'acct_1', stripeObjectType: 'checkout_session', status: 'pending', feeAmount: '0.00', amount: '1001.00', currency: 'JPY', stripePaymentIntentId: 'pi_10' };
+    queueResult([mapping]);
+    queueResult([{ id: 'inv10', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '1001.00', currencyCode: 'JPY' }]);
+    queueResult([mapping]);
+    queueResult([{ id: 'pay10' }]); queueResult([{ id: 'm10' }]); queueResult([{ status: 'paid' }]);
+
+    await recordStripePayment({ stripeObjectId: 'cs_10', stripePaymentIntentId: 'pi_10', stripeAccountId: 'acct_1', amount: '1001', currency: 'JPY' });
+
+    expect(insertValues.calls).toContainEqual(expect.objectContaining({ amount: '1001.00', method: 'card' }));
+  });
+
+  // Deliberate: a capture BELOW a fractional legacy balance is recorded. The
+  // customer has already been charged; refusing it here would leave real money
+  // unrecorded, while the 0.50 residue stays payable by an exact manual payoff.
+  // The producers refuse to mint such a session, so only a pre-deploy one gets here.
+  it('a zero-decimal capture below a fractional legacy balance is recorded as a partial payment', async () => {
+    const mapping = { id: 'm11', invoiceId: 'inv11', invoicePaymentId: null, stripeAccountId: 'acct_1', stripeObjectType: 'checkout_session', status: 'pending', feeAmount: '0.00', amount: '1000.00', currency: 'JPY', stripePaymentIntentId: 'pi_11' };
+    queueResult([mapping]);
+    queueResult([{ id: 'inv11', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '1000.50', currencyCode: 'JPY' }]);
+    queueResult([mapping]);
+    queueResult([{ id: 'pay11' }]); queueResult([{ id: 'm11' }]); queueResult([{ status: 'partially_paid' }]);
+
+    await recordStripePayment({ stripeObjectId: 'cs_11', stripePaymentIntentId: 'pi_11', stripeAccountId: 'acct_1', amount: '1000', currency: 'JPY' });
+
+    expect(insertValues.calls).toContainEqual(expect.objectContaining({ amount: '1000.00', method: 'card' }));
+    expect(recompute).toHaveBeenCalledWith('inv11');
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.failed' }));
+  });
+
   it('void invoice is TERMINAL: marks failed + emits payment.failed, no throw', async () => {
     queueResult([{ id: 'm3', invoiceId: 'inv3', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping discovery
     queueResult([{ id: 'inv3', orgId: 'org1', partnerId: 'p1', status: 'void', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)

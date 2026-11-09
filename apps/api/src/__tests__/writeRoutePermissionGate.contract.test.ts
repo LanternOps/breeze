@@ -190,6 +190,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/auth/mfa/setup': 'own account: Caller\'s own TOTP enrollment, re-verified by password or SSO grant',
   'POST /api/v1/auth/mfa/verify': 'public: Login MFA completion via temp token; setup confirm authenticates inline',
   'POST /api/v1/auth/mfa/disable': 'own account: Caller\'s own MFA factor, password re-verified',
+  'POST /api/v1/auth/mfa/totp/remove': 'own account: Removes caller\'s own authenticator app; password/SSO re-verified plus existing-factor grant',
   'POST /api/v1/auth/mfa/enable': 'own account: Caller\'s own MFA factor enrollment with step-up',
   'POST /api/v1/auth/mfa/step-up': 'own account: Mints caller\'s own step-up grant; target routes authorize separately',
   'POST /api/v1/auth/mfa/recovery-codes': 'own account: Rotates caller\'s own recovery codes',

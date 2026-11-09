@@ -26,6 +26,8 @@ const {
   setSpy,
   selectResult,
   insertReturning,
+  whereSpy,
+  ensureIdentityMock,
 } = vi.hoisted(() => ({
   // Identity of the executor handed to a nested `db.transaction` callback, so a
   // test can tell savepoint work from outer-transaction work.
@@ -39,13 +41,15 @@ const {
   setSpy: vi.fn(),
   selectResult: vi.fn(),
   insertReturning: vi.fn(),
+  whereSpy: vi.fn(),
+  ensureIdentityMock: vi.fn(),
 }));
 
 vi.mock('../db', () => {
   const chain: any = {
     from: () => chain,
     innerJoin: () => chain,
-    where: () => chain,
+    where: (w: unknown) => { whereSpy(w); return chain; },
     limit: () => selectResult(),
   };
   const methods = {
@@ -73,6 +77,8 @@ vi.mock('../db', () => {
   };
   return {
     withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
+    // A savepoint in production; a pass-through here.
+    withDbTransaction: (fn: () => Promise<unknown>) => fn(),
     db: dbMock,
   };
 });
@@ -83,9 +89,19 @@ vi.mock('./clientAiPolicy', () => ({
 vi.mock('./contacts/loginLink', () => ({ linkLoginToContact: linkLoginToContactMock }));
 vi.mock('./clientAiEntraAddress', () => ({ resolveLinkableEntraAddress: resolveAddressMock }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
+// insertEntraIdentity stays REAL (it must land on the savepoint executor);
+// only the existing-login self-heal is stubbed.
+vi.mock('./portalUserIdentities', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./portalUserIdentities')>()),
+  ensureEntraIdentity: ensureIdentityMock,
+}));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { db } from '../db';
+import { portalUserIdentities, portalUsers } from '../db/schema';
 import { resolveAndMintClientSession } from './clientAiExchange';
 import type { ClientAiEntraClaims } from './clientAiEntraJwt';
+import { entraIssuer } from './portalUserIdentities';
 
 const ORG_ID = '3f1c0b2a-1111-4222-8333-444455556666';
 const PARTNER_ID = '9a9a9a9a-1111-4222-8333-444455556666';
@@ -144,6 +160,7 @@ beforeEach(() => {
   isPermittedMock.mockReturnValue(true);
   resolveAddressMock.mockResolvedValue({ kind: 'linkable', email: EMAIL });
   linkLoginToContactMock.mockResolvedValue({ contactId: 'ct-1', outcome: 'created' });
+  ensureIdentityMock.mockResolvedValue('present');
 });
 
 describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
@@ -454,5 +471,130 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
     expect(outcome.kind).toBe('denied');
     expect(linkLoginToContactMock).not.toHaveBeenCalled();
     expect(outcome.audit.details).toMatchObject({ contactLink: 'not-attempted' });
+  });
+});
+
+describe('resolveAndMintClientSession — portal_user_identities dual-write (W2 release A)', () => {
+  const insertCalls = () => {
+    const insert = vi.mocked(db.insert);
+    return insert.mock.calls.map((call, i) => ({ table: call[0], ctx: insert.mock.contexts[i] }));
+  };
+
+  it('writes the entra identity inside the same SAVEPOINT as the JIT login insert', async () => {
+    seedSelects([]);
+    insertReturning.mockResolvedValueOnce([activeUser()]);
+
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+
+    expect(outcome.kind).toBe('resolved');
+    const calls = insertCalls();
+    expect(calls.map((c) => c.table)).toEqual([portalUsers, portalUserIdentities]);
+    // Both on the savepoint executor, never the outer transaction: a 23505 on
+    // either rolls back BOTH (no half-provisioned login).
+    expect(calls.every((c) => c.ctx === txSentinel)).toBe(true);
+    expect(valuesSpy).toHaveBeenNthCalledWith(2, {
+      orgId: ORG_ID,
+      portalUserId: 'pu-1',
+      provider: 'entra',
+      issuer: entraIssuer('tenant-guid'),
+      subject: 'oid-guid',
+      entraTenantId: 'tenant-guid',
+      linkedVia: 'jit',
+      lastUsedAt: expect.any(Date),
+    });
+    // A just-provisioned login needs no self-heal.
+    expect(ensureIdentityMock).not.toHaveBeenCalled();
+  });
+
+  it('JIT inserts browser_access none (an add-in login never grants the browser portal)', async () => {
+    seedSelects([]);
+    insertReturning.mockResolvedValueOnce([activeUser()]);
+    await resolveAndMintClientSession(claims(), redis);
+    expect(valuesSpy.mock.calls[0]![0]).toMatchObject({ authMethod: 'entra', browserAccess: 'none', status: 'active' });
+  });
+
+  it('ensures the identity on a later exchange', async () => {
+    seedSelects([activeUser({ contactId: 'ct-1' })]);
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+    expect(outcome.kind).toBe('resolved');
+    expect(ensureIdentityMock).toHaveBeenCalledWith(db, {
+      orgId: ORG_ID,
+      portalUserId: 'pu-1',
+      tid: 'tenant-guid',
+      oid: 'oid-guid',
+      usedAt: expect.any(Date),
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('still mints a session on an identity conflict and reports the drift', async () => {
+    seedSelects([activeUser({ contactId: 'ct-1' })]);
+    ensureIdentityMock.mockResolvedValueOnce('conflict');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const outcome = await resolveAndMintClientSession(claims(), redis);
+      // Release A: reads are still on the columns, so drift is reported, not enforced.
+      expect(outcome.kind).toBe('resolved');
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({ eventCode: 'client_ai_identity_drift' }),
+      );
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('a failing identity self-heal never costs the user their sign-in, and is reported', async () => {
+    seedSelects([activeUser({ contactId: 'ct-1' })]);
+    ensureIdentityMock.mockRejectedValueOnce(new Error('lock timeout on portal_user_identities'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const outcome = await resolveAndMintClientSession(claims(), redis);
+      expect(outcome.kind).toBe('resolved');
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({ eventCode: 'client_ai_identity_write_failed' }),
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('a JIT identity collision with another login fails closed as provisioning_failed and is reported as drift', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ orgId: ORG_ID, partnerId: PARTNER_ID, partnerEnabled: true }])
+      .mockResolvedValueOnce([]) // no login yet
+      .mockResolvedValueOnce([]); // re-select after the savepoint rolled back: nothing
+    insertReturning.mockResolvedValueOnce([activeUser()]);
+    // The identity insert (2nd values() call) is the one that collides.
+    valuesSpy.mockImplementation((v: Record<string, unknown>) => {
+      if (v.provider === 'entra') {
+        throw Object.assign(new Error('dup'), { cause: { code: '23505', constraint_name: 'portal_user_identities_issuer_subject_uq' } });
+      }
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const outcome = await resolveAndMintClientSession(claims(), redis);
+      expect(outcome).toMatchObject({ kind: 'denied', status: 403, body: { error: 'provisioning_failed' } });
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({ eventCode: 'client_ai_identity_drift' }),
+      );
+    } finally {
+      errSpy.mockRestore();
+      valuesSpy.mockReset();
+    }
+  });
+
+  it('still resolves the login by portal_users entra columns, not identities', async () => {
+    seedSelects([activeUser({ contactId: 'ct-1' })]);
+    await resolveAndMintClientSession(claims(), redis);
+    // [0] = tenant mapping lookup, [1] = the login lookup.
+    const rendered = new PgDialect().sqlToQuery(whereSpy.mock.calls[1]![0] as never);
+    expect(rendered.sql).toContain('"portal_users"."entra_tenant_id"');
+    expect(rendered.sql).toContain('"portal_users"."entra_oid"');
+    expect(rendered.sql).not.toContain('portal_user_identities');
+    expect(rendered.params).toEqual(['tenant-guid', 'oid-guid']);
   });
 });

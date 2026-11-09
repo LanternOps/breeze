@@ -41,7 +41,12 @@ export const ASSESSMENT_MAX_RUNS_PER_HOUR = 6;
  * (assessmentProfile.test.ts asserts all four). `manage_alerts` is a
  * multiplexed tool whose mutating actions escalate in `aiGuardrails.ts`, so
  * it is listed ONLY action-scoped to its two reads — the same entries
- * `VERDICT_TOOL_ALLOWLIST` uses. There is no agent-reachable ticket read
+ * `VERDICT_TOOL_ALLOWLIST` uses. `manage_device_anomalies` is the same shape
+ * (a read plus mutating actions that escalate in `aiGuardrails.ts`) and is
+ * listed only as `:list` (#11425): an anomaly wake drills into the device's
+ * anomaly rows.
+ * Every action-scoped entry must be a `TIER1_READ_ACTIONS` read (asserted in
+ * the test). There is no agent-reachable ticket read
  * tool today (`manage_tickets` is not in `TOOL_TIERS`); ticket facts reach
  * the run through the context block instead.
  *
@@ -59,6 +64,8 @@ export const ASSESSMENT_TOOL_ALLOWLIST: readonly string[] = [
   'query_devices', 'get_device_details', 'query_audit_log',
   // Alerts (read actions only).
   'manage_alerts:list', 'manage_alerts:get',
+  // Metric anomaly rows on one device (read action only, #11425).
+  'manage_device_anomalies:list',
   // Backup health.
   'get_backup_status', 'query_backup_sla',
   // Incidents.

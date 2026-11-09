@@ -25,7 +25,7 @@ vi.mock('../../db', () => {
       if (Object.hasOwn(columns, 'publishedAt')) { mocks.trustPageReads++; return []; }
       return [{
         id: 'pu-1', orgId: '11111111-1111-4111-8111-111111111111', email: 'customer@example.com',
-        name: 'Customer', contactId: null, authMethod: 'password', receiveNotifications: true,
+        name: 'Customer', contactId: null, authMethod: 'password', browserAccess: 'granted', receiveNotifications: true,
         status: 'active', authEpoch: 1,
       }];
     };

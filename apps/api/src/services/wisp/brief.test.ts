@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   spendSummary: vi.fn(),
   listWatches: vi.fn(),
   listActivity: vi.fn(),
+  createEntityResolver: vi.fn(),
+  resolveEntity: vi.fn(),
   getOrCreateThread: vi.fn(),
   notifyUser: vi.fn(),
   loadNudgeBookkeeping: vi.fn(),
@@ -50,6 +52,10 @@ vi.mock('./concerns', () => ({ listConcernsForCeiling: h.listConcernsForCeiling 
 vi.mock('./budget', () => ({ spendSummary: h.spendSummary }));
 vi.mock('./watches', () => ({ listWatches: h.listWatches }));
 vi.mock('./activity', () => ({ listActivity: h.listActivity }));
+vi.mock('./entityRefs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./entityRefs')>()),
+  createEntityResolver: h.createEntityResolver,
+}));
 vi.mock('./threads', () => ({ getOrCreateThread: h.getOrCreateThread }));
 vi.mock('./notifyUser', () => ({ notifyUser: h.notifyUser }));
 vi.mock('./nudgePreferences', async (importOriginal) => ({
@@ -80,7 +86,10 @@ const ORG = '00000000-0000-4000-8000-000000000d01';
 const ORG2 = '00000000-0000-4000-8000-000000000d02';
 const THREAD = '00000000-0000-4000-8000-000000000e01';
 
-const CEILING = { grantId: GRANT, revisionId: REVISION, partnerId: PARTNER, grantorUserId: USER, status: 'active' };
+const CEILING = {
+  grantId: GRANT, revisionId: REVISION, partnerId: PARTNER, grantorUserId: USER, status: 'active',
+  orgIds: new Set([ORG, ORG2]), siteIds: null, orgTerms: new Map(),
+};
 
 let seq = 0;
 function concern(over: Partial<Concern> = {}): Concern {
@@ -123,9 +132,11 @@ beforeEach(() => {
   seq = 0;
   h.resolveGrantCeiling.mockResolvedValue(CEILING);
   h.listConcernsForCeiling.mockResolvedValue([]);
-  h.spendSummary.mockResolvedValue({ spentTodayCents: 0, budgetCentsPerDay: 200, budgetResetsAt: new Date() });
+  h.spendSummary.mockResolvedValue({ spentTodayCents: 0, backgroundCents: 0, chatCents: 0, budgetCentsPerDay: 200, budgetResetsAt: new Date() });
   h.listWatches.mockResolvedValue([]);
   h.listActivity.mockResolvedValue({ items: [], nextCursor: null });
+  h.createEntityResolver.mockImplementation(() => h.resolveEntity);
+  h.resolveEntity.mockResolvedValue({ reason: 'not_found' });
   h.getOrCreateThread.mockResolvedValue({ id: THREAD, grantId: GRANT });
   h.notifyUser.mockResolvedValue({ inApp: true, pushed: 1, suppressed: null });
   h.loadNudgeBookkeeping.mockResolvedValue(new Map());
@@ -227,7 +238,8 @@ describe('buildBrief', () => {
   it('resolves the live ceiling from the grant row in system context', async () => {
     h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
     await buildBrief(GRANT, NOW);
-    expect(h.selects).toEqual([{ table: 'wisp_grants', system: true }]);
+    // #11428: the overnight assessment counts read ai_agent_runs, also in system context.
+    expect(h.selects).toEqual([{ table: 'wisp_grants', system: true }, { table: 'ai_agent_runs', system: true }]);
     expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT, REVISION);
     expect(h.listConcernsForCeiling).toHaveBeenCalledWith(CEILING, expect.objectContaining({ status: ['open', 'snoozed'] }));
   });
@@ -240,15 +252,15 @@ describe('buildBrief', () => {
 
   it('with 0 concerns says nothing needs you and omits empty sections', async () => {
     h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
-    h.spendSummary.mockResolvedValue({ spentTodayCents: 0, budgetCentsPerDay: 200, budgetResetsAt: NOW });
+    h.spendSummary.mockResolvedValue({ spentTodayCents: 0, backgroundCents: 0, chatCents: 0, budgetCentsPerDay: 200, budgetResetsAt: NOW });
     const brief = await buildBrief(GRANT, NOW);
     expect(brief.title).toBe('Good morning — nothing needs you');
     expect(brief.body).toBe('Nothing needs you right now.');
     expect(brief.sections.map((s) => s.heading)).toEqual(['Spend']);
-    expect(brief.sections[0]!.lines).toEqual(['$0.00 of $2.00 today']);
+    expect(brief.sections[0]!.lines).toEqual(['$0.00 of $2.00 today (background $0.00 · chat $0.00)']);
   });
 
-  it('counts needs-you and open concerns, truncates the body to 3 highest-severity summaries', async () => {
+  it('counts needs-you and open concerns; the body is the 3 most urgent open items, snoozed left out', async () => {
     h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
     const long = 'Backups on the accounting server failed three nights in a row';
     h.listConcernsForCeiling.mockImplementation(async (_c: unknown, f: { status: string[] }) => (f.status.includes('resolved') ? [] : [
@@ -259,26 +271,227 @@ describe('buildBrief', () => {
       concern({ severity: 'high', summary: 'Snoozed high', status: 'snoozed', approvalIntentId: 'intent-2' }),
     ]));
     const brief = await buildBrief(GRANT, NOW);
-    expect(brief.title).toBe('Good morning — 2 need you, 5 open');
-    const parts = brief.body.split(' · ');
-    expect(parts).toHaveLength(3);
-    expect(parts[0]).toBe(`${long.slice(0, 39)}…`);
-    expect([...parts[0]!].length).toBe(40);
-    // snoozed concerns stay out of the lock-screen body
-    expect(parts.slice(1)).toEqual(['Patch window missed', 'Low thing']);
+    // Needs you: both approval cards (one snoozed). Open: the four that are not snoozed.
+    expect(brief.title).toBe('Good morning — 2 need you, 4 open');
+    // A 62-character summary now fits whole (#11428); snoozed concerns stay out of the lock-screen body.
+    expect(brief.body.split(' · ')).toEqual([long, 'Patch window missed', 'Low thing']);
     const needs = brief.sections.find((s) => s.heading === 'Needs you');
     expect(needs?.lines).toEqual([long, 'Snoozed high']);
     const open = brief.sections.find((s) => s.heading === 'Open concerns');
-    expect(open?.lines).toEqual(['high: 2', 'medium: 1', 'low: 1', 'info: 1']);
+    expect(open?.lines).toEqual(['high: 1', 'medium: 1', 'low: 1', 'info: 1']);
+  });
+
+  describe('#11428: who needs you, what is open, and what the body says', () => {
+    const live = (rows: Concern[]) => h.listConcernsForCeiling.mockImplementation(
+      async (_c: unknown, f: { status: string[] }) => (f.status.includes('resolved') ? [] : rows),
+    );
+    const readiness = (orgId: string) => concern({
+      severity: 'info', subject: { kind: 'readiness', id: orgId }, signature: `readiness:${orgId}`, evidence: { readiness: { checks: [] } },
+    });
+    const resolved = (label: string) => ({ ref: { kind: 'device', id: ORG, orgId: ORG }, orgId: ORG, status: null, href: '/x', label });
+    beforeEach(() => {
+      h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
+    });
+
+    it('two open HIGH concerns and no approval card: "2 need you"', async () => {
+      live([
+        concern({ severity: 'high', summary: 'No successful backup since July.' }),
+        concern({ severity: 'high', summary: 'The maintenance window has no start time.' }),
+        concern({ severity: 'medium', summary: 'Disk is filling up.' }),
+      ]);
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.title).toBe('Good morning — 2 need you, 3 open');
+      expect(brief.sections.find((s) => s.heading === 'Needs you')?.lines)
+        .toEqual(['No successful backup since July.', 'The maintenance window has no start time.']);
+    });
+
+    it('a snoozed HIGH concern with no approval card does not need you', async () => {
+      live([concern({ severity: 'high', status: 'snoozed', summary: 'Snoozed high' })]);
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.title).toBe('Good morning — nothing needs you');
+      expect(brief.sections.find((s) => s.heading === 'Needs you')).toBeUndefined();
+    });
+
+    it('a readiness note is not an open concern, but still counts as a readiness gap', async () => {
+      live([readiness(ORG), readiness(ORG2), concern({ severity: 'medium', summary: 'Patch window missed.' })]);
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.title).toBe('Good morning — 0 need you, 1 open');
+      expect(brief.body).toBe('Patch window missed');
+      expect(brief.sections.find((s) => s.heading === 'Open concerns')?.lines).toEqual(['medium: 1']);
+      expect(brief.sections.find((s) => s.heading === 'Watching')?.lines).toEqual(['2 readiness gaps']);
+    });
+
+    it('only a snoozed concern with an approval card waiting: the body does not say nothing needs you', async () => {
+      live([concern({ severity: 'medium', status: 'snoozed', approvalIntentId: 'intent-3', summary: 'Restart the print spooler?' })]);
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.title).toBe('Good morning — 1 need you, 0 open');
+      expect(brief.body).toBe('Open Wisp to review.');
+    });
+
+    it('only readiness notes and snoozed concerns: nothing needs you', async () => {
+      live([readiness(ORG), concern({ severity: 'low', status: 'snoozed' })]);
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.title).toBe('Good morning — nothing needs you');
+      expect(brief.body).toBe('Nothing needs you right now.');
+    });
+
+    it('a 120-character summary is cut at a word boundary within 90 characters, not 39 + "…"', async () => {
+      const summary = 'Backups on the accounting server have failed every night since the first of July and nobody has looked at them since now';
+      expect(summary).toHaveLength(120);
+      live([concern({ severity: 'high', summary })]);
+      const { body } = await buildBrief(GRANT, NOW);
+      expect(body).toBe('Backups on the accounting server have failed every night since the first of July and…');
+      expect([...body].length).toBeLessThanOrEqual(90);
+    });
+
+    it('a summary that fills the cut exactly up to a space keeps its last word', async () => {
+      // 89 characters, then a space: no word is broken, so none is dropped.
+      const head = 'Backups on the accounting server failed every night since July first and the odd cause is';
+      expect(head).toHaveLength(89);
+      live([concern({ severity: 'high', summary: `${head} unknown to everyone involved so far` })]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe(`${head}…`);
+    });
+
+    it('the body fits the 120-character push clip with whole items, most urgent first', async () => {
+      // 75 + " · " + 71 = 149: the second item would be cut mid-word by the push clip, so it is left out.
+      const a = 'Backups on the file server have failed three nights in a row with one error';
+      live([
+        concern({ severity: 'high', summary: a, updatedAt: '2026-10-23T03:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'The print spooler on the front desk PC keeps crashing every morning now', updatedAt: '2026-10-23T02:00:00.000Z' }),
+        concern({ severity: 'medium', summary: 'Disk C: on the accounting laptop is ninety-seven percent full' }),
+      ]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe(a);
+
+      h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
+      // 34 + 3 + 39 = 76 fits; adding 3 + 28 makes 107, which fits too.
+      live([
+        concern({ severity: 'high', summary: 'Patch window missed on six devices', updatedAt: '2026-10-23T03:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'Antivirus definitions are four days old', updatedAt: '2026-10-23T02:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'Two admins share one account', updatedAt: '2026-10-23T01:00:00.000Z' }),
+      ]);
+      expect((await buildBrief(GRANT, NOW)).body)
+        .toBe('Patch window missed on six devices · Antivirus definitions are four days old · Two admins share one account');
+    });
+
+    it('a first item too long for the push on its own is cut at a word to fit it', async () => {
+      const label = 'SYNTHETIC-DAIRY-RECEPTION-PC-00012345';
+      live([concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'Backups on the accounting server have failed every night since the first of July and nobody has looked at them since now' })]);
+      h.resolveEntity.mockResolvedValue(resolved(label));
+      const { body } = await buildBrief(GRANT, NOW);
+      expect(body).toBe(`${label}: Backups on the accounting server have failed every night since the first of July…`);
+      expect([...body].length).toBeLessThanOrEqual(120);
+    });
+
+    it('a single word longer than half the room is cut where it falls', async () => {
+      live([concern({ severity: 'high', summary: `Path ${'x'.repeat(100)} is unreadable` })]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe(`Path ${'x'.repeat(84)}…`);
+    });
+
+    it('a cut that lands after a comma drops the comma before the ellipsis', async () => {
+      live([concern({ severity: 'high', summary: 'Backups on the accounting server have failed every night since the first of July, unbelievablyunrecoverable errors since' })]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe('Backups on the accounting server have failed every night since the first of July…');
+    });
+
+    it('a subject name longer than 40 characters is cut to 40', async () => {
+      live([concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'Disk full.' })]);
+      h.resolveEntity.mockResolvedValue(resolved('SYNTHETIC-WORKSTATION-WITH-A-VERY-LONG-NAME-0001'));
+      expect((await buildBrief(GRANT, NOW)).body).toBe('SYNTHETIC-WORKSTATION-WITH-A-VERY-LONG…: Disk full');
+    });
+
+    it('a "?" or "!" ends the first sentence, and line breaks read as spaces', async () => {
+      live([
+        concern({ severity: 'high', summary: 'Is the backup\nvault still mounted? It went quiet.', updatedAt: '2026-10-23T02:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'Ransomware canary tripped! Isolate now.', updatedAt: '2026-10-23T01:00:00.000Z' }),
+      ]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe('Is the backup vault still mounted? · Ransomware canary tripped!');
+    });
+
+    it('takes the first sentence of the summary only', async () => {
+      live([concern({ severity: 'high', summary: 'Cove backup has not succeeded since 2026-07-01. The last 41 jobs failed.' })]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe('Cove backup has not succeeded since 2026-07-01');
+    });
+
+    it('a decimal point does not end the first sentence', async () => {
+      live([concern({ severity: 'high', summary: 'Agent v0.127.0 crashed twice overnight. Restarted.' })]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe('Agent v0.127.0 crashed twice overnight');
+    });
+
+    it('orders the body HIGH first, then newest first, and keeps 3 items', async () => {
+      live([
+        concern({ severity: 'medium', summary: 'Medium new', updatedAt: '2026-10-24T09:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'High old', updatedAt: '2026-10-20T00:00:00.000Z' }),
+        concern({ severity: 'medium', summary: 'Medium old', updatedAt: '2026-10-21T00:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'High new', updatedAt: '2026-10-23T00:00:00.000Z' }),
+      ]);
+      expect((await buildBrief(GRANT, NOW)).body.split(' · ')).toEqual(['High new', 'High old', 'Medium new']);
+    });
+
+    it('leads an item with the subject name the ceiling resolves for a device or org subject', async () => {
+      live([
+        concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'No successful Cove backup since July 1.' }),
+        concern({ severity: 'medium', subject: { kind: 'org', id: ORG2 }, summary: 'Two admins share one account.' }),
+      ]);
+      h.resolveEntity.mockImplementation(async (ref: { kind: string }) => resolved(ref.kind === 'device' ? 'FRONT-DESK-01' : 'Synthetic Dairy'));
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.body).toBe('FRONT-DESK-01: No successful Cove backup since July 1 · Synthetic Dairy: Two admins share one account');
+      expect(h.createEntityResolver).toHaveBeenCalledWith({ ceiling: CEILING });
+      expect(h.resolveEntity.mock.calls.map((c) => c[0])).toEqual([{ kind: 'device', id: ORG }, { kind: 'organization', id: ORG2 }]);
+    });
+
+    it('does not repeat the subject name when the summary already starts with it', async () => {
+      live([concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'front-desk-01 has had no successful backup since July 1.' })]);
+      h.resolveEntity.mockResolvedValue(resolved('FRONT-DESK-01'));
+      expect((await buildBrief(GRANT, NOW)).body).toBe('front-desk-01 has had no successful backup since July 1');
+    });
+
+    it('a summary that opens with a longer name (web-10) still gets the subject name (web-1)', async () => {
+      live([concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'web-10 answers for web-1 while it reboots.' })]);
+      h.resolveEntity.mockResolvedValue(resolved('web-1'));
+      expect((await buildBrief(GRANT, NOW)).body).toBe('web-1: web-10 answers for web-1 while it reboots');
+    });
+
+    it('resolves names for the body items only, not every open concern', async () => {
+      live([1, 2, 3, 4, 5].map((n) => concern({
+        severity: 'high', subject: { kind: 'device', id: ORG }, summary: `Device problem ${n}.`, updatedAt: `2026-10-23T0${n}:00:00.000Z`,
+      })));
+      h.resolveEntity.mockResolvedValue(resolved('PC'));
+      await buildBrief(GRANT, NOW);
+      expect(h.resolveEntity).toHaveBeenCalledTimes(3);
+    });
+
+    it('never resolves a free-text subject (a ticket title stays off the lock screen)', async () => {
+      live([concern({ severity: 'high', subject: { kind: 'ticket', id: ORG }, summary: 'Printer ticket waiting three days.' })]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe('Printer ticket waiting three days');
+      expect(h.resolveEntity).not.toHaveBeenCalled();
+    });
+
+    it('a subject the ceiling refuses, or a failed label read, leaves the item without a name', async () => {
+      live([
+        concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'Refused device.', updatedAt: '2026-10-23T02:00:00.000Z' }),
+        concern({ severity: 'high', subject: { kind: 'device', id: ORG2 }, summary: 'Broken read.', updatedAt: '2026-10-23T01:00:00.000Z' }),
+      ]);
+      const boom = new Error('label read failed');
+      h.resolveEntity.mockResolvedValueOnce({ reason: 'outside_ceiling' }).mockRejectedValueOnce(boom);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const brief = await buildBrief(GRANT, NOW);
+        expect(brief.body).toBe('Refused device · Broken read');
+        expect(h.captureException).toHaveBeenCalledTimes(1);
+        expect(h.captureException).toHaveBeenCalledWith(boom, undefined, expect.objectContaining({ grantId: GRANT, area: 'wisp_brief' }));
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   it('reports overnight activity since the given time, spend and watching with readiness gaps', async () => {
     h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
+    h.selectQueue.ai_agent_runs = [[{ ran: 2, skipped: 0 }]];
     const since = new Date('2026-10-23T12:00:00Z');
     h.listActivity.mockResolvedValue({
       items: [
+        // #11428: assessments are counted from ai_agent_runs, not from this capped feed.
         activity('assessment', '2026-10-24T03:00:00Z'),
-        activity('assessment', '2026-10-24T02:00:00Z'),
         activity('specialist', '2026-10-24T01:00:00Z'),
         activity('nudge', '2026-10-24T01:00:00Z'),
         activity('assessment', '2026-10-23T11:00:00Z'), // before the last brief
@@ -297,16 +510,60 @@ describe('buildBrief', () => {
         // #10386: an org-level concern is never a readiness gap, whatever its evidence says.
         concern({ severity: 'high', subject: { kind: 'org', id: ORG }, evidence: { readiness: { checks: [] } } }),
       ]));
-    h.spendSummary.mockResolvedValue({ spentTodayCents: 42, budgetCentsPerDay: 200, budgetResetsAt: NOW });
+    h.spendSummary.mockResolvedValue({ spentTodayCents: 200, backgroundCents: 30, chatCents: 170, budgetCentsPerDay: 500, budgetResetsAt: NOW });
     h.listWatches.mockResolvedValue([{ status: 'active' }, { status: 'active' }, { status: 'stopped' }]);
 
     const brief = await buildBrief(GRANT, NOW, { since });
     const byHeading = Object.fromEntries(brief.sections.map((s) => [s.heading, s.lines]));
     expect(byHeading.Overnight).toEqual(['2 assessments run', '1 specialist launched', '1 concern resolved']);
-    expect(byHeading.Spend).toEqual(['$0.42 of $2.00 today']);
+    expect(byHeading.Spend).toEqual(['$2.00 of $5.00 today (background $0.30 · chat $1.70)']);
     expect(byHeading.Watching).toEqual(['2 active watches', '2 readiness gaps']);
     expect(h.listActivity).toHaveBeenCalledWith(CEILING, { limit: 100 });
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT, NOW);
+  });
+
+  describe('#11428: assessments skipped because nothing changed (#11423)', () => {
+    beforeEach(() => {
+      h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
+    });
+
+    it('adds a skipped line beside the assessments that ran', async () => {
+      h.selectQueue.ai_agent_runs = [[{ ran: 3, skipped: 41 }]];
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines)
+        .toEqual(['3 assessments run', '41 assessments skipped — nothing had changed']);
+    });
+
+    it('one skip reads in the singular, with no ran line when none ran', async () => {
+      h.selectQueue.ai_agent_runs = [[{ ran: 0, skipped: 1 }]];
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines).toEqual(['1 assessment skipped — nothing had changed']);
+    });
+
+    it('tolerates zero and an absent row: no skipped line, no Overnight section', async () => {
+      h.selectQueue.ai_agent_runs = [[{ ran: 0, skipped: 0 }]];
+      expect((await buildBrief(GRANT, NOW)).sections.map((s) => s.heading)).toEqual(['Spend']);
+      h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
+      h.selectQueue.ai_agent_runs = [[]];
+      expect((await buildBrief(GRANT, NOW)).sections.map((s) => s.heading)).toEqual(['Spend']);
+    });
+
+    it('orgs each restricted to sites by their own term read no runs either', async () => {
+      const sites = { siteIds: new Set(['00000000-0000-4000-8000-000000000f01']) };
+      h.resolveGrantCeiling.mockResolvedValue({ ...CEILING, orgTerms: new Map([[ORG, sites], [ORG2, sites]]) });
+      h.selectQueue.ai_agent_runs = [[{ ran: 9, skipped: 9 }]];
+      const brief = await buildBrief(GRANT, NOW);
+      expect(h.selects.some((s) => s.table === 'ai_agent_runs')).toBe(false);
+      expect(brief.sections.find((s) => s.heading === 'Overnight')).toBeUndefined();
+    });
+
+    it('a site-restricted ceiling (no org-level reach) reads no runs', async () => {
+      h.resolveGrantCeiling.mockResolvedValue({ ...CEILING, siteIds: new Set(['00000000-0000-4000-8000-000000000f01']) });
+      h.selectQueue.ai_agent_runs = [[{ ran: 9, skipped: 9 }]];
+      const brief = await buildBrief(GRANT, NOW);
+      expect(h.selects.some((s) => s.table === 'ai_agent_runs')).toBe(false);
+      expect(brief.sections.find((s) => s.heading === 'Overnight')).toBeUndefined();
+    });
   });
 });
 
@@ -426,7 +683,7 @@ describe('runMorningBriefs', () => {
       title: 'Good morning — nothing needs you',
       body: 'Nothing needs you right now.',
       briefLocalDate: '2026-10-24',
-      briefSections: [{ heading: 'Spend', lines: ['$0.00 of $2.00 today'] }],
+      briefSections: [{ heading: 'Spend', lines: ['$0.00 of $2.00 today (background $0.00 · chat $0.00)'] }],
     });
     expect(h.loadNudgeBookkeeping).toHaveBeenCalledTimes(1);
   });

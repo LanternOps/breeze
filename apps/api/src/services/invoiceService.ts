@@ -2175,12 +2175,11 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   if (outcome.kind === 'replayed') return replayedPaymentResult(outcome.updated, outcome.prior);
   const { inv, payment, updated, paymentPushMappingId } = outcome;
 
-  // Event emission runs after db.transaction returns, but that does NOT mean
-  // the invoice row lock is released: on the request path db.transaction is a
-  // SAVEPOINT inside the request-wide withDbAccessContext transaction, so the
-  // FOR UPDATE lock persists until the request tx commits. (recordStripePayment
-  // avoids this by emitting after its top-level system tx has returned.)
-  // Moving emission to post-commit is the follow-up tracked in #3803.
+  // Registered after db.transaction returns (the payment is final), but
+  // PUBLISHED only once the outermost transaction commits (#3803 item 9): on
+  // the request path db.transaction is a savepoint of the request-wide
+  // transaction, which still holds the invoice row lock here. Redis is never
+  // waited on under that lock, and a request that rolls back publishes nothing.
   await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment.id, actorUserId: actor.userId });
   if (updated.status === 'paid') await emitInvoiceEvent({ type: 'invoice.paid', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
   // Fire-and-forget nudge, AFTER the transaction callback returned.
@@ -2441,9 +2440,9 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       },
     });
   }
-  // Emitted after db.transaction returns — NOT after the lock is released: on
-  // the request path this is a savepoint of the request-wide tx, so the invoice
-  // row lock is held until the request commits. Post-commit emission: #3803.
+  // Published only once the outermost transaction commits (#3803 item 9), so
+  // the request's invoice row lock never waits on Redis and a rolled-back void
+  // announces nothing. See emitInvoiceEvent.
   await emitInvoiceEvent({ type: 'payment.voided', invoiceId: audit.invoiceId, orgId: audit.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
   // Same fire-and-forget contract as the record hook above: the mapping row
   // already carries pending_op='delete', so a failed enqueue only delays the
