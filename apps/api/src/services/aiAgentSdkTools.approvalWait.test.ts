@@ -79,6 +79,20 @@ for (const variant of ['registry', 'session-aware'] as const) {
       }
     });
 
+    it('a non-object result is left as is and the wait rides as its own text block', async () => {
+      for (const raw of ['plain stdout text', '[{"id":1}]']) {
+        h.execute.mockResolvedValue(raw);
+        const result = await make(async () => ({ allowed: true, approvalWaitMs: 290_000 }))(input);
+        expect(result.content).toEqual([
+          { type: 'text', text: raw },
+          { type: 'text', text: '{"approvalWaitSeconds":290}' },
+        ]);
+      }
+      h.execute.mockResolvedValue('plain stdout text');
+      const short = await make(async () => ({ allowed: true, approvalWaitMs: 10_000 }))(input);
+      expect(short.content).toEqual([{ type: 'text', text: 'plain stdout text' }]);
+    });
+
     it('an error result keeps its error classification with the wait added', async () => {
       h.execute.mockResolvedValue('{"error":"device offline"}');
       const result = await make(async () => ({ allowed: true, approvalWaitMs: 60_000 }))(input);
@@ -87,3 +101,23 @@ for (const variant of ['registry', 'session-aware'] as const) {
     });
   });
 }
+
+describe('registry handler: a screenshot that waited on an approval', () => {
+  const shot = JSON.stringify({ imageBase64: 'aGVsbG8=', format: 'png', width: 10, height: 10, sizeBytes: 5, capturedAt: '2026-11-09T00:00:00Z' });
+  const make = (pre?: PreToolUseCallback) => __test__.makeToolHandler('take_screenshot', () => auth, undefined, pre, h.post);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.execute.mockResolvedValue(shot);
+  });
+
+  it('carries approvalWaitSeconds beside the image after a long wait', async () => {
+    const result = await make(async () => ({ allowed: true, approvalWaitMs: 290_000 }))(input);
+    expect(result.content[0]).toMatchObject({ type: 'image', data: 'aGVsbG8=' });
+    expect(result.content).toContainEqual({ type: 'text', text: '{"approvalWaitSeconds":290}' });
+  });
+
+  it('adds nothing after a short wait', async () => {
+    const result = await make(async () => ({ allowed: true, approvalWaitMs: 10_000 }))(input);
+    expect(JSON.stringify(result.content)).not.toContain('approvalWaitSeconds');
+  });
+});

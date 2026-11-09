@@ -62,8 +62,9 @@ export interface PendingApproval {
   deviceContext?: DeviceContext;
   /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
   intentBacked?: boolean;
-  /** #10416: a push went to the user's phone / who the turn is waiting on — drives the thinking indicator. */
+  /** #10416: Tier-2 only — a push provider accepted a push for the user's phone. Absent means unknown, not "no push". */
   pushedToPhone?: boolean;
+  /** #10416: who must decide the card; drives the thinking indicator's wait copy. */
   waitingOn?: AiApprovalWaitingOn;
   /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
   selfApprovalRequestId?: string;

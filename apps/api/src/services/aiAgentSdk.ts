@@ -1352,7 +1352,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // right intent without relying solely on pendingIntentBySession.
     let createdIntentId: string | undefined;
     // #10416: how long this call waited on its approval card (tier-2 or a
-    // tier-3 intent). Carried on a Wisp session's allowed exit only.
+    // tier-3 intent). Set whenever such a wait completes; returned only on a
+    // Wisp session's allowed exit (denials and timeouts discard it).
     let approvalWaitMs: number | undefined;
 
     // #10400: the stream stopped this turn at its work-turn limit; a call it
@@ -1744,6 +1745,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           input,
           description: guardrailCheck.description ?? `Execute ${toolName}`,
           requiresAdminApproval: true,
+          // #10416: PAM policy or an administrator decides, never the requester.
+          waitingOn: 'other_approvers',
         });
 
         let approved: boolean;
@@ -3107,7 +3110,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           }
 
           // Best-effort push notification to the user's mobile device(s).
-          // #10416: the card says whether at least one push went out.
+          // #10416: the card says whether at least one push was accepted for
+          // delivery by a push provider (not proof the phone received it).
           let pushedToPhone = false;
           if (approvalRequestId) {
             try {

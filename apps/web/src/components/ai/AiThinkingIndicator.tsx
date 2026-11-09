@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Hourglass, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { AiApprovalWaitingOn } from '@breeze/shared';
 import type { PendingApproval } from '../../stores/processStreamEvent';
 
 /** #10416: a tool call is blocked on a human approval — say so instead of a generic spinner. */
-export type AiApprovalWait = { pushedToPhone: boolean; waitingOn: 'you' | 'other_approvers'; intentBacked: boolean };
+export type AiApprovalWait = { pushedToPhone: boolean; waitingOn: AiApprovalWaitingOn; intentBacked: boolean };
 
+/**
+ * The wait an unresolved card describes, or null once it resolves. Every
+ * card publisher on the current server sets `waitingOn`; a card without it
+ * (an older server) falls back to `'you'`.
+ */
 export function approvalWaitFromPending(p: PendingApproval | null | undefined): AiApprovalWait | null {
   if (!p || p.resolution) return null;
   return { pushedToPhone: p.pushedToPhone === true, waitingOn: p.waitingOn ?? 'you', intentBacked: p.intentBacked === true };
@@ -15,6 +21,9 @@ export function approvalWaitFromPending(p: PendingApproval | null | undefined): 
  * W05 (spec §11): never a silent pause while the model reasons. Progress
  * NOTES (thinkingDisplay 'updates') are not carried by the Agent SDK yet
  * (W01 D1), so this shows a state and the elapsed seconds.
+ *
+ * #10416: while `approvalWait` is set it takes precedence over `thinking` and
+ * shows who the turn is waiting on (no spinner, no seconds) instead.
  */
 export default function AiThinkingIndicator({ thinking, approvalWait }: { thinking: boolean; approvalWait?: AiApprovalWait | null }) {
   const { t } = useTranslation('ai');

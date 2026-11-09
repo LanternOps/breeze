@@ -170,23 +170,47 @@ function wispMissingToolAuthDenial(
 /** #10416: a wait at least this long is worth mentioning in the reply. */
 export const APPROVAL_WAIT_NOTE_MIN_MS = 30_000;
 
+/** #10416: the wait in whole seconds when it is worth mentioning, else null. */
+function approvalWaitSeconds(waitMs: number | undefined): number | null {
+  return waitMs !== undefined && waitMs >= APPROVAL_WAIT_NOTE_MIN_MS ? Math.round(waitMs / 1000) : null;
+}
+
+function isJsonObjectText(output: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * #10416: put a long approval wait on the tool result the model reads, as
  * `approvalWaitSeconds`, so its reply can say the step was waiting (a user
  * waited 290 s and asked "stuck?"). Only a JSON object result is changed, and
  * only when `waitMs` is at least APPROVAL_WAIT_NOTE_MIN_MS; anything else is
- * returned unchanged. The pre-hook sets the wait for Wisp sessions only.
+ * returned unchanged, and `approvalWaitBlock` carries the wait instead. The
+ * pre-hook sets the wait for Wisp sessions only.
  */
 export function withApprovalWait(output: string, waitMs: number | undefined): string {
-  if (waitMs === undefined || !(waitMs >= APPROVAL_WAIT_NOTE_MIN_MS)) return output;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    return output;
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return output;
-  return JSON.stringify({ ...parsed, approvalWaitSeconds: Math.round(waitMs / 1000) });
+  const seconds = approvalWaitSeconds(waitMs);
+  if (seconds === null || !isJsonObjectText(output)) return output;
+  return JSON.stringify({ ...(JSON.parse(output) as Record<string, unknown>), approvalWaitSeconds: seconds });
+}
+
+/**
+ * #10416: the wait as its own text block, for a result `withApprovalWait`
+ * cannot merge into (plain text, an array, a screenshot's image blocks).
+ * Null when there is nothing to say, or when `output` is a JSON object that
+ * already carries it.
+ */
+export function approvalWaitBlock(
+  waitMs: number | undefined,
+  output?: string,
+): { type: 'text'; text: string } | null {
+  const seconds = approvalWaitSeconds(waitMs);
+  if (seconds === null || (output !== undefined && isJsonObjectText(output))) return null;
+  return { type: 'text', text: JSON.stringify({ approvalWaitSeconds: seconds }) };
 }
 
 /**
@@ -1296,6 +1320,8 @@ function makeToolHandler(
               },
             ];
             contentBlocks.push(...visionMetadataTextBlocks(toolName, parsed));
+            const waitBlock = approvalWaitBlock(approvalWaitMs);
+            if (waitBlock) contentBlocks.push(waitBlock);
             notifyToolSuccess(onSuccess, toolName, args, result, false);
             return { content: contentBlocks };
           }
@@ -1320,7 +1346,11 @@ function makeToolHandler(
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs);
       notifyToolSuccess(onSuccess, toolName, args, result, isToolError);
-      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+      const waitBlock = approvalWaitBlock(approvalWaitMs, compactResult);
+      return {
+        content: [{ type: 'text' as const, text: compactResult }, ...(waitBlock ? [waitBlock] : [])],
+        ...(isToolError ? { isError: true } : {}),
+      };
     } catch (err) {
       const durationMs = Date.now() - startTime;
       // A thrown error here is an internal fault — its message is very often a
@@ -1523,7 +1553,11 @@ function makeSessionAwareHandler(
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
       notifyToolSuccess(onSuccess, toolName, args, result, isToolError || (typeof handlerResult !== 'string' && handlerResult.kind === 'error'));
-      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+      const waitBlock = approvalWaitBlock(approvalWaitMs, compactResult);
+      return {
+        content: [{ type: 'text' as const, text: compactResult }, ...(waitBlock ? [waitBlock] : [])],
+        ...(isToolError ? { isError: true } : {}),
+      };
     } catch (err) {
       const durationMs = Date.now() - startTime;
       // A thrown error here is an internal fault — its message is very often a
