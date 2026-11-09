@@ -541,7 +541,7 @@ export default function MFASettings({
       disabled={isLoading}
       className="text-sm text-primary underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-60"
     >
-      {recoveryUsesTotp ? t('stepUpPrompt.usePasskeyInstead') : t('stepUpPrompt.useAuthenticatorAppInstead')}
+      {recoveryUsesTotp ? t('stepUpPrompt.usePasskeyInstead') : t('stepUpPrompt.switchToAuthenticatorCode')}
     </button>
   );
 
@@ -1279,7 +1279,7 @@ export default function MFASettings({
             >
               {isLoading
                 ? t('mFASettings.verifying')
-                : isBackupEnrollment ? t('mFASettings.verifyAndAddBackup') : t('mFASettings.verifyAndEnable')}
+                : isBackupEnrollment ? t('mFASettings.confirmBackupButton') : t('mFASettings.verifyAndEnable')}
             </button>
           )}
         </div>
@@ -1410,7 +1410,7 @@ export default function MFASettings({
             className="block text-sm text-primary underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {removeProofMethod === 'passkey'
-              ? t('stepUpPrompt.useAuthenticatorAppInstead')
+              ? t('stepUpPrompt.switchToAuthenticatorCode')
               : t('stepUpPrompt.usePasskeyInstead')}
           </button>
         </div>

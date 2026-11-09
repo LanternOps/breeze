@@ -1731,7 +1731,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               disabled={isAddingPasskey}
               className="block text-sm text-primary underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {passkeyStepUpUseTotp ? t('stepUpPrompt.usePasskeyInstead') : t('stepUpPrompt.useAuthenticatorAppInstead')}
+              {passkeyStepUpUseTotp ? t('stepUpPrompt.usePasskeyInstead') : t('stepUpPrompt.switchToAuthenticatorCode')}
             </button>
           )}
         </div>
@@ -2298,7 +2298,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 disabled={!!mutatingPasskeyId}
                 onClick={() => { setPasskeyDeleteUseTotp(!passkeyDeleteUseTotp); setPasskeyFactorCode(''); setPasskeyError(undefined); }}
               >
-                {passkeyDeleteUseTotp ? t('stepUpPrompt.usePasskeyInstead') : t('stepUpPrompt.useAuthenticatorAppInstead')}
+                {passkeyDeleteUseTotp ? t('stepUpPrompt.usePasskeyInstead') : t('stepUpPrompt.switchToAuthenticatorCode')}
               </button>
             )}
             {deletePasskeyMethod === 'passkey' && !deletePasskeyUsesTotp && (

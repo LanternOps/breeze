@@ -5171,7 +5171,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Kayıt olurken şifrenizle (Touch ID / Windows Hello) onaylayacaksınız.",
     "authenticatorCode": "Kimlik doğrulayıcı kodu",
-    "confirmYourPassword": "Şifrenizi doğrulayın"
+    "confirmYourPassword": "Şifrenizi doğrulayın",
+    "switchToAuthenticatorCode": "Bunun yerine kimlik doğrulama uygulamasını kullanın",
+    "usePasskeyInstead": "Bunun yerine geçiş anahtarınızı kullanın"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Hazır yanıtlar",
@@ -5514,7 +5516,21 @@
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
     "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın.",
     "ssoReauthManageHint": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Bu değişikliği onaylamak için sağlayıcınızla doğrulayın.",
-    "ssoReauthManageVerified": "Kimliğiniz sağlayıcınızla doğrulandı. Bu değişikliği onaylamak için aşağıdaki adımı tamamlayın."
+    "ssoReauthManageVerified": "Kimliğiniz sağlayıcınızla doğrulandı. Bu değişikliği onaylamak için aşağıdaki adımı tamamlayın.",
+    "notSetUp": "Kurulmadı",
+    "notAvailable": "Kullanılamıyor",
+    "backup": "Yedek",
+    "addBackup": "Yedek ekle",
+    "totpBackupAddHint": "Geçiş anahtarınız kullanılamadığında yine de oturum açabilmek için yedek olarak bir kimlik doğrulama uygulaması ekleyin.",
+    "totpPolicyDisallowed": "Kuruluşunuzun ilkesi kimlik doğrulama uygulamalarına izin vermiyor.",
+    "totpBackupActiveHint": "Geçiş anahtarınız kullanılamıyorsa kimlik doğrulama uygulamanızdaki bir kodu kullanın.",
+    "totpBackupVerifyNote": "Doğrula düğmesine bastığınızda geçiş anahtarınızla onaylayacaksınız.",
+    "confirmBackupButton": "Doğrulayın ve yedek ekleyin",
+    "removeTotpTitle": "Kimlik doğrulama uygulamasını kaldır",
+    "removeTotpBackupDescription": "Geçiş anahtarınızla oturum açmaya devam edeceksiniz. Kurtarma kodlarınız aynı kalır.",
+    "removeTotpPrimaryDescription": "Geçiş anahtarınız birincil oturum açma yönteminiz olur. Kurtarma kodlarınız aynı kalır.",
+    "removeTotpConfirmWithPasskey": "Geçiş anahtarınızla onaylayacaksınız.",
+    "removing": "Kaldırılıyor..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Pax8'den içe aktar",
@@ -5639,7 +5655,12 @@
     "ssoReauthManageProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Bu değişikliği onaylamak için yeniden doğrulayın.",
     "verifyWithIdpToDeletePasskey": "Bu hesabın parolası yok. Bir geçiş anahtarını kaldırmadan önce kimlik sağlayıcınızla doğrulayın.",
     "deletePasskeySsoReauth": "Bir geçiş anahtarını kaldırmak için kimliği doğrulayın",
-    "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin."
+    "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin.",
+    "authenticatorBackupAdded": "Kimlik doğrulama uygulaması yedek olarak eklendi. Kurtarma kodlarınız değişmedi",
+    "authenticatorAppRemoved": "Kimlik doğrulama uygulaması kaldırıldı. Geçiş anahtarınızla oturum açacaksınız",
+    "authenticatorCodeRejectedWaitForNext": "Bu kod kabul edilmedi. Her kod yalnızca bir kez çalışır, bu yüzden kimlik doğrulama uygulamanızdaki bir sonraki kodu bekleyin.",
+    "passkeyConfirmationCanceled": "Geçiş anahtarı onayı iptal edildi veya zaman aşımına uğradı.",
+    "failedToRemoveAuthenticatorApp": "Kimlik doğrulama uygulaması kaldırılamadı"
   },
   "roleManager": {
     "roles": "Roller",

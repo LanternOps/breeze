@@ -5172,7 +5172,7 @@
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
     "authenticatorCode": "Authenticator code",
     "confirmYourPassword": "Confirm your password",
-    "useAuthenticatorAppInstead": "Use authenticator app instead",
+    "switchToAuthenticatorCode": "Use authenticator app instead",
     "usePasskeyInstead": "Use your passkey instead"
   },
   "cannedResponsesCard": {
@@ -5525,7 +5525,7 @@
     "totpPolicyDisallowed": "Your organization's policy doesn't allow authenticator apps.",
     "totpBackupActiveHint": "Use a code from your authenticator app if your passkey isn't available.",
     "totpBackupVerifyNote": "When you press Verify, you'll confirm with your passkey.",
-    "verifyAndAddBackup": "Verify and add backup",
+    "confirmBackupButton": "Verify and add backup",
     "removeTotpTitle": "Remove authenticator app",
     "removeTotpBackupDescription": "You'll keep signing in with your passkey. Your recovery codes stay the same.",
     "removeTotpPrimaryDescription": "Your passkey becomes your primary sign-in method. Your recovery codes stay the same.",

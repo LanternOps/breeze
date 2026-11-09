@@ -5171,7 +5171,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Sie bestätigen bei der Registrierung mit Ihrem Passkey (Touch ID / Windows Hello).",
     "authenticatorCode": "Authentifizierungscode",
-    "confirmYourPassword": "Bestätigen Sie Ihr Passwort"
+    "confirmYourPassword": "Bestätigen Sie Ihr Passwort",
+    "switchToAuthenticatorCode": "Stattdessen Authentifizierungs-App verwenden",
+    "usePasskeyInstead": "Stattdessen Ihren Passkey verwenden"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Vorgefertigte Antworten",
@@ -5514,7 +5516,21 @@
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
     "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung Ihrer Authenticator-App abzuschließen.",
     "ssoReauthManageHint": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich bei Ihrem Anbieter, um diese Änderung zu bestätigen.",
-    "ssoReauthManageVerified": "Identität bei Ihrem Anbieter bestätigt. Schließen Sie den folgenden Schritt ab, um diese Änderung zu bestätigen."
+    "ssoReauthManageVerified": "Identität bei Ihrem Anbieter bestätigt. Schließen Sie den folgenden Schritt ab, um diese Änderung zu bestätigen.",
+    "notSetUp": "Nicht eingerichtet",
+    "notAvailable": "Nicht verfügbar",
+    "backup": "Backup",
+    "addBackup": "Backup hinzufügen",
+    "totpBackupAddHint": "Fügen Sie eine Authentifizierungs-App als Backup hinzu, damit Sie sich weiterhin anmelden können, wenn Ihr Passkey nicht verfügbar ist.",
+    "totpPolicyDisallowed": "Die Richtlinie Ihrer Organisation lässt keine Authentifizierungs-Apps zu.",
+    "totpBackupActiveHint": "Verwenden Sie einen Code aus Ihrer Authentifizierungs-App, wenn Ihr Passkey nicht verfügbar ist.",
+    "totpBackupVerifyNote": "Wenn Sie auf „Überprüfen“ klicken, bestätigen Sie mit Ihrem Passkey.",
+    "confirmBackupButton": "Überprüfen und Backup hinzufügen",
+    "removeTotpTitle": "Authentifizierungs-App entfernen",
+    "removeTotpBackupDescription": "Sie melden sich weiterhin mit Ihrem Passkey an. Ihre Wiederherstellungscodes bleiben unverändert.",
+    "removeTotpPrimaryDescription": "Ihr Passkey wird zu Ihrer primären Anmeldemethode. Ihre Wiederherstellungscodes bleiben unverändert.",
+    "removeTotpConfirmWithPasskey": "Sie bestätigen mit Ihrem Passkey.",
+    "removing": "Entfernen..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import aus Pax8",
@@ -5639,7 +5655,12 @@
     "ssoReauthManageProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um diese Änderung zu bestätigen.",
     "verifyWithIdpToDeletePasskey": "Dieses Konto hat kein Passwort. Bestätigen Sie sich bei Ihrem Identitätsanbieter, bevor Sie einen Passkey entfernen.",
     "deletePasskeySsoReauth": "Identität bestätigen, um einen Passkey zu entfernen",
-    "deletePasskeySsoVerified": "Identität bestätigt. Wählen Sie beim zu entfernenden Passkey „Löschen“."
+    "deletePasskeySsoVerified": "Identität bestätigt. Wählen Sie beim zu entfernenden Passkey „Löschen“.",
+    "authenticatorBackupAdded": "Authentifizierungs-App als Backup hinzugefügt. Ihre Wiederherstellungscodes haben sich nicht geändert",
+    "authenticatorAppRemoved": "Authentifizierungs-App entfernt. Sie melden sich mit Ihrem Passkey an",
+    "authenticatorCodeRejectedWaitForNext": "Dieser Code wurde nicht akzeptiert. Jeder Code funktioniert nur einmal. Warten Sie daher auf den nächsten Code Ihrer Authentifizierungs-App.",
+    "passkeyConfirmationCanceled": "Die Passkey-Bestätigung wurde abgebrochen oder es kam zu einer Zeitüberschreitung.",
+    "failedToRemoveAuthenticatorApp": "Die Authentifizierungs-App konnte nicht entfernt werden"
   },
   "roleManager": {
     "roles": "Rollen",

@@ -5509,7 +5509,21 @@
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
     "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'app di autenticazione.",
     "ssoReauthManageHint": "Questo account accede tramite un provider di identità e non ha una password. Verifica con il tuo provider per confermare questa modifica.",
-    "ssoReauthManageVerified": "Identità verificata con il tuo provider. Completa il passaggio seguente per confermare questa modifica."
+    "ssoReauthManageVerified": "Identità verificata con il tuo provider. Completa il passaggio seguente per confermare questa modifica.",
+    "notSetUp": "Non configurata",
+    "notAvailable": "Non disponibile",
+    "backup": "Di riserva",
+    "addBackup": "Aggiungi backup",
+    "totpBackupAddHint": "Aggiungi un’app di autenticazione come backup, così potrai accedere anche se la passkey non è disponibile.",
+    "totpPolicyDisallowed": "La policy della tua organizzazione non consente le app di autenticazione.",
+    "totpBackupActiveHint": "Usa un codice della tua app di autenticazione se la passkey non è disponibile.",
+    "totpBackupVerifyNote": "Quando premi Verifica, confermerai con la tua passkey.",
+    "confirmBackupButton": "Verifica e aggiungi backup",
+    "removeTotpTitle": "Rimuovi app di autenticazione",
+    "removeTotpBackupDescription": "Continuerai ad accedere con la tua passkey. I tuoi codici di recupero restano invariati.",
+    "removeTotpPrimaryDescription": "La tua passkey diventa il metodo di accesso principale. I tuoi codici di recupero restano invariati.",
+    "removeTotpConfirmWithPasskey": "Confermerai con la tua passkey.",
+    "removing": "Rimozione..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importa da Pax8",
@@ -5634,7 +5648,12 @@
     "ssoReauthManageProofExpired": "La verifica con il provider di identità è scaduta. Verifica di nuovo per confermare questa modifica.",
     "verifyWithIdpToDeletePasskey": "Questo account non ha una password. Verifica con il tuo provider di identità prima di rimuovere una passkey.",
     "deletePasskeySsoReauth": "Verifica l'identità per rimuovere una passkey",
-    "deletePasskeySsoVerified": "Identità verificata. Scegli Elimina sulla passkey che vuoi rimuovere."
+    "deletePasskeySsoVerified": "Identità verificata. Scegli Elimina sulla passkey che vuoi rimuovere.",
+    "authenticatorBackupAdded": "App di autenticazione aggiunta come backup. I tuoi codici di recupero non sono cambiati",
+    "authenticatorAppRemoved": "App di autenticazione rimossa. Accederai con la tua passkey",
+    "authenticatorCodeRejectedWaitForNext": "Codice non accettato. Ogni codice funziona una sola volta, quindi attendi il prossimo codice della tua app di autenticazione.",
+    "passkeyConfirmationCanceled": "La conferma con passkey è stata annullata o è scaduta.",
+    "failedToRemoveAuthenticatorApp": "Impossibile rimuovere l’app di autenticazione"
   },
   "roleManager": {
     "roles": "Ruoli",
@@ -7370,7 +7389,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Confermerai con la tua passkey (Touch ID / Windows Hello) al momento della registrazione.",
     "authenticatorCode": "Codice authenticator",
-    "confirmYourPassword": "Conferma la password"
+    "confirmYourPassword": "Conferma la password",
+    "switchToAuthenticatorCode": "Usa invece l’app di autenticazione",
+    "usePasskeyInstead": "Usa invece la tua passkey"
   },
   "tenantVariablesPage": {
     "orgOwnedNote": "Le variabili appartenenti a un’organizzazione sono elencate nella rispettiva organizzazione.",
