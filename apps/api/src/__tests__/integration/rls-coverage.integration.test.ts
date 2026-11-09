@@ -1040,6 +1040,15 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // reportsPartnerRls.integration.test.ts. Deliberately NOT in
   // XOR_OWNERSHIP_DUAL_AXIS_TABLES — see the exclusion note there.
   'reports',
+  // #11412 W01 (origin #9246): software_upload_sessions mirrors the owner of
+  // the catalog row it uploads into — org_id XOR partner_id
+  // (software_upload_sessions_one_owner_chk, 2027-01-22-211500). Deliberately
+  // NOT in XOR_OWNERSHIP_DUAL_AXIS_TABLES: an in-flight partner upload is
+  // partner-private, so it carries no partner-wide SELECT branch (plan D3, the
+  // reports/webhooks precedent). The org_id column keeps org-tenant
+  // auto-discovery asserting the org branch; the partner branch, forge, XOR
+  // and cascade proof is softwareUploadSessionsPartnerRls.integration.test.ts.
+  'software_upload_sessions',
   // #4247: report_runs mirrors its parent — org_id XOR partner_id
   // (report_runs_one_owner_chk), pinned to the parent's owner by DEFERRABLE
   // composite FKs, one direct FOR ALL owner policy (no parent EXISTS join).

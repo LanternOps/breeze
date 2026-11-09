@@ -1,6 +1,7 @@
 ---
 issue: LanternOps/breeze#9246
-status: draft — awaiting owner approval (register the feature with feature-lifecycle only after approval)
+status: approved by the owner 2026-11-08; registered as feature #11412
+tracking_issue: 11412
 ---
 # Partner-wide installer upload for built-in packages (#9246) Implementation Plan
 
