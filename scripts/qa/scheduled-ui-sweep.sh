@@ -127,6 +127,16 @@ git checkout --quiet -B qa/scheduled-sweep origin/main
 git reset --quiet --hard origin/main
 git clean -fdq   # keeps ignored files (.env, node_modules)
 NEW_SHA="$(git rev-parse HEAD)"
+# The skill's Scheduled-mode contract (outbox schema, scope rules) must match THIS
+# runner's publisher, not whatever main currently has, so the installer ships them
+# together and the runner overlays its copy onto the worktree (reset next run).
+if [ -f "$SCRIPT_DIR/ui-qa-sweep.SKILL.md" ]; then
+  cp "$SCRIPT_DIR/ui-qa-sweep.SKILL.md" .claude/skills/ui-qa-sweep/SKILL.md
+else
+  log "WARN: no bundled skill next to runner; using main's (may lack Scheduled mode)"
+fi
+grep -q '^## Scheduled mode' .claude/skills/ui-qa-sweep/SKILL.md \
+  || { notify "QA sweep: skill has no Scheduled mode section - re-run install-schedule.sh"; log "FATAL skill contract missing"; exit 1; }
 log "main=$NEW_SHA prev=${PREV_SHA:-none}"
 QA_REPO="${QA_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)}"
 [ -n "$QA_REPO" ] || { notify "QA sweep: could not resolve GitHub repo"; exit 1; }
