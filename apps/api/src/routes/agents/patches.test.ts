@@ -1323,11 +1323,43 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // The version-aware flip bypasses the pending-preserving CASE entirely:
     // it writes the plain 'installed' literal, not a conditional expression.
     expect(set.status).toBe('installed');
-    // ...and installedAt takes the plain installedAtParam value (NULL::timestamp
-    // here, since the payload has no installedAt), not the CASE that would
-    // otherwise reference the stored column.
-    expect(set.installedAt).toEqual({ op: 'sql', strings: ['NULL::timestamp'], values: [] });
+    // ...and installedAt takes the plain installedAtParam value, not the
+    // pending-preserving CASE. The payload has no installedAt, so that value
+    // is the stored column itself: a report without a date keeps the date
+    // already on the row instead of writing NULL over it (#9723).
+    expect(set.installedAt).toEqual({ op: 'sql', strings: ['', ''], values: [tables.devicePatches.installedAt] });
     expect(set.installedVersion).toBe('2.51.0.2');
+  });
+
+  it('writes a reported installedAt on conflict, so a reinstall moves the date (#9723)', async () => {
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts(undefined, '2.51.0.2');
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        installed: [
+          {
+            name: 'Git',
+            source: 'third_party',
+            externalId: 'Git.Git',
+            packageId: 'Git.Git',
+            version: '2.51.0.2',
+            installedAt: '2026-01-05T10:20:30Z',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const { values, set } = devicePatchUpserts[0]!;
+    expect(values.installedAt).toEqual(new Date('2026-01-05T10:20:30Z'));
+    expect(set.installedAt).toEqual({
+      op: 'sql',
+      strings: ['', '::timestamp'],
+      values: ['2026-01-05T10:20:30.000Z'],
+    });
   });
 
   it('uses this device\'s own available_version, not a stale global patches.version, so a differently-stale catalog row cannot prematurely flip a still-pending row (#2736)', async () => {

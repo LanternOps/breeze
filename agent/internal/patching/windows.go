@@ -29,6 +29,11 @@ const (
 	wuaResultAborted         = 5
 )
 
+// maxWUAHistoryEntries bounds how many Windows Update history entries one
+// installed-inventory pass reads, starting from index 0 (the most recent
+// entry). An update installed before the entries read keeps an unknown date.
+const maxWUAHistoryEntries = 1000
+
 // WindowsUpdateProvider integrates with Windows Update.
 type WindowsUpdateProvider struct {
 	cfg *config.Config
@@ -392,8 +397,96 @@ func (w *WindowsUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
 			})
 		}
 
+		// IUpdate has no install time; the update history does (#9723). A
+		// history failure leaves the dates unknown, never the inventory.
+		history, err := w.queryInstallHistory(session)
+		if err != nil {
+			log.Warn("WUA install history unavailable; install dates left unknown", "error", err.Error())
+			return nil
+		}
+		applyWUAInstallDates(patches, newestWUAInstallDates(history))
 		return nil
 	})
+}
+
+// queryInstallHistory reads up to maxWUAHistoryEntries of the newest Windows
+// Update history entries.
+func (w *WindowsUpdateProvider) queryInstallHistory(session *ole.IDispatch) ([]wuaHistoryEntry, error) {
+	searcherVar, err := oleutil.CallMethod(session, "CreateUpdateSearcher")
+	if err != nil {
+		return nil, fmt.Errorf("create searcher failed: %w", err)
+	}
+	searcher := searcherVar.ToIDispatch()
+	if searcher == nil {
+		return nil, fmt.Errorf("create searcher failed: nil searcher")
+	}
+	defer searcher.Release()
+
+	totalVar, err := oleutil.CallMethod(searcher, "GetTotalHistoryCount")
+	if err != nil {
+		return nil, fmt.Errorf("history count failed: %w", err)
+	}
+	total := int(totalVar.Val)
+	_ = totalVar.Clear()
+	if total <= 0 {
+		return nil, nil
+	}
+	if total > maxWUAHistoryEntries {
+		total = maxWUAHistoryEntries
+	}
+
+	historyVar, err := oleutil.CallMethod(searcher, "QueryHistory", 0, total)
+	if err != nil {
+		return nil, fmt.Errorf("query history failed: %w", err)
+	}
+	history := historyVar.ToIDispatch()
+	if history == nil {
+		return nil, fmt.Errorf("query history failed: nil collection")
+	}
+	defer history.Release()
+
+	count, err := w.getIntProperty(history, "Count")
+	if err != nil {
+		return nil, fmt.Errorf("history entry count failed: %w", err)
+	}
+
+	entries := make([]wuaHistoryEntry, 0, count)
+	for i := 0; i < count; i++ {
+		itemVar, err := getCollectionItem(history, i)
+		if err != nil {
+			continue
+		}
+		item := itemVar.ToIDispatch()
+		if item == nil {
+			continue
+		}
+		entries = append(entries, w.readHistoryEntry(item))
+		item.Release()
+	}
+	return entries, nil
+}
+
+// readHistoryEntry reads one IUpdateHistoryEntry. Fields that cannot be read
+// stay zero, which newestWUAInstallDates skips.
+func (w *WindowsUpdateProvider) readHistoryEntry(item *ole.IDispatch) wuaHistoryEntry {
+	var entry wuaHistoryEntry
+	entry.Operation, _ = w.getIntProperty(item, "Operation")
+	entry.ResultCode, _ = w.getIntProperty(item, "ResultCode")
+	if dateVar, err := oleutil.GetProperty(item, "Date"); err == nil {
+		// Date is VT_DATE in UTC. go-ole yields a float64 instead of a
+		// time.Time when it cannot convert, which leaves the date zero.
+		if t, ok := dateVar.Value().(time.Time); ok {
+			entry.Date = t
+		}
+		_ = dateVar.Clear()
+	}
+	if identityVar, err := oleutil.GetProperty(item, "UpdateIdentity"); err == nil {
+		if identity := identityVar.ToIDispatch(); identity != nil {
+			entry.UpdateID, _ = w.getStringProperty(identity, "UpdateID")
+			identity.Release()
+		}
+	}
+	return entry
 }
 
 func (w *WindowsUpdateProvider) withSession(action func(session *ole.IDispatch) error) error {

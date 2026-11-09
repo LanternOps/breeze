@@ -530,7 +530,15 @@ async function upsertInstalledPatches(
     // A Date bound inside a raw sql`` fragment bypasses drizzle's column
     // mapper and postgres.js cannot serialize it (TypeError at query time) —
     // bind the ISO string with an explicit cast instead.
-    const installedAtParam = installedAt ? sql`${installedAt.toISOString()}::timestamp` : sql`NULL::timestamp`;
+    //
+    // A report that omits installedAt keeps the date already stored (#9723):
+    // providers only send it when the OS has one, and an agent that predates
+    // install dates never sends it, so writing NULL here would wipe a known
+    // date on the next scan. A reported date still replaces the stored one,
+    // so a reinstall moves it.
+    const installedAtParam = installedAt
+      ? sql`${installedAt.toISOString()}::timestamp`
+      : sql`${devicePatches.installedAt}`;
     // Installed inventory must not downgrade an actionable 'pending' row on the
     // normal paired-submit flow. Package managers report a pending upgrade and
     // the installed package under the SAME (source, externalId) — `winget list`

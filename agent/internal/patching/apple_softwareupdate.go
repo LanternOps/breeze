@@ -194,6 +194,11 @@ func parseAppleInstallHistory(output []byte, now time.Time, maxAge time.Duration
 
 	cutoff := now.Add(-maxAge)
 	installed := make([]InstalledPatch, 0, len(result.SPInstallHistoryDataType))
+	// The history lists an item once per install, and every entry is sent
+	// under the same ID. Keep one per ID, the newest dated install, so the
+	// date and version the API stores are the latest install's (#9723).
+	index := make(map[string]int, len(result.SPInstallHistoryDataType))
+	newest := make([]time.Time, 0, len(result.SPInstallHistoryDataType))
 	for _, item := range result.SPInstallHistoryDataType {
 		if item.Name == "" || isIgnoredInstallHistoryItem(item.Name) {
 			continue
@@ -210,11 +215,28 @@ func parseAppleInstallHistory(output []byte, now time.Time, maxAge time.Duration
 			continue
 		}
 
-		installed = append(installed, InstalledPatch{
+		patch := InstalledPatch{
 			ID:      item.Name,
 			Title:   item.Name,
 			Version: item.Version,
-		})
+		}
+		if parseErr == nil {
+			patch.InstalledAt = installTime.UTC().Format(time.RFC3339)
+		} else {
+			installTime = time.Time{}
+		}
+
+		if i, seen := index[patch.ID]; seen {
+			// An undated entry never replaces a dated one.
+			if installTime.After(newest[i]) {
+				installed[i] = patch
+				newest[i] = installTime
+			}
+			continue
+		}
+		index[patch.ID] = len(installed)
+		installed = append(installed, patch)
+		newest = append(newest, installTime)
 	}
 
 	return installed, nil

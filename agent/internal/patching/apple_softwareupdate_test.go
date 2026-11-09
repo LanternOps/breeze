@@ -53,6 +53,49 @@ func TestParseAppleInstallHistoryFiltersThirdPartyAndOldEntries(t *testing.T) {
 	if installed[0].Version != "15.3" {
 		t.Fatalf("unexpected version %q", installed[0].Version)
 	}
+	// #9723: the install_date the history already parsed is the install date.
+	if installed[0].InstalledAt != "2026-02-01T10:00:00Z" {
+		t.Fatalf("InstalledAt = %q, want 2026-02-01T10:00:00Z", installed[0].InstalledAt)
+	}
+}
+
+// #9723: the history lists an item once per install. With dates sent, the one
+// the API keeps must be the newest install, whatever order the history uses.
+func TestParseAppleInstallHistoryKeepsNewestInstallPerItem(t *testing.T) {
+	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	jsonPayload := []byte(`{
+		"SPInstallHistoryDataType": [
+			{"_name": "XProtectPlistConfigData", "install_version": "5290", "package_source": "package_source_apple", "install_date": "2026-01-20T08:00:00Z"},
+			{"_name": "XProtectPlistConfigData", "install_version": "5300", "package_source": "package_source_apple", "install_date": "2026-02-03T08:00:00Z"},
+			{"_name": "XProtectPlistConfigData", "install_version": "5295", "package_source": "package_source_apple", "install_date": "2026-01-27T08:00:00Z"},
+			{"_name": "Safari", "install_version": "18.3", "package_source": "package_source_apple", "install_date": "2026-01-15"},
+			{"_name": "Undated Update", "install_version": "1.0", "package_source": "package_source_apple", "install_date": ""}
+		]
+	}`)
+
+	installed, err := parseAppleInstallHistory(jsonPayload, now, 90*24*time.Hour)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	got := map[string]InstalledPatch{}
+	for _, p := range installed {
+		if _, dup := got[p.ID]; dup {
+			t.Fatalf("duplicate entry for %q: %#v", p.ID, installed)
+		}
+		got[p.ID] = p
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 items, got %d: %#v", len(got), installed)
+	}
+	if xp := got["XProtectPlistConfigData"]; xp.Version != "5300" || xp.InstalledAt != "2026-02-03T08:00:00Z" {
+		t.Errorf("XProtect = %+v, want version 5300 installed 2026-02-03T08:00:00Z", xp)
+	}
+	if s := got["Safari"]; s.InstalledAt != "2026-01-15T00:00:00Z" {
+		t.Errorf("Safari InstalledAt = %q, want 2026-01-15T00:00:00Z", s.InstalledAt)
+	}
+	if u := got["Undated Update"]; u.InstalledAt != "" {
+		t.Errorf("Undated Update InstalledAt = %q, want empty", u.InstalledAt)
+	}
 }
 
 func TestIsApplePackageSource(t *testing.T) {

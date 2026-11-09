@@ -153,6 +153,39 @@ describe('patch ingest — installed inventory must not erase pending rows (real
   });
 });
 
+describe('patch ingest — a report without installedAt keeps the stored date (real Postgres, #9723)', () => {
+  runDb('stores a reported date, keeps it through a dateless re-scan, and moves it on a newer date', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const externalId = `itest.winget.installed-at-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const pkg = { name: 'Installed At Probe', source: 'third_party', externalId, packageId: externalId, version: '1.0' };
+    const installedPath = `/agents/${dev.agentId}/patches/installed`;
+
+    // 1. An agent that knows the install date reports it.
+    const first = await putJson(app, env.organization.id, installedPath, {
+      installed: [{ ...pkg, installedAt: '2026-01-05T10:20:30Z' }],
+    });
+    expect(first.status).toBe(200);
+    const stored = await getDevicePatchRow(dev.id, externalId);
+    expect(stored?.status).toBe('installed');
+    expect(stored?.installedAt?.toISOString()).toBe('2026-01-05T10:20:30.000Z');
+
+    // 2. The next scan omits the field (an older agent, or a provider with no
+    //    date for this package). Pre-#9723 this wrote NULL over the date.
+    const dateless = await putJson(app, env.organization.id, installedPath, { installed: [pkg] });
+    expect(dateless.status).toBe(200);
+    expect((await getDevicePatchRow(dev.id, externalId))?.installedAt?.toISOString()).toBe('2026-01-05T10:20:30.000Z');
+
+    // 3. A newer reported date (a reinstall) still replaces the stored one.
+    const reinstall = await putJson(app, env.organization.id, installedPath, {
+      installed: [{ ...pkg, version: '1.1', installedAt: '2026-02-01T08:00:00Z' }],
+    });
+    expect(reinstall.status).toBe(200);
+    expect((await getDevicePatchRow(dev.id, externalId))?.installedAt?.toISOString()).toBe('2026-02-01T08:00:00.000Z');
+  });
+});
+
 /**
  * `patches` is a GLOBAL, un-tenanted catalog table deduped on
  * `(source, external_id)`: every device that reports a colliding key writes the
