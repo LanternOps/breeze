@@ -1149,6 +1149,7 @@ describe('loadAssessmentContext', () => {
       queueDigest();
       const ctx = await loadAssessmentContext(firstLookRun());
       expect(ctx!.firstLook).toBe(true);
+      expect(ctx!.noEarlierAssessment).toBe(true);
       const { q, chain } = alertsSelect();
       const { sql: text, params } = compile(q.where[0]);
       expect(text).toMatch(/"org_id" = \$\d+/);
@@ -1210,6 +1211,8 @@ describe('loadAssessmentContext', () => {
         triggerRef: { wisp: { grantId: GRANT, grantRevisionId: REV, reason: { kind: 'on_demand', requestId: 'req-1' }, watermark } },
       }));
       expect(ctx!.firstLook).toBe(true);
+      // An earlier assessment exists, so this run must not create the readiness note (#11429).
+      expect(ctx!.noEarlierAssessment).toBe(false);
       expect(ctx!.reason).toEqual({ kind: 'on_demand', requestId: 'req-1' });
       const { q, chain } = alertsSelect();
       expect(compile(q.where[0]).sql).not.toMatch(/triggered_at/);
@@ -1223,6 +1226,7 @@ describe('loadAssessmentContext', () => {
         triggerRef: { wisp: { grantId: GRANT, grantRevisionId: REV, reason: { kind: 'onboarding' }, watermark } },
       }));
       expect(ctx!.firstLook).toBe(true);
+      expect(ctx!.noEarlierAssessment).toBe(false);
       expect(compile(alertsSelect().q.where[0]).sql).not.toMatch(/triggered_at/);
     });
   });

@@ -1152,6 +1152,7 @@ export async function loadAssessmentContext(run: {
     openConcerns,
     changedSince: since.toISOString(),
     firstLook,
+    noEarlierAssessment: ref.watermark === null,
     digest,
     watch,
     reason,

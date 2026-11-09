@@ -160,6 +160,14 @@ export interface AssessmentRunContext {
    * prompt frames the run as a look at the current state.
    */
   firstLook: boolean;
+  /**
+   * No fully applied earlier assessment of (grant, org): the run's watermark
+   * is null. Narrower than `firstLook`, which an onboarding or on-demand
+   * reason also sets. The finalizer reads it so that an on-demand run that is
+   * the org's first look creates the readiness note, as onboarding does
+   * (#10406 × #11429).
+   */
+  noEarlierAssessment: boolean;
   digest: AssessmentDigest;
   /** Set when the run was requested by a watch (`reason.kind === 'watch'`) and the watch still exists. */
   watch: Watch | null;

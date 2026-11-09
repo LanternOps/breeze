@@ -113,7 +113,7 @@ function assessmentCtx(overrides: Partial<AssessmentRunContext> = {}): Assessmen
     grantId: GRANT_ID, grantRevisionId: REVISION_ID, grantorUserId: GRANTOR, threadId: THREAD_ID,
     threadSummary: '', openConcerns: [], changedSince: null,
     digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [], anomalies: [] },
-    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false,
+    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false, noEarlierAssessment: false,
     ...overrides,
   };
 }
@@ -627,6 +627,23 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       await finalizeAssessment(makeCtx(assessmentCtx({ reason: { kind: 'tick' }, readiness })), makeResult());
       expect(concerns.upsertConcern).not.toHaveBeenCalled();
       expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    });
+
+    // #10406 × #11429: an on-demand run can be an org's first look under the
+    // grant (asked before any assessment, or it took over a queued onboarding
+    // job). That look creates the note, as onboarding would; an on-demand run
+    // after an earlier assessment only refreshes a live note, like any run.
+    it('an on_demand run with no earlier assessment creates the note; one after an earlier assessment does not', async () => {
+      const onDemand = { kind: 'on_demand' as const, requestId: 'req-1' };
+      await finalizeAssessment(makeCtx(assessmentCtx({ reason: onDemand, readiness, firstLook: true, noEarlierAssessment: true })), makeResult());
+      expect(concerns.upsertConcern).toHaveBeenCalledTimes(1);
+      expect(concerns.upsertConcern).toHaveBeenCalledWith(expect.objectContaining({
+        subject: { kind: 'readiness', id: ORG_ID }, signature: `readiness:${ORG_ID}`,
+      }));
+
+      concerns.upsertConcern.mockClear();
+      await finalizeAssessment(makeCtx(assessmentCtx({ reason: onDemand, readiness, firstLook: true, noEarlierAssessment: false })), makeResult());
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
     });
   });
 
