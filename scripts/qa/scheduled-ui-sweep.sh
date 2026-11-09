@@ -297,8 +297,10 @@ HOSTED_PRS_FILE="$RUN_DIR/hosted-prs.txt"
   state_get '.pendingHostedPrs // [] | .[]'
 } | grep -E '^[0-9]{1,7}$' | sort -un > "$HOSTED_PRS_FILE"
 chmod 0444 "$HOSTED_PRS_FILE"
-for pr in $(cat "$HOSTED_PRS_FILE"); do case "$IN_SCOPE" in *" $pr "*) ;; *) IN_SCOPE="$IN_SCOPE$pr ";; esac; done
-log "hosted-phase PRs: $(tr '\n' ' ' < "$HOSTED_PRS_FILE")"
+# Trusted copy lives in shell memory; the file is only the agent's read-only view.
+HOSTED_PRS="$(tr '\n' ' ' < "$HOSTED_PRS_FILE")"
+for pr in $HOSTED_PRS; do case "$IN_SCOPE" in *" $pr "*) ;; *) IN_SCOPE="$IN_SCOPE$pr ";; esac; done
+log "hosted-phase PRs: $HOSTED_PRS"
 
 # Per-run browser config: only the local stack is reachable (no exfil to the
 # internet via the browser); file:// stays blocked (Playwright MCP default).
@@ -365,7 +367,7 @@ if [ "${QA_DRY_RUN:-0}" = 1 ]; then
   for u in "$BASE_URL/api/v1/config" "$BASE_URL/api/config"; do
     f="$(curl -sf "$u" 2>/dev/null | jq -c '.features // empty' 2>/dev/null)" && [ -n "$f" ] && { log "features: $f"; break; }
   done
-  if [ -s "$HOSTED_PRS_FILE" ] || [ "${QA_DRY_HOSTED:-0}" = 1 ]; then
+  if [ -n "${HOSTED_PRS// /}" ] || [ "${QA_DRY_HOSTED:-0}" = 1 ]; then
     switch_to_hosted && log "DRY RUN: hosted switch OK" || log "DRY RUN: hosted switch FAILED"
   fi
   exit 0
@@ -386,7 +388,7 @@ ALLOWED_TOOLS=(
 )
 DENIED_TOOLS=(
   "Read(/$QA_WORKTREE/.env*)" "Read(/$QA_WORKTREE/**/.env*)"
-  "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
+  "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/hosted-prs.txt)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
   "Read(/$RUN_DIR/*.log)" "Read(/$RUN_DIR/transcript*.jsonl)" "Read(/$RUN_DIR/claude*.err)"
   "mcp__playwright__browser_run_code_unsafe"
   "WebFetch" "WebSearch" "Agent" "Task"
@@ -407,7 +409,7 @@ RC=$?
 
 # --- hosted phase (only when hosted-only surfaces were touched) ---------------
 HOSTED_OK=1
-if [ "$RC" = 0 ] && [ -s "$HOSTED_PRS_FILE" ]; then
+if [ "$RC" = 0 ] && [ -n "${HOSTED_PRS// /}" ]; then
   HOSTED_OK=0
   if switch_to_hosted; then
     HPROMPT="Run the ui-qa-sweep skill in **Scheduled mode — Hosted phase** (read the skill's 'Hosted phase' subsection first and follow it exactly).
@@ -497,7 +499,7 @@ if [ "$RC" = 0 ] && [ -f "$RUN_DIR/report.md" ]; then
   tmp="$(mktemp)"
   jq -n --slurpfile old <(cat "$STATE" 2>/dev/null || echo '{}') \
      --arg sha "$NEW_SHA" --arg run "$RUN_ID" --argjson slice "$(( (SLICE + 1) % 4 ))" \
-     --argjson pend "$(if [ "$HOSTED_OK" = 1 ]; then echo '[]'; else jq -R . < "$HOSTED_PRS_FILE" | jq -s .; fi)" \
+     --argjson pend "$(if [ "$HOSTED_OK" = 1 ]; then echo '[]'; else printf '%s\n' $HOSTED_PRS | jq -R . | jq -s .; fi)" \
      '($old[0] // {}) + {lastSweptSha:$sha, lastRun:$run, nextSlice:$slice, pendingHostedPrs:$pend}' > "$tmp" && mv "$tmp" "$STATE"
   ln -sfn "$RUN_DIR" "$QA_HOME/latest"
   SUMMARY="$(grep -m1 -E '^RESULT:' "$RUN_DIR/report.md" | cut -c1-180)"
