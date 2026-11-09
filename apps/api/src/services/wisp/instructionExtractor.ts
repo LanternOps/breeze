@@ -67,7 +67,7 @@ import { INSTRUCTION_EXTRACT_SOURCE_REF_PREFIX, chargeableUnderGrant, utcDayWind
 import {
   CeilingViolationError,
   GrantInactiveError,
-  assertReadWithinCeiling,
+  assertWithinCeiling,
   inSystemContext,
   resolveGrantCeiling,
   type GrantCeiling,
@@ -183,7 +183,7 @@ export async function resolveDeviceNamesInCeiling(
 
   const inReach = rows.filter((row) => {
     try {
-      assertReadWithinCeiling(ceiling, { orgId: row.orgId, siteId: row.siteId });
+      assertWithinCeiling(ceiling, { orgId: row.orgId, siteId: row.siteId });
       return true;
     } catch (err) {
       if (err instanceof CeilingViolationError) return false;
