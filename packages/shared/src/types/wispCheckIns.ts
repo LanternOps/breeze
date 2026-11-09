@@ -17,11 +17,26 @@
  * (apps/api/migrations/*-wisp-check-ins-event-triggers.sql). For an event row
  * `due_at` is the deadline: it fires on the event, or at `due_at` saying the
  * event did not happen.
+ *
+ * Run check-ins (W07 #11496, #10410): `mode: 'run'` admits one read-only
+ * assessment run under the grant when the check-in fires and posts the run's
+ * result. `WISP_CHECK_IN_MODES` mirrors `wisp_check_ins_mode_chk`
+ * (apps/api/migrations/*-wisp-check-ins-run-mode.sql). A run row's lifecycle:
+ * scheduled → running → consumed (the result was posted) or fired (the run
+ * did not finish; the grantor was asked to run it now).
  */
 import type { WispEntityKind } from './wisp';
 
-export const WISP_CHECK_IN_STATUSES = ['scheduled', 'fired', 'consumed', 'cancelled'] as const;
+export const WISP_CHECK_IN_STATUSES = ['scheduled', 'running', 'fired', 'consumed', 'cancelled'] as const;
 export type WispCheckInStatus = (typeof WISP_CHECK_IN_STATUSES)[number];
+
+/**
+ * What a check-in does when it fires: `notify` (post the instruction; it
+ * returns with the grantor's next message) or `run` (Wisp checks on its own,
+ * read-only, under the grant, and posts the result).
+ */
+export const WISP_CHECK_IN_MODES = ['notify', 'run'] as const;
+export type WispCheckInMode = (typeof WISP_CHECK_IN_MODES)[number];
 
 /** Earliest a check-in may fire, in minutes after it is scheduled. */
 export const WISP_CHECK_IN_MIN_DELAY_MINUTES = 1;
@@ -29,7 +44,7 @@ export const WISP_CHECK_IN_MIN_DELAY_MINUTES = 1;
 export const WISP_CHECK_IN_MAX_DELAY_MINUTES = 10_080;
 /** Longest instruction, in characters (code points; `char_length` in SQL). */
 export const WISP_CHECK_IN_INSTRUCTION_MAX = 1000;
-/** Most `scheduled` check-ins one thread may hold at once. */
+/** Most `scheduled` + `running` check-ins one thread may hold at once. */
 export const WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD = 5;
 /** Most `fired` check-ins prepended to (and consumed by) one turn, oldest first. */
 export const WISP_CHECK_IN_CONSUME_LIMIT = 5;
@@ -86,4 +101,8 @@ export type WispCheckIn = {
   fireReason: WispCheckInFireReason | null;
   /** Why Breeze cancelled it (e.g. `grant_inactive`, `subject_deleted`); null otherwise. */
   cancelReason: string | null;
+  /** W07: `notify`, or `run` (Wisp checks on its own and posts the result). */
+  mode: WispCheckInMode;
+  /** W07: the assessment run a `run` check-in admitted; null until it has (and always for `notify`). */
+  runId: string | null;
 };

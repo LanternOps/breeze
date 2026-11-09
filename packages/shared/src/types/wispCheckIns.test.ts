@@ -10,13 +10,18 @@ import {
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD,
   WISP_CHECK_IN_MIN_DELAY_MINUTES,
+  WISP_CHECK_IN_MODES,
   WISP_CHECK_IN_STATUSES,
   WISP_TIMELINE_POST_KINDS,
 } from '../index';
 
 describe('wisp check-in constants', () => {
-  it('statuses are exactly scheduled, fired, consumed, cancelled', () => {
-    expect([...WISP_CHECK_IN_STATUSES]).toEqual(['scheduled', 'fired', 'consumed', 'cancelled']);
+  it('statuses are exactly scheduled, running (W07), fired, consumed, cancelled', () => {
+    expect([...WISP_CHECK_IN_STATUSES]).toEqual(['scheduled', 'running', 'fired', 'consumed', 'cancelled']);
+  });
+
+  it('W07: modes are exactly notify and run', () => {
+    expect([...WISP_CHECK_IN_MODES]).toEqual(['notify', 'run']);
   });
 
   it('limits match the spec (1 minute to 7 days, 1000 chars, 5 per thread, 5 per turn)', () => {

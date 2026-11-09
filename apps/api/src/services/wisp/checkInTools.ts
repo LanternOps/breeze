@@ -36,6 +36,14 @@
  * caller's own reach, and the row's org is the subject's. Another partner's
  * subject reads as not found.
  *
+ * W07 (#11496, #10410): `mode: 'run'` makes Wisp check on its own (read-only,
+ * one assessment run under the grant) when the check-in fires, and post the
+ * result. It needs an org to assess: the trigger subject's, else the context
+ * subject's, else the grant's scope org, else the thread's focus org when the
+ * live ceiling holds it (`run_needs_org` otherwise), and that org must be
+ * assessable, i.e. reached without a site term (`run_org_not_assessable`).
+ * Unlike a notify check-in it keeps its per_step card (selfStateTools.ts).
+ *
  * The per-call ceiling gate (tool allowlist, denied tools, permission) is
  * `createSessionPreToolUse`, which runs before any handler; it is not repeated.
  */
@@ -69,6 +77,7 @@ import {
   threadForGrant,
 } from './checkIns';
 import { loadTriggerSubject, triggerSubjectScope, type TriggerSubject } from './checkInTriggers';
+import { assessableOrgIds } from './assessableOrgs';
 import { isResolveFailure, resolveEntityRef } from './entityRefs';
 import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 
@@ -86,6 +95,14 @@ const THREAD_NOT_FOUND = JSON.stringify({ error: 'thread_not_found' });
 const CHECK_IN_NOT_FOUND = JSON.stringify({ error: 'check_in_not_found' });
 const SUBJECT_NOT_FOUND = JSON.stringify({ error: 'subject_not_found' });
 const SUBJECT_OUTSIDE_GRANT = JSON.stringify({ error: 'subject_outside_grant' });
+const RUN_NEEDS_ORG = JSON.stringify({
+  error: 'run_needs_org',
+  message: 'A run check-in needs one organization to check: give a subject or a trigger in that organization.',
+});
+const RUN_ORG_NOT_ASSESSABLE = JSON.stringify({
+  error: 'run_org_not_assessable',
+  message: 'This grant reaches that organization only for some sites, so Wisp cannot check it on its own. Use mode notify.',
+});
 const FENCE_SOURCE = 'wisp_check_ins';
 
 function inputSchemaFor(shape: z.ZodRawShape): AiTool['definition']['input_schema'] {
@@ -128,9 +145,11 @@ function mapServiceError(err: unknown): string {
  * nothing is read. Parse (not just validate): zod strips unknown keys, so
  * nothing the model adds (a grantId, a threadId) reaches the service.
  */
+type GrantThread = { id: string; focusOrgId: string | null };
+
 function grantTool<S extends z.ZodType>(
   schema: S,
-  body: (input: z.infer<S>, ceiling: GrantCeiling, threadId: string, auth: AuthContext) => Promise<string>,
+  body: (input: z.infer<S>, ceiling: GrantCeiling, thread: GrantThread, auth: AuthContext) => Promise<string>,
 ): Handler {
   return async (input, auth) => {
     const grant = auth.wispGrant;
@@ -141,7 +160,7 @@ function grantTool<S extends z.ZodType>(
       const ceiling = await resolveGrantCeiling(grant.grantId, grant.grantRevisionId);
       const thread = await threadForGrant(ceiling.grantId);
       if (!thread) return THREAD_NOT_FOUND;
-      return await body(parsed.data, ceiling, thread.id, auth);
+      return await body(parsed.data, ceiling, { id: thread.id, focusOrgId: thread.focusOrgId ?? null }, auth);
     } catch (err) {
       return mapServiceError(err);
     }
@@ -187,7 +206,21 @@ const TRIGGER_ALREADY: Readonly<Record<WispCheckInTriggerEvent, string>> = Objec
   run_settled: 'The run has already settled',
 });
 
-const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ceiling, threadId, auth) => {
+/**
+ * The org a run check-in assesses when nothing else named one: the thread's
+ * focus org, only while the live ceiling holds it and the caller reaches it.
+ */
+function focusOrgForRun(thread: GrantThread, ceiling: GrantCeiling, auth: AuthContext): string | null {
+  const org = thread.focusOrgId;
+  if (org === null || !ceiling.orgIds.has(org)) return null;
+  if (auth.scope === 'organization' && org !== auth.orgId) return null;
+  if (typeof auth.canAccessOrg === 'function' && !auth.canAccessOrg(org)) return null;
+  return org;
+}
+
+const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ceiling, thread, auth) => {
+  const threadId = thread.id;
+  const runMode = input.mode === 'run';
   // One clock for the delay, the window check and `created_at` (the DB CHECK
   // bounds due_at by the row's own created_at).
   const now = new Date();
@@ -221,6 +254,14 @@ const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ce
     context = { subject: { kind: input.subject.kind, id: input.subject.id } };
   }
 
+  if (runMode) {
+    orgId ??= focusOrgForRun(thread, ceiling, auth);
+    if (orgId === null) return RUN_NEEDS_ORG;
+    // The assessment's digest reads are org-wide (enqueueAssessment refuses a
+    // site-restricted org at fire time); refuse it now rather than then.
+    if (!assessableOrgIds(ceiling).has(orgId)) return RUN_ORG_NOT_ASSESSABLE;
+  }
+
   const row = await createCheckIn(ceiling, {
     threadId,
     sessionId: auth.wispGrant?.sessionId ?? null,
@@ -229,14 +270,27 @@ const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ce
     orgId,
     context,
     trigger,
+    ...(runMode ? { mode: 'run' as const } : {}),
   }, now);
   if (!trigger) {
+    if (runMode) {
+      return `Check-in scheduled (ID: ${row.id}) for ${row.dueAt.toISOString()}. When it fires you check on your own (read-only) and Breeze posts the result to this thread.`;
+    }
     return `Check-in scheduled (ID: ${row.id}) for ${row.dueAt.toISOString()}. Breeze will notify the user then, and the instruction comes back to you with their next message in this thread.`;
   }
   // The fire-at-scheduling re-check found the subject gone or the grant unusable.
   if (row.status === 'cancelled') return JSON.stringify({ error: 'check_in_cancelled', reason: row.cancelReason });
+  if (row.status === 'running') {
+    return `${TRIGGER_ALREADY[trigger.kind]}, so check-in ${row.id} started now: you are checking on your own (read-only), and Breeze posts the result to this thread.`;
+  }
+  if (row.status === 'fired' && runMode) {
+    return `${TRIGGER_ALREADY[trigger.kind]}, but check-in ${row.id} could not run on its own: Breeze asked the user whether to run it now.`;
+  }
   if (row.status === 'fired') {
     return `${TRIGGER_ALREADY[trigger.kind]}, so check-in ${row.id} fired now: Breeze notified the user, and the instruction comes back to you with their next message in this thread.`;
+  }
+  if (runMode) {
+    return `Check-in scheduled (ID: ${row.id}): it fires when ${TRIGGER_WAITS_FOR[trigger.kind]}, or at ${row.dueAt.toISOString()} if it has not by then. You then check on your own (read-only) and Breeze posts the result to this thread.`;
   }
   return `Check-in scheduled (ID: ${row.id}): it fires when ${TRIGGER_WAITS_FOR[trigger.kind]}, or at ${row.dueAt.toISOString()} if it has not by then. Breeze will notify the user, and the instruction comes back to you with their next message in this thread.`;
 });

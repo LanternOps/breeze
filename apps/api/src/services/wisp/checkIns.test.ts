@@ -8,7 +8,13 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { WISP_CHECK_IN_CANCEL_REASON_MAX, WISP_CHECK_IN_FIRE_REASONS, WISP_CHECK_IN_TRIGGER_KINDS } from '@breeze/shared';
+import {
+  WISP_CHECK_IN_CANCEL_REASON_MAX,
+  WISP_CHECK_IN_FIRE_REASONS,
+  WISP_CHECK_IN_MODES,
+  WISP_CHECK_IN_STATUSES,
+  WISP_CHECK_IN_TRIGGER_KINDS,
+} from '@breeze/shared';
 import type { WispCheckInRow } from '../../db/schema/wispCheckIns';
 import { checkInPostBody, toCheckInDto } from './checkIns';
 
@@ -34,6 +40,12 @@ describe('wisp_check_ins CHECKs mirror the shared constants', () => {
     const lenLine = readdirSync(MIGRATIONS).sort().map((f) => (f.endsWith('.sql') ? readFileSync(join(MIGRATIONS, f), 'utf8') : ''))
       .join('\n').split('\n').filter((l) => l.includes('ADD CONSTRAINT wisp_check_ins_cancel_reason_len_chk')).at(-1);
     expect(lenLine).toContain(`char_length(cancel_reason) <= ${WISP_CHECK_IN_CANCEL_REASON_MAX}`);
+  });
+
+  it('W07: statuses (widened with running) and modes', () => {
+    expect(lastCheckList('wisp_check_ins_status_chk')).toEqual([...WISP_CHECK_IN_STATUSES]);
+    expect(WISP_CHECK_IN_STATUSES).toContain('running');
+    expect(lastCheckList('wisp_check_ins_mode_chk')).toEqual([...WISP_CHECK_IN_MODES]);
   });
 });
 
@@ -64,11 +76,23 @@ function row(over: Partial<WispCheckInRow> = {}): WispCheckInRow {
     triggerSubjectId: null,
     fireReason: null,
     cancelReason: null,
+    mode: 'notify',
+    runId: null,
+    grantRevisionId: null,
     ...over,
   };
 }
 
 describe('toCheckInDto', () => {
+  it('W07: a notify check-in maps mode notify and no run', () => {
+    expect(toCheckInDto(row())).toMatchObject({ mode: 'notify', runId: null });
+  });
+
+  it('W07: a run check-in maps its mode and the run it admitted', () => {
+    const RUN = '00000000-0000-4000-8000-000000000f01';
+    expect(toCheckInDto(row({ mode: 'run', runId: RUN, status: 'running' }))).toMatchObject({ mode: 'run', runId: RUN, status: 'running' });
+  });
+
   it('a time check-in has no trigger, and no fire or cancel reason until one is written', () => {
     expect(toCheckInDto(row())).toMatchObject({ trigger: null, fireReason: null, cancelReason: null });
   });

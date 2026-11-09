@@ -73,5 +73,11 @@ Last release: **v0.127.0** (2026-11-08).
 - The check runs in chat, on assessment and troubleshooting proposals, and again when an approved action is released. An approval raised before you kept the instruction is refused at release.
 - A patch install counts as a reboot, because AI-initiated patch jobs reboot when a patch requires it. No migration.
 
+### Wisp check-ins can check on their own
+
+- A Wisp check-in can now be scheduled with `mode: 'run'`: when it fires, Wisp checks on its own (one read-only assessment of one organization under the grant) and posts what it found to the thread, linked to the run. Scheduling one always asks for approval on a card, because the check spends grant budget while nobody is watching. A check-in in the default `notify` mode is unchanged.
+- One check-in runs at most one assessment, however often it is retried. If the grant was revised since the check-in was scheduled, today's budget is spent, or the check cannot start, Wisp runs nothing and posts "I couldn't check on my own: … Run it now?" instead. A run that does not finish posts "My check didn't finish (…). Run it now?".
+- Migration `2027-01-22-233600-wisp-check-ins-run-mode.sql` adds three columns to `wisp_check_ins` (`mode`, `run_id`, `grant_revision_id`) and a `running` status. Existing rows become `notify` check-ins. It writes no rows.
+
 ## Migrations
 

@@ -1241,6 +1241,10 @@ async function wispSelfStateSkipsCard(
     // grant_id), so the only rows it can touch are this grant's own.
     case 'own_thread':
       return true;
+    // W07 (#11496): only a notify check-in is a pure add. A `run` one spends
+    // grant budget unattended when it fires; an unrecognised mode asks too.
+    case 'notify_check_in':
+      return input.mode === undefined || input.mode === 'notify';
     case 'own_memory':
       return input.ownerKind === 'user';
     case 'own_concern': {

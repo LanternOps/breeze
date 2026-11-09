@@ -207,7 +207,8 @@ describe('wisp check-in tools — registry', () => {
     }
     expect(TOOL_RATE_LIMITS.schedule_check_in).toEqual({ limit: 10, windowSeconds: 600 });
     expect(TOOL_RATE_LIMITS.cancel_check_in).toEqual({ limit: 20, windowSeconds: 300 });
-    expect(WISP_SELF_STATE_TOOLS.get('schedule_check_in')).toBe('adds_row');
+    // W07: a notify check-in adds a row; a run check-in keeps its card.
+    expect(WISP_SELF_STATE_TOOLS.get('schedule_check_in')).toBe('notify_check_in');
     expect(WISP_SELF_STATE_TOOLS.get('cancel_check_in')).toBe('own_thread');
     expect(WISP_SELF_STATE_TOOLS.has('list_check_ins')).toBe(false);
   });
@@ -244,7 +245,7 @@ describe('wisp check-in tools — registry', () => {
     expect(WISP_CHECK_IN_TOOL_SCHEMAS.list_check_ins).toBe(listCheckInsInputSchema);
     expect(WISP_CHECK_IN_TOOL_SCHEMAS.cancel_check_in).toBe(cancelCheckInSchema);
     const schema = tools.get('schedule_check_in')!.definition.input_schema as { properties: Record<string, { description?: string }>; required?: string[] };
-    expect(Object.keys(schema.properties).sort()).toEqual(['at', 'delayMinutes', 'instruction', 'subject', 'trigger']);
+    expect(Object.keys(schema.properties).sort()).toEqual(['at', 'delayMinutes', 'instruction', 'mode', 'subject', 'trigger']);
     expect(schema.required).toEqual(['instruction']);
     // A-W03: a parameter description is capped at 160 chars.
     for (const t of tools.values()) {
@@ -587,6 +588,84 @@ describe('wisp check-in tools — handlers', () => {
       expect(out).toBe(
         `The device has already come online, so check-in ${CHECK_IN} fired now: Breeze notified the user, and the instruction comes back to you with their next message in this thread.`,
       );
+    });
+  });
+
+  // W07 (#11496, #10410 wave B): mode run checks on its own when it fires. It
+  // needs an org to assess: the subject's, the grant's scope org or the
+  // thread's focus org, and that org must be assessable (no site term).
+  describe('schedule_check_in mode run (W07)', () => {
+    const partnerWide = { ...ceiling, scopeOrgId: null, partnerWide: true };
+
+    it('mode run on an org-scoped grant schedules a run check-in in the scope org and says Wisp checks on its own', async () => {
+      const out = await run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'run' });
+      const input = svc.createCheckIn.mock.calls[0]![1] as Record<string, unknown> & { dueAt: Date };
+      expect(input).toMatchObject({ mode: 'run', orgId: ORG, trigger: null });
+      expect(out).toBe(
+        `Check-in scheduled (ID: ${CHECK_IN}) for ${input.dueAt.toISOString()}. When it fires you check on your own (read-only) and Breeze posts the result to this thread.`,
+      );
+    });
+
+    it('mode notify (or none) passes no run mode to the service', async () => {
+      await run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'notify' });
+      await run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION });
+      for (const call of svc.createCheckIn.mock.calls) expect((call[1] as { mode?: string }).mode ?? 'notify').toBe('notify');
+    });
+
+    it('a partner-wide grant with no subject takes the thread focus org, when the ceiling holds it', async () => {
+      resolveGrantCeiling.mockResolvedValueOnce(partnerWide);
+      svc.threadForGrant.mockResolvedValueOnce({ id: THREAD, partnerId: PARTNER, focusOrgId: ORG2 });
+      await run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'run' }, auth({ scope: 'partner' }));
+      expect(svc.createCheckIn.mock.calls[0]![1]).toMatchObject({ mode: 'run', orgId: ORG2 });
+    });
+
+    it('no subject, no scope org and no usable focus org → run_needs_org, nothing created', async () => {
+      for (const focusOrgId of [null, '00000000-0000-4000-8000-000000000d09']) {
+        resolveGrantCeiling.mockResolvedValueOnce(partnerWide);
+        svc.threadForGrant.mockResolvedValueOnce({ id: THREAD, partnerId: PARTNER, focusOrgId });
+        expect(await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'run' }, auth({ scope: 'partner' }))))
+          .toMatchObject({ error: 'run_needs_org' });
+      }
+      // A notify check-in still schedules partner-level.
+      resolveGrantCeiling.mockResolvedValueOnce(partnerWide);
+      svc.threadForGrant.mockResolvedValueOnce({ id: THREAD, partnerId: PARTNER, focusOrgId: null });
+      await run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION }, auth({ scope: 'partner' }));
+      expect(svc.createCheckIn).toHaveBeenCalledTimes(1);
+    });
+
+    it('an org the grant reaches only through a site term → run_org_not_assessable, nothing created', async () => {
+      resolveGrantCeiling.mockResolvedValueOnce({ ...ceiling, orgTerms: new Map([[ORG, { permissionKeys: new Set(['*:*']), siteIds: new Set([SITE]) }]]) });
+      expect(await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'run' })))
+        .toMatchObject({ error: 'run_org_not_assessable' });
+      expect(svc.createCheckIn).not.toHaveBeenCalled();
+    });
+
+    it('an unknown mode is invalid input', async () => {
+      expect((await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'auto' }))).error).toBe('invalid_input');
+      expect(svc.createCheckIn).not.toHaveBeenCalled();
+    });
+
+    it('an event run check-in whose event already happened says the check started (running) or could not run (fired)', async () => {
+      const subject = { kind: 'device_online', orgId: ORG, partnerId: PARTNER, siteId: SITE, status: 'online', at: null, exitCode: null, output: null, lastSeenAt: null };
+      loadTriggerSubject.mockResolvedValue(subject);
+      svc.createCheckIn.mockResolvedValueOnce(row({ mode: 'run', status: 'running', triggerKind: 'device_online', triggerSubjectId: DEVICE }));
+      expect(await run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION, mode: 'run' })).toBe(
+        `The device has already come online, so check-in ${CHECK_IN} started now: you are checking on your own (read-only), and Breeze posts the result to this thread.`,
+      );
+      svc.createCheckIn.mockResolvedValueOnce(row({ mode: 'run', status: 'fired', triggerKind: 'device_online', triggerSubjectId: DEVICE }));
+      expect(await run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION, mode: 'run' })).toBe(
+        `The device has already come online, but check-in ${CHECK_IN} could not run on its own: Breeze asked the user whether to run it now.`,
+      );
+      loadTriggerSubject.mockReset();
+    });
+
+    it('the mode parameter says what run does and when to use it, within the 160-char cap', () => {
+      const schema = tools.get('schedule_check_in')!.definition.input_schema as { properties: Record<string, { description?: string; enum?: string[] }> };
+      const mode = schema.properties.mode!;
+      expect(mode.enum).toEqual(['notify', 'run']);
+      expect(mode.description).toMatch(/on your own \(read-only\)/);
+      expect(mode.description).toMatch(/read-and-report/);
+      expect((mode.description ?? '').length).toBeLessThanOrEqual(160);
     });
   });
 

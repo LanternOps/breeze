@@ -194,6 +194,10 @@ vi.mock('../wisp/specialistDispatch', () => ({ dispatchSpecialistRequests }));
 const postFirstLookIfDone = vi.hoisted(() => vi.fn<(grantId: string) => Promise<unknown>>(async () => ({ posted: false, reason: 'in_progress' })));
 vi.mock('../wisp/firstLook', () => ({ postFirstLookIfDone }));
 
+// W07 (#11496) — a run check-in's result post (its own rules: wispCheckInRuns.integration.test.ts).
+const postCheckInRunResult = vi.hoisted(() => vi.fn<(runId: string) => Promise<unknown>>(async () => 'posted'));
+vi.mock('../wisp/checkInRuns', () => ({ postCheckInRunResult }));
+
 import { executeAgentRun, resolveRunProfileLimits, resolveRunProfileToolAllowlist } from './runLoop';
 import { assessmentToolAllowlist } from './assessmentProfile';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
@@ -226,7 +230,7 @@ function snapshot(effective: AiAgentPolicy): AiAgentPolicySnapshot {
   };
 }
 
-function seedRows(run: { profile: 'assessment' | 'triage'; grant: boolean }) {
+function seedRows(run: { profile: 'assessment' | 'triage'; grant: boolean; reason?: Record<string, unknown> }) {
   const effective = policy();
   dbMockState.rowQueues.ai_agent_runs = [[{
     id: RUN_ID, agentId: AGENT_ID, orgId: ORG_ID, deviceId: null, alertId: null,
@@ -234,7 +238,7 @@ function seedRows(run: { profile: 'assessment' | 'triage'; grant: boolean }) {
     anomalyIncidentId: null, status: 'queued', modeAtStart: 'shadow',
     triggerKind: run.profile === 'triage' ? 'ticket' : 'schedule',
     policySnapshot: snapshot(effective), profile: run.profile, correlationGroupId: null, scheduleId: null,
-    triggerRef: run.grant ? { wisp: { grantId: GRANT_ID, grantRevisionId: REVISION_ID, reason: { kind: 'tick' }, watermark: null } } : {},
+    triggerRef: run.grant ? { wisp: { grantId: GRANT_ID, grantRevisionId: REVISION_ID, reason: run.reason ?? { kind: 'tick' }, watermark: null } } : {},
     taskId: null, taskStepKey: null, taskAttemptOrdinal: null,
     grantId: run.grant ? GRANT_ID : null,
     grantRevisionId: run.grant ? REVISION_ID : null,
@@ -514,6 +518,35 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     await expect(executeAgentRun(RUN_ID)).resolves.not.toThrow();
     expect(finalTransition()?.to).toBe('completed');
     consoleError.mockRestore();
+  });
+
+  const CHECK_IN_REASON = { kind: 'check_in', checkInId: '00000000-0000-4000-8000-0000000000c7', instruction: 'Check WS-01.', evidence: null };
+
+  it('W07: a check-in assessment posts its result once, after its final status is written', async () => {
+    seedRows({ profile: 'assessment', grant: true, reason: CHECK_IN_REASON });
+    let statusAtPost: string | undefined;
+    postCheckInRunResult.mockImplementationOnce(async () => { statusAtPost = finalTransition()?.to; return 'posted'; });
+    await executeAgentRun(RUN_ID);
+    expect(postCheckInRunResult).toHaveBeenCalledTimes(1);
+    expect(postCheckInRunResult).toHaveBeenCalledWith(RUN_ID);
+    expect(statusAtPost).toBe('completed');
+  });
+
+  it('W07: a failing check-in post never changes the run outcome (the wake tick re-sweeps it)', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    seedRows({ profile: 'assessment', grant: true, reason: CHECK_IN_REASON });
+    postCheckInRunResult.mockRejectedValueOnce(new Error('notify down'));
+    await expect(executeAgentRun(RUN_ID)).resolves.not.toThrow();
+    expect(finalTransition()?.to).toBe('completed');
+    consoleError.mockRestore();
+  });
+
+  it('W07: an assessment for any other reason, or a non-assessment run, never asks for the check-in post', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    await executeAgentRun(RUN_ID);
+    seedRows({ profile: 'triage', grant: false });
+    await executeAgentRun(RUN_ID);
+    expect(postCheckInRunResult).not.toHaveBeenCalled();
   });
 
   it('#10402: a non-assessment run never asks for the first-look post', async () => {
