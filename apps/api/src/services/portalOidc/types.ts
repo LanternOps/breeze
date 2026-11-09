@@ -17,8 +17,8 @@ export type PortalOidcPurpose =
   | { kind: 'invite'; inviteTokenHash: string }
   /** The signed-in portal account linking an identity, pinned to its session's epoch. */
   | { kind: 'link'; portalUserId: string; orgId: string; authEpoch: number }
-  /** sha256 of the proof-run link token; the tenant the link is pinned to (D6). */
-  | { kind: 'tenant_proof'; runTokenHash: string; orgId: string; expectedTenantId: string | null };
+  /** sha256 of the proof-run link token; the tenant the link is pinned to (D6: a run always is). */
+  | { kind: 'tenant_proof'; runTokenHash: string; orgId: string; expectedTenantId: string };
 
 /** The stored flow state. Never holds the raw `state` or binding value, only the binding's sha256. */
 export interface PortalOidcState {

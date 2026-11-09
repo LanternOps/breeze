@@ -36,7 +36,8 @@ vi.mock('../../services/email', async (importOriginal) => ({
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { generateKeyPair, SignJWT } from 'jose';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTestDb } from './setup';
 import {
   assignUserToPartner,
@@ -50,9 +51,11 @@ import {
   auditLogs,
   clientAiTenantMappings,
   m365Connections,
+  partnerUsers,
   partners,
   portalUserIdentities,
   portalUsers,
+  users,
 } from '../../db/schema';
 import type { PortalEntraProofEvidence, PortalEntraProofVia } from '../../db/schema/clientAi';
 import {
@@ -69,6 +72,12 @@ import { entraIssuer } from '../../services/portalUserIdentities';
 import { createAccessToken } from '../../services/jwt';
 import { clientAiAdminRoutes } from '../../routes/clientAi/admin';
 import * as orgMergeModule from '../../services/orgMerge';
+import { authMiddleware } from '../../middleware/auth';
+import { registerPortalEntraTenantRoutes } from '../../routes/orgPortalEntraTenant';
+import { peekPortalEntraProofRun } from '../../services/portalOidc/proofRunStore';
+import { portalRoutes } from '../../routes/portal';
+import { portalEntraProofRuns, portalOidcStates, portalRateLimitBuckets } from '../../routes/portal/helpers';
+import { __testOnly as oidcTestOnly } from '../../routes/portal/oidc';
 
 const admin = () => getTestDb();
 const newTenant = () => randomUUID();
@@ -651,5 +660,512 @@ describe('org merge race (D8)', () => {
     expect(await mappingFor(survivor.id)).toMatchObject({ entraTenantId: survivorTenant, provenAt: null });
     const [org] = await admin().execute(sql`SELECT status FROM organizations WHERE id = ${loser.id}::uuid`) as unknown as Array<{ status: string }>;
     expect(org?.status).toBe('active');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 8: the MSP tenant-proof routes through the real auth middleware, so each
+// request holds its own breeze_app transaction and the service runs beside it
+// through runOutsideDbContext (it refuses a held context: a missing
+// runOutsideDbContext is a 500 here, not a pass).
+// ---------------------------------------------------------------------------
+describe('MSP tenant-proof routes through the real router (Task 8)', () => {
+  const ENV_KEYS = ['PORTAL_ENTRA_CLIENT_ID', 'PORTAL_ENTRA_CLIENT_SECRET', 'PORTAL_ENTRA_CALLBACK_BASE_URL'] as const;
+  let savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+    process.env.PORTAL_ENTRA_CLIENT_ID = '22222222-2222-4222-8222-222222222222';
+    process.env.PORTAL_ENTRA_CLIENT_SECRET = 'portal-app-secret';
+    process.env.PORTAL_ENTRA_CALLBACK_BASE_URL = 'https://portal.msp.example';
+  });
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    vi.unstubAllGlobals();
+  });
+
+  async function mspSession() {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const token = await createAccessToken({
+      sub: env.user.id, email: env.user.email, roleId: env.role.id, orgId: null, partnerId: env.partner.id,
+      scope: 'partner', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const app = new Hono();
+    app.use('*', authMiddleware);
+    registerPortalEntraTenantRoutes(app);
+    const call = (method: string, orgId: string, suffix = '', body?: unknown) =>
+      app.request(`/organizations/${orgId}/portal-entra-tenant${suffix}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    return { env, call };
+  }
+
+  /** A tenant binds at most one connection per profile (m365_connections_verified_tenant_profile_uniq). */
+  async function seedBoundConnection(
+    orgId: string,
+    tenantId: string,
+    profile: 'customer-graph-read' | 'customer-graph-actions' = 'customer-graph-read',
+  ) {
+    const [row] = await admin().insert(m365Connections).values({
+      orgId, userId: null, consentAttemptId: randomUUID(), clientId: randomUUID(), clientSecret: null,
+      authMode: 'application-certificate', vaultRef: 'akv://vault.example/test-certificate/version',
+      credentialVersion: 'test-version', permissionManifestVersion: 1, status: 'active',
+      profile, credentialDomain: profile, tenantId,
+    }).returning();
+    return row!;
+  }
+
+  it("DELETE removes the mapping (and with it the AI for Office mapping) and audits removed; another partner's org → 404", async () => {
+    const { env, call } = await mspSession();
+    const tenant = newTenant();
+    await recordEntraTenantProof(proofRun(env.organization.id, tenant, env.user.id));
+
+    const res = await call('DELETE', env.organization.id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { removed: true, tenantId: tenant } });
+    expect(await mappingFor(env.organization.id)).toBeNull();
+    expect(await findOrgByProvenEntraTenant(tenant)).toBeNull();
+    await vi.waitFor(async () => {
+      const rows = await audits(env.organization.id, 'organization.portal_identity_proof.removed');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ actorType: 'user', actorId: env.user.id, details: { tenantId: tenant } });
+    });
+
+    const again = await call('DELETE', env.organization.id);
+    expect(await again.json()).toEqual({ data: { removed: false, tenantId: null } });
+
+    const other = await tenantOrg();
+    const otherTenant = newTenant();
+    await seedMapping(other.org.id, otherTenant);
+    const crossPartner = await call('DELETE', other.org.id);
+    expect(crossPartner.status).toBe(404);
+    expect(await mappingFor(other.org.id)).toMatchObject({ entraTenantId: otherTenant });
+  });
+
+  it('prove-from-connection proves via the identity-bound connection and GET shows it with a consent URL; a tenant proven elsewhere → 409, never a 500', async () => {
+    const { env, call } = await mspSession();
+    const tenant = newTenant();
+    const bound = await seedBoundConnection(env.organization.id, tenant);
+
+    const before = await call('GET', env.organization.id);
+    expect(before.status).toBe(200);
+    expect((await before.json()).data).toEqual({
+      tenantId: null, state: 'none', provenAt: null, provenVia: null, connectionTenantId: tenant, consentUrl: null,
+    });
+
+    const proved = await call('POST', env.organization.id, '/prove-from-connection');
+    expect(proved.status).toBe(200);
+    expect((await proved.json()).data).toMatchObject({
+      tenantId: tenant, state: 'proven', provenVia: 'm365_connection', connectionTenantId: tenant,
+    });
+    expect(await mappingFor(env.organization.id)).toMatchObject({
+      entraTenantId: tenant,
+      provenVia: 'm365_connection',
+      provenByUserId: env.user.id,
+      provenEvidence: { via: 'm365_connection', connectionId: bound.id, profile: 'customer-graph-read' },
+    });
+
+    const status = await call('GET', env.organization.id);
+    const { data } = await status.json();
+    expect(data).toMatchObject({ tenantId: tenant, state: 'proven' });
+    expect(data.consentUrl).toMatch(new RegExp(`^https://login\\.microsoftonline\\.com/${tenant}/v2\\.0/adminconsent\\?`));
+
+    // Another partner's org whose connection is bound to the now-proven tenant:
+    // an M365-connection proof cannot displace it (OD4). The refusal is mapped
+    // to 409 and the request still commits cleanly.
+    const rival = await mspSession();
+    await seedBoundConnection(rival.env.organization.id, tenant, 'customer-graph-actions');
+    const refused = await rival.call('POST', rival.env.organization.id, '/prove-from-connection');
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: expect.any(String), code: 'PORTAL_ENTRA_TENANT_PROVEN_ELSEWHERE' });
+    expect(await mappingFor(rival.env.organization.id)).toBeNull();
+    expect(await mappingFor(env.organization.id)).toMatchObject({ entraTenantId: tenant, provenVia: 'm365_connection' });
+
+    // No connection at all → 422, also through the request transaction.
+    const bare = await mspSession();
+    const none = await bare.call('POST', bare.env.organization.id, '/prove-from-connection');
+    expect(none.status).toBe(422);
+    expect((await none.json()).code).toBe('PORTAL_ENTRA_NO_VERIFIED_CONNECTION');
+  });
+
+  it('proof-links with a domain hint pins the tid from the openid-configuration; no hint and no tenant → 422', async () => {
+    const { env, call } = await mspSession();
+    const tenant = newTenant();
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === 'https://login.microsoftonline.com/contoso.example/v2.0/.well-known/openid-configuration') {
+        return new Response(JSON.stringify({ issuer: `https://login.microsoftonline.com/${tenant}/v2.0` }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: 'invalid_tenant' }), { status: 400 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await call('POST', env.organization.id, '/proof-links', { tenant: 'Contoso.example' });
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.expectedTenantId).toBe(tenant);
+    const url = new URL(data.url);
+    expect(`${url.origin}${url.pathname}`).toBe('https://portal.msp.example/api/v1/portal/auth/oidc/entra/proof');
+    const token = url.searchParams.get('run')!;
+    const run = await peekPortalEntraProofRun(token);
+    expect(run?.record).toMatchObject({
+      orgId: env.organization.id, partnerId: env.partner.id, createdByUserId: env.user.id, expectedTenantId: tenant,
+    });
+    await vi.waitFor(async () => {
+      const rows = await audits(env.organization.id, 'organization.portal_identity_proof.link_created');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        actorId: env.user.id,
+        details: { runId: run!.record.runId, expectedTenantId: tenant, tenantSource: 'hint' },
+      });
+      expect(JSON.stringify(rows[0])).not.toContain(token);
+    });
+    // A link is not a proof (inv. 2): nothing was mapped.
+    expect(await mappingFor(env.organization.id)).toBeNull();
+
+    const unknown = await call('POST', env.organization.id, '/proof-links', { tenant: 'not-a-tenant.example' });
+    expect(unknown.status).toBe(422);
+    expect((await unknown.json()).code).toBe('PORTAL_ENTRA_TENANT_HINT_INVALID');
+
+    const required = await call('POST', env.organization.id, '/proof-links', {});
+    expect(required.status).toBe(422);
+    expect((await required.json()).code).toBe('PORTAL_ENTRA_TENANT_HINT_REQUIRED');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 8: the proof run end to end. The MSP creates the link through the real
+// MSP route (auth middleware + request transaction); the tenant admin opens it
+// and returns through the real portal router (public, no DB context held), on
+// real Postgres as breeze_app. Microsoft is stubbed at the portal OIDC route's
+// NODE_ENV=test seam: the token endpoint and Graph are injected fetches, the
+// id_token is signed with a local RS256 key. Nothing reaches the network.
+// ---------------------------------------------------------------------------
+describe('proof run through the portal router (Task 8, D6)', () => {
+  const CLIENT_ID = '22222222-2222-4222-8222-222222222222';
+  const PORTAL = 'https://portal.example.test/portal';
+  const GLOBAL_ADMIN = '62e90394-69f5-4237-9190-012177145e10';
+  const USER_ADMIN = 'fe930be7-5e62-47db-91af-98c3a49a38b1';
+  const ENV: Record<string, string> = {
+    PORTAL_ENTRA_CLIENT_ID: CLIENT_ID,
+    PORTAL_ENTRA_CLIENT_SECRET: 'portal-app-secret',
+    PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.msp.example',
+    PUBLIC_PORTAL_URL: PORTAL,
+  };
+  const INVALID = `${PORTAL}/entra-setup?status=invalid`;
+  const FAILED = `${PORTAL}/entra-setup?status=failed`;
+  let savedEnv: Record<string, string | undefined> = {};
+  let keys: Awaited<ReturnType<typeof generateKeyPair>>;
+  const portal = new Hono().route('/api/v1/portal', portalRoutes);
+
+  /** Microsoft's token endpoint, by authorization code: what it answers for each code. */
+  const issued = new Map<string, { idToken: string; accessToken: string }>();
+  const tokenFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    const code = new URLSearchParams(String(init?.body)).get('code') ?? '';
+    const tokens = issued.get(code);
+    if (!tokens) return new Response('{"error":"invalid_grant"}', { status: 400 });
+    return Response.json({ id_token: tokens.idToken, access_token: tokens.accessToken });
+  });
+  /** Microsoft Graph, by the bearer's principal: who it is, its home tenant, its directory roles. */
+  const directory = new Map<string, { oid: string; tid: string; roles: string[] }>();
+  let rolesGate: null | (() => Promise<void>) = null;
+  const graphFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const bearer = String((init?.headers as Record<string, string> | undefined)?.authorization ?? '').replace(/^Bearer /, '');
+    const who = directory.get(bearer);
+    if (!who) return new Response('{}', { status: 401 });
+    const url = String(input);
+    if (url.includes('/v1.0/me?')) return Response.json({ id: who.oid });
+    if (url.includes('/v1.0/organization?')) return Response.json({ value: [{ id: who.tid }] });
+    if (rolesGate) await rolesGate();
+    return Response.json({ value: who.roles.map((roleTemplateId) => ({ roleTemplateId })) });
+  });
+
+  beforeAll(async () => {
+    keys = await generateKeyPair('RS256', { modulusLength: 2048 });
+  });
+
+  beforeEach(() => {
+    savedEnv = Object.fromEntries(Object.keys(ENV).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, ENV);
+    portalOidcStates.clear();
+    portalEntraProofRuns.clear();
+    portalRateLimitBuckets.clear();
+    issued.clear();
+    directory.clear();
+    rolesGate = null;
+    tokenFetch.mockClear();
+    graphFetch.mockClear();
+    oidcTestOnly.setEntraDeps({
+      fetch: tokenFetch as unknown as typeof fetch,
+      verificationKey: keys.publicKey,
+      graphFetch: graphFetch as unknown as typeof fetch,
+    });
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    oidcTestOnly.setEntraDeps(null);
+  });
+
+  afterAll(() => {
+    oidcTestOnly.setEntraDeps(null);
+  });
+
+  /** A partner member with full org access (the link's creator) and the org. */
+  async function mspWithOrg() {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const token = await createAccessToken({
+      sub: env.user.id, email: env.user.email, roleId: env.role.id, orgId: null, partnerId: env.partner.id,
+      scope: 'partner', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const msp = new Hono();
+    msp.use('*', authMiddleware);
+    registerPortalEntraTenantRoutes(msp);
+    /** POST proof-links through the real MSP route: the link the MSP sends the tenant admin. */
+    const createLink = async (body: { tenant?: string } = {}) => {
+      const res = await msp.request(`/organizations/${env.organization.id}/portal-entra-tenant/proof-links`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      const { data } = (await res.json()) as { data: { url: string; expectedTenantId: string } };
+      const link = new URL(data.url);
+      const runToken = link.searchParams.get('run')!;
+      const run = (await peekPortalEntraProofRun(runToken))!.record;
+      return { path: `${link.pathname}${link.search}`, runToken, run, expectedTenantId: data.expectedTenantId };
+    };
+    return { env, createLink };
+  }
+
+  /** The admin opens the link: 302 to Microsoft, pinned to the run's tenant. */
+  async function openLink(path: string) {
+    const res = await portal.request(path);
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get('location')!);
+    const binding = res.headers.getSetCookie().find((c) => c.startsWith('breeze_portal_oidc='))!.split(';')[0]!;
+    return { location, state: location.searchParams.get('state')!, nonce: location.searchParams.get('nonce')!, binding };
+  }
+
+  /** Microsoft signs (tid, oid) in for this flow and hands back a code; Graph knows the principal. */
+  async function microsoftSignsIn(
+    flow: { nonce: string },
+    who: { tid: string; oid: string; roles: string[] },
+  ): Promise<string> {
+    const idToken = await new SignJWT({
+      tid: who.tid, oid: who.oid, nonce: flow.nonce, ver: '2.0', iss: entraIssuer(who.tid), aud: CLIENT_ID,
+      preferred_username: `admin@${who.tid.slice(0, 8)}.example`, name: 'Tenant Admin',
+    }).setProtectedHeader({ alg: 'RS256' }).setIssuedAt().setExpirationTime('1h').sign(keys.privateKey);
+    const code = `code-${randomUUID()}`;
+    const accessToken = `graph-access-${randomUUID()}`;
+    issued.set(code, { idToken, accessToken });
+    directory.set(accessToken, who);
+    return code;
+  }
+
+  function callback(flow: { state: string; binding: string }, code: string) {
+    return portal.request(`/api/v1/portal/auth/oidc/entra/callback?code=${code}&state=${encodeURIComponent(flow.state)}`, {
+      headers: { Cookie: flow.binding },
+    });
+  }
+
+  const adminConsentFor = (tenantId: string) => new RegExp(`^https://login\\.microsoftonline\\.com/${tenantId}/v2\\.0/adminconsent\\?`);
+
+  it('proof run end-to-end with a stubbed token endpoint + Graph role check: mapping proven via proof_run, redirect to adminconsent', async () => {
+    const { env, createLink } = await mspWithOrg();
+    const tenant = newTenant();
+    const link = await createLink({ tenant });
+    expect(link.expectedTenantId).toBe(tenant);
+
+    const flow = await openLink(link.path);
+    expect(`${flow.location.origin}${flow.location.pathname}`).toBe(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize`);
+    expect(flow.location.searchParams.get('scope')).toBe('openid profile Directory.Read.All');
+
+    const adminOid = randomUUID();
+    const code = await microsoftSignsIn(flow, { tid: tenant, oid: adminOid, roles: [GLOBAL_ADMIN] });
+    const res = await callback(flow, code);
+    expect(res.status).toBe(302);
+    const consent = new URL(res.headers.get('location')!);
+    expect(consent.toString()).toMatch(adminConsentFor(tenant));
+    expect(consent.searchParams.get('client_id')).toBe(CLIENT_ID);
+    expect(consent.searchParams.get('redirect_uri')).toBe('https://portal.msp.example/api/v1/portal/auth/oidc/entra/consent-return');
+    expect(res.headers.getSetCookie().find((c) => c.startsWith('breeze_portal_oidc='))).toContain('Max-Age=0');
+
+    // The code went to the pinned tenant's token endpoint; Graph saw the access token it issued.
+    expect(String(tokenFetch.mock.calls[0]![0])).toBe(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`);
+    expect(graphFetch).toHaveBeenCalledTimes(3);
+
+    expect(await mappingFor(env.organization.id)).toMatchObject({
+      entraTenantId: tenant,
+      provenVia: 'proof_run',
+      provenByUserId: env.user.id,
+      provenEvidence: { via: 'proof_run', adminOid, runId: link.run.runId },
+    });
+    expect(await findOrgByProvenEntraTenant(tenant)).toEqual({ orgId: env.organization.id, partnerId: env.partner.id });
+    const proven = await audits(env.organization.id, 'organization.portal_identity_proof.proven');
+    expect(proven).toHaveLength(1);
+    expect(proven[0]).toMatchObject({ actorType: 'user', actorId: env.user.id, details: { tenantId: tenant, via: 'proof_run' } });
+    expect(await audits(env.organization.id, 'organization.portal_identity_proof.failed')).toEqual([]);
+    // The link is spent.
+    expect(await peekPortalEntraProofRun(link.runToken)).toBeNull();
+  });
+
+  it('proof run by a non-admin (Graph check fails) → failed, run still usable', async () => {
+    const { env, createLink } = await mspWithOrg();
+    const tenant = newTenant();
+    const link = await createLink({ tenant });
+
+    const first = await openLink(link.path);
+    const userAdmin = await microsoftSignsIn(first, { tid: tenant, oid: randomUUID(), roles: [USER_ADMIN] });
+    const refused = await callback(first, userAdmin);
+    expect(refused.headers.get('location')).toBe(FAILED);
+    expect(await mappingFor(env.organization.id)).toBeNull();
+    const failed = await audits(env.organization.id, 'organization.portal_identity_proof.failed');
+    expect(failed).toEqual([expect.objectContaining({
+      actorType: 'system', details: { reason: 'admin_check_failed', adminCheck: 'no_accepted_role' },
+    })]);
+    expect(JSON.stringify(failed)).not.toContain(link.runToken);
+
+    // Not burned: the tenant's Global Administrator completes it with the same link.
+    expect(await peekPortalEntraProofRun(link.runToken)).not.toBeNull();
+    const second = await openLink(link.path);
+    const globalAdmin = await microsoftSignsIn(second, { tid: tenant, oid: randomUUID(), roles: [GLOBAL_ADMIN] });
+    const done = await callback(second, globalAdmin);
+    expect(done.headers.get('location')).toMatch(adminConsentFor(tenant));
+    expect(await mappingFor(env.organization.id)).toMatchObject({ entraTenantId: tenant, provenVia: 'proof_run' });
+  });
+
+  it("proof run pinned to the org's mapped tenant refuses a token from another tenant", async () => {
+    const { env, createLink } = await mspWithOrg();
+    const mapped = newTenant();
+    await seedMapping(env.organization.id, mapped);
+    // No hint: the org's (unproven) mapped tenant is the pin.
+    const link = await createLink();
+    expect(link.expectedTenantId).toBe(mapped);
+
+    const flow = await openLink(link.path);
+    expect(flow.location.pathname).toBe(`/${mapped}/oauth2/v2.0/authorize`);
+    const other = newTenant();
+    const code = await microsoftSignsIn(flow, { tid: other, oid: randomUUID(), roles: [GLOBAL_ADMIN] });
+    const res = await callback(flow, code);
+    expect(res.headers.get('location')).toBe(FAILED);
+
+    // Refused at the pinned id_token check: Graph never consulted, nothing recorded, the run untouched.
+    expect(graphFetch).not.toHaveBeenCalled();
+    expect(await mappingFor(env.organization.id)).toMatchObject({ entraTenantId: mapped, provenAt: null });
+    expect(await mappingsForTenant(other)).toEqual([]);
+    expect(await peekPortalEntraProofRun(link.runToken)).not.toBeNull();
+    expect(await audits(env.organization.id, 'organization.portal_identity_proof.failed')).toEqual([
+      expect.objectContaining({ details: { reason: 'token_invalid' } }),
+    ]);
+  });
+
+  it('a forwarded link opened by the admin of a different tenant → failed (tid ≠ expectedTenantId), nothing recorded', async () => {
+    const { env, createLink } = await mspWithOrg();
+    const customer = newTenant();
+    const link = await createLink({ tenant: customer });
+
+    // The link reached the Global Administrator of some other tenant.
+    const stranger = newTenant();
+    const flow = await openLink(link.path);
+    const code = await microsoftSignsIn(flow, { tid: stranger, oid: randomUUID(), roles: [GLOBAL_ADMIN] });
+    const res = await callback(flow, code);
+    expect(res.headers.get('location')).toBe(FAILED);
+
+    expect(graphFetch).not.toHaveBeenCalled();
+    expect(await mappingFor(env.organization.id)).toBeNull();
+    expect(await mappingsForTenant(stranger)).toEqual([]);
+    expect(await mappingsForTenant(customer)).toEqual([]);
+    expect(await audits(env.organization.id, 'organization.portal_identity_proof.proven')).toEqual([]);
+  });
+
+  it('creator deactivated after creating the link → invalid at callback, nothing recorded', async () => {
+    for (const revoke of ['deactivated', 'removed from the partner'] as const) {
+      const { env, createLink } = await mspWithOrg();
+      const tenant = newTenant();
+      const link = await createLink({ tenant });
+      if (revoke === 'deactivated') {
+        await admin().update(users).set({ status: 'disabled' }).where(eq(users.id, env.user.id));
+      } else {
+        await admin().delete(partnerUsers).where(eq(partnerUsers.userId, env.user.id));
+      }
+
+      const flow = await openLink(link.path);
+      const code = await microsoftSignsIn(flow, { tid: tenant, oid: randomUUID(), roles: [GLOBAL_ADMIN] });
+      const res = await callback(flow, code);
+      expect(res.headers.get('location'), revoke).toBe(INVALID);
+      expect(await mappingFor(env.organization.id), revoke).toBeNull();
+      expect(await mappingsForTenant(tenant), revoke).toEqual([]);
+      expect(await audits(env.organization.id, 'organization.portal_identity_proof.failed'), revoke).toEqual([
+        expect.objectContaining({ details: { reason: 'creator_unauthorized' } }),
+      ]);
+      // Consumed by the refused callback: the MSP creates a new link.
+      expect(await peekPortalEntraProofRun(link.runToken), revoke).toBeNull();
+    }
+  });
+
+  it('concurrent proof callbacks record one proof', async () => {
+    const { env, createLink } = await mspWithOrg();
+    const tenant = newTenant();
+    const link = await createLink({ tenant });
+
+    // Two tabs, two states, one run; both pass the admin check before either consumes.
+    const tabA = await openLink(link.path);
+    const tabB = await openLink(link.path);
+    const codeA = await microsoftSignsIn(tabA, { tid: tenant, oid: randomUUID(), roles: [GLOBAL_ADMIN] });
+    const codeB = await microsoftSignsIn(tabB, { tid: tenant, oid: randomUUID(), roles: [GLOBAL_ADMIN] });
+    let arrived = 0;
+    let open!: () => void;
+    const bothChecked = new Promise<void>((resolve) => { open = resolve; });
+    rolesGate = async () => {
+      arrived += 1;
+      if (arrived >= 2) open();
+      await bothChecked;
+    };
+
+    const [a, b] = await Promise.all([callback(tabA, codeA), callback(tabB, codeB)]);
+    const locations = [a.headers.get('location')!, b.headers.get('location')!];
+    expect(locations.filter((l) => adminConsentFor(tenant).test(l))).toHaveLength(1);
+    expect(locations.filter((l) => l === INVALID)).toHaveLength(1);
+
+    expect(await mappingsForTenant(tenant)).toHaveLength(1);
+    expect(await audits(env.organization.id, 'organization.portal_identity_proof.proven')).toHaveLength(1);
+    expect(await audits(env.organization.id, 'organization.portal_identity_proof.failed')).toEqual([
+      expect.objectContaining({ details: { reason: 'run_unavailable' } }),
+    ]);
+  });
+
+  it('a used run link → invalid', async () => {
+    const { env, createLink } = await mspWithOrg();
+    const tenant = newTenant();
+    const link = await createLink({ tenant });
+    const earlierTab = await openLink(link.path);
+
+    const flow = await openLink(link.path);
+    const code = await microsoftSignsIn(flow, { tid: tenant, oid: randomUUID(), roles: [GLOBAL_ADMIN] });
+    expect((await callback(flow, code)).headers.get('location')).toMatch(adminConsentFor(tenant));
+
+    // Reopening the link: refused before Microsoft, no new flow.
+    const reopened = await portal.request(link.path);
+    expect(reopened.status).toBe(302);
+    expect(reopened.headers.get('location')).toBe(INVALID);
+    expect(reopened.headers.getSetCookie().some((c) => c.startsWith('breeze_portal_oidc='))).toBe(false);
+
+    // A tab opened before the proof finishes its sign-in: the run is gone.
+    const late = await microsoftSignsIn(earlierTab, { tid: tenant, oid: randomUUID(), roles: [GLOBAL_ADMIN] });
+    expect((await callback(earlierTab, late)).headers.get('location')).toBe(INVALID);
+    expect(await audits(env.organization.id, 'organization.portal_identity_proof.proven')).toHaveLength(1);
   });
 });

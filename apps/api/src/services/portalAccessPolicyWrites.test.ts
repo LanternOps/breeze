@@ -8,7 +8,25 @@ const store = vi.hoisted(() => ({
   inserts: [] as Array<{ owner: Owner; values: Record<string, unknown>; config: Record<string, unknown> }>,
   /** The org's proven Entra tenant (W4 D2), as findProvenEntraTenantForOrg returns it. */
   provenTenant: null as { tenantId: string; provenAt: Date } | null,
+  /** withDbTransaction bookkeeping (plan D12: impact, upsert and clear share ONE savepoint). */
+  txStack: [] as number[],
+  txSeq: 0,
+  /** The savepoint each step ran in (undefined = outside any). */
+  txOf: { flips: [] as Array<number | undefined>, insert: [] as Array<number | undefined>, clear: [] as Array<number | undefined> },
 }));
+
+const sso = vi.hoisted(() => ({
+  computeFlips: vi.fn(),
+  clearPasswords: vi.fn(),
+}));
+vi.mock('./portalSsoOnly', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./portalSsoOnly')>();
+  return {
+    ...actual,
+    computeSsoOnlyFlips: (...args: unknown[]) => { store.txOf.flips.push(store.txStack.at(-1)); return sso.computeFlips(...args); },
+    clearPasswordsForSsoOnly: (...args: unknown[]) => { store.txOf.clear.push(store.txStack.at(-1)); return sso.clearPasswords(...args); },
+  };
+});
 
 const findProvenTenant = vi.hoisted(() => vi.fn(async (_orgId: string) => store.provenTenant));
 vi.mock('./portalEntraTenantProof', () => ({ findProvenEntraTenantForOrg: findProvenTenant }));
@@ -16,6 +34,11 @@ vi.mock('./portalEntraTenantProof', () => ({ findProvenEntraTenantForOrg: findPr
 vi.mock('../db', () => ({
   hasDbAccessContext: () => true,
   withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
+  withDbTransactionIfHeld: async (fn: () => Promise<unknown>) => fn(),
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    store.txStack.push(++store.txSeq);
+    try { return await fn(); } finally { store.txStack.pop(); }
+  },
   db: {
     select: vi.fn(() => { throw new Error('writes must read through readPortalAccessPolicyRows'); }),
     insert: vi.fn(() => ({
@@ -23,6 +46,7 @@ vi.mock('../db', () => ({
         onConflictDoUpdate: (config: Record<string, unknown>) => ({
           returning: async () => {
             const owner: Owner = values.orgId ? 'org' : 'partner';
+            store.txOf.insert.push(store.txStack.at(-1));
             store.inserts.push({ owner, values, config });
             const set = config.set as Record<string, unknown>;
             const prev = store[owner];
@@ -51,8 +75,10 @@ import { portalAccessPolicies } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { PartnerWideWriteDeniedError as LeafPartnerWideWriteDeniedError } from './partnerWideAccess';
 import { __testOnly } from './portalAccessPolicy';
+import { ssoOnlyImpactDigest, type SsoOnlyOrgImpact } from './portalSsoOnly';
 import {
   PartnerWideWriteDeniedError,
+  PortalAccessPolicyConfirmRequiredError,
   PortalAccessPolicyValidationError,
   getOrgPortalAccessPolicyView,
   getPartnerPortalAccessPolicyView,
@@ -84,7 +110,11 @@ beforeEach(() => {
   store.partner = null;
   store.inserts = [];
   store.provenTenant = null;
+  store.txStack = [];
+  store.txOf = { flips: [], insert: [], clear: [] };
   findProvenTenant.mockClear();
+  sso.computeFlips.mockReset().mockResolvedValue([]);
+  sso.clearPasswords.mockReset().mockResolvedValue({ clearedUserIds: [] });
   // Explicit, never the deployment's (W4 derives entra from the portal Entra app env).
   __testOnly.setCapabilities(NO_CAPS);
 });
@@ -342,5 +372,117 @@ describe('views', () => {
     expect(selected.effective.ssoSessionMaxHours).toEqual({ value: 24, source: 'partner' });
     const full = await getPartnerPortalAccessPolicyView(fullPartner, ORG.partnerId);
     expect(full.canEdit).toBe(true);
+  });
+});
+
+// W4 (#11381) plan D12: a save that flips some org from effective `allowed` to
+// effective `sso_only` needs the CURRENT impact digest, and then commits the
+// upsert and the hash clearing together.
+describe('sso_only save flow (D12)', () => {
+  const FLIP: SsoOnlyOrgImpact = { orgId: ORG.id, orgName: 'Acme', passwordsToClear: 2, strandedTotal: 1 };
+  const OTHER_ORG = '2b3c4d5e-6f7a-4b2c-9d3e-4f5a6b7c8d9e';
+  const FLIP_OTHER: SsoOnlyOrgImpact = { orgId: OTHER_ORG, orgName: 'Beta', passwordsToClear: 0, strandedTotal: 4 };
+
+  async function confirmRequired(p: Promise<unknown>): Promise<PortalAccessPolicyConfirmRequiredError> {
+    const err = await p.then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(PortalAccessPolicyConfirmRequiredError);
+    return err as PortalAccessPolicyConfirmRequiredError;
+  }
+
+  function entraOnProvenOrg() {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    store.provenTenant = PROVEN_TENANT;
+    store.org = { ...blank, entraEnabled: true };
+  }
+
+  it('org save that flips to sso_only without an ack → ConfirmRequired with the impact; nothing written', async () => {
+    entraOnProvenOrg();
+    sso.computeFlips.mockResolvedValue([FLIP]);
+    const err = await confirmRequired(updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' }));
+    expect(err.code).toBe('PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED');
+    expect(err.impact).toEqual({ flips: [FLIP], impactDigest: ssoOnlyImpactDigest([FLIP]) });
+    expect(sso.computeFlips).toHaveBeenCalledWith({ kind: 'org', orgId: ORG.id, partnerId: ORG.partnerId }, { passwordMode: 'sso_only' });
+    // Recomputed INSIDE the write transaction, never trusted from the preview.
+    expect(store.txOf.flips).toEqual([expect.any(Number)]);
+    expect(store.inserts).toHaveLength(0);
+    expect(sso.clearPasswords).not.toHaveBeenCalled();
+  });
+
+  it('a stale digest (the impact changed since the preview) → ConfirmRequired with the fresh digest; nothing written', async () => {
+    entraOnProvenOrg();
+    const preview = [{ ...FLIP, passwordsToClear: 1 }];
+    sso.computeFlips.mockResolvedValue([FLIP]);
+    const err = await confirmRequired(updateOrgPortalAccessPolicy(
+      ORG, { passwordMode: 'sso_only' }, { acknowledgeSsoOnly: ssoOnlyImpactDigest(preview) },
+    ));
+    expect(err.impact.impactDigest).toBe(ssoOnlyImpactDigest([FLIP]));
+    expect(err.impact.impactDigest).not.toBe(ssoOnlyImpactDigest(preview));
+    expect(store.inserts).toHaveLength(0);
+    expect(sso.clearPasswords).not.toHaveBeenCalled();
+  });
+
+  it('with the current digest the upsert and the clear run in ONE transaction and the result carries ssoOnly', async () => {
+    entraOnProvenOrg();
+    sso.computeFlips.mockResolvedValue([FLIP]);
+    sso.clearPasswords.mockResolvedValue({ clearedUserIds: ['pu-1', 'pu-2'] });
+    const r = await updateOrgPortalAccessPolicy(
+      ORG, { passwordMode: 'sso_only' }, { acknowledgeSsoOnly: ssoOnlyImpactDigest([FLIP]) },
+    );
+    expect(r.changedFields).toEqual(['passwordMode']);
+    expect(r.view.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
+    expect(r.ssoOnly).toEqual({ orgIds: [ORG.id], passwordsCleared: 2, clearedUserIds: ['pu-1', 'pu-2'] });
+    expect(sso.clearPasswords).toHaveBeenCalledTimes(1);
+    expect(sso.clearPasswords.mock.calls[0]![1]).toEqual([ORG.id]);
+    // The impact, the upsert and the clear: the same savepoint.
+    const [tx] = store.txOf.insert;
+    expect(tx).toEqual(expect.any(Number));
+    expect(store.txOf.flips).toEqual([tx]);
+    expect(store.txOf.clear).toEqual([tx]);
+  });
+
+  it('a save that flips nothing needs no ack, clears nothing and reports ssoOnly null', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    const r = await updateOrgPortalAccessPolicy(ORG, { ssoSessionMaxHours: 8 }, { acknowledgeSsoOnly: 'whatever' });
+    expect(r.changedFields).toEqual(['ssoSessionMaxHours']);
+    expect(r.ssoOnly).toBeNull();
+    expect(sso.clearPasswords).not.toHaveBeenCalled();
+
+    // A no-op save never asks for an impact at all.
+    const same = await updateOrgPortalAccessPolicy(ORG, { ssoSessionMaxHours: 8 });
+    expect(same.changedFields).toEqual([]);
+    expect(same.ssoOnly).toBeNull();
+    expect(sso.computeFlips).toHaveBeenCalledTimes(1);
+  });
+
+  it('a validation refusal comes before the impact (no impact computed, nothing written)', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    sso.computeFlips.mockResolvedValue([FLIP]);
+    await validationError(updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' })); // no SSO effective
+    expect(sso.computeFlips).not.toHaveBeenCalled();
+    expect(store.inserts).toHaveLength(0);
+  });
+
+  it('partner save: impact over the partner owner; no ack → ConfirmRequired; ack → clear across every flipped org', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    sso.computeFlips.mockResolvedValue([FLIP, FLIP_OTHER]);
+    const err = await confirmRequired(updatePartnerPortalAccessPolicy(fullPartner, ORG.partnerId, { entraEnabled: true }));
+    expect(err.impact.flips).toEqual([FLIP, FLIP_OTHER]);
+    expect(sso.computeFlips).toHaveBeenCalledWith({ kind: 'partner', partnerId: ORG.partnerId }, { entraEnabled: true });
+    expect(store.inserts).toHaveLength(0);
+
+    sso.clearPasswords.mockResolvedValue({ clearedUserIds: ['pu-9'] });
+    const r = await updatePartnerPortalAccessPolicy(
+      fullPartner, ORG.partnerId, { entraEnabled: true }, { acknowledgeSsoOnly: err.impact.impactDigest },
+    );
+    expect(r.ssoOnly).toEqual({ orgIds: [ORG.id, OTHER_ORG], passwordsCleared: 1, clearedUserIds: ['pu-9'] });
+    expect(sso.clearPasswords.mock.calls[0]![1]).toEqual([ORG.id, OTHER_ORG]);
+    expect(store.txOf.clear).toEqual(store.txOf.insert);
+  });
+
+  it('a refused partner-wide write never computes an impact', async () => {
+    sso.computeFlips.mockResolvedValue([FLIP]);
+    await expect(updatePartnerPortalAccessPolicy(selectedPartner, ORG.partnerId, { entraEnabled: false }))
+      .rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(sso.computeFlips).not.toHaveBeenCalled();
   });
 });

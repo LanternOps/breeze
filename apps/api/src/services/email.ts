@@ -7,6 +7,7 @@ import {
   getSupportEmail,
   renderButton,
   renderLayout,
+  renderLinkRow,
 } from './emailLayout';
 import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
 import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
@@ -163,6 +164,17 @@ export interface PortalInviteEmailParams {
   partnerName?: string;
   /** Partner-saved template override; null/absent uses code defaults. */
   custom?: PartnerEmailCustom | null;
+  /**
+   * Portal registration W4 (#11381), spec §5.5: the invitation-bound "Sign in
+   * with Microsoft" link (the invite link with `&method=microsoft`), present
+   * only when Microsoft is effective for the org. It becomes the primary button.
+   */
+  microsoftUrl?: string;
+  /**
+   * Whether the org's effective policy allows password sign-in. False
+   * (`sso_only`): the email never offers a password.
+   */
+  passwordAllowed: boolean;
 }
 
 /**
@@ -1156,6 +1168,16 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
   return { subject, html, text };
 }
 
+/**
+ * The portal invite. Which sign-in methods it offers follows the org's
+ * effective policy (W4 #11381, spec §5.5):
+ *  - password only (Microsoft off): unchanged — one "Set your password" button;
+ *  - Microsoft and password: "Sign in with Microsoft" is the button, and
+ *    "Or set a password" a secondary link;
+ *  - `sso_only`: Microsoft only; no password line, link or wording.
+ * The subject never changes. A partner's custom button label was written for
+ * the password button, so it never relabels the Microsoft one.
+ */
 export function buildPortalInviteTemplate(params: PortalInviteEmailParams): EmailTemplate {
   const orgName = params.orgName?.trim();
   const inviter = params.inviterName?.trim();
@@ -1164,26 +1186,41 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>`
     : '';
   const custom = params.custom ?? null;
+  const microsoftUrl = params.microsoftUrl || undefined;
+  const passwordOnly = !microsoftUrl && params.passwordAllowed;
+  // No password and no Microsoft: an SSO-only org whose method is not Microsoft
+  // (Google, W7). The plain invite link; its page offers what the org allows.
+  const primary = microsoftUrl
+    ? { url: microsoftUrl, label: 'Sign in with Microsoft', preheader: 'Sign in with Microsoft to access your support portal.' }
+    : passwordOnly
+      ? { url: params.inviteUrl, label: undefined, preheader: 'Set your password to access your support portal.' }
+      : { url: params.inviteUrl, label: 'Accept your invite', preheader: 'Accept your invite to access your support portal.' };
+  const passwordSecondary = Boolean(microsoftUrl) && params.passwordAllowed;
   const rendered = renderPartnerEmail({
     id: 'portal_invite',
-    custom,
+    custom: !passwordOnly && custom ? { ...custom, buttonLabel: null } : custom,
     vars: {
       requester_name: inviter ?? '',
       partner_name: params.partnerName ?? '',
-      invite_url: params.inviteUrl,
+      // A custom body's `{{invite_url}}` is the link that works for this invitee.
+      invite_url: params.passwordAllowed ? params.inviteUrl : primary.url,
       org_name: orgName ?? '',
     },
-    ctaUrl: params.inviteUrl,
+    ctaUrl: primary.url,
+    ctaLabel: primary.label,
     footer: supportFooter(params.supportEmail, 'Need help? Contact'),
-    preheader: 'Set your password to access your support portal.',
+    preheader: primary.preheader,
     bodyBeforeCta: messageBlock,
-    bodyAfterCta: '',
+    bodyAfterCta: passwordSecondary ? renderLinkRow([{ label: 'Or set a password', url: params.inviteUrl }]) : '',
   });
   const support = getSupportEmail(params.supportEmail);
+  const actionLines = microsoftUrl
+    ? [`Sign in with Microsoft: ${microsoftUrl}`, passwordSecondary ? `Or set a password: ${params.inviteUrl}` : null]
+    : [passwordOnly ? `Set your password: ${params.inviteUrl}` : `Accept your invite: ${params.inviteUrl}`];
   const text = [
     orgName ? `You're invited to the ${orgName} support portal.` : `You're invited to your support portal.`,
     customMessage || null,
-    `Set your password: ${params.inviteUrl}`,
+    ...actionLines,
     'This invite link expires in 7 days.',
     support ? `Need help? Contact ${support}.` : null
   ].filter(Boolean).join('\n');

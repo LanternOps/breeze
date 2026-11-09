@@ -1,4 +1,5 @@
 import type { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, withDbTransaction } from '../db';
@@ -37,6 +38,7 @@ import {
 } from '@breeze/shared';
 import { listPortalUsersForOrg } from '../services/portalUserDirectory';
 import { portalUserHasIdentitySql } from '../services/portalUserIdentities';
+import { isSsoOnlyStranded, resolveInviteSignInMethods } from '../services/portalSsoOnly';
 import { normalizeContactEmail } from '../services/contacts/crud';
 import {
   bindContactLoginForInvite,
@@ -142,8 +144,22 @@ async function hasPortalUserReferences(userId: string): Promise<boolean> {
 /**
  * Issue a purpose-bound invite token (bound to the org, the address and the
  * row's CURRENT auth_epoch — pass the epoch the write returned) and email it.
+ *
+ * The email offers what the org's effective policy allows (W4 #11381, spec
+ * §5.5): "Sign in with Microsoft" (the same invite link with
+ * `&method=microsoft`) when Microsoft is effective, and a password only while
+ * password sign-in is allowed. A policy read that fails sends nothing (false),
+ * like a missing token store: never an invite offering the wrong methods. The
+ * read runs in its own savepoint, so catching it leaves the request usable.
  */
 export async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string; authEpoch: number }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
+  let methods: { microsoft: boolean; password: boolean };
+  try {
+    methods = await resolveInviteSignInMethods(orgId);
+  } catch (err) {
+    console.warn(`[orgPortalUsers] invite not sent (sign-in policy unavailable) portalUserId=${user.id} orgId=${orgId}:`, err instanceof Error ? err.message : err);
+    return false;
+  }
   const rawToken = await issuePortalCapabilityToken({ purpose: 'invite', portalUserId: user.id, orgId, email: user.email, authEpoch: user.authEpoch });
   if (!rawToken) {
     // redis unavailable — do not email a dead invite link
@@ -181,6 +197,8 @@ export async function issueAndSendInvite(c: any, orgId: string, user: { id: stri
     await emailService.sendPortalInvite({
       to: user.email,
       inviteUrl,
+      microsoftUrl: methods.microsoft ? `${inviteUrl}&method=microsoft` : undefined,
+      passwordAllowed: methods.password,
       orgName: orgName ?? undefined,
       inviterName: inviterName ?? undefined,
       message,
@@ -294,6 +312,65 @@ async function purgeLoginSessions(userId: string): Promise<void> {
 async function readOrgName(orgId: string): Promise<string | null> {
   const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
   return orgRow?.name ?? null;
+}
+
+// ── SSO invite for stranded accounts (portal registration W4 #11381, D12) ────
+
+/** POST …/portal-users/sso-invite: Microsoft is not effective for the org, so there is nothing to invite with. */
+export const PORTAL_SSO_INVITE_UNAVAILABLE = 'PORTAL_SSO_INVITE_UNAVAILABLE';
+
+const ssoInviteSchema = z.object({
+  portalUserIds: z.array(z.string().uuid()).min(1).max(100),
+}).strict();
+
+/** Per account: invited, not stranded (absent, another org, has an identity, disabled …), or the refusal code. */
+type SsoInviteResult =
+  | { result: 'invited'; emailSent: boolean }
+  | { result: 'not_stranded' }
+  | { result: string };
+
+/**
+ * One stranded account through the `msp_sso_invite` writer (the bulk-invite
+ * shape: a state-module target written under the epoch it read, sessions
+ * purged, then the invite issued at the new epoch). The email offers Microsoft
+ * because the route has checked it is effective; issueAndSendInvite re-reads
+ * the policy.
+ *
+ * An `active` account that still holds a password is stranded only while
+ * password sign-in is off (effective sso_only): with password allowed it can
+ * sign in and connect Microsoft from its profile, and moving it to `invited`
+ * would only lock it out.
+ */
+async function ssoInviteOne(c: any, orgId: string, portalUserId: string, orgName: string | null, actor: { id: string; name?: string | null }, passwordAllowed: boolean): Promise<SsoInviteResult> {
+  const target = await getOrgScopedPortalUser(orgId, portalUserId);
+  if (!target || !isSsoOnlyStranded(target)) return { result: 'not_stranded' };
+  if (passwordAllowed && target.status === 'active' && target.passwordHash) return { result: 'not_stranded' };
+  let plan: PortalAccountTarget;
+  try {
+    plan = planPortalAccountTransition(accountFacts(target), 'msp_sso_invite');
+  } catch (error) {
+    if (!(error instanceof PortalAccountTransitionError)) throw error;
+    const reason = inviteRefusalReason(error);
+    return { result: reason ? REFUSAL_BY_REASON[reason].code : error.code };
+  }
+  const now = new Date();
+  const [moved] = await db.update(portalUsers)
+    .set({ ...stateSet(plan), invitedBy: actor.id, invitedAt: now, updatedAt: now })
+    .where(and(eq(portalUsers.id, target.id), eq(portalUsers.orgId, orgId), eq(portalUsers.authEpoch, target.authEpoch)))
+    .returning({ authEpoch: portalUsers.authEpoch });
+  // Changed since the read (disabled, accepted, re-invited): nothing written.
+  if (!moved) return { result: PORTAL_ACCOUNT_TRANSITION_REFUSED };
+  // Side effects after the write, as invite-contacts does: only Redis can throw
+  // here (issueAndSendInvite's reads are savepoints), and the bumped epoch is
+  // what refuses the old sessions, so a purge failure is safe to report past.
+  let emailSent = false;
+  try {
+    if (plan.bumpEpoch) await purgeLoginSessions(target.id);
+    emailSent = await issueAndSendInvite(c, orgId, { id: target.id, email: target.email, authEpoch: moved.authEpoch }, orgName, actor.name);
+  } catch (err) {
+    console.error(`[orgPortalUsers] sso-invite side effect failed portalUserId=${target.id} orgId=${orgId}:`, err);
+  }
+  return { result: 'invited', emailSent };
 }
 
 /**
@@ -571,6 +648,56 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     }
     writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.bulk_invite', resourceType: 'organization', resourceId: org.id, details: { invited: results.filter((r) => !r.skipped).length, skipped: results.filter((r) => r.skipped).length } });
     return c.json({ data: results });
+  });
+
+  // W4 (#11381, spec §5.11): "Send Microsoft sign-in invite" to stranded
+  // accounts (no identity, so `sso_only` leaves them unable to sign in).
+  // Sequential, one result per unique id, in request order.
+  orgRoutes.post('/organizations/:id/portal-users/sso-invite', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', ssoInviteSchema), async (c) => {
+    const org = await resolveAccessibleOrg(c);
+    if (org instanceof Response) return org;
+    const auth = c.get('auth') as AuthContext;
+    const ids = [...new Set(c.req.valid('json').portalUserIds)];
+    const methods = await resolveInviteSignInMethods(org.id);
+    if (!methods.microsoft) {
+      return c.json({ error: 'Microsoft sign-in is not available for this organization.', code: PORTAL_SSO_INVITE_UNAVAILABLE }, 409);
+    }
+    const orgName = await readOrgName(org.id);
+    const results: Array<{ portalUserId: string } & SsoInviteResult> = [];
+    for (const portalUserId of ids) {
+      results.push({ portalUserId, ...(await ssoInviteOne(c, org.id, portalUserId, orgName, auth.user, methods.password)) });
+    }
+    const invited = results.filter((r) => r.result === 'invited').length;
+    const notStranded = results.filter((r) => r.result === 'not_stranded').length;
+    writeRouteAudit(c, {
+      orgId: org.id,
+      action: 'organization.portal_user.sso_invite',
+      resourceType: 'organization',
+      resourceId: org.id,
+      details: { requested: ids.length, invited, notStranded, refused: ids.length - invited - notStranded },
+    });
+    return c.json({ data: results });
+  });
+
+  // W4: "Give browser access" to an existing (typically add-in) account. The
+  // state module's msp_grant_browser_access writer: no epoch bump, so the
+  // person's add-in sessions keep working; disabled / invited are refused.
+  orgRoutes.post('/organizations/:id/portal-users/:userId/browser-access', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
+    const org = await resolveAccessibleOrg(c);
+    if (org instanceof Response) return org;
+    const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
+    if (!target) return c.json({ error: 'Portal user not found' }, 404);
+    const plan = planOrRefuse(c, target, 'msp_grant_browser_access');
+    if (plan instanceof Response) return plan;
+    if (plan.status !== target.status || plan.browserAccess !== target.browserAccess || plan.bumpEpoch) {
+      const [updated] = await db.update(portalUsers)
+        .set({ ...stateSet(plan), updatedAt: new Date() })
+        .where(and(eq(portalUsers.id, target.id), eq(portalUsers.orgId, org.id), eq(portalUsers.authEpoch, target.authEpoch)))
+        .returning({ id: portalUsers.id });
+      if (!updated) return concurrentChange(c);
+      writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.browser_access.grant', resourceType: 'portal_user', resourceId: target.id, details: { email: target.email } });
+    }
+    return c.json({ data: { browserAccess: 'granted' as const } });
   });
 
   // Batch "Give portal access" from the Contacts tab (W1, #11378). Always 200

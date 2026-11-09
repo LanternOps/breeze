@@ -32,7 +32,10 @@ vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
 
 import {
   consumePortalCapabilityToken,
+  consumePortalCapabilityTokenByHash,
+  hashPortalCapabilityToken,
   issuePortalCapabilityToken,
+  peekPortalCapabilityToken,
   validatePortalCapability,
   type ConsumedCapability,
 } from './capabilityTokens';
@@ -268,5 +271,108 @@ describe('validatePortalCapability — access policy (W3)', () => {
     rowRef.current = invitedRow({ authEpoch: 9 });
     expect(await validatePortalCapability('invite', v2())).toEqual({ ok: false, reason: 'invalid' });
     expect(resolvePolicy).not.toHaveBeenCalled();
+  });
+});
+
+// Portal registration W4 (#11381, plan Task 7): the Microsoft invite path.
+// The OIDC start PEEKS the invite (the token must survive the round trip to
+// Microsoft); the callback consumes it by the sha256 the state carries, then
+// validates it without the password-method requirement.
+describe('W4: hash consume, peek, and the Microsoft invite validation', () => {
+  const issueInvite = () => issuePortalCapabilityToken({ purpose: 'invite', portalUserId: USER, orgId: ORG, email: EMAIL, authEpoch: 3 });
+
+  it('hashPortalCapabilityToken is the sha256 the store is keyed by', async () => {
+    const raw = await issueInvite();
+    expect(hashPortalCapabilityToken(raw!)).toBe(sha(raw!));
+    expect(portalInviteTokens.has(hashPortalCapabilityToken(raw!))).toBe(true);
+  });
+
+  it('consumePortalCapabilityTokenByHash consumes exactly once by the sha256 hash', async () => {
+    const raw = await issueInvite();
+    expect(await consumePortalCapabilityTokenByHash('invite', sha(raw!))).toEqual(v2());
+    expect(await consumePortalCapabilityTokenByHash('invite', sha(raw!))).toBeNull();
+    // The raw-token consume sees the same burn.
+    expect(await consumePortalCapabilityToken('invite', raw!)).toBeNull();
+  });
+
+  it('consumePortalCapabilityTokenByHash refuses a malformed hash without touching the store', async () => {
+    const raw = await issueInvite();
+    expect(await consumePortalCapabilityTokenByHash('invite', raw!)).toBeNull();
+    expect(await consumePortalCapabilityTokenByHash('invite', sha(raw!).toUpperCase())).toBeNull();
+    expect(await consumePortalCapabilityTokenByHash('invite', '')).toBeNull();
+    expect(portalInviteTokens.has(sha(raw!))).toBe(true);
+  });
+
+  it('consumePortalCapabilityTokenByHash keeps purposes apart', async () => {
+    const raw = await issueInvite();
+    expect(await consumePortalCapabilityTokenByHash('reset', sha(raw!))).toBeNull();
+    expect(await consumePortalCapabilityTokenByHash('invite', sha(raw!))).toEqual(v2());
+  });
+
+  it('peekPortalCapabilityToken reads without consuming', async () => {
+    const raw = await issueInvite();
+    expect(await peekPortalCapabilityToken('invite', raw!)).toEqual(v2());
+    expect(await peekPortalCapabilityToken('invite', raw!)).toEqual(v2());
+    expect(portalInviteTokens.has(sha(raw!))).toBe(true);
+    expect(await consumePortalCapabilityToken('invite', raw!)).toEqual(v2());
+    expect(await peekPortalCapabilityToken('invite', raw!)).toBeNull();
+  });
+
+  it('peekPortalCapabilityToken refuses an expired entry, an unknown token and the other purpose', async () => {
+    portalInviteTokens.set(sha('expired'), {
+      payload: JSON.stringify({ v: 2, purpose: 'invite', portalUserId: USER, orgId: ORG, email: EMAIL, authEpoch: 3 }),
+      expiresAt: new Date(Date.now() - 1), createdAt: new Date(),
+    });
+    expect(await peekPortalCapabilityToken('invite', 'expired')).toBeNull();
+    expect(await peekPortalCapabilityToken('invite', 'never-issued')).toBeNull();
+    const raw = await issueInvite();
+    expect(await peekPortalCapabilityToken('reset', raw!)).toBeNull();
+  });
+
+  describe('validatePortalCapability(…, { requirePasswordMethod: false })', () => {
+    const sso = { requirePasswordMethod: false } as const;
+
+    it('accepts an invite while the org is effectively sso_only (the password path refuses it)', async () => {
+      resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+      expect(await validatePortalCapability('invite', v2())).toEqual({ ok: false, reason: 'invalid' });
+      expect(await validatePortalCapability('invite', v2(), sso)).toEqual({ ok: true, user: invitedRow() });
+    });
+
+    it('does not require a password-eligible row', async () => {
+      rowRef.current = invitedRow({ authMethod: 'entra' });
+      expect((await validatePortalCapability('invite', v2())).ok).toBe(false);
+      expect(await validatePortalCapability('invite', v2(), sso)).toEqual({ ok: true, user: invitedRow({ authMethod: 'entra' }) });
+    });
+
+    it.each([
+      ['epoch drift', () => invitedRow({ authEpoch: 4 })],
+      ['org mismatch', () => invitedRow({ orgId: OTHER_ORG })],
+      ['email mismatch', () => invitedRow({ email: 'someone-else@acme.example' })],
+      ['non-invited status (active)', () => invitedRow({ status: 'active' })],
+      ['browser_access none', () => invitedRow({ browserAccess: 'none' })],
+      ['row gone', () => null],
+    ])('still refuses %s', async (_name, row) => {
+      rowRef.current = row();
+      expect(await validatePortalCapability('invite', v2(), sso)).toEqual({ ok: false, reason: 'invalid' });
+    });
+
+    it('still reports an unavailable org', async () => {
+      activeOrgMock.mockResolvedValueOnce(null);
+      expect(await validatePortalCapability('invite', v2(), sso)).toEqual({ ok: false, reason: 'org_unavailable' });
+    });
+
+    it('refuses a legacy invite (no issue-time epoch to pin the activation to)', async () => {
+      expect(await validatePortalCapability('invite', { format: 'legacy', portalUserId: USER }, sso)).toEqual({ ok: false, reason: 'invalid' });
+    });
+
+    it('refuses a reset token (a reset is always a password capability)', async () => {
+      rowRef.current = invitedRow({ status: 'active', passwordHash: 'h' });
+      expect(await validatePortalCapability('reset', v2({ purpose: 'reset' }), sso)).toEqual({ ok: false, reason: 'invalid' });
+    });
+
+    it('requirePasswordMethod defaults to true', async () => {
+      resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+      expect(await validatePortalCapability('invite', v2(), {})).toEqual({ ok: false, reason: 'invalid' });
+    });
   });
 });

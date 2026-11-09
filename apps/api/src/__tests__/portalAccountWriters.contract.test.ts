@@ -52,6 +52,9 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // W4 linkPortalUserIdentity: the W3 D4 writer fence (entra_tenant_id /
   // entra_oid) and the D12 password_hash clear when linking under sso_only.
   'apps/api/src/services/portalUserIdentities.ts': { kind: 'no-state', reason: 'entraTenantId / entraOid / passwordHash / updatedAt on identity link only' },
+  // W4 (#11381) plan D12: an acknowledged sso_only save clears the hash and
+  // bumps the epoch of the flipped orgs' accounts that have an identity.
+  'apps/api/src/services/portalSsoOnly.ts': { kind: 'no-state', reason: 'passwordHash / authEpoch / updatedAt on an sso_only save only' },
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');

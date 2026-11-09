@@ -270,6 +270,7 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     const spy = vi.spyOn(svc, 'sendEmail');
     await svc.sendPortalInvite({
       to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+      passwordAllowed: true,
     });
     expect(spy.mock.calls[0]![0]).toMatchObject({
       purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP',

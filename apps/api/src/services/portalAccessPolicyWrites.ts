@@ -10,7 +10,7 @@ import {
   type PortalPolicySource,
   type PortalSignInCapabilities,
 } from '@breeze/shared';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { portalAccessPolicies } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
@@ -22,6 +22,13 @@ import {
   type PortalPolicyOrgFacts,
 } from './portalAccessPolicy';
 import { findProvenEntraTenantForOrg } from './portalEntraTenantProof';
+import {
+  clearPasswordsForSsoOnly,
+  computeSsoOnlyFlips,
+  ssoOnlyImpactDigest,
+  type SsoOnlyOrgImpact,
+  type SsoOnlyPolicyOwner,
+} from './portalSsoOnly';
 
 /**
  * Settings views and validated writes for portal_access_policies (portal
@@ -35,6 +42,14 @@ import { findProvenEntraTenantForOrg } from './portalEntraTenantProof';
  * Runs under the caller's DB context (routes hold a request context). The
  * partner-wide write gate sits here, not only in the route, because
  * partner-wide-write-coverage.test.ts scans services as well as routes.
+ *
+ * W4 (#11381) plan D12: each update runs in ONE `withDbTransaction`. A save
+ * that moves some org from effective `allowed` to effective `sso_only`
+ * recomputes that impact inside it, refuses with
+ * {@link PortalAccessPolicyConfirmRequiredError} unless the caller acknowledged
+ * exactly that impact (its digest), and then clears the identity accounts'
+ * hashes in the same savepoint as the upsert. A refusal, or any failure, rolls
+ * both back; the caller catches OUTSIDE this call (docs/agents/tenancy-rls.md).
  */
 
 /** Re-exported (one class): the route maps it to 403 PARTNER_WIDE_WRITE_DENIED_MESSAGE. */
@@ -42,9 +57,33 @@ export { PartnerWideWriteDeniedError };
 
 type PartnerWriteAuth = Pick<AuthContext, 'scope' | 'partnerOrgAccess'>;
 type PolicyPatch = Partial<PortalAccessPolicyRowValues>;
+
+/** What this save did under D12: the orgs it flipped to `sso_only` and the hashes it cleared. */
+export interface PortalAccessPolicySsoOnlyOutcome {
+  orgIds: string[];
+  passwordsCleared: number;
+  /** For the caller's post-commit session purge (cleanup; the epoch bump is the control). */
+  clearedUserIds: string[];
+}
+
 export interface PortalAccessPolicyWriteResult {
   view: PortalAccessPolicyView;
   changedFields: PortalAccessPolicyField[];
+  /** Null unless this save flipped some org to effective `sso_only`. */
+  ssoOnly: PortalAccessPolicySsoOnlyOutcome | null;
+}
+
+export interface PortalAccessPolicyWriteOptions {
+  /**
+   * The `impactDigest` the caller was shown (`?acknowledge=` on the PATCH).
+   * Absent or stale while the save flips some org → ConfirmRequired.
+   */
+  acknowledgeSsoOnly?: string | null;
+}
+
+export interface PortalAccessPolicySsoOnlyImpact {
+  flips: SsoOnlyOrgImpact[];
+  impactDigest: string;
 }
 
 export class PortalAccessPolicyValidationError extends Error {
@@ -55,6 +94,20 @@ export class PortalAccessPolicyValidationError extends Error {
   ) {
     super(message);
     this.name = 'PortalAccessPolicyValidationError';
+  }
+}
+
+/**
+ * D12: the save flips some org to effective `sso_only` and carried no
+ * acknowledgement, or one for a different impact. Carries the FRESH impact, so
+ * the caller can show it and retry with its digest. The route maps it to 409.
+ */
+export class PortalAccessPolicyConfirmRequiredError extends Error {
+  readonly code = PORTAL_ACCESS_POLICY_ERROR_CODES.SSO_ONLY_CONFIRM_REQUIRED;
+
+  constructor(readonly impact: PortalAccessPolicySsoOnlyImpact) {
+    super('Turning off password sign-in changes existing portal accounts. Review the impact and confirm to save.');
+    this.name = 'PortalAccessPolicyConfirmRequiredError';
   }
 }
 
@@ -188,6 +241,31 @@ function parsePatch(patch: PolicyPatch): PolicyPatch {
   return definedOnly(portalAccessPolicyPatchSchema.parse(patch));
 }
 
+/**
+ * D12, on the write transaction: the orgs this save flips to `sso_only`,
+ * recomputed here and never taken from the preview. Throws ConfirmRequired
+ * unless `ack` is the digest of exactly this impact. No flip → no ack needed.
+ */
+async function requireAcknowledgedSsoOnlyFlips(
+  owner: SsoOnlyPolicyOwner,
+  fields: PolicyPatch,
+  ack: string | null | undefined,
+): Promise<SsoOnlyOrgImpact[]> {
+  const flips = await computeSsoOnlyFlips(owner, fields);
+  if (flips.length === 0) return flips;
+  const impactDigest = ssoOnlyImpactDigest(flips);
+  if (ack !== impactDigest) throw new PortalAccessPolicyConfirmRequiredError({ flips, impactDigest });
+  return flips;
+}
+
+/** After the upsert, same transaction: clear the flipped orgs' identity accounts. */
+async function clearForFlips(flips: SsoOnlyOrgImpact[]): Promise<PortalAccessPolicySsoOnlyOutcome | null> {
+  if (flips.length === 0) return null;
+  const orgIds = flips.map((f) => f.orgId);
+  const { clearedUserIds } = await clearPasswordsForSsoOnly(db, orgIds);
+  return { orgIds, passwordsCleared: clearedUserIds.length, clearedUserIds };
+}
+
 export async function getOrgPortalAccessPolicyView(org: { id: string; partnerId: string }): Promise<PortalAccessPolicyView> {
   const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
   const entraTenantProven = await isOrgEntraTenantProven(org.id);
@@ -202,71 +280,92 @@ export async function getPartnerPortalAccessPolicyView(auth: PartnerWriteAuth, p
   );
 }
 
-/** Upsert the org override; a `null` field clears it (inherit). Caller resolves org access. */
+/**
+ * Upsert the org override; a `null` field clears it (inherit). Caller resolves
+ * org access and holds a DB context. D12: see the module header.
+ */
 export async function updateOrgPortalAccessPolicy(
   org: { id: string; partnerId: string },
   patch: PolicyPatch,
+  opts: PortalAccessPolicyWriteOptions = {},
 ): Promise<PortalAccessPolicyWriteResult> {
   const fields = parsePatch(patch);
   const caps = getPortalSignInCapabilities();
   assertMethodsAvailable(fields, caps);
-  const entraTenantProven = await isOrgEntraTenantProven(org.id);
-  assertEntraTenantProven(fields, entraTenantProven);
-  const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
-  const before = rows.org ?? BLANK_ROW;
-  const owner = { kind: 'org' as const, id: org.id };
-  assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(
-    { ...before, ...fields }, rows.partner, caps, factsFor(owner, entraTenantProven),
-  ));
+  return withDbTransaction(async () => {
+    const entraTenantProven = await isOrgEntraTenantProven(org.id);
+    assertEntraTenantProven(fields, entraTenantProven);
+    const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
+    const before = rows.org ?? BLANK_ROW;
+    const owner = { kind: 'org' as const, id: org.id };
+    assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(
+      { ...before, ...fields }, rows.partner, caps, factsFor(owner, entraTenantProven),
+    ));
 
-  const changedFields = changedFieldsOf(fields, before);
-  if (changedFields.length === 0) {
-    return { view: buildView(owner, rows.org, rows.partner, caps, true, entraTenantProven), changedFields };
-  }
-  const [row] = await db.insert(portalAccessPolicies).values({ orgId: org.id, partnerId: null, ...fields })
-    .onConflictDoUpdate({
-      target: portalAccessPolicies.orgId,
-      targetWhere: isNotNull(portalAccessPolicies.orgId),
-      set: { ...fields, updatedAt: new Date() },
-    })
-    .returning();
-  if (!row) throw new Error('portal access policy: org upsert returned no row');
-  return {
-    view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true, entraTenantProven),
-    changedFields,
-  };
+    const changedFields = changedFieldsOf(fields, before);
+    if (changedFields.length === 0) {
+      return { view: buildView(owner, rows.org, rows.partner, caps, true, entraTenantProven), changedFields, ssoOnly: null };
+    }
+    const flips = await requireAcknowledgedSsoOnlyFlips(
+      { kind: 'org', orgId: org.id, partnerId: org.partnerId }, fields, opts.acknowledgeSsoOnly,
+    );
+    const [row] = await db.insert(portalAccessPolicies).values({ orgId: org.id, partnerId: null, ...fields })
+      .onConflictDoUpdate({
+        target: portalAccessPolicies.orgId,
+        targetWhere: isNotNull(portalAccessPolicies.orgId),
+        set: { ...fields, updatedAt: new Date() },
+      })
+      .returning();
+    if (!row) throw new Error('portal access policy: org upsert returned no row');
+    const ssoOnly = await clearForFlips(flips);
+    return {
+      view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true, entraTenantProven),
+      changedFields,
+      ssoOnly,
+    };
+  });
 }
 
 /**
  * Upsert the partner default; a `null` field clears it (built-in default).
  * Refused with {@link PartnerWideWriteDeniedError} unless the caller has full
  * partner access (canManagePartnerWidePolicies) — checked before anything is read.
+ *
+ * D12: the flips cover every org of the partner the caller's context reaches.
+ * The gate admits only a full-partner admin, whose request context holds every
+ * active/trial org of the partner, so the impact and the clear see the same
+ * orgs with no system escalation (portalSsoOnly.ts header).
  */
 export async function updatePartnerPortalAccessPolicy(
   auth: PartnerWriteAuth,
   partnerId: string,
   patch: PolicyPatch,
+  opts: PortalAccessPolicyWriteOptions = {},
 ): Promise<PortalAccessPolicyWriteResult> {
   if (!canManagePartnerWidePolicies(auth)) throw new PartnerWideWriteDeniedError();
   const fields = parsePatch(patch);
   const caps = getPortalSignInCapabilities();
   assertMethodsAvailable(fields, caps);
-  const rows = await readPortalAccessPolicyRows({ orgId: null, partnerId });
-  const before = rows.partner ?? BLANK_ROW;
-  const owner = { kind: 'partner' as const, id: partnerId };
-  assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(null, { ...before, ...fields }, caps, factsFor(owner, null)));
+  return withDbTransaction(async () => {
+    const rows = await readPortalAccessPolicyRows({ orgId: null, partnerId });
+    const before = rows.partner ?? BLANK_ROW;
+    const owner = { kind: 'partner' as const, id: partnerId };
+    assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(null, { ...before, ...fields }, caps, factsFor(owner, null)));
 
-  const changedFields = changedFieldsOf(fields, before);
-  if (changedFields.length === 0) {
-    return { view: buildView(owner, rows.partner, null, caps, true, null), changedFields };
-  }
-  const [row] = await db.insert(portalAccessPolicies).values({ partnerId, orgId: null, ...fields })
-    .onConflictDoUpdate({
-      target: portalAccessPolicies.partnerId,
-      targetWhere: isNotNull(portalAccessPolicies.partnerId),
-      set: { ...fields, updatedAt: new Date() },
-    })
-    .returning();
-  if (!row) throw new Error('portal access policy: partner upsert returned no row');
-  return { view: buildView(owner, toPortalAccessPolicyRowValues(row), null, caps, true, null), changedFields };
+    const changedFields = changedFieldsOf(fields, before);
+    if (changedFields.length === 0) {
+      return { view: buildView(owner, rows.partner, null, caps, true, null), changedFields, ssoOnly: null };
+    }
+    const flips = await requireAcknowledgedSsoOnlyFlips({ kind: 'partner', partnerId }, fields, opts.acknowledgeSsoOnly);
+    const [row] = await db.insert(portalAccessPolicies).values({ partnerId, orgId: null, ...fields })
+      .onConflictDoUpdate({
+        target: portalAccessPolicies.partnerId,
+        targetWhere: isNotNull(portalAccessPolicies.partnerId),
+        set: { ...fields, updatedAt: new Date() },
+      })
+      .returning();
+    if (!row) throw new Error('portal access policy: partner upsert returned no row');
+    const ssoOnly = await clearForFlips(flips);
+    return { view: buildView(owner, toPortalAccessPolicyRowValues(row), null, caps, true, null), changedFields, ssoOnly };
+  });
 }

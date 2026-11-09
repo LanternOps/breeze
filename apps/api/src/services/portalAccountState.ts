@@ -38,7 +38,14 @@ export type PortalAccountWriter =
   // separate names exist only so the writer census and audits say which path
   // wrote.
   | 'sso_instant_grant'
-  | 'msp_grant_browser_access';
+  | 'msp_grant_browser_access'
+  // W4: "Send Microsoft sign-in invite" to a stranded account (spec §5.11; the
+  // §5.1 `active → invited` re-invite). Unlike msp_invite it accepts an active
+  // account that HAS a password: under sso_only that password no longer signs
+  // in, and only an invitation can bind a Microsoft identity to the account
+  // (§5.6 step 2, never by email). The hash is kept (a fallback to `allowed`
+  // must not strand the person); a Microsoft accept under sso_only clears it.
+  | 'msp_sso_invite';
 
 export interface PortalAccountFacts {
   status: string;
@@ -144,6 +151,16 @@ export function planPortalAccountTransition(facts: PortalAccountFacts, writer: P
   const inviteEligible = isPasswordEligible(facts) && !facts.hasExternalIdentity;
 
   switch (writer) {
+    case 'msp_sso_invite': {
+      if (!inviteEligible) return refuse(PORTAL_USER_IDENTITY_MANAGED, 409, 'identity_managed', MSG_IDENTITY_MANAGED);
+      if (status === 'disabled') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'disabled', 'This user is disabled. Reactivate them before inviting.');
+      }
+      if (browserAccess !== 'granted') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'browser_access_none', 'Give this user browser access first.');
+      }
+      return { status: 'invited', browserAccess: 'granted', bumpEpoch: true };
+    }
     case 'msp_invite':
     case 'msp_bulk_invite': {
       // Identity check first: today's route order (an add-in login is

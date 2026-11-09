@@ -42,7 +42,13 @@ function partnerOnlyBranding(partner: PartnerPortalDefaults): Record<string, str
   return entries.length > 0 ? Object.fromEntries(entries) : null;
 }
 
-async function resolveBrandingByDomain(domain: string) {
+/**
+ * The portal_branding row whose VERIFIED custom domain is `domain`, or null.
+ * The one custom-domain lookup: the public branding route layers the partner's
+ * defaults over it, and the Microsoft sign-in host binding (W4 D5) reads only
+ * its org.
+ */
+async function findVerifiedBrandingByDomain(domain: string) {
   const normalizedDomain = domain.trim().toLowerCase();
   if (!normalizedDomain) {
     return null;
@@ -82,9 +88,34 @@ async function resolveBrandingByDomain(domain: string) {
   if (!branding || !branding.domainVerified) {
     return null;
   }
+  return branding;
+}
+
+async function resolveBrandingByDomain(domain: string) {
+  const branding = await findVerifiedBrandingByDomain(domain);
+  if (!branding) {
+    return null;
+  }
 
   const partner = await loadPartnerPortalDefaults(branding.orgId);
   return { branding: withPartnerDefaults(branding, partner), degraded: partner.degraded };
+}
+
+/**
+ * The org whose verified custom domain is `host`, or null (the shared portal
+ * host, an unverified or unknown domain). Portal registration W4, plan D5: a
+ * Microsoft sign-in started on an org's custom domain may only end in that
+ * org.
+ *
+ * `host` MUST be the request's `Host` header (port stripped, lowercased) —
+ * never a body or query value, which the browser controls. Opens its own
+ * system context; a caller inside a request transaction wraps it in
+ * `runOutsideDbContext`, or the read runs under that request's org scope and
+ * misses every other org's row.
+ */
+export async function resolvePortalHostOrgId(host: string): Promise<string | null> {
+  const branding = await findVerifiedBrandingByDomain(host);
+  return branding?.orgId ?? null;
 }
 
 brandingRoutes.get('/branding/:domain', zValidator('param', brandingParamSchema), async (c) => {

@@ -152,11 +152,21 @@ describe('portal OIDC state store (in-memory backend)', () => {
       { kind: 'invite', inviteTokenHash: sha256Hex('i') },
       { kind: 'link', portalUserId: USER, orgId: ORG, authEpoch: 1 },
       { kind: 'tenant_proof', runTokenHash: sha256Hex('r'), orgId: ORG, expectedTenantId: '11111111-1111-4111-8111-111111111111' },
-      { kind: 'tenant_proof', runTokenHash: sha256Hex('r2'), orgId: ORG, expectedTenantId: null },
     ];
     for (const purpose of purposes) {
       const minted = await mint(purpose);
       expect((await consumePortalOidcState(minted.state, minted.bindingCookie))?.purpose).toEqual(purpose);
+    }
+  });
+
+  it('refuses a tenant_proof state that is not pinned to a tenant (a proof run always is, D6)', async () => {
+    for (const expectedTenantId of [null, '', undefined]) {
+      const minted = await mint({ kind: 'tenant_proof', runTokenHash: sha256Hex('r'), orgId: ORG, expectedTenantId: '11111111-1111-4111-8111-111111111111' });
+      const key = sha256Hex(minted.state);
+      const entry = portalOidcStates.get(key)!;
+      const stored = JSON.parse(entry.payload);
+      portalOidcStates.set(key, { ...entry, payload: JSON.stringify({ ...stored, purpose: { ...stored.purpose, expectedTenantId } }) });
+      expect(await consumePortalOidcState(minted.state, minted.bindingCookie)).toBeNull();
     }
   });
 });

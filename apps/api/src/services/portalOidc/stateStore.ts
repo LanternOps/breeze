@@ -121,9 +121,10 @@ function parsePurpose(value: unknown): PortalOidcPurpose | null {
         ? { kind: 'link', portalUserId, orgId, authEpoch }
         : null;
     case 'tenant_proof':
-      if (!isNonEmptyString(runTokenHash) || !isNonEmptyString(orgId)) return null;
-      if (expectedTenantId === null) return { kind: 'tenant_proof', runTokenHash, orgId, expectedTenantId: null };
-      return isNonEmptyString(expectedTenantId) ? { kind: 'tenant_proof', runTokenHash, orgId, expectedTenantId } : null;
+      // A proof run is always pinned to a tenant (D6): an unpinned state is refused.
+      return isNonEmptyString(runTokenHash) && isNonEmptyString(orgId) && isNonEmptyString(expectedTenantId)
+        ? { kind: 'tenant_proof', runTokenHash, orgId, expectedTenantId }
+        : null;
     default:
       return null;
   }

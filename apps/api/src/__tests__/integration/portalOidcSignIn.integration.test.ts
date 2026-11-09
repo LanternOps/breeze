@@ -31,19 +31,29 @@ vi.mock('../../services/clientAiEntraAddress', async (importOriginal) => {
 
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getTestDb } from './setup';
+import { Hono } from 'hono';
+import { generateKeyPair, SignJWT } from 'jose';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getTestDb, getTestRedis } from './setup';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  auditLogs,
   clientAiTenantMappings,
   contacts,
   customerEmailDomains,
   portalAccessPolicies,
   portalAccessRequests,
+  portalBranding,
   portalUserIdentities,
   portalUsers,
 } from '../../db/schema';
+import { clientAiAuthMiddleware } from '../../middleware/clientAiAuth';
+import { CLIENT_AI_REDIS_KEYS } from '../../routes/clientAi/schemas';
+import { portalRoutes } from '../../routes/portal';
+import { issuePortalCapabilityToken, peekPortalCapabilityToken } from '../../routes/portal/capabilityTokens';
+import { portalOidcStates, portalRateLimitBuckets, portalSessions } from '../../routes/portal/helpers';
+import { __testOnly as oidcTestOnly } from '../../routes/portal/oidc';
 import { __testOnly as policyTestOnly } from '../../services/portalAccessPolicy';
 import { approvePortalAccessRequest, createPortalAccessRequest } from '../../services/portalAccessRequests';
 import { entraIssuer } from '../../services/portalUserIdentities';
@@ -503,5 +513,276 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     expect(await identitiesFor({ portalUserId: account.id })).toEqual([expect.objectContaining({
       issuer: entraIssuer(tid), subject: oid, linkedVia: 'jit', lastUsedAt: null,
     })]);
+  });
+});
+
+/**
+ * Plan Task 7: the routes through the real portal router, on real Postgres as
+ * breeze_app. Microsoft is stubbed at the route's NODE_ENV=test seam: the token
+ * endpoint is an injected fetch and the id_token is signed with a local RS256
+ * key injected as the verification key. Nothing reaches the network.
+ */
+describe('portal Microsoft sign-in routes (real DB + router)', () => {
+  const CLIENT_ID = '99999999-8888-4777-8666-555555555555';
+  const PORTAL = 'https://portal.example.test/portal';
+  const SAVED_ENV = {
+    id: process.env.PORTAL_ENTRA_CLIENT_ID,
+    secret: process.env.PORTAL_ENTRA_CLIENT_SECRET,
+    portal: process.env.PUBLIC_PORTAL_URL,
+  };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  let keys: Awaited<ReturnType<typeof generateKeyPair>>;
+  const tokenFetch = vi.fn();
+  const app = new Hono().route('/portal', portalRoutes);
+
+  beforeAll(async () => {
+    keys = await generateKeyPair('RS256', { modulusLength: 2048 });
+    process.env.PORTAL_ENTRA_CLIENT_ID = CLIENT_ID;
+    process.env.PORTAL_ENTRA_CLIENT_SECRET = 'portal-entra-test-secret';
+    process.env.PUBLIC_PORTAL_URL = PORTAL;
+  });
+
+  afterAll(() => {
+    restore('PORTAL_ENTRA_CLIENT_ID', SAVED_ENV.id);
+    restore('PORTAL_ENTRA_CLIENT_SECRET', SAVED_ENV.secret);
+    restore('PUBLIC_PORTAL_URL', SAVED_ENV.portal);
+  });
+
+  beforeEach(() => {
+    portalOidcStates.clear();
+    portalSessions.clear();
+    portalRateLimitBuckets.clear();
+    tokenFetch.mockReset();
+    oidcTestOnly.setEntraDeps({ fetch: tokenFetch as unknown as typeof fetch, verificationKey: keys.publicKey });
+  });
+
+  afterEach(() => oidcTestOnly.setEntraDeps(null));
+
+  const cookiePair = (res: Response, name: string) => {
+    const header = res.headers.getSetCookie().find((c) => c.startsWith(`${name}=`));
+    if (!header) throw new Error(`no ${name} cookie`);
+    return header.split(';')[0]!;
+  };
+
+  async function startFlow(body: unknown, headers: Record<string, string> = {}) {
+    const res = await app.request('/portal/auth/oidc/entra/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    const url = new URL(((await res.json()) as { redirectUrl: string }).redirectUrl);
+    return { state: url.searchParams.get('state')!, nonce: url.searchParams.get('nonce')!, binding: cookiePair(res, 'breeze_portal_oidc') };
+  }
+
+  /** Microsoft's answer: an id_token for (tid, oid) bound to the flow's nonce. */
+  async function microsoftSignsIn(nonce: string, tid: string, oid: string, upn: string) {
+    const idToken = await new SignJWT({
+      tid, oid, nonce, ver: '2.0', iss: entraIssuer(tid), aud: CLIENT_ID, preferred_username: upn, name: 'Pat Person',
+    }).setProtectedHeader({ alg: 'RS256' }).setIssuedAt().setExpirationTime('1h').sign(keys.privateKey);
+    tokenFetch.mockImplementation(async () => new Response(JSON.stringify({ id_token: idToken }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+  }
+
+  async function callback(flow: { state: string; binding: string }) {
+    return app.request(`/portal/auth/oidc/entra/callback?code=code-${randomUUID()}&state=${encodeURIComponent(flow.state)}`, {
+      headers: { Cookie: flow.binding },
+    });
+  }
+
+  async function oidcAuditRows(orgId: string) {
+    return (await admin().select().from(auditLogs).where(eq(auditLogs.orgId, orgId)))
+      .filter((row) => row.action.startsWith('portal.auth.'));
+  }
+
+  it('end-to-end: start → callback (stubbed token endpoint + local JWKS key) → portal session works on /portal/profile', async () => {
+    const { org, tid } = await seedOrg();
+    const oid = randomUUID();
+    const account = await seedAccount(org.id, { authMethod: 'entra', passwordHash: null, identity: { tid, oid } });
+
+    const flow = await startFlow({ purpose: 'login' });
+    await microsoftSignsIn(flow.nonce, tid, oid, account.email);
+    const res = await callback(flow);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=signed_in`);
+    expect(res.headers.getSetCookie().find((c) => c.startsWith('breeze_portal_oidc='))).toContain('Max-Age=0');
+
+    const profile = await app.request('/portal/profile', { headers: { Cookie: cookiePair(res, 'breeze_portal_session') } });
+    expect(profile.status).toBe(200);
+    expect(((await profile.json()) as { user: { id: string } }).user.id).toBe(account.id);
+    expect([...portalSessions.values()]).toEqual([expect.objectContaining({
+      portalUserId: account.id, orgId: org.id, method: 'entra', entraTenantId: tid,
+    })]);
+
+    // The same callback again: the state is spent.
+    const replay = await callback(flow);
+    expect(replay.headers.get('location')).toBe(`${PORTAL}/login?sso=unavailable`);
+
+    const rows = await oidcAuditRows(org.id);
+    expect(rows).toEqual([expect.objectContaining({
+      action: 'portal.auth.oidc.login', result: 'success', actorId: account.id, resourceType: 'portal_user', resourceId: account.id,
+      details: { provider: 'entra', outcome: 'session', via: 'identity' },
+    })]);
+  });
+
+  it('instant grant leaves the add-in session valid', async () => {
+    const { org, tid } = await seedOrg({ mode: 'instant' });
+    const oid = randomUUID();
+    const account = await seedAccount(org.id, {
+      authMethod: 'entra', browserAccess: 'none', passwordHash: null, identity: { tid, oid },
+    });
+    // A live add-in (client-AI) session for the same person, at the current epoch.
+    const addinToken = `client-ai-${randomUUID()}`;
+    const redis = getTestRedis();
+    await redis.set(CLIENT_AI_REDIS_KEYS.session(addinToken), JSON.stringify({
+      portalUserId: account.id, orgId: org.id, authEpoch: 5, createdAt: new Date().toISOString(),
+    }));
+    await redis.sadd(CLIENT_AI_REDIS_KEYS.userSessions(account.id), addinToken);
+    const addin = new Hono();
+    addin.use('*', clientAiAuthMiddleware);
+    addin.get('/protected', (c) => c.json({ id: c.get('clientAiAuth').clientUserId }));
+    expect((await addin.request('/protected', { headers: { Authorization: `Bearer ${addinToken}` } })).status).toBe(200);
+
+    const flow = await startFlow({ purpose: 'login' });
+    await microsoftSignsIn(flow.nonce, tid, oid, account.email);
+    const res = await callback(flow);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=signed_in`);
+    expect(await readAccount(account.id)).toMatchObject({ browserAccess: 'granted', authEpoch: 5 });
+
+    // Neither product grants the other, and granting the browser did not end the add-in session.
+    const after = await addin.request('/protected', { headers: { Authorization: `Bearer ${addinToken}` } });
+    expect(after.status).toBe(200);
+    expect(await after.json()).toEqual({ id: account.id });
+    const profile = await app.request('/portal/profile', { headers: { Cookie: cookiePair(res, 'breeze_portal_session') } });
+    expect(profile.status).toBe(200);
+  });
+
+  it('custom-domain host for org A + token for tenant proven in org B → unavailable (host_mismatch)', async () => {
+    const { org: orgA } = await seedOrg({ mode: 'instant' });
+    const domainA = `portal-a-${randomUUID().slice(0, 8)}.test`;
+    await admin().insert(portalBranding).values({ orgId: orgA.id, customDomain: domainA, domainVerified: true });
+    const { org: orgB, tid: tidB } = await seedOrg({ mode: 'instant' });
+    const oid = randomUUID();
+    const inB = await seedAccount(orgB.id, { authMethod: 'entra', passwordHash: null, identity: { tid: tidB, oid } });
+
+    // The browser is on A's custom domain (Host header, any case, with a port).
+    const flow = await startFlow({ purpose: 'login' }, { Host: `${domainA.toUpperCase()}:443` });
+    await microsoftSignsIn(flow.nonce, tidB, oid, inB.email);
+    const res = await callback(flow);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=unavailable`);
+    expect(res.headers.getSetCookie().some((c) => c.startsWith('breeze_portal_session='))).toBe(false);
+    expect(portalSessions.size).toBe(0);
+
+    // The reason is in the audit row only.
+    expect(await oidcAuditRows(orgB.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.oidc.login', result: 'failure', details: { provider: 'entra', outcome: 'denied', reason: 'host_mismatch' },
+    })]);
+    expect(await oidcAuditRows(orgA.id)).toEqual([]);
+
+    // The same identity on the shared host signs in to B.
+    const shared = await startFlow({ purpose: 'login' });
+    await microsoftSignsIn(shared.nonce, tidB, oid, inB.email);
+    expect((await callback(shared)).headers.get('location')).toBe(`${PORTAL}/login?sso=signed_in`);
+  });
+
+  it('a signed-in password user links Microsoft through link/start and link-status (real session middleware, org RLS)', async () => {
+    const { org, tid } = await seedOrg();
+    const account = await seedAccount(org.id, { passwordHash: 'kept-hash' });
+    const sessionToken = `portal-${randomUUID()}`;
+    portalSessions.set(sessionToken, {
+      token: sessionToken, portalUserId: account.id, orgId: org.id, authEpoch: 5, method: 'password',
+      createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+    const auth = { Authorization: `Bearer ${sessionToken}` };
+    const linkStatus = async () => (await app.request('/portal/auth/oidc/entra/link-status', { headers: auth })).json();
+
+    expect((await app.request('/portal/auth/oidc/entra/link-status')).status).toBe(401);
+    expect(await linkStatus()).toEqual({ available: true, linked: false });
+
+    // With a Host, so the custom-domain lookup runs (outside the request's org transaction).
+    const startRes = await app.request('/portal/auth/oidc/entra/link/start', {
+      method: 'POST', headers: { ...auth, Host: 'shared-portal.example.test' },
+    });
+    expect(startRes.status).toBe(200);
+    const url = new URL(((await startRes.json()) as { redirectUrl: string }).redirectUrl);
+    const flow = { state: url.searchParams.get('state')!, binding: cookiePair(startRes, 'breeze_portal_oidc') };
+    const oid = randomUUID();
+    await microsoftSignsIn(url.searchParams.get('nonce')!, tid, oid, account.email);
+    const res = await callback(flow);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/profile?sso=linked`);
+
+    expect(await readAccount(account.id)).toMatchObject({ passwordHash: 'kept-hash', authEpoch: 5, entraTenantId: tid, entraOid: oid });
+    expect(await identitiesFor({ portalUserId: account.id })).toEqual([expect.objectContaining({ subject: oid, linkedVia: 'self_link' })]);
+    expect(await linkStatus()).toEqual({ available: true, linked: true });
+    expect(await oidcAuditRows(org.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.identity.link', result: 'success', actorId: account.id, details: { provider: 'entra', linkedVia: 'self_link' },
+    })]);
+  });
+
+  it('link/start on another org\'s custom domain binds that org (the lookup escapes the request\'s org scope) → unavailable', async () => {
+    const { org: orgA } = await seedOrg();
+    const domainA = `portal-a-${randomUUID().slice(0, 8)}.test`;
+    await admin().insert(portalBranding).values({ orgId: orgA.id, customDomain: domainA, domainVerified: true });
+    const { org: orgB, tid: tidB } = await seedOrg();
+    const account = await seedAccount(orgB.id);
+    const sessionToken = `portal-${randomUUID()}`;
+    portalSessions.set(sessionToken, {
+      token: sessionToken, portalUserId: account.id, orgId: orgB.id, authEpoch: 5, method: 'password',
+      createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+
+    const startRes = await app.request('/portal/auth/oidc/entra/link/start', {
+      method: 'POST', headers: { Authorization: `Bearer ${sessionToken}`, Host: domainA },
+    });
+    expect(startRes.status).toBe(200);
+    const url = new URL(((await startRes.json()) as { redirectUrl: string }).redirectUrl);
+    await microsoftSignsIn(url.searchParams.get('nonce')!, tidB, randomUUID(), account.email);
+    const res = await callback({ state: url.searchParams.get('state')!, binding: cookiePair(startRes, 'breeze_portal_oidc') });
+    expect(res.headers.get('location')).toBe(`${PORTAL}/profile?sso=unavailable`);
+    expect(await identitiesFor({ portalUserId: account.id })).toEqual([]);
+    expect(await oidcAuditRows(orgB.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.oidc.login', result: 'failure', resourceId: account.id,
+      details: { provider: 'entra', outcome: 'denied', reason: 'host_mismatch' },
+    })]);
+  });
+
+  it('an invite accepted through Microsoft uses the real capability consumer: one activation, the token spent', async () => {
+    const { org, tid } = await seedOrg({ ssoOnly: true });
+    const invited = await seedAccount(org.id, { status: 'invited', passwordHash: null, authEpoch: 7 });
+    const inviteToken = await issuePortalCapabilityToken({
+      purpose: 'invite', portalUserId: invited.id, orgId: org.id, email: invited.email, authEpoch: 7,
+    });
+
+    // sso_only: the invite can only be accepted through Microsoft.
+    const methods = await app.request('/portal/auth/invite/methods', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: inviteToken }),
+    });
+    expect(await methods.json()).toEqual({ password: false, microsoft: true });
+
+    const flow = await startFlow({ purpose: 'invite', inviteToken });
+    expect(await peekPortalCapabilityToken('invite', inviteToken!)).not.toBeNull(); // peeked, not consumed
+    const oid = randomUUID();
+    await microsoftSignsIn(flow.nonce, tid, oid, `someone-${randomUUID()}@elsewhere.test`);
+    const res = await callback(flow);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=signed_in`);
+
+    expect(await readAccount(invited.id)).toMatchObject({
+      status: 'active', browserAccess: 'granted', authMethod: 'password', authEpoch: 8, entraTenantId: tid, entraOid: oid,
+    });
+    expect(await identitiesFor({ portalUserId: invited.id })).toEqual([expect.objectContaining({ subject: oid, linkedVia: 'invite' })]);
+    expect(await peekPortalCapabilityToken('invite', inviteToken!)).toBeNull();
+    expect(await oidcAuditRows(org.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.identity.link', result: 'success', resourceId: invited.id, details: { provider: 'entra', linkedVia: 'invite' },
+    })]);
+
+    // A second start with the spent token is the ordinary invalid-invite 400.
+    const again = await app.request('/portal/auth/oidc/entra/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ purpose: 'invite', inviteToken }),
+    });
+    expect(again.status).toBe(400);
+    expect(await again.json()).toEqual({ error: 'Invalid or expired invite' });
   });
 });

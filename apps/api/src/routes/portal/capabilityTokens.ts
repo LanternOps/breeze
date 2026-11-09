@@ -28,6 +28,11 @@
  * TODO(W3): remove the legacy-invite branch once every pre-W2 invite has
  * expired (7-day TTL after this deploys).
  *
+ * W4 (Sign in with Microsoft, plan Task 7): an invite can also be accepted
+ * through Microsoft. The OIDC start PEEKS the invite (no consume), its state
+ * carries only the token's sha256, and the callback consumes by that hash and
+ * validates with `{ requirePasswordMethod: false }`.
+ *
  * The backend is Redis when `PORTAL_USE_REDIS`, otherwise the in-memory maps
  * in ./helpers — the same mutually exclusive switch as sessions.
  */
@@ -96,6 +101,18 @@ export type CapabilityCheck =
 function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex');
 }
+
+/**
+ * The sha256 (hex) a capability token is stored under. The OIDC invite flow
+ * (W4) carries only this through its state and consumes by it
+ * ({@link consumePortalCapabilityTokenByHash}), so the raw token never leaves
+ * the browser's start request.
+ */
+export function hashPortalCapabilityToken(rawToken: string): string {
+  return hashToken(rawToken);
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 function storage(purpose: PortalCapabilityPurpose) {
   return purpose === 'invite'
@@ -192,8 +209,21 @@ export async function consumePortalCapabilityToken(
   purpose: PortalCapabilityPurpose,
   rawToken: string,
 ): Promise<ConsumedCapability | null> {
+  return consumePortalCapabilityTokenByHash(purpose, hashToken(rawToken));
+}
+
+/**
+ * {@link consumePortalCapabilityToken} by the stored sha256 instead of the raw
+ * token (W4: the OIDC invite callback holds only the hash its state carries).
+ * The same atomic GET+DEL; a value that is not a lowercase sha256 hex digest
+ * names no token and touches nothing.
+ */
+export async function consumePortalCapabilityTokenByHash(
+  purpose: PortalCapabilityPurpose,
+  tokenHash: string,
+): Promise<ConsumedCapability | null> {
+  if (!SHA256_HEX.test(tokenHash)) return null;
   const s = storage(purpose);
-  const tokenHash = hashToken(rawToken);
   let raw: string | null;
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
@@ -206,6 +236,44 @@ export async function consumePortalCapabilityToken(
 }
 
 /**
+ * Read the token for `purpose` WITHOUT consuming it (W4): the Microsoft invite
+ * start and the invite-methods lookup must leave the token for the callback
+ * (or the password accept) that later consumes it. Null for an unknown,
+ * expired or malformed token, and when Redis is required but unavailable.
+ * A peek is never authority on its own: whatever it allows is re-checked at
+ * consume.
+ */
+export async function peekPortalCapabilityToken(
+  purpose: PortalCapabilityPurpose,
+  rawToken: string,
+): Promise<ConsumedCapability | null> {
+  const s = storage(purpose);
+  const tokenHash = hashToken(rawToken);
+  let raw: string | null;
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (!redis) return null;
+    raw = await redis.get(s.key(tokenHash));
+  } else {
+    const entry = s.map.get(tokenHash);
+    raw = entry && entry.expiresAt.getTime() > Date.now() ? entry.payload : null;
+  }
+  return parseCapability(purpose, raw);
+}
+
+export interface ValidatePortalCapabilityOptions {
+  /**
+   * Default true: the token is redeemed with a password (accept-invite, reset),
+   * so the row must be password-eligible and the org's effective policy must
+   * allow password sign-in. False (W4, an invite accepted through Microsoft):
+   * neither is required — the credential is the identity the callback links,
+   * and the resolver checks that Microsoft is allowed. Every other check
+   * stands, and a legacy (pre-W2) invite or a reset is refused outright.
+   */
+  requirePasswordMethod?: boolean;
+}
+
+/**
  * Re-check a consumed token against the row it names. Runs its own system
  * context: the public portal auth routes hold no DB context. Only a token
  * that is valid in every other respect learns that its org is unavailable.
@@ -213,10 +281,17 @@ export async function consumePortalCapabilityToken(
 export async function validatePortalCapability(
   purpose: PortalCapabilityPurpose,
   consumed: ConsumedCapability,
+  opts: ValidatePortalCapabilityOptions = {},
 ): Promise<CapabilityCheck> {
+  const requirePasswordMethod = opts.requirePasswordMethod ?? true;
   const invalid: CapabilityCheck = { ok: false, reason: 'invalid' };
   if (consumed.format === 'legacy' && purpose === 'reset') return invalid;
   if (consumed.format === 'v2' && consumed.payload.purpose !== purpose) return invalid;
+  if (!requirePasswordMethod) {
+    // A reset sets a password. A legacy invite carries no issue-time epoch, so
+    // an SSO activation could not be pinned to the generation it was issued at.
+    if (purpose !== 'invite' || consumed.format !== 'v2') return invalid;
+  }
 
   const portalUserId = consumed.format === 'v2' ? consumed.payload.portalUserId : consumed.portalUserId;
   const [user] = await withSystemDbAccessContext(() =>
@@ -249,7 +324,7 @@ export async function validatePortalCapability(
     const p = consumed.payload;
     if (user.orgId !== p.orgId || normalizeEmail(user.email) !== p.email || user.authEpoch !== p.authEpoch) return invalid;
   }
-  if (!isPasswordEligible(user)) return invalid;
+  if (requirePasswordMethod && !isPasswordEligible(user)) return invalid;
   if (purpose === 'invite') {
     if (user.status !== 'invited' || user.browserAccess !== 'granted') return invalid;
   } else if (user.status !== 'active' && user.status !== 'invited') {
@@ -260,7 +335,9 @@ export async function validatePortalCapability(
   // effective policy switched password sign-in off is refused with the generic
   // invalid, before the org gate, so it learns nothing about the org either.
   // No DB context is held (public routes), so the resolver opens its own.
-  if (!(await isPasswordSignInAllowedForOrg(user.orgId))) return invalid;
+  // (A Microsoft acceptance is not a password sign-in: the OIDC resolver
+  // applies the policy's Microsoft gate instead.)
+  if (requirePasswordMethod && !(await isPasswordSignInAllowedForOrg(user.orgId))) return invalid;
 
   if (!(await getActiveOrgTenant(user.orgId))) return { ok: false, reason: 'org_unavailable' };
 
