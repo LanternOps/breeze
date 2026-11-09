@@ -48,6 +48,14 @@ describe('contract: standing-instruction verb map covers every Tier >= 2 device 
     expect(missing, `classify these in services/aiToolStandingVerbs.ts: ${missing.join(', ')}`).toEqual([]);
   });
 
+  it('every enforced entry names a registry tool with deviceArgs (its devices are where matching happens)', () => {
+    const blind = Object.entries(STANDING_INSTRUCTION_VERB_MAP)
+      .filter(([, rule]) => rule !== 'none')
+      .map(([name]) => name)
+      .filter((name) => (aiTools.get(name)?.deviceArgs ?? []).length === 0);
+    expect(blind).toEqual([]);
+  });
+
   it('no entry names a tool that is absent from TOOL_TIERS', () => {
     const stale = Object.keys(STANDING_INSTRUCTION_VERB_MAP).filter((name) => !(name in TOOL_TIERS));
     expect(stale).toEqual([]);

@@ -121,9 +121,13 @@ describe('findStandingInstructionMatches (in-code filters)', () => {
     expect(matches[0]!.enforceable).toBe(true);
   });
 
-  it('invalid content is ignored and reported, never thrown', async () => {
-    rowsQueue.push([row({ effect: 'obliterate' }), row({ deviceId: 'not-a-uuid' })]);
-    expect(await find(['reboot'])).toEqual([]);
+  it('content that fails its schema on a matched device warns (fails toward a human), and is reported', async () => {
+    rowsQueue.push([row({ effect: 'obliterate' }), row({ verb: 'teleport', text: 42 })]);
+    const matches = await find(['patch_install', 'any_change']);
+    expect(matches).toHaveLength(2);
+    expect(matches[0]).toMatchObject({ strength: 'possible', enforceable: false, text: "don't reboot PC-01", deviceId: PC01 });
+    expect(matches[1]).toMatchObject({ strength: 'possible', enforceable: false, text: 'a remembered instruction for this device' });
+    expect(standingInstructionDecision(matches).action).toBe('warn');
     expect(captureException).toHaveBeenCalledTimes(2);
   });
 

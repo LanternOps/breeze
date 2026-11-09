@@ -72,7 +72,11 @@ export function suppliedStandingDeviceIds(deviceArgs: readonly string[], input: 
  */
 async function deviceArgsFor(toolName: string): Promise<readonly string[]> {
   const { aiTools } = await import('../aiTools');
-  return aiTools.get(toolName)?.deviceArgs ?? [];
+  const tool = aiTools.get(toolName);
+  // Only reached for a tool the verb map enforces; the contract test keeps
+  // every such tool in the registry with deviceArgs, so a miss is a fault.
+  if (!tool) throw new Error(`standing-instruction check: '${toolName}' is in the verb map but not in the tool registry`);
+  return tool.deviceArgs ?? [];
 }
 
 /** A group target the caller's reach cannot resolve: the call is refused with the resolver's message. */

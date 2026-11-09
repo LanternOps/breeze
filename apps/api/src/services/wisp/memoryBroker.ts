@@ -462,7 +462,23 @@ export async function findStandingInstructionMatches(input: {
     if (row.status !== 'confirmed' && row.status !== 'unconfirmed') continue;
     const parsed = standingInstructionContentSchema.safeParse(row.content);
     if (!parsed.success) {
-      captureException(new Error(`ai_memory_blocks ${row.id}: standing_instruction content fails its schema; ignored by enforcement`));
+      // The SQL matched it on one of the call's devices but its verb cannot
+      // be read: never decide it is no match. It warns (a human sees the
+      // call), and never refuses on content nobody can read.
+      console.error(`[memoryBroker] standing_instruction ${row.id} fails its schema; enforced as a warning`);
+      captureException(new Error(`ai_memory_blocks ${row.id}: standing_instruction content fails its schema; enforced as a warning`));
+      const raw = row.content as Record<string, unknown>;
+      const rawDevice = typeof raw.deviceId === 'string' ? raw.deviceId.toLowerCase() : '';
+      matches.push({
+        blockId: row.id,
+        instructionId: typeof raw.instructionId === 'string' ? raw.instructionId : row.id,
+        status: row.status,
+        text: typeof raw.text === 'string' && raw.text.length > 0 ? raw.text.slice(0, 500) : 'a remembered instruction for this device',
+        deviceId: wanted.has(rawDevice) ? rawDevice : deviceIds[0]!,
+        verb: 'any_change',
+        enforceable: false,
+        strength: 'possible',
+      });
       continue;
     }
     const c = parsed.data;

@@ -482,6 +482,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       await finalizeAssessment(makeCtx(), result);
       expect(evaluateStandingInstructions).toHaveBeenCalledWith(expect.objectContaining({
         ceiling: expect.objectContaining({ grantId: GRANT_ID }), toolName: 'run_script', input: { scriptId: 's-1' },
+        auth: result.agentAuth,
       }));
       expect(createActionIntent).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['propose_standing_instruction']);

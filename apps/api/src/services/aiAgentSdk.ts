@@ -59,7 +59,11 @@ import type { WispCeilingRefusal } from './wisp/chatCeiling';
 // Leaf data module (no imports): loading it never pulls in the Wisp graph.
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
 import { classifyWispUnattendedRead } from './wisp/unattendedReads';
-import { checkStandingInstructionsForCall, standingConflictDescription } from './wisp/standingInstructionGate';
+import {
+  STANDING_CHECK_UNAVAILABLE_MESSAGE,
+  checkStandingInstructionsForCall,
+  standingConflictDescription,
+} from './wisp/standingInstructionGate';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { aiTools as registeredAiTools } from './aiToolNames';
@@ -1121,9 +1125,6 @@ async function runWispCeilingGate(
   }
 }
 
-/** #10428 W06: the chat's fail-closed answer when the standing-instruction check itself cannot run. */
-const STANDING_CHECK_UNAVAILABLE = "Couldn't check remembered instructions; try again.";
-
 /**
  * #10428 W06: the standing-instruction check for one Wisp call, under the
  * ceiling this call passed. Never throws: any failure refuses the call (only
@@ -1141,7 +1142,7 @@ async function standingInstructionCheck(
   } catch (err) {
     console.error(`[AI-SDK] Standing-instruction check failed for '${toolName}'; refusing`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
-    return { action: 'refuse', error: STANDING_CHECK_UNAVAILABLE };
+    return { action: 'refuse', error: STANDING_CHECK_UNAVAILABLE_MESSAGE };
   }
 }
 

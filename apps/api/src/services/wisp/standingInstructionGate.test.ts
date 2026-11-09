@@ -98,6 +98,14 @@ describe('evaluateStandingInstructions', () => {
   });
 });
 
+describe('a mapped tool missing from the registry', () => {
+  it('throws (never reads as "no devices")', async () => {
+    await expect(evaluateStandingInstructions({ ceiling, toolName: 'trigger_agent_restart', input: { deviceIds: [PC01] } }))
+      .rejects.toThrow(/registry/);
+    expect(findMatches).not.toHaveBeenCalled();
+  });
+});
+
 describe('checkStandingInstructionsForCall (fail closed)', () => {
   it('a matcher error refuses with the retry text and is reported', async () => {
     findMatches.mockRejectedValue(new Error('db down'));
