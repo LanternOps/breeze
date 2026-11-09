@@ -299,6 +299,29 @@ async function appliedItems(auth: AuthContext, reportRunId: string): Promise<str
   });
 }
 
+/**
+ * Whether `document` may attach the design as deliverable evidence: a contracts:write effect, decided on the caller's
+ * live role as on REST. #11433: under a Wisp grant (`document` is delegable) the chat ceiling checked documents:write
+ * only, so the link must also sit inside the grant's ceiling for the report's org. A grant that no longer resolves
+ * links nothing (the document is still filed); a corrupt pin or a DB error propagates.
+ */
+async function canLinkDeliverableEvidence(auth: AuthContext, orgId: string): Promise<boolean> {
+  if (!(await can(auth, PERMISSIONS.CONTRACTS_WRITE))) return false;
+  const grant = auth.wispGrant;
+  if (!grant) return true;
+  // Lazy, as the chat gate loads it: an ordinary session never loads the Wisp graph.
+  const { CeilingViolationError, GrantInactiveError, assertWithinCeiling, resolveGrantCeiling } = await import('./wisp/grantAuthority');
+  try {
+    const ceiling = await resolveGrantCeiling(grant.grantId, grant.grantRevisionId);
+    assertWithinCeiling(ceiling, { orgId, permission: `${PERMISSIONS.CONTRACTS_WRITE.resource}:${PERMISSIONS.CONTRACTS_WRITE.action}` });
+    return true;
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return false;
+    if (err instanceof GrantInactiveError && err.kind !== 'corrupt') return false;
+    throw err;
+  }
+}
+
 async function fileDocument(auth: AuthContext, reportRunId: string): Promise<string> {
   const [{ loadFleetDesignReport }, { fileFleetDesignDocument }] = await Promise.all([
     import('./aiAgents/fleetDesignReport'),
@@ -312,7 +335,7 @@ async function fileDocument(auth: AuthContext, reportRunId: string): Promise<str
       reportRunId,
       actor: { userId: auth.user?.id ?? null, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds },
       // Explicit: omitting it links. Attaching can mark a contract deliverable delivered.
-      linkDeliverableEvidence: await can(auth, PERMISSIONS.CONTRACTS_WRITE),
+      linkDeliverableEvidence: await canLinkDeliverableEvidence(auth, report.orgId),
     });
     auditToolWrite(auth, {
       orgId: report.orgId,

@@ -19,7 +19,13 @@ const h = vi.hoisted(() => ({
   digest: vi.fn(),
   perms: vi.fn(),
   audit: vi.fn(),
+  resolveGrantCeiling: vi.fn(),
   order: [] as string[],
+}));
+
+vi.mock('./wisp/grantAuthority', async (orig) => ({
+  ...(await orig<typeof import('./wisp/grantAuthority')>()),
+  resolveGrantCeiling: h.resolveGrantCeiling,
 }));
 
 vi.mock('./fleetDesign/ledger', () => ({
@@ -92,7 +98,7 @@ const emptyApproval = {};
 const automationApproval = { automation: ['automation:file_server:script:0'] };
 
 beforeEach(() => {
-  for (const fn of [h.lock, h.loadLedger, h.preview, h.apply, h.rollback, h.report, h.file, h.launch, h.digest, h.perms, h.audit]) fn.mockReset();
+  for (const fn of [h.lock, h.loadLedger, h.preview, h.apply, h.rollback, h.report, h.file, h.launch, h.digest, h.perms, h.audit, h.resolveGrantCeiling]) fn.mockReset();
   h.order.length = 0;
   h.lock.mockImplementation(async () => {
     h.order.push('lock');
@@ -409,6 +415,52 @@ describe('document', () => {
     h.perms.mockResolvedValue(null);
     await run(input, auth(), released);
     expect(h.file.mock.calls[0]![0]).toMatchObject({ linkDeliverableEvidence: false });
+  });
+
+  // #11433: `document` is delegable to Wisp. The chat ceiling checked documents:write only; the evidence link is a
+  // contracts:write effect decided on the human's live role, so under a grant it must also sit inside the ceiling.
+  describe('under a Wisp grant (#11433)', () => {
+    const wisp = () => auth({ wispGrant: { grantId: 'g-1', grantRevisionId: 'r-1', sessionId: 's-1' } });
+    const ceilingWith = (...keys: string[]) => ({
+      grantId: 'g-1', revisionId: 'r-1', partnerId: PARTNER, grantorUserId: 'u-1', scopeOrgId: null, partnerWide: true,
+      status: 'active', orgIds: new Set([ORG]), siteIds: null, permissionKeys: new Set(keys),
+      toolAllowlist: null, deniedTools: new Set(), orgTerms: new Map(),
+    });
+
+    it('links evidence when the ceiling holds contracts:write in the report\'s org', async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceilingWith('documents:write', 'contracts:write'));
+      await run(input, wisp(), released);
+      expect(h.resolveGrantCeiling).toHaveBeenCalledWith('g-1', 'r-1');
+      expect(h.file.mock.calls[0]![0]).toMatchObject({ linkDeliverableEvidence: true });
+    });
+
+    it('links nothing when the live role has contracts:write but the ceiling does not; the document is still filed', async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceilingWith('documents:write'));
+      const out = parse(await run(input, wisp(), released));
+      expect(h.file.mock.calls[0]![0]).toMatchObject({ orgId: ORG, linkDeliverableEvidence: false });
+      expect(out.documentId).toBe('doc-1');
+    });
+
+    it('links nothing when the grant\'s term for the report\'s org lacks contracts:write', async () => {
+      h.resolveGrantCeiling.mockResolvedValue({
+        ...ceilingWith('documents:write', 'contracts:write'),
+        orgTerms: new Map([[ORG, { permissionKeys: new Set(['documents:write']), siteIds: null }]]),
+      });
+      await run(input, wisp(), released);
+      expect(h.file.mock.calls[0]![0]).toMatchObject({ linkDeliverableEvidence: false });
+    });
+
+    it('links nothing when the grant is no longer active', async () => {
+      const { GrantInactiveError } = await import('./wisp/grantAuthority');
+      h.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g-1', 'paused'));
+      await run(input, wisp(), released);
+      expect(h.file.mock.calls[0]![0]).toMatchObject({ linkDeliverableEvidence: false });
+    });
+
+    it('an ordinary session resolves no ceiling', async () => {
+      await run(input, auth(), released);
+      expect(h.resolveGrantCeiling).not.toHaveBeenCalled();
+    });
   });
 
   it('audits the filed document', async () => {
