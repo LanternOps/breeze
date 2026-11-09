@@ -1182,6 +1182,8 @@
       "trust_page_template": "Trust Center template",
       "tunnel_allowlist": "Tunnel allowlist",
       "tunnel_session": "Tunnel session",
+      "unifi_collector": "UniFi controller",
+      "unifi_site_mapping": "UniFi site mapping",
       "update_ring": "Update ring",
       "user": "User",
       "user_risk_policy": "User risk policy",

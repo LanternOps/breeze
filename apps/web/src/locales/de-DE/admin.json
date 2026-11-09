@@ -1182,6 +1182,8 @@
       "trust_page_template": "Vertrauenszentrum-Vorlage",
       "tunnel_allowlist": "Tunnel-Zulassungsliste",
       "tunnel_session": "Tunnelsitzung",
+      "unifi_collector": "UniFi-Controller",
+      "unifi_site_mapping": "UniFi-Standortzuordnung",
       "update_ring": "Update-Ring",
       "user": "Benutzer",
       "user_risk_policy": "Benutzerrisikorichtlinie",

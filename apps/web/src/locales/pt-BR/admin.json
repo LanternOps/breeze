@@ -1182,6 +1182,8 @@
       "trust_page_template": "Modelo da Central de Confiança",
       "tunnel_allowlist": "Lista de permissões do túnel",
       "tunnel_session": "Sessão de túnel",
+      "unifi_collector": "Controlador UniFi",
+      "unifi_site_mapping": "Mapeamento de site do UniFi",
       "update_ring": "Anel de atualização",
       "user": "Usuário",
       "user_risk_policy": "Política de risco de usuário",
