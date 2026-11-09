@@ -33,9 +33,9 @@ export type WispSpecialistKind = (typeof WISP_SPECIALIST_KINDS)[number];
  * by the same parity test). #10406: an assessment never asks for more
  * assessments; the coordinator refuses one anyway (`unknown_kind`).
  */
-export const WISP_ASSESSMENT_REQUEST_KINDS = WISP_SPECIALIST_KINDS.filter(
+export const WISP_ASSESSMENT_REQUEST_KINDS: readonly Exclude<WispSpecialistKind, 'assessment'>[] = WISP_SPECIALIST_KINDS.filter(
   (k): k is Exclude<WispSpecialistKind, 'assessment'> => k !== 'assessment',
-) as readonly Exclude<WispSpecialistKind, 'assessment'>[];
+);
 export type WispAssessmentRequestKind = (typeof WISP_ASSESSMENT_REQUEST_KINDS)[number];
 
 export const BULK_TICKET_REPLY_MAX_TICKETS = 250;

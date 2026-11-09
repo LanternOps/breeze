@@ -357,6 +357,16 @@ describe('enqueueAssessment', () => {
     expect(input.triggerRef.wisp).toEqual({ grantId: GRANT, grantRevisionId: REV, reason: { kind: 'onboarding' }, watermark: null });
   });
 
+  // #10406: only a tick is rewritten to onboarding on a first look; an
+  // on-demand request keeps its reason (and its open-alerts digest).
+  it('an on_demand reason with no watermark stays on_demand', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'on_demand', requestId: 'req-1' } });
+    const input = h.createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: { wisp: unknown } };
+    expect(input.triggerRef.wisp).toMatchObject({ reason: { kind: 'on_demand', requestId: 'req-1' }, watermark: null });
+  });
+
   // #10389: a floor tick for an org this grant has never assessed is its first
   // look, so it runs as onboarding (framing + readiness note) rather than as a
   // periodic "what changed" check.

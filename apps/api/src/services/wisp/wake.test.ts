@@ -374,6 +374,69 @@ describe('requestAssessment — on_demand upgrade (#10406)', () => {
     expect(assessAdds().map((a) => a.opts.jobId)).toEqual([onDemandSuccessorJobId(G1, O1)]);
   });
 
+  // Review finding: replacing an event / watch reason would drop its focus (the
+  // alert, anomaly incident or watch the run is about). Those jobs keep their
+  // reason and the on-demand request gets the successor instead.
+  it('an event or watch job keeps its reason: the on_demand request gets the successor', async () => {
+    const event = { kind: 'event', eventType: 'alert.triggered', eventId: 'e1', alertId: ALERT };
+    for (const reason of [event, { kind: 'watch', watchId: 'w1' }]) {
+      h.jobs = new Map(); h.updates = []; h.promotes = []; h.adds = [];
+      seed('delayed', { grantId: G1, orgId: O1, reason });
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+      expect(h.updates).toEqual([]);
+      expect(h.promotes).toEqual([]);
+      expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason });
+      expect(assessAdds().map((a) => a.opts.jobId)).toEqual([onDemandSuccessorJobId(G1, O1)]);
+    }
+  });
+
+  it('an onboarding job is upgraded in place like a tick', async () => {
+    seed('delayed', { grantId: G1, orgId: O1, reason: { kind: 'onboarding' } });
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+    expect(h.updates).toHaveLength(1);
+  });
+
+  // Review finding: BullMQ no-ops an add whose id is still in Redis, so a
+  // finished record that cannot be removed must fail the request, never
+  // report 'queued' with nothing queued.
+  it('a finished record that cannot be removed throws instead of a silent no-op add', async () => {
+    seed('failed');
+    h.removeFails = true;
+    await expect(requestAssessment({ grantId: G1, orgId: O1, reason: OD })).rejects.toThrow(/could not remove/);
+    expect(assessAdds()).toHaveLength(0);
+
+    h.jobs = new Map();
+    seed('active');
+    h.jobs.set(onDemandSuccessorJobId(G1, O1), { name: 'assess', data: {}, opts: {}, state: 'failed', timestamp: 1 });
+    await expect(requestAssessment({ grantId: G1, orgId: O1, reason: OD })).rejects.toThrow(/could not remove/);
+    expect(assessAdds()).toHaveLength(0);
+  });
+
+  it('a retained completed / failed window record is replaced by a fresh on_demand window job with no delay', async () => {
+    for (const state of ['completed', 'failed']) {
+      h.jobs = new Map(); h.adds = [];
+      seed(state);
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+      expect(assessAdds()).toHaveLength(1);
+      expect(assessAdds()[0]).toMatchObject({ opts: { jobId: wakeJobId(G1, O1), delay: 0 } });
+      expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason: OD });
+    }
+  });
+
+  it('a failed promote is not fatal: the job already carries on_demand and is still unclaimed → upgraded', async () => {
+    seed('delayed');
+    // Something else moved the job to waiting between our read and promote(),
+    // so the fake's promote throws (BullMQ: "not in the delayed state").
+    h.onUpdateData = (rec) => { rec.state = 'waiting'; };
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+    expect(h.promotes).toEqual([wakeJobId(G1, O1)]);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason: OD });
+    expect(assessAdds()).toHaveLength(0);
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('could not promote'), expect.anything());
+    consoleWarn.mockRestore();
+  });
+
   it('a non-on_demand request onto an on_demand job coalesces and never downgrades it', async () => {
     seed('waiting', { grantId: G1, orgId: O1, reason: OD });
     for (const reason of [{ kind: 'tick' as const }, { kind: 'watch' as const, watchId: 'w1' }, { kind: 'event' as const, eventType: 'alert.triggered', eventId: 'e1' }]) {

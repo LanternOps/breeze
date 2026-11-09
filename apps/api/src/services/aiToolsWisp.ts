@@ -6,13 +6,14 @@
  * a coordinator code path, and `workspace_launch_analysis` stays denied.
  *
  *   launch_specialist        Tier 2 chat tool, inside a Wisp session only
- *                            (`auth.wispGrant`, stamped by W04). The auto-admit
- *                            kinds (sweep, analysis) run on the call; every
- *                            asks-first kind escalates to a supervised Tier-3
- *                            approval in chat (`TIER3_ACTIONS`, keyed on
- *                            `kind`), so the person sees the exact request —
- *                            the ticket list and message for a bulk reply —
- *                            before it runs. Agent principals are denied
+ *                            (`auth.wispGrant`, stamped by W04). The
+ *                            chatLaunchTier-2 kinds (sweep, analysis,
+ *                            device_troubleshooting, assessment) run on the
+ *                            call after one ordinary card; the Tier-3 kinds
+ *                            escalate to a supervised approval in chat
+ *                            (`TIER3_ACTIONS`, keyed on `kind`), so the person
+ *                            sees the exact request — the ticket list and
+ *                            message for a bulk reply — before it runs. Agent principals are denied
  *                            (AGENT_HUMAN_ONLY_TOOLS).
  *   wisp_specialist_request  the approval card an assessment raises for an
  *                            asks-first kind. Human-only (never declared);

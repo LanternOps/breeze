@@ -58,6 +58,8 @@ const MESSAGES: Readonly<Record<SpecialistRefusal, string>> = Object.freeze({
 
 /** Sentences for the `detail` a code carries, where the detail changes the next step. */
 const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Record<string, string>>>>> = Object.freeze({
+  // #10406: a chat-only kind (assessment) asked for by an assessment or its card.
+  unknown_kind: { chat_only: 'Only a person in chat can start a Wisp assessment; an assessment cannot start another one.' },
   wisp_disabled: { ai_kill_switch: 'AI actions are paused by the AI kill switch. An administrator has to lift it.' },
   org_out_of_ceiling: { site_restricted: 'This Wisp grant is limited to specific sites, and specialists work on a whole organization.' },
   invalid_params: {

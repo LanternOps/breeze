@@ -10,7 +10,10 @@
  *                        `wisp.grant.resumed` asks for one floor-tick
  *                        assessment of the round-robin org.
  *   requestAssessment    the 60 s per-(grant, org) debounce: ONE delayed
- *                        BullMQ job per pair is the window.
+ *                        BullMQ job per pair is the window. An `on_demand`
+ *                        request (#10406) skips the delay and is never
+ *                        dropped: it upgrades the window job or adds a `-od`
+ *                        successor (requestOnDemandAssessment).
  *   pickRoundRobinOrg    pure: never-assessed orgs first, then the oldest.
  *   enqueueCheckIn / removeCheckInJob / isCheckInJobLive
  *                        the delayed `check-in` job of a Wisp check-in timer
@@ -127,12 +130,21 @@ export function onDemandSuccessorJobId(grantId: string, orgId: string): string {
 /**
  * `queued`    a new job was added;
  * `coalesced` a live job already covers this request (nothing changed);
- * `upgraded`  a waiting job of another reason now carries `on_demand` (#10406).
+ * `upgraded`  a tick / onboarding job no worker holds yet (waiting, delayed or
+ *             prioritized) now carries `on_demand` (#10406).
  */
 export type RequestAssessmentResult = 'queued' | 'coalesced' | 'upgraded';
 
 /** Live states in which no worker holds the job yet, so its data can still change. */
 const UNCLAIMED_JOB_STATES = new Set(['waiting', 'delayed', 'prioritized']);
+
+/**
+ * Reasons an on-demand request may replace in place. A tick or onboarding run
+ * reads nothing the on-demand run does not; an event or watch reason names
+ * what its run is about (the alert, anomaly incident or watch), so those jobs
+ * keep it and the on-demand request takes the successor.
+ */
+const REPLACEABLE_REASONS = new Set<AssessmentReason['kind']>(['tick', 'onboarding']);
 
 const ASSESS_JOB_OPTIONS = {
   // A transient failure (Redis / DB blip in enqueueAssessment) retries the
@@ -158,24 +170,37 @@ function assessJobData(input: WispAssessJobData): WispAssessJobData {
 /**
  * The live job with this id, or null. A retained completed / failed record
  * would make BullMQ no-op an add with the same id forever (it dedupes on any
- * job record still in Redis), so such a record is removed here.
+ * job record still in Redis), so such a record is removed here. If that
+ * removal fails, a debounced request only warns (the next wake retries it);
+ * a `strict` caller throws, because its add would be silently ignored and it
+ * must not report the request as queued (the enqueueCheckIn rule).
  */
-async function liveJob(queue: Queue<WakeQueueData>, jobId: string): Promise<{ job: Job<WakeQueueData>; state: string } | null> {
+async function liveJob(
+  queue: Queue<WakeQueueData>,
+  jobId: string,
+  opts: { strict?: boolean } = {},
+): Promise<{ job: Job<WakeQueueData>; state: string } | null> {
   const existing = await queue.getJob(jobId);
   if (!existing) return null;
   const state = await existing.getState();
   if (LIVE_JOB_STATES.has(state)) return { job: existing, state };
-  await existing.remove().catch((err: unknown) => {
+  try {
+    await existing.remove();
+  } catch (err) {
+    if (opts.strict) {
+      throw new Error(`[wisp-wake] could not remove the finished assess job ${jobId} (state ${state}): ${err instanceof Error ? err.message : String(err)}`);
+    }
     console.warn('[wisp-wake] could not remove a finished assess job', { jobId, state, err });
-  });
+  }
   return null;
 }
 
 /**
- * Ask for one assessment of (grant, org) within the next 60 s.
+ * Ask for one assessment of (grant, org): within the next 60 s, or at once for
+ * `on_demand`.
  *
- * One delayed job per (grant, org) IS the window: every request while that job
- * is still waiting, delayed or running collapses onto it. The stored data is
+ * One delayed job per (grant, org) IS the window: every other request while
+ * that job is still waiting, delayed or running collapses onto it. The stored data is
  * the FIRST request's — its reason and its deterministic digest hint. Later
  * coalesced requests' hints are dropped; that is acceptable because a funded
  * assessment reads everything since the watermark, not the reason, and on the
@@ -203,32 +228,46 @@ export async function requestAssessment(input: WispAssessJobData): Promise<Reque
  * #10406 — an on-demand request, with no debounce delay:
  *
  *  - a live job that already carries `on_demand` (the window job or its
- *    successor) covers it → `coalesced`. A later tick / event / watch request
- *    coalesces onto that job too, so `on_demand` is never downgraded;
+ *    successor) covers it → `coalesced`. A job is assessed when its RUN
+ *    starts (loadAssessmentContext), after the assess job admits it, so a
+ *    running on-demand assess job still reads the alerts open now. A later
+ *    tick / event / watch request coalesces onto a window job carrying
+ *    `on_demand`, so that job is never downgraded (those requests do not
+ *    consult the successor: if the window job has finished they add a fresh
+ *    window job, an extra run, never a lost one);
  *  - no live window job → the window job is added with `on_demand`;
- *  - a window job no worker holds yet (waiting, delayed, prioritized) gets the
- *    `on_demand` reason (`updateData`, keeping its digest hint), and a delayed
- *    one is promoted to run now → `upgraded`;
- *  - the window job is running, or a worker claimed it while it was being
- *    updated (its state is re-read after the update, quorum finding) → the
- *    successor job `<window>-od` is added → `queued`. A running assess job is
- *    only admitting a run: that is no proof the run reads the open alerts.
+ *  - a tick or onboarding window job no worker holds yet (waiting, delayed,
+ *    prioritized) gets the `on_demand` reason (`updateData`, keeping its
+ *    digest hint), and a delayed one is promoted to run now → `upgraded`;
+ *  - otherwise the successor job `<window>-od` is added → `queued`: the window
+ *    job is running (it is only admitting a run, no proof that run reads the
+ *    open alerts), a worker claimed it while it was being updated (its state
+ *    is re-read after the write, quorum finding), or it carries an event or
+ *    watch reason it must keep (REPLACEABLE_REASONS).
+ *
+ * A finished record that cannot be removed throws (`strict`): the add would
+ * be a silent BullMQ no-op, and the caller must not report it as queued.
  */
 async function requestOnDemandAssessment(input: WispAssessJobData): Promise<RequestAssessmentResult> {
   const queue = getWispWakeQueue();
   const jobId = wakeJobId(input.grantId, input.orgId);
   const successorId = onDemandSuccessorJobId(input.grantId, input.orgId);
 
-  const live = await liveJob(queue, jobId);
+  const live = await liveJob(queue, jobId, { strict: true });
   if (live && isOnDemandJob(live.job.data)) return 'coalesced';
-  if (await liveJob(queue, successorId)) return 'coalesced';
+  if (await liveJob(queue, successorId, { strict: true })) return 'coalesced';
 
   if (!live) {
     await queue.add(ASSESS_JOB, assessJobData(input), { jobId, delay: 0, ...ASSESS_JOB_OPTIONS });
     return 'queued';
   }
 
-  if (UNCLAIMED_JOB_STATES.has(live.state) && (await upgradeToOnDemand(live.job, live.state, input.reason))) {
+  const liveReason = (live.job.data as Partial<WispAssessJobData> | undefined)?.reason?.kind;
+  if (
+    UNCLAIMED_JOB_STATES.has(live.state)
+    && liveReason !== undefined && REPLACEABLE_REASONS.has(liveReason)
+    && (await upgradeToOnDemand(live.job, live.state, input.reason))
+  ) {
     return 'upgraded';
   }
 

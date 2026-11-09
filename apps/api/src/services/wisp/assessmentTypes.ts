@@ -21,8 +21,9 @@ import type { Concern, Watch, WatchKind } from '@breeze/shared';
  *
  * `on_demand` (#10406) is a person asking for an assessment from chat
  * (`launch_specialist {kind: 'assessment'}`). It reads the org's open alerts
- * like a first look, and it is never swallowed by a queued tick or event job
- * (wake.ts `requestAssessment` upgrades that job). `requestId` is the chat
+ * like a first look, and it is never dropped by a queued or running tick or
+ * event job (wake.ts `requestAssessment` upgrades an unclaimed tick job, or
+ * adds a successor job). `requestId` is the chat
  * request's id, kept for traceability and never shown to the model.
  */
 export type AssessmentReason =

@@ -35,7 +35,8 @@ vi.mock('../../db', () => {
   };
 });
 
-import { ONBOARDING_ORG_LIMIT, orgsWithOpenAlerts } from './assessableOrgs';
+import { ONBOARDING_ORG_LIMIT } from './assessableOrgs';
+import { orgsWithOpenAlerts } from './openAlertOrgs';
 
 const O1 = '00000000-0000-4000-8000-0000000000b1';
 const O2 = '00000000-0000-4000-8000-0000000000b2';

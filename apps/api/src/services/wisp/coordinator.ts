@@ -257,7 +257,7 @@ async function decide(
   const policy = SPECIALIST_KIND_POLICY[input.kind];
   // #10406: only a person in chat starts a chat-only kind. An assessment's own
   // request, or the approval card one raised, must not start more assessments.
-  if (policy.chatOnly && requester.kind !== 'user') return { refused: 'unknown_kind' };
+  if (policy.chatOnly && requester.kind !== 'user') return { refused: 'unknown_kind', detail: 'chat_only' };
   const params = parseSpecialistParams(input.kind, input.params);
   if (!params) return { refused: 'invalid_params' };
   if (input.kind === 'analysis' && !aiWorkspaceEnabled()) {

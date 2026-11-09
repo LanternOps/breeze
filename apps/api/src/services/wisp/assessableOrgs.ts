@@ -1,14 +1,8 @@
 /**
- * Wisp W05b — which orgs of a grant ceiling an assessment may run in. Kept
- * out of assessment.ts so the wake coordinator (which must not pull the
- * run-admission graph into the event-subscriber closure) can use it.
- * `assessableOrgIds` is pure; `orgsWithOpenAlerts` (#10406) is one system
- * read of the alerts table.
+ * Wisp W05b — which orgs of a grant ceiling an assessment may run in.
+ * Pure, and kept out of assessment.ts so the wake coordinator (which must not
+ * pull the run-admission graph into the event-subscriber closure) can use it.
  */
-import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { alerts } from '../../db/schema/alerts';
-import { organizations } from '../../db/schema/orgs';
 import type { GrantCeiling } from './grantAuthority';
 
 /**
@@ -29,30 +23,4 @@ export const ONBOARDING_ORG_LIMIT = 10;
 export function assessableOrgIds(ceiling: GrantCeiling): Set<string> {
   if (ceiling.siteIds !== null) return new Set();
   return new Set([...ceiling.orgIds].filter((id) => (ceiling.orgTerms.get(id)?.siteIds ?? null) === null));
-}
-
-/** The open alert statuses: the same set as the first-look digest (assessment.ts loadOpenAlertRows). */
-const OPEN_ALERT_STATUSES = ['active', 'acknowledged'] as const;
-
-/**
- * #10406 — the orgs of `orgIds` with at least one open alert, worst open
- * severity first (the severity enum is declared critical → info, so `min` is
- * the worst), then the most open alerts, then the name; at most `limit`.
- * `orgIds` must already be inside the caller's ceiling (assessableOrgIds):
- * this is a system read, and the filter is the only scope it has.
- */
-export async function orgsWithOpenAlerts(
-  orgIds: readonly string[],
-  limit: number,
-): Promise<Array<{ orgId: string; orgName: string }>> {
-  if (orgIds.length === 0 || limit <= 0) return [];
-  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
-    .select({ orgId: alerts.orgId, orgName: organizations.name })
-    .from(alerts)
-    .innerJoin(organizations, eq(organizations.id, alerts.orgId))
-    .where(and(inArray(alerts.orgId, [...orgIds]), inArray(alerts.status, [...OPEN_ALERT_STATUSES])))
-    .groupBy(alerts.orgId, organizations.name)
-    .orderBy(asc(sql`min(${alerts.severity})`), desc(count(alerts.id)), asc(organizations.name), asc(alerts.orgId))
-    .limit(limit), 'wisp.orgsWithOpenAlerts'));
-  return rows.map((r) => ({ orgId: r.orgId, orgName: r.orgName }));
 }

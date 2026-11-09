@@ -164,14 +164,14 @@ beforeEach(() => {
 // assessments; the refusal comes before the grant budget is read.
 describe('chat-only assessment kind (#10406)', () => {
   it('the run path is refused unknown_kind before the budget is read', async () => {
-    await expect(requestSpecialist(base({ kind: 'assessment' }), { requester: requesterOf('run') })).resolves.toEqual({ refused: 'unknown_kind' });
+    await expect(requestSpecialist(base({ kind: 'assessment' }), { requester: requesterOf('run') })).resolves.toEqual({ refused: 'unknown_kind', detail: 'chat_only' });
     expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
     expect(h.raiseSpecialistIntent).not.toHaveBeenCalled();
     expect(launchCalls()).toBe(0);
   });
 
   it('the approval path is refused unknown_kind too', async () => {
-    await expect(requestSpecialist(base({ kind: 'assessment' }), { requester: requesterOf('approval') })).resolves.toEqual({ refused: 'unknown_kind' });
+    await expect(requestSpecialist(base({ kind: 'assessment' }), { requester: requesterOf('approval') })).resolves.toEqual({ refused: 'unknown_kind', detail: 'chat_only' });
     expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
     expect(launchCalls()).toBe(0);
   });
