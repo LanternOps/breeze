@@ -165,7 +165,7 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
               poePorts: unifiDeviceTelemetry.poePorts, isStale: unifiDeviceTelemetry.isStale, lastSeenAt: unifiDeviceTelemetry.lastSeenAt,
             }).from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.siteId, siteId)).limit(ROW_CAP + 1);
             const clientsOut = await db.select({
-              // The same MAC can be two rows (two sites of one controller): collector + controller site identify a row.
+              // The same MAC can be two rows (two sites of one controller): collectorId + localSiteId + mac identify a row.
               collectorId: unifiClients.collectorId, localSiteId: unifiClients.localSiteId,
               mac: unifiClients.mac, hostname: unifiClients.hostname, ipAddress: unifiClients.ipAddress,
               connectedDeviceId: unifiClients.connectedDeviceId, isWired: unifiClients.isWired, ssid: unifiClients.ssid,

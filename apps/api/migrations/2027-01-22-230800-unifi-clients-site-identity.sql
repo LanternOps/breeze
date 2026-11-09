@@ -6,11 +6,14 @@
 -- old key folded both into one row, so whichever site reported last decided the
 -- row's org. local_site_id records the controller site the client was seen on.
 --
--- '' means "site unknown or not recorded": every legacy row, and any row from an
--- agent that sent no site id. It does not mean "the agent reported no site".
+-- '' means "controller site not recorded": every legacy row, plus a row a cloud
+-- collector writes when the agent sends no site id (a self-hosted collector
+-- skips such records). It is never a real controller site id.
 -- raw cannot backfill it (the agent assigns the site id outside the raw
--- element), so legacy rows keep '' and the reconcile removes each one the first
--- time the same MAC is upserted under a real site id.
+-- element), so legacy rows keep ''. The reconcile deletes a legacy row the first
+-- time its MAC is upserted under a real site id (unless the same poll also
+-- reports that MAC with no site id); a legacy row whose MAC never reappears goes
+-- stale as before.
 --
 -- No row writes, so no set_config('breeze.scope', ...) election is needed.
 -- Existing rows are unique on (collector_id, mac), so they stay unique on

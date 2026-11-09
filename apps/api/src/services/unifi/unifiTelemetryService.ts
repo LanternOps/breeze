@@ -33,13 +33,18 @@ export interface TelemetryPayload {
 }
 export interface ReconcileResult {
   devicesUpserted: number; devicesStaled: number; clientsUpserted: number; clientsStaled: number;
-  // W04 (#11504): records a mapped-only (self-hosted) collector did not file, for
-  // either skip reason, and rows removed because the controller reported them
-  // under an unmapped site.
+  // W04 (#11504): records a mapped-only (self-hosted) collector did not file,
+  // by reason. "Unmapped": reported under a controller site with no mapping (map
+  // it to fix). "NoSiteId": the agent sent no site id (an older agent; upgrade it).
   devicesSkippedUnmapped: number; clientsSkippedUnmapped: number;
+  devicesSkippedNoSiteId: number; clientsSkippedNoSiteId: number;
+  // Rows removed because the controller reported them under an unmapped site.
   devicesRemovedUnmapped: number; clientsRemovedUnmapped: number;
-  // discovered_assets rows the removed telemetry rows linked to. Logged for
-  // review, never deleted here: they may be approved, linked or manual.
+  // The controller site ids this poll reported records under with no mapping (sorted).
+  unmappedSiteIds: string[];
+  // discovered_assets rows the removed device telemetry rows linked to. Logged
+  // for review, never deleted here: they may be approved, linked or manual.
+  // (Client rows only enrich an existing asset, so their links are not collected.)
   removedDiscoveredAssetIds: string[];
 }
 
@@ -53,8 +58,9 @@ export type TelemetrySiteResolution =
  * serve several customers, so a site with no mapping must not fall back to the
  * collector agent's own org: that files customer B's inventory under customer A.
  * Its unmapped sites are discovery-only (listed in unifi_controller_sites for
- * mapping, but they file no telemetry). A cloud collector keeps today's fallback
- * until the OD-P1 lab check (plan Task 20) shows its site ids match the mappings.
+ * mapping, but they file no telemetry). A cloud collector keeps the fallback
+ * until its reported site ids are confirmed to match the Site Manager mapping
+ * keys (#10358); making it mapped-only before then could empty its telemetry.
  */
 export function requiresMappedSite(collector: { unifiHostId: string | null }): boolean {
   // `== null` on purpose, matching the hostKey `??` below: both treat a missing host id as self-hosted.
@@ -170,9 +176,11 @@ export async function reconcileTelemetry(
   const markStale = opts.markStale ?? true;
   const result: ReconcileResult = {
     devicesUpserted: 0, devicesStaled: 0, clientsUpserted: 0, clientsStaled: 0,
-    devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0, devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0,
-    removedDiscoveredAssetIds: [],
+    devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0, devicesSkippedNoSiteId: 0, clientsSkippedNoSiteId: 0,
+    devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0, unmappedSiteIds: [], removedDiscoveredAssetIds: [],
   };
+  // Every controller site id reported this poll that has no mapping (devices and clients).
+  const unmappedSiteIds = new Set<string>();
 
   const [collector] = await db.select({
     id: unifiCollectors.id, orgId: unifiCollectors.orgId, siteId: unifiCollectors.siteId,
@@ -245,9 +253,14 @@ export async function reconcileTelemetry(
   for (const d of payload.devices) {
     const target = resolveSite(d.unifiSiteId);
     if (target.kind === 'skip') {
-      // No telemetry row, no asset link, not "seen".
-      result.devicesSkippedUnmapped++;
-      if (target.reason === 'unmapped_site') unmappedDeviceIds.add(d.unifiDeviceId);
+      // No telemetry row, no asset link, not "seen" (so a full poll stales an existing row).
+      if (target.reason === 'unmapped_site') {
+        result.devicesSkippedUnmapped++;
+        unmappedDeviceIds.add(d.unifiDeviceId);
+        unmappedSiteIds.add(target.unifiSiteId);
+      } else {
+        result.devicesSkippedNoSiteId++;
+      }
       continue;
     }
     seenDeviceIds.add(d.unifiDeviceId);
@@ -323,17 +336,18 @@ export async function reconcileTelemetry(
   const clientKey = (localSiteId: string, mac: string) => `${localSiteId}\u0000${mac}`;
   const seenClientKeys = new Set<string>();
   const unmappedClientMacs = new Set<string>();
-  const unmappedSiteIds = new Set<string>();
   const macsUpsertedWithSite = new Set<string>();
   const macsUpsertedWithoutSite = new Set<string>();
   for (const cl of payload.clients) {
     const mac = normalizeMac(cl.mac);
     const target = resolveSite(cl.unifiSiteId);
     if (target.kind === 'skip') {
-      result.clientsSkippedUnmapped++;
       if (target.reason === 'unmapped_site') {
+        result.clientsSkippedUnmapped++;
         unmappedClientMacs.add(mac);
         unmappedSiteIds.add(target.unifiSiteId);
+      } else {
+        result.clientsSkippedNoSiteId++;
       }
       continue;
     }
@@ -401,5 +415,6 @@ export async function reconcileTelemetry(
     }
   }
 
+  result.unmappedSiteIds = [...unmappedSiteIds].sort();
   return result;
 }

@@ -483,6 +483,8 @@ describe('site resolution: self-hosted collectors are mapped-only', () => {
 
   it('requiresMappedSite is true only for a self-hosted collector (no unifi_host_id)', () => {
     expect(requiresMappedSite({ unifiHostId: null })).toBe(true);
+    // Same `??` semantics as the mapping host key: a missing host id is self-hosted.
+    expect(requiresMappedSite({ unifiHostId: undefined as unknown as null })).toBe(true);
     expect(requiresMappedSite({ unifiHostId: 'host-1' })).toBe(false);
   });
 
@@ -527,6 +529,7 @@ describe('reconcileTelemetry: discovery-only unmapped self-hosted sites', () => 
     expect(writes.selects.filter((t) => t === discoveredAssets)).toHaveLength(0);
     expect(res).toMatchObject({
       devicesUpserted: 0, clientsUpserted: 0, devicesSkippedUnmapped: 1, clientsSkippedUnmapped: 1,
+      devicesSkippedNoSiteId: 0, clientsSkippedNoSiteId: 0, unmappedSiteIds: ['s2'],
     });
   });
 
@@ -546,9 +549,29 @@ describe('reconcileTelemetry: discovery-only unmapped self-hosted sites', () => 
 
     expect(writes.deletes).toHaveLength(0);
     expect(writes.inserts.filter((w) => w.table === unifiDeviceTelemetry || w.table === unifiClients)).toHaveLength(0);
+    // Counted under its own reason ("upgrade the agent"), not as an unmapped site ("map it").
     expect(res).toMatchObject({
-      devicesSkippedUnmapped: 1, clientsSkippedUnmapped: 1, devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0,
+      devicesSkippedNoSiteId: 1, clientsSkippedNoSiteId: 1, devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0,
+      devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0, unmappedSiteIds: [],
     });
+    // Not refreshed, so a full poll stales (never deletes) the existing rows.
+    expect(res).toMatchObject({ devicesStaled: 1, clientsStaled: 1 });
+    expect(writes.updates.filter((u) => u.table === unifiDeviceTelemetry || u.table === unifiClients)
+      .every((u) => u.values.isStale === true)).toBe(true);
+  });
+
+  it('a device id reported under both a mapped and an unmapped site keeps its row', async () => {
+    const { db, writes } = scriptedDb({ collector: SELF_HOSTED, mappings: MAPPINGS });
+
+    const res = await reconcileTelemetry(db, {
+      ...polled,
+      devices: [{ unifiDeviceId: 'd1', unifiSiteId: 's1', raw: {} }, { unifiDeviceId: 'd1', unifiSiteId: 's2', raw: {} }],
+      clients: [],
+    });
+
+    expect(writes.inserts.filter((w) => w.table === unifiDeviceTelemetry)).toHaveLength(1);
+    expect(writes.deletes.filter((d) => d.table === unifiDeviceTelemetry)).toHaveLength(0);
+    expect(res).toMatchObject({ devicesUpserted: 1, devicesSkippedUnmapped: 1, devicesRemovedUnmapped: 0 });
   });
 
   it('cloud: unmapped site → collector fallback (unchanged)', async () => {
@@ -572,6 +595,32 @@ describe('reconcileTelemetry: discovery-only unmapped self-hosted sites', () => 
       devicesUpserted: 1, clientsUpserted: 1, devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0,
       devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0,
     });
+  });
+
+  it('cloud: a client with no site id falls back with local_site_id \'\', and keeps its \'\' row when also seen under a site', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { ...SELF_HOSTED, unifiHostId: 'host-1' },
+      mappings: [{ unifiHostId: 'host-1', unifiSiteId: 's1', orgId: 'org-b', siteId: 'site-b' }],
+    });
+
+    await reconcileTelemetry(db, {
+      ...polled, devices: [],
+      clients: [
+        { mac: 'ff:ff:ff:ff:ff:01', unifiSiteId: 's1', raw: {} },
+        { mac: 'ff:ff:ff:ff:ff:01', unifiSiteId: null, raw: {} }, // same MAC, no site id
+        { mac: 'ff:ff:ff:ff:ff:02', unifiSiteId: 's1', raw: {} },
+      ],
+    });
+
+    const noSite = writes.inserts.filter((w) => w.table === unifiClients && w.values.localSiteId === '');
+    expect(noSite).toHaveLength(1);
+    expect(noSite[0]!.values).toMatchObject({ mac: 'ff:ff:ff:ff:ff:01', orgId: 'org-collector', siteId: 'site-collector' });
+    // The legacy cleanup covers only ...:02; ...:01's '' row was upserted this poll.
+    const legacy = writes.deletes.filter((d) => d.table === unifiClients);
+    expect(legacy).toHaveLength(1);
+    const q = renderWhere(legacy[0]!.where);
+    expect(q.params).toEqual(expect.arrayContaining([['ff:ff:ff:ff:ff:02']]));
+    expect(q.params).not.toEqual(expect.arrayContaining([expect.arrayContaining(['ff:ff:ff:ff:ff:01'])]));
   });
 
   it('partial poll still removes rows reported under an unmapped site', async () => {

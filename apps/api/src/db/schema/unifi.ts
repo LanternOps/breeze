@@ -188,10 +188,12 @@ export const unifiClients = pgTable('unifi_clients', {
   collectorId: uuid('collector_id').notNull().references(() => unifiCollectors.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id').notNull().references(() => sites.id),
-  // Controller site the client was reported on (W04, #11504). '' means "site
-  // unknown or not recorded" (legacy rows, or an agent that sent none), NOT
-  // "the agent reported no site". Part of the unique identity below, so the
-  // same MAC at two sites of one controller is two rows in two orgs.
+  // Controller site the client was reported on (W04, #11504). '' means
+  // "controller site not recorded": every legacy row, plus a row a cloud
+  // collector wrote when the agent sent no site id (a self-hosted collector
+  // skips such records). It is never a real controller site id. Part of the
+  // unique identity below, so the same MAC at two sites of one controller is two
+  // rows, each filed under its own mapped site (possibly in different orgs).
   localSiteId: text('local_site_id').notNull().default(''),
   mac: text('mac').notNull(),
   hostname: text('hostname'),

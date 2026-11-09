@@ -124,7 +124,40 @@ describe('self-hosted UniFi reconcile: unmapped sites are discovery-only', () =>
 
     expect(await telemetryRows(f.collectorId)).toHaveLength(1);
     expect(await clientRows(f.collectorId)).toHaveLength(1);
-    expect(res).toMatchObject({ devicesSkippedUnmapped: 1, clientsSkippedUnmapped: 1, devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0 });
+    expect(res).toMatchObject({ devicesSkippedNoSiteId: 1, clientsSkippedNoSiteId: 1, devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0 });
+  });
+
+  it('removal never touches a correctly attributed row of the same MAC at a mapped site', async () => {
+    const f = await fixture();
+    const mac = '02:00:00:00:00:cc';
+    // Already on the widened key, correctly in org B for mapped s1.
+    await raw().execute(sql`INSERT INTO unifi_clients (collector_id, org_id, site_id, local_site_id, mac, raw)
+      VALUES (${f.collectorId}::uuid, ${f.orgB.id}::uuid, ${f.siteB.id}::uuid, 's1', ${mac}, '{}'::jsonb)`);
+    // Wrongly attributed: an org-A row for unmapped s2, plus the legacy '' row.
+    await raw().execute(sql`INSERT INTO unifi_clients (collector_id, org_id, site_id, local_site_id, mac, raw)
+      VALUES (${f.collectorId}::uuid, ${f.orgA.id}::uuid, ${f.siteA.id}::uuid, 's2', ${mac}, '{}'::jsonb),
+             (${f.collectorId}::uuid, ${f.orgA.id}::uuid, ${f.siteA.id}::uuid, '', ${mac}, '{}'::jsonb)`);
+
+    // Partial poll: the MAC is reported at unmapped s2 only (s1 failed this time).
+    const res = await f.reconcile({ sites: SITES, devices: [], clients: [{ mac, unifiSiteId: 's2', raw: {} }] }, false);
+
+    expect(await clientRows(f.collectorId)).toEqual([{ mac, local_site_id: 's1', org_id: f.orgB.id, is_stale: false }]);
+    expect(res).toMatchObject({ clientsRemovedUnmapped: 2, unmappedSiteIds: ['s2'] });
+  });
+
+  it('re-mapping a site to another org moves its rows on the next poll', async () => {
+    const f = await fixture();
+    const mac = '02:00:00:00:00:dd';
+    const payload = { sites: SITES, devices: [{ unifiDeviceId: 'd1', unifiSiteId: 's1', raw: {} }], clients: [{ mac, unifiSiteId: 's1', raw: {} }] };
+    await f.reconcile(payload);
+    expect(await clientRows(f.collectorId)).toEqual([{ mac, local_site_id: 's1', org_id: f.orgB.id, is_stale: false }]);
+
+    await raw().execute(sql`UPDATE unifi_site_mappings SET org_id = ${f.orgC.id}::uuid, site_id = ${f.siteC.id}::uuid
+      WHERE integration_id = ${f.integrationId}::uuid AND unifi_site_id = 's1'`);
+    await f.reconcile(payload);
+
+    expect(await telemetryRows(f.collectorId)).toEqual([{ unifi_device_id: 'd1', org_id: f.orgC.id }]);
+    expect(await clientRows(f.collectorId)).toEqual([{ mac, local_site_id: 's1', org_id: f.orgC.id, is_stale: false }]);
   });
 
   it('the same MAC at two mapped sites is two rows in two orgs, and its legacy row is deleted, not left stale', async () => {
