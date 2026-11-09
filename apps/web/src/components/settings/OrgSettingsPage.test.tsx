@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { makePolicyView } from './portalAccess/viewFixture';
 
 import OrgSettingsPage, { runOrgNameSave } from './OrgSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -1028,5 +1029,37 @@ describe('OrgSettingsPage — archived organization (2026-08-28 pre-release swee
       expect(banner.textContent).toMatch(/2026/);
       expect(screen.getByTestId('org-archived-restore-link')).toBeInTheDocument();
     });
+  });
+});
+
+describe('OrgSettingsPage portal tab layout', () => {
+  const orgDetails = {
+    id: 'org-1', name: 'Acme Systems', slug: 'acme', status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z', settings: {}
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '#portal';
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (url === '/orgs/organizations/org-1/portal-settings') return Promise.resolve(makeJsonResponse({ data: {} }));
+      if (url === '/orgs/organizations/org-1/portal-access-policy') return Promise.resolve(makeJsonResponse({ data: makePolicyView() }));
+      if (url === '/orgs/organizations/org-1/portal-access-requests?status=pending') return Promise.resolve(makeJsonResponse({ data: [], hasMore: false }));
+      if (url === '/orgs/organizations/org-1/portal-users') return Promise.resolve(makeJsonResponse({ data: [] }));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+  });
+
+  afterEach(() => { window.location.hash = ''; });
+
+  it('renders the Sign-in & registration card between the portal settings and the portal users list', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+    const settings = await screen.findByTestId('org-portal-settings');
+    const card = await screen.findByTestId('org-sign-in-card');
+    const users = await screen.findByTestId('portal-users-editor');
+    expect(settings.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(users) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

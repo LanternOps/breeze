@@ -221,6 +221,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('stripeSessionRevocationSweep'),
   consumers('quoteExpiryReaper'),
   consumers('agreementRequestExpiryReaper'),
+  // Portal registration W3: daily portal identity drift report (report only).
+  consumers('portalIdentityReconcile'),
   // #9075 W4a: automatic agreement-request reminders.
   consumers('agreementRequestAutoReminder'),
   consumers('suppressionExpiryReaper'),

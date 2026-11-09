@@ -26,7 +26,7 @@ const h = vi.hoisted(() => ({
   attachmentSeedLines: vi.fn(),
   listWorkingSet: vi.fn(),
   listConcernsForCeiling: vi.fn(),
-  loadStandingLoopFacts: vi.fn(),
+  loadStandingStateFacts: vi.fn(),
   captureException: vi.fn(),
   execute: vi.fn(async (q: unknown) => {
     const { text, params } = sqlOf(q);
@@ -116,7 +116,7 @@ vi.mock('./threadLinks', () => ({ listWorkingSet: h.listWorkingSet }));
 vi.mock('./concerns', () => ({ listConcernsForCeiling: h.listConcernsForCeiling }));
 vi.mock('./standingLoop', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./standingLoop')>()),
-  loadStandingLoopFacts: h.loadStandingLoopFacts,
+  loadStandingStateFacts: h.loadStandingStateFacts,
 }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('./threadAttachments', () => ({
@@ -395,58 +395,32 @@ describe('updateThreadPicture (#10390)', () => {
 });
 
 describe('seedContextForSession', () => {
-  describe('standing loop (#10391)', () => {
-    const loopFacts = {
-      status: 'active' as const,
-      floorTickMinutes: 30,
-      lastFloorTickAt: new Date('2026-11-05T09:15:00Z'),
-      firstLook: { assessedOrgs: 10, inFlight: 0, totalOrgs: 10 },
-      brief: { timeLocal: '08:00', timezone: 'UTC' },
-    };
-
-    it('a chat seed (model given) appends the standing loop filled from the grant, after the behaviour block', async () => {
+  describe('standing loop (#10391, #10426)', () => {
+    it('a chat seed (model given) appends the static standing loop after the behaviour block, with no fact read', async () => {
       h.threads = [threadRow];
-      h.loadStandingLoopFacts.mockResolvedValueOnce(loopFacts);
+      h.loadStandingStateFacts.mockClear();
       const out = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
-      expect(h.loadStandingLoopFacts).toHaveBeenCalledWith(ceiling);
       expect(out.startsWith(WISP_BEHAVIOUR_BLOCK)).toBe(true);
       expect(out).toContain('## Wisp standing loop');
       expect(out).toContain('You are Wisp, running on claude-sonnet-5-5.');
-      expect(out).toContain('every 30 min');
-      expect(out).toContain('10 of 10 orgs assessed');
-      expect(out).toContain('08:00 UTC');
+      expect(out).toContain('<wisp_standing_state>');
+      // #10426: the numbers that go stale ride on each turn, not in the system prompt.
+      expect(out).not.toMatch(/\d+ of \d+ orgs|every \d+ min|First look:/);
+      expect(h.loadStandingStateFacts).not.toHaveBeenCalled();
     });
 
-    it('without a model (the assessment seed) there is no standing-loop section and no fact read', async () => {
+    it('two chat seeds of the same thread are byte-identical (the prompt cache stays warm)', async () => {
       h.threads = [threadRow];
-      h.loadStandingLoopFacts.mockClear();
+      const first = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
+      h.threads = [threadRow];
+      const second = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
+      expect(second).toBe(first);
+    });
+
+    it('without a model (the assessment seed) there is no standing-loop section', async () => {
+      h.threads = [threadRow];
       const out = await seedContextForSession(THREAD, ceiling);
       expect(out).toBe(WISP_BEHAVIOUR_BLOCK);
-      expect(h.loadStandingLoopFacts).not.toHaveBeenCalled();
-    });
-
-    it('a failed fact read is captured and the section still renders, without numbers', async () => {
-      h.threads = [threadRow];
-      h.captureException.mockClear();
-      const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-      h.loadStandingLoopFacts.mockRejectedValueOnce(new Error('db down'));
-      const out = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
-      expect(out).toContain('## Wisp standing loop');
-      expect(out).toContain('You are Wisp, running on claude-sonnet-5-5.');
-      expect(out).not.toMatch(/\d+ of \d+ orgs/);
-      expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { grantId: GRANT, op: 'wisp.seed_standing_loop' });
-      expect(logged).toHaveBeenCalledWith(expect.stringContaining(`standing-loop facts of grant ${GRANT} failed`), expect.any(Error));
-      logged.mockRestore();
-    });
-
-    it('a grant row gone between ceiling and seed renders the numberless section, no capture', async () => {
-      h.threads = [threadRow];
-      h.captureException.mockClear();
-      h.loadStandingLoopFacts.mockResolvedValueOnce(null);
-      const out = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
-      expect(out).toContain('(schedule unavailable now)');
-      expect(out).not.toMatch(/\d+ of \d+ orgs/);
-      expect(h.captureException).not.toHaveBeenCalled();
     });
   });
 
@@ -476,6 +450,13 @@ describe('seedContextForSession', () => {
     expect(WISP_BEHAVIOUR_BLOCK).toMatch(/does not grant|never grants/i);
   });
 
+  it('tells the model to say when a step waited on an approval (#10416)', () => {
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n')).toContain(
+      '- If a tool result carries approvalWaitSeconds, say that the step waited that long for approval.',
+    );
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
+  });
+
   it('tells the model how to name an owner on a partner-wide grant (#11432)', () => {
     const line = WISP_BEHAVIOUR_BLOCK.split('\n').find((l) => l.includes('ownerScope'));
     expect(line).toBeDefined();
@@ -483,6 +464,12 @@ describe('seedContextForSession', () => {
     expect(line).toContain('`orgId`');
     expect(line).toContain("`ownerScope: 'partner'`");
     expect(line).toMatch(/never put the partner id in `orgId`/i);
+  });
+
+  it('answers status questions from the picture and the standing state first (#10429)', () => {
+    const lines = WISP_BEHAVIOUR_BLOCK.split('\n');
+    expect(lines).toContain('- For "what needs my attention" or a status overview, answer from the Partner picture and the standing state first. Use tools only to drill into the item the user picks; "keep it short" means at most 3 tool calls before you answer.');
+    expect(lines.length).toBeLessThanOrEqual(40);
   });
 
   it('seedContextForSession wraps the summary as untrusted and appends renderMemoryForPrompt output', async () => {

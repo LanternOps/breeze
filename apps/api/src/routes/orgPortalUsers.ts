@@ -36,6 +36,7 @@ import {
   type PortalInviteErrorCode,
 } from '@breeze/shared';
 import { listPortalUsersForOrg } from '../services/portalUserDirectory';
+import { portalUserHasIdentitySql } from '../services/portalUserIdentities';
 import { normalizeContactEmail } from '../services/contacts/crud';
 import {
   bindContactLoginForInvite,
@@ -45,6 +46,7 @@ import {
   ContactEmailChangedError,
   PortalLoginChangedError,
   inviteRefusalReason,
+  portalLoginEmailEquals,
   type ContactInviteDecision,
   type InviteableContact,
 } from '../services/contacts/portalInvite';
@@ -75,7 +77,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
 }
 
 async function getOrgScopedPortalUser(orgId: string, userId: string) {
-  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, entraOid: portalUsers.entraOid })
+  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, hasExternalIdentity: portalUserHasIdentitySql() })
     .from(portalUsers).where(and(eq(portalUsers.id, userId), eq(portalUsers.orgId, orgId))).limit(1);
   return row ?? null;
 }
@@ -89,7 +91,7 @@ async function getOrgScopedPortalUser(orgId: string, userId: string) {
 // overwriting the newer state.
 // ---------------------------------------------------------------------------
 
-type AccountRow = { status: string; browserAccess: string; authMethod: string; passwordHash: string | null; entraOid: string | null };
+type AccountRow = { status: string; browserAccess: string; authMethod: string; passwordHash: string | null; hasExternalIdentity: boolean };
 
 function accountFacts(row: AccountRow): PortalAccountFacts {
   return {
@@ -97,8 +99,9 @@ function accountFacts(row: AccountRow): PortalAccountFacts {
     browserAccess: row.browserAccess,
     authMethod: row.authMethod,
     hasPasswordHash: Boolean(row.passwordHash),
-    // W2: reads stay on the legacy column; W3 switches to portal_user_identities.
-    hasExternalIdentity: row.entraOid !== null,
+    // Identities release B (W3): EXISTS over portal_user_identities, selected
+    // with portalUserHasIdentitySql() by every reader in this file.
+    hasExternalIdentity: row.hasExternalIdentity,
   };
 }
 
@@ -140,7 +143,7 @@ async function hasPortalUserReferences(userId: string): Promise<boolean> {
  * Issue a purpose-bound invite token (bound to the org, the address and the
  * row's CURRENT auth_epoch — pass the epoch the write returned) and email it.
  */
-async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string; authEpoch: number }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
+export async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string; authEpoch: number }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
   const rawToken = await issuePortalCapabilityToken({ purpose: 'invite', portalUserId: user.id, orgId, email: user.email, authEpoch: user.authEpoch });
   if (!rawToken) {
     // redis unavailable — do not email a dead invite link
@@ -385,8 +388,15 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       return c.json({ data: { id: decision.portalUserId, email: decision.email, status: 'invited', contactLink }, emailSent });
     }
 
-    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, contactId: portalUsers.contactId, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, entraOid: portalUsers.entraOid })
-      .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), eq(portalUsers.email, normalizedEmail))).limit(1);
+    // The per-address lock BEFORE the existing-login read (W3 Review Focus 3).
+    // Approving a self/SSO access request takes this lock, refuses when the
+    // address has an account, and inserts one; read first and this invite
+    // could act on a stale "none" and insert a second portal_users row for the
+    // address (portal_users.email is not unique). Held to the end of the
+    // request transaction; the contact resolver's re-take below is a no-op.
+    await lockPortalInviteAddresses(db, org.id, [normalizedEmail]);
+    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, contactId: portalUsers.contactId, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, hasExternalIdentity: portalUserHasIdentitySql() })
+      .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), portalLoginEmailEquals(normalizedEmail))).limit(1);
 
     // Refusals (identity-managed, disabled, already active with a password)
     // come from the state module, BEFORE any contact is read or written.
@@ -523,14 +533,15 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     // "Pending setup" = a password-method row with no password and no external
     // identity, invited or (pre-#3258 inbound email) active (plan D2). Bulk
     // invite can never touch an add-in (Entra) or identity-only account.
+    // "No external identity" = no portal_user_identities row (W3 release B).
     const baseWhere = and(
       eq(portalUsers.orgId, org.id),
       eq(portalUsers.authMethod, 'password'),
       isNull(portalUsers.passwordHash),
-      isNull(portalUsers.entraOid),
+      sql`not ${portalUserHasIdentitySql()}`,
       inArray(portalUsers.status, ['invited', 'active']),
     );
-    const candidates = await db.select({ id: portalUsers.id, email: portalUsers.email, status: portalUsers.status, browserAccess: portalUsers.browserAccess, authMethod: portalUsers.authMethod, passwordHash: portalUsers.passwordHash, entraOid: portalUsers.entraOid, authEpoch: portalUsers.authEpoch }).from(portalUsers).where(baseWhere);
+    const candidates = await db.select({ id: portalUsers.id, email: portalUsers.email, status: portalUsers.status, browserAccess: portalUsers.browserAccess, authMethod: portalUsers.authMethod, passwordHash: portalUsers.passwordHash, hasExternalIdentity: portalUserHasIdentitySql(), authEpoch: portalUsers.authEpoch }).from(portalUsers).where(baseWhere);
     const eligible = candidates.filter((u) => isBulkInviteEligible(accountFacts(u)));
     const targets = userIds && userIds.length > 0 ? eligible.filter((u) => userIds.includes(u.id)) : eligible;
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);

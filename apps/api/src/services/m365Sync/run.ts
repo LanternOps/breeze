@@ -76,8 +76,9 @@ export interface SyncRunContext {
     /**
      * #5784 W05. The `signin_events` delta window, or null for every other
      * domain. Computed HERE because Phase A is the only phase that holds a DB
-     * context — Phase B deliberately holds none, and the window needs
-     * MAX(signed_in_at) for the org.
+     * context — Phase B deliberately holds none, and the window needs the
+     * org's watermark (MAX(signed_in_at) over rows the last completed walk
+     * proved, keyed on `last_complete_snapshot_at`, #9394).
      */
     signinEventsWindow?: { since: string; until: string } | null;
   };
@@ -185,10 +186,11 @@ export async function loadSyncRunContext(
     }
 
     // #5784 W05. The sign-in event window rides Phase A's own system context:
-    // it is one indexed MAX(signed_in_at) on the org, and Phase B holds no DB
-    // context at all, so there is nowhere later it could be read.
+    // it is at most one MAX(signed_in_at) read on the org (none before a first
+    // completed walk), and Phase B holds no DB context at all, so there is
+    // nowhere later it could be read.
     const signinWindow = data.domain === 'signin_events'
-      ? await signinEventsWindow(data.orgId, now)
+      ? await signinEventsWindow(data.orgId, now, row!.lastCompleteSnapshotAt)
       : null;
 
     return {
@@ -308,21 +310,31 @@ const AUTH_FAILURE_CODES = new Set<M365SyncCallFailureCode>([
  * whether to throw, because a dead credential is a config issue already
  * recorded on the row and capturing it once per scheduled run is exactly what
  * flooded the Sentry quota for Huntress (BREEZE-1); `restartWalk` means the
- * page cursor is gone and the walk must be restarted from the beginning.
+ * page cursor is gone and the walk must be restarted from the beginning;
+ * `retryable` means a non-final BullMQ attempt writes nothing and asks for the
+ * 30 s / 2 min / 8 min backoff instead, so a transient condition never reaches
+ * the row (or the health card) unless it outlasts the ladder.
  */
 export function outcomeForFailure(code: M365SyncCallFailureCode): {
-  outcome: M365SyncOutcome; unschedule: boolean; sentryWorthy: boolean; restartWalk: boolean;
+  outcome: M365SyncOutcome; unschedule: boolean; sentryWorthy: boolean; restartWalk: boolean; retryable: boolean;
 } {
   switch (code) {
     case 'graph_permission_missing':
-      return { outcome: 'needs_consent', unschedule: true, sentryWorthy: false, restartWalk: false };
+      return { outcome: 'needs_consent', unschedule: true, sentryWorthy: false, restartWalk: false, retryable: false };
     case 'sync_capacity':
     case 'graph_throttled':
     case 'read_rate_limited':
-      return { outcome: 'throttled', unschedule: false, sentryWorthy: false, restartWalk: false };
+      return { outcome: 'throttled', unschedule: false, sentryWorthy: false, restartWalk: false, retryable: true };
+    case 'graph_request_timeout':
+      // #9394: Graph did not answer a page inside the per-request budget (or
+      // the run's deadline). Transient, so it gets the same short retry ladder
+      // as a throttle. If the ladder runs out it is recorded as an `error`
+      // under its own code, so the health card shows the real cause, but it is
+      // not paged to Sentry once per scheduled run — the row already carries it.
+      return { outcome: 'error', unschedule: false, sentryWorthy: false, restartWalk: false, retryable: true };
     case 'credential_unavailable':
     case 'application_token_invalid':
-      return { outcome: 'error', unschedule: true, sentryWorthy: false, restartWalk: false };
+      return { outcome: 'error', unschedule: true, sentryWorthy: false, restartWalk: false, retryable: false };
     case 'continuation_invalid':
       // Expected and self-healing: the executor's continuation seal expires
       // after an hour and dies outright on an executor restart when
@@ -330,9 +342,9 @@ export function outcomeForFailure(code: M365SyncCallFailureCode): {
       // unschedule a tenant's sign-in activity every time we redeployed.
       // `outcome` is unused on this branch — the run returns 'partial-continue'
       // and writes no last_status at all.
-      return { outcome: 'partial', unschedule: false, sentryWorthy: false, restartWalk: true };
+      return { outcome: 'partial', unschedule: false, sentryWorthy: false, restartWalk: true, retryable: false };
     default:
-      return { outcome: 'error', unschedule: false, sentryWorthy: true, restartWalk: false };
+      return { outcome: 'error', unschedule: false, sentryWorthy: true, restartWalk: false, retryable: false };
   }
 }
 
@@ -585,7 +597,7 @@ export async function runSyncDomain(
     });
 
     if (!call.ok) {
-      const { outcome, unschedule, sentryWorthy, restartWalk } = outcomeForFailure(call.code);
+      const { outcome, unschedule, sentryWorthy, restartWalk, retryable } = outcomeForFailure(call.code);
 
       // sentryWorthy means this is a genuinely unexpected Graph failure, not a
       // dead credential, a throttle, or a missing consent — those are already
@@ -612,15 +624,23 @@ export async function runSyncDomain(
         return 'partial-continue';
       }
 
-      // A throttle mid-retry writes nothing: the lease is still ours (20 min vs
-      // a 10.5-minute retry ladder) and BullMQ will bring the job back.
-      if (outcome === 'throttled' && !opts.isFinalAttempt) return 'throttled';
+      // A throttle (or a Graph timeout, #9394) mid-retry writes nothing: the
+      // lease is still ours (20 min vs a 10.5-minute retry ladder) and BullMQ
+      // will bring the job back. 'throttled' is the worker's retry signal here,
+      // never a stored status.
+      if (retryable && !opts.isFinalAttempt) return 'throttled';
 
       const cadence = applyCadence(
         data.domain, { intervalSeconds: loaded.state.intervalSeconds }, outcome,
         signalsFor({
           capacity: call.code === 'sync_capacity',
           authFailure: AUTH_FAILURE_CODES.has(call.code),
+          // #9394: a failed run's latency is the time it took to fail, not
+          // evidence that the tenant is large. A run that burned the ~110 s
+          // deadline crossed the cadence's 60 s slow-executor threshold and
+          // doubled the interval on every failure — 24 h, 48 h, 96 h, then the
+          // 7-day ceiling — which is how sign-in events ended up ~8 days out.
+          latencyMs: 0,
         }),
         rng,
       );
@@ -707,6 +727,10 @@ export async function runSyncDomain(
       logSync('m365.sync.continuation', {
         orgId: data.orgId, domain: data.domain, generation: data.generation,
         correlationId, updated: persisted.updated, unchanged: persisted.unchanged,
+        // #9394: anything but 'ok' means the walk stopped early — the limiter
+        // paused it, or a page timed out or stayed throttled and the run kept
+        // the pages before it. Nothing else records that on this path.
+        primarySource: primaryState ?? null,
       });
       await reclaimSameDomain(data, 'continuation-reclaim-failed');
       return 'partial-continue';

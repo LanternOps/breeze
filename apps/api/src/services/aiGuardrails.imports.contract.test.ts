@@ -21,4 +21,11 @@ describe('aiGuardrails.ts import surface', () => {
     const imports = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
     expect(imports.sort()).toEqual(['../aiChatEventLogsReadOnly', 'zod']);
   });
+
+  it('the #10406 ONBOARDING_ORG_LIMIT module it imports stays pure and DB-free', () => {
+    const src = readFileSync(new URL('./wisp/assessableOrgs.ts', import.meta.url), 'utf8');
+    const imports = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
+    expect(imports).toEqual(['./grantAuthority']);
+    expect(src).toMatch(/import type \{ GrantCeiling \} from '\.\/grantAuthority'/);
+  });
 });

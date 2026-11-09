@@ -40,6 +40,7 @@ import {
 } from './backupSnapshotIdReservations';
 import { physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
 import { createAuditLog } from './auditService';
+import { contentlessEntryKind } from './backupSnapshotEntryKind';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -1801,6 +1802,9 @@ export async function applyBackupCommandResultToJob(params: {
         backupPath: file.backupPath ?? '',
         size: file.size ?? null,
         modifiedAt: file.modTime ? new Date(file.modTime) : null,
+        // #11235: the same kind hydration records, so an inline index and a
+        // hydrated one list the same tree.
+        kind: contentlessEntryKind(file),
       }));
 
       for (let i = 0; i < fileRows.length; i += BATCH_SIZE) {

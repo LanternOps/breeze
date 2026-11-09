@@ -112,6 +112,8 @@ import type { PreparedTopologyInvestigation } from '../services/topology/aiInves
 const loadTopologyTurn = () => import('./aiTopologyTurn');
 // W05 (#7603): the continuation handler, loaded on first use for the same reason.
 const loadSessionContinuation = () => import('./aiSessionContinue');
+// #10426: the Wisp standing-state block, only for a Wisp session (it loads the Wisp graph).
+const loadStandingStateTurn = () => import('../services/wisp/standingStateTurn');
 /** Topology sessions get a fixed title: no model or evidence text ever names a session. */
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import {
@@ -933,6 +935,32 @@ aiRoutes.post(
       }
     }
 
+    // #10426: Wisp's standing state (loop cadence, first look, concerns,
+    // watches, check-ins, spend, alerts) rides on THIS turn ahead of the
+    // check-ins, so the system prompt stays cache-stable
+    // (services/wisp/standingStateTurn.ts; facts cached up to 60 s). Null
+    // when nothing changed since the last block this session was sent;
+    // recorded as sent only once the turn is dispatched (below). A failure
+    // never blocks the turn.
+    let standingState: { block: string; hash: string } | null = null;
+    // Held from this import, so nothing after dispatch can fail on loading it.
+    let markStandingStateSent: ((sessionId: string, hash: string) => Promise<void>) | null = null;
+    const wispGrantRevisionId = wispGrantId ? dbSession.wispGrantRevisionId : null;
+    if (wispGrantId && wispGrantRevisionId) {
+      try {
+        const standingStateTurn = await loadStandingStateTurn();
+        markStandingStateSent = standingStateTurn.markStandingStateSent;
+        standingState = await timePreStreamPhase('wispStandingState', () => standingStateTurn.standingStateForTurn({
+          grantId: wispGrantId, revisionId: wispGrantRevisionId, sessionId, auth,
+        }));
+      } catch (err) {
+        console.warn('[AI] failed to build the Wisp standing state; sending the turn without it', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_standing_state_phase: 'read' });
+      }
+    }
+
     // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
     // approval-only prior turn, then rotate the idle query so this turn is
     // created with the exact durable reservation ceiling.
@@ -1169,9 +1197,9 @@ aiRoutes.post(
       const baseTurn = topology
         ? topology.prompt
         : continuationSummary ? withContinuationContext(continuationSummary, sanitizedContent) : sanitizedContent;
-      // W04 (#10995): fired check-ins go between any analysis results
-      // (outermost) and the user's own text, which stays last.
-      const turnContent = checkInBlock ? `${checkInBlock}\n\n${baseTurn}` : baseTurn;
+      // W04 (#10995) / #10426: after any analysis results (outermost), the
+      // standing state, then fired check-ins; the user's own text stays last.
+      const turnContent = [standingState?.block, checkInBlock, baseTurn].filter(Boolean).join('\n\n');
       // Subscribe BEFORE the turn is pushed: the session event bus has no
       // replay, and a fast transport can publish the turn's events (even its
       // error and done) before the SSE callback below would run.
@@ -1222,6 +1250,18 @@ aiRoutes.post(
           orgId: dbSession.orgId, sessionId, grantId: wispGrantId, ids, error: err instanceof Error ? err.message : String(err),
         });
         captureException(err, c, { wisp_check_in_phase: 'consume' }, { fingerprint: ['wisp-check-in-turn', 'consume'] });
+      }
+    }
+    // #10426: the model has this standing state now; an unchanged one is not
+    // re-sent. A failure only re-sends it next turn: logged, never thrown.
+    if (standingState && markStandingStateSent) {
+      try {
+        await markStandingStateSent(sessionId, standingState.hash);
+      } catch (err) {
+        // The turn is already dispatched: never fail its response over this.
+        console.warn('[AI] failed to record the Wisp standing state as sent; it is sent again next turn', {
+          orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 

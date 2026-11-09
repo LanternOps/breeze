@@ -27,7 +27,7 @@
  * the address; it does not stop a concurrent disable, accept or password
  * change, which is what the epoch guard is for.
  */
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import type { AlreadyHasAccessReason } from '@breeze/shared';
 import { contacts } from '../../db/schema/contacts';
 import { portalUsers } from '../../db/schema';
@@ -38,7 +38,19 @@ import {
   planPortalAccountTransition,
   type PortalAccountTarget,
 } from '../portalAccountState';
+import { portalUserHasIdentitySql } from '../portalUserIdentities';
 import { normalizeContactEmail, updateContact, type ContactExecutor } from './crud';
+
+/**
+ * The ONE comparison every portal-invite path uses to find an existing login
+ * for an address (#11529): stored `email` lower-cased against the address
+ * lower-cased and trimmed. An exact `eq(email, ...)` treats `Ada@X` and
+ * `ada@x` as two people, so the plain-email invite and the contact invite
+ * could each mint a login for the same person.
+ */
+export function portalLoginEmailEquals(email: string): SQL {
+  return sql`lower(${portalUsers.email}) = ${email.trim().toLowerCase()}`;
+}
 
 export interface InviteableContact {
   id: string;
@@ -76,8 +88,8 @@ export interface InviteLoginCandidate {
   /** Read for the optimistic-concurrency guard on the reuse write. */
   authEpoch: number;
   browserAccess: string;
-  /** W2 reads external identity from the legacy column (W3: portal_user_identities). */
-  entraOid: string | null;
+  /** Any `portal_user_identities` row (W3 release B, `portalUserHasIdentitySql`). */
+  hasExternalIdentity: boolean;
 }
 
 export type InvitePlan =
@@ -272,12 +284,12 @@ export async function bindContactLoginForInvite(
       createdAt: portalUsers.createdAt,
       authEpoch: portalUsers.authEpoch,
       browserAccess: portalUsers.browserAccess,
-      entraOid: portalUsers.entraOid,
+      hasExternalIdentity: portalUserHasIdentitySql(),
     })
     .from(portalUsers)
     .where(and(
       eq(portalUsers.orgId, orgId),
-      or(eq(portalUsers.contactId, contact.id), sql`lower(${portalUsers.email}) = ${normalizedEmail}`),
+      or(eq(portalUsers.contactId, contact.id), portalLoginEmailEquals(normalizedEmail)),
     ));
 
   const plan = planContactInvite(contact.id, normalizedEmail, candidates);
@@ -298,7 +310,7 @@ export async function bindContactLoginForInvite(
         browserAccess: login.browserAccess,
         authMethod: login.authMethod,
         hasPasswordHash: Boolean(login.passwordHash),
-        hasExternalIdentity: login.entraOid !== null,
+        hasExternalIdentity: login.hasExternalIdentity,
       }, 'msp_invite');
     } catch (error) {
       const reason = error instanceof PortalAccountTransitionError ? inviteRefusalReason(error) : null;

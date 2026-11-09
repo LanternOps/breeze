@@ -6,7 +6,7 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   accountingConnections,
@@ -169,7 +169,11 @@ describe('org sources', () => {
     expect(obs.find((x) => x.sourceId === revoked)).toMatchObject({ state: 'retired' });
   });
 
+  afterEach(() => { vi.unstubAllEnvs(); });
+
   it('m365 sync: one observation per connection; unknown under a degraded parent', async () => {
+    // Tenant sync is dark by default and then every observation retires (#10021 D7b).
+    vi.stubEnv('M365_TENANT_SYNC_ENABLED', 'true');
     const a = await orgOf();
     const healthyParent = await m365Connection(a.o, 'active');
     const b = await orgOf();

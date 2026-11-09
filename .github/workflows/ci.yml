@@ -89,8 +89,16 @@ jobs:
       pull-requests: read
       actions: read
     outputs:
-      selection_mode: ${{ steps.queue_shadow.outputs.selection_mode || (github.event_name == 'pull_request' && 'pr' || 'full') }}
-      selection_reason: ${{ steps.queue_shadow.outputs.selection_reason || (steps.queue_shadow.outcome == 'failure' && 'shadow_step_failed') || '' }}
+      selection_mode: ${{ steps.queue_thin.outputs.selection_mode || (github.event_name == 'pull_request' && 'pr' || 'full') }}
+      selection_reason: ${{ steps.queue_thin.outputs.selection_reason || (steps.queue_thin.outcome == 'failure' && 'thin_step_failed') || '' }}
+      # W05 (#10749): the jobs the pinned CI Gate's selection lets this queue entry
+      # skip, as ",a,b,", or '' (skip nothing). Only the 27 thinnable jobs read it, each
+      # for its own id, and CI Success counts a listed job that was skipped as
+      # satisfied. Empty on every PR, on a failed or skipped step, when the
+      # CI_THIN_QUEUE repository variable is unset or `off`, and whenever the gate's
+      # published selection is not `mode=thin` (the gate publishes that only under
+      # `enforce`; an entry already running when the variable flips keeps its list).
+      thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}
       code: ${{ steps.classify.outputs.code }}
       docs: ${{ steps.classify.outputs.docs }}
       agent: ${{ steps.classify.outputs.agent }}
@@ -115,6 +123,10 @@ jobs:
       # any code change, so the queue always runs the full integration suite.
       # Fail-safe like the rest: anything unresolvable turns it on.
       integration: ${{ steps.classify.outputs.integration }}
+      # Named integration suites the PR's change selects (W07b2, #10751): `all`
+      # or a comma list. Shadow: integration-test logs it, every file still runs.
+      # `all` for every other event, and whenever the step fails.
+      integration_suites: ${{ steps.suites.outputs.integration_suites || 'all' }}
       # Docs-only PRs can break tests reading docs by path; the map declares them.
       # path_readers=true with an empty reader_tests list runs every mapped test.
       path_readers: ${{ steps.classify.outputs.path_readers }}
@@ -187,20 +199,66 @@ jobs:
           fi
           printf '%s\n' "${classified}" | tee -a "${GITHUB_OUTPUT}"
 
-      - name: Queue selection shadow
-        id: queue_shadow
+      - name: Integration suite selection (shadow)
+        # W07b2 (#10751): the named integration suites this PR selects, from
+        # the same PR files list the classifier gates `integration` on (the PR
+        # checkout is shallow, so no git diff). Shadow only: integration-test
+        # logs what it would run and still runs every file. Fails open: any
+        # error is `all`, and continue-on-error keeps this job's result to the
+        # classifier. Layout is load-bearing: the classifier tests extract the
+        # text up to the job's second `run: |` (so `run` precedes `env` here),
+        # and queue-selection.test pins the CI Gate's selection read as the job's
+        # last step.
+        id: suites
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -uo pipefail
+          suites=all
+          if ! files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'); then
+            echo "::warning title=Integration suites::Cannot list the PR's files, so every suite is selected."
+          elif (( $(printf '%s\n' "${files}" | wc -l) >= 3000 )); then
+            # The PR files API stops at 3000 files without saying so; a
+            # truncated list could select a subset.
+            echo "::warning title=Integration suites::The PR lists 3000 or more paths, the files API's cap, so every suite is selected."
+          elif ! suites=$(printf '%s\n' "${files}" | node .github/scripts/integration-suites.mjs select); then
+            echo "::warning title=Integration suites::The selector failed, so every suite is selected."
+            suites=all
+          fi
+          # Only a well-formed value reaches GITHUB_OUTPUT.
+          if [[ ! "${suites}" =~ ^(all|[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*)$ ]]; then
+            echo "::warning title=Integration suites::The selector printed an invalid value, so every suite is selected."
+            suites=all
+          fi
+          echo "integration_suites=${suites}" | tee -a "${GITHUB_OUTPUT}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: Read the CI Gate's queue selection (W05)
+        # W05 (#10749): the pinned CI Gate decides which jobs this entry may skip and
+        # publishes it as an artifact; this reads it into `thin_skip`. Advice only: the
+        # gate judges the entry against its own copy, so a wrong read can only skip a
+        # job the gate still requires, which ejects the entry. Any doubt (kill switch
+        # off, no pinned gate run in 60 s, no selection in 180 s, a selection for
+        # another entry) is '' and runs everything. Replaces W04's candidate-side
+        # shadow, whose line the gate now logs (`ci-gate-selection:`).
+        id: queue_thin
         if: github.event_name == 'merge_group'
         continue-on-error: true
         timeout-minutes: 5
         run: |
-          node .github/scripts/queue-selection.mjs shadow
+          node .github/scripts/queue-selection.mjs consume
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REF: ${{ github.event.merge_group.head_ref }}
-          BASE_SHA: ${{ github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
-          FULL_SELECTION: ${{ toJSON(steps.classify.outputs) }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          THIN_QUEUE: ${{ vars.CI_THIN_QUEUE }}
+          GATE_WORKFLOW: .github/workflows/ci-gate.yml
+          GATE_SELECTION_ARTIFACT: ci-gate-selection-attempt-1
+          GATE_SELECTION_FILE: ci-gate-selection.json
 
   # ─── Docs check ─────────────────────────────────────────────────────
   # Was `docs-ci.yml`, whose job was ALSO named `CI Success` — the third
@@ -496,7 +554,7 @@ jobs:
     name: Test API (shard ${{ matrix.shard }}/8)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-api,')
     # ~2470 vitest files, import-time dominated, 26-34 min unsharded. Only the
     # main `test:run` invocation below is split across shards (mirrors
     # integration-test's sharding); every other named step here is a
@@ -680,7 +738,7 @@ jobs:
     name: Test M365 Graph Read Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-m365-graph-read-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -710,7 +768,7 @@ jobs:
     name: Test M365 Graph Actions Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-m365-graph-actions-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -740,7 +798,7 @@ jobs:
     name: Test M365 Communications Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-m365-communications-executor,')
     services:
       postgres:
         image: postgres:16-alpine
@@ -1035,7 +1093,7 @@ jobs:
     name: Test Web (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-web,')
     # ~1030 jsdom vitest files, 17 min unsharded — the longest job on an
     # api-only queue entry once the iOS build is gated. Split like test-api;
     # vitest partitions by file so `clearMocks`/`restoreMocks` in
@@ -1118,7 +1176,7 @@ jobs:
     name: Test Mobile
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-mobile,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1334,7 +1392,7 @@ jobs:
     name: Test Portal
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-portal,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1371,7 +1429,7 @@ jobs:
     name: Test Viewer
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-viewer,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1410,7 +1468,7 @@ jobs:
     name: Test Shared
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-shared,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1440,7 +1498,7 @@ jobs:
     name: Test Office Add-in Core
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-office-addin-core,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1476,7 +1534,7 @@ jobs:
     name: Test Document UI
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-document-ui,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1509,7 +1567,7 @@ jobs:
     name: Test Excel Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-excel-addin,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1539,7 +1597,7 @@ jobs:
     name: Test Word Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-word-addin,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1572,7 +1630,7 @@ jobs:
     name: Test PowerPoint Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-powerpoint-addin,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1614,7 +1672,7 @@ jobs:
     name: Test Outlook Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-outlook-addin,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1870,7 +1928,7 @@ jobs:
     name: Build API
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-api,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1918,7 +1976,7 @@ jobs:
     name: Build M365 Graph Read Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-m365-graph-read-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1954,7 +2012,7 @@ jobs:
     name: Build M365 Graph Actions Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-m365-graph-actions-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1992,7 +2050,7 @@ jobs:
     name: Build M365 Communications Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-m365-communications-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2030,7 +2088,7 @@ jobs:
     name: Build Web
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-web,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2075,7 +2133,7 @@ jobs:
     name: Build Portal
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-portal,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2116,7 +2174,7 @@ jobs:
     name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-agent,')
     strategy:
       fail-fast: false
       matrix:
@@ -2302,7 +2360,7 @@ jobs:
     name: Test Agent
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-agent,')
     # Room for a package retry (W1, #10744): "Run Go tests" measured 5.8 min
     # median / 5.9 max, setup + loopback/edition steps ≤ 1.5 min, across six
     # CI runs 2026-10-29..30. Explicit so retry-shard's --budget-minutes (this
@@ -2406,7 +2464,7 @@ jobs:
     name: Test Agent (Windows)
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-agent-windows,')
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -3669,7 +3727,7 @@ jobs:
     # the cache key carries ImageOS, so the two must land on one distro release.
     runs-on: ubuntu-26.04
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.rust == 'true' && !contains(needs.changes.outputs.thin_skip, ',rust-check,')
     timeout-minutes: 35
 
     steps:
@@ -3831,7 +3889,7 @@ jobs:
     # web/portal/viewer/agent-only PR sets `api` (test-api reads those files)
     # but cannot affect this suite. PR-only — the merge queue reports
     # integration=true for every code entry, so the queue always runs it.
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.integration == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.integration == 'true' && !contains(needs.changes.outputs.thin_skip, ',integration-test,')
     strategy:
       # Report every shard's result — a red shard must not cancel the others
       # (same rationale as the no-bail rule inside the suite: masking stacked
@@ -3857,6 +3915,14 @@ jobs:
     # nothing quarantined.
     env:
       CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      # Named-suite selection (W07b2, #10751), read by the timing sequencer in
+      # apps/api/vitest.integration.config.ts. Every shard logs
+      # `integration-suites: mode=… suites=… would_run=n/total`. MODE=enforce
+      # only asks: the sequencer enforces when ENFORCE_PR_SUITES in
+      # .github/scripts/integration-suites.mjs is also true. It is false, so
+      # every run is shadow and runs every file. The queue never asks.
+      BREEZE_INTEGRATION_SUITES: ${{ needs.changes.outputs.integration_suites || 'all' }}
+      BREEZE_INTEGRATION_SUITES_MODE: ${{ github.event_name == 'pull_request' && 'enforce' || 'shadow' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -4813,7 +4879,7 @@ jobs:
     name: Path-read contracts
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.path_readers == 'true'
+    if: needs.changes.outputs.path_readers == 'true' && !contains(needs.changes.outputs.thin_skip, ',path-read-contracts,')
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -5250,6 +5316,7 @@ jobs:
           INTEGRATION_CHANGED: ${{ needs.changes.outputs.integration }}
           PATH_READERS_CHANGED: ${{ needs.changes.outputs.path_readers }}
           PATH_READ_CONTRACTS_RESULT: ${{ needs.path-read-contracts.result }}
+          THIN_SKIP: ${{ needs.changes.outputs.thin_skip }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           # Fail closed: only a successful path check may skip native compilation. The
@@ -5271,6 +5338,42 @@ jobs:
           case " ${API_CHANGED} ${WEB_CHANGED} ${PORTAL_CHANGED} " in
             *" true "*) STACK_CHANGED=true ;;
           esac
+          # W05 (#10749): a job the thin queue selection skipped counts as satisfied.
+          # Only jobs with a label below can be thinned; a skipped job the gate did not
+          # list stays `skipped` and fails its own leg. Running it anyway keeps its result.
+          # The pinned CI Gate runs this script from the base revision with its own list,
+          # so a candidate's edit here changes only its own CI Success, never the gate's.
+          for thin_job in ${THIN_SKIP//,/ }; do
+            case "${thin_job}" in
+              build-api) [[ "${BUILD_API_RESULT}" != "skipped" ]] || BUILD_API_RESULT=success ;;
+              build-web) [[ "${BUILD_WEB_RESULT}" != "skipped" ]] || BUILD_WEB_RESULT=success ;;
+              build-portal) [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]] || BUILD_PORTAL_RESULT=success ;;
+              build-agent) [[ "${BUILD_AGENT_RESULT}" != "skipped" ]] || BUILD_AGENT_RESULT=success ;;
+              build-m365-graph-read-executor) [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]] || BUILD_M365_GRAPH_READ_EXECUTOR_RESULT=success ;;
+              build-m365-graph-actions-executor) [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "skipped" ]] || BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT=success ;;
+              build-m365-communications-executor) [[ "${BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "skipped" ]] || BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT=success ;;
+              rust-check) [[ "${RUST_CHECK_RESULT}" != "skipped" ]] || RUST_CHECK_RESULT=success ;;
+              test-api) [[ "${TEST_API_RESULT}" != "skipped" ]] || TEST_API_RESULT=success ;;
+              test-web) [[ "${TEST_WEB_RESULT}" != "skipped" ]] || TEST_WEB_RESULT=success ;;
+              test-portal) [[ "${TEST_PORTAL_RESULT}" != "skipped" ]] || TEST_PORTAL_RESULT=success ;;
+              test-mobile) [[ "${TEST_MOBILE_RESULT}" != "skipped" ]] || TEST_MOBILE_RESULT=success ;;
+              test-viewer) [[ "${TEST_VIEWER_RESULT}" != "skipped" ]] || TEST_VIEWER_RESULT=success ;;
+              test-shared) [[ "${TEST_SHARED_RESULT}" != "skipped" ]] || TEST_SHARED_RESULT=success ;;
+              test-document-ui) [[ "${TEST_DOCUMENT_UI_RESULT}" != "skipped" ]] || TEST_DOCUMENT_UI_RESULT=success ;;
+              test-office-addin-core) [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]] || TEST_OFFICE_ADDIN_CORE_RESULT=success ;;
+              test-excel-addin) [[ "${TEST_EXCEL_ADDIN_RESULT}" != "skipped" ]] || TEST_EXCEL_ADDIN_RESULT=success ;;
+              test-word-addin) [[ "${TEST_WORD_ADDIN_RESULT}" != "skipped" ]] || TEST_WORD_ADDIN_RESULT=success ;;
+              test-powerpoint-addin) [[ "${TEST_POWERPOINT_ADDIN_RESULT}" != "skipped" ]] || TEST_POWERPOINT_ADDIN_RESULT=success ;;
+              test-outlook-addin) [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "skipped" ]] || TEST_OUTLOOK_ADDIN_RESULT=success ;;
+              test-m365-graph-read-executor) [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]] || TEST_M365_GRAPH_READ_EXECUTOR_RESULT=success ;;
+              test-m365-graph-actions-executor) [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "skipped" ]] || TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT=success ;;
+              test-m365-communications-executor) [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "skipped" ]] || TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT=success ;;
+              test-agent) [[ "${TEST_AGENT_RESULT}" != "skipped" ]] || TEST_AGENT_RESULT=success ;;
+              test-agent-windows) [[ "${TEST_AGENT_WINDOWS_RESULT}" != "skipped" ]] || TEST_AGENT_WINDOWS_RESULT=success ;;
+              integration-test) [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]] || INTEGRATION_TEST_RESULT=success ;;
+              path-read-contracts) [[ "${PATH_READ_CONTRACTS_RESULT}" != "skipped" ]] || PATH_READ_CONTRACTS_RESULT=success ;;
+            esac
+          done
           if [[ "${CHANGES_RESULT}" != "success" ]] || \
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
              { [[ "${PATH_READERS_CHANGED}" == "true" ]] && [[ "${PATH_READ_CONTRACTS_RESULT}" != "success" ]]; } || \
@@ -5424,6 +5527,9 @@ jobs:
              { [[ "${AGENT_CHANGED}" == "false" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "skipped" ]]; }; }; }; then
             echo "One or more required jobs failed"
             exit 1
+          fi
+          if [[ -n "${THIN_SKIP}" ]]; then
+            echo "Thin queue run: skipped as the CI Gate's selection allowed, counted as satisfied:${THIN_SKIP//,/ }"
           fi
           if [[ "${CODE_CHANGED}" == "false" ]]; then
             echo "Docs-only PR: code jobs skipped, docs-check passed; the merge queue runs the full suite before merge."

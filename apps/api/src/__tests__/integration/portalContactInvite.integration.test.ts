@@ -25,7 +25,7 @@ vi.mock('../../services/email', async (importOriginal) => ({
   }),
 }));
 import { db, withDbTransaction, withSystemDbAccessContext } from '../../db';
-import { contacts, portalUsers } from '../../db/schema';
+import { contacts, portalUserIdentities, portalUsers } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
 import { portalRoutes } from '../../routes/portal';
@@ -457,6 +457,12 @@ describe('invite from contacts × account state machine (W2) — real Postgres',
     const contactId = await seedContact(orgId, 'twin@acme.example');
     const suffix = crypto.randomUUID();
     const loginId = await seedLogin({ orgId, email: 'twin@acme.example', status: 'invited', entraOid: `oid-${suffix}`, entraTenantId: `tid-${suffix}` });
+    // The identity row is what makes it identity-managed since W3 (identities
+    // release B); the legacy columns above are the D4 dual-write, no longer read.
+    await getTestDb().insert(portalUserIdentities).values({
+      orgId, portalUserId: loginId, provider: 'entra', issuer: `https://login.microsoftonline.com/tid-${suffix}/v2.0`,
+      subject: `oid-${suffix}`, entraTenantId: `tid-${suffix}`, linkedVia: 'migrated',
+    });
     const before = await stateOf(loginId);
 
     const res = await post(env, orgId, 'invite', { email: 'twin@acme.example', contactId });

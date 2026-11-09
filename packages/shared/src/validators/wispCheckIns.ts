@@ -14,14 +14,30 @@ import {
   WISP_CHECK_IN_INSTRUCTION_MAX,
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   WISP_CHECK_IN_MIN_DELAY_MINUTES,
+  WISP_CHECK_IN_TRIGGER_EVENTS,
 } from '../types/wispCheckIns';
 import { wispEntityKindSchema } from './wisp';
 
 /**
- * Exactly one of `delayMinutes` (whole minutes, 1..10080) or `at` (ISO 8601
+ * W04 (#11493, #10410): fire when an event happens instead of at a time. The
+ * subject is the device (`device_online`), script execution
+ * (`script_finished`), device command (`command_finished`) or agent run
+ * (`run_settled`). `deadlineMinutes` (1..10080, default
+ * WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES) is when it fires anyway, saying the
+ * event did not happen.
+ */
+export const wispCheckInTriggerSchema = z.object({
+  event: z.enum(WISP_CHECK_IN_TRIGGER_EVENTS),
+  subjectId: z.guid(),
+  deadlineMinutes: z.number().int().min(WISP_CHECK_IN_MIN_DELAY_MINUTES).max(WISP_CHECK_IN_MAX_DELAY_MINUTES).optional(),
+});
+export type WispCheckInTriggerInput = z.infer<typeof wispCheckInTriggerSchema>;
+
+/**
+ * Exactly one of `delayMinutes` (whole minutes, 1..10080), `at` (ISO 8601
  * WITH an offset or `Z`: a bare local time would be read in the server's time
- * zone). Unknown keys are stripped, so nothing the model adds (a grantId, a
- * threadId) reaches the handler.
+ * zone) or `trigger` (an event, with a deadline). Unknown keys are stripped,
+ * so nothing the model adds (a grantId, a threadId) reaches the handler.
  */
 export const scheduleCheckInSchema = z
   .object({
@@ -29,14 +45,15 @@ export const scheduleCheckInSchema = z
     at: z.iso.datetime({ offset: true }).optional(),
     instruction: z.string().trim().min(1).max(WISP_CHECK_IN_INSTRUCTION_MAX),
     subject: z.object({ kind: wispEntityKindSchema, id: z.guid() }).optional(),
+    trigger: wispCheckInTriggerSchema.optional(),
   })
   .superRefine((value, ctx) => {
-    const given = Number(value.delayMinutes !== undefined) + Number(value.at !== undefined);
+    const given = Number(value.delayMinutes !== undefined) + Number(value.at !== undefined) + Number(value.trigger !== undefined);
     if (given !== 1) {
       ctx.addIssue({
         code: 'custom',
         path: ['delayMinutes'],
-        message: 'give exactly one of delayMinutes or at',
+        message: 'give exactly one of delayMinutes, at or trigger',
       });
     }
   });

@@ -284,7 +284,7 @@
     "alertThresholds": "Warn at (% of budget)",
     "alertThresholdsHelp": "Partner admins with billing access get an in-app alert at each rung and an email for monthly and cap-reached alerts. Leave empty to inherit 50, 80, 95.",
     "notSet": "Not set, orgs configure individually",
-    "description": "Values set here apply to every child organization and lock the matching organization field. Leave a field empty to let organizations configure it.",
+    "description": "A value you set here applies to every organization and locks it. A field you leave empty is configured per organization. Dollar amounts are stored in cents internally.",
     "modes": {
       "perStep": "Per Step",
       "actionPlan": "Action Plan",
@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Known guests",
         "description": "Approved visitor and technician devices by MAC address"
+      },
+      "customerPortal": {
+        "label": "Customer portal",
+        "description": "Default sign-in and registration rules for your customers' portals, and access requests waiting for a decision"
       }
     },
     "saved": "Partner settings saved",
@@ -1198,6 +1202,7 @@
       "badge": {
         "locks": "Locks orgs",
         "locksConditional": "Locks orgs when enabled",
+        "locksWhenSet": "Locks orgs when set",
         "overridable": "Org can override",
         "overridableCap": "Org can override, up to {{limit}}",
         "partnerOnly": "Partner-wide"
@@ -1205,6 +1210,7 @@
       "badgeHelp": {
         "locks": "While this is set, every organization uses your value. An organization's own value is ignored.",
         "locksConditional": "While enabled, every organization uses your value instead of its own. While disabled, organizations use their own.",
+        "locksWhenSet": "Once you set a value, every organization uses it and its own value is ignored. While empty, each organization configures its own.",
         "overridable": "Your value is the default. An organization that sets its own value uses that instead.",
         "overridableCap": "Your value is the default. An organization can set its own value, up to {{limit}}.",
         "partnerOnly": "Organizations have no setting of their own. Your value applies to all of them."
@@ -2351,6 +2357,11 @@
       "sendInvite": "Failed to send invite",
       "action": "Action failed",
       "invalidEmail": "Enter a valid email address"
+    },
+    "badges": {
+      "noBrowserAccess": "No browser access",
+      "microsoft": "Microsoft sign-in",
+      "google": "Google sign-in"
     }
   },
   "orgRemoteAccessSettings": {
@@ -5171,7 +5182,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
     "authenticatorCode": "Authenticator code",
-    "confirmYourPassword": "Confirm your password"
+    "confirmYourPassword": "Confirm your password",
+    "switchToAuthenticatorCode": "Use authenticator app instead",
+    "usePasskeyInstead": "Use your passkey instead"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Canned responses",
@@ -5514,7 +5527,21 @@
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
     "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app.",
     "ssoReauthManageHint": "This account signs in through an identity provider and has no password. Verify with your provider to confirm this change.",
-    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change."
+    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change.",
+    "notSetUp": "Not set up",
+    "notAvailable": "Not available",
+    "backup": "Backup",
+    "addBackup": "Add backup",
+    "totpBackupAddHint": "Add an authenticator app as a backup, so you can still sign in if your passkey isn't available.",
+    "totpPolicyDisallowed": "Your organization's policy doesn't allow authenticator apps.",
+    "totpBackupActiveHint": "Use a code from your authenticator app if your passkey isn't available.",
+    "totpBackupVerifyNote": "When you press Verify, you'll confirm with your passkey.",
+    "confirmBackupButton": "Verify and add backup",
+    "removeTotpTitle": "Remove authenticator app",
+    "removeTotpBackupDescription": "You'll keep signing in with your passkey. Your recovery codes stay the same.",
+    "removeTotpPrimaryDescription": "Your passkey becomes your primary sign-in method. Your recovery codes stay the same.",
+    "removeTotpConfirmWithPasskey": "You'll confirm with your passkey.",
+    "removing": "Removing..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -5639,7 +5666,13 @@
     "ssoReauthManageProofExpired": "Your identity provider verification has expired. Verify again to confirm this change.",
     "verifyWithIdpToDeletePasskey": "This account has no password. Verify with your identity provider before removing a passkey.",
     "deletePasskeySsoReauth": "Verify identity to remove a passkey",
-    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove."
+    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove.",
+    "authenticatorBackupAdded": "Authenticator app added as a backup. Your recovery codes haven't changed",
+    "authenticatorAppRemoved": "Authenticator app removed. You'll sign in with your passkey",
+    "authenticatorCodeRejectedWaitForNext": "That code wasn't accepted. Each code works only once, so if you just used it, wait for the next code from your authenticator app.",
+    "passkeyConfirmationCanceled": "Passkey confirmation was canceled or timed out.",
+    "passkeyProofRejected": "Your passkey couldn't be verified. Please try again.",
+    "failedToRemoveAuthenticatorApp": "Failed to remove the authenticator app"
   },
   "roleManager": {
     "roles": "Roles",
@@ -7666,7 +7699,8 @@
         "none": "No access",
         "invited": "Invited",
         "active": "Active",
-        "disabled": "Disabled"
+        "disabled": "Disabled",
+        "requested": "Requested"
       },
       "actions": {
         "give": "Give portal access",
@@ -8265,5 +8299,126 @@
     "title": "AI approval mode",
     "description": "How Breeze AI asks before running gated (Tier 2/3) actions in this organization. Applies whether or not any spending cap is set.",
     "save": "Save"
+  },
+  "portalAccessPolicy": {
+    "title": "Sign-in & registration",
+    "orgDescription": "How people at this organization sign in to the customer portal, and how new people get browser access. A field left on Inherit follows your partner default.",
+    "partnerDescription": "The default for every customer organization. Each organization can override any field on its Customer Portal tab.",
+    "loading": "Loading sign-in settings…",
+    "readOnly": "You can view these settings but not change them. Changing the partner default needs full partner access.",
+    "save": "Save sign-in settings",
+    "sources": {
+      "partner": "Partner default",
+      "default": "Breeze default"
+    },
+    "signIn": {
+      "title": "How people sign in"
+    },
+    "newPeople": {
+      "title": "How new people get browser access"
+    },
+    "options": {
+      "on": "On",
+      "off": "Off"
+    },
+    "microsoft": {
+      "label": "Microsoft sign-in"
+    },
+    "google": {
+      "label": "Google sign-in"
+    },
+    "password": {
+      "label": "Password sign-in",
+      "allowed": "Allowed",
+      "ssoOnly": "Off — Microsoft/Google only",
+      "ssoOnlyNeedsSso": "Available once Microsoft or Google sign-in is turned on."
+    },
+    "fallback": "Password sign-in is on because no Microsoft or Google sign-in is enabled.",
+    "invites": {
+      "label": "Invites from the MSP",
+      "value": "Always on"
+    },
+    "selfRegistration": {
+      "label": "Self-registration",
+      "off": "Off",
+      "approval": "Needs approval",
+      "instant": "Instant"
+    },
+    "ssoNewPerson": {
+      "label": "First Microsoft / Google sign-in",
+      "invitedOnly": "Invited people only",
+      "approval": "Needs approval",
+      "instant": "Instant"
+    },
+    "requests": "Requests ({{count}})",
+    "errors": {
+      "load": "Couldn't load sign-in settings.",
+      "save": "Couldn't save sign-in settings.",
+      "methodUnavailable": "This sign-in method isn't available on this Breeze deployment yet.",
+      "ssoOnlyNeedsSso": "Turn on Microsoft or Google sign-in before turning off password sign-in."
+    },
+    "toasts": {
+      "saved": "Sign-in settings saved."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Access requests",
+    "description": "People waiting for access to this organization's portal. Approve to give them access, or deny to dismiss the request.",
+    "columns": {
+      "person": "Person",
+      "source": "How they asked",
+      "requested": "Requested"
+    },
+    "sources": {
+      "self": "Self-registration",
+      "entra": "Microsoft sign-in",
+      "google": "Google sign-in",
+      "addin_user": "AI for Office add-in"
+    },
+    "selectAll": "Select all requests",
+    "selectOne": "Select the request from {{email}}",
+    "accountExists": "Already has an account — Deny to dismiss",
+    "actions": {
+      "approve": "Approve",
+      "deny": "Deny",
+      "approveSelected": "Approve selected ({{count}})",
+      "denySelected": "Deny selected ({{count}})"
+    },
+    "results": {
+      "accountExists": "Already has an account",
+      "notPending": "No longer pending",
+      "notFound": "Request not found",
+      "identityLinked": "Sign-in already linked to another account",
+      "failed": "Couldn't decide this request"
+    },
+    "denyDialog": {
+      "title": "Deny access request",
+      "message": "Deny the request from {{email}}? They get an email saying it was not approved.",
+      "bulkMessage_one": "Deny {{count}} request? The person gets an email saying it was not approved.",
+      "bulkMessage_other": "Deny {{count}} requests? Each person gets an email saying it was not approved."
+    },
+    "toasts": {
+      "approved": "Approved access for {{email}}.",
+      "denied": "Denied the request from {{email}}.",
+      "bulkDone_one": "{{count}} request decided.",
+      "bulkDone_other": "{{count}} requests decided.",
+      "bulkPartial": "{{succeeded}} of {{total}} requests decided. The others are marked in the list."
+    },
+    "errors": {
+      "load": "Couldn't load access requests.",
+      "action": "Couldn't update the access request.",
+      "bulk": "Couldn't decide the selected requests."
+    },
+    "summary": {
+      "title": "Pending access requests",
+      "description": "Requests waiting in your customer organizations. Open an organization to approve or deny them.",
+      "empty": "No pending requests",
+      "orgPending_one": "{{count}} pending",
+      "orgPending_other": "{{count}} pending",
+      "review": "Review requests",
+      "loadError": "Couldn't load pending access requests."
+    },
+    "refreshFailed": "Couldn't refresh the access requests, so this list may be out of date.",
+    "more": "Showing the first {{count}} requests. Decide these to see the rest."
   }
 }

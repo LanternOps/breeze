@@ -29,6 +29,7 @@ import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav'
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import OrgPortalUsersEditor from './OrgPortalUsersEditor';
+import OrgSignInRegistrationCard from './portalAccess/OrgSignInRegistrationCard';
 import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinSelectors';
@@ -660,6 +661,13 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         return effectiveOrgId ? (
           <>
             <OrgPortalSettingsEditor
+              orgId={effectiveOrgId}
+              onDirty={handleDirty}
+              onSave={() => handleSave()}
+            />
+            {/* Sign-in & registration (portal registration W3): the org override of the
+                portal access policy, above the portal users list (spec §4). */}
+            <OrgSignInRegistrationCard
               orgId={effectiveOrgId}
               onDirty={handleDirty}
               onSave={() => handleSave()}

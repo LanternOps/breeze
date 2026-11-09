@@ -15,12 +15,23 @@
 // sharding with a warning (today's behaviour). Anything else that is wrong — a
 // file in no shard, in two, or outside the repository — throws, which fails
 // the shard before a single test runs.
+//
+// W07b2: with a named-suite selection (integration-suites.mjs runSelection),
+// every shard logs what enforcement would run. In shadow it still partitions
+// every file, exactly as above; under enforcement it partitions the selected
+// files only, and a shard left with none runs EMPTY_SHARD_SENTINEL.
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SUITE_MAP_PATH, runSelection } from './integration-suites.mjs';
 
+export { SUITE_MAP_PATH };
 export const TIMINGS_PATH = '.github/ci-timings/integration.json';
+// One empty test. vitest 4.1 exits 1 ("No test files found") when shard()
+// returns nothing, which an enforced selection can do to a shard. Set aside in
+// every other case, so it never runs in, or changes, a full run's plan.
+export const EMPTY_SHARD_SENTINEL = 'apps/api/src/__tests__/integration/emptyShard.sentinel.test.ts';
 export const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 export const INTEGRATION_CONFIG = 'apps/api/vitest.integration.config.ts';
 // Below this share of files with a recorded timing, the shard log asks for a refresh.
@@ -133,29 +144,65 @@ export function assertPartition(plan, files) {
   if (strangers.length) throw new ShardPlanError(`file(s) in the plan but not in the run: ${list(strangers)}`);
 }
 
+const escapeData = s => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+
+// W07b2: apply a named-suite selection to the run's keys. Shadow returns what
+// enforcement would run, for the log and the plan artifact; the caller still
+// runs every key. Every shard logs the same line. An enforced selection
+// without a usable timing table fails open to every file, and so does any
+// throw here: a selection can never fail a shard or shrink a run by accident.
+function pickSuites(keys, selection, { tableUsable, log }) {
+  let mode = 'shadow';
+  let suites = 'all';
+  let warning;
+  let selected = keys;
+  try {
+    const chosen = runSelection(selection);
+    ({ mode, suites, warning } = chosen);
+    if (mode === 'enforce' && suites !== 'all' && !tableUsable) {
+      suites = 'all';
+      warning = `${TIMINGS_PATH} is unusable, so every suite runs`;
+    }
+    if (suites !== 'all') selected = keys.filter(key => suites.includes(chosen.suiteOf(key)));
+  } catch (error) {
+    [mode, suites, selected, warning] = ['shadow', 'all', keys, `the selection failed (${error?.message ?? error}), so every suite runs`];
+  }
+  if (warning) log(`::warning title=Integration suites::${escapeData(warning)}`);
+  log(`integration-suites: mode=${mode} suites=${suites === 'all' ? 'all' : suites.join(',')} would_run=${selected.length}/${keys.length}`);
+  const digest = createHash('sha256').update(JSON.stringify([...selected].sort(byPath))).digest('hex');
+  return { mode, selected, record: { mode, suites, wouldRun: selected.length, total: keys.length, digest } };
+}
+
 // The sequencer core. `specs` are vitest TestSpecifications (only `moduleId`
-// is read); returns this shard's specs, or `fallback()` without a usable table.
+// is read); returns this shard's specs, or `fallback(specs)` without a usable
+// table (`specs` without EMPTY_SHARD_SENTINEL).
 // `timingsError`: why the table could not be read, when it could not.
-// `writePlan` is diagnostics only: a failure to write it warns, never fails.
+// `selection`: the integration-test job's suite env plus the map text (W07b2),
+// absent outside CI. `writePlan` is diagnostics only: a failure to write it
+// warns, never fails.
 export function timingShard(specs, {
-  index, count, repoRoot = REPO_ROOT, timingsText, timingsError, fallback, log = console.log, writePlan,
+  index, count, repoRoot = REPO_ROOT, timingsText, timingsError, fallback, log = console.log, writePlan, selection,
 } = {}) {
   if (!Number.isInteger(count) || count < 1 || !Number.isInteger(index) || index < 1 || index > count) {
     throw new ShardPlanError(`invalid shard ${index}/${count}`);
   }
-  const table = loadTimings(timingsText);
-  if (!table) {
-    const why = typeof timingsText === 'string' ? 'is not a valid schema-1 table' : `could not be read (${timingsError ?? 'missing'})`;
-    log(`::warning title=Shard timing unavailable::${TIMINGS_PATH} ${why}, so shard ${index}/${count} uses vitest's file-count sharding.`);
-    return fallback();
-  }
   const byKey = new Map();
+  let sentinel;
   for (const spec of specs) {
     const key = toRepoKey(spec.moduleId, repoRoot);
+    if (key === EMPTY_SHARD_SENTINEL) { sentinel = spec; continue; }
     if (byKey.has(key)) throw new ShardPlanError(`${key} was handed to the sequencer twice`);
     byKey.set(key, spec);
   }
-  const keys = [...byKey.keys()];
+  const all = [...byKey.keys()];
+  const table = loadTimings(timingsText);
+  const pick = selection ? pickSuites(all, selection, { tableUsable: Boolean(table), log }) : null;
+  if (!table) {
+    const why = typeof timingsText === 'string' ? 'is not a valid schema-1 table' : `could not be read (${timingsError ?? 'missing'})`;
+    log(`::warning title=Shard timing unavailable::${TIMINGS_PATH} ${why}, so shard ${index}/${count} uses vitest's file-count sharding.`);
+    return fallback([...byKey.values()]);
+  }
+  const keys = pick?.mode === 'enforce' ? pick.selected : all;
   const plan = partition(keys, { count, ...table });
   assertPartition(plan, keys);
   const mine = plan[index - 1];
@@ -168,9 +215,19 @@ export function timingShard(specs, {
     log(`::warning title=Shard timing stale::Only ${known}/${keys.length} integration files have a recorded timing; run \`node .github/scripts/test-timings.mjs refresh\`.`);
   }
   try {
-    writePlan?.({ index, count, total: keys.length, files: mine, projectedSeconds: loads[index - 1], planDigest: digest });
+    writePlan?.({
+      index, count, total: keys.length, files: mine, projectedSeconds: loads[index - 1], planDigest: digest,
+      ...(pick ? { selection: pick.record } : {}),
+    });
   } catch (error) {
     log(`::warning title=Shard plan not written::${error.message}`);
+  }
+  if (!mine.length && pick?.mode === 'enforce') {
+    if (!sentinel) {
+      throw new ShardPlanError(`shard ${index}/${count} has no selected file, and ${EMPTY_SHARD_SENTINEL} is not in the run to keep vitest from failing it`);
+    }
+    log(`shard-plan: shard=${index}/${count} has no selected file, so it runs ${EMPTY_SHARD_SENTINEL}`);
+    return [sentinel];
   }
   return mine.map(key => byKey.get(key));
 }

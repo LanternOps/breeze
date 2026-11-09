@@ -2090,7 +2090,6 @@
   "integrations.unifiIntegration.saveMappings",
   "integrations.unifiIntegration.siteMapping",
   "integrations.unifiIntegration.siteMappingsSaved",
-  "integrations.unifiIntegration.siteThisControllerServes",
   "integrations.unifiIntegration.syncError",
   "integrations.unifiIntegration.syncHistory",
   "integrations.unifiIntegration.syncNow",

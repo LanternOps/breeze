@@ -2110,9 +2110,20 @@ test('baseRevisionIO: the PR head comes from refs/pull, which needs no pull-requ
 
 const selectionLines = io => io.all().filter(line => /^ci-gate-selection:/.test(line));
 const resultVar = job => `${job.toUpperCase().replaceAll('-', '_')}_RESULT`;
+// W05b put the block in the real ci.yml. These fixtures model a base with it and one
+// without, so both start from the real tree with the block (and THIN_SKIP) taken out.
+function withoutThinBlock(ci) {
+  const start = ci.indexOf('          # W05 (#10749): a job the thin queue selection skipped counts as satisfied.\n');
+  const end = ci.indexOf('\n          done\n', start) + '\n          done\n'.length;
+  const env = '          THIN_SKIP: ${{ needs.changes.outputs.thin_skip }}\n';
+  assert.ok(start > 0 && end > start && ci.includes(env), 'the W05 block is in ci.yml');
+  return (ci.slice(0, start) + ci.slice(end)).replace(env, '');
+}
+const preW05Ci = withoutThinBlock(realCi);
 // The ci-success normalization W05b adds, in the plan's shape, for the jobs given
 // (default: every THINNABLE job the aggregator has a result variable for).
 function withThinBlock(ci, jobs) {
+  if (ci.includes('for thin_job in ')) ci = withoutThinBlock(ci);
   const { env } = gate.extractAggregator(ci);
   const arms = (jobs ?? thin.THINNABLE.filter(job => env[resultVar(job)]?.job === job))
     .map(job => `              ${job}) [[ "\${${resultVar(job)}}" != "skipped" ]] || ${resultVar(job)}=success ;;`);
@@ -2146,10 +2157,16 @@ test('thinSkipValue: empty is empty; otherwise sorted, unique and comma-fenced; 
   for (const bad of ['test web', 'a,b', '', 'Test-Web', '$(x)', 7]) assert.throws(() => thin.thinSkipValue([bad]), /job id/, String(bad));
 });
 
-test('thinnableAtBase: today\'s ci-success has no W05 block, so nothing can be thinned at that base', () => {
-  const today = gate.extractAggregator(realCi);
-  assert.deepEqual(thin.thinnableAtBase(today), []);
-  assert.equal(thin.readsThinSkip(today), false);
+test('thinnableAtBase: a ci-success without the W05 block can thin nothing; the real one lists every THINNABLE job', () => {
+  const before = gate.extractAggregator(preW05Ci);
+  assert.deepEqual(thin.thinnableAtBase(before), []);
+  assert.equal(thin.readsThinSkip(before), false);
+  const tree = gate.extractAggregator(realCi);
+  assert.deepEqual(thin.thinnableAtBase(tree), [...thin.THINNABLE]);
+  // The fixture is the real block, comments aside.
+  const code = script => script.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+  assert.equal(code(thinAggregator.script), code(tree.script));
+  assert.deepEqual(thinAggregator.env, tree.env);
 });
 
 test('thinnableAtBase: the W05 block gives its case labels, in order', () => {
@@ -2239,7 +2256,7 @@ const SELECT_FALLBACKS = [
   ['no_base_flags', { deps: { flagsAt: () => null } }],
   ['stale_base', { deps: { queueSelection: () => ({ ...SHADOW_THIN, mode: 'full', reason: 'stale_base' }) } }],
   ['entry_not_single_commit', { deps: { queueSelection: () => ({ ...SHADOW_THIN, mode: 'full', reason: 'entry_not_single_commit' }) } }],
-  ['thin_unsupported_at_base', { deps: { aggregatorAt: () => gate.extractAggregator(realCi) } }],
+  ['thin_unsupported_at_base', { deps: { aggregatorAt: () => gate.extractAggregator(preW05Ci) } }],
   ['thin_unsupported_at_base', { deps: { aggregatorAt: () => null } }],
   ['nothing_to_skip', { deps: { queueSelection: () => ({ ...SHADOW_THIN, would_skip: ['smoke-test'] }) } }],
   ['audit_sample', { env: { HEAD_SHA: AUDIT_HEAD } }],
@@ -2739,8 +2756,8 @@ const fieldOf = (line, key) => JSON.parse(line.match(new RegExp(` ${key}=(.*?)(?
 const selectOf = r => over => r.verifyEnv({ GITHUB_RUN_ATTEMPT: '1', ...over });
 const publishedIn = r => JSON.parse(readFileSync(join(r.clone, thin.SELECTION_FILE), 'utf8'));
 
-test('select: end to end, real commits and a pinned anchor give the W04 selection, which today\'s base cannot thin', () => {
-  const r = queueEntryRig();
+test('select: end to end, real commits and a pinned anchor give the W04 selection, which a pre-W05 base cannot thin', () => {
+  const r = queueEntryRig({ baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: preW05Ci } });
   const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
   r.addAnchor({ anchor: { files: ['docs/guide.md'], policy_digest: digest } });
   r.addCi({ attempts: [docsOnlyJobs()] });
@@ -2770,7 +2787,7 @@ test('select: end to end, the base revision\'s ci-success decides whether thin i
 });
 
 test('select: end to end, the reads are the base revision\'s, though the checkout is the gate\'s own', () => {
-  const r = queueEntryRig();
+  const r = queueEntryRig({ baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: preW05Ci } });
   const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
   r.addAnchor({ anchor: { files: ['docs/guide.md'], policy_digest: digest } });
   r.addCi({ attempts: [docsOnlyJobs()] });
@@ -2837,27 +2854,17 @@ test('select: end to end, the Actions API failing in the selection is reason=err
   assert.equal(gate.verify(r.io, selectOf(r)()), 0, r.lines.join('\n'));
 });
 
-// ── The candidate-side shadow is untouched ───────────────────────────────
+// ── The candidate side reads the gate's selection (W05b) ────────────────
 
-test('queue_shadow in ci.yml is byte-identical', () => {
-  const start = realCi.indexOf('      - name: Queue selection shadow\n');
-  const end = realCi.indexOf('\n  # ─── Docs check', start);
-  assert.ok(start > 0 && end > start);
-  assert.equal(realCi.slice(start, end), `      - name: Queue selection shadow
-        id: queue_shadow
-        if: github.event_name == 'merge_group'
-        continue-on-error: true
-        timeout-minutes: 5
-        run: |
-          node .github/scripts/queue-selection.mjs shadow
-        env:
-          GH_TOKEN: \${{ github.token }}
-          EVENT_NAME: \${{ github.event_name }}
-          HEAD_REF: \${{ github.event.merge_group.head_ref }}
-          BASE_SHA: \${{ github.event.merge_group.base_sha }}
-          HEAD_SHA: \${{ github.event.merge_group.head_sha }}
-          FULL_SELECTION: \${{ toJSON(steps.classify.outputs) }}
-`);
+// W05b replaced the candidate-side shadow step: the gate logs that line itself.
+// The consume step's exact shape is pinned in queue-selection.test.mjs.
+test('ci.yml: the W04 candidate-side shadow is gone; changes reads this gate\'s artifact', () => {
+  assert.ok(!realCi.includes('queue_shadow') && !realCi.includes('queue-selection.mjs shadow'));
+  const changes = ciJob('changes');
+  assert.ok(changes.includes('          node .github/scripts/queue-selection.mjs consume\n'));
+  assert.ok(changes.includes(`          GATE_WORKFLOW: ${gate.GATE_WORKFLOW}\n`));
+  assert.ok(changes.includes(`          GATE_SELECTION_ARTIFACT: ${thin.selectionArtifact(1)}\n`));
+  assert.ok(changes.includes(`          GATE_SELECTION_FILE: ${thin.SELECTION_FILE}\n`));
 });
 
 test('verify: no trust code runs in the candidate-side shadow CLI', () => {

@@ -346,8 +346,12 @@ test('postgres-compat.yml integration: same shards, a timeout at least ci.yml\'s
   const maxParallel = Number((/^ {6}max-parallel:\s*(\d+)$/m.exec(body) || [])[1]);
   assert.ok(maxParallel >= 1 && maxParallel <= 8, `max-parallel ${maxParallel}: the nightly must never hold more than 8 runners`);
   const env = mapUnder(n, 'env', 4);
-  assert.deepEqual(env, { BREEZE_TEST_PG_IMAGE: 'pgvector/pgvector:pg${{ matrix.pg }}', PG_MAJOR: '${{ matrix.pg }}' },
-    'the image comes from the matrix; no CI_BASE_SHA, so nothing is quarantined');
+  assert.deepEqual(env, {
+    BREEZE_TEST_PG_IMAGE: 'pgvector/pgvector:pg${{ matrix.pg }}',
+    PG_MAJOR: '${{ matrix.pg }}',
+    BREEZE_INTEGRATION_SUITES: 'all',
+    BREEZE_INTEGRATION_SUITES_MODE: 'shadow',
+  }, 'the image comes from the matrix; no CI_BASE_SHA, so nothing is quarantined; suite selection mirrored as shadow/all');
 });
 
 // ── Wiring: nothing may quietly neutralise a leg ────────────────────────────
@@ -399,8 +403,15 @@ test('postgres-compat.yml integration: job-level shape matches ci.yml integratio
   assert.equal(runsOn(n), runsOn(c));
   // ci.yml's only job-level env is the flaky-ledger base, which the nightly
   // deliberately drops. Anything new there must be mirrored (or declared here).
-  assert.deepEqual(Object.keys(mapUnder(c, 'env', 4) ?? {}), ['CI_BASE_SHA'],
+  assert.deepEqual(Object.keys(mapUnder(c, 'env', 4) ?? {}),
+    ['CI_BASE_SHA', 'BREEZE_INTEGRATION_SUITES', 'BREEZE_INTEGRATION_SUITES_MODE'],
     'ci.yml integration-test gained a job-level env var: mirror it into postgres-compat.yml integration');
+  // W07b2 (#10751): the named-suite selection vars are mirrored as literals.
+  // The compat workflow has no `changes` job, so it always asks for every
+  // suite in shadow mode — the same thing a queue run gets.
+  const nEnv = mapUnder(n, 'env', 4) ?? {};
+  assert.equal(nEnv.BREEZE_INTEGRATION_SUITES, 'all', 'compat integration runs every suite');
+  assert.equal(nEnv.BREEZE_INTEGRATION_SUITES_MODE, 'shadow', 'compat integration never enforces');
   // The version assertion dials the same database the suite then uses.
   assert.equal(
     stepEnv(stepNamed(n, 'Assert the server major')).DATABASE_URL,

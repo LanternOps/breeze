@@ -30,6 +30,7 @@ import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } 
 import { recordSnapshotFileIndex } from './backupMetrics';
 import { refreshSnapshotFileIndexStatistics } from './backupSnapshotFileIndexStatistics';
 import { captureException } from './sentry';
+import { contentlessEntryKind, type SnapshotEntryKind } from './backupSnapshotEntryKind';
 import {
   HYDRATING_STALE_MS,
   hydrationFailureFromError,
@@ -467,13 +468,22 @@ async function claimSnapshotForHydration(
   );
 }
 
-type FileRowJson = { source_path: string; backup_path: string; size: number | null; modified_at: string | null };
+type FileRowJson = {
+  source_path: string;
+  backup_path: string;
+  size: number | null;
+  modified_at: string | null;
+  kind: SnapshotEntryKind | null;
+};
 
 /** What pass 1 learned about a spooled manifest. The rows stay on disk until pass 2. */
 type ParsedManifest = {
   manifestSha256: string;
   spool: ManifestSpool;
-  /** Entries that become rows: everything but content-less dirs and symlinks. */
+  /**
+   * Entries that become rows: every entry, content-less dirs and symlinks
+   * included (#11235), so the index lists the tree the manifest records.
+   */
   eligibleEntries: number;
   originCounts: Map<string, number>;
 };
@@ -550,9 +560,13 @@ async function validateSpooledManifest(
           return;
         }
         const { backupPath } = result.data;
-        // Content-less entries (dir/symlink) upload nothing — the schema above
-        // guarantees an empty backupPath only ever appears on one.
-        if (!backupPath) return;
+        // A content-less entry (dir/symlink) uploads nothing: the schema above
+        // guarantees an empty backupPath only ever appears on one. It is still
+        // a row (#11235), with no key to check and no origin.
+        if (!backupPath) {
+          eligibleEntries += 1;
+          return;
+        }
         const parsedKey = parseBackupObjectKey(backupPath);
         if (!parsedKey) {
           invalidKey ??= backupPath;
@@ -766,10 +780,10 @@ async function verifyOriginsAndWrite(
         // that outlived a minor GC at 1.1M entries, and what grew the heap.
         // The ::text keeps the driver from serializing the string as JSON again.
         const written = await tx.execute(sql`
-          INSERT INTO ${backupSnapshotFiles} (snapshot_db_id, source_path, backup_path, size, modified_at)
-          SELECT ${snapshotDbId}::uuid, r.source_path, r.backup_path, r.size, r.modified_at
+          INSERT INTO ${backupSnapshotFiles} (snapshot_db_id, source_path, backup_path, size, modified_at, kind)
+          SELECT ${snapshotDbId}::uuid, r.source_path, r.backup_path, r.size, r.modified_at, r.kind
           FROM json_to_recordset(${JSON.stringify(batch)}::text::json)
-            AS r(source_path text, backup_path text, size bigint, modified_at timestamp)
+            AS r(source_path text, backup_path text, size bigint, modified_at timestamp, kind text)
         `);
         // The database's own count of rows written.
         inserted += extractRowCount(written);
@@ -780,7 +794,6 @@ async function verifyOriginsAndWrite(
           // Pass 1 validated these same bytes, and verifiedSpoolBytes holds
           // them to it.
           const file = entry as HydrationEntry;
-          if (!file.backupPath) return;
           batch.push({
             source_path: file.originalPath ?? file.sourcePath,
             backup_path: file.backupPath,
@@ -788,6 +801,7 @@ async function verifyOriginsAndWrite(
             // As the column's own mapping sends it: a UTC ISO string, stored
             // in a timestamp without time zone.
             modified_at: file.modTime ? new Date(file.modTime).toISOString() : null,
+            kind: contentlessEntryKind(file),
           });
           if (batch.length >= FILE_ROW_BATCH_SIZE) await writeBatch();
         },
@@ -811,7 +825,9 @@ async function verifyOriginsAndWrite(
           fileIndexHydratedAt: new Date(),
           fileIndexExternalCount: externalCount,
           fileIndexError: null,
-          metadata: { ...asRecord(current.metadata), hasIndexedFiles: true, fileIndexVersion: 2 },
+          // 3: content-less entries are rows (#11235). An index of version 2
+          // is still correct for every file; it only omits those entries.
+          metadata: { ...asRecord(current.metadata), hasIndexedFiles: true, fileIndexVersion: 3 },
         })
         .where(claimPredicate(snapshot));
 

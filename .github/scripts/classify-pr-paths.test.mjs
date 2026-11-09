@@ -26,6 +26,11 @@ const job = (name) => {
   return match[1];
 };
 const summary = job('ci-success');
+// W05 (#10749): a job CI Success has a thin `case` arm for may end its `if:` with the
+// clause naming its own id; nothing else may follow the gates pinned here.
+const thinArms = new Set([...summary.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gmu)].map((m) => m[1]));
+const thinOpt = (name) => (thinArms.has(name)
+  ? `(?: && !contains\\(needs\\.changes\\.outputs\\.thin_skip, ',${name},'\\))?` : '');
 const classify = (paths) =>
   spawnSync('bash', [new URL('./classify-pr-paths.sh', import.meta.url).pathname], {
     encoding: 'utf8',
@@ -380,7 +385,7 @@ test('every code job is gated on the classifier', () => {
   // Per-area jobs carry an extra area clause AFTER the code/app gate; the exact
   // per-area `if:` lines are pinned by ci-area-gating.test.mjs. The prefix is
   // still required here, so a docs-only or tooling-only PR still skips them.
-  const areaGated = /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && (needs\.changes\.outputs\.(api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|\(needs\.changes\.outputs\.api == 'true' \|\| needs\.changes\.outputs\.web == 'true' \|\| needs\.changes\.outputs\.portal == 'true'\))$/mu;
+  const areaGated = (name) => new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true' && (needs\\.changes\\.outputs\\.(api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|\\(needs\\.changes\\.outputs\\.api == 'true' \\|\\| needs\\.changes\\.outputs\\.web == 'true' \\|\\| needs\\.changes\\.outputs\\.portal == 'true'\\))${thinOpt(name)}$`, 'mu');
   for (const name of jobs) {
     if (exempt.has(name)) continue;
     const body = job(name);
@@ -388,14 +393,14 @@ test('every code job is gated on the classifier', () => {
     if (name === 'check-migrations') {
       // code AND api, never app: it is the release-lineage guard for tooling-only PRs.
       assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.api == 'true'$/mu, name);
-    } else if (areaGated.test(body)) {
+    } else if (areaGated(name).test(body)) {
       continue;
     } else if (codeOnly.has(name)) {
       assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, `${name} must be skipped on a docs-only PR, and stay code-only (not app-gated)`);
     } else {
       assert.match(
         body,
-        /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true'$/mu,
+        new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true'${thinOpt(name)}$`, 'mu'),
         `${name} must be skipped on a docs-only OR tooling-only PR`,
       );
     }
@@ -1008,7 +1013,7 @@ test('integration-test is gated on the integration output, which the changes job
   assert.match(job('changes'), /^      integration: \$\{\{ steps\.classify\.outputs\.integration \}\}$/mu);
   assert.match(
     job('integration-test'),
-    /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && needs\.changes\.outputs\.integration == 'true'$/mu,
+    new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true' && needs\\.changes\\.outputs\\.integration == 'true'${thinOpt('integration-test')}$`, 'mu'),
   );
   assert.match(summary, /^          INTEGRATION_CHANGED: \$\{\{ needs\.changes\.outputs\.integration \}\}$/mu);
   assert.match(

@@ -1,13 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { PgDialect, QueryBuilder } from 'drizzle-orm/pg-core';
+import { portalUsers } from '../db/schema/portal';
 
 const state = vi.hoisted(() => ({
   held: false,
   systemCalls: 0,
   inserts: [] as Array<{ values: Record<string, unknown>; onConflict: boolean }>,
   updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
+  selects: [] as Array<{ cols: unknown; where: unknown; limited: boolean }>,
   insertReturns: [] as unknown[][],
   updateReturns: [] as unknown[][],
+  selectReturns: [] as unknown[][],
 }));
 
 vi.mock('../db', () => ({
@@ -19,7 +23,10 @@ vi.mock('../db', () => ({
 import {
   ensureEntraIdentity,
   entraIssuer,
+  findPortalUserIdByEntraIdentity,
   insertEntraIdentity,
+  listIdentityProvidersByUser,
+  portalUserHasIdentitySql,
   reconcilePortalUserIdentities,
   type IdentityExecutor,
 } from './portalUserIdentities';
@@ -54,6 +61,19 @@ function fakeExec(): IdentityExecutor {
       };
       return chain;
     },
+    select: (cols: unknown) => {
+      const rec = { cols, where: undefined as unknown, limited: false };
+      state.selects.push(rec);
+      const chain: Record<string, unknown> = {
+        from: () => chain,
+        where: (w: unknown) => { rec.where = w; return chain; },
+        orderBy: () => chain,
+        limit: () => { rec.limited = true; return chain; },
+        then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+          Promise.resolve(state.selectReturns.shift() ?? []).then(resolve, reject),
+      };
+      return chain;
+    },
   } as unknown as IdentityExecutor;
 }
 
@@ -62,8 +82,88 @@ beforeEach(() => {
   state.systemCalls = 0;
   state.inserts.length = 0;
   state.updates.length = 0;
+  state.selects.length = 0;
   state.insertReturns.length = 0;
   state.updateReturns.length = 0;
+  state.selectReturns.length = 0;
+});
+
+// ---------------------------------------------------------------------------
+// Identities release B (W3): readers
+// ---------------------------------------------------------------------------
+
+describe('portalUserHasIdentitySql (#9692 qualifier stripping)', () => {
+  // A single-table select is exactly where drizzle rewrites every column chunk
+  // of a selection `sql` to a bare identifier — so a helper written as
+  // `${portalUsers.id}` would render `"id"` and bind to the SUBQUERY's id.
+  const singleTable = () => new QueryBuilder()
+    .select({ id: portalUsers.id, hasExternalIdentity: portalUserHasIdentitySql() })
+    .from(portalUsers)
+    .toSQL().sql;
+
+  it('correlates on the OUTER portal_users row even inside a single-table selection', () => {
+    const text = singleTable();
+    expect(text).toMatch(/exists \(select 1 from "portal_user_identities" "\w+" where "\w+"\."portal_user_id" = "portal_users"\."id"\)/);
+    // Never a bare `= "id"` correlation (it would resolve to portal_user_identities.id).
+    expect(text).not.toMatch(/= "id"\)/);
+  });
+
+  it('counts any provider (Entra or Google), not only entra', () => {
+    expect(singleTable()).not.toMatch(/provider/);
+  });
+
+  it('negates cleanly as a WHERE predicate', () => {
+    const where = new PgDialect().sqlToQuery(sql`not ${portalUserHasIdentitySql()}`);
+    expect(where.sql).toMatch(/^not exists \(select 1 from "portal_user_identities"/);
+    expect(where.params).toEqual([]);
+  });
+
+  it('returns a fresh SQL object per call (callers may mapWith/alias it)', () => {
+    expect(portalUserHasIdentitySql()).not.toBe(portalUserHasIdentitySql());
+  });
+});
+
+describe('findPortalUserIdByEntraIdentity', () => {
+  it('looks up by provider, issuer (derived from tid) and subject — never by the portal_users entra columns', async () => {
+    state.selectReturns.push([{ portalUserId: USER, orgId: ORG }]);
+    await expect(findPortalUserIdByEntraIdentity(fakeExec(), { tid: TID, oid: OID })).resolves.toEqual({ portalUserId: USER, orgId: ORG });
+    const where = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(where.sql).toContain('"portal_user_identities"."provider"');
+    expect(where.sql).toContain('"portal_user_identities"."issuer"');
+    expect(where.sql).toContain('"portal_user_identities"."subject"');
+    expect(where.sql).not.toContain('entra_oid');
+    expect(where.params).toEqual(['entra', entraIssuer(TID), OID]);
+    expect(state.selects[0]!.limited).toBe(true);
+  });
+
+  it('returns null when no identity matches', async () => {
+    state.selectReturns.push([]);
+    await expect(findPortalUserIdByEntraIdentity(fakeExec(), { tid: TID, oid: OID })).resolves.toBeNull();
+  });
+});
+
+describe('listIdentityProvidersByUser', () => {
+  it('runs no query for an empty id list', async () => {
+    const map = await listIdentityProvidersByUser(fakeExec(), []);
+    expect(map.size).toBe(0);
+    expect(state.selects).toHaveLength(0);
+  });
+
+  it('groups providers per user, sorted, and leaves users without identities out', async () => {
+    const OTHER = '55555555-5555-4555-8555-555555555555';
+    state.selectReturns.push([
+      { portalUserId: USER, provider: 'google' },
+      { portalUserId: OTHER, provider: 'entra' },
+      { portalUserId: USER, provider: 'entra' },
+    ]);
+    const map = await listIdentityProvidersByUser(fakeExec(), [USER, OTHER, 'no-identity']);
+    expect(map.get(USER)).toEqual(['entra', 'google']);
+    expect(map.get(OTHER)).toEqual(['entra']);
+    expect(map.has('no-identity')).toBe(false);
+    const where = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(where.sql).toContain('"portal_user_identities"."portal_user_id" in');
+    expect(where.params).toEqual([USER, OTHER, 'no-identity']);
+  });
 });
 
 describe('entraIssuer', () => {

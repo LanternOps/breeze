@@ -146,6 +146,19 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
     expect(text.length).toBeLessThan(330);
   });
 
+  // #10406: one card covers the whole batch, so it says so.
+  it('the assessment card says when it covers the orgs with open alerts, not just the anchor org', () => {
+    const input = (scope?: string) => ({ orgId: 'o', kind: 'assessment', reason: 'go through the open alerts', params: scope ? { scope } : {} });
+    expect(describeSpecialistRequest(input('orgs_with_open_alerts'), 'Greenwood'))
+      .toBe('Wisp wants to run a Wisp assessment at Greenwood: go through the open alerts — covers up to 10 orgs in this grant with open alerts, worst first');
+    expect(describeSpecialistRequest(input('org'), 'Greenwood'))
+      .toBe('Wisp wants to run a Wisp assessment at Greenwood: go through the open alerts');
+    expect(describeSpecialistRequest(input(), 'Greenwood'))
+      .toBe('Wisp wants to run a Wisp assessment at Greenwood: go through the open alerts');
+    expect(checkGuardrails('launch_specialist', input('orgs_with_open_alerts'), { chatSession: true }))
+      .toMatchObject({ tier: 2, allowed: true, requiresApproval: false });
+  });
+
   it('the card names the org, not a raw id prefix, when the chat gate resolved its name', () => {
     const input = { orgId: '64233cbe-0000-4000-8000-000000000001', kind: 'sweep', reason: 'disks are filling' };
     expect(describeSpecialistRequest(input, 'Default Organization'))

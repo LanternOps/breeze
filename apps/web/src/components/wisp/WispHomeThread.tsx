@@ -10,7 +10,7 @@ import { useAiStore, type WispState } from '@/stores/aiStore';
 import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
 import AiChatInput from '../ai/AiChatInput';
-import AiThinkingIndicator from '../ai/AiThinkingIndicator';
+import AiThinkingIndicator, { approvalWaitFromPending } from '../ai/AiThinkingIndicator';
 import AiContinuationPrompt from '../ai/AiContinuationPrompt';
 import AiModelPicker from '../ai/AiModelPicker';
 import BuyCreditsLink from '../ai/BuyCreditsLink';
@@ -462,7 +462,7 @@ export default function WispHomeThread({
               </div>
             )}
             <AiContinuationPrompt />
-            <AiThinkingIndicator thinking={isStreaming && !!thinking} />
+            <AiThinkingIndicator thinking={isStreaming && !!thinking} approvalWait={isStreaming ? approvalWaitFromPending(pendingApproval) : null} />
             {/* The docked panel's model menu (registry W05): the store loads it for the bound session. */}
             <AiModelPicker disabled={isStreaming} />
             <WispCheckInChip checkIns={checkIns} onCancel={(id) => void onCancelCheckIn(id)} />

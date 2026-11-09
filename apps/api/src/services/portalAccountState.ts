@@ -24,14 +24,18 @@ export type PortalAccountWriter =
   | 'msp_resend_invite'
   | 'msp_disable'
   | 'msp_reactivate'
-  | 'accept_invite';
+  | 'accept_invite'
+  // W3 (#11380): approving an add-in user's access request
+  // (services/portalAccessRequests.ts). New accounts from an approved request
+  // use initialPortalAccountState instead.
+  | 'access_request_approve';
 
 export interface PortalAccountFacts {
   status: string;
   browserAccess: string;
   authMethod: string;
   hasPasswordHash: boolean;
-  /** W2: `portal_users.entra_oid IS NOT NULL` (reads stay on the columns). W3 switches to portal_user_identities. */
+  /** W3: EXISTS portal_user_identities (portalUserHasIdentitySql). */
   hasExternalIdentity: boolean;
 }
 
@@ -68,15 +72,27 @@ export function isPasswordEligible(f: Pick<PortalAccountFacts, 'authMethod'>): b
   return f.authMethod === 'password';
 }
 
-/** The state a brand-new row is inserted with. An add-in login never starts with browser access. */
+/**
+ * The state a brand-new row is inserted with. An add-in login never starts with
+ * browser access.
+ *
+ * W3 (#11380) access-request approval:
+ *  - `sso_request_approved`  — an identity-only account: active and granted.
+ *    The caller sets `auth_method` to the provider, never `password` (plan D2).
+ *  - `self_request_approved` — the same as an MSP invite: invited and granted.
+ *    The caller issues the invite.
+ */
 export function initialPortalAccountState(
-  writer: 'msp_invite' | 'addin_jit',
+  writer: 'msp_invite' | 'addin_jit' | 'sso_request_approved' | 'self_request_approved',
 ): { status: PortalAccountStatus; browserAccess: PortalBrowserAccess } {
   switch (writer) {
     case 'msp_invite':
+    case 'self_request_approved':
       return { status: 'invited', browserAccess: 'granted' };
     case 'addin_jit':
       return { status: 'active', browserAccess: 'none' };
+    case 'sso_request_approved':
+      return { status: 'active', browserAccess: 'granted' };
   }
 }
 
@@ -167,6 +183,18 @@ export function planPortalAccountTransition(facts: PortalAccountFacts, writer: P
         return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 400, 'not_acceptable', MSG_INVALID_INVITE);
       }
       return { status: 'active', browserAccess, bumpEpoch: true };
+    }
+
+    case 'access_request_approve': {
+      // Grants the browser portal to an existing (add-in) account. No epoch
+      // bump: granting must not kill the person's live add-in sessions.
+      if (status === 'disabled') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'disabled', 'This user is disabled. Reactivate them before approving.');
+      }
+      if (status === 'invited') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'invited', 'This user has a pending invite. Resend the invite instead.');
+      }
+      return { status: 'active', browserAccess: 'granted', bumpEpoch: false };
     }
 
     default:

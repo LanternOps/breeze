@@ -60,7 +60,7 @@ vi.mock('../db', () => ({
   }
 }));
 vi.mock('../db/schema', () => ({
-  portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt', contactId: 'contactId', authEpoch: 'authEpoch', browserAccess: 'browserAccess', entraOid: 'entraOid' },
+  portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt', contactId: 'contactId', authEpoch: 'authEpoch', browserAccess: 'browserAccess' },
   contacts: { id: 'id', orgId: 'orgId', email: 'email', roles: 'roles' },
   organizations: { id: 'id', name: 'name', deletedAt: 'deletedAt', partnerId: 'partnerId' },
   partners: { id: 'id', name: 'name', settings: 'settings' },
@@ -80,6 +80,10 @@ vi.mock('../routes/portal/helpers', () => ({
 }));
 vi.mock('../services/email', () => ({ getEmailService: () => ({ sendPortalInvite: sendInvite }) }));
 
+import { QueryBuilder } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { db } from '../db';
+import { portalUsers as realPortalUsers } from '../db/schema/portal';
 import { authMiddleware } from '../middleware/auth';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { purgePortalSessionsForUsers } from './portal/helpers';
@@ -93,8 +97,8 @@ describe('GET /organizations/:id/portal-users', () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org existence
       .mockResolvedValueOnce([
-        { id: 'pu-1', email: 'a@acme.example', name: 'A', passwordHash: 'h', status: 'active', receiveNotifications: true, lastLoginAt: null, invitedAt: null },
-        { id: 'pu-2', email: 'b@acme.example', name: null, passwordHash: null, status: 'active', receiveNotifications: true, lastLoginAt: null, invitedAt: null }
+        { id: 'pu-1', email: 'a@acme.example', name: 'A', passwordHash: 'h', status: 'active', receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'password' },
+        { id: 'pu-2', email: 'b@acme.example', name: null, passwordHash: null, status: 'active', receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'password' }
       ]);
     const res = await makeApp().request(`/organizations/${ORG_ID}/portal-users`);
     expect(res.status).toBe(200);
@@ -122,6 +126,21 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     // request input. A partner-scoped caller must hand a real id over, or
     // portal invites silently stay on the platform sender forever.
     expect((sendInvite.mock.calls.at(-1)![0] as { partnerId?: string | null }).partnerId).toBe('p-1');
+  });
+
+  it('matches the existing login case-insensitively (#11529: same comparison as the contact-invite path)', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    createContactMock.mockResolvedValueOnce({ id: 'ct-new' });
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new', email: 'ada@acme.example', status: 'invited' }]);
+    const res = await invite({ email: 'Ada@Acme.Example' });
+    expect(res.status).toBe(200);
+    const loginLookup = new PgDialect().sqlToQuery(selectWhereSpy.mock.calls[1]![0] as never);
+    expect(loginLookup.sql).toContain('lower(');
+    expect(loginLookup.params).toContain('ada@acme.example');
   });
 
   // ---- #3258 W03: an invited LOGIN is linked to the org's CONTACT ----
@@ -199,10 +218,37 @@ describe('POST /organizations/:id/portal-users/invite', () => {
 
     await invite({ email: 'Fresh@Acme.Example' });
 
-    expect(executeSpy).toHaveBeenCalledTimes(1);
-    const { sql: lockSql, params } = new PgDialect().sqlToQuery(executeSpy.mock.calls[0]![0] as never);
-    expect(lockSql).toMatch(/pg_advisory_xact_lock\(hashtext\(\$\d\), hashtext\(\$\d\)\)/i);
-    expect(params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG_ID}:fresh@acme.example`]);
+    // Taken twice: once before the existing-login read (Review Focus 3, below)
+    // and again by the contact resolver, a no-op re-take of the held lock.
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+    for (const [statement] of executeSpy.mock.calls) {
+      const { sql: lockSql, params } = new PgDialect().sqlToQuery(statement as never);
+      expect(lockSql).toMatch(/pg_advisory_xact_lock\(hashtext\(\$\d\), hashtext\(\$\d\)\)/i);
+      expect(params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG_ID}:fresh@acme.example`]);
+    }
+  });
+
+  it('a plain-email invite takes the per-address lock BEFORE it reads the existing login (W3 Review Focus 3)', async () => {
+    // Approving a self request takes this lock, re-checks "no account at this
+    // address" and inserts one. An invite that read the existing login before
+    // queueing on the lock would act on that stale "none" and insert a second
+    // portal_users row for the address (portal_users.email is not unique).
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])            // org existence
+      .mockResolvedValueOnce([])                          // existing-login read
+      .mockResolvedValueOnce([])                          // contact lookup
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    createContactMock.mockResolvedValueOnce({ id: 'ct-made' });
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new' }]);
+
+    await invite({ email: 'Race@Acme.Example' });
+
+    const firstLock = executeSpy.mock.invocationCallOrder[0]!;
+    const [orgRead, existingLoginRead] = selectWhereSpy.mock.invocationCallOrder;
+    expect(firstLock).toBeGreaterThan(orgRead!);
+    expect(firstLock).toBeLessThan(existingLoginRead!);
+    const { params } = new PgDialect().sqlToQuery(executeSpy.mock.calls[0]![0] as never);
+    expect(params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG_ID}:race@acme.example`]);
   });
 
   it('creates a portal-role contact when the org has none for the address', async () => {
@@ -247,7 +293,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
   it('re-inviting an existing login NEVER overwrites a contact link it already has', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, authMethod: 'password', status: 'invited', contactId: 'ct-existing', authEpoch: 1, browserAccess: 'granted', entraOid: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, authMethod: 'password', status: 'invited', contactId: 'ct-existing', authEpoch: 1, browserAccess: 'granted', hasExternalIdentity: false }])
       .mockResolvedValueOnce([{ name: 'Acme Co' }]);
     insertReturning.mockResolvedValueOnce([{ id: 'pu-1' }]);
 
@@ -270,7 +316,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
   it('re-inviting a login with NO contact link backfills one', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, authMethod: 'password', status: 'invited', contactId: null, authEpoch: 1, browserAccess: 'granted', entraOid: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, authMethod: 'password', status: 'invited', contactId: null, authEpoch: 1, browserAccess: 'granted', hasExternalIdentity: false }])
       .mockResolvedValueOnce([{ id: 'ct-1' }])
       .mockResolvedValueOnce([{ name: 'Acme Co' }]);
     insertReturning.mockResolvedValueOnce([{ id: 'pu-1' }]);
@@ -284,7 +330,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
   it('409s when the email is already an active account with a password', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'live@acme.example', passwordHash: 'h', authMethod: 'password', status: 'active', authEpoch: 1, browserAccess: 'granted', entraOid: null }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'live@acme.example', passwordHash: 'h', authMethod: 'password', status: 'active', authEpoch: 1, browserAccess: 'granted', hasExternalIdentity: false }]);
     const res = await invite({ email: 'live@acme.example' });
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
@@ -293,7 +339,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
   it('409s without mutation or email when the address belongs to an Entra identity', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-entra', email: 'entra@acme.example', passwordHash: null, authMethod: 'entra', status: 'active', contactId: null, authEpoch: 1, browserAccess: 'none', entraOid: 'oid-entra' }]);
+      .mockResolvedValueOnce([{ id: 'pu-entra', email: 'entra@acme.example', passwordHash: null, authMethod: 'entra', status: 'active', contactId: null, authEpoch: 1, browserAccess: 'none', hasExternalIdentity: true }]);
     const res = await invite({ email: 'entra@acme.example' });
     expect(res.status).toBe(409);
     expect(setSpy).not.toHaveBeenCalled();
@@ -303,7 +349,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
   it('409s when the existing row is disabled — disable is terminal, must not resurrect via invite', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'disabled@acme.example', passwordHash: 'h', authMethod: 'password', status: 'disabled', authEpoch: 1, browserAccess: 'granted', entraOid: null }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'disabled@acme.example', passwordHash: 'h', authMethod: 'password', status: 'disabled', authEpoch: 1, browserAccess: 'granted', hasExternalIdentity: false }]);
     const res = await invite({ email: 'disabled@acme.example' });
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
@@ -315,7 +361,7 @@ describe('PATCH /organizations/:id/portal-users/:userId', () => {
   it('disables a user', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])                         // org
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'a@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'active', authEpoch: 3, browserAccess: 'granted', entraOid: null }]); // target exists in org
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'a@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'active', authEpoch: 3, browserAccess: 'granted', hasExternalIdentity: false }]); // target exists in org
     insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]); // update .returning
     const res = await patch('pu-1', { status: 'disabled' });
     expect(res.status).toBe(200);
@@ -326,7 +372,7 @@ describe('PATCH /organizations/:id/portal-users/:userId', () => {
   it('rotates the durable session epoch when a user is reactivated', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'a@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'disabled', authEpoch: 3, browserAccess: 'granted', entraOid: null }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'a@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'disabled', authEpoch: 3, browserAccess: 'granted', hasExternalIdentity: false }]);
     insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'active' }]);
 
     const res = await patch('pu-1', { status: 'active' });
@@ -342,7 +388,7 @@ describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
   it('resends the invite to a pending (no-password) user', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'pending@acme.example', name: null, passwordHash: null, authMethod: 'password', status: 'invited', authEpoch: 1, browserAccess: 'granted', entraOid: null }]) // target
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'pending@acme.example', name: null, passwordHash: null, authMethod: 'password', status: 'invited', authEpoch: 1, browserAccess: 'granted', hasExternalIdentity: false }]) // target
       .mockResolvedValueOnce([{ name: 'Acme Co' }]); // org name
     const res = await resend('pu-1');
     expect(res.status).toBe(200);
@@ -353,7 +399,7 @@ describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
   it('409s when the target already has an active password-set account', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'live@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'active', authEpoch: 1, browserAccess: 'granted', entraOid: null }]); // target
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'live@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'active', authEpoch: 1, browserAccess: 'granted', hasExternalIdentity: false }]); // target
     const res = await resend('pu-1');
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
@@ -362,7 +408,7 @@ describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
   it('409s without email when the target is an Entra identity', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-entra', orgId: ORG_ID, email: 'entra@acme.example', name: null, passwordHash: null, authMethod: 'entra', status: 'active', authEpoch: 1, browserAccess: 'none', entraOid: 'oid-entra' }]);
+      .mockResolvedValueOnce([{ id: 'pu-entra', orgId: ORG_ID, email: 'entra@acme.example', name: null, passwordHash: null, authMethod: 'entra', status: 'active', authEpoch: 1, browserAccess: 'none', hasExternalIdentity: true }]);
     const res = await resend('pu-entra');
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
@@ -371,7 +417,7 @@ describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
   it('409s when the target is disabled — disable is terminal, must not resurrect via resend', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'disabled@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'disabled', authEpoch: 1, browserAccess: 'granted', entraOid: null }]); // target
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'disabled@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'disabled', authEpoch: 1, browserAccess: 'granted', hasExternalIdentity: false }]); // target
     const res = await resend('pu-1');
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
@@ -383,7 +429,7 @@ describe('POST /organizations/:id/portal-users/bulk-invite', () => {
   const PU_1 = 'aaaaaaaa-1111-4222-8333-444455556666';
   const PU_2 = 'bbbbbbbb-1111-4222-8333-444455556666';
   const PU_DISABLED = 'cccccccc-1111-4222-8333-444455556666';
-  const pending = { status: 'invited', browserAccess: 'granted', authMethod: 'password', passwordHash: null, entraOid: null, authEpoch: 1 };
+  const pending = { status: 'invited', browserAccess: 'granted', authMethod: 'password', passwordHash: null, hasExternalIdentity: false, authEpoch: 1 };
 
   it('invites all candidates returned by the pending-setup query when no userIds are given', async () => {
     selectResult
@@ -464,7 +510,7 @@ describe('portal account state machine on the MSP routes (W2)', () => {
   const render = (w: unknown) => new PgDialect().sqlToQuery(w as never);
   const row = (over: Record<string, unknown> = {}) => ({
     id: 'pu-1', orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password',
-    status: 'invited', authEpoch: 5, browserAccess: 'granted', entraOid: null, contactId: 'ct-1', ...over,
+    status: 'invited', authEpoch: 5, browserAccess: 'granted', hasExternalIdentity: false, contactId: 'ct-1', ...over,
   });
   const invite = (body: unknown) => makeApp().request(`/organizations/${ORG_ID}/portal-users/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const patch = (body: unknown) => makeApp().request(`/organizations/${ORG_ID}/portal-users/pu-1`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -475,7 +521,7 @@ describe('portal account state machine on the MSP routes (W2)', () => {
   it('invite of an identity-only (entra) account → 409 PORTAL_INVITE_EXTERNAL_IDENTITY, no write, no email', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([row({ authMethod: 'entra', status: 'active', browserAccess: 'none', entraOid: 'oid-1' })]);
+      .mockResolvedValueOnce([row({ authMethod: 'entra', status: 'active', browserAccess: 'none', hasExternalIdentity: true })]);
     const res = await invite({ email: 'cust@acme.example' });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'This identity is managed by an external sign-in provider.', code: 'PORTAL_INVITE_EXTERNAL_IDENTITY' });
@@ -486,7 +532,7 @@ describe('portal account state machine on the MSP routes (W2)', () => {
   it('invite of a password row that carries an Entra identity is identity-managed too', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([row({ entraOid: 'oid-1' })]);
+      .mockResolvedValueOnce([row({ hasExternalIdentity: true })]);
     const res = await invite({ email: 'cust@acme.example' });
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('PORTAL_INVITE_EXTERNAL_IDENTITY');
@@ -637,7 +683,7 @@ describe('portal account state machine on the MSP routes (W2)', () => {
         row({ id: 'pu-ok' }),
         // Defence in depth: even if the SQL filter let these through, the
         // state module's isBulkInviteEligible drops them.
-        row({ id: 'pu-entra', authMethod: 'entra', browserAccess: 'none', entraOid: 'oid-1' }),
+        row({ id: 'pu-entra', authMethod: 'entra', browserAccess: 'none', hasExternalIdentity: true }),
         row({ id: 'pu-disabled', status: 'disabled' }),
         row({ id: 'pu-hash', passwordHash: 'h', status: 'active' }),
       ])
@@ -650,8 +696,91 @@ describe('portal account state machine on the MSP routes (W2)', () => {
 
     // The candidate query itself (the 2nd select, after the org lookup) is narrowed.
     const candidateWhere = render(selectWhereSpy.mock.calls[1]![0]);
-    expect(candidateWhere.params).toEqual(expect.arrayContaining(['authMethod', 'password', 'passwordHash', 'entraOid', 'status', 'invited', 'active']));
+    expect(candidateWhere.params).toEqual(expect.arrayContaining(['authMethod', 'password', 'passwordHash', 'status', 'invited', 'active']));
     expect(candidateWhere.params).not.toContain('disabled');
+    // W3: "no external identity" is NOT EXISTS over portal_user_identities, correlated to the row.
+    expect(candidateWhere.params).not.toContain('entraOid');
+    expect(candidateWhere.sql).toMatch(/not exists \(select 1 from "portal_user_identities" "\w+" where "\w+"\."portal_user_id" = "portal_users"\."id"\)/);
     expect(issueTokenMock).toHaveBeenCalledWith(expect.objectContaining({ portalUserId: 'pu-ok', authEpoch: 6 }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Portal registration W3 (identities release B): external identity is read
+// from portal_user_identities (portalUserHasIdentitySql), not entra_oid.
+// The real-Postgres proofs are in
+// __tests__/integration/portalUserIdentities.integration.test.ts.
+// ---------------------------------------------------------------------------
+
+describe('identities release B on the MSP portal-user routes (W3)', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 'pu-1', orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password',
+    status: 'invited', authEpoch: 5, browserAccess: 'granted', hasExternalIdentity: false, contactId: 'ct-1', ...over,
+  });
+  const invite = (body: unknown) => makeApp().request(`/organizations/${ORG_ID}/portal-users/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const resend = () => makeApp().request(`/organizations/${ORG_ID}/portal-users/pu-1/resend-invite`, { method: 'POST' });
+  /** The selection's hasExternalIdentity rendered in a single-table select — where drizzle strips qualifiers (#9692). */
+  const renderIdentityColumn = (callIndex: number) => {
+    const cols = vi.mocked(db.select).mock.calls[callIndex]![0] as unknown as Record<string, unknown>;
+    expect(cols).not.toHaveProperty('entraOid');
+    return new QueryBuilder().select({ id: realPortalUsers.id, has: cols.hasExternalIdentity as SQL }).from(realPortalUsers).toSQL().sql;
+  };
+
+  it('an account with an identity row is identity-managed even when entra_oid is NULL', async () => {
+    // A password account whose only external identity lives in portal_user_identities.
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([row({ entraOid: null, hasExternalIdentity: true })]);
+    const res = await invite({ email: 'cust@acme.example' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('PORTAL_INVITE_EXTERNAL_IDENTITY');
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(sendInvite).not.toHaveBeenCalled();
+
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([row({ entraOid: null, hasExternalIdentity: true })]);
+    const resent = await resend();
+    expect(resent.status).toBe(409);
+    expect((await resent.json()).code).toBe('PORTAL_USER_IDENTITY_MANAGED');
+  });
+
+  it('an identity on ANOTHER user does not make this user identity-managed', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([row({ hasExternalIdentity: false })])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    const res = await resend();
+    expect(res.status).toBe(200);
+    // The fact comes from an EXISTS correlated to THIS row's id, spelled with
+    // its table so a single-table select cannot rebind it to the subquery.
+    expect(renderIdentityColumn(1)).toMatch(/where "\w+"\."portal_user_id" = "portal_users"\."id"\)/);
+  });
+
+  it('the invite-by-email reader takes the identity fact from portal_user_identities too', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([row({ hasExternalIdentity: true })]);
+    await invite({ email: 'cust@acme.example' });
+    expect(renderIdentityColumn(1)).toMatch(/exists \(select 1 from "portal_user_identities"/);
+  });
+
+  it('bulk invite skips accounts with any identity row', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([
+        row({ id: 'pu-ok' }),
+        // A password row whose identity lives only in portal_user_identities:
+        // defence in depth behind the SQL NOT EXISTS.
+        row({ id: 'pu-identity', entraOid: null, hasExternalIdentity: true }),
+      ])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    insertReturning.mockResolvedValue([{ authEpoch: 6 }]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-users/bulk-invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([{ id: 'pu-ok', emailSent: true }]);
+    const candidateWhere = new PgDialect().sqlToQuery(selectWhereSpy.mock.calls[1]![0] as never);
+    expect(candidateWhere.sql).toMatch(/not exists \(select 1 from "portal_user_identities"/);
+    expect(renderIdentityColumn(1)).toMatch(/= "portal_users"\."id"\)/);
   });
 });

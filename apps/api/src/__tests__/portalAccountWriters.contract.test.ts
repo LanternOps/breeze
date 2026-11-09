@@ -33,6 +33,10 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // Portal registration W1 (#11378) contact invite: create + reuse, both
   // planned by the state module and epoch-guarded like orgPortalUsers.ts.
   'apps/api/src/services/contacts/portalInvite.ts': { kind: 'state-module' },
+  // Portal registration W3 (#11380): approving an access request creates an
+  // account (initialPortalAccountState) or grants browser access to an add-in
+  // login (planPortalAccountTransition, epoch-guarded).
+  'apps/api/src/services/portalAccessRequests.ts': { kind: 'state-module' },
   'apps/api/src/routes/portal/profile.ts': { kind: 'no-state', reason: 'name / receiveNotifications / passwordHash only' },
 };
 

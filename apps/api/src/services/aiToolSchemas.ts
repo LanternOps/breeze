@@ -42,7 +42,9 @@ import {
   resolveConcernToolSchema,
   scheduleCheckInSchema,
   snoozeConcernToolSchema,
+  WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES,
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
+  wispCheckInTriggerSchema,
 } from '@breeze/shared';
 import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
@@ -455,19 +457,27 @@ export const listLinksShape = {
  * Wisp check-in timers (#10991 W03; services/wisp/checkInTools.ts). The shared
  * validators (packages/shared/src/validators/wispCheckIns.ts) are the source
  * of truth, as for the concern and link tools; checkInTools.test.ts pins the
- * key parity. The delayMinutes / at XOR lives in the shared schema's
- * superRefine (toolInputSchemas uses it as-is), so the descriptions say it
- * too. `list_check_ins` = the shared empty strict object plus the tool-only
- * output budget (A-W05).
+ * key parity. The delayMinutes / at / trigger XOR lives in the shared
+ * schema's superRefine (toolInputSchemas uses it as-is), so the descriptions
+ * say it too. `trigger` (W04 #11493) is the shared trigger object with its
+ * fields described. `list_check_ins` = the shared empty strict object plus the
+ * tool-only output budget (A-W05).
  */
 export const LIST_CHECK_INS_DEFAULT_LIMIT = 20;
 export const LIST_CHECK_INS_MAX_LIMIT = 50;
 const sci = scheduleCheckInSchema.shape;
+const scit = wispCheckInTriggerSchema.shape;
 export const scheduleCheckInShape = {
-  delayMinutes: sci.delayMinutes.describe(`Minutes from now until it is due (1 to ${WISP_CHECK_IN_MAX_DELAY_MINUTES}). Give this or at, not both`),
-  at: sci.at.describe('When it is due: ISO 8601 datetime with offset, 1 minute to 7 days ahead. Give this or delayMinutes, not both'),
+  delayMinutes: sci.delayMinutes.describe(`Minutes from now until it is due (1 to ${WISP_CHECK_IN_MAX_DELAY_MINUTES}). Give exactly one of delayMinutes, at or trigger`),
+  at: sci.at.describe('When it is due: ISO 8601 datetime with offset, 1 minute to 7 days ahead. Give exactly one of delayMinutes, at or trigger'),
   instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars)'),
   subject: sci.subject.describe('Optional: the Breeze object it is about (kind + UUID); its org is read from the object'),
+  trigger: z.object({
+    // The enum names itself; no description.
+    event: scit.event,
+    subjectId: scit.subjectId.describe('UUID of the device, script execution, device command or agent run'),
+    deadlineMinutes: scit.deadlineMinutes.describe(`Fires anyway then, saying it did not happen (default ${WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES}, max ${WISP_CHECK_IN_MAX_DELAY_MINUTES})`),
+  }).optional().describe('Fire on an event instead of a time. Give exactly one of delayMinutes, at or trigger'),
 };
 export const listCheckInsInputSchema = listCheckInsToolSchema.extend({
   limit: z.number().int().min(1).max(LIST_CHECK_INS_MAX_LIMIT).optional(),
@@ -489,18 +499,31 @@ export const launchSpecialistInputSchema = z.strictObject({
   reason: z.string().trim().min(5).max(500),
 });
 const ls = launchSpecialistInputSchema.shape;
-export const launchSpecialistShape = {
-  orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
-  kind: ls.kind.describe('Which specialist. sweep (needs a schedule), analysis (needs workspace), device_troubleshooting run now; rest ask first'),
-  // #10144: every kind's exact keys — the params schemas in
-  // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
-  // invalid_params. The two long kinds are listed in the tool description
-  // (aiToolsWisp.ts): a parameter description is capped at 160 chars (A-W03).
-  params: ls.params.describe(
-    'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
-  ),
-  reason: ls.reason.describe('Why, in one sentence a technician would accept'),
-};
+// #10406 item 1: the advertised text follows the server's workspace flag
+// (aiWorkspaceEnabled(), passed in so this file stays free of config/env).
+// The kind enum is unchanged; a call to an unavailable kind is still refused.
+// Capped at 160 chars by aiTools.descriptionBudget.contract.test.ts.
+export function launchSpecialistKindDescribe(workspaceEnabled: boolean): string {
+  return workspaceEnabled
+    ? 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, analysis, sweep if scheduled. Rest ask first'
+    : 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, sweep if scheduled. analysis is off here. Rest ask first';
+}
+export function launchSpecialistShapeFor(workspaceEnabled: boolean) {
+  return {
+    orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
+    kind: ls.kind.describe(launchSpecialistKindDescribe(workspaceEnabled)),
+    // #10144: every kind's exact keys — the params schemas in
+    // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
+    // invalid_params. The kinds whose keys do not fit here (device_troubleshooting,
+    // assessment, bulk_ticket_reply, operator_recipe) are listed in the tool
+    // description (aiToolsWisp.ts launchSpecialistDescription): a parameter
+    // description is capped at 160 chars (A-W03).
+    params: ls.params.describe(
+      'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+    ),
+    reason: ls.reason.describe('Why, in one sentence a technician would accept'),
+  };
+}
 // The approval carrier: never model-callable (HUMAN_ONLY_TOOLS); the schema
 // bounds what the coordinator mints.
 export const wispSpecialistRequestSchema = z.strictObject({

@@ -98,6 +98,11 @@ export const MAIL_PURPOSES = {
   'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  // Portal registration W3 (#11380, OD3): the decision on a portal access
+  // request, to the person who asked. Customer-facing, same envelope as the
+  // invite. Send sites: EmailService.sendPortalAccessApproved / ...Declined.
+  'portal.access_request.approved': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'portal.access_request.declined': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   // Caller verification (#6354 W03): the request-confirmation link sent to the
   // customer contact. Customer-facing, so it rides the partner's support stream
   // (their sending domain when verified, company-name fallback otherwise).

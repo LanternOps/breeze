@@ -6,6 +6,7 @@ import { backupSnapshotFiles, backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { readableIndexCondition } from './backupRestoreIntegrity';
 import { createSelectionResolver, normalizeSnapshotPath, type SelectedSnapshotPathsResolution } from './backupSelectedPaths';
+import type { SnapshotEntryKind } from './backupSnapshotEntryKind';
 
 /**
  * One-level, keyset-paged listing of a snapshot's file index (#8230).
@@ -73,7 +74,10 @@ export type BrowseEntry = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
-  /** Directories only: indexed files at any depth beneath it (#9628). */
+  /**
+   * Directories only: indexed files at any depth beneath it (#9628), symlinks
+   * included, directory entries not (#11235). Absent on a search result.
+   */
   fileCount?: number;
 };
 
@@ -165,14 +169,15 @@ function afterSourcePath(after: string | null) {
 /**
  * One keyset page of the stored source paths a selective restore may resolve
  * against: the same rows the listing would show (#11026), decided in the
- * statement that reads them. Ordered by source_path, the second column of
+ * statement that reads them, with each row's kind (a directory entry is the
+ * folder it names, #11235). Ordered by source_path, the second column of
  * backup_snapshot_files_snapshot_source_idx, so each page is an index range
  * once the table's statistics know the snapshot's rows (#11209). Exported,
  * unexecuted, so a test can EXPLAIN this exact statement.
  */
 export function readableSourcePathPageQuery(snapshotDbId: string, after: string | null) {
   return db
-    .select({ sourcePath: backupSnapshotFiles.sourcePath })
+    .select({ sourcePath: backupSnapshotFiles.sourcePath, kind: backupSnapshotFiles.kind })
     .from(backupSnapshotFiles)
     .where(and(
       eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
@@ -183,18 +188,15 @@ export function readableSourcePathPageQuery(snapshotDbId: string, after: string 
     .limit(SELECTION_PAGE_SIZE);
 }
 
-async function readableSourcePathPage(snapshotDbId: string, after: string | null): Promise<string[]> {
-  const rows = await readableSourcePathPageQuery(snapshotDbId, after);
-  return rows.map((row) => row.sourcePath);
-}
+type ReadableSourcePath = { sourcePath: string; kind: SnapshotEntryKind | null };
 
-async function* readableSourcePaths(snapshotDbId: string): AsyncGenerator<string[]> {
+async function* readableSourcePaths(snapshotDbId: string): AsyncGenerator<ReadableSourcePath[]> {
   let after: string | null = null;
   for (;;) {
-    const page = await readableSourcePathPage(snapshotDbId, after);
+    const page: ReadableSourcePath[] = await readableSourcePathPageQuery(snapshotDbId, after);
     if (page.length > 0) yield page;
     if (page.length < SELECTION_PAGE_SIZE) return;
-    after = page[page.length - 1]!;
+    after = page[page.length - 1]!.sourcePath;
   }
 }
 
@@ -204,7 +206,7 @@ async function* readableSourcePaths(snapshotDbId: string): AsyncGenerator<string
  */
 export async function readableSnapshotSourcePaths(snapshotDbId: string): Promise<string[]> {
   const all: string[] = [];
-  for await (const page of readableSourcePaths(snapshotDbId)) all.push(...page);
+  for await (const page of readableSourcePaths(snapshotDbId)) all.push(...page.map((row) => row.sourcePath));
   return all;
 }
 
@@ -226,7 +228,7 @@ export async function resolveSelectedSnapshotPathsInDb(
   let anyRows = false;
   for await (const page of readableSourcePaths(snapshotDbId)) {
     anyRows = true;
-    for (const path of page) resolver.add(path);
+    for (const row of page) resolver.add(row.sourcePath, row.kind);
     // Nothing to match: the first page already answers whether rows exist.
     if (selected.length === 0) break;
   }
@@ -251,9 +253,15 @@ export async function listSnapshotDirectory(params: {
   // np = stored path with `\`→`/`, repeated `/` collapsed and leading `/`
   // stripped — the same segmentation normalizeSnapshotPath + filter(Boolean)
   // gave the old in-JS tree builder, so Windows and POSIX roots are unchanged.
+  //
+  // A directory entry (kind 'dir', #11235) is a folder at its own level: it
+  // groups with the rows beneath it, so a folder recorded for its mode or ACL
+  // is listed once, and an empty one is listed at all. It is not counted as a
+  // file. A symlink is a file. A content-less row of unknown kind (written
+  // before kinds were recorded) is a file, as it always was.
   const result = await withStatementTimeout(params.statementTimeoutMs ?? BROWSE_STATEMENT_TIMEOUT_MS, (tx) => tx.execute(sql`
     WITH n AS (
-      SELECT source_path, size, modified_at,
+      SELECT source_path, size, modified_at, kind,
         regexp_replace(regexp_replace(replace(source_path, E'\\\\', '/'), '/{2,}', '/', 'g'), '^/+', '') AS np
       FROM backup_snapshot_files
       WHERE snapshot_db_id = ${snapshotDbId}
@@ -264,19 +272,19 @@ export async function listSnapshotDirectory(params: {
         )
     ),
     r AS (
-      SELECT source_path, size, modified_at,
+      SELECT source_path, size, modified_at, kind,
         CASE WHEN ${prefix}::text = '' THEN np ELSE substr(np, length(${prefix}::text) + 2) END AS rest
       FROM n
       WHERE ${prefix}::text = '' OR left(np, length(${prefix}::text) + 1) = ${prefix}::text || '/'
     ),
     g AS (
       SELECT split_part(rest, '/', 1) AS name,
-        position('/' in rest) > 0 AS is_dir,
-        CASE WHEN position('/' in rest) > 0 THEN 0 ELSE 1 END AS rank,
+        (position('/' in rest) > 0 OR kind IS NOT DISTINCT FROM 'dir') AS is_dir,
+        CASE WHEN position('/' in rest) > 0 OR kind IS NOT DISTINCT FROM 'dir' THEN 0 ELSE 1 END AS rank,
         min(source_path) AS source_path,
         max(size) AS size,
         max(modified_at) AS modified_at,
-        count(*) AS file_count
+        count(*) FILTER (WHERE kind IS DISTINCT FROM 'dir') AS file_count
       FROM r
       WHERE rest <> ''
       GROUP BY 1, 2, 3
@@ -310,10 +318,12 @@ function lastSegment(sourcePath: string): string {
 }
 
 /**
- * Files of a snapshot whose stored path contains `query`, case-insensitively,
+ * Entries of a snapshot whose stored path contains `query`, case-insensitively,
  * anywhere: a file name or any folder above it. Matched with position(), so
  * `%` and `_` are plain characters. Only an index that may be listed is read
  * (readableIndexCondition), in source_path order, keyset-paged after `after`.
+ * A directory entry (#11235) is returned as a folder at its browse path, the
+ * value browse takes back as `dir` and selection resolves.
  */
 export async function searchSnapshotFiles(params: {
   snapshotDbId: string;
@@ -330,6 +340,7 @@ export async function searchSnapshotFiles(params: {
         sourcePath: backupSnapshotFiles.sourcePath,
         size: backupSnapshotFiles.size,
         modifiedAt: backupSnapshotFiles.modifiedAt,
+        kind: backupSnapshotFiles.kind,
       })
       .from(backupSnapshotFiles)
       .where(and(
@@ -346,13 +357,19 @@ export async function searchSnapshotFiles(params: {
 
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
-  const entries: BrowseEntry[] = page.map((row) => ({
-    name: lastSegment(row.sourcePath),
-    path: normalizeSnapshotPath(row.sourcePath),
-    type: 'file',
-    sizeBytes: row.size === null || row.size === undefined ? undefined : Number(row.size),
-    modifiedAt: row.modifiedAt ? new Date(row.modifiedAt).toISOString() : undefined,
-  }));
+  const entries: BrowseEntry[] = page.map((row) => {
+    if (row.kind === 'dir') {
+      const segments = dirSegments(row.sourcePath);
+      return { name: lastSegment(row.sourcePath), path: `/${segments.join('/')}`, type: 'directory' };
+    }
+    return {
+      name: lastSegment(row.sourcePath),
+      path: normalizeSnapshotPath(row.sourcePath),
+      type: 'file',
+      sizeBytes: row.size === null || row.size === undefined ? undefined : Number(row.size),
+      modifiedAt: row.modifiedAt ? new Date(row.modifiedAt).toISOString() : undefined,
+    };
+  });
   const last = page[page.length - 1];
   return { entries, nextCursor: hasMore && last ? encodeSearchCursor(last.sourcePath) : null };
 }

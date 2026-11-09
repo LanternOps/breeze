@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
+import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShapeFor, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
@@ -51,7 +51,7 @@ import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
 import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
 import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
-import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
+import { aiScriptAuthoringEnabled, aiWorkspaceEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { captureException, captureMessage } from './sentry';
@@ -111,8 +111,12 @@ export type PreToolUseResult =
    * reach. Set for every allowed call of a Wisp session; absent otherwise,
    * and the handler then reads `getAuth()` as before. A Wisp session's call
    * that arrives WITHOUT it is denied (`wispMissingToolAuthDenial`).
+   *
+   * `approvalWaitMs` (#10416): how long the call waited on its approval card.
+   * Set only for Wisp sessions; the handler adds it to the result through
+   * `withApprovalWait` so the model can tell the user the step was waiting.
    */
-  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void> }
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void>; approvalWaitMs?: number }
   /**
    * Not run by THIS session. Two different things wear this shape:
    *
@@ -161,6 +165,52 @@ function wispMissingToolAuthDenial(
   console.error(`[AI-SDK] ${err.message}`);
   captureException(err);
   return { allowed: false, error: WISP_UNGATED_CALL_MESSAGE };
+}
+
+/** #10416: a wait at least this long is worth mentioning in the reply. */
+export const APPROVAL_WAIT_NOTE_MIN_MS = 30_000;
+
+/** #10416: the wait in whole seconds when it is worth mentioning, else null. */
+function approvalWaitSeconds(waitMs: number | undefined): number | null {
+  return waitMs !== undefined && waitMs >= APPROVAL_WAIT_NOTE_MIN_MS ? Math.round(waitMs / 1000) : null;
+}
+
+function isJsonObjectText(output: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #10416: put a long approval wait on the tool result the model reads, as
+ * `approvalWaitSeconds`, so its reply can say the step was waiting (a user
+ * waited 290 s and asked "stuck?"). Only a JSON object result is changed, and
+ * only when `waitMs` is at least APPROVAL_WAIT_NOTE_MIN_MS; anything else is
+ * returned unchanged, and `approvalWaitBlock` carries the wait instead. The
+ * pre-hook sets the wait for Wisp sessions only.
+ */
+export function withApprovalWait(output: string, waitMs: number | undefined): string {
+  const seconds = approvalWaitSeconds(waitMs);
+  if (seconds === null || !isJsonObjectText(output)) return output;
+  return JSON.stringify({ ...(JSON.parse(output) as Record<string, unknown>), approvalWaitSeconds: seconds });
+}
+
+/**
+ * #10416: the wait as its own text block, for a result `withApprovalWait`
+ * cannot merge into (plain text, an array, a screenshot's image blocks).
+ * Null when there is nothing to say, or when `output` is a JSON object that
+ * already carries it.
+ */
+export function approvalWaitBlock(
+  waitMs: number | undefined,
+  output?: string,
+): { type: 'text'; text: string } | null {
+  const seconds = approvalWaitSeconds(waitMs);
+  if (seconds === null || (output !== undefined && isJsonObjectText(output))) return null;
+  return { type: 'text', text: JSON.stringify({ approvalWaitSeconds: seconds }) };
 }
 
 /**
@@ -1119,6 +1169,8 @@ function makeToolHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
+    // #10416: how long the call waited on its approval (Wisp sessions only).
+    let approvalWaitMs: number | undefined;
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
@@ -1147,6 +1199,7 @@ function makeToolHandler(
           : check.context;
         callToolAuth = check.toolAuth;
         onSuccess = check.onSuccess;
+        approvalWaitMs = check.approvalWaitMs;
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
@@ -1244,7 +1297,7 @@ function makeToolHandler(
         toolTimeout,
         toolName,
       );
-      const compactResult = compactToolResultForChat(toolName, result);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result), approvalWaitMs);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
       // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
@@ -1267,6 +1320,8 @@ function makeToolHandler(
               },
             ];
             contentBlocks.push(...visionMetadataTextBlocks(toolName, parsed));
+            const waitBlock = approvalWaitBlock(approvalWaitMs);
+            if (waitBlock) contentBlocks.push(waitBlock);
             notifyToolSuccess(onSuccess, toolName, args, result, false);
             return { content: contentBlocks };
           }
@@ -1291,7 +1346,11 @@ function makeToolHandler(
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs);
       notifyToolSuccess(onSuccess, toolName, args, result, isToolError);
-      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+      const waitBlock = approvalWaitBlock(approvalWaitMs, compactResult);
+      return {
+        content: [{ type: 'text' as const, text: compactResult }, ...(waitBlock ? [waitBlock] : [])],
+        ...(isToolError ? { isError: true } : {}),
+      };
     } catch (err) {
       const durationMs = Date.now() - startTime;
       // A thrown error here is an internal fault — its message is very often a
@@ -1371,6 +1430,8 @@ function makeSessionAwareHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
+    // #10416: how long the call waited on its approval (Wisp sessions only).
+    let approvalWaitMs: number | undefined;
     if (onPreToolUse) {
       let check: PreToolUseResult;
       try {
@@ -1393,6 +1454,7 @@ function makeSessionAwareHandler(
       intentId = check.intentId;
       callToolAuth = check.toolAuth;
       onSuccess = check.onSuccess;
+      approvalWaitMs = check.approvalWaitMs;
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
     if (missingWispAuth) {
@@ -1477,7 +1539,7 @@ function makeSessionAwareHandler(
         sealed = { intentId, sealedResult: split.sealedResult };
       }
 
-      const compactResult = compactToolResultForChat(toolName, result);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result), approvalWaitMs);
 
       // Detect error responses returned as JSON strings by tool handlers
       let isToolError = false;
@@ -1491,7 +1553,11 @@ function makeSessionAwareHandler(
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
       notifyToolSuccess(onSuccess, toolName, args, result, isToolError || (typeof handlerResult !== 'string' && handlerResult.kind === 'error'));
-      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+      const waitBlock = approvalWaitBlock(approvalWaitMs, compactResult);
+      return {
+        content: [{ type: 'text' as const, text: compactResult }, ...(waitBlock ? [waitBlock] : [])],
+        ...(isToolError ? { isError: true } : {}),
+      };
     } catch (err) {
       const durationMs = Date.now() - startTime;
       // A thrown error here is an internal fault — its message is very often a
@@ -1866,7 +1932,7 @@ export function wispSpecialistToolDefinitions(
 function wispSpecialistToolTemplates(): SdkTool[] {
   if (!wispEnabled()) return [];
   return [
-    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShape, lateBoundToolHandler('launch_specialist')),
+    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShapeFor(aiWorkspaceEnabled()), lateBoundToolHandler('launch_specialist')),
   ] as SdkTool[];
 }
 

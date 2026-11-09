@@ -23,7 +23,7 @@
 import type { Concern } from '@breeze/shared';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { wrapUntrustedData } from '../aiInputSanitizer';
-import type { AssessmentDigest, AssessmentReason, OrgReadiness } from '../wisp/assessmentTypes';
+import type { AssessmentDigest, AssessmentReason, OrgReadiness, WatchHitSummary } from '../wisp/assessmentTypes';
 import { AGENT_PROMPT_AUTHORITY_DISCLAIMER, sanitizeSweepText, type AgentRunPromptContext } from './runnerPrompt';
 
 /**
@@ -77,9 +77,55 @@ const FIRST_LOOK_LINE =
   + 'below, failed patches, pending reboots, backups, security findings) before you choose an outcome; stay quiet '
   + 'only once you have looked and found nothing worth tracking.';
 
+/**
+ * #10406: an on-demand assessment reads the open alerts like a first look, but
+ * an earlier assessment may well exist, so it gets its own line rather than
+ * FIRST_LOOK_LINE's "no completed earlier assessment".
+ */
+const ON_DEMAND_LINE =
+  'On demand: a person asked for this assessment now, so judge the org\'s current state, not what changed — '
+  + '"call nothing when nothing changed" does not apply. Work through the open alerts below and read what else is '
+  + 'open with your tools (failed patches, pending reboots, backups, security findings) before you choose an '
+  + 'outcome; stay quiet only once you have looked and found nothing worth tracking.';
+
 const SUMMARY_MAX = 300;
 const ORG_NAME_MAX = 200;
 const TITLE_MAX = 160;
+
+const WATCH_HIT_SUBJECT_LABEL: Record<WatchHitSummary['subject'], string> = {
+  alert: 'open alert(s)',
+  device: 'device(s) below the threshold',
+  finding: 'open finding(s) (device vulnerabilities / EDR detections)',
+};
+const WATCH_HIT_CHANGE_LINE: Record<WatchHitSummary['change'], string> = {
+  first: 'first evaluation of this watch',
+  new: 'new: the previous evaluation found none',
+  cleared: 'cleared: nothing matches any more',
+  changed: 'changed since the previous evaluation (hits added, removed or changed state)',
+};
+
+/**
+ * #11424: the scheduler's in-code evaluation of the requesting watch, rendered
+ * under the watch lines so the run does not re-query it. Every value is an
+ * enum, a count or a uuid (parseWatchHitSummary drops anything else).
+ */
+export function watchHitLines(hits: WatchHitSummary): string[] {
+  const previous = hits.previousCount === null ? 'none recorded' : String(hits.previousCount);
+  const lines = [
+    'Wisp evaluated this watch in code and wakes you only when its hit-set changes; the hits below are current, so do not re-query them to find out what changed.',
+    `hits: ${hits.count} ${WATCH_HIT_SUBJECT_LABEL[hits.subject]} in org ${hits.orgId} (previous evaluation: ${previous}) — ${WATCH_HIT_CHANGE_LINE[hits.change]}`,
+  ];
+  if (hits.ids.length > 0) {
+    const more = hits.count > hits.ids.length ? ` (${hits.count - hits.ids.length} more not listed)` : '';
+    // Patch devices carry no timestamp, so they come in id order.
+    const order = hits.subject === 'device' ? '' : ', newest first';
+    lines.push(`hit ids${order}: ${hits.ids.join(', ')}${more}`);
+  }
+  if (hits.partnerWide) {
+    lines.push('partner-wide watch: evaluated in this org only; the previous evaluation may have covered another org.');
+  }
+  return lines;
+}
 
 function reasonLine(reason: AssessmentReason): string {
   switch (reason.kind) {
@@ -102,6 +148,9 @@ function reasonLine(reason: AssessmentReason): string {
       return 'onboarding (first look at this org under the grant)';
     case 'tick':
       return 'periodic check';
+    // The request id is traceability only: no tool can look it up (#10388).
+    case 'on_demand':
+      return 'on demand (a person asked Wisp for this assessment in chat)';
     default: {
       const exhaustive: never = reason;
       return `unknown (${String((exhaustive as { kind?: unknown }).kind)})`;
@@ -192,6 +241,9 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     lines.push(wrapUntrustedData('wisp-org-name', sanitizeSweepText(a.org.name ?? '', ORG_NAME_MAX) || '(no name)'));
   }
   lines.push('- New problem worth tracking → record_concern (one subject per call, at most 10 per run).');
+  // #11426: the same-org rollup folds device concerns sharing a pattern into one.
+  lines.push('  When the same problem recurs across devices, give each of those record_concern calls the same short '
+    + 'pattern key (e.g. phantom_incident_event) so Wisp can group them.');
   lines.push("- Known concern changed or is fixed → update_concern. To close it send status: 'resolved' with an "
     + 'outcome; a summary edit alone keeps it open.');
   lines.push('- The person should act now → nudge (one concern, one next step).');
@@ -199,7 +251,7 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('- Needs a specialist → request_specialist (recorded now; Wisp\'s coordinator handles it after this '
     + 'assessment, and kinds that ask first become an approval card; at most 3 per assessment).');
   lines.push(`Why this assessment: ${a ? reasonLine(a.reason) : 'unknown'}.`);
-  if (a?.firstLook) lines.push(FIRST_LOOK_LINE);
+  if (a?.firstLook) lines.push(a.reason.kind === 'on_demand' ? ON_DEMAND_LINE : FIRST_LOOK_LINE);
   lines.push('');
 
   // (2) Authority disclaimer.
@@ -271,6 +323,7 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     lines.push('');
     lines.push('## Watch that requested this assessment');
     lines.push(...a.watchLines);
+    if (a.reason.kind === 'watch' && a.reason.hits) lines.push(...watchHitLines(a.reason.hits));
   }
 
   // (7) Tool-output rule.

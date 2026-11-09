@@ -75,6 +75,7 @@ import { assessableOrgIds } from './assessableOrgs';
 import { readinessInventory } from './readiness';
 import { getOrCreateThread, seedContextForSession, updateThreadPicture } from './threads';
 import { listWatches } from './watches';
+import { parseWatchHitSummary } from './watchHits';
 import { incWispAssessment } from '../wispMetrics';
 import type {
   AssessmentDigest,
@@ -729,10 +730,16 @@ function parseReason(v: unknown): AssessmentReason | null {
         : null;
     case 'tick':
       return { kind: 'tick' };
-    case 'watch':
-      return isNonEmptyString(r.watchId) ? { kind: 'watch', watchId: r.watchId } : null;
+    case 'watch': {
+      if (!isNonEmptyString(r.watchId)) return null;
+      // #11424: the scheduler's hit summary; a malformed one is dropped, not the reason.
+      const hits = parseWatchHitSummary(r.hits);
+      return hits ? { kind: 'watch', watchId: r.watchId, hits } : { kind: 'watch', watchId: r.watchId };
+    }
     case 'onboarding':
       return { kind: 'onboarding' };
+    case 'on_demand':
+      return isNonEmptyString(r.requestId) ? { kind: 'on_demand', requestId: r.requestId } : null;
     default:
       return null;
   }
@@ -1121,8 +1128,10 @@ export async function loadAssessmentContext(run: {
 
   const since = ref.watermark ? new Date(ref.watermark) : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
   // #10389: nothing earlier to diff against, so the alerts are the org's
-  // current open ones rather than the 24 h fallback window.
-  const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding';
+  // current open ones rather than the 24 h fallback window. #10406: a person
+  // asking "go through the open alerts" gets the same open-alerts digest,
+  // whatever the watermark.
+  const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding' || ref.reason.kind === 'on_demand';
   const reason = ref.reason;
   const anomalyIncidentId = reason.kind === 'event' ? reason.anomalyIncidentId ?? null : null;
   const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook, anomalyIncidentId);
@@ -1143,6 +1152,7 @@ export async function loadAssessmentContext(run: {
     openConcerns,
     changedSince: since.toISOString(),
     firstLook,
+    noEarlierAssessment: ref.watermark === null,
     digest,
     watch,
     reason,

@@ -2935,5 +2935,8 @@
   "featureLock": {
     "lockedLabel": "Verrouillé",
     "upgrade": "Voir les offres"
+  },
+  "inheritChoice": {
+    "inherit": "Hériter — {{value}} ({{source}})"
   }
 }

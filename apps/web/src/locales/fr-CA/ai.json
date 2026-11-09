@@ -617,7 +617,11 @@
     "thinking": "Réflexion"
   },
   "aiThinking": {
-    "label": "Réflexion en cours… {{seconds}} s"
+    "label": "Réflexion en cours… {{seconds}} s",
+    "waitingApproval": "En attente de votre approbation",
+    "waitingApprovalPhone": "En attente de votre approbation (envoyée à votre téléphone)",
+    "waitingOthers": "En attente d’un autre approbateur",
+    "openApprovals": "Ouvrir les approbations"
   },
   "aiTurnModel": {
     "answeredBy": "Réponse de {{model}}",

@@ -28,6 +28,10 @@
  * waiting for autovacuum. Before that, browse root took 9.6–10.2 s and the
  * largest-folder selection 39–44 s at this point, against 3.2–3.4 s and about
  * 3 s once autovacuum had run.
+ *
+ * The manifest carries directory and symlink entries as a real one does
+ * (#11235), the largest folder's own entry among them: every entry is a row, the
+ * content-less ones with their kind, and that folder still selects as one prefix.
  */
 import './setup';
 
@@ -41,7 +45,13 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { acceptanceBreaches, HEAP_LIMIT_FLAG, LARGEST_FOLDER, type HydrationRunFigures } from '../../../scripts/backup-hydration-rss.lib';
+import {
+  acceptanceBreaches,
+  HEAP_LIMIT_FLAG,
+  LARGEST_FOLDER,
+  manifestEntryKindCounts,
+  type HydrationRunFigures,
+} from '../../../scripts/backup-hydration-rss.lib';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { verifySnapshotAttestation, type AttestationVerifyDeps } from '../../services/backupAttestationVerify';
 import { listSnapshotDirectory, resolveSelectedSnapshotPathsInDb, searchSnapshotFiles } from '../../services/backupSnapshotBrowse';
@@ -184,8 +194,14 @@ describe('file index acceptance at 1.1M entries', () => {
       };
 
       const [rowCount] = (await withSystemDbAccessContext(() =>
-        db.execute(sql`SELECT count(*)::int AS n FROM backup_snapshot_files WHERE snapshot_db_id = ${snapshotDbId}`),
-      )) as unknown as Array<{ n: number }>;
+        db.execute(sql`
+          SELECT count(*)::int AS n,
+                 count(*) FILTER (WHERE kind = 'dir')::int AS dirs,
+                 count(*) FILTER (WHERE kind = 'symlink')::int AS symlinks,
+                 count(*) FILTER (WHERE kind IS NULL AND backup_path <> '')::int AS files
+          FROM backup_snapshot_files WHERE snapshot_db_id = ${snapshotDbId}
+        `),
+      )) as unknown as Array<{ n: number; dirs: number; symlinks: number; files: number }>;
 
       const read = <T,>(fn: () => Promise<T>) =>
         runOutsideDbContext(() => withDbAccessContext(orgContext(state.orgId), fn));
@@ -226,6 +242,7 @@ describe('file index acceptance at 1.1M entries', () => {
         entries: TOTAL_ENTRIES,
         manifestMb: Math.round(state.manifestBytes / (1024 * 1024)),
         rows: rowCount!.n,
+        contentlessRows: { dirs: rowCount!.dirs, symlinks: rowCount!.symlinks },
         // Recorded, not asserted: see the header.
         hydrateAtDefaultHeapLimit: hydrationFigures(atDefaultLimit),
         hydrateUnder1GbHeapLimit: hydrationFigures(heapLimited),
@@ -242,6 +259,9 @@ describe('file index acceptance at 1.1M entries', () => {
 
       expect(verification.result).toEqual({ outcome: 'verified' });
       expect(rowCount!.n).toBe(TOTAL_ENTRIES);
+      const kinds = manifestEntryKindCounts(TOTAL_ENTRIES);
+      expect({ dirs: rowCount!.dirs, symlinks: rowCount!.symlinks, files: rowCount!.files })
+        .toEqual({ dirs: kinds.dir, symlinks: kinds.symlink, files: kinds.file });
       expect(browseRoot.result.entries.map((e) => e.name)).toEqual(['C:']);
       expect(browseLargest.result.entries.length).toBe(200);
       expect(searchMiss.result.entries).toEqual([]);

@@ -14,18 +14,39 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Hono } from 'hono';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
+
+// W3: the MSP routes below email invites; nothing here reads the mail.
+vi.mock('../../services/email', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/email')>()),
+  getEmailService: () => ({ sendPortalInvite: async () => undefined, sendPasswordReset: async () => undefined }),
+}));
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { partners } from '../../db/schema';
+import { contacts } from '../../db/schema/contacts';
 import { portalUserIdentities, portalUsers } from '../../db/schema/portal';
 import { clientAiOrgPolicies, clientAiTenantMappings } from '../../db/schema/clientAi';
 import * as orgMergeModule from '../../services/orgMerge';
 import { resolveAndMintClientSession } from '../../services/clientAiExchange';
 import type { ClientAiEntraClaims } from '../../services/clientAiEntraJwt';
-import { ensureEntraIdentity, reconcilePortalUserIdentities } from '../../services/portalUserIdentities';
-import { createOrganization, createPartner } from './db-utils';
+import {
+  ensureEntraIdentity,
+  findPortalUserIdByEntraIdentity,
+  listIdentityProvidersByUser,
+  portalUserHasIdentitySql,
+  reconcilePortalUserIdentities,
+} from '../../services/portalUserIdentities';
+import { listPortalUsersForOrg } from '../../services/portalUserDirectory';
+import { authMiddleware } from '../../middleware/auth';
+import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
+import { clientAiAdminOrgRoutes } from '../../routes/clientAi/adminOrgs';
+import { validatePortalCapability } from '../../routes/portal/capabilityTokens';
+import { processPortalIdentityReconcileJob } from '../../jobs/portalIdentityReconcile';
+import { createAccessToken } from '../../services/jwt';
+import { createOrganization, createPartner, setupTestEnvironment } from './db-utils';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
@@ -375,42 +396,306 @@ describe('resolveAndMintClientSession dual-writes portal_user_identities', () =>
     expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
   });
 
-  it('a forced identity-insert failure rolls back the login insert too (no half-provisioned row)', async () => {
+  it('release B: an identity whose login carries different legacy columns resolves to THAT login; no JIT, and the drift report flags the mismatch', async () => {
+    // W2 (release A) looked the login up by the entra_* columns, so this
+    // shape — the identity (tid, oid) held by a login whose columns say
+    // something else — missed, JIT-inserted, collided on the identity and was
+    // denied (provisioning_failed; the savepoint rollback is still pinned by
+    // clientAiExchange.test.ts). Release B makes the identity the source of
+    // truth (spec §5.2): the token resolves to the identity's login and the
+    // stale columns are reported as drift, never read.
     const tid = await mapTenant(fx.orgId, fx.partnerId);
     const oid = randomUUID();
-    // Drift: another login in the same org already holds this (issuer, subject).
-    const squatter = await seedEntraLogin(fx.orgId);
-    await seedIdentity(fx.orgId, squatter.id, tid, oid);
+    const holder = await seedEntraLogin(fx.orgId);
+    await seedIdentity(fx.orgId, holder.id, tid, oid);
     const [{ n: before }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
 
     const outcome = await resolveAndMintClientSession(exchangeClaims(tid, oid), fakeRedis);
 
-    expect(outcome.kind).toBe('denied');
-    expect(outcome).toMatchObject({ status: 403, body: { error: 'provisioning_failed' } });
+    expect(outcome).toMatchObject({ kind: 'resolved', audit: { actorId: holder.id, details: { provisioned: false } } });
     const [{ n: after }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
     expect(after).toBe(before);
     expect(await admin().select().from(portalUsers).where(eq(portalUsers.entraOid, oid))).toHaveLength(0);
+    expect((await reconcilePortalUserIdentities()).samples.mismatched).toEqual([
+      expect.objectContaining({ portalUserId: holder.id, field: 'subject' }),
+    ]);
   });
 
-  it('a login created without an identity (old-binary shape) gains one on its next exchange', async () => {
+  it('add-in exchange for a login whose identity row is missing fails closed (403 provisioning_failed) and never inserts a second portal_users row', async () => {
+    // Release B (W3) reads identities only. A login that kept its legacy
+    // entra_* columns but has no identity row (drift the deploy-time backfill
+    // should have repaired) is NOT found; the JIT insert then hits the login's
+    // own unique index (portal_users_entra_identity_uniq), the identity
+    // re-select finds nothing, and the exchange is denied. No silent fallback
+    // to the columns, and never a second login for the same (tid, oid).
     const tid = await mapTenant(fx.orgId, fx.partnerId);
     const oid = randomUUID();
-    // What a pre-W2 binary writes during a rolling deploy: no browser_access
-    // (the fill trigger supplies 'none'), no identity row.
     const [legacy] = await admin().execute(sql`
       INSERT INTO portal_users (org_id, email, auth_method, entra_tenant_id, entra_oid)
       VALUES (${fx.orgId}, ${`${oid}@${tid}.entra.invalid`}, 'entra', ${tid}, ${oid})
-      RETURNING id, browser_access`);
-    expect(legacy.browser_access).toBe('none');
+      RETURNING id`);
     expect((await reconcilePortalUserIdentities()).counts.missingIdentity).toBe(1);
+    const [{ n: before }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
 
     const outcome = await resolveAndMintClientSession(exchangeClaims(tid, oid), fakeRedis);
-    expect(outcome.kind).toBe('resolved');
 
-    const identities = await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, legacy.id));
-    expect(identities).toHaveLength(1);
-    expect(identities[0]).toMatchObject({ subject: oid, linkedVia: 'jit' });
-    expect(identities[0].lastUsedAt).not.toBeNull();
-    expect((await reconcilePortalUserIdentities()).counts.missingIdentity).toBe(0);
+    expect(outcome).toMatchObject({ kind: 'denied', status: 403, body: { error: 'provisioning_failed' } });
+    const [{ n: after }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
+    expect(after).toBe(before);
+    const logins = await admin().select({ id: portalUsers.id }).from(portalUsers).where(eq(portalUsers.entraOid, oid));
+    expect(logins).toEqual([{ id: legacy.id }]);
+    // Fail closed means no self-heal either: the drift is left for a human (D10).
+    expect(await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, legacy.id))).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3 — identities release B: the AI for Office exchange reads identities
+// ---------------------------------------------------------------------------
+
+describe('resolveAndMintClientSession reads portal_user_identities (release B)', () => {
+  it('JIT still writes both entra_* columns and the identity (writer fence) and the drift report stays clean', async () => {
+    const tid = await mapTenant(fx.orgId, fx.partnerId);
+    const oid = randomUUID();
+
+    const first = await resolveAndMintClientSession(exchangeClaims(tid, oid), fakeRedis);
+    expect(first).toMatchObject({ kind: 'resolved', audit: { details: { provisioned: true } } });
+
+    const [login] = await admin().select().from(portalUsers).where(eq(portalUsers.orgId, fx.orgId));
+    // D4 writer fence: a release-A instance (reads the columns) still finds this login.
+    expect(login).toMatchObject({ entraTenantId: tid, entraOid: oid, authMethod: 'entra' });
+    expect(await withSystemDbAccessContext(() => findPortalUserIdByEntraIdentity(db, { tid, oid })))
+      .toEqual({ portalUserId: login.id, orgId: fx.orgId });
+    expect((await reconcilePortalUserIdentities()).counts)
+      .toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
+
+    // The second exchange resolves the SAME login through its identity: no second row.
+    const second = await resolveAndMintClientSession(exchangeClaims(tid, oid), fakeRedis);
+    expect(second).toMatchObject({ kind: 'resolved', audit: { actorId: login.id, details: { provisioned: false } } });
+    const [{ n }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users WHERE org_id = ${fx.orgId}`);
+    expect(n).toBe(1);
+  });
+
+  it('mints for an account found by its entra identity regardless of auth_method (D5)', async () => {
+    const tid = await mapTenant(fx.orgId, fx.partnerId);
+    const oid = randomUUID();
+    // A password account linked to an Entra identity (the W4 shape), legacy columns empty.
+    const [pw] = await admin().insert(portalUsers).values({
+      orgId: fx.orgId, email: `pw-${oid}@acme.example`, authMethod: 'password', status: 'active', browserAccess: 'granted',
+    }).returning({ id: portalUsers.id });
+    await seedIdentity(fx.orgId, pw.id, tid, oid);
+
+    const outcome = await resolveAndMintClientSession(exchangeClaims(tid, oid), fakeRedis);
+
+    expect(outcome).toMatchObject({ kind: 'resolved', audit: { actorId: pw.id, details: { provisioned: false } } });
+    const logins = await admin().select({ id: portalUsers.id }).from(portalUsers).where(eq(portalUsers.orgId, fx.orgId));
+    expect(logins).toEqual([{ id: pw.id }]);
+  });
+
+  it('identity in org B for a tenant mapped to org A → org_mismatch denial, nothing written', async () => {
+    const tid = await mapTenant(fx.orgId, fx.partnerId);
+    const orgB = await otherOrg();
+    const loginB = await seedEntraLogin(orgB, { tid });
+    await seedIdentity(orgB, loginB.id, tid, loginB.oid);
+    const [{ n: before }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
+
+    const outcome = await resolveAndMintClientSession(exchangeClaims(tid, loginB.oid), fakeRedis);
+
+    expect(outcome).toMatchObject({ kind: 'denied', status: 403, body: { error: 'org_mismatch' } });
+    const [{ n: after }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
+    expect(after).toBe(before);
+    const [identity] = await admin().select({ lastUsedAt: portalUserIdentities.lastUsedAt })
+      .from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, loginB.id));
+    expect(identity.lastUsedAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3 — identities release B: the MSP / portal readers
+// ---------------------------------------------------------------------------
+
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
+
+function buildMspApp(): Hono {
+  const app = new Hono();
+  app.use('*', authMiddleware);
+  registerOrgPortalUsersRoutes(app);
+  app.route('/client-ai/admin', clientAiAdminOrgRoutes);
+  return app;
+}
+
+async function mfaTokenFor(env: Awaited<ReturnType<typeof setupTestEnvironment>>): Promise<string> {
+  return createAccessToken({
+    sub: env.user.id, email: env.user.email, roleId: env.role.id, orgId: null, partnerId: env.partner.id,
+    scope: 'partner', mfa: true, aep: 1, mep: 1, sid: 'it-session',
+  });
+}
+
+/** A browser (password) login with NO legacy entra columns. */
+async function seedPasswordLogin(orgId: string, over: Record<string, unknown> = {}) {
+  const [row] = await admin().insert(portalUsers).values({
+    orgId, email: `pw-${randomUUID()}@acme.example`, authMethod: 'password', status: 'invited', browserAccess: 'granted', ...over,
+  }).returning({ id: portalUsers.id, email: portalUsers.email, authEpoch: portalUsers.authEpoch });
+  return row as { id: string; email: string; authEpoch: number };
+}
+
+describe('external-identity readers use portal_user_identities (release B)', () => {
+  it('an identity on ANOTHER user does not make this user identity-managed (single-table select, #9692)', async () => {
+    const plain = await seedPasswordLogin(fx.orgId);
+    const linked = await seedPasswordLogin(fx.orgId);
+    await seedIdentity(fx.orgId, linked.id, randomUUID(), randomUUID());
+
+    // Single-table: exactly where drizzle strips qualifiers from selection sql.
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ id: portalUsers.id, has: portalUserHasIdentitySql() }).from(portalUsers).where(eq(portalUsers.orgId, fx.orgId)),
+    );
+    const has = new Map(rows.map((r) => [r.id, r.has]));
+    expect(has.get(plain.id)).toBe(false);
+    expect(has.get(linked.id)).toBe(true);
+
+    // ...and the same helper negated in a WHERE.
+    const without = await withSystemDbAccessContext(() =>
+      db.select({ id: portalUsers.id }).from(portalUsers)
+        .where(sql`${eq(portalUsers.orgId, fx.orgId)} and not ${portalUserHasIdentitySql()}`),
+    );
+    expect(without.map((r) => r.id)).toEqual([plain.id]);
+  });
+
+  it('an account with an identity row is identity-managed even when entra_oid is NULL (capability, resend, invite, invite-contacts)', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    const token = await mfaTokenFor(env);
+    const app = buildMspApp();
+    const plain = await seedPasswordLogin(orgId);
+    const linked = await seedPasswordLogin(orgId);
+    await seedIdentity(orgId, linked.id, randomUUID(), randomUUID());
+    const [legacyColumns] = await admin().select({ entraOid: portalUsers.entraOid }).from(portalUsers).where(eq(portalUsers.id, linked.id));
+    expect(legacyColumns.entraOid).toBeNull();
+
+    // Capability consume (accept-invite / reset facts).
+    const cap = (u: { id: string; email: string; authEpoch: number }) => validatePortalCapability('invite', {
+      format: 'v2', payload: { v: 2, purpose: 'invite', portalUserId: u.id, orgId, email: u.email, authEpoch: u.authEpoch },
+    });
+    expect(await cap(plain)).toMatchObject({ ok: true, user: { hasExternalIdentity: false } });
+    expect(await cap(linked)).toMatchObject({ ok: true, user: { hasExternalIdentity: true } });
+
+    // Resend (getOrgScopedPortalUser → state module).
+    const resend = (id: string) => app.request(`/organizations/${orgId}/portal-users/${id}/resend-invite`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` },
+    });
+    expect((await resend(plain.id)).status).toBe(200);
+    const refused = await resend(linked.id);
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).code).toBe('PORTAL_USER_IDENTITY_MANAGED');
+
+    // Invite by email (the existing-row lookup).
+    const invited = await app.request(`/organizations/${orgId}/portal-users/invite`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, ...JSON_HEADERS }, body: JSON.stringify({ email: linked.email }),
+    });
+    expect(invited.status).toBe(409);
+    expect((await invited.json()).code).toBe('PORTAL_INVITE_EXTERNAL_IDENTITY');
+
+    // Invite a contact on the linked login's address (services/contacts/portalInvite.ts).
+    const [contact] = await admin().insert(contacts).values({ orgId, name: 'Linked', email: linked.email }).returning({ id: contacts.id });
+    const batch = await app.request(`/organizations/${orgId}/portal-users/invite-contacts`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, ...JSON_HEADERS }, body: JSON.stringify({ contactIds: [contact.id] }),
+    });
+    expect(batch.status).toBe(200);
+    expect((await batch.json()).data.results).toEqual([
+      { contactId: contact.id, outcome: 'already_has_access', portalUserId: linked.id, reason: 'external_identity' },
+    ]);
+    const [after] = await admin().select({ contactId: portalUsers.contactId, authEpoch: portalUsers.authEpoch })
+      .from(portalUsers).where(eq(portalUsers.id, linked.id));
+    expect(after).toEqual({ contactId: null, authEpoch: linked.authEpoch });
+  });
+
+  it('bulk invite skips accounts with any identity row', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    const pending = await seedPasswordLogin(orgId);
+    const linked = await seedPasswordLogin(orgId);
+    await seedIdentity(orgId, linked.id, randomUUID(), randomUUID());
+
+    const res = await buildMspApp().request(`/organizations/${orgId}/portal-users/bulk-invite`, {
+      method: 'POST', headers: { Authorization: `Bearer ${await mfaTokenFor(env)}`, ...JSON_HEADERS }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.map((r: { id: string }) => r.id)).toEqual([pending.id]);
+    const [linkedAfter] = await admin().select({ authEpoch: portalUsers.authEpoch, invitedBy: portalUsers.invitedBy })
+      .from(portalUsers).where(eq(portalUsers.id, linked.id));
+    expect(linkedAfter).toEqual({ authEpoch: linked.authEpoch, invitedBy: null });
+  });
+
+  it('identity-only active account reads active, not pending_setup; list items carry browserAccess and identityProviders', async () => {
+    const addin = await seedEntraLogin(fx.orgId);
+    await seedIdentity(fx.orgId, addin.id, addin.tid, addin.oid);
+    const pending = await seedPasswordLogin(fx.orgId);
+    const linked = await seedPasswordLogin(fx.orgId, { status: 'active' });
+    await seedIdentity(fx.orgId, linked.id, randomUUID(), randomUUID());
+
+    const list = await withDbAccessContext(orgCtx(fx.orgId), () => listPortalUsersForOrg(fx.orgId));
+    const byId = new Map(list.map((u) => [u.id, u]));
+    expect(byId.get(addin.id)).toMatchObject({ effectiveStatus: 'active', browserAccess: 'none', identityProviders: ['entra'] });
+    expect(byId.get(pending.id)).toMatchObject({ effectiveStatus: 'pending_setup', browserAccess: 'granted', identityProviders: [] });
+    expect(byId.get(linked.id)).toMatchObject({ effectiveStatus: 'active', identityProviders: ['entra'] });
+
+    const providers = await withSystemDbAccessContext(() => listIdentityProvidersByUser(db, [addin.id, pending.id]));
+    expect([...providers.entries()]).toEqual([[addin.id, ['entra']]]);
+  });
+
+  it('entra user count and picker come from identities (a password user with an entra identity is counted)', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    await admin().insert(clientAiTenantMappings).values({ orgId, entraTenantId: randomUUID() });
+    const pwWithIdentity = await seedPasswordLogin(orgId, { status: 'active' });
+    await seedIdentity(orgId, pwWithIdentity.id, randomUUID(), randomUUID());
+    // An 'entra' login whose identity is gone (drift): no longer counted or offered.
+    const strandedEntra = await seedEntraLogin(orgId);
+    await seedPasswordLogin(orgId); // a plain password login is never counted
+
+    const app = buildMspApp();
+    const auth = { Authorization: `Bearer ${env.token}` };
+    const list = await app.request(`/client-ai/admin/orgs?orgId=${orgId}`, { headers: auth });
+    expect(list.status).toBe(200);
+    expect((await list.json()).data).toEqual([expect.objectContaining({ orgId, mapped: true, consentStatus: 'granted' })]);
+
+    const picker = await app.request(`/client-ai/admin/orgs/${orgId}/users`, { headers: auth });
+    expect(picker.status).toBe(200);
+    const ids = (await picker.json()).data.map((u: { id: string }) => u.id);
+    expect(ids).toEqual([pwWithIdentity.id]);
+    expect(ids).not.toContain(strandedEntra.id);
+  });
+
+  it('consent stays pending while the only entra-method login has no identity', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    await admin().insert(clientAiTenantMappings).values({ orgId, entraTenantId: randomUUID() });
+    await seedEntraLogin(orgId); // auth_method entra, legacy columns set, no identity row
+
+    const res = await buildMspApp().request(`/client-ai/admin/orgs?orgId=${orgId}`, { headers: { Authorization: `Bearer ${env.token}` } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([expect.objectContaining({ orgId, consentStatus: 'pending' })]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W3 — the daily drift report job (D10: report, never repair)
+// ---------------------------------------------------------------------------
+
+describe('portal identity drift report job', () => {
+  it('the real job handler runs against Postgres without throwing "context already held", and never repairs', async () => {
+    const missing = await seedEntraLogin(fx.orgId); // drift: no identity row
+    const [{ n: before }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_user_identities`);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await processPortalIdentityReconcileJob();
+      expect(result.clean).toBe(false);
+      expect(result.counts.missingIdentity).toBe(1);
+    } finally {
+      log.mockRestore();
+    }
+    const [{ n: after }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_user_identities`);
+    expect(after).toBe(before);
+    expect(await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, missing.id))).toHaveLength(0);
   });
 });

@@ -104,6 +104,8 @@ export const unifiSyncRuns = pgTable('unifi_sync_runs', {
   devicesUpdated: integer('devices_updated').notNull().default(0),
   devicesUnchanged: integer('devices_unchanged').notNull().default(0),
   devicesRemoved: integer('devices_removed').notNull().default(0),
+  // Listed sites with no mapping row. NULL = not recorded (older, failed, no-mapping or incomplete-list runs).
+  sitesUnmapped: integer('sites_unmapped'),
   error: text('error'),
 }, (table) => ({
   integrationStartedIdx: index('unifi_sync_runs_integration_started_idx')
@@ -188,6 +190,13 @@ export const unifiClients = pgTable('unifi_clients', {
   collectorId: uuid('collector_id').notNull().references(() => unifiCollectors.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id').notNull().references(() => sites.id),
+  // Controller site the client was reported on (W04, #11504). '' means
+  // "controller site not recorded": every legacy row, plus a row a cloud
+  // collector wrote when the agent sent no site id (a self-hosted collector
+  // skips such records). It is never a real controller site id. Part of the
+  // unique identity below, so the same MAC at two sites of one controller is two
+  // rows, each filed under its own mapped site (possibly in different orgs).
+  localSiteId: text('local_site_id').notNull().default(''),
   mac: text('mac').notNull(),
   hostname: text('hostname'),
   ipAddress: inet('ip_address'),
@@ -208,7 +217,7 @@ export const unifiClients = pgTable('unifi_clients', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
-  collectorMacIdx: uniqueIndex('unifi_clients_collector_mac_idx').on(table.collectorId, table.mac),
+  collectorSiteMacIdx: uniqueIndex('unifi_clients_collector_site_mac_idx').on(table.collectorId, table.localSiteId, table.mac),
   orgMacIdx: index('unifi_clients_org_mac_idx').on(table.orgId, table.mac),
 }));
 

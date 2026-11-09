@@ -2,6 +2,7 @@ import { PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import { z } from 'zod';
 import { PORTAL_REPORT_TYPES } from '../../services/portal/reportsSelfService';
 import { PORTAL_RATE_LIMIT_REDIS_KEYS } from '../../services/portal/rateLimit';
+import type { PortalSessionMethod } from './browserSession';
 
 // ============================================
 // Types
@@ -12,6 +13,12 @@ export type PortalSession = {
   portalUserId: string;
   orgId: string;
   authEpoch: number;
+  /**
+   * The sign-in method that minted the session (W3, plan D6). Every mint site
+   * writes it; absent means a pre-W3 session, which `parseStoredPortalSession`
+   * reads as `'password'`, exactly like a Redis payload without the field.
+   */
+  method?: PortalSessionMethod;
   createdAt: Date;
   expiresAt: Date;
 };

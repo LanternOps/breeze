@@ -12,6 +12,19 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 
 const mocks = vi.hoisted(() => ({ decide: vi.fn() }));
 
+// Portal registration W3 (#11380): portalAuthMiddleware re-checks the portal
+// access policy on every request. Not under test here, so it resolves like an
+// org with no policy rows: password allowed, today's behaviour (the gate itself
+// is covered in authOrgStatusGate.test.ts and auth.logout.test.ts).
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/portalAccessPolicy')>();
+  return {
+    ...actual,
+    resolvePortalAccessPolicy: async (orgId: string) => ({
+      orgId, partnerId: 'partner-1', ...actual.pickEffectivePortalAccessPolicy(null, null, actual.getPortalSignInCapabilities()),
+    }),
+  };
+});
 vi.mock('../../services/portal/trustPageEditor', () => ({
   decidePortalTrustPageEditor: mocks.decide,
   isPortalTrustPageEditor: vi.fn(async () => false),

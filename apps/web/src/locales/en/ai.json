@@ -617,7 +617,11 @@
     "thinking": "Thinking"
   },
   "aiThinking": {
-    "label": "Thinking… {{seconds}}s"
+    "label": "Thinking… {{seconds}}s",
+    "waitingApproval": "Waiting for your approval",
+    "waitingApprovalPhone": "Waiting for your approval (sent to your phone)",
+    "waitingOthers": "Waiting for another approver",
+    "openApprovals": "Open approvals"
   },
   "aiTurnModel": {
     "answeredBy": "Answered by {{model}}",

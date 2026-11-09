@@ -305,10 +305,10 @@ describe('POST …/invite without contactId (stable codes on the existing 409s)'
   // The refusal itself comes from the W2 state module; the invite route keeps
   // W1's stable PORTAL_INVITE_* codes on it.
   it.each([
-    [{ authMethod: 'entra', status: 'active', passwordHash: null, browserAccess: 'none', entraOid: 'oid-1' }, 'PORTAL_INVITE_EXTERNAL_IDENTITY', 'This identity is managed by an external sign-in provider.'],
-    [{ authMethod: 'password', status: 'invited', passwordHash: null, browserAccess: 'granted', entraOid: 'oid-1' }, 'PORTAL_INVITE_EXTERNAL_IDENTITY', 'This identity is managed by an external sign-in provider.'],
-    [{ authMethod: 'password', status: 'disabled', passwordHash: null, browserAccess: 'granted', entraOid: null }, 'PORTAL_INVITE_USER_DISABLED', 'This user is disabled. Reactivate them before inviting.'],
-    [{ authMethod: 'password', status: 'active', passwordHash: 'h', browserAccess: 'granted', entraOid: null }, 'PORTAL_INVITE_ALREADY_ACTIVE', 'This email already has an active portal account.'],
+    [{ authMethod: 'entra', status: 'active', passwordHash: null, browserAccess: 'none', hasExternalIdentity: true }, 'PORTAL_INVITE_EXTERNAL_IDENTITY', 'This identity is managed by an external sign-in provider.'],
+    [{ authMethod: 'password', status: 'invited', passwordHash: null, browserAccess: 'granted', hasExternalIdentity: true }, 'PORTAL_INVITE_EXTERNAL_IDENTITY', 'This identity is managed by an external sign-in provider.'],
+    [{ authMethod: 'password', status: 'disabled', passwordHash: null, browserAccess: 'granted', hasExternalIdentity: false }, 'PORTAL_INVITE_USER_DISABLED', 'This user is disabled. Reactivate them before inviting.'],
+    [{ authMethod: 'password', status: 'active', passwordHash: 'h', browserAccess: 'granted', hasExternalIdentity: false }, 'PORTAL_INVITE_ALREADY_ACTIVE', 'This email already has an active portal account.'],
   ])('existing row %o → 409 %s with the old message', async (row, code, error) => {
     h.selectResult.mockReset();
     h.selectResult
@@ -325,7 +325,7 @@ describe('POST …/invite without contactId (stable codes on the existing 409s)'
     h.selectResult.mockReset();
     h.selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'ada@acme.test', contactId: null, authEpoch: 1, authMethod: 'password', status: 'weird', passwordHash: null, browserAccess: 'granted', entraOid: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'ada@acme.test', contactId: null, authEpoch: 1, authMethod: 'password', status: 'weird', passwordHash: null, browserAccess: 'granted', hasExternalIdentity: false }])
       .mockResolvedValue([]);
     const res = await post('invite', { email: 'ada@acme.test' });
     expect(res.status).toBe(409);

@@ -315,6 +315,25 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
       expect(p.indexOf('First look:')).toBeLessThan(p.indexOf(AGENT_PROMPT_AUTHORITY_DISCLAIMER));
     });
 
+    // #10406: an on-demand assessment reads the open alerts like a first look,
+    // but there may well be an earlier assessment — the line must not claim
+    // there is none.
+    it('an on_demand reason says a person asked for it, with the current-state rule and no "no earlier assessment" claim', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({ reason: { kind: 'on_demand', requestId: 'req-secret-1' }, firstLook: true })));
+      expect(p).toContain('Why this assessment: on demand (a person asked Wisp for this assessment in chat).');
+      expect(p).not.toContain('req-secret-1');
+      const line = p.split('\n').find((l) => l.startsWith('On demand:'));
+      expect(line).toBeDefined();
+      expect(line).toMatch(/current state/i);
+      expect(line).toMatch(/"call nothing when nothing changed" does not apply/i);
+      expect(line).toMatch(/open alerts/i);
+      expect(p).not.toContain('First look:');
+      expect(p).not.toMatch(/no completed earlier assessment/i);
+      expect(p).toContain('Open alerts now (worst first, at most 25) and other changes since 2026-10-21T00:00:00.000Z:');
+      expect(p.indexOf('On demand:')).toBeGreaterThan(p.indexOf('Why this assessment:'));
+      expect(p.indexOf('On demand:')).toBeLessThan(p.indexOf(AGENT_PROMPT_AUTHORITY_DISCLAIMER));
+    });
+
     it('heads the digest as the org\'s open alerts plus recent changes', () => {
       const p = buildAssessmentTaskPrompt(ctx(assessment({ firstLook: true })));
       expect(p).toContain('Open alerts now (worst first, at most 25) and other changes since 2026-10-21T00:00:00.000Z:');
@@ -344,6 +363,62 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     })));
     expect(p).toContain('watch w-1: backup_health');
     expect(p.indexOf('watch w-1: backup_health')).toBeLessThan(p.indexOf(UNTRUSTED_TOOL_OUTPUT_RULE));
+  });
+
+  describe('watch hit summary (#11424)', () => {
+    const ALERT_ID = '00000000-0000-4000-8000-0000000000b1';
+    const watchLines = ['watch w-1: alert_pattern', `scope: org ${ORG_ID}`, 'cadence: every 60 minutes'];
+    const hits = (over: Record<string, unknown> = {}) => ({
+      change: 'first' as const, subject: 'alert' as const, orgId: ORG_ID, partnerWide: false,
+      count: 1, previousCount: null as number | null, ids: [ALERT_ID], ...over,
+    });
+
+    it('renders the hit count, ids and change under the watch lines', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({ reason: { kind: 'watch', watchId: 'w-1', hits: hits() }, watchLines })));
+      const lines = p.split('\n');
+      const watchAt = lines.indexOf('watch w-1: alert_pattern');
+      const hitAt = lines.findIndex((l) => l.startsWith('hits: '));
+      expect(watchAt).toBeGreaterThanOrEqual(0);
+      expect(hitAt).toBeGreaterThan(watchAt);
+      expect(lines[hitAt]).toBe(`hits: 1 open alert(s) in org ${ORG_ID} (previous evaluation: none recorded) — first evaluation of this watch`);
+      expect(p).toContain(`hit ids, newest first: ${ALERT_ID}`);
+      expect(p).toContain('do not re-query them');
+      expect(p.indexOf('hits: ')).toBeLessThan(p.indexOf(UNTRUSTED_TOOL_OUTPUT_RULE));
+    });
+
+    it('a resolved alert renders "cleared" in the watch line, with the previous count and no id line', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({
+        reason: { kind: 'watch', watchId: 'w-1', hits: hits({ change: 'cleared', count: 0, previousCount: 1, ids: [] }) },
+        watchLines,
+      })));
+      expect(p).toContain(`hits: 0 open alert(s) in org ${ORG_ID} (previous evaluation: 1) — cleared: nothing matches any more`);
+      expect(p).not.toContain('hit ids, newest first');
+    });
+
+    it('says how many hits were not listed, and flags a partner-wide evaluation', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({
+        reason: { kind: 'watch', watchId: 'w-1', hits: hits({ change: 'changed', count: 30, previousCount: 2, partnerWide: true }) },
+        watchLines,
+      })));
+      expect(p).toContain(`hit ids, newest first: ${ALERT_ID} (29 more not listed)`);
+      expect(p).toContain('partner-wide watch: evaluated in this org only');
+    });
+
+    it('patch devices are listed without a "newest first" claim (they carry no timestamp)', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({
+        reason: { kind: 'watch', watchId: 'w-1', hits: hits({ subject: 'device' }) },
+        watchLines,
+      })));
+      expect(p).toContain('device(s) below the threshold');
+      expect(p).toContain(`hit ids: ${ALERT_ID}`);
+      expect(p).not.toContain('newest first');
+    });
+
+    it('a watch reason without hits (an unevaluated kind) renders the watch lines alone', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({ reason: { kind: 'watch', watchId: 'w-1' }, watchLines })));
+      expect(p).toContain('watch w-1: alert_pattern');
+      expect(p).not.toContain('hits: ');
+    });
   });
 
   it('readiness and nudge-feedback blocks are fenced and only present when set (w00 A33/A34)', () => {
@@ -391,6 +466,16 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     expect(p).toContain('Berthoud Vet Care');
     expect(p.indexOf(`Organization id: ${ORG_ID}.`)).toBeLessThan(p.indexOf('- New problem worth tracking'));
     expect(p.indexOf('wisp-org-name')).toBeLessThan(p.indexOf(AGENT_PROMPT_AUTHORITY_DISCLAIMER));
+  });
+
+  // #11426: the same-org rollup groups device concerns by record_concern's pattern.
+  it('asks for one shared record_concern pattern when a problem recurs across devices', () => {
+    const p = buildAssessmentTaskPrompt(ctx());
+    const rule = p.split('\n').find((l) => l.includes('same problem recurs across devices'));
+    expect(rule).toBeDefined();
+    expect(rule).toContain('the same short pattern key');
+    expect(p.indexOf('- New problem worth tracking')).toBeLessThan(p.indexOf(rule!));
+    expect(p.indexOf(rule!)).toBeLessThan(p.indexOf('- Known concern changed'));
   });
 
   it('single-lines a hostile org name inside its fence and tolerates a missing one', () => {

@@ -7,7 +7,8 @@
  * where clause that forgot the org and would bind another tenant's contact.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { PgDialect, QueryBuilder } from 'drizzle-orm/pg-core';
+import { portalUsers } from '../../db/schema/portal';
 import type { SQL } from 'drizzle-orm';
 
 const { updateContactMock } = vi.hoisted(() => ({ updateContactMock: vi.fn() }));
@@ -19,6 +20,7 @@ vi.mock('./crud', async () => {
 
 import {
   planContactInvite,
+  portalLoginEmailEquals,
   bindContactLoginForInvite,
   loadOrgContactsForPortalInvite,
   lockPortalInviteAddresses,
@@ -51,7 +53,7 @@ function login(over: Partial<InviteLoginCandidate> = {}): InviteLoginCandidate {
     createdAt: new Date(2026, 0, seq),
     authEpoch: 1,
     browserAccess: 'granted',
-    entraOid: null,
+    hasExternalIdentity: false,
     ...over,
   };
 }
@@ -160,6 +162,7 @@ interface Recorder {
   exec: ContactExecutor;
   executes: SQL[];
   wheres: SQL[];
+  selections: Array<Record<string, unknown>>;
   forStrengths: string[];
   inserts: Array<Record<string, unknown>>;
   updates: Array<{ set: Record<string, unknown>; where: SQL }>;
@@ -175,16 +178,17 @@ function recorder(
   updateReturning: Array<Record<string, unknown>> = [{ id: 'updated', authEpoch: 8 }],
 ): Recorder {
   const queue = [...selects];
-  const rec: Recorder = { exec: null as never, executes: [], wheres: [], forStrengths: [], inserts: [], updates: [], order: [] };
+  const rec: Recorder = { exec: null as never, executes: [], wheres: [], selections: [], forStrengths: [], inserts: [], updates: [], order: [] };
   rec.exec = {
     execute: (statement: SQL) => {
       rec.executes.push(statement);
       rec.order.push('lock');
       return Promise.resolve([]);
     },
-    select: () => ({
+    select: (cols: Record<string, unknown>) => ({
       from: () => ({
         where: (clause: SQL) => {
+          rec.selections.push(cols);
           rec.wheres.push(clause);
           let settled: Promise<unknown> | null = null;
           const result = () => {
@@ -312,7 +316,7 @@ describe('bindContactLoginForInvite', () => {
   });
 
   it('reuse/direct writes the state module target and contactId, guarded by the epoch it read, and returns the new epoch', async () => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'granted', entraOid: null };
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'granted', hasExternalIdentity: false };
     const r = recorder([[contactRow()], [existing]]);
     const decision = await bindContactLoginForInvite(r.exec, bindInput());
 
@@ -331,21 +335,21 @@ describe('bindContactLoginForInvite', () => {
   });
 
   it('a legacy credential-less ACTIVE row is moved to invited (the msp_invite target), not left active', async () => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'active', passwordHash: null, createdAt: NOW, authEpoch: 3, browserAccess: 'granted', entraOid: null };
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'active', passwordHash: null, createdAt: NOW, authEpoch: 3, browserAccess: 'granted', hasExternalIdentity: false };
     const r = recorder([[contactRow()], [existing]]);
     await bindContactLoginForInvite(r.exec, bindInput());
     expect(r.updates[0]!.set).toMatchObject({ status: 'invited', browserAccess: 'granted' });
   });
 
   it('throws PortalLoginChangedError when the epoch guard matches nothing (changed since the read), before any contact write', async () => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'granted', entraOid: null };
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'granted', hasExternalIdentity: false };
     const r = recorder([[contactRow()], [existing]], []);
     await expect(bindContactLoginForInvite(r.exec, bindInput())).rejects.toBeInstanceOf(PortalLoginChangedError);
     expect(updateContactMock).not.toHaveBeenCalled();
   });
 
   it('an unknown stored browser_access fails closed (the state module refuses), writing nothing', async () => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'maybe', entraOid: null };
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'maybe', hasExternalIdentity: false };
     const r = recorder([[contactRow()], [existing]]);
     await expect(bindContactLoginForInvite(r.exec, bindInput())).rejects.toBeInstanceOf(PortalAccountTransitionError);
     expect(r.updates).toHaveLength(0);
@@ -353,7 +357,7 @@ describe('bindContactLoginForInvite', () => {
   });
 
   it('reuse/kept leaves the existing binding as it is', async () => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 2, browserAccess: 'granted', entraOid: null };
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 2, browserAccess: 'granted', hasExternalIdentity: false };
     const r = recorder([[contactRow()], [existing]]);
     const decision = await bindContactLoginForInvite(r.exec, bindInput());
 
@@ -369,9 +373,9 @@ describe('bindContactLoginForInvite', () => {
     ['conflict', { contactId: D }, { kind: 'email_bound_to_other_contact' }],
     // The planner picks this password row; the state module refuses it as
     // identity-managed (W2), which the invite API reports as external_identity.
-    ['password row carrying an Entra identity', { contactId: C, entraOid: 'oid-1' }, { kind: 'already_has_access', reason: 'external_identity' }],
+    ['password row carrying an Entra identity', { contactId: C, hasExternalIdentity: true }, { kind: 'already_has_access', reason: 'external_identity' }],
   ])('%s performs no insert, update, or contact write', async (_label, over, expected) => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 1, browserAccess: 'granted', entraOid: null, ...over };
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 1, browserAccess: 'granted', hasExternalIdentity: false, ...over };
     const r = recorder([[contactRow()], [existing]]);
     const decision = await bindContactLoginForInvite(r.exec, bindInput());
 
@@ -379,6 +383,31 @@ describe('bindContactLoginForInvite', () => {
     expect(r.inserts).toHaveLength(0);
     expect(r.updates).toHaveLength(0);
     expect(updateContactMock).not.toHaveBeenCalled();
+  });
+
+  // ---- W3 identities release B: the external-identity fact comes from
+  // portal_user_identities (portalUserHasIdentitySql), never entra_oid. ----
+
+  it('an account with an identity row is identity-managed even when entra_oid is NULL', async () => {
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 1, browserAccess: 'granted', entraOid: null, hasExternalIdentity: true };
+    const r = recorder([[contactRow()], [existing]]);
+    const decision = await bindContactLoginForInvite(r.exec, bindInput());
+    expect(decision).toEqual({ kind: 'already_has_access', portalUserId: 'pu-1', reason: 'external_identity' });
+    expect(r.updates).toHaveLength(0);
+    expect(updateContactMock).not.toHaveBeenCalled();
+  });
+
+  it('an identity on ANOTHER user does not make this user identity-managed', async () => {
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 2, browserAccess: 'granted', hasExternalIdentity: false };
+    const r = recorder([[contactRow()], [existing]]);
+    const decision = await bindContactLoginForInvite(r.exec, bindInput());
+    expect(decision).toMatchObject({ kind: 'invite', portalUserId: 'pu-1' });
+    // The candidate read (2nd select) asks the DB per row, correlated to THIS
+    // row's id even in a single-table select (#9692), and no longer reads entra_oid.
+    const cols = r.selections[1]!;
+    expect(cols).not.toHaveProperty('entraOid');
+    const text = new QueryBuilder().select({ id: portalUsers.id, has: cols.hasExternalIdentity as SQL }).from(portalUsers).toSQL().sql;
+    expect(text).toMatch(/exists \(select 1 from "portal_user_identities" "\w+" where "\w+"\."portal_user_id" = "portal_users"\."id"\)/);
   });
 
   it("unions the 'portal' role only when missing", async () => {
@@ -427,5 +456,13 @@ describe('loadOrgContactsForPortalInvite', () => {
     const r = recorder([]);
     expect(await loadOrgContactsForPortalInvite(r.exec, ORG, [])).toEqual([]);
     expect(r.wheres).toHaveLength(0);
+  });
+});
+
+describe("portalLoginEmailEquals (#11529)", () => {
+  it("compares lower(email) against the lower-cased, trimmed address", () => {
+    const q = compile(portalLoginEmailEquals("  Ada@X.Test "));
+    expect(q.sql).toContain("lower(\"portal_users\".\"email\") = $1");
+    expect(q.params).toEqual(["ada@x.test"]);
   });
 });

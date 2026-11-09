@@ -284,7 +284,7 @@
     "alertThresholds": "Uyar (bütçenin %'si)",
     "alertThresholdsHelp": "Faturalama erişimine sahip partner yöneticileri her eşikte uygulama içi bir uyarı ve aylık ile limit aşımı uyarıları için e-posta alır. 50, 80, 95 değerlerini devralmak için boş bırakın.",
     "notSet": "Ayarlanmadı, kuruluşlar ayrı ayrı yapılandırılır",
-    "description": "Burada ayarlanan değerler her alt kuruluşa uygulanır ve ilgili kuruluş alanını kilitler. Kuruluşların yapılandırması için bir alanı boş bırakın.",
+    "description": "Burada ayarladığınız değer tüm kuruluşlara uygulanır ve onları kilitler. Boş bıraktığınız alan kuruluş başına yapılandırılır. Dolar tutarları dahili olarak sent cinsinden saklanır.",
     "modes": {
       "perStep": "Adım Başına",
       "actionPlan": "Eylem Planı",
@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Bilinen konuklar",
         "description": "MAC adresine göre onaylı ziyaretçi ve teknisyen cihazları"
+      },
+      "customerPortal": {
+        "label": "Müşteri portalı",
+        "description": "Müşterilerinizin portalları için varsayılan oturum açma ve kayıt kuralları ile karar bekleyen erişim talepleri"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -1198,6 +1202,7 @@
       "badge": {
         "locks": "Kuruluşları kilitler",
         "locksConditional": "Etkinken kuruluşları kilitler",
+        "locksWhenSet": "Ayarlandığında kuruluşları kilitler",
         "overridable": "Kuruluş değiştirebilir",
         "overridableCap": "Kuruluş değiştirebilir, en fazla {{limit}}",
         "partnerOnly": "İş ortağı geneli"
@@ -1205,6 +1210,7 @@
       "badgeHelp": {
         "locks": "Bu ayarlıyken her kuruluş sizin değerinizi kullanır. Kuruluşun kendi değeri yok sayılır.",
         "locksConditional": "Etkinken her kuruluş kendi değeri yerine sizinkini kullanır. Devre dışıyken kuruluşlar kendi değerlerini kullanır.",
+        "locksWhenSet": "Bir değer ayarladığınızda her kuruluş onu kullanır ve kendi değeri yok sayılır. Boşken her kuruluş kendi değerini yapılandırır.",
         "overridable": "Sizin değeriniz varsayılandır. Kendi değerini belirleyen bir kuruluş onun yerine kendi değerini kullanır.",
         "overridableCap": "Sizin değeriniz varsayılandır. Bir kuruluş en fazla {{limit}} olmak üzere kendi değerini belirleyebilir.",
         "partnerOnly": "Kuruluşların bunun için kendi ayarı yoktur. Sizin değeriniz hepsine uygulanır."
@@ -2351,6 +2357,11 @@
       "sendInvite": "Davet gönderilemedi",
       "action": "İşlem başarısız oldu",
       "invalidEmail": "Geçerli bir e-posta adresi girin"
+    },
+    "badges": {
+      "noBrowserAccess": "Tarayıcı erişimi yok",
+      "microsoft": "Microsoft ile oturum açma",
+      "google": "Google ile oturum açma"
     }
   },
   "orgRemoteAccessSettings": {
@@ -5171,7 +5182,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Kayıt olurken şifrenizle (Touch ID / Windows Hello) onaylayacaksınız.",
     "authenticatorCode": "Kimlik doğrulayıcı kodu",
-    "confirmYourPassword": "Şifrenizi doğrulayın"
+    "confirmYourPassword": "Şifrenizi doğrulayın",
+    "switchToAuthenticatorCode": "Bunun yerine kimlik doğrulama uygulamasını kullanın",
+    "usePasskeyInstead": "Bunun yerine geçiş anahtarınızı kullanın"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Hazır yanıtlar",
@@ -5514,7 +5527,21 @@
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
     "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın.",
     "ssoReauthManageHint": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Bu değişikliği onaylamak için sağlayıcınızla doğrulayın.",
-    "ssoReauthManageVerified": "Kimliğiniz sağlayıcınızla doğrulandı. Bu değişikliği onaylamak için aşağıdaki adımı tamamlayın."
+    "ssoReauthManageVerified": "Kimliğiniz sağlayıcınızla doğrulandı. Bu değişikliği onaylamak için aşağıdaki adımı tamamlayın.",
+    "notSetUp": "Kurulmadı",
+    "notAvailable": "Kullanılamıyor",
+    "backup": "Yedek",
+    "addBackup": "Yedek ekle",
+    "totpBackupAddHint": "Geçiş anahtarınız kullanılamadığında yine de oturum açabilmek için yedek olarak bir kimlik doğrulama uygulaması ekleyin.",
+    "totpPolicyDisallowed": "Kuruluşunuzun ilkesi kimlik doğrulama uygulamalarına izin vermiyor.",
+    "totpBackupActiveHint": "Geçiş anahtarınız kullanılamıyorsa kimlik doğrulama uygulamanızdaki bir kodu kullanın.",
+    "totpBackupVerifyNote": "Doğrula düğmesine bastığınızda geçiş anahtarınızla onaylayacaksınız.",
+    "confirmBackupButton": "Doğrulayın ve yedek ekleyin",
+    "removeTotpTitle": "Kimlik doğrulama uygulamasını kaldır",
+    "removeTotpBackupDescription": "Geçiş anahtarınızla oturum açmaya devam edeceksiniz. Kurtarma kodlarınız aynı kalır.",
+    "removeTotpPrimaryDescription": "Geçiş anahtarınız birincil oturum açma yönteminiz olur. Kurtarma kodlarınız aynı kalır.",
+    "removeTotpConfirmWithPasskey": "Geçiş anahtarınızla onaylayacaksınız.",
+    "removing": "Kaldırılıyor..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Pax8'den içe aktar",
@@ -5639,7 +5666,13 @@
     "ssoReauthManageProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Bu değişikliği onaylamak için yeniden doğrulayın.",
     "verifyWithIdpToDeletePasskey": "Bu hesabın parolası yok. Bir geçiş anahtarını kaldırmadan önce kimlik sağlayıcınızla doğrulayın.",
     "deletePasskeySsoReauth": "Bir geçiş anahtarını kaldırmak için kimliği doğrulayın",
-    "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin."
+    "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin.",
+    "authenticatorBackupAdded": "Kimlik doğrulama uygulaması yedek olarak eklendi. Kurtarma kodlarınız değişmedi",
+    "authenticatorAppRemoved": "Kimlik doğrulama uygulaması kaldırıldı. Geçiş anahtarınızla oturum açacaksınız",
+    "authenticatorCodeRejectedWaitForNext": "Bu kod kabul edilmedi. Her kod yalnızca bir kez çalışır; az önce kullandıysanız kimlik doğrulama uygulamanızdaki bir sonraki kodu bekleyin.",
+    "passkeyConfirmationCanceled": "Geçiş anahtarı onayı iptal edildi veya zaman aşımına uğradı.",
+    "passkeyProofRejected": "Geçiş anahtarınız doğrulanamadı. Lütfen tekrar deneyin.",
+    "failedToRemoveAuthenticatorApp": "Kimlik doğrulama uygulaması kaldırılamadı"
   },
   "roleManager": {
     "roles": "Roller",
@@ -7575,7 +7608,8 @@
         "none": "Erişim yok",
         "invited": "Davet edildi",
         "active": "Etkin",
-        "disabled": "Devre dışı"
+        "disabled": "Devre dışı",
+        "requested": "Talep edildi"
       },
       "actions": {
         "give": "Portal erişimi ver",
@@ -8265,5 +8299,126 @@
     "title": "Yapay Zeka onay modu",
     "description": "Breeze AI sohbetinin bu kuruluşta korumalı (Tier 2/3) eylemleri çalıştırmadan önce nasıl onay istediği. Harcama sınırı ayarlanmış olsun ya da olmasın uygulanır.",
     "save": "Kaydet"
+  },
+  "portalAccessPolicy": {
+    "title": "Oturum açma ve kayıt",
+    "orgDescription": "Bu kuruluştaki kişilerin müşteri portalında nasıl oturum açtığı ve yeni kişilerin tarayıcı erişimini nasıl aldığı. Devral olarak bırakılan bir alan, iş ortağı varsayılanını izler.",
+    "partnerDescription": "Tüm müşteri kuruluşları için varsayılan. Her kuruluş, Müşteri Portalı sekmesinde herhangi bir alanı geçersiz kılabilir.",
+    "loading": "Oturum açma ayarları yükleniyor…",
+    "readOnly": "Bu ayarları görüntüleyebilir ancak değiştiremezsiniz. İş ortağı varsayılanını değiştirmek için tam iş ortağı erişimi gerekir.",
+    "save": "Oturum açma ayarlarını kaydet",
+    "sources": {
+      "partner": "İş ortağı varsayılanı",
+      "default": "Breeze varsayılanı"
+    },
+    "signIn": {
+      "title": "Kişiler nasıl oturum açar"
+    },
+    "newPeople": {
+      "title": "Yeni kişiler tarayıcı erişimini nasıl alır"
+    },
+    "options": {
+      "on": "Açık",
+      "off": "Kapalı"
+    },
+    "microsoft": {
+      "label": "Microsoft ile oturum açma"
+    },
+    "google": {
+      "label": "Google ile oturum açma"
+    },
+    "password": {
+      "label": "Şifreyle oturum açma",
+      "allowed": "İzinli",
+      "ssoOnly": "Kapalı — yalnızca Microsoft/Google",
+      "ssoOnlyNeedsSso": "Microsoft veya Google ile oturum açma etkinleştirildiğinde kullanılabilir."
+    },
+    "fallback": "Microsoft veya Google ile oturum açma etkin olmadığı için şifreyle oturum açma açık.",
+    "invites": {
+      "label": "MSP davetleri",
+      "value": "Her zaman açık"
+    },
+    "selfRegistration": {
+      "label": "Kendi kendine kayıt",
+      "off": "Kapalı",
+      "approval": "Onay gerekli",
+      "instant": "Anında"
+    },
+    "ssoNewPerson": {
+      "label": "İlk Microsoft / Google ile oturum açma",
+      "invitedOnly": "Yalnızca davet edilen kişiler",
+      "approval": "Onay gerekli",
+      "instant": "Anında"
+    },
+    "requests": "Talepler ({{count}})",
+    "errors": {
+      "load": "Oturum açma ayarları yüklenemedi.",
+      "save": "Oturum açma ayarları kaydedilemedi.",
+      "methodUnavailable": "Bu oturum açma yöntemi bu Breeze dağıtımında henüz kullanılamıyor.",
+      "ssoOnlyNeedsSso": "Şifreyle oturum açmayı kapatmadan önce Microsoft veya Google ile oturum açmayı etkinleştirin."
+    },
+    "toasts": {
+      "saved": "Oturum açma ayarları kaydedildi."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Erişim talepleri",
+    "description": "Bu kuruluşun portalına erişim bekleyen kişiler. Erişim vermek için onaylayın veya talebi kapatmak için reddedin.",
+    "columns": {
+      "person": "Kişi",
+      "source": "Nasıl talep ettiler",
+      "requested": "Talep edildi"
+    },
+    "sources": {
+      "self": "Kendi kendine kayıt",
+      "entra": "Microsoft ile oturum açma",
+      "google": "Google ile oturum açma",
+      "addin_user": "AI for Office eklentisi"
+    },
+    "selectAll": "Tüm talepleri seç",
+    "selectOne": "{{email}} kişisinin talebini seç",
+    "accountExists": "Zaten bir hesabı var — Kapatmak için reddedin",
+    "actions": {
+      "approve": "Onayla",
+      "deny": "Reddet",
+      "approveSelected": "Seçilenleri onayla ({{count}})",
+      "denySelected": "Seçilenleri reddet ({{count}})"
+    },
+    "results": {
+      "accountExists": "Zaten bir hesabı var",
+      "notPending": "Artık beklemede değil",
+      "notFound": "Talep bulunamadı",
+      "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
+      "failed": "Bu talebe karar verilemedi"
+    },
+    "denyDialog": {
+      "title": "Erişim talebini reddet",
+      "message": "{{email}} kişisinin talebi reddedilsin mi? Kişiye talebin onaylanmadığını bildiren bir e-posta gönderilir.",
+      "bulkMessage_one": "{{count}} talep reddedilsin mi? Kişiye talebin onaylanmadığını bildiren bir e-posta gönderilir.",
+      "bulkMessage_other": "{{count}} talep reddedilsin mi? Her kişiye talebin onaylanmadığını bildiren bir e-posta gönderilir."
+    },
+    "toasts": {
+      "approved": "{{email}} için erişim onaylandı.",
+      "denied": "{{email}} kişisinin talebi reddedildi.",
+      "bulkDone_one": "{{count}} talebe karar verildi.",
+      "bulkDone_other": "{{count}} talebe karar verildi.",
+      "bulkPartial": "{{total}} talepten {{succeeded}} tanesine karar verildi. Diğerleri listede işaretlendi."
+    },
+    "errors": {
+      "load": "Erişim talepleri yüklenemedi.",
+      "action": "Erişim talebi güncellenemedi.",
+      "bulk": "Seçilen taleplere karar verilemedi."
+    },
+    "summary": {
+      "title": "Bekleyen erişim talepleri",
+      "description": "Müşteri kuruluşlarınızda bekleyen talepler. Onaylamak veya reddetmek için bir kuruluşu açın.",
+      "empty": "Bekleyen talep yok",
+      "orgPending_one": "{{count}} bekliyor",
+      "orgPending_other": "{{count}} bekliyor",
+      "review": "Talepleri incele",
+      "loadError": "Bekleyen erişim talepleri yüklenemedi."
+    },
+    "refreshFailed": "Erişim istekleri yenilenemedi; bu liste güncel olmayabilir.",
+    "more": "İlk {{count}} istek gösteriliyor. Kalanları görmek için bunlar hakkında karar verin."
   }
 }

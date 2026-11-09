@@ -20,13 +20,14 @@ import { showToast } from '../shared/Toast';
  * tokens can read).
  */
 
-export type ContactPortalStatus = 'none' | 'invited' | 'active' | 'disabled';
+export type ContactPortalStatus = 'none' | 'invited' | 'active' | 'disabled' | 'requested';
 
 export type PortalLogin = {
   id: string;
   email: string;
   contactId: string | null;
   authMethod: string;
+  browserAccess: 'granted' | 'none';
   effectiveStatus: 'active' | 'disabled' | 'pending_setup';
 };
 
@@ -57,26 +58,57 @@ function best(logins: PortalLogin[]): PortalLogin | null {
 }
 
 /**
- * Only browser-portal (`password`) logins count: an Entra-only login gives the
- * person add-in access, not browser access, so the contact reads "No access".
+ * Only logins with browser access (`browserAccess === 'granted'`) count: an
+ * add-in-only login gives the person add-in access, not browser access, so the
+ * contact reads "No access". A contact with no counted login whose email has a
+ * pending access request reads "Requested".
  * A login bound to the contact wins; otherwise an unbound login with the same
  * email (what the API reports as `already_has_access` for it) is used.
  */
-export function derivePortalStatus(contact: ContactRef, logins: PortalLogin[]): Derived {
-  const password = logins.filter((l) => l.authMethod === 'password');
-  const bound = best(password.filter((l) => l.contactId === contact.id));
+export function derivePortalStatus(
+  contact: ContactRef,
+  logins: PortalLogin[],
+  pendingEmails: ReadonlySet<string> = new Set(),
+): Derived {
+  const withBrowser = logins.filter((l) => l.browserAccess === 'granted');
+  const bound = best(withBrowser.filter((l) => l.contactId === contact.id));
   let chosen = bound;
   if (!chosen && contact.email) {
     const wanted = contact.email.trim().toLowerCase();
     chosen = best(
-      password.filter((l) => l.contactId === null && l.email.trim().toLowerCase() === wanted),
+      withBrowser.filter((l) => l.contactId === null && l.email.trim().toLowerCase() === wanted),
     );
   }
-  if (!chosen) return NONE;
+  if (!chosen) {
+    if (contact.email && pendingEmails.has(contact.email.trim().toLowerCase())) {
+      return { status: 'requested', portalUserId: null };
+    }
+    return NONE;
+  }
   return { status: STATUS_BY_EFFECTIVE[chosen.effectiveStatus], portalUserId: chosen.id };
 }
 
 const base = (orgId: string) => `/orgs/organizations/${orgId}/portal-users`;
+// An org holds at most 200 pending requests (the API cap), and the list route
+// takes up to 200 per page, so one page covers every pending email.
+const requestsUrl = (orgId: string) => `/orgs/organizations/${orgId}/portal-access-requests?status=pending&limit=200`;
+
+async function fetchPendingEmails(orgId: string): Promise<Set<string>> {
+  try {
+    const res = await fetchWithAuth(requestsUrl(orgId));
+    if (!res.ok) {
+      console.warn('[useContactPortalAccess] access requests load failed', res.status);
+      return new Set();
+    }
+    const body = (await res.json()) as { data?: Array<{ email?: string }> };
+    return new Set(
+      (body.data ?? []).flatMap((r) => (r.email ? [r.email.trim().toLowerCase()] : [])),
+    );
+  } catch (err) {
+    console.warn('[useContactPortalAccess] access requests load failed', err);
+    return new Set();
+  }
+}
 
 export function useContactPortalAccess(orgId: string): {
   available: boolean;
@@ -85,12 +117,13 @@ export function useContactPortalAccess(orgId: string): {
 } {
   const [available, setAvailable] = useState(false);
   const [logins, setLogins] = useState<PortalLogin[]>([]);
+  const [pendingEmails, setPendingEmails] = useState<ReadonlySet<string>>(new Set());
   const seq = useRef(0);
 
   const reload = useCallback(async () => {
     const mine = (seq.current += 1);
     try {
-      const res = await fetchWithAuth(base(orgId));
+      const [res, pending] = await Promise.all([fetchWithAuth(base(orgId)), fetchPendingEmails(orgId)]);
       if (mine !== seq.current) return;
       if (res.status === 401) {
         void navigateTo('/login', { replace: true });
@@ -102,12 +135,14 @@ export function useContactPortalAccess(orgId: string): {
       if (res.status === 403 || res.status === 404) {
         setAvailable(false);
         setLogins([]);
+        setPendingEmails(new Set());
         return;
       }
       if (!res.ok) throw new Error(`portal users load failed: ${res.status}`);
       const body = (await res.json()) as { data?: PortalLogin[] };
       if (mine !== seq.current) return;
       setLogins(body.data ?? []);
+      setPendingEmails(pending);
       setAvailable(true);
     } catch (err) {
       if (mine !== seq.current) return;
@@ -119,11 +154,12 @@ export function useContactPortalAccess(orgId: string): {
   useEffect(() => {
     setAvailable(false);
     setLogins([]);
+    setPendingEmails(new Set());
     void reload();
     return () => { seq.current += 1; };
   }, [reload]);
 
-  const statusFor = useCallback((c: ContactRef) => derivePortalStatus(c, logins), [logins]);
+  const statusFor = useCallback((c: ContactRef) => derivePortalStatus(c, logins, pendingEmails), [logins, pendingEmails]);
   return { available, statusFor, reload };
 }
 

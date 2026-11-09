@@ -284,7 +284,7 @@
     "alertThresholds": "Avvisa al (% del budget)",
     "alertThresholdsHelp": "Gli admin partner con accesso alla fatturazione ricevono un avviso in-app a ogni soglia e un'email per gli avvisi mensili e di limite raggiunto. Lascia vuoto per ereditare 50, 80, 95.",
     "notSet": "Non impostato, le org si configurano singolarmente",
-    "description": "I valori impostati qui si applicano a ogni organizzazione figlia e bloccano il campo corrispondente dell'organizzazione. Lascia un campo vuoto per farlo configurare alle organizzazioni.",
+    "description": "Un valore impostato qui si applica a tutte le organizzazioni e le blocca. Un campo lasciato vuoto viene configurato per organizzazione. Gli importi in dollari sono archiviati internamente in centesimi.",
     "modes": {
       "perStep": "Per passaggio",
       "actionPlan": "Piano d'azione",
@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Ospiti noti",
         "description": "Dispositivi approvati di visitatori e tecnici per indirizzo MAC"
+      },
+      "customerPortal": {
+        "label": "Portale clienti",
+        "description": "Regole predefinite di accesso e registrazione per i portali dei tuoi clienti e richieste di accesso in attesa di una decisione"
       }
     },
     "saved": "Impostazioni partner salvate",
@@ -1198,6 +1202,7 @@
       "badge": {
         "locks": "Blocca le organizzazioni",
         "locksConditional": "Blocca le organizzazioni se attivo",
+        "locksWhenSet": "Blocca le organizzazioni una volta impostato",
         "overridable": "L’organizzazione può modificarlo",
         "overridableCap": "L’organizzazione può modificarlo, fino a {{limit}}",
         "partnerOnly": "Per tutto il partner"
@@ -1205,6 +1210,7 @@
       "badgeHelp": {
         "locks": "Finché è impostato, ogni organizzazione usa il tuo valore. Il valore proprio dell’organizzazione viene ignorato.",
         "locksConditional": "Se attivo, ogni organizzazione usa il tuo valore invece del proprio. Se disattivo, le organizzazioni usano il proprio.",
+        "locksWhenSet": "Una volta impostato un valore, ogni organizzazione lo usa e il proprio viene ignorato. Finché è vuoto, ogni organizzazione configura il proprio.",
         "overridable": "Il tuo valore è quello predefinito. Un’organizzazione che imposta un proprio valore usa quello.",
         "overridableCap": "Il tuo valore è quello predefinito. Un’organizzazione può impostare un proprio valore, fino a {{limit}}.",
         "partnerOnly": "Le organizzazioni non hanno un’impostazione propria. Il tuo valore vale per tutte."
@@ -2351,6 +2357,11 @@
       "sendInvite": "Impossibile inviare l'invito",
       "action": "Azione non riuscita",
       "invalidEmail": "Inserisci un indirizzo email valido"
+    },
+    "badges": {
+      "noBrowserAccess": "Nessun accesso da browser",
+      "microsoft": "Accesso con Microsoft",
+      "google": "Accesso con Google"
     }
   },
   "orgRemoteAccessSettings": {
@@ -5509,7 +5520,21 @@
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
     "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'app di autenticazione.",
     "ssoReauthManageHint": "Questo account accede tramite un provider di identità e non ha una password. Verifica con il tuo provider per confermare questa modifica.",
-    "ssoReauthManageVerified": "Identità verificata con il tuo provider. Completa il passaggio seguente per confermare questa modifica."
+    "ssoReauthManageVerified": "Identità verificata con il tuo provider. Completa il passaggio seguente per confermare questa modifica.",
+    "notSetUp": "Non configurata",
+    "notAvailable": "Non disponibile",
+    "backup": "Di riserva",
+    "addBackup": "Aggiungi backup",
+    "totpBackupAddHint": "Aggiungi un’app di autenticazione come backup, così potrai accedere anche se la passkey non è disponibile.",
+    "totpPolicyDisallowed": "La policy della tua organizzazione non consente le app di autenticazione.",
+    "totpBackupActiveHint": "Usa un codice della tua app di autenticazione se la passkey non è disponibile.",
+    "totpBackupVerifyNote": "Quando premi Verifica, confermerai con la tua passkey.",
+    "confirmBackupButton": "Verifica e aggiungi backup",
+    "removeTotpTitle": "Rimuovi app di autenticazione",
+    "removeTotpBackupDescription": "Continuerai ad accedere con la tua passkey. I tuoi codici di recupero restano invariati.",
+    "removeTotpPrimaryDescription": "La tua passkey diventa il metodo di accesso principale. I tuoi codici di recupero restano invariati.",
+    "removeTotpConfirmWithPasskey": "Confermerai con la tua passkey.",
+    "removing": "Rimozione..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importa da Pax8",
@@ -5634,7 +5659,13 @@
     "ssoReauthManageProofExpired": "La verifica con il provider di identità è scaduta. Verifica di nuovo per confermare questa modifica.",
     "verifyWithIdpToDeletePasskey": "Questo account non ha una password. Verifica con il tuo provider di identità prima di rimuovere una passkey.",
     "deletePasskeySsoReauth": "Verifica l'identità per rimuovere una passkey",
-    "deletePasskeySsoVerified": "Identità verificata. Scegli Elimina sulla passkey che vuoi rimuovere."
+    "deletePasskeySsoVerified": "Identità verificata. Scegli Elimina sulla passkey che vuoi rimuovere.",
+    "authenticatorBackupAdded": "App di autenticazione aggiunta come backup. I tuoi codici di recupero non sono cambiati",
+    "authenticatorAppRemoved": "App di autenticazione rimossa. Accederai con la tua passkey",
+    "authenticatorCodeRejectedWaitForNext": "Codice non accettato. Ogni codice funziona una sola volta: se lo hai appena usato, attendi il prossimo codice della tua app di autenticazione.",
+    "passkeyConfirmationCanceled": "La conferma con passkey è stata annullata o è scaduta.",
+    "passkeyProofRejected": "Impossibile verificare la passkey. Riprova.",
+    "failedToRemoveAuthenticatorApp": "Impossibile rimuovere l’app di autenticazione"
   },
   "roleManager": {
     "roles": "Ruoli",
@@ -7370,7 +7401,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Confermerai con la tua passkey (Touch ID / Windows Hello) al momento della registrazione.",
     "authenticatorCode": "Codice authenticator",
-    "confirmYourPassword": "Conferma la password"
+    "confirmYourPassword": "Conferma la password",
+    "switchToAuthenticatorCode": "Usa invece l’app di autenticazione",
+    "usePasskeyInstead": "Usa invece la tua passkey"
   },
   "tenantVariablesPage": {
     "orgOwnedNote": "Le variabili appartenenti a un’organizzazione sono elencate nella rispettiva organizzazione.",
@@ -7575,7 +7608,8 @@
         "none": "Nessun accesso",
         "invited": "Invitato",
         "active": "Attivo",
-        "disabled": "Disattivato"
+        "disabled": "Disattivato",
+        "requested": "Richiesto"
       },
       "actions": {
         "give": "Concedi accesso al portale",
@@ -8265,5 +8299,126 @@
     "title": "Modalità di approvazione IA",
     "description": "Come la chat di Breeze AI chiede conferma prima di eseguire azioni protette (Tier 2/3) in questa organizzazione. Si applica che sia impostato o meno un limite di spesa.",
     "save": "Salva"
+  },
+  "portalAccessPolicy": {
+    "title": "Accesso e registrazione",
+    "orgDescription": "Come accedono al portale clienti le persone di questa organizzazione e come ottengono l’accesso da browser le nuove persone. Un campo lasciato su Eredita segue il valore predefinito del partner.",
+    "partnerDescription": "Il valore predefinito per ogni organizzazione cliente. Ogni organizzazione può sostituire qualsiasi campo nella propria scheda Portale clienti.",
+    "loading": "Caricamento delle impostazioni di accesso…",
+    "readOnly": "Puoi visualizzare queste impostazioni ma non modificarle. Modificare il valore predefinito del partner richiede l’accesso completo al partner.",
+    "save": "Salva impostazioni di accesso",
+    "sources": {
+      "partner": "Predefinito del partner",
+      "default": "Predefinito di Breeze"
+    },
+    "signIn": {
+      "title": "Come accedono le persone"
+    },
+    "newPeople": {
+      "title": "Come ottengono l’accesso da browser le nuove persone"
+    },
+    "options": {
+      "on": "Attivo",
+      "off": "Disattivato"
+    },
+    "microsoft": {
+      "label": "Accesso con Microsoft"
+    },
+    "google": {
+      "label": "Accesso con Google"
+    },
+    "password": {
+      "label": "Accesso con password",
+      "allowed": "Consentito",
+      "ssoOnly": "Disattivato — solo Microsoft/Google",
+      "ssoOnlyNeedsSso": "Disponibile dopo l’attivazione dell’accesso con Microsoft o Google."
+    },
+    "fallback": "L’accesso con password è attivo perché non è abilitato alcun accesso con Microsoft o Google.",
+    "invites": {
+      "label": "Inviti dall’MSP",
+      "value": "Sempre attivi"
+    },
+    "selfRegistration": {
+      "label": "Autoregistrazione",
+      "off": "Disattivata",
+      "approval": "Richiede approvazione",
+      "instant": "Immediata"
+    },
+    "ssoNewPerson": {
+      "label": "Primo accesso con Microsoft / Google",
+      "invitedOnly": "Solo persone invitate",
+      "approval": "Richiede approvazione",
+      "instant": "Immediato"
+    },
+    "requests": "Richieste ({{count}})",
+    "errors": {
+      "load": "Impossibile caricare le impostazioni di accesso.",
+      "save": "Impossibile salvare le impostazioni di accesso.",
+      "methodUnavailable": "Questo metodo di accesso non è ancora disponibile in questa distribuzione di Breeze.",
+      "ssoOnlyNeedsSso": "Attiva l’accesso con Microsoft o Google prima di disattivare l’accesso con password."
+    },
+    "toasts": {
+      "saved": "Impostazioni di accesso salvate."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Richieste di accesso",
+    "description": "Persone in attesa di accedere al portale di questa organizzazione. Approva per concedere l’accesso oppure rifiuta per chiudere la richiesta.",
+    "columns": {
+      "person": "Persona",
+      "source": "Come hanno richiesto",
+      "requested": "Richiesto"
+    },
+    "sources": {
+      "self": "Autoregistrazione",
+      "entra": "Accesso con Microsoft",
+      "google": "Accesso con Google",
+      "addin_user": "Componente aggiuntivo AI for Office"
+    },
+    "selectAll": "Seleziona tutte le richieste",
+    "selectOne": "Seleziona la richiesta di {{email}}",
+    "accountExists": "Ha già un account — Rifiuta per chiudere la richiesta",
+    "actions": {
+      "approve": "Approva",
+      "deny": "Rifiuta",
+      "approveSelected": "Approva selezionate ({{count}})",
+      "denySelected": "Rifiuta selezionate ({{count}})"
+    },
+    "results": {
+      "accountExists": "Ha già un account",
+      "notPending": "Non più in sospeso",
+      "notFound": "Richiesta non trovata",
+      "identityLinked": "Accesso già collegato a un altro account",
+      "failed": "Impossibile decidere su questa richiesta"
+    },
+    "denyDialog": {
+      "title": "Rifiuta richiesta di accesso",
+      "message": "Rifiutare la richiesta di {{email}}? La persona riceve un’e-mail che indica che non è stata approvata.",
+      "bulkMessage_one": "Rifiutare {{count}} richiesta? La persona riceve un’e-mail che indica che non è stata approvata.",
+      "bulkMessage_other": "Rifiutare {{count}} richieste? Ogni persona riceve un’e-mail che indica che non è stata approvata."
+    },
+    "toasts": {
+      "approved": "Accesso approvato per {{email}}.",
+      "denied": "Richiesta di {{email}} rifiutata.",
+      "bulkDone_one": "{{count}} richiesta decisa.",
+      "bulkDone_other": "{{count}} richieste decise.",
+      "bulkPartial": "{{succeeded}} richieste su {{total}} decise. Le altre sono contrassegnate nell’elenco."
+    },
+    "errors": {
+      "load": "Impossibile caricare le richieste di accesso.",
+      "action": "Impossibile aggiornare la richiesta di accesso.",
+      "bulk": "Impossibile decidere sulle richieste selezionate."
+    },
+    "summary": {
+      "title": "Richieste di accesso in sospeso",
+      "description": "Richieste in attesa nelle tue organizzazioni clienti. Apri un’organizzazione per approvarle o rifiutarle.",
+      "empty": "Nessuna richiesta in sospeso",
+      "orgPending_one": "{{count}} in sospeso",
+      "orgPending_other": "{{count}} in sospeso",
+      "review": "Esamina richieste",
+      "loadError": "Impossibile caricare le richieste di accesso in sospeso."
+    },
+    "refreshFailed": "Impossibile aggiornare le richieste di accesso: questo elenco potrebbe non essere aggiornato.",
+    "more": "Vengono mostrate le prime {{count}} richieste. Decidi su queste per vedere le altre."
   }
 }

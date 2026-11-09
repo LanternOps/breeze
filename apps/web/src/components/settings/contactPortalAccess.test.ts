@@ -36,7 +36,7 @@ function json(body: unknown, status = 200) {
 function login(over: Partial<PortalLogin>): PortalLogin {
   return {
     id: 'l1', email: 'ada@acme.test', contactId: 'c1', authMethod: 'password',
-    effectiveStatus: 'active', ...over,
+    browserAccess: 'granted', effectiveStatus: 'active', ...over,
   };
 }
 
@@ -50,7 +50,8 @@ describe('derivePortalStatus', () => {
     ['a bound active login gives active', [login({})], contact, 'active'],
     ['bound pending gives invited', [login({ effectiveStatus: 'pending_setup' })], contact, 'invited'],
     ['bound disabled gives disabled', [login({ effectiveStatus: 'disabled' })], contact, 'disabled'],
-    ['an Entra-only bound login gives none', [login({ authMethod: 'entra' })], contact, 'none'],
+    ['an add-in-only login does not count as portal access', [login({ authMethod: 'entra', browserAccess: 'none' })], contact, 'none'],
+    ['an Entra login with browser access counts', [login({ authMethod: 'entra', browserAccess: 'granted' })], contact, 'active'],
     ['an unbound active login with the same email (mixed case) gives active',
       [login({ contactId: null, email: 'ADA@Acme.test' })], contact, 'active'],
     ['bound disabled plus another active login bound to the same contact gives active',
@@ -67,6 +68,23 @@ describe('derivePortalStatus', () => {
   it('returns the id of the login it chose', () => {
     expect(derivePortalStatus(contact, [login({ id: 'x' })]).portalUserId).toBe('x');
     expect(derivePortalStatus(contact, []).portalUserId).toBeNull();
+  });
+
+  it('contact with a pending request reads Requested', () => {
+    expect(derivePortalStatus(contact, [], new Set(['ada@acme.test']))).toEqual({ status: 'requested', portalUserId: null });
+    expect(derivePortalStatus({ id: 'c1', email: ' ADA@acme.test ' }, [], new Set(['ada@acme.test'])).status).toBe('requested');
+    expect(derivePortalStatus(contact, [login({})], new Set(['ada@acme.test'])).status).toBe('active');
+    expect(derivePortalStatus(contact, [], new Set(['other@acme.test'])).status).toBe('none');
+  });
+
+  it('an unbound add-in-only login with the contact email does not count (none), and with a pending request reads requested', () => {
+    const contact = { id: 'c1', email: 'ada@acme.test' };
+    const addInOnly = login({ contactId: null, email: 'ada@acme.test', authMethod: 'entra', browserAccess: 'none' });
+    expect(derivePortalStatus(contact, [addInOnly])).toEqual({ status: 'none', portalUserId: null });
+    expect(derivePortalStatus(contact, [addInOnly], new Set(['ada@acme.test']))).toEqual({
+      status: 'requested',
+      portalUserId: null,
+    });
   });
 
   it('prefers a bound login over an unbound same-email login', () => {
@@ -86,7 +104,7 @@ describe('useContactPortalAccess', () => {
     await act(async () => { await Promise.resolve(); });
     expect(result.current.available).toBe(false);
     expect(showToastMock).not.toHaveBeenCalled();
-    expect(fetchWithAuthMock.mock.calls[0][0]).toBe(`/orgs/organizations/${ORG}/portal-users`);
+    expect(fetchWithAuthMock.mock.calls.map((c) => c[0])).toContain(`/orgs/organizations/${ORG}/portal-users`);
   });
 
   it('is available and derives status once logins load; reload refetches', async () => {
@@ -95,7 +113,41 @@ describe('useContactPortalAccess', () => {
     await waitFor(() => expect(result.current.available).toBe(true));
     expect(result.current.statusFor({ id: 'c1', email: 'ada@acme.test' }).status).toBe('active');
     await act(async () => { await result.current.reload(); });
-    expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('loads pending requests into the status, asking for the whole pending cap in one page', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      url.includes('portal-access-requests') ? json({ data: [{ email: 'New@Acme.test' }], hasMore: false }) : json({ data: [] }));
+    const { result } = renderHook(() => useContactPortalAccess(ORG));
+    await waitFor(() => expect(result.current.available).toBe(true));
+    await waitFor(() => expect(result.current.statusFor({ id: 'c9', email: 'new@acme.test' }).status).toBe('requested'));
+    // An org holds at most 200 pending requests; the list route defaults to 100 per page.
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(`/orgs/organizations/${ORG}/portal-access-requests?status=pending&limit=200`);
+  });
+
+  it.each([
+    ['a 500', () => json({ error: 'boom' }, 500)],
+    ['a thrown fetch', () => Promise.reject(new Error('network down'))],
+  ])('keeps portal access available when the requests fetch fails with %s', async (_label, failRequests) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      url.includes('portal-access-requests') ? failRequests() : json({ data: [login({})] }));
+    const { result } = renderHook(() => useContactPortalAccess(ORG));
+    await waitFor(() => expect(result.current.available).toBe(true));
+    expect(result.current.statusFor({ id: 'c1', email: 'ada@acme.test' }).status).toBe('active');
+    expect(warn).toHaveBeenCalledWith('[useContactPortalAccess] access requests load failed', expect.anything());
+    warn.mockRestore();
+  });
+
+  it('treats a 403 requests fetch as empty without hiding portal access', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      url.includes('portal-access-requests') ? json({ error: 'forbidden' }, 403) : json({ data: [login({})] }));
+    const { result } = renderHook(() => useContactPortalAccess(ORG));
+    await waitFor(() => expect(result.current.available).toBe(true));
+    expect(result.current.statusFor({ id: 'c1', email: 'ada@acme.test' }).status).toBe('active');
+    warn.mockRestore();
   });
 
   it('redirects to login on 401', async () => {

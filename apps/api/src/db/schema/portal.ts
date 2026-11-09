@@ -137,7 +137,7 @@ export const portalUsers = pgTable('portal_users', {
   // partial-index convention.
   entraOid: text('entra_oid'),
   entraTenantId: text('entra_tenant_id'),
-  authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' (SQL CHECK)
+  authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' | 'google' (SQL CHECK portal_users_auth_method_check); only 'password' is password-eligible
   // Durable generation snapshotted by portal and client-AI sessions. Redis
   // deletion is cleanup; live authorization compares this column instead.
   authEpoch: integer('auth_epoch').notNull().default(1),
@@ -200,8 +200,9 @@ export const portalUsers = pgTable('portal_users', {
  * release B on. Tenancy shape 1 (direct org_id, forced RLS).
  *
  * Release A (W2): backfilled from portal_users.entra_* and dual-written by the
- * AI for Office exchange (services/portalUserIdentities.ts). Reads for
- * authorization stay on portal_users.entra_tenant_id/entra_oid until W3.
+ * AI for Office exchange. Release B (W3): every read of external identity
+ * comes from this table (services/portalUserIdentities.ts); writers still
+ * dual-write portal_users.entra_* until release C drops them.
  *
  * The real tenancy constraint lives in SQL only — the composite FK
  * `portal_user_identities_user_org_fk` (portal_user_id, org_id) →

@@ -25,7 +25,7 @@ Inviting a customer from **Settings → Organizations → [organization] → Cus
 
 ### Give contacts portal access
 
-You can give a contact a portal login straight from the organization's **Contacts** tab (**Settings → Organizations → [organization] → Contacts**), instead of typing the address again on the Customer Portal tab. This is available to partner users only. The **Portal** column shows each contact as **No access**, **Invited**, **Active**, or **Disabled**.
+You can give a contact a portal login straight from the organization's **Contacts** tab (**Settings → Organizations → [organization] → Contacts**), instead of typing the address again on the Customer Portal tab. This is available to partner users only. The **Portal** column shows each contact as **No access**, **Requested**, **Invited**, **Active**, or **Disabled**. **Requested** means the contact has no login with browser access and their email has a pending access request (see [Access requests](#access-requests)); approve or deny it on the Customer Portal tab.
 
 - **One contact:** use **Give portal access** in the row actions. For a contact who was invited but has not set a password yet, the action is **Resend invite**.
 - **Several contacts:** tick the row checkboxes and choose **Give portal access (N)**. A single request covers up to 100 contacts.
@@ -36,7 +36,7 @@ The invite is the same email as above, and the login is tied to that contact. A 
 A login that is already tied to a different contact is never moved. The request fails with `PORTAL_INVITE_CONTACT_CONFLICT`; unlink the login from its current contact first, then invite again.
 
 <Aside type="note" title="AI for Office sign-ins">
-A person who only signs in through AI for Office (Microsoft Entra) shows as **No access** here, because that is not browser access to the portal.
+Only logins with browser access to the portal count. A person who only signs in through AI for Office (Microsoft Entra) shows as **No access** here, because that is not browser access to the portal.
 </Aside>
 
 #### Bulk results
@@ -52,6 +52,44 @@ The bulk action reports one result per contact. If any selected contact is not i
 | `duplicate_email_in_batch` | Two or more selected contacts share one email. None of them is invited; invite one at a time |
 
 If the login was created but the invite email did not go out (`emailSent: false`, shown as a warning toast: "Portal login created, but the invite email could not be sent"), use **Resend invite** on that contact.
+
+## Sign-in & registration
+
+Each organization has a sign-in policy. It decides how the organization's people sign in to the portal, and how new people get browser access. You set it at two levels:
+
+- **Partner default:** **Settings → Partner → Customer portal**. It applies to every customer organization. Changing it needs full partner access; partner users limited to selected organizations see the tab read-only.
+- **Organization override:** **Settings → Organizations → [organization] → Customer Portal → Sign-in & registration**. A field left on **Inherit** follows the partner default. The field always shows the value it inherits and where that value comes from (**Partner default** or **Breeze default**).
+
+A saved change applies from the next portal request. Nothing is cached.
+
+### How people sign in
+
+| Setting | Values | Breeze default |
+|---------|--------|----------------|
+| Password sign-in | **Allowed**, **Off — Microsoft/Google only** | Allowed |
+
+**Off — Microsoft/Google only** can be chosen only while Microsoft or Google sign-in is on for the organization. Microsoft and Google sign-in to the browser portal are not available yet, so the option is shown disabled with a note. The Microsoft and Google rows appear on the card once the portal supports them.
+
+If the policy says **Off** but no Microsoft or Google sign-in is in effect any more (for example, the partner default that enabled it was changed), password sign-in stays on. The card shows: "Password sign-in is on because no Microsoft or Google sign-in is enabled."
+
+The **Password reset** toggle on the Customer Portal tab is a separate setting. It controls self-service reset for people who sign in with a password; this policy decides whether password sign-in exists at all.
+
+### How new people get browser access
+
+- **Invites from the MSP** are always on: you can invite people from the Customer Portal tab or the Contacts tab whatever the other settings say. Password sign-in **Off** also stops an invited person from setting a password.
+- Self-registration and first sign-in with Microsoft or Google appear on the card once the portal supports them.
+
+### Access requests
+
+When someone asks for portal access through a route that needs your approval, the request waits in **Access requests**, above the organization's portal users list. The list only appears while requests are waiting, and the **Requests (N)** button on the Sign-in & registration card jumps to it. It shows the first 100 requests; decide those to see the rest.
+
+- **Approve:** for a self-registration request, Breeze creates the login and sends the normal invite email. For a Microsoft or Google request, it creates the account and emails the person that they can now sign in. For an AI for Office user, it turns on browser access for their existing login and sends the same "you can now sign in" email.
+- **Deny:** asks you to confirm, then emails the person that the request was not approved.
+- **Several at once:** tick the rows and choose **Approve selected** or **Deny selected**. Each row reports its own result, and rows that could not be decided are marked in the list.
+- A request whose email already has a portal login shows **Already has an account — Deny to dismiss**. Approve is disabled for it.
+- A request expires after 14 days. An organization holds at most 200 pending requests.
+
+The partner **Customer portal** tab lists every organization with pending requests, with a link to each organization's Customer Portal tab.
 
 ## Key Concepts
 
