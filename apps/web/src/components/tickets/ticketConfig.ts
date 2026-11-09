@@ -104,20 +104,29 @@ export function ticketDisplayNumber(t: { id: string; internalNumber?: string | n
   return t.internalNumber ?? t.ticketNumber ?? t.id.slice(0, 8);
 }
 
+/** Text for a neutral (muted) chip. --muted-foreground is 4.2:1 on --muted in
+ *  light — under AA for text-xs — so light reads from the foreground instead;
+ *  dark keeps the muted ink, which clears 4.7:1 there. Scoped to chips: the
+ *  global --muted-foreground is unchanged. */
+export const NEUTRAL_CHIP_TEXT = 'text-foreground/70 dark:text-muted-foreground';
+
+// Chip text uses the *-ink tokens: the fill tokens measure 1.8–4.0:1 as
+// text-xs on their own tint (ticketChipContrast.test.tsx guards every chip).
 export const statusConfig: Record<TicketStatus, { label: string; color: string }> = {
-  new: { label: 'New', color: 'bg-primary/15 text-primary border-primary/30' },
-  open: { label: 'Open', color: 'bg-success/15 text-success border-success/30' },
-  pending: { label: 'Pending', color: 'bg-warning/15 text-warning border-warning/30' },
-  on_hold: { label: 'On hold', color: 'bg-muted text-muted-foreground border-border' },
-  resolved: { label: 'Resolved', color: 'bg-success/15 text-success border-success/30' },
-  closed: { label: 'Closed', color: 'bg-muted text-muted-foreground border-border' },
+  new: { label: 'New', color: 'bg-primary/15 text-primary-ink border-primary/30' },
+  open: { label: 'Open', color: 'bg-success/15 text-success-ink border-success/30' },
+  pending: { label: 'Pending', color: 'bg-warning/15 text-warning-ink border-warning/30' },
+  on_hold: { label: 'On hold', color: `bg-muted ${NEUTRAL_CHIP_TEXT} border-border` },
+  resolved: { label: 'Resolved', color: 'bg-success/15 text-success-ink border-success/30' },
+  closed: { label: 'Closed', color: `bg-muted ${NEUTRAL_CHIP_TEXT} border-border` },
 };
 
 export const priorityConfig: Record<TicketPriority, { label: string; color: string; weight: number }> = {
   urgent: { label: 'Urgent', color: 'text-red-700 dark:text-red-400 bg-red-500/10 border-red-500/30', weight: 0 },
-  high: { label: 'High', color: 'text-orange-700 dark:text-orange-400 bg-orange-500/10 border-orange-500/30', weight: 1 },
-  normal: { label: 'Normal', color: 'text-muted-foreground bg-muted border-border', weight: 2 },
-  low: { label: 'Low', color: 'text-muted-foreground bg-muted/50 border-border', weight: 3 },
+  // orange-700 is 4.2:1 on its tint under a selected row; 800 clears 5.9:1.
+  high: { label: 'High', color: 'text-orange-800 dark:text-orange-400 bg-orange-500/10 border-orange-500/30', weight: 1 },
+  normal: { label: 'Normal', color: `${NEUTRAL_CHIP_TEXT} bg-muted border-border`, weight: 2 },
+  low: { label: 'Low', color: `${NEUTRAL_CHIP_TEXT} bg-muted/50 border-border`, weight: 3 },
 };
 
 export function formatRelative(totalMinutes: number): string {

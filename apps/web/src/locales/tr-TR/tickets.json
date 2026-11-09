@@ -139,7 +139,8 @@
       "tooLarge": "{{name}} 10 MB sınırını aşıyor.",
       "sentWithoutAttachment_one": "Not gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
       "sentWithoutAttachment_other": "Not gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın."
-    }
+    },
+    "modeLabel": "Yorum görünürlüğü"
   },
   "ticketFeed": {
     "empty": "Henüz etkinlik yok.",
@@ -416,7 +417,18 @@
     },
     "filterByType": "Türe göre filtrele",
     "allTypes": "Tüm türler",
-    "showMerged": "Birleştirilenleri göster"
+    "showMerged": "Birleştirilenleri göster",
+    "shortcutsButton": "Kısayollar",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, {{priority}} öncelik",
+      "ticketWithSla": "{{number}} {{subject}}, {{priority}} öncelik, {{sla}}",
+      "sla": {
+        "ok": "SLA: {{relative}} kaldı",
+        "atRisk": "SLA risk altında, {{relative}} kaldı",
+        "paused": "SLA duraklatıldı, {{relative}} kaldı",
+        "breached": "SLA ihlal edildi"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "Bilet bulunamadı. Silinmiş olabilir veya erişiminiz olmayabilir.",

@@ -139,7 +139,8 @@
       "tooLarge": "{{name}} ist größer als 10 MB.",
       "sentWithoutAttachment_one": "Notiz gepostet, aber der Anhang konnte nicht hinzugefügt werden. Wiederholen oder entfernen.",
       "sentWithoutAttachment_other": "Notiz gepostet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen."
-    }
+    },
+    "modeLabel": "Sichtbarkeit des Kommentars"
   },
   "ticketFeed": {
     "empty": "Noch keine Aktivität.",
@@ -416,7 +417,18 @@
     },
     "filterByType": "Nach Typ filtern",
     "allTypes": "Alle Typen",
-    "showMerged": "Zusammengeführte anzeigen"
+    "showMerged": "Zusammengeführte anzeigen",
+    "shortcutsButton": "Kürzel",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, Priorität {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, Priorität {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA: {{relative}} übrig",
+        "atRisk": "SLA gefährdet, {{relative}} übrig",
+        "paused": "SLA pausiert, {{relative}} übrig",
+        "breached": "SLA durchbrochen"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "Ticket nicht gefunden. Möglicherweise wurde es gelöscht oder Sie haben keinen Zugriff darauf.",

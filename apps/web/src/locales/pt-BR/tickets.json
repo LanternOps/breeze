@@ -139,7 +139,8 @@
       "tooLarge": "{{name}} é maior que 10 MB.",
       "sentWithoutAttachment_one": "Nota publicada, mas não foi possível adicionar o anexo. Tente novamente ou remova-o.",
       "sentWithoutAttachment_other": "Nota publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os."
-    }
+    },
+    "modeLabel": "Visibilidade do comentário"
   },
   "ticketFeed": {
     "empty": "Nenhuma atividade ainda.",
@@ -416,7 +417,18 @@
     },
     "filterByType": "Filtrar por tipo",
     "allTypes": "Todos os tipos",
-    "showMerged": "Mostrar mesclados"
+    "showMerged": "Mostrar mesclados",
+    "shortcutsButton": "Atalhos",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, prioridade {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, prioridade {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA: restam {{relative}}",
+        "atRisk": "SLA em risco, restam {{relative}}",
+        "paused": "SLA pausado, restam {{relative}}",
+        "breached": "SLA violado"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "Chamado não encontrado. Ele pode ter sido excluído ou você pode não ter acesso a ele.",
