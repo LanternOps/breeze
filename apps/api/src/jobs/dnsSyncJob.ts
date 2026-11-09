@@ -13,7 +13,6 @@ import {
   dnsThreatCategoryEnum,
   isDnsThreatCategory,
   type DnsAction,
-  DNS_SYNC_INTERVAL_MINUTES,
   type DnsIntegrationConfig,
   type DnsPolicyDomain,
   type DnsThreatCategory
@@ -46,7 +45,10 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const DNS_SYNC_QUEUE = 'dns-sync';
-const DEFAULT_SYNC_INTERVAL_MINUTES = DNS_SYNC_INTERVAL_MINUTES.DEFAULT;
+// Literal on purpose: scheduleRegistry.contract.test.ts must read the repeat
+// interval statically. dnsFilterSyncInterval.test.ts pins it to
+// DNS_SYNC_INTERVAL_MINUTES.DEFAULT so the two cannot drift.
+export const DEFAULT_SYNC_INTERVAL_MINUTES = 15;
 
 const VALID_ACTIONS = new Set(dnsActionEnum.enumValues);
 const VALID_CATEGORIES = new Set(dnsThreatCategoryEnum.enumValues);
