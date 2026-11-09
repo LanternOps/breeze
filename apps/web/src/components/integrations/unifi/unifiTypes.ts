@@ -33,6 +33,7 @@ export interface BreezeSiteOption {
 export interface OrgOption {
   id: string;
   name: string;
+  type?: string;
 }
 // Currently-saved mappings (from GET /unifi/mappings).
 export interface SavedMapping {
@@ -57,6 +58,9 @@ export interface SyncRun {
   devicesUnchanged: number;
   devicesRemoved: number;
   error: string | null;
+  // Cloud sites with no mapping at the end of the run; null = not recorded
+  // (older runs, failed runs, runs with zero mappings).
+  sitesUnmapped?: number | null;
 }
 
 // Per-console deep-telemetry collector config (from GET /unifi/collectors).
@@ -170,6 +174,7 @@ export interface ControllerDraft {
 export interface SiteGroup {
   id: string;
   name: string;
+  isInternal: boolean;
   sites: BreezeSiteOption[];
 }
 
