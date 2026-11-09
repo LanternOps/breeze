@@ -67,7 +67,7 @@ export const DISPATCH_EVIDENCE: Readonly<Record<string, EvidenceRule>> = Object.
 export const DISPATCH_UNVERIFIED_NOTE =
   'dispatch unverified: no job, command or intent id came back; do not report it as done and do not retry without checking';
 
-function bareToolName(name: string): string {
+export function bareToolName(name: string): string {
   return name.replace(/^mcp__[a-z0-9_-]+?__/i, '');
 }
 
@@ -163,10 +163,16 @@ export function turnEvidenceFrom(toolOutcomes: readonly WispTurnToolOutcome[]): 
     pendingApprovals: 0,
     assessmentQueued: false,
     concernChanged: false,
+    toolCalls: 0,
+    dispatchAttempted: false,
   };
   const dispatched = new Set<string>();
   for (const outcome of toolOutcomes) {
+    evidence.toolCalls += 1;
     const name = bareToolName(outcome.toolName);
+    const rule = DISPATCH_EVIDENCE[name];
+    const attempted = rule !== undefined && ruleApplies(rule, outcome.input);
+    if (attempted) evidence.dispatchAttempted = true;
     const parsed = parseObject(outcome.output);
     // Approvals first: "approval still pending" reaches the model as an error.
     evidence.pendingApprovals += approvalCount(parsed, outcome.output);
@@ -178,8 +184,7 @@ export function turnEvidenceFrom(toolOutcomes: readonly WispTurnToolOutcome[]): 
       evidence.concernChanged = true;
     }
 
-    const rule = DISPATCH_EVIDENCE[name];
-    if (!rule || !ruleApplies(rule, outcome.input)) continue;
+    if (!rule || !attempted) continue;
     const proven = rule.text
       ? rule.text.test(outcome.output)
       : parsed ? hasEvidenceKey(parsed, rule.keys) : rawHasEvidenceKey(outcome.output, rule.keys);

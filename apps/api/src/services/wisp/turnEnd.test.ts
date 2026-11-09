@@ -122,7 +122,9 @@ describe('runWispTurnEndBeforeDone: the promise correction (#10427)', () => {
     const { s, published } = replied("I'll check back in 5 minutes.");
     await runWispTurnEndBeforeDone(s);
     expect(published.filter((e) => e.type === 'content_delta')).toHaveLength(1);
-    expect(h.captureException).toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'db down' }), undefined, expect.objectContaining({ op: 'wisp.promise_correction.persist' }),
+    );
   });
 
   it('with Wisp off, or with no grant, nothing is linted', async () => {
@@ -134,6 +136,35 @@ describe('runWispTurnEndBeforeDone: the promise correction (#10427)', () => {
     await runWispTurnEndBeforeDone(noGrant.s);
     expect([...off.published, ...noGrant.published]).toEqual([]);
     expect(h.insertValues).not.toHaveBeenCalled();
+  });
+
+  it('a persist that outlasts the timeout is reported, the correction still streams, and a late failure is reported too', async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectInsert!: (err: Error) => void;
+      h.insertValues.mockReturnValueOnce(new Promise((_, reject) => (rejectInsert = reject)));
+      const { s, published } = replied("I'll check back in 5 minutes.");
+      const running = runWispTurnEndBeforeDone(s);
+      await vi.advanceTimersByTimeAsync(1_500);
+      await running;
+      expect(published.filter((e) => e.type === 'content_delta')).toHaveLength(1);
+      expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ op: 'wisp.promise_correction.persist_timeout' }));
+      rejectInsert(new Error('db down late'));
+      await vi.waitFor(() => expect(h.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'db down late' }), undefined, expect.objectContaining({ op: 'wisp.promise_correction.persist' }),
+      ));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a broken turn record is reported and never stops the rest of the turn end', async () => {
+    const { s, turn } = replied("don't reboot PC-01. I'll check back in 5 minutes.");
+    turn.userMessage = "don't reboot PC-01";
+    Object.defineProperty(turn, 'toolOutcomes', { get: () => { throw new Error('broken record'); } });
+    const extras = await runWispTurnEndBeforeDone(s);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ op: 'wisp.promise_correction' }));
+    expect(extras.wispInstructionCapture?.captureId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('the correction does not stop the standing-instruction capture', async () => {

@@ -70,19 +70,19 @@ export async function publishTurnCorrection(session: Session, text: string): Pro
   const turn = session.currentTurn;
   if (!turn || turn.correctionPublished) return;
   turn.correctionPublished = true;
-  try {
-    await withTimeout(
-      withDbAccessContext(
-        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-        () => db.insert(aiMessages).values({ sessionId: session.breezeSessionId, role: 'assistant', content: text }),
-      ).then(() => undefined),
-      WISP_TURN_END_BEFORE_DONE_TIMEOUT_MS,
-      undefined,
-      () => console.warn('[wisp] promise correction not persisted in time', { sessionId: session.breezeSessionId }),
-    );
-  } catch (err) {
-    report('wisp.promise_correction.persist', err, session.orgId);
-  }
+  const orgId = session.orgId;
+  // The failure handler is attached before the race, so a persist that fails
+  // after the timeout has given up waiting is still reported, never dropped.
+  const persisted = withDbAccessContext(
+    { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+    () => db.insert(aiMessages).values({ sessionId: session.breezeSessionId, role: 'assistant', content: text }),
+  ).then(
+    () => undefined,
+    (err: unknown) => report('wisp.promise_correction.persist', err, orgId),
+  );
+  await withTimeout(persisted, WISP_TURN_END_BEFORE_DONE_TIMEOUT_MS, undefined, () => {
+    report('wisp.promise_correction.persist_timeout', new Error('promise correction not persisted in time'), orgId);
+  });
   session.eventBus.publish({ type: 'message_start', messageId: randomUUID() });
   session.eventBus.publish({ type: 'content_delta', delta: text });
   session.eventBus.publish({ type: 'message_end', inputTokens: 0, outputTokens: 0 });

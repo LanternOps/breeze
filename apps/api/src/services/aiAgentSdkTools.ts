@@ -23,7 +23,7 @@ import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
-import { normaliseDispatchResult } from './wisp/dispatchEvidence';
+import { bareToolName, normaliseDispatchResult } from './wisp/dispatchEvidence';
 import { incWispDispatchUnverified } from './wispMetrics';
 import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -172,7 +172,7 @@ function wispMissingToolAuthDenial(
 /** #10427 (W08): normalise a Wisp dispatch result that carries no evidence, and count it. */
 function wispDispatchResult(toolName: string, args: Record<string, unknown>, result: string): string {
   const normalised = normaliseDispatchResult(toolName, args, result);
-  if (normalised.unverified) incWispDispatchUnverified(toolName);
+  if (normalised.unverified) incWispDispatchUnverified(bareToolName(toolName));
   return normalised.output;
 }
 

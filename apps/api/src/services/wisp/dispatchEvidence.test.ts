@@ -216,6 +216,8 @@ describe('turnEvidenceFrom', () => {
     pendingApprovals: 0,
     assessmentQueued: false,
     concernChanged: false,
+    toolCalls: 0,
+    dispatchAttempted: false,
   };
 
   it('no tool calls, no evidence', () => {
@@ -244,7 +246,16 @@ describe('turnEvidenceFrom', () => {
       outcome('schedule_check_in', {}, JSON.stringify({ error: 'check_in_limit_reached' }), true),
       outcome('manage_patches', { action: 'scan' }, JSON.stringify({ success: false, error: 'No patch scan was queued', queued: [], failed: [{ deviceId: DEV, error: 'offline' }] })),
     ]);
-    expect(ev).toEqual(empty);
+    // Attempted, but nothing proven.
+    expect(ev).toEqual({ ...empty, toolCalls: 4, dispatchAttempted: true });
+  });
+
+  it('counts every tool call, and a read is not a dispatch attempt', () => {
+    const ev = turnEvidenceFrom([
+      outcome('query_devices', {}, JSON.stringify({ devices: [] })),
+      outcome('manage_patches', { action: 'list' }, JSON.stringify({ patches: [] })),
+    ]);
+    expect(ev).toEqual({ ...empty, toolCalls: 2 });
   });
 
   it('a partly refused scan still dispatched to the devices that took it', () => {

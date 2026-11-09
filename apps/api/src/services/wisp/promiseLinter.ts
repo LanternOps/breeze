@@ -15,8 +15,13 @@
  *  - an offer ("I can check back if you'd like", "you could schedule a scan")
  *    is not a commitment, nor is anything conditional on the user's say-so;
  *  - negations ("I will not follow up") are skipped;
- *  - a passive with a time reference ("has been restarted 3 times since
- *    Monday") reads as a device fact, not a dispatch claim;
+ *  - a completed passive ("the scan has been queued") counts only when the
+ *    turn tried a dispatch or called no tool at all: after a read-only call
+ *    ("KB5034441 has been installed on 12 devices") it is a status report, and
+ *    one with a time reference ("restarted 3 times since Monday") is a device
+ *    fact either way;
+ *  - a step that still needs approval ("which requires your approval") is a
+ *    proposal, not a claim;
  *  - quoted (`>`) lines and fenced code are ignored.
  *
  * Pure: no I/O, no imports, so it is cheap to run before `done`.
@@ -37,6 +42,10 @@ export type TurnEvidence = {
   assessmentQueued: boolean;
   /** A concern was raised or changed this turn. */
   concernChanged: boolean;
+  /** Tool calls this turn, of any kind (a passive claim after reads is a status report). */
+  toolCalls: number;
+  /** A dispatch-class tool was called this turn, whatever came back. */
+  dispatchAttempted: boolean;
 };
 
 export type PromiseClass = 'follow_up' | 'dispatched' | 'concern';
@@ -73,7 +82,7 @@ const CONCERN_RE = new RegExp(`${FIRST_PERSON}${GAP}\\s+${CONCERN_VERBS}(?:\\s+[
 /** A word in the gap that turns the commitment around. */
 const NEGATION_RE = /\b(?:not|never|no)\b|n't\b/i;
 /** The sentence leaves the action to the user's say-so: an offer, not a promise. */
-const OFFER_RE = /\bif (?:you(?:'d| would)? (?:like|want|prefer|approve)|needed|that helps)\b|\b(?:once|after|when) you approve\b|\bwith your approval\b|\bwant me to\b|\bwould you like\b|\b(?:shall|should) i\b/i;
+const OFFER_RE = /\bif (?:you(?:'d| would)? (?:like|want|prefer|approve)|needed|that helps)\b|\b(?:once|after|when) you approve\b|\bwith your approval\b|\b(?:requires?|needs?) (?:your )?approval\b|\bwant me to\b|\bwould you like\b|\b(?:shall|should) i\b/i;
 /** A time reference makes a passive a historical fact about the device. */
 const HISTORY_RE = /\b(?:\d+\s+times?|times|ago|since|last|recently|yesterday|earlier|previously|already|before)\b/i;
 
@@ -96,11 +105,12 @@ function committed(re: RegExp, sentence: string): boolean {
   return !NEGATION_RE.test(m[1] ?? '');
 }
 
-function classesIn(sentence: string): PromiseClass[] {
+function classesIn(sentence: string, lintPassive: boolean): PromiseClass[] {
   if (OFFER_RE.test(sentence)) return [];
   const out: PromiseClass[] = [];
   if (committed(FOLLOW_UP_RE, sentence)) out.push('follow_up');
-  if (committed(DISPATCH_RE, sentence) || (DISPATCH_PASSIVE_RE.test(sentence) && !HISTORY_RE.test(sentence))) {
+  const passiveClaim = lintPassive && DISPATCH_PASSIVE_RE.test(sentence) && !HISTORY_RE.test(sentence);
+  if (committed(DISPATCH_RE, sentence) || passiveClaim) {
     out.push('dispatched');
   }
   if (committed(CONCERN_RE, sentence)) out.push('concern');
@@ -123,8 +133,9 @@ export function lintTurnPromises(
   evidence: TurnEvidence,
 ): { corrections: string[]; classes: PromiseClass[] } {
   const found = new Set<PromiseClass>();
+  const lintPassive = evidence.dispatchAttempted || evidence.toolCalls === 0;
   for (const sentence of sentences(lintableText(assistantText))) {
-    for (const cls of classesIn(sentence)) found.add(cls);
+    for (const cls of classesIn(sentence, lintPassive)) found.add(cls);
   }
   const classes = CLASS_ORDER.filter((cls) => found.has(cls) && !backed(cls, evidence));
   return { corrections: classes.map((cls) => CORRECTIONS[cls]), classes };

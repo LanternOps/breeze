@@ -429,7 +429,9 @@ describe('turn end — the promise correction (#10427)', () => {
 
   it('a Wisp reply with no promise gets no correction', async () => {
     lookupWispGrantMock.mockResolvedValue(GRANT);
-    const { session } = await runTurn('sess-wisp-no-promise', ['PC-01 is online and its disk is at 91%.']);
+    const { session, recorded } = await runTurn('sess-wisp-no-promise', ['PC-01 is online and its disk is at 91%.']);
+    // The reply was buffered and linted; it simply promised nothing.
+    expect(recorded?.assistantText).toBe('PC-01 is online and its disk is at 91%.');
     expect(streamed(session).some((e: string) => e.startsWith('delta:Correction'))).toBe(false);
   });
 

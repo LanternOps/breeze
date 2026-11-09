@@ -21,6 +21,8 @@ const none: TurnEvidence = {
   pendingApprovals: 0,
   assessmentQueued: false,
   concernChanged: false,
+  toolCalls: 0,
+  dispatchAttempted: false,
 };
 const ev = (over: Partial<TurnEvidence>): TurnEvidence => ({ ...none, ...over });
 
@@ -107,6 +109,25 @@ describe('lintTurnPromises', () => {
 
     it('a queued assessment backs it', () => {
       expect(lintTurnPromises('An assessment has been queued.', ev({ assessmentQueued: true })).corrections).toEqual([]);
+    });
+
+    it('a passive status read back from a list call is not a claim of dispatch', () => {
+      const listed = ev({ toolCalls: 1 });
+      expect(lintTurnPromises('KB5034441 has been installed on 12 devices; 3 have been rebooted.', listed).corrections).toEqual([]);
+      expect(lintTurnPromises('The service has been restarted.', listed).corrections).toEqual([]);
+    });
+
+    it('a passive claim after a dispatch that came back unverified is corrected', () => {
+      expect(lintTurnPromises('The scan has been queued.', ev({ toolCalls: 1, dispatchAttempted: true })).corrections).toEqual([DISPATCH_CORRECTION]);
+    });
+
+    it('a first-person claim is corrected even when other tools ran', () => {
+      expect(lintTurnPromises("I've queued a patch scan on PC-01.", ev({ toolCalls: 2 })).corrections).toEqual([DISPATCH_CORRECTION]);
+    });
+
+    it('a step that still needs approval is a proposal, not a claim', () => {
+      expect(lintTurnPromises("I'll need to restart the service, which requires your approval.", none).corrections).toEqual([]);
+      expect(lintTurnPromises("I'll restart it, but that needs approval first.", none).corrections).toEqual([]);
     });
 
     it('a historical fact about the device is not a claim of dispatch', () => {
