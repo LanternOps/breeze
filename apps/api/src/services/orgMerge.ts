@@ -417,6 +417,8 @@ const DROP_LOSER_OVERRIDE_SETTINGS_TABLES: ReadonlySet<string> = new Set([
   'billing_payment_settings',
   // #4617 customer work approval policy.
   'ticket_approval_settings',
+  // W3 #11380 portal sign-in policy: survivor keeps its own override or inherits the partner default.
+  'portal_access_policies',
 ]);
 
 /** Policy kinds that issue DML. Everything else is a documented no-op. */
