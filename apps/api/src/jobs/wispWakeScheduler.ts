@@ -33,7 +33,9 @@
  *      4b. reconcileCheckIns (#10991) — a `scheduled` check-in more than
  *         2 minutes overdue with no live job is re-enqueued with delay 0
  *         (services/wisp/checkIns.ts reconcileOrphanCheckIns).
- *      5. pollStaleTickets, 6. pollTicketClusters, 7. correlateIncidents.
+ *      5. pollStaleTickets, 6. pollTicketClusters, 7. correlateIncidents,
+ *      8. rollupDeviceConcerns (#11426: ≥ 3 device concerns of one org
+ *         sharing a pattern → one org-level parent; services/wisp/concernRollup.ts).
  *  - `assess` — the debounced per-(grant, org) job requestAssessment adds;
  *    processAssessJob hands it to enqueueAssessment.
  *  - `check-in` — the delayed job of one Wisp check-in timer (#10991);
@@ -67,6 +69,7 @@ import { pauseGrant, resumeGrant } from '../services/wisp/grants';
 import { reconcilePartnerDisabled } from '../services/wisp/partnerSettings';
 import { setWispGrantsActive } from '../services/wispMetrics';
 import { correlateIncidents } from '../services/wisp/incidentCorrelator';
+import { rollupDeviceConcerns } from '../services/wisp/concernRollup';
 import { pollStaleTickets, pollTicketClusters } from '../services/wisp/pollers';
 import { claimDueWatches, recordWatchHits, stopWatchesForInactiveGrants } from '../services/wisp/watches';
 import { evaluateWatchHits, parseWatchHitRecord, watchHitChange, type WatchHitSet } from '../services/wisp/watchHits';
@@ -112,6 +115,8 @@ export type WakeTickResult = {
   grantsResumed: number;
   ticketClustersOpened: number;
   incidentsOpened: number;
+  /** #11426: org-level parents the same-org device-concern rollup opened. */
+  concernRollupsOpened: number;
   checkInsRefired: number;
 };
 
@@ -400,6 +405,7 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
     grantsResumed: 0,
     ticketClustersOpened: 0,
     incidentsOpened: 0,
+    concernRollupsOpened: 0,
     checkInsRefired: 0,
   };
   if (!wispEnabled()) return result;
@@ -438,6 +444,9 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
   });
   await section('correlateIncidents', async () => {
     result.incidentsOpened = (await correlateIncidents(now)).partnerIncidentsOpened;
+  });
+  await section('rollupDeviceConcerns', async () => {
+    result.concernRollupsOpened = (await rollupDeviceConcerns(now)).opened;
   });
   // null when the reconcile section failed: leave the gauge at its last value.
   if (activeGrants !== null) setWispGrantsActive(activeGrants);

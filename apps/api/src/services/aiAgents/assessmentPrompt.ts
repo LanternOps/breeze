@@ -227,6 +227,9 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     lines.push(wrapUntrustedData('wisp-org-name', sanitizeSweepText(a.org.name ?? '', ORG_NAME_MAX) || '(no name)'));
   }
   lines.push('- New problem worth tracking → record_concern (one subject per call, at most 10 per run).');
+  // #11426: the same-org rollup folds device concerns sharing a pattern into one.
+  lines.push('  When the same problem recurs across devices, give each of those record_concern calls the same short '
+    + 'pattern key (e.g. phantom_incident_event) so Wisp can group them.');
   lines.push("- Known concern changed or is fixed → update_concern. To close it send status: 'resolved' with an "
     + 'outcome; a summary edit alone keeps it open.');
   lines.push('- The person should act now → nudge (one concern, one next step).');

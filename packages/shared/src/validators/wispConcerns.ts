@@ -72,12 +72,41 @@ const snoozeUntilSchema = z.iso.datetime({ offset: true }).refine((value) => {
 // Outcome tools (assessment runs, W05b)
 // ---------------------------------------------------------------------------
 
+/** Longest stored concern pattern key (#11426); a longer one is cut at a `_`. */
+export const CONCERN_PATTERN_MAX = 64;
+
+/** #11426: the evidence key holding a concern's pattern; server-written, never taken from model evidence. */
+export const CONCERN_PATTERN_EVIDENCE_KEY = 'pattern';
+
+/**
+ * #11426: a concern pattern key in its stored form — lowercase snake_case
+ * (`Phantom Incident-Event` → `phantom_incident_event`), at most
+ * CONCERN_PATTERN_MAX characters. null when fewer than 3 characters survive
+ * (or the input is not a string): no key is better than a meaningless one.
+ */
+export function normalizeConcernPattern(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  let key = raw.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (key.length > CONCERN_PATTERN_MAX) {
+    const cut = key.slice(0, CONCERN_PATTERN_MAX + 1);
+    const at = cut.lastIndexOf('_');
+    key = (at > 0 ? cut.slice(0, at) : cut.slice(0, CONCERN_PATTERN_MAX)).replace(/_+$/, '');
+  }
+  return key.length >= 3 ? key : null;
+}
+
 /** `record_concern` — the assessment run's way to raise a concern. */
 export const raiseConcernSchema = z.object({
   subject: concernSubjectSchema,
   summary: summarySchema,
   severity: concernSeveritySchema,
   evidence: evidenceSchema.optional(),
+  // #11426: the same-org rollup folds ≥ 3 device concerns sharing this key into
+  // one org-level concern. Stored normalised (normalizeConcernPattern).
+  pattern: z.string().trim().min(1).max(100).optional().describe(
+    'Short snake_case key for the KIND of problem, identical for every device that has it '
+    + '(e.g. phantom_incident_event, browser_critical_cves, patch_job_timeout). No device names, ids or numbers.',
+  ),
 });
 export type RaiseConcernInput = z.infer<typeof raiseConcernSchema>;
 
@@ -174,7 +203,9 @@ export interface AssessmentOutcome {
 // ---------------------------------------------------------------------------
 
 /** `raise_concern` (chat, T2 auto-approvable): a chat turn names its target org. */
-export const raiseConcernChatSchema = raiseConcernSchema.extend({
+// No `pattern` (#11426): a chat raise names one concern a person asked for; the
+// rollup key is the assessment run's, and the chat tool index stays unchanged.
+export const raiseConcernChatSchema = raiseConcernSchema.omit({ pattern: true }).extend({
   orgId: z.uuid(),
   subject: z.object({ kind: z.enum(CHAT_RAISE_CONCERN_SUBJECT_KINDS), id: z.uuid() }),
 });

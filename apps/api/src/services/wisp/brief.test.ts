@@ -335,6 +335,35 @@ describe('buildBrief', () => {
       expect(brief.body).toBe('Nothing needs you right now.');
     });
 
+    // #11426: the brief prefers a same-org rollup parent over its device children.
+    it('counts a rollup parent once and folds its device children under it', async () => {
+      const kids = [1, 2, 3].map((n) => concern({ severity: n === 2 ? 'high' : 'low', summary: `Phantom incident event ${n}` }));
+      const parent = concern({
+        subject: { kind: 'incident', id: '00000000-0000-4000-8000-0000000000ff' },
+        severity: 'high', summary: '3 devices: phantom incident event', signature: `${ORG}:phantom_incident_event`,
+        evidence: { rollup: 'device_pattern', pattern: 'phantom_incident_event', deviceCount: 3 },
+        childConcernIds: kids.map((k) => k.id),
+      });
+      live([...kids, parent, concern({ severity: 'medium', summary: 'Disk is filling up.' })]);
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.title).toBe('Good morning — 1 need you, 2 open');
+      expect(brief.body.split(' · ')).toEqual(['3 devices: phantom incident event', 'Disk is filling up']);
+      expect(brief.sections.find((s) => s.heading === 'Needs you')?.lines).toEqual(['3 devices: phantom incident event']);
+      expect(brief.sections.find((s) => s.heading === 'Open concerns')?.lines).toEqual(['high: 1', 'medium: 1']);
+    });
+
+    it('a folded child with an approval card waiting still needs you', async () => {
+      const kid = concern({ severity: 'low', approvalIntentId: 'intent-7', summary: 'Restart the agent?' });
+      const parent = concern({
+        subject: { kind: 'incident', id: '00000000-0000-4000-8000-0000000000fe' }, severity: 'low',
+        summary: '3 devices: phantom incident event', evidence: { rollup: 'device_pattern' }, childConcernIds: [kid.id],
+      });
+      live([kid, parent]);
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.title).toBe('Good morning — 1 need you, 1 open');
+      expect(brief.sections.find((s) => s.heading === 'Needs you')?.lines).toEqual(['Restart the agent?']);
+    });
+
     it('a 120-character summary is cut at a word boundary within 90 characters, not 39 + "…"', async () => {
       const summary = 'Backups on the accounting server have failed every night since the first of July and nobody has looked at them since now';
       expect(summary).toHaveLength(120);
