@@ -3,7 +3,7 @@ import { isCimdClientId } from './cimdHosts';
 import { errors } from 'oidc-provider';
 import type { McpGrantableDomain } from '@breeze/shared';
 import { and, eq, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   oauthAuthorizationCodes,
   oauthClients,
@@ -403,18 +403,33 @@ async function resolveLostRotation(
 }
 
 /**
- * A seal is only ever opened inside the window, which is capped. Clearing a
- * client's older seals on each rotation leaves at most the latest rotation of
- * a family carrying one at rest.
+ * A seal is only ever opened inside the window, which is capped at
+ * REFRESH_ROTATION_GRACE_MAX_MS whatever the configured length. Each rotation
+ * by a client clears that client's seals older than the cap; seals from the
+ * last 30 s and the last seal of an idle client remain until row cleanup.
+ *
+ * Housekeeping only, so it must never fail the rotation it rides along with:
+ * the UPDATE runs in a savepoint (a caught failure would otherwise abort the
+ * consume's transaction) and a failure is logged. The next rotation by the
+ * client retries it.
  */
 async function scrubStaleRotationSeals(clientId: string, now: Date): Promise<void> {
-  await db.update(oauthRefreshTokens)
-    .set({ successorSealed: null })
-    .where(and(
-      eq(oauthRefreshTokens.clientId, clientId),
-      isNotNull(oauthRefreshTokens.successorSealed),
-      lt(oauthRefreshTokens.rotatedAt, new Date(now.getTime() - REFRESH_ROTATION_GRACE_MAX_MS)),
-    ));
+  try {
+    await withDbTransaction(() => db.update(oauthRefreshTokens)
+      .set({ successorSealed: null })
+      .where(and(
+        eq(oauthRefreshTokens.clientId, clientId),
+        isNotNull(oauthRefreshTokens.successorSealed),
+        lt(oauthRefreshTokens.rotatedAt, new Date(now.getTime() - REFRESH_ROTATION_GRACE_MAX_MS)),
+      )));
+  } catch (err) {
+    logOauthWarn({
+      errorId: ERROR_IDS.OAUTH_REFRESH_SEAL_SCRUB_FAILED,
+      message: 'failed to clear stale refresh-rotation seals; the rotation continues',
+      err,
+      context: { client_id: clientId },
+    });
+  }
 }
 
 export class BreezeOidcAdapter {
@@ -676,6 +691,14 @@ export class BreezeOidcAdapter {
           // alias-only `resource` mismatch from failing the exchange in the
           // first place.
           //
+          // Exception (#10301): the same client re-presenting a token it
+          // rotated inside the grace window is handled above and never gets
+          // here. That includes the post-failure retry described above:
+          // consume() sealed the successor before the exchange failed, so a
+          // retry inside the window receives it. Outside the window, or with
+          // the window off, it still lands here. `rotation_grace` and
+          // `rotated_ms_ago` in the log below say which case it was.
+          //
           // SUPPORT-VISIBLE CONSEQUENCE: that revocation is now DURABLE and
           // IRREVERSIBLE. It used to be recorded only in the Redis grant
           // marker, so a family effectively "recovered" once the marker
@@ -702,7 +725,8 @@ export class BreezeOidcAdapter {
               revoked_at: row.revokedAt.toISOString(),
               revoked_ms_ago: Date.now() - row.revokedAt.getTime(),
               // Why the #10301 grace window did not apply to a rotated token
-              // (null: not rotated, not the refresh_token grant, or window off).
+              // (null: not rotated, not the refresh_token grant presenting this
+              // token, window off, or no sealing key configured).
               rotation_grace: grace.outcome === 'not_applicable' ? null : grace.outcome,
               rotated_ms_ago: grace.outcome === 'not_applicable' ? null : grace.reuseMs,
             },

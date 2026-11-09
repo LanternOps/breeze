@@ -441,6 +441,85 @@ describe.skipIf(!SHOULD_RUN)('OAuth token consume is atomic across concurrent ex
     });
   }, 30_000);
 
+  it('clears only the rotating client\'s seals older than the cap (#10301)', async () => {
+    const issued = await issueAuthorizationCode(live.url, 'grace-scrub');
+    const initial = await exchangeCode(live.url, issued);
+    expect(initial.status).toBe(200);
+    const first = await initial.json() as { refresh_token: string };
+    const [template] = await getTestDb()
+      .select({ userId: oauthRefreshTokens.userId, partnerId: oauthRefreshTokens.partnerId, payload: oauthRefreshTokens.payload })
+      .from(oauthRefreshTokens)
+      .where(eq(oauthRefreshTokens.id, sha256Hex(first.refresh_token)));
+    if (!template) throw new Error('initial refresh token row missing');
+    const otherClient = await registerClient(live.url, 'grace-scrub-other');
+
+    const now = Date.now();
+    const seeded = {
+      stale: sha256Hex(`seed-stale-${randomUUID()}`),
+      recent: sha256Hex(`seed-recent-${randomUUID()}`),
+      foreign: sha256Hex(`seed-foreign-${randomUUID()}`),
+    };
+    const seedRow = (id: string, clientId: string, ageMs: number, sealed: string) => ({
+      id,
+      userId: template.userId,
+      clientId,
+      partnerId: template.partnerId,
+      payload: template.payload,
+      expiresAt: new Date(now + 3_600_000),
+      revokedAt: new Date(now - ageMs),
+      rotatedAt: new Date(now - ageMs),
+      successorSealed: sealed,
+    });
+    await getTestDb().insert(oauthRefreshTokens).values([
+      seedRow(seeded.stale, issued.clientId, 31_000, 'v1.stale'),
+      seedRow(seeded.recent, issued.clientId, 5_000, 'v1.recent'),
+      seedRow(seeded.foreign, otherClient, 31_000, 'v1.foreign'),
+    ]);
+
+    const rotated = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
+    expect(rotated.status).toBe(200);
+
+    const sealOf = async (id: string) => (await getTestDb()
+      .select({ sealed: oauthRefreshTokens.successorSealed })
+      .from(oauthRefreshTokens)
+      .where(eq(oauthRefreshTokens.id, id)))[0]?.sealed;
+    expect(await sealOf(seeded.stale)).toBeNull();
+    expect(await sealOf(seeded.recent)).toBe('v1.recent');
+    expect(await sealOf(seeded.foreign)).toBe('v1.foreign');
+    expect(await sealOf(sha256Hex(first.refresh_token))).toMatch(/^v1\./);
+  }, 30_000);
+
+  it('keeps the strict reuse path end to end when OAUTH_REFRESH_ROTATION_GRACE_MS=0 (#10301)', async () => {
+    const issued = await issueAuthorizationCode(live.url, 'grace-off');
+    const initial = await exchangeCode(live.url, issued);
+    expect(initial.status).toBe(200);
+    const first = await initial.json() as { refresh_token: string };
+
+    const previous = process.env.OAUTH_REFRESH_ROTATION_GRACE_MS;
+    process.env.OAUTH_REFRESH_ROTATION_GRACE_MS = '0';
+    try {
+      const rotated = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
+      expect(rotated.status).toBe(200);
+      const second = await rotated.json() as { refresh_token: string };
+      const [parent] = await getTestDb()
+        .select({ rotatedAt: oauthRefreshTokens.rotatedAt, sealed: oauthRefreshTokens.successorSealed })
+        .from(oauthRefreshTokens)
+        .where(eq(oauthRefreshTokens.id, sha256Hex(first.refresh_token)));
+      expect(parent).toEqual({ rotatedAt: null, sealed: null });
+      const grantId = await grantIdOfRow(sha256Hex(second.refresh_token));
+
+      const replay = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
+      expect(replay.status).toBe(400);
+      expect(await grantRevocation(grantId)).toEqual({
+        revokedAt: expect.any(Date),
+        revokedReason: 'refresh-token-reuse',
+      });
+    } finally {
+      if (previous === undefined) delete process.env.OAUTH_REFRESH_ROTATION_GRACE_MS;
+      else process.env.OAUTH_REFRESH_ROTATION_GRACE_MS = previous;
+    }
+  }, 30_000);
+
   it('refresh-token reuse durably revokes the Grant and its whole family, not just a Redis marker', async () => {
     // Steal-and-replay, sequentially (no lock needed): rotate once legitimately,
     // then present the burned RT again once the grace window has passed. The

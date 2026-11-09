@@ -80,7 +80,8 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
   // by consume() in the same UPDATE that consumes the token during a rotation:
   // rotated_at is rotation provenance (revoked_at alone is also set by
   // destroy()); successor_sealed is the successor token sealed under a key that
-  // needs this row's RAW token, scrubbed once older than the window cap.
+  // needs this row's RAW token, cleared by the client's next rotation once older
+  // than REFRESH_ROTATION_GRACE_MAX_MS (30 s, not the configured window).
   rotatedAt: timestamp('rotated_at', { withTimezone: true }),
   successorSealed: text('successor_sealed'),
 }, (table) => ({

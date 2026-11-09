@@ -10,6 +10,7 @@ import {
   sanitizeRefreshTokenPayload,
 } from './adapter';
 import { revokeGrant, revokeJti } from './revocationCache';
+import { metricsRegistry } from '../services/metricsRegistry';
 import {
   configureRotationSealKey,
   markRotationGraceHit,
@@ -29,6 +30,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('./revocationCache', () => ({
@@ -115,6 +117,18 @@ function collectAllStrings(value: unknown, acc = new Set<string>(), seen = new W
   for (const v of Object.values(value as Record<string, unknown>)) {
     collectAllStrings(v, acc, seen);
   }
+  return acc;
+}
+
+function collectDates(value: unknown, acc: Date[] = [], seen = new WeakSet<object>()): Date[] {
+  if (value instanceof Date) {
+    acc.push(value);
+    return acc;
+  }
+  if (!value || typeof value !== 'object') return acc;
+  if (seen.has(value)) return acc;
+  seen.add(value);
+  for (const v of Object.values(value as Record<string, unknown>)) collectDates(v, acc, seen);
   return acc;
 }
 
@@ -904,6 +918,16 @@ describe('BreezeOidcAdapter refresh rotation grace window (#10301)', () => {
     return call?.[1] as Record<string, unknown> | undefined;
   }
 
+  function reuseLogContext(): Record<string, unknown> | undefined {
+    const call = consoleError.mock.calls.find((c) => String(c[0]).includes('OAUTH_REFRESH_TOKEN_REUSE'));
+    return call?.[1] as Record<string, unknown> | undefined;
+  }
+
+  async function graceCount(outcome: string): Promise<number> {
+    const metric = await metricsRegistry.getSingleMetric('oauth_refresh_rotation_grace_total')?.get();
+    return metric?.values.find((v) => v.labels.outcome === outcome)?.value ?? 0;
+  }
+
   function expectFamilyRevoked() {
     expect(reuseLogged()).toBe(true);
     expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).toHaveBeenCalledWith({
@@ -956,6 +980,16 @@ describe('BreezeOidcAdapter refresh rotation grace window (#10301)', () => {
       expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).not.toHaveBeenCalled();
       expect(graceHitLog()).toMatchObject({ client_id: client, grant_id: GRANT, reuse_ms: 32, path: 'replay' });
       expect(rotationGraceHit(ctx, PARENT_DIGEST)).toBe(SUCCESSOR_RAW);
+    });
+
+    it('counts a replay hit under outcome="hit"', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow()], [successorRow()]);
+      const before = await graceCount('hit');
+
+      await new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW);
+
+      expect(await graceCount('hit')).toBe(before + 1);
     });
 
     it('still grants when the winner has not saved the successor row yet (consume→save gap)', async () => {
@@ -1034,6 +1068,70 @@ describe('BreezeOidcAdapter refresh rotation grace window (#10301)', () => {
       await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
       expectFamilyRevoked();
     });
+
+    it.each([
+      ['outside_window', { rotatedAt: new Date(NOW - 10_001) }, {}, CLIENT],
+      ['outside_window', { rotatedAt: new Date(NOW + 10_001) }, {}, CLIENT],
+      ['client_mismatch', {}, {}, 'client_other'],
+      ['successor_inactive', {}, { revokedAt: new Date(NOW - 5) }, CLIENT],
+      ['successor_inactive', {}, { clientId: 'client_other' }, CLIENT],
+      ['successor_inactive', {}, { payload: { grantId: 'grant_other' } }, CLIENT],
+    ])('records why a rotated token missed the window (%s) on the metric and the reuse log', async (
+      outcome,
+      parentOverrides,
+      successorOverrides,
+      presentingClient,
+    ) => {
+      useCtx(grantCtx(PARENT_RAW, presentingClient as string));
+      mockSelectSequence(
+        [parentRow(parentOverrides as Record<string, unknown>)],
+        [successorRow(successorOverrides as Record<string, unknown>)],
+      );
+      const before = await graceCount(outcome as string);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+
+      expectFamilyRevoked();
+      expect(await graceCount(outcome as string)).toBe(before + 1);
+      expect(reuseLogContext()).toMatchObject({ rotation_grace: outcome, rotated_ms_ago: expect.any(Number) });
+    });
+
+    it('records an unopenable seal as outcome="unsealable"', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow({ successorSealed: 'v1.not-a-real-seal' })]);
+      const before = await graceCount('unsealable');
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+
+      expect(await graceCount('unsealable')).toBe(before + 1);
+      expect(reuseLogContext()).toMatchObject({ rotation_grace: 'unsealable' });
+    });
+
+    it('logs rotation_grace=null for a token that was never rotated', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow({ rotatedAt: null, successorSealed: null })]);
+
+      await new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW);
+
+      expect(reuseLogContext()).toMatchObject({ rotation_grace: null, rotated_ms_ago: null });
+    });
+
+    it('treats a client the provider did not authenticate as a different client', async () => {
+      useCtx(grantCtx(PARENT_RAW, null));
+      mockSelectSequence([parentRow()], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expectFamilyRevoked();
+    });
+
+    it('returns nothing (and revokes nothing) for an expired parent inside the window', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow({ expiresAt: new Date(NOW - 1) })], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expect(reuseLogged()).toBe(false);
+      expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).not.toHaveBeenCalled();
+    });
   });
 
   describe('consume()', () => {
@@ -1105,6 +1203,61 @@ describe('BreezeOidcAdapter refresh rotation grace window (#10301)', () => {
       vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValue(grantActive as boolean);
       mockUpdateChain([]);
       mockSelectSequence([parentRow(overrides as Record<string, unknown>)], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW))
+        .rejects.toMatchObject({ error: 'invalid_grant' });
+    });
+
+    it('scopes the seal scrub to the presenting client and to seals older than the cap', async () => {
+      useCtx(grantCtx());
+      const chain = mockUpdateChain([{ id: PARENT_DIGEST, clientId: CLIENT }]);
+
+      await new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW);
+
+      const scrubCall = chain.set.mock.calls.findIndex((c) => (c as unknown[])[0] && 'successorSealed' in ((c as unknown[])[0] as object)
+        && ((c as unknown[])[0] as { successorSealed: unknown }).successorSealed === null);
+      expect(scrubCall).toBeGreaterThan(-1);
+      const where = (chain.where.mock.calls[scrubCall] as unknown[])[0];
+      const strings = collectAllStrings(where);
+      expect(strings.has(CLIENT)).toBe(true);
+      // The cutoff is the 30 s cap before the rotation, never the live seal.
+      const dates = collectDates(where);
+      expect(dates.map((d) => d.getTime())).toContain(NOW - 30_000);
+    });
+
+    it('still completes the rotation when the seal scrub fails', async () => {
+      const ctx = useCtx(grantCtx());
+      const returning = vi.fn(async () => [{ id: PARENT_DIGEST, clientId: CLIENT }]);
+      const where = vi.fn()
+        .mockImplementationOnce(() => ({ returning }))
+        .mockImplementationOnce(() => Promise.reject(new Error('lock timeout')));
+      const set = vi.fn(() => ({ where }));
+      updateMock.mockReturnValue({ set } as unknown as ReturnType<typeof db.update>);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW)).resolves.toBeUndefined();
+
+      expect(takePendingRotationSuccessor(ctx)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(consoleWarn.mock.calls.some((c) => String(c[0]).includes('OAUTH_REFRESH_SEAL_SCRUB_FAILED'))).toBe(true);
+    });
+
+    it('counts a concurrent loser under outcome="concurrent_hit"', async () => {
+      useCtx(grantCtx());
+      mockUpdateChain([]);
+      mockSelectSequence([parentRow({ revokedAt: new Date(NOW - 3), rotatedAt: new Date(NOW - 3) })], []);
+      const before = await graceCount('concurrent_hit');
+
+      await new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW);
+
+      expect(await graceCount('concurrent_hit')).toBe(before + 1);
+    });
+
+    it.each([
+      ['the parent row is gone', []],
+      ['the parent carries no grantId', [parentRow({ payload: { accountId: USER, clientId: CLIENT } })]],
+    ])('rejects a lost CAS when %s', async (_label, parentRows) => {
+      useCtx(grantCtx());
+      mockUpdateChain([]);
+      mockSelectSequence(parentRows as unknown[], [successorRow()]);
 
       await expect(new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW))
         .rejects.toMatchObject({ error: 'invalid_grant' });

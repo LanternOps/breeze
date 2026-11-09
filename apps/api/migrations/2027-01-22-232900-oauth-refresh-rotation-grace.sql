@@ -6,17 +6,19 @@
 --                    rotation from destroy() or a family revocation.
 --   successor_sealed the successor token, AES-256-GCM sealed under a key derived
 --                    from this row's RAW token (never stored) and the server
---                    secret. Scrubbed per client once older than the 30 s cap.
+--                    secret. Cleared by the client's next rotation once older
+--                    than the 30 s cap (REFRESH_ROTATION_GRACE_MAX_MS).
 --
--- Additive and nullable: rows written before this change, and every row written
--- while OAUTH_REFRESH_ROTATION_GRACE_MS=0, leave both NULL and keep the strict
--- reuse path. No rows are written here, so no system scope is needed.
+-- Additive and nullable. Rows consumed before this change, with
+-- OAUTH_REFRESH_ROTATION_GRACE_MS=0, without a sealing key, or by anything other
+-- than a refresh_token rotation leave both NULL, and a later presentation takes
+-- the strict reuse path. No rows are written here, so no system scope is needed.
 
 ALTER TABLE oauth_refresh_tokens ADD COLUMN IF NOT EXISTS rotated_at timestamptz;
 ALTER TABLE oauth_refresh_tokens ADD COLUMN IF NOT EXISTS successor_sealed text;
 
--- Serves the per-client scrub of stale seals; at most a handful of rows carry
--- one at any time, so the partial index stays tiny.
+-- Serves the per-client clearing of stale seals. Only rows that still carry a
+-- seal are indexed: roughly one per recently active client.
 CREATE INDEX IF NOT EXISTS oauth_refresh_tokens_sealed_client_idx
   ON oauth_refresh_tokens (client_id, rotated_at)
   WHERE successor_sealed IS NOT NULL;

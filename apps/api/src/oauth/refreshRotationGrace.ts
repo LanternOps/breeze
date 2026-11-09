@@ -8,8 +8,8 @@
  * dies. This module carves out only that innocent case: the SAME client
  * re-presenting a token rotated less than `OAUTH_REFRESH_ROTATION_GRACE_MS` ago
  * receives the successor the winner was issued, and nothing is revoked. Later
- * presentations, other clients and tokens that were never rotated keep the
- * fatal path unchanged.
+ * presentations, other clients and tokens that were never rotated still take
+ * the reuse path (family revocation), as before.
  *
  * How the loser gets "the same successor" without storing a usable token:
  *   - The winner's consume() generates the successor value itself and, in the
@@ -17,7 +17,7 @@
  *     provenance: `revoked_at` alone is also written by destroy()) and
  *     `successor_sealed`, the successor sealed with AES-256-GCM.
  *   - The sealing key is HKDF over the RAW parent token, salted with a key
- *     derived from OAUTH_COOKIE_SECRET. Only the raw parent is never stored
+ *     derived from OAUTH_COOKIE_SECRET. The raw parent token is never stored
  *     (rows are keyed by its sha256), so a database read plus the server secret
  *     still cannot open a seal: it takes the parent token the client held.
  *   - Publishing the successor atomically with the consume closes the
@@ -27,13 +27,17 @@
  *     module overrides to return the value consume() published for the current
  *     request (oidc-provider exposes the request through `Provider.ctx`). Every
  *     other refresh token keeps the provider's random id.
- *   - consume() scrubs a client's seals once they are older than the cap, so
- *     at most the latest rotation of each family carries one at rest.
+ *   - Each rotation by a client (window on) clears that client's seals older
+ *     than REFRESH_ROTATION_GRACE_MAX_MS. Seals from the last 30 s, and the
+ *     last seal of a client that stops refreshing, stay at rest until the row
+ *     is cleaned up; opening one still takes the raw parent token.
  *
- * Trade-off (documented in apps/docs): inside the window a public client cannot
- * be told apart from someone else holding the same parent token and client_id.
- * Such a party receives the same successor as the client; whichever of them
- * refreshes next, the other's later use is reuse and kills the family.
+ * Trade-off (documented in apps/docs): Breeze's DCR and CIMD clients are all
+ * public, so inside the window the client cannot be told apart from someone
+ * else holding the same parent token and client_id (a confidential client's
+ * secret is checked before any of this runs). Such a party receives the same
+ * successor; the second of them to refresh presents a rotated token and
+ * revokes the family.
  */
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from 'node:crypto';
 import { Provider } from 'oidc-provider';
@@ -83,8 +87,8 @@ let sealSalt: Buffer | null = null;
 
 /**
  * Set (or, with null, clear) the server half of the sealing key. Called once
- * when the provider is built; without it the grace window is unavailable and
- * rotation behaves exactly as before #10301.
+ * when the provider is built; without it no seal is written and every
+ * presentation of a rotated token takes the strict reuse path.
  */
 export function configureRotationSealKey(secret: string | null): void {
   sealSalt = secret
