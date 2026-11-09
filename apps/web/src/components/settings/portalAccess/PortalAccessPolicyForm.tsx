@@ -28,6 +28,17 @@ export interface PortalAccessPolicyFormProps {
 
 const ID = 'portal-access-policy';
 
+/** The fields the form renders a row for, given what the deployment can run (OD2). */
+export function visiblePolicyFields(capabilities: PortalAccessPolicyView['capabilities']): PortalAccessPolicyField[] {
+  const fields: PortalAccessPolicyField[] = [];
+  if (capabilities.entra) fields.push('entraEnabled');
+  if (capabilities.google) fields.push('googleEnabled');
+  fields.push('passwordMode');
+  if (capabilities.selfRegistration) fields.push('selfRegistrationMode');
+  if (capabilities.entra || capabilities.google) fields.push('ssoNewPersonMode');
+  return fields;
+}
+
 /**
  * The portal access policy form, shared by the org Sign-in & registration card
  * (org override) and the partner Customer portal tab (partner default).
@@ -46,6 +57,7 @@ export function PortalAccessPolicyForm({
 }: PortalAccessPolicyFormProps) {
   const { t } = useTranslation('settings');
   const { capabilities } = view;
+  const visible = new Set(visiblePolicyFields(capabilities));
   const disabled = !view.canEdit;
   const allowInherit = view.owner.kind === 'org';
   const sourceLabel = (field: PortalAccessPolicyField) =>
@@ -112,8 +124,8 @@ export function PortalAccessPolicyForm({
 
       <section className="space-y-4" aria-labelledby={`${ID}-sign-in-heading`}>
         <h3 id={`${ID}-sign-in-heading`} className="text-sm font-semibold">{t('portalAccessPolicy.signIn.title')}</h3>
-        {capabilities.entra && row('entraEnabled', 'microsoft', t('portalAccessPolicy.microsoft.label'), onOff('microsoft'))}
-        {capabilities.google && row('googleEnabled', 'google', t('portalAccessPolicy.google.label'), onOff('google'))}
+        {visible.has('entraEnabled') && row('entraEnabled', 'microsoft', t('portalAccessPolicy.microsoft.label'), onOff('microsoft'))}
+        {visible.has('googleEnabled') && row('googleEnabled', 'google', t('portalAccessPolicy.google.label'), onOff('google'))}
         {row('passwordMode', 'password', t('portalAccessPolicy.password.label'), passwordOptions)}
         {view.passwordModeFallback && (
           <p
@@ -144,9 +156,9 @@ export function PortalAccessPolicyForm({
           <span className="font-medium">{t('portalAccessPolicy.invites.label')}</span>
           <span className="text-muted-foreground">{t('portalAccessPolicy.invites.value')}</span>
         </div>
-        {capabilities.selfRegistration
+        {visible.has('selfRegistrationMode')
           && row('selfRegistrationMode', 'self-registration', t('portalAccessPolicy.selfRegistration.label'), selfRegistrationOptions)}
-        {(capabilities.entra || capabilities.google)
+        {visible.has('ssoNewPersonMode')
           && row('ssoNewPersonMode', 'sso-new-person', t('portalAccessPolicy.ssoNewPerson.label'), ssoNewPersonOptions)}
       </section>
     </div>
