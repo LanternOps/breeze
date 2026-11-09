@@ -1581,5 +1581,26 @@
     "pushTestNote": "O evento de teste pode levar alguns minutos para chegar.",
     "pushLast": "Último evento push: {{relative}}",
     "pushNone": "Nenhum evento push recebido ainda"
+  },
+  "externalMatch": {
+    "suggested": "Sugerido: {{target}}",
+    "matchedOn": "correspondência em “{{key}}”",
+    "accept": "Aceitar",
+    "possibleMatches_one": "{{count}} possível correspondência",
+    "possibleMatches_other": "{{count}} possíveis correspondências",
+    "alsoMatches": "Também corresponde a {{names}}",
+    "pickSite": "Escolha um site em {{org}}",
+    "reviewButton_one": "Revisar {{count}} correspondência sugerida",
+    "reviewButton_other": "Revisar {{count}} correspondências sugeridas",
+    "reviewTitle": "Revisar correspondências sugeridas",
+    "confirm_one": "Mapear {{count}} selecionado",
+    "confirm_other": "Mapear {{count}} selecionados",
+    "resolveInTable": "Resolva estes na tabela",
+    "tierExact": "Mesmo nome",
+    "tierNormalized": "Mesmo nome, ignorando sufixos",
+    "summary": "{{unmapped}} não mapeados · {{suggested}} sugeridos",
+    "staleReview": "Algumas linhas mudaram desde que você abriu esta revisão. A lista foi recarregada.",
+    "newSinceSync_one": "{{count}} novo desde a última sincronização",
+    "newSinceSync_other": "{{count}} novos desde a última sincronização"
   }
 }

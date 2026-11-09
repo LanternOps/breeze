@@ -1581,5 +1581,26 @@
     "pushTestNote": "Das Testereignis kann einige Minuten brauchen, bis es eintrifft.",
     "pushLast": "Letztes Push-Ereignis: {{relative}}",
     "pushNone": "Noch keine Push-Ereignisse empfangen"
+  },
+  "externalMatch": {
+    "suggested": "Vorschlag: {{target}}",
+    "matchedOn": "übereinstimmend bei „{{key}}“",
+    "accept": "Übernehmen",
+    "possibleMatches_one": "{{count}} mögliche Übereinstimmung",
+    "possibleMatches_other": "{{count}} mögliche Übereinstimmungen",
+    "alsoMatches": "Passt auch zu {{names}}",
+    "pickSite": "Wählen Sie einen Standort in {{org}}",
+    "reviewButton_one": "{{count}} vorgeschlagene Zuordnung prüfen",
+    "reviewButton_other": "{{count}} vorgeschlagene Zuordnungen prüfen",
+    "reviewTitle": "Vorgeschlagene Zuordnungen prüfen",
+    "confirm_one": "{{count}} ausgewählte zuordnen",
+    "confirm_other": "{{count}} ausgewählte zuordnen",
+    "resolveInTable": "Diese in der Tabelle klären",
+    "tierExact": "Gleicher Name",
+    "tierNormalized": "Gleicher Name, Firmenzusätze ignoriert",
+    "summary": "{{unmapped}} nicht zugeordnet · {{suggested}} vorgeschlagen",
+    "staleReview": "Einige Zeilen haben sich geändert, seit Sie diese Prüfung geöffnet haben. Die Liste wurde neu geladen.",
+    "newSinceSync_one": "{{count}} neu seit der letzten Synchronisierung",
+    "newSinceSync_other": "{{count}} neu seit der letzten Synchronisierung"
   }
 }

@@ -1581,5 +1581,26 @@
     "retry": "Retry",
     "saved": "Health notification setting saved",
     "saveFailed": "Couldn't save the health notification setting"
+  },
+  "externalMatch": {
+    "suggested": "Suggested: {{target}}",
+    "matchedOn": "matched on “{{key}}”",
+    "accept": "Accept",
+    "possibleMatches_one": "{{count}} possible match",
+    "possibleMatches_other": "{{count}} possible matches",
+    "alsoMatches": "Also matches {{names}}",
+    "pickSite": "Pick a site in {{org}}",
+    "reviewButton_one": "Review {{count}} suggested match",
+    "reviewButton_other": "Review {{count}} suggested matches",
+    "reviewTitle": "Review suggested matches",
+    "confirm_one": "Map {{count}} selected",
+    "confirm_other": "Map {{count}} selected",
+    "resolveInTable": "Resolve these in the table",
+    "tierExact": "Same name",
+    "tierNormalized": "Same name, ignoring suffixes",
+    "summary": "{{unmapped}} unmapped · {{suggested}} suggested",
+    "staleReview": "Some rows changed since you opened this review. The list has been reloaded.",
+    "newSinceSync_one": "{{count}} new since last sync",
+    "newSinceSync_other": "{{count}} new since last sync"
   }
 }
