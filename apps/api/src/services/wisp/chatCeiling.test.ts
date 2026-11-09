@@ -160,6 +160,14 @@ describe('enforceWispCeiling', () => {
     });
   });
 
+  it('manage_monitor_definitions describe passes the permission gate on alerts:read, and refuses without it (#11431)', async () => {
+    await expect(enforce('manage_monitor_definitions', { action: 'describe', kind: 'offline' })).resolves.toMatchObject({ ok: true });
+    shared.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['devices:read']) }));
+    await expect(enforce('manage_monitor_definitions', { action: 'describe' })).resolves.toMatchObject({
+      ok: false, refusal: { detail: 'permission' },
+    });
+  });
+
   it('a never-delegable or non-allowlisted tool is refused with detail "tool"', async () => {
     shared.resolveGrantCeiling.mockResolvedValue(ceiling({ toolAllowlist: new Set(['manage_alerts']) }));
     await expect(enforce('get_device_details', {})).resolves.toMatchObject({ ok: false, refusal: { detail: 'tool' } });
