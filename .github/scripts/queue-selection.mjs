@@ -57,12 +57,18 @@ export function nonGatingJobs(workflow) {
 }
 
 // Recursive descent, never eval: the grammar deliberately has no arbitrary JS/shell.
+// The W05 thin clause, !contains(needs.changes.outputs.thin_skip, ',<id>,'), parses
+// to an atom that is always true here: what the gate's selection skips never feeds
+// back into computing a selection.
+const THIN_CLAUSE = /^!contains\(needs\.changes\.outputs\.thin_skip, ',([a-z0-9-]+),'\)$/;
 export function parseIfExpression(expression) {
-  const tokens = expression.match(/needs\.changes\.outputs\.\w+\s*==\s*'true'|&&|\|\||[()]|\S+/g) ?? [];
+  const tokens = expression.match(/needs\.changes\.outputs\.\w+\s*==\s*'true'|!contains\(needs\.changes\.outputs\.thin_skip, ',[a-z0-9-]+,'\)|&&|\|\||[()]|\S+/g) ?? [];
   let pos = 0;
   const atom = () => {
     const token = tokens[pos++];
     if (token === '(') { const value = or(); if (tokens[pos++] !== ')') throw Error('Missing )'); return value; }
+    const thin = token?.match(THIN_CLAUSE)?.[1];
+    if (thin) return { thin };
     const key = token?.match(/^needs\.changes\.outputs\.(\w+)\s*==\s*'true'$/)?.[1];
     if (!key) throw Error(`Unsupported condition: ${expression}`);
     return { key };
@@ -75,6 +81,7 @@ export function parseIfExpression(expression) {
 }
 export function evaluateIf(tree, flags) {
   if (typeof tree === 'string') tree = parseIfExpression(tree);
+  if (tree.thin) return true;
   if (tree.key) return truth(flags[tree.key]);
   return tree.op === 'and' ? evaluateIf(tree.left, flags) && evaluateIf(tree.right, flags)
     : evaluateIf(tree.left, flags) || evaluateIf(tree.right, flags);
