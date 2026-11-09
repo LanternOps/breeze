@@ -61,8 +61,9 @@ export const TRIGGER_SUBJECT_PERMISSION: Readonly<Record<WispCheckInTriggerEvent
 });
 
 /**
- * What the predicate saw when it held. Bounded and, for output, sanitised:
- * W07's `run` mode hands it to an assessment run as untrusted background.
+ * What the predicate saw when it held. Bounded and, for output, sanitised, so
+ * it is safe to pass on as untrusted background (the planned `run` mode,
+ * plan wave W07, is the intended consumer; nothing reads it yet).
  */
 export type CheckInEvidence = {
   kind: WispCheckInTriggerEvent;

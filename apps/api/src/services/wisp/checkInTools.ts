@@ -3,9 +3,11 @@
  * services/wisp/checkIns.ts (W02).
  *
  *   schedule_check_in  (T2)  set a follow-up on this grant's thread, 1 minute
- *                            to 7 days ahead. When it fires the grantor is
- *                            notified and the instruction is put in front of
- *                            the model on their next message (W04).
+ *                            to 7 days ahead, or on an event with a deadline
+ *                            in that window (default 24 h). When it fires the
+ *                            grantor is notified and the instruction is put in
+ *                            front of the model on their next message
+ *                            (consumption wave #10995).
  *   list_check_ins     (T1)  the thread's scheduled and fired-not-consumed rows
  *   cancel_check_in    (T2)  scheduled | fired → cancelled
  *

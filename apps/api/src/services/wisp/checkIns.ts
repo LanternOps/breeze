@@ -3,16 +3,21 @@
  * its own thread (`wisp_check_ins`, migrations/2027-01-20-130000-wisp-check-ins.sql).
  *
  *   createCheckIn          ceiling + window + per-thread cap, insert, then
- *                          enqueue the delayed `check-in` job on wisp-wake.
+ *                          enqueue the delayed `check-in` job on wisp-wake
+ *                          (an event row is then fired at once if its event
+ *                          already happened).
  *   listCheckIns           the grant's scheduled + fired rows, due first.
  *   cancelCheckIn          scheduled | fired → cancelled, then drop the job.
- *   fireCheckIn            the job body (jobs/wispWakeScheduler.ts): verify
- *                          the row is `scheduled` → notifyUser (which writes
+ *   fireCheckIn            the job body (jobs/wispWakeScheduler.ts) and the
+ *                          event path: verify the row is `scheduled` and
+ *                          usable → (event rows) decide fire / cancel / skip
+ *                          → claim `fire_reason` → notifyUser (which writes
  *                          the `check_in` post and the bell row in one step,
  *                          deduped on `wisp.check_in:<id>`) → compare-and-set
- *                          scheduled → fired. In that order so a retry after a
- *                          failed notifyUser still notifies, and a retry after
- *                          a crash before the flip writes nothing twice.
+ *                          scheduled → fired → (event path) remove the delayed
+ *                          job. In that order so a retry after a failed
+ *                          notifyUser still notifies, and a retry after a
+ *                          crash before the flip writes nothing twice.
  *   reconcileOrphanCheckIns  the 5-minute tick's sweep: a `scheduled` row
  *                          overdue by more than the grace with no live job
  *                          (Redis lost it) is re-enqueued with delay 0.
@@ -238,13 +243,24 @@ export async function createCheckIn(
   // and the insert is still seen here (or by the tick). A failure here is
   // reported, not thrown: the row is scheduled and the tick re-checks it.
   if (row.triggerKind !== 'time') {
+    let outcome: Awaited<ReturnType<typeof fireCheckIn>> = 'skipped';
     try {
-      if ((await fireCheckIn(row.id, now, { path: 'event' })) !== 'skipped') {
-        const [after] = await sys(() => db.select().from(wispCheckIns).where(eq(wispCheckIns.id, row.id)).limit(1), 'wisp-check-in-create-reread');
-        if (after) return after;
-      }
+      outcome = await fireCheckIn(row.id, now, { path: 'event' });
     } catch (err) {
       report('fire_on_schedule', err, { checkInId: row.id, grantId: row.grantId });
+    }
+    if (outcome !== 'skipped') {
+      // The caller must not say "scheduled" about a row that already fired or
+      // was cancelled; if the re-read fails, the outcome stands in for it.
+      try {
+        const [after] = await sys(() => db.select().from(wispCheckIns).where(eq(wispCheckIns.id, row.id)).limit(1), 'wisp-check-in-create-reread');
+        if (after) return after;
+      } catch (err) {
+        report('reread_after_fire', err, { checkInId: row.id, grantId: row.grantId });
+      }
+      return outcome === 'fired'
+        ? { ...row, status: 'fired', firedAt: now }
+        : { ...row, status: 'cancelled', cancelledAt: now };
     }
   }
   return row;
@@ -371,7 +387,7 @@ type FireRead = {
   grantRevisionId: string | null;
 };
 
-/** The Phase 1 usability checks, each with its cancel reason; null = usable. */
+/** The usability checks (grant, thread, grantor), each with its cancel reason; null = usable. */
 function unusableReason(read: FireRead, now: Date): CheckInCancelReason | null {
   if (read.grantStatus !== 'active' || !read.grantExpiresAt || read.grantExpiresAt.getTime() <= now.getTime()) return 'grant_inactive';
   if (read.threadGrantId !== read.row.grantId) return 'thread_mismatch';
@@ -412,8 +428,12 @@ async function decideEventFire(read: FireRead, path: CheckInFirePath, now: Date)
     ceiling = await resolveGrantCeiling(row.grantId, read.grantRevisionId);
   } catch (err) {
     if (!(err instanceof GrantInactiveError)) throw err;
-    // Wisp switched off on this deployment is not the grant's doing: leave the row for when it is back on.
-    if (!wispEnabled()) return { kind: 'skip' };
+    // Wisp switched off on this deployment is not the grant's doing: leave the
+    // row for when it is back on (the orphan reconcile refires it then).
+    if (!wispEnabled()) {
+      console.info('[wisp.checkIns] event check-in left scheduled: Wisp is disabled', { checkInId: row.id });
+      return { kind: 'skip' };
+    }
     if (err.kind === 'corrupt') captureException(err, undefined, { component: 'wisp.checkIns', op: 'fire_ceiling', checkInId: row.id, grantId: row.grantId });
     return { kind: 'cancel', reason: 'grant_inactive' };
   }
@@ -479,7 +499,9 @@ export async function fireCheckIn(
     const decision = await decideEventFire(read, path, now);
     if (decision.kind === 'skip') return 'skipped';
     if (decision.kind === 'cancel') {
-      console.info('[wisp.checkIns] event check-in cancelled', { checkInId, grantId: row.grantId, reason: decision.reason });
+      console.info('[wisp.checkIns] event check-in cancelled', {
+        checkInId, grantId: row.grantId, reason: decision.reason, triggerKind: row.triggerKind, subjectId: row.triggerSubjectId,
+      });
       return (await cancelScheduled(checkInId, now, decision.reason)) ? 'cancelled' : 'skipped';
     }
     reason = decision.reason;
@@ -578,9 +600,12 @@ export const CHECK_IN_TRIGGER_EVENT_SUBJECTS: Readonly<Record<string, { kind: Wi
   'ai.agent.run.failed': { kind: 'run_settled', idKey: 'runId' },
   'ai.agent.run.skipped': { kind: 'run_settled', idKey: 'runId' },
 });
-/** Rows one event may fire (one subject; each thread holds at most 5 scheduled). */
+/**
+ * Rows one event fires. Many threads can wait on one subject; rows past the
+ * limit are fired by the next tick.
+ */
 export const CHECK_IN_TRIGGER_EVENT_LIMIT = 50;
-/** Event rows the tick evaluates per run, deadline first; the rest wait for the next tick. */
+/** Event rows the tick evaluates per run (one page; see triggerSweepCursor). */
 export const CHECK_IN_TRIGGER_RECONCILE_LIMIT = 200;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -624,23 +649,53 @@ export async function handleCheckInTriggerEvent(event: BreezeEvent): Promise<voi
 }
 
 /**
- * The tick's sweep of event rows whose deadline has not passed yet, deadline
- * first, at most CHECK_IN_TRIGGER_RECONCILE_LIMIT: each is fired if its state
- * holds (the only fast path `command_finished` has, and the net under a lost
- * bus event), cancelled if its subject is gone, and left alone while pending.
- * Rows past `due_at` belong to the deadline job and the orphan reconcile.
- * Per-row failures are reported; after CHECK_IN_RECONCILE_MAX_FAILURES the
- * sweep stops until the next tick.
+ * Where the next tick's page starts when the last page was full (keyset on
+ * `(due_at, id)`), so every pending row is evaluated within
+ * ceil(rows / CHECK_IN_TRIGGER_RECONCILE_LIMIT) ticks instead of the nearest
+ * deadlines starving the rest. Per process: a restart starts from the top,
+ * which only re-evaluates rows sooner.
  */
-export async function reconcileCheckInTriggers(now: Date): Promise<{ fired: number; cancelled: number }> {
+let triggerSweepCursor: { dueAt: Date; id: string } | null = null;
+
+/** Test-only: start the next sweep from the nearest deadline. */
+export function _resetCheckInTriggerSweepForTests(): void {
+  triggerSweepCursor = null;
+}
+
+/**
+ * The tick's sweep of event rows whose deadline has not passed yet, a page of
+ * CHECK_IN_TRIGGER_RECONCILE_LIMIT at a time in deadline order (a full page
+ * hands the next tick a cursor; a short one wraps to the top): each is fired
+ * if its state holds (the only fast path `command_finished` and a cancelled
+ * script have, and the net under a lost bus event), cancelled if its subject
+ * is gone, and left alone while pending. Rows past `due_at` belong to the
+ * deadline job and the orphan reconcile. A failing row never stops the sweep
+ * (rows behind it would starve); the first CHECK_IN_RECONCILE_MAX_FAILURES are
+ * reported and the rest counted in one line.
+ */
+export async function reconcileCheckInTriggers(
+  now: Date,
+  opts: { limit?: number } = {},
+): Promise<{ fired: number; cancelled: number }> {
+  const limit = opts.limit ?? CHECK_IN_TRIGGER_RECONCILE_LIMIT;
+  const cursor = triggerSweepCursor;
   const waiting = await sys(() => db
-    .select({ id: wispCheckIns.id })
+    .select({ id: wispCheckIns.id, dueAt: wispCheckIns.dueAt })
     .from(wispCheckIns)
-    .where(and(eq(wispCheckIns.status, 'scheduled'), ne(wispCheckIns.triggerKind, 'time'), gt(wispCheckIns.dueAt, now)))
+    .where(and(
+      eq(wispCheckIns.status, 'scheduled'),
+      ne(wispCheckIns.triggerKind, 'time'),
+      gt(wispCheckIns.dueAt, now),
+      cursor
+        ? or(gt(wispCheckIns.dueAt, cursor.dueAt), and(eq(wispCheckIns.dueAt, cursor.dueAt), gt(wispCheckIns.id, cursor.id)))
+        : undefined,
+    ))
     .orderBy(asc(wispCheckIns.dueAt), asc(wispCheckIns.id))
-    .limit(CHECK_IN_TRIGGER_RECONCILE_LIMIT), 'wisp-check-in-trigger-reconcile');
-  if (waiting.length === CHECK_IN_TRIGGER_RECONCILE_LIMIT) {
-    console.warn('[wisp.checkIns] trigger reconcile page full; nearest deadlines first, the rest wait for the next tick', { limit: CHECK_IN_TRIGGER_RECONCILE_LIMIT });
+    .limit(limit), 'wisp-check-in-trigger-reconcile');
+  const last = waiting.at(-1);
+  triggerSweepCursor = waiting.length === limit && last ? { dueAt: last.dueAt, id: last.id } : null;
+  if (triggerSweepCursor) {
+    console.info('[wisp.checkIns] trigger reconcile page full; the next tick continues from here', { limit });
   }
 
   let fired = 0;
@@ -652,13 +707,14 @@ export async function reconcileCheckInTriggers(now: Date): Promise<{ fired: numb
       if (outcome === 'fired') fired += 1;
       else if (outcome === 'cancelled') cancelled += 1;
     } catch (err) {
-      report('trigger_reconcile_row', err, { checkInId: id });
       failures += 1;
-      if (failures >= CHECK_IN_RECONCILE_MAX_FAILURES) {
-        console.error('[wisp.checkIns] trigger reconcile stopped after repeated failures; retried next tick', { failures, fired, cancelled });
-        break;
-      }
+      if (failures <= CHECK_IN_RECONCILE_MAX_FAILURES) report('trigger_reconcile_row', err, { checkInId: id });
     }
+  }
+  if (failures > CHECK_IN_RECONCILE_MAX_FAILURES) {
+    console.error('[wisp.checkIns] trigger reconcile: more rows failed than were reported; retried next tick', {
+      failures, reported: CHECK_IN_RECONCILE_MAX_FAILURES, fired, cancelled,
+    });
   }
   return { fired, cancelled };
 }

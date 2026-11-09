@@ -34,7 +34,7 @@ export const WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD = 5;
 /** Most `fired` check-ins prepended to (and consumed by) one turn, oldest first. */
 export const WISP_CHECK_IN_CONSUME_LIMIT = 5;
 
-/** What a check-in waits for: a time (Phase 1), or one of the events below. */
+/** What a check-in waits for: a time, or one of the events below. */
 export const WISP_CHECK_IN_TRIGGER_KINDS = ['time', 'device_online', 'script_finished', 'command_finished', 'run_settled'] as const;
 export type WispCheckInTriggerKind = (typeof WISP_CHECK_IN_TRIGGER_KINDS)[number];
 

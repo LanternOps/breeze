@@ -309,8 +309,9 @@ describe('fireCheckIn', () => {
     await withSystemDbAccessContext(() => db.update(wispCheckIns).set({ threadId: otherThread.id }).where(eq(wispCheckIns.id, rc.id)));
     expect(await fireCheckIn(rc.id)).toBe('cancelled');
 
-    for (const [fx, id] of [[a, ra.id], [b, rb.id], [c, rc.id]] as const) {
-      expect((await rowOf(id))!.status).toBe('cancelled');
+    // W04 (#11493): each cancel records why.
+    for (const [fx, id, reason] of [[a, ra.id, 'grant_inactive'], [b, rb.id, 'grantor_changed'], [c, rc.id, 'thread_mismatch']] as const) {
+      expect(await rowOf(id)).toMatchObject({ status: 'cancelled', cancelReason: reason, fireReason: null });
       expect(await postsFor(fx.thread.id)).toHaveLength(0);
     }
     expect(await postsFor(otherThread.id)).toHaveLength(0);

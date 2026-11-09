@@ -1,5 +1,5 @@
 /**
- * Wisp check-in timers W04 (#10995, feature #10991; spec §4) — next-turn
+ * Wisp check-in timers, consumption wave (#10995, feature #10991; spec §4) — next-turn
  * consumption. `POST /ai/sessions/:id/messages` (routes/ai.ts) reads the
  * grant's `fired` check-ins before it reserves budget, prefixes them to the
  * turn it pushes to the model, and marks them `consumed` only once that turn
@@ -13,6 +13,10 @@
  * each instruction is flattened to ONE line (so it cannot forge a header,
  * an `Instruction:` / `Subject:` line or the footer), every delimiter
  * look-alike of the blocks that share this turn is stripped, and it is capped.
+ *
+ * An event check-in (W04 #11493) also gets a `Trigger met: …` or `Did not
+ * happen by …` line under its header (`triggerLine`), built only from shared
+ * constants, a known trigger kind and a UUID.
  *
  * A leaf module (db, the table, the sanitizer, shared constants) so the chat
  * route does not load the Wisp graph. Both DB functions run on the AMBIENT

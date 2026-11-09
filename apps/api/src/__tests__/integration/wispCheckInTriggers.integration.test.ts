@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
   removeCheckInJob: vi.fn(),
   isCheckInJobLive: vi.fn(),
   resolveGrantCeiling: vi.fn(),
+  wispEnabled: vi.fn(() => true),
   ceiling: null as unknown,
 }));
 vi.mock('../../services/expoPush', async (orig) => ({
@@ -54,7 +55,7 @@ vi.mock('../../services/wisp/grantAuthority', async (orig) => ({
 }));
 vi.mock('../../config/env', async (orig) => ({
   ...(await orig<typeof import('../../config/env')>()),
-  wispEnabled: () => true,
+  wispEnabled: () => h.wispEnabled(),
 }));
 
 import { notifyUser } from '../../services/wisp/notifyUser';
@@ -65,6 +66,7 @@ import {
   fireCheckIn,
   handleCheckInTriggerEvent,
   reconcileCheckInTriggers,
+  _resetCheckInTriggerSweepForTests,
 } from '../../services/wisp/checkIns';
 import { loadTriggerSubject } from '../../services/wisp/checkInTriggers';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
@@ -86,6 +88,9 @@ beforeEach(() => {
   h.isCheckInJobLive.mockResolvedValue(false);
   h.resolveGrantCeiling.mockReset();
   h.resolveGrantCeiling.mockImplementation(async () => h.ceiling);
+  h.wispEnabled.mockReset();
+  h.wispEnabled.mockReturnValue(true);
+  _resetCheckInTriggerSweepForTests();
 });
 
 async function seedGrant(partnerId: string, grantorUserId: string, orgIds: string[]) {
@@ -465,5 +470,127 @@ describe('the fire claim and the event / deadline race', () => {
     expect(await fireCheckIn(row.id, new Date(), { path: 'event' })).toBe('skipped');
     expect(await fireCheckIn(row.id)).toBe('fired');
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', fireReason: 'due' });
+  });
+});
+
+describe('failures, Wisp off, and the edges (review follow-ups)', () => {
+  runDb('Wisp off: the event fast path reads nothing and fires nothing', async () => {
+    const fx = await seed();
+    const row = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id });
+    await setDevice(fx.device.id, { status: 'online' });
+    h.wispEnabled.mockReturnValue(false);
+    await handleCheckInTriggerEvent(busEvent('device.online', fx.org.id, { deviceId: fx.device.id }));
+    expect((await rowOf(row.id)).status).toBe('scheduled');
+    expect(notifyUser).not.toHaveBeenCalled();
+  });
+
+  runDb('Wisp off: a grant ceiling refusal at the deadline leaves the row scheduled instead of cancelling it', async () => {
+    const fx = await seed();
+    const row = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id }, { deadlineMs: 30 * MIN });
+    h.wispEnabled.mockReturnValue(false);
+    h.resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError(fx.grantId, 'paused', 'Wisp is disabled on this deployment', 'paused'));
+    expect(await fireCheckIn(row.id, new Date(row.dueAt.getTime() + 1000))).toBe('skipped');
+    expect(await rowOf(row.id)).toMatchObject({ status: 'scheduled', cancelReason: null, fireReason: null });
+  });
+
+  runDb('an event whose first row fails still fires the second, then throws so the delivery retries; the retry fires the first', async () => {
+    const fx = await seed();
+    const first = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id }, { deadlineMs: 30 * MIN });
+    const second = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id }, { deadlineMs: 60 * MIN });
+    await setDevice(fx.device.id, { status: 'online' });
+    vi.mocked(notifyUser).mockRejectedValueOnce(new Error('push down'));
+    const event = busEvent('device.online', fx.org.id, { deviceId: fx.device.id });
+    await expect(handleCheckInTriggerEvent(event)).rejects.toThrow('push down');
+    // The first row (nearest deadline) failed after its claim; the second fired.
+    expect(await rowOf(first.id)).toMatchObject({ status: 'scheduled', fireReason: 'event' });
+    expect((await rowOf(second.id)).status).toBe('fired');
+    await handleCheckInTriggerEvent(event);
+    expect(await rowOf(first.id)).toMatchObject({ status: 'fired', fireReason: 'event' });
+  });
+
+  runDb('a failing row never stops the tick sweep: the rows behind it are still fired', async () => {
+    const fx = await seed();
+    const now = new Date();
+    const cmds = [await command(fx, 'sent'), await command(fx, 'sent'), await command(fx, 'sent')];
+    const rows = [];
+    for (const [i, cmd] of cmds.entries()) rows.push(await schedule(fx, now, { kind: 'command_finished', subjectId: cmd }, { deadlineMs: (i + 1) * 30 * MIN }));
+    for (const cmd of cmds) await withSystemDbAccessContext(() => db.update(deviceCommands).set({ status: 'completed', completedAt: now }).where(eq(deviceCommands.id, cmd)));
+    vi.mocked(notifyUser).mockRejectedValueOnce(new Error('push down'));
+    expect(await reconcileCheckInTriggers(now)).toEqual({ fired: 2, cancelled: 0 });
+    expect((await rowOf(rows[0]!.id)).status).toBe('scheduled');
+    expect((await rowOf(rows[1]!.id)).status).toBe('fired');
+    expect((await rowOf(rows[2]!.id)).status).toBe('fired');
+  });
+
+  runDb('a full page hands the next tick a cursor, so rows beyond the first page are reached; a short page wraps to the top', async () => {
+    const fx = await seed();
+    const now = new Date();
+    const cmds = [await command(fx, 'sent'), await command(fx, 'sent'), await command(fx, 'sent')];
+    const rows = [];
+    for (const [i, cmd] of cmds.entries()) rows.push(await schedule(fx, now, { kind: 'command_finished', subjectId: cmd }, { deadlineMs: (i + 1) * 30 * MIN }));
+    // Page 1 (limit 2): the two nearest deadlines, still pending.
+    expect(await reconcileCheckInTriggers(now, { limit: 2 })).toEqual({ fired: 0, cancelled: 0 });
+    for (const cmd of cmds) await withSystemDbAccessContext(() => db.update(deviceCommands).set({ status: 'completed', completedAt: now }).where(eq(deviceCommands.id, cmd)));
+    // Page 2 continues after the cursor: only the third row.
+    expect(await reconcileCheckInTriggers(now, { limit: 2 })).toEqual({ fired: 1, cancelled: 0 });
+    expect((await rowOf(rows[2]!.id)).status).toBe('fired');
+    expect((await rowOf(rows[0]!.id)).status).toBe('scheduled');
+    // That page was short, so the next one starts from the top again.
+    expect(await reconcileCheckInTriggers(now, { limit: 2 })).toEqual({ fired: 2, cancelled: 0 });
+  });
+
+  runDb('a grant with no pinned revision is corrupt: cancelled grant_inactive; any other ceiling failure throws and leaves the row as it was', async () => {
+    const fx = await seed();
+    const row = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id }, { deadlineMs: 30 * MIN });
+    h.resolveGrantCeiling.mockRejectedValueOnce(new Error('db down'));
+    await expect(fireCheckIn(row.id, new Date(row.dueAt.getTime() + 1000))).rejects.toThrow('db down');
+    expect(await rowOf(row.id)).toMatchObject({ status: 'scheduled', fireReason: null, cancelReason: null });
+
+    await withSystemDbAccessContext(() => db.update(wispGrants).set({ currentRevisionId: null }).where(eq(wispGrants.id, fx.grantId)));
+    expect(await fireCheckIn(row.id, new Date(row.dueAt.getTime() + 1000))).toBe('cancelled');
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive' });
+  });
+
+  runDb("a device moved to another partner's org reads as deleted at fire time", async () => {
+    const fx = await seed();
+    const row = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id });
+    const otherPartner = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+    const otherSite = await createSite({ orgId: otherOrg.id });
+    await setDevice(fx.device.id, { orgId: otherOrg.id, siteId: otherSite.id, status: 'online' });
+    await handleCheckInTriggerEvent(busEvent('device.online', otherOrg.id, { deviceId: fx.device.id }));
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'subject_deleted' });
+    expect(h.resolveGrantCeiling).not.toHaveBeenCalled();
+  });
+
+  runDb('createCheckIn: a failing fire-at-schedule is reported, not thrown — the row comes back scheduled for the tick; an event row needs an org', async () => {
+    const fx = await seed();
+    await setDevice(fx.device.id, { status: 'online' });
+    h.resolveGrantCeiling.mockRejectedValueOnce(new Error('db down'));
+    const row = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id });
+    expect(row).toMatchObject({ status: 'scheduled', fireReason: null });
+    expect(await reconcileCheckInTriggers(new Date())).toEqual({ fired: 1, cancelled: 0 });
+
+    await expect(createCheckIn(fx.ceiling, {
+      threadId: fx.thread.id, sessionId: null, dueAt: new Date(Date.now() + DAY), instruction: INSTRUCTION, orgId: null, context: null,
+      trigger: { kind: 'device_online', subjectId: fx.device.id },
+    })).rejects.toThrow(/needs its subject's org/);
+  });
+
+  runDb('the early-deadline tolerance: 59 s before due_at fires the deadline, 61 s before skips', async () => {
+    const fx = await seed();
+    const a = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id }, { deadlineMs: 30 * MIN });
+    expect(await fireCheckIn(a.id, new Date(a.dueAt.getTime() - 61_000))).toBe('skipped');
+    expect(await fireCheckIn(a.id, new Date(a.dueAt.getTime() - 59_000))).toBe('fired');
+    expect(await rowOf(a.id)).toMatchObject({ fireReason: 'deadline' });
+  });
+
+  runDb('a delayed-job removal that throws after an event fire is reported; the fire still counts', async () => {
+    const fx = await seed();
+    const row = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id });
+    await setDevice(fx.device.id, { status: 'online' });
+    h.removeCheckInJob.mockRejectedValueOnce(new Error('redis down'));
+    expect(await fireCheckIn(row.id, new Date(), { path: 'event' })).toBe('fired');
+    expect((await rowOf(row.id)).status).toBe('fired');
   });
 });
