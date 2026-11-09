@@ -9,7 +9,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { fetchWithAuth } from "../../stores/auth";
+import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { runAction, handleActionError } from "../../lib/runAction";
 import { useHashState } from "@/lib/useHashState";
 import { Dialog } from "../shared/Dialog";
@@ -1020,6 +1020,11 @@ export default function SoftwareCatalog() {
                 catalogId={selectedSoftware.id}
                 embedded
                 builtinReadOnly={Boolean(selectedSoftware.builtinPackageKey)}
+                ownerScope={selectedSoftware.orgId ? "organization" : "partner"}
+                canManagePartnerWide={
+                  useAuthStore.getState().user?.canManagePartnerWide
+                }
+                integrationProvider={selectedSoftware.integrationProvider}
               />
             )}
           </div>
