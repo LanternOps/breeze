@@ -110,6 +110,16 @@ describe('resolveCustomerAutoMapNameSuggestions', () => {
       ],
       [{ id: ORG_A, name: 'Acme Ltd' }],
     );
+    // Both customers reach ORG_A, so the org is contested and neither is
+    // suggested. The old first-come claim depended on input order.
+    expect(out).toEqual([]);
+  });
+
+  it('strips corporate suffixes', () => {
+    const out = resolveCustomerAutoMapNameSuggestions(
+      [{ id: 'c1', vendorCustomerName: 'Acme Corp', vendorExternalCode: null }],
+      [{ id: ORG_A, name: 'Acme Corporation' }],
+    );
     expect(out).toEqual([{ customerId: 'c1', orgId: ORG_A }]);
   });
 });
