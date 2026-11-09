@@ -111,8 +111,12 @@ export type PreToolUseResult =
    * reach. Set for every allowed call of a Wisp session; absent otherwise,
    * and the handler then reads `getAuth()` as before. A Wisp session's call
    * that arrives WITHOUT it is denied (`wispMissingToolAuthDenial`).
+   *
+   * `approvalWaitMs` (#10416): how long the call waited on its approval card.
+   * Set only for Wisp sessions; the handler adds it to the result through
+   * `withApprovalWait` so the model can tell the user the step was waiting.
    */
-  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void> }
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void>; approvalWaitMs?: number }
   /**
    * Not run by THIS session. Two different things wear this shape:
    *
@@ -161,6 +165,28 @@ function wispMissingToolAuthDenial(
   console.error(`[AI-SDK] ${err.message}`);
   captureException(err);
   return { allowed: false, error: WISP_UNGATED_CALL_MESSAGE };
+}
+
+/** #10416: a wait at least this long is worth mentioning in the reply. */
+export const APPROVAL_WAIT_NOTE_MIN_MS = 30_000;
+
+/**
+ * #10416: put a long approval wait on the tool result the model reads, as
+ * `approvalWaitSeconds`, so its reply can say the step was waiting (a user
+ * waited 290 s and asked "stuck?"). Only a JSON object result is changed, and
+ * only when `waitMs` is at least APPROVAL_WAIT_NOTE_MIN_MS; anything else is
+ * returned unchanged. The pre-hook sets the wait for Wisp sessions only.
+ */
+export function withApprovalWait(output: string, waitMs: number | undefined): string {
+  if (waitMs === undefined || !(waitMs >= APPROVAL_WAIT_NOTE_MIN_MS)) return output;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return output;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return output;
+  return JSON.stringify({ ...parsed, approvalWaitSeconds: Math.round(waitMs / 1000) });
 }
 
 /**
@@ -1119,6 +1145,8 @@ function makeToolHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
+    // #10416: how long the call waited on its approval (Wisp sessions only).
+    let approvalWaitMs: number | undefined;
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
@@ -1147,6 +1175,7 @@ function makeToolHandler(
           : check.context;
         callToolAuth = check.toolAuth;
         onSuccess = check.onSuccess;
+        approvalWaitMs = check.approvalWaitMs;
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
@@ -1244,7 +1273,7 @@ function makeToolHandler(
         toolTimeout,
         toolName,
       );
-      const compactResult = compactToolResultForChat(toolName, result);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result), approvalWaitMs);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
       // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
@@ -1371,6 +1400,8 @@ function makeSessionAwareHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
+    // #10416: how long the call waited on its approval (Wisp sessions only).
+    let approvalWaitMs: number | undefined;
     if (onPreToolUse) {
       let check: PreToolUseResult;
       try {
@@ -1393,6 +1424,7 @@ function makeSessionAwareHandler(
       intentId = check.intentId;
       callToolAuth = check.toolAuth;
       onSuccess = check.onSuccess;
+      approvalWaitMs = check.approvalWaitMs;
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
     if (missingWispAuth) {
@@ -1477,7 +1509,7 @@ function makeSessionAwareHandler(
         sealed = { intentId, sealedResult: split.sealedResult };
       }
 
-      const compactResult = compactToolResultForChat(toolName, result);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result), approvalWaitMs);
 
       // Detect error responses returned as JSON strings by tool handlers
       let isToolError = false;

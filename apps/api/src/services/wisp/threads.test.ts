@@ -465,6 +465,13 @@ describe('seedContextForSession', () => {
     expect(lines.length).toBeLessThanOrEqual(40);
   });
 
+  it('tells the model to say when a step waited on an approval (#10416)', () => {
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n')).toContain(
+      '- If a tool result carries approvalWaitSeconds, say that the step waited that long for approval.',
+    );
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
+  });
+
   it('seedContextForSession wraps the summary as untrusted and appends renderMemoryForPrompt output', async () => {
     threadRow.summary = 'Patched the Acme file server; reboot pending.';
     h.threads = [threadRow];
