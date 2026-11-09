@@ -1153,6 +1153,19 @@ test('B2: the CI Success script also runs under the macOS bash 3.2 the gate test
   assert.equal(run('', 'skipped').status, 1);
 });
 
+test('B3: docs/agents/testing.md explains the thin queue run, its log line, every reason and the kill switch', () => {
+  const doc = readFileSync(join(REPO_ROOT, 'docs/agents/testing.md'), 'utf8');
+  const section = doc.slice(doc.indexOf('**Thin merge-queue run (W05, #10749).**'));
+  assert.ok(section.length < doc.length, 'the section exists');
+  for (const text of ['`queue-thin: mode=… reason=… gate_run=… waited_s=… thin_skip=…`', '`ci-gate-selection:`', '`CI_THIN_QUEUE`',
+    '`thin_skip`', '`thin_skip_unjustified`', '`gh variable set CI_THIN_QUEUE --body off`', 'docs/agents/merge-and-deploy.md']) {
+    assert.ok(section.includes(text), text);
+  }
+  for (const reason of ['thin_disabled', 'no_gate_run', 'no_gate_selection', 'gate_selection_invalid', 'gate_shadow', 'gate:<reason>', 'error']) {
+    assert.ok(section.includes(`\`${reason}\``), reason);
+  }
+});
+
 test('consume CLI: the real module loads, and with the kill switch unset it writes full and exits 0', () => {
   const dir = mkdtempSync(join(tmpdir(), 'queue-thin-cli-'));
   try {
