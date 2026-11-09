@@ -17,8 +17,8 @@
  *   4. propose_action  → createActionIntent (Tier 2/3 only, capped)
  *   5. request_specialist — left in the outcome untouched (W07)
  *   then the readiness note (Task 15; re-evaluated every run, #11429), the
- *   `last_assessed_run_id` touch of every other concern the run read, and
- *   the best-effort partner rollup.
+ *   `last_assessed_run_id` touch of every non-readiness concern the run
+ *   read, and the best-effort partner rollup.
  *
  * Authority: every concern id in the outcome is MODEL-SUPPLIED. Steps 2–4
  * re-read the concern under the grant's live ceiling (`getConcernForCeiling`,
@@ -342,9 +342,10 @@ function readinessNoteUnchanged(live: Concern, summary: string, next: ReadinessE
  * serviceable closes the live note; otherwise a later run refreshes it only
  * when its gaps changed (a write bumps `updated_at`, which the brief and the
  * no-changes probe read) and never re-creates one: only an onboarding run
- * creates it, so a note the user dismissed stays dismissed. No inventory this
- * run (it failed) leaves the note as it is. A later run acts on the live note
- * it read (`openConcerns`), the same snapshot the touch loop uses.
+ * creates it, so a note the user dismissed stays dismissed. No inventory for
+ * the org this run (`readiness: null`) leaves the note as it is. A later run
+ * acts on the live note it read (`openConcerns`), the same snapshot the touch
+ * loop uses.
  */
 async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId: string, skipped: string[]): Promise<void> {
   const readiness = a.readiness;
@@ -357,9 +358,11 @@ async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId:
   if (readiness.checks.every((c) => c.serviceable)) {
     if (!live) return;
     // Stamp first: the close then reads as this run's own write, which the
-    // next tick's no-changes probe does not count as news.
+    // next tick's no-changes probe does not count as news. A resolve that
+    // fails after the stamp marks the run partially applied, which the probe
+    // does not anchor on, so the next run retries it.
     await updateConcern(live.id, { lastAssessedRunId: run.id });
-    // No grant: system bookkeeping, not an outcome worth remembering.
+    // No grant: system bookkeeping, no concern_outcome memory block.
     await resolveConcern(live.id, {}, READINESS_SERVICEABLE_OUTCOME);
     return;
   }
@@ -486,8 +489,9 @@ export async function finalizeAssessment(ctx: RunContext, result: LoopResult): P
     await item('readiness', () => applyReadiness(ctx, a, grantId, skipped));
 
     for (const c of a.openConcerns) {
-      // #11429: a readiness note is applyReadiness's to write; a touch here
-      // would bump its updated_at every run with nothing new to say.
+      // #11429: readiness-subject notes are written by their owners only (the
+      // onboarding note by applyReadiness, the no-agent note by admission); a
+      // touch here would bump updated_at every run with nothing new to say.
       if (c.orgId !== run.orgId || touched.has(c.id) || c.subject.kind === 'readiness') continue;
       await item('touch', () => updateConcern(c.id, { lastAssessedRunId: run.id }));
     }

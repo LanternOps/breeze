@@ -708,6 +708,50 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       }]]);
     });
 
+    // The store trims what it writes; a rendered summary with edge whitespace
+    // must still compare equal to what the last refresh stored.
+    it('a rendered summary with edge whitespace compares equal to the trimmed one stored', async () => {
+      renderReadinessSummary.mockReturnValue(`${SUMMARY}  `);
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a missing integration was added', { ...gaps, missingIntegrations: ['backup', 'psa'] }],
+      ['a check\'s reason changed', { ...gaps, checks: [gaps.checks[0]!, { ...gaps.checks[1]!, reason: 'backup vendor not synced yet' }] }],
+    ])('a tick refreshes the note when only its evidence changed (%s), the summary being the same', async (_l, changed) => {
+      await finalizeAssessment(run({ readiness: changed, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).toHaveBeenCalledTimes(1);
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C2, {
+        summary: SUMMARY,
+        evidence: { readiness: { checks: changed.checks, missingIntegrations: changed.missingIntegrations } },
+        lastAssessedRunId: RUN_ID,
+      });
+    });
+
+    it.each([
+      ['no readiness key', {}],
+      ['an empty readiness object', { readiness: {} }],
+      ['checks that are not an array', { readiness: { checks: 'x', missingIntegrations: ['backup'] } }],
+      ['missingIntegrations null', { readiness: { checks: gaps.checks, missingIntegrations: null } }],
+      ['a null check', { readiness: { checks: [null, gaps.checks[1]], missingIntegrations: ['backup'] } }],
+    ])('a stored note with %s reads as changed and is refreshed once, keeping its other evidence', async (_l, stored) => {
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [note({ evidence: { ...stored, href: '/x' } })] }), makeResult());
+      expect(concerns.updateConcern.mock.calls).toEqual([[C2, {
+        summary: SUMMARY,
+        evidence: { href: '/x', readiness: { checks: gaps.checks, missingIntegrations: ['backup'] } },
+        lastAssessedRunId: RUN_ID,
+      }]]);
+    });
+
+    it('a failed stamp leaves the note unresolved and the run partially applied', async () => {
+      concerns.updateConcern.mockRejectedValueOnce(new Error('db down'));
+      const result = makeResult();
+      expect(await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note()] }), result))
+        .toBe('assessment_partially_applied');
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    });
+
     it('a refresh keeps the approval card on the note', async () => {
       const intent = '00000000-0000-4000-8000-0000000000e1';
       await finalizeAssessment(run({
