@@ -618,6 +618,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
+  'orgPortalAccessPolicy.ts': { exempt: 'identity', note: 'Portal sign-in policy, partner default and org override (#11380 W3): which sign-in methods an org\'s portal accepts is authentication configuration and stays human. The W3 plan gives it no AI tool, and manage_org_portal_settings does not gain it.' },
+  'orgPortalAccessRequests.ts': { exempt: 'identity', note: 'Portal access-request queue (#11380 W3): approve/deny creates portal accounts or grants browser access, an identity decision that stays human like portal-user invites (orgPortalUsers.ts).' },
   'orgPortalPreview.ts': { exempt: 'staff_ui_render', note: 'Staff read-only Customer view of the portal read models (#9350). Permanently no AI action (#11129): it is a human-facing render that adds no capability over the per-domain read tools (it shows the customer-flag-filtered view of the same data); manage_org_portal_settings stays get/update/set_sensitive_access. Revisit if an agent workflow needs the customer-as-seen view.' },
   'orgPortalSettings.ts': { tools: ['manage_org_portal_settings'] }, // W18 PR B (#6789): get, update, four-eyes set_sensitive_access; customCss stays human
   'orgPortalUsers.ts': { tools: ['list_portal_users'] }, // W18 (#6789): invite / disable / delete stay identity, no tool action (W18-1)
