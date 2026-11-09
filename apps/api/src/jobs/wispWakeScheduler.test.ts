@@ -234,7 +234,7 @@ describe('processWakeTick', () => {
     expect(h.hasEntitlement).not.toHaveBeenCalled();
   });
 
-  it('runs the sections in order: reconcile, stop, floor, watches, check-in reconcile, stale, clusters, incidents, rollup', async () => {
+  it('runs the sections in order: reconcile, stop, floor, watches, check-in reconcile, trigger reconcile, stale, clusters, incidents, rollup', async () => {
     useFixtures({
       due: [{ id: G1, partner_id: P1, current_revision_id: REV, last_floor_tick_text: null }],
       orgs: [{ id: O1, name: 'A' }],
@@ -587,6 +587,7 @@ describe('processWakeTick', () => {
     expect(result.checkInTriggersFired).toBe(0);
     expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'reconcileCheckInTriggers' });
     expect(h.pollStaleTickets).toHaveBeenCalledWith(NOW);
+    expect(h.rollupDeviceConcerns).toHaveBeenCalledWith(NOW);
     err.mockRestore();
   });
 
