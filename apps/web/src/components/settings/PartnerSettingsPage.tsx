@@ -41,6 +41,7 @@ import { useAiFeatureDefaultsUnit } from './partnerSettings/units/aiFeatureDefau
 import { useAiDataPolicyUnit } from './partnerSettings/units/aiDataPolicyUnit';
 import { usePortalAccessPolicyUnit } from './partnerSettings/units/portalAccessPolicyUnit';
 import PartnerCustomerPortalTab from './partnerSettings/PartnerCustomerPortalTab';
+import { SsoOnlyConfirmHost } from './portalAccess/ssoOnlyConfirmRequests';
 import PartnerSettingsStatus, { deriveStatus, type AutosaveReport } from './partnerSettings/PartnerSettingsStatus';
 import FormCard from './partnerSettings/FormCard';
 import { PartnerSettingsSaveContext } from './partnerSettings/partnerSettingsSaveContext';
@@ -291,6 +292,8 @@ export default function PartnerSettingsPage() {
       {/* The layout's copy stands down on this route (placement="layout"), so
           exactly one banner shows, aligned to this container. */}
       <MfaPolicyOffBanner placement="page" />
+      {/* The header Save's sso_only confirmation (portal access policy unit, W4 D12). */}
+      <SsoOnlyConfirmHost />
 
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-destructive">
