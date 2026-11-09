@@ -200,8 +200,13 @@ carries B's partitioned cookie. Admission rules, enforced before dispatch:
   this tunnel's origin. A missing `Origin` on an unsafe method is rejected.
 - These rules apply to GET too, because device GET endpoints often have side effects
   (reboot links, config toggles).
+- Any `Origin` other than this tunnel's own is refused. The one exception (#11458) is
+  `Origin: null` together with `Sec-Fetch-Site: same-origin`. Under the `no-referrer`
+  policy (§6), browsers send `null` on a same-origin form POST. `Sec-Fetch-Site` is set by
+  the browser, so `same-origin` proves the request came from this tunnel's own page.
+  `null` with any other `Sec-Fetch-Site`, or with none, is still refused.
 
-Only an admitted request's `Origin` is rewritten for the device (§5).
+Only an admitted request's `Origin` and `Referer` are rewritten for the device (§5).
 
 ### 5. What the proxy still rewrites
 
@@ -222,9 +227,12 @@ The device owns the whole origin, so root-relative and relative URLs need **no r
   cookies reach the device.
 - **Device `Origin`:** when the request's `Origin` equals this tunnel's origin, it is
   forwarded rewritten to the device's own origin, so device-side CSRF checks that compare
-  `Origin` to the device host pass. Any other `Origin` is not forwarded. `Referer` is not
-  forwarded either, since responses set `no-referrer`. This is new in host mode; path mode
-  forwards neither.
+  `Origin` to the device host pass. Any other `Origin` is not forwarded. A `Referer` naming
+  this tunnel's origin is rewritten the same way, keeping its path and query (#11458). A
+  `Referer` from any other origin is dropped, as is one naming a reserved `/__bz` page,
+  because the enter page's URL carries the ticket. Responses set `no-referrer`, so a
+  `Referer` arrives only when an operator relaxes that policy at the edge. This is new in
+  host mode; path mode forwards neither.
 
 ### 6. Response headers in host mode
 
