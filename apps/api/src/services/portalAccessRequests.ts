@@ -31,7 +31,7 @@ import {
   type PortalAccessRequestStatus,
 } from '../db/schema';
 import { linkLoginToContact } from './contacts/loginLink';
-import { lockPortalInviteAddresses } from './contacts/portalInvite';
+import { lockPortalInviteAddresses, portalLoginEmailEquals } from './contacts/portalInvite';
 import {
   PORTAL_ACCOUNT_TRANSITION_REFUSED,
   PortalAccountTransitionError,
@@ -286,7 +286,7 @@ async function lockAddressAndRefuseExisting(request: LockedRequest): Promise<voi
   const [existing] = await db
     .select({ id: portalUsers.id })
     .from(portalUsers)
-    .where(and(eq(portalUsers.orgId, request.orgId), sql`lower(${portalUsers.email}) = ${request.email}`))
+    .where(and(eq(portalUsers.orgId, request.orgId), portalLoginEmailEquals(request.email)))
     .limit(1);
   if (existing) throw accountExists();
 }

@@ -46,6 +46,7 @@ import {
   ContactEmailChangedError,
   PortalLoginChangedError,
   inviteRefusalReason,
+  portalLoginEmailEquals,
   type ContactInviteDecision,
   type InviteableContact,
 } from '../services/contacts/portalInvite';
@@ -395,7 +396,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     // request transaction; the contact resolver's re-take below is a no-op.
     await lockPortalInviteAddresses(db, org.id, [normalizedEmail]);
     const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, contactId: portalUsers.contactId, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, hasExternalIdentity: portalUserHasIdentitySql() })
-      .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), eq(portalUsers.email, normalizedEmail))).limit(1);
+      .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), portalLoginEmailEquals(normalizedEmail))).limit(1);
 
     // Refusals (identity-managed, disabled, already active with a password)
     // come from the state module, BEFORE any contact is read or written.
