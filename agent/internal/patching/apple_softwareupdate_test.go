@@ -98,6 +98,41 @@ func TestParseAppleInstallHistoryKeepsNewestInstallPerItem(t *testing.T) {
 	}
 }
 
+// The dated entry wins over an undated one in either order, and equal dates
+// keep the later-listed entry (what the API kept before entries were merged).
+func TestParseAppleInstallHistoryDedupeOrdering(t *testing.T) {
+	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	entry := func(version, date string) string {
+		return `{"_name": "Item", "install_version": "` + version + `", "package_source": "package_source_apple", "install_date": "` + date + `"}`
+	}
+	cases := []struct {
+		name        string
+		entries     []string
+		wantVersion string
+		wantAt      string
+	}{
+		{"undated then dated", []string{entry("1", ""), entry("2", "2026-02-01T00:00:00Z")}, "2", "2026-02-01T00:00:00Z"},
+		{"dated then undated", []string{entry("1", "2026-02-01T00:00:00Z"), entry("2", "")}, "1", "2026-02-01T00:00:00Z"},
+		{"equal dates", []string{entry("1", "2026-02-01T00:00:00Z"), entry("2", "2026-02-01T00:00:00Z")}, "2", "2026-02-01T00:00:00Z"},
+		{"both undated", []string{entry("1", ""), entry("2", "")}, "2", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := []byte(`{"SPInstallHistoryDataType": [` + strings.Join(tc.entries, ",") + `]}`)
+			installed, err := parseAppleInstallHistory(payload, now, 90*24*time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(installed) != 1 {
+				t.Fatalf("got %d entries, want 1: %#v", len(installed), installed)
+			}
+			if installed[0].Version != tc.wantVersion || installed[0].InstalledAt != tc.wantAt {
+				t.Errorf("got version %q at %q, want %q at %q", installed[0].Version, installed[0].InstalledAt, tc.wantVersion, tc.wantAt)
+			}
+		})
+	}
+}
+
 func TestIsApplePackageSource(t *testing.T) {
 	if !isApplePackageSource("package_source_apple") {
 		t.Fatal("expected apple source to be accepted")

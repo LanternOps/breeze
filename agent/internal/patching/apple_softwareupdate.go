@@ -227,8 +227,10 @@ func parseAppleInstallHistory(output []byte, now time.Time, maxAge time.Duration
 		}
 
 		if i, seen := index[patch.ID]; seen {
-			// An undated entry never replaces a dated one.
-			if installTime.After(newest[i]) {
+			// An undated entry (zero time) never replaces a dated one; on
+			// equal times the later-listed entry wins, as it did when every
+			// entry was sent and the API kept the last.
+			if !installTime.Before(newest[i]) {
 				installed[i] = patch
 				newest[i] = installTime
 			}

@@ -1325,9 +1325,14 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     expect(set.status).toBe('installed');
     // ...and installedAt takes the plain installedAtParam value, not the
     // pending-preserving CASE. The payload has no installedAt, so that value
-    // is the stored column itself: a report without a date keeps the date
-    // already on the row instead of writing NULL over it (#9723).
-    expect(set.installedAt).toEqual({ op: 'sql', strings: ['', ''], values: [tables.devicePatches.installedAt] });
+    // keeps the stored date while the installed version is unchanged rather
+    // than writing NULL over it (#9723). Real execution of the version guard
+    // is covered by patches.integration.test.ts.
+    expect(set.installedAt).toEqual({
+      op: 'sql',
+      strings: ['CASE WHEN ', ' IS NOT DISTINCT FROM ', '::varchar THEN ', ' ELSE NULL::timestamp END'],
+      values: [tables.devicePatches.installedVersion, '2.51.0.2', tables.devicePatches.installedAt],
+    });
     expect(set.installedVersion).toBe('2.51.0.2');
   });
 

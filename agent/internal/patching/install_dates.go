@@ -10,7 +10,9 @@ import (
 // has none the field stays empty and the dashboard shows "date unknown".
 
 // IUpdateHistoryEntry.Operation and .ResultCode values used to pick
-// installation dates out of the Windows Update history.
+// installation dates out of the Windows Update history. ResultCode 3 is
+// orcSucceededWithErrors; windows.go names the same value
+// wuaResultSucceededReboot.
 const (
 	wuaHistoryOperationInstallation     = 1 // uoInstallation
 	wuaHistoryResultSucceeded           = 2 // orcSucceeded
@@ -56,7 +58,7 @@ func applyWUAInstallDates(installed []InstalledPatch, dates map[string]time.Time
 }
 
 // uninstallEntry is one machine-wide Uninstall registry key: what Windows
-// lists under Installed apps.
+// lists under Installed apps for all users. Per-user keys are not read.
 type uninstallEntry struct {
 	DisplayName    string
 	DisplayVersion string
@@ -90,8 +92,12 @@ func uninstallNameKey(name string) string {
 // (winget, Chocolatey) from the Uninstall key whose DisplayName equals the
 // package's title. The match must be exact (case-insensitive): a truncated or
 // differently-worded name stays unknown. When several keys share the name,
-// the package version narrows them; if they still disagree on the date, the
-// date is left unknown.
+// only those with the package's version count, and if none has it, or they
+// disagree on the date, the date is left unknown.
+//
+// winget's Name column is the installed app's display name, so most winget
+// packages can match. A Chocolatey title is the package id ("git",
+// "googlechrome"), which matches only when the id equals the display name.
 func applyUninstallInstallDates(installed []InstalledPatch, entries []uninstallEntry) {
 	if len(installed) == 0 || len(entries) == 0 {
 		return
@@ -119,9 +125,16 @@ func uninstallInstallDate(candidates []uninstallEntry, version string) string {
 				sameVersion = append(sameVersion, c)
 			}
 		}
-		if len(sameVersion) > 0 {
+		switch {
+		case len(sameVersion) > 0:
 			candidates = sameVersion
+		case len(candidates) > 1:
+			// Several keys and none has this version: none is known to be
+			// the installed package.
+			return ""
 		}
+		// A single key under the name is taken even when its version is
+		// written differently (winget can normalise "5.0.0" to "5.0").
 	}
 	date := ""
 	for _, c := range candidates {

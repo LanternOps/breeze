@@ -82,6 +82,12 @@ func TestApplyUninstallInstallDates(t *testing.T) {
 		{DisplayName: "Twin Tool", DisplayVersion: "2.0", InstallDate: "20250202"},
 		{DisplayName: "No Date App", DisplayVersion: "3.0"},
 		{DisplayName: "Bad Date App", DisplayVersion: "1.0", InstallDate: "garbage"},
+		// One key under the name: a differently-formatted version is still it.
+		{DisplayName: "Solo App", DisplayVersion: "5.0.0", InstallDate: "20250505"},
+		// Several keys, none with the reported version: neither is known to
+		// be the installed package, even though they agree on the date.
+		{DisplayName: "Pair Tool", DisplayVersion: "1.0", InstallDate: "20250101"},
+		{DisplayName: "Pair Tool", DisplayVersion: "2.0", InstallDate: "20250101"},
 	}
 	installed := []InstalledPatch{
 		{ID: "Git.Git", Title: "Git", Version: "2.51.0.2"},
@@ -91,6 +97,8 @@ func TestApplyUninstallInstallDates(t *testing.T) {
 		{ID: "Bad.Date", Title: "Bad Date App", Version: "1.0"},
 		{ID: "Missing.App", Title: "Not In Registry", Version: "1.0"},
 		{ID: "Truncated.App", Title: "Microsoft Visual C++ 2015-2022 Redistrib…", Version: "14.38"},
+		{ID: "Solo.App", Title: "Solo App", Version: "5.0"},
+		{ID: "Pair.Tool", Title: "Pair Tool", Version: "3.0"},
 	}
 	applyUninstallInstallDates(installed, entries)
 
@@ -102,6 +110,8 @@ func TestApplyUninstallInstallDates(t *testing.T) {
 		"Bad.Date":      "",
 		"Missing.App":   "",
 		"Truncated.App": "",
+		"Solo.App":      "2025-05-05",
+		"Pair.Tool":     "",
 	}
 	for _, p := range installed {
 		if p.InstalledAt != want[p.ID] {

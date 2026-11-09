@@ -20,10 +20,13 @@ var uninstallRegistryPaths = []string{
 
 // platformUninstallEntries reads DisplayName, DisplayVersion and InstallDate
 // from every machine-wide Uninstall key. A missing view (32-bit Windows has
-// no WOW6432Node) is skipped. Any other failure returns an error and no
-// entries, so a partial read cannot make an ambiguous name look unique.
+// no WOW6432Node), or a key removed between listing and opening it, is
+// skipped. Any other failure, including a key that cannot be opened, returns
+// an error and no entries, so a partial read cannot make an ambiguous name
+// look unique.
 func platformUninstallEntries() ([]uninstallEntry, error) {
 	var entries []uninstallEntry
+	unreadable, total := 0, 0
 	for _, path := range uninstallRegistryPaths {
 		key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.READ)
 		if err != nil {
@@ -37,9 +40,13 @@ func platformUninstallEntries() ([]uninstallEntry, error) {
 			_ = key.Close()
 			return nil, fmt.Errorf("list HKLM\\%s: %w", path, err)
 		}
+		total += len(names)
 		for _, name := range names {
 			sub, err := registry.OpenKey(key, name, registry.QUERY_VALUE)
 			if err != nil {
+				if !errors.Is(err, registry.ErrNotExist) {
+					unreadable++
+				}
 				continue
 			}
 			entry := uninstallEntry{
@@ -53,6 +60,9 @@ func platformUninstallEntries() ([]uninstallEntry, error) {
 			}
 		}
 		_ = key.Close()
+	}
+	if unreadable > 0 {
+		return nil, fmt.Errorf("%d of %d Uninstall keys could not be opened", unreadable, total)
 	}
 	return entries, nil
 }

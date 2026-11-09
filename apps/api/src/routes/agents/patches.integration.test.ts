@@ -154,7 +154,7 @@ describe('patch ingest — installed inventory must not erase pending rows (real
 });
 
 describe('patch ingest — a report without installedAt keeps the stored date (real Postgres, #9723)', () => {
-  runDb('stores a reported date, keeps it through a dateless re-scan, and moves it on a newer date', async () => {
+  runDb('stores a reported date, keeps it through a dateless re-scan of the same version, moves it on a newer date, and clears it on a dateless new version', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const dev = await insertDevice(env.organization.id, env.site.id);
     const app = mountRoutes(env.organization.id, dev.agentId);
@@ -183,6 +183,30 @@ describe('patch ingest — a report without installedAt keeps the stored date (r
     });
     expect(reinstall.status).toBe(200);
     expect((await getDevicePatchRow(dev.id, externalId))?.installedAt?.toISOString()).toBe('2026-02-01T08:00:00.000Z');
+
+    // 4. An upgrade reported without a date: the stored date was for 1.1, so
+    //    the row reads unknown rather than claiming 1.2 was installed then.
+    const upgrade = await putJson(app, env.organization.id, installedPath, {
+      installed: [{ ...pkg, version: '1.2' }],
+    });
+    expect(upgrade.status).toBe(200);
+    const upgraded = await getDevicePatchRow(dev.id, externalId);
+    expect(upgraded?.installedVersion).toBe('1.2');
+    expect(upgraded?.installedAt).toBeNull();
+
+    // 5. A dateless report with no version at all keeps a NULL-version row's
+    //    date (IS NOT DISTINCT FROM treats NULL = NULL).
+    const dated = await putJson(app, env.organization.id, installedPath, {
+      installed: [{ name: pkg.name, source: pkg.source, externalId, packageId: externalId, installedAt: '2026-03-01T00:00:00Z' }],
+    });
+    expect(dated.status).toBe(200);
+    const versionless = await putJson(app, env.organization.id, installedPath, {
+      installed: [{ name: pkg.name, source: pkg.source, externalId, packageId: externalId }],
+    });
+    expect(versionless.status).toBe(200);
+    const kept = await getDevicePatchRow(dev.id, externalId);
+    expect(kept?.installedVersion).toBeNull();
+    expect(kept?.installedAt?.toISOString()).toBe('2026-03-01T00:00:00.000Z');
   });
 });
 

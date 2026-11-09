@@ -532,13 +532,17 @@ async function upsertInstalledPatches(
     // bind the ISO string with an explicit cast instead.
     //
     // A report that omits installedAt keeps the date already stored (#9723):
-    // providers only send it when the OS has one, and an agent that predates
-    // install dates never sends it, so writing NULL here would wipe a known
-    // date on the next scan. A reported date still replaces the stored one,
-    // so a reinstall moves it.
+    // providers send it only when the OS has one, and a provider can miss it
+    // on one scan (a failed history or registry read), so writing NULL would
+    // wipe a known date. The date is kept only while the installed version is
+    // unchanged: a stored date belongs to the version installed then, so a
+    // new version without a date reads unknown rather than wrong. A reported
+    // date always replaces the stored one, so a reinstall moves it. (SET
+    // expressions read the row's pre-update values, so installed_version here
+    // is the stored one.)
     const installedAtParam = installedAt
       ? sql`${installedAt.toISOString()}::timestamp`
-      : sql`${devicePatches.installedAt}`;
+      : sql`CASE WHEN ${devicePatches.installedVersion} IS NOT DISTINCT FROM ${version}::varchar THEN ${devicePatches.installedAt} ELSE NULL::timestamp END`;
     // Installed inventory must not downgrade an actionable 'pending' row on the
     // normal paired-submit flow. Package managers report a pending upgrade and
     // the installed package under the SAME (source, externalId) — `winget list`
