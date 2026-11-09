@@ -23,8 +23,13 @@
  *         ONE org per grant (round-robin over ceiling ∩ live orgs) gets a
  *         `tick` request: a quiet partner pays once per floor tick, not N×.
  *      4. due watches — claimDueWatches (which advances next_due_at in the
- *         same statement) → a `watch` request; a partner-wide watch (orgId
- *         null) takes its grant's round-robin org.
+ *         same statement), then each watch is evaluated in code (#11424,
+ *         services/wisp/watchHits.ts): a `watch` request only when its
+ *         hit-set changed since the last recorded one, none is recorded, the
+ *         kind is not evaluated, or the evaluation failed (fail-open). The
+ *         new hit-set is recorded by processAssessJob once a run is
+ *         admitted. A partner-wide watch (orgId null) takes its grant's
+ *         round-robin org, for the evaluation and the request alike.
  *      4b. reconcileCheckIns (#10991) — a `scheduled` check-in more than
  *         2 minutes overdue with no live job is re-enqueued with delay 0
  *         (services/wisp/checkIns.ts reconcileOrphanCheckIns).
@@ -63,7 +68,9 @@ import { reconcilePartnerDisabled } from '../services/wisp/partnerSettings';
 import { setWispGrantsActive } from '../services/wispMetrics';
 import { correlateIncidents } from '../services/wisp/incidentCorrelator';
 import { pollStaleTickets, pollTicketClusters } from '../services/wisp/pollers';
-import { claimDueWatches, stopWatchesForInactiveGrants } from '../services/wisp/watches';
+import { claimDueWatches, recordWatchHits, stopWatchesForInactiveGrants } from '../services/wisp/watches';
+import { evaluateWatchHits, parseWatchHitRecord, watchHitChange, type WatchHitSet } from '../services/wisp/watchHits';
+import type { AssessmentReason } from '../services/wisp/assessmentTypes';
 import { fireCheckIn, reconcileOrphanCheckIns } from '../services/wisp/checkIns';
 import {
   ASSESS_JOB,
@@ -97,6 +104,8 @@ const FLOOR_TICK_GRANT_LIMIT = 500;
 export type WakeTickResult = {
   grantsTicked: number;
   watchesFired: number;
+  /** #11424: due watches evaluated whose hit-set had not changed — no request. */
+  watchesUnchanged: number;
   staleTicketsPublished: number;
   watchesStopped: number;
   grantsPaused: number;
@@ -266,14 +275,18 @@ async function runFloorTicks(now: Date): Promise<number> {
   return ticked;
 }
 
-/** Due watches → `watch` requests. Returns the watches that got a request. */
-async function runDueWatches(now: Date): Promise<number> {
+/**
+ * Due watches → `watch` requests, for a changed hit-set only (#11424).
+ * `fired` = watches that got a request; `unchanged` = watches evaluated with
+ * the same hit-set as last recorded (no request).
+ */
+async function runDueWatches(now: Date): Promise<{ fired: number; unchanged: number }> {
   // claimDueWatches advances next_due_at in the claim itself, before any
   // request below — same trade as the floor-tick CAS: no rollback (it could
   // double-fire across replicas), so a failure after the claim loses that
   // watch's run for one cadence interval, and is reported.
   const watches = await claimDueWatches(now, WATCH_CLAIM_LIMIT);
-  if (watches.length === 0) return 0;
+  if (watches.length === 0) return { fired: 0, unchanged: 0 };
 
   // claimDueWatches is a system claim with no ceiling filter: every watch is
   // re-checked here against its grant's LIVE ceiling, and one whose org is
@@ -300,10 +313,12 @@ async function runDueWatches(now: Date): Promise<number> {
   const picks = new Map<string, Promise<string | null>>();
 
   let fired = 0;
+  let unchanged = 0;
   for (const w of watches) {
     try {
       const pin = pins.get(w.grantId);
       if (!pin) continue;
+      const partnerWide = w.orgId === null;
       let orgId = w.orgId;
       if (orgId !== null) {
         if (!(await assessableFor(pin)).has(orgId)) {
@@ -319,14 +334,45 @@ async function runDueWatches(now: Date): Promise<number> {
         orgId = await pick;
       }
       if (!orgId) continue;
-      await requestAssessment({ grantId: w.grantId, orgId, reason: { kind: 'watch', watchId: w.id } });
+
+      // #11424: evaluate in code. An unchanged hit-set launches no run — the
+      // claim already moved last_ran_at and next_due_at.
+      let hits: WatchHitSet | null = null;
+      try {
+        hits = await evaluateWatchHits(w, orgId, now);
+      } catch (err) {
+        // Fail open to the pre-#11424 behaviour (a plain watch run): a broken
+        // evaluator must cost a run, never silence the watch.
+        console.error('[wisp-wake] dueWatches: watch evaluation failed; running it unevaluated', { watchId: w.id, grantId: w.grantId, error: errMessage(err) });
+        report(err, { op: 'watch_evaluate' });
+      }
+      const change = hits ? watchHitChange(w, hits, { orgId, partnerWide }) : null;
+      if (hits && !change) {
+        unchanged += 1;
+        continue;
+      }
+      const reason: AssessmentReason = change
+        ? { kind: 'watch', watchId: w.id, hits: change }
+        : { kind: 'watch', watchId: w.id };
+      // The new hit-set rides on the job and is recorded by processAssessJob
+      // only once a run is ADMITTED for it. A coalesced request (another
+      // assess job for the org is live and keeps its own data), a failed
+      // request, or an admission skip (budget, no Triage agent, …) leaves the
+      // stored hit-set alone, so the next cadence asks again rather than
+      // losing the change.
+      await requestAssessment({
+        grantId: w.grantId,
+        orgId,
+        reason,
+        ...(hits ? { watchRecord: { watchId: w.id, previousHash: w.hitHash, hash: hits.hash, count: hits.count } } : {}),
+      });
       fired += 1;
     } catch (err) {
       console.error('[wisp-wake] dueWatches: watch failed', { watchId: w.id, grantId: w.grantId, error: errMessage(err) });
       report(err, { op: 'due_watch' });
     }
   }
-  return fired;
+  return { fired, unchanged };
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +393,7 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
   const result: WakeTickResult = {
     grantsTicked: 0,
     watchesFired: 0,
+    watchesUnchanged: 0,
     staleTicketsPublished: 0,
     watchesStopped: 0,
     grantsPaused: 0,
@@ -376,7 +423,9 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
     result.grantsTicked = await runFloorTicks(now);
   });
   await section('dueWatches', async () => {
-    result.watchesFired = await runDueWatches(now);
+    const watches = await runDueWatches(now);
+    result.watchesFired = watches.fired;
+    result.watchesUnchanged = watches.unchanged;
   });
   await section('reconcileCheckIns', async () => {
     result.checkInsRefired = (await reconcileOrphanCheckIns(now)).refired;
@@ -406,6 +455,34 @@ export async function processAssessJob(data: WispAssessJobData, occurrenceKey?: 
   const result = await enqueueAssessment(occurrenceKey ? { ...data, occurrenceKey } : data);
   if ('skipped' in result) {
     console.info('[wisp-wake] assessment skipped', { grantId: data.grantId, orgId: data.orgId, reason: data.reason.kind, skipped: result.skipped });
+    return;
+  }
+  if (data.watchRecord !== undefined) await recordAdmittedWatchHits(data.watchRecord);
+}
+
+/**
+ * #11424: a run was admitted for this watch's hit-set — store it, so the next
+ * cadence launches nothing unless the hit-set changes again. Never throws: a
+ * BullMQ retry would only hit the run's dedupe key, so a failure is reported
+ * and the next cadence, still seeing the old hash, asks once more (a
+ * duplicate run, never a lost change).
+ */
+async function recordAdmittedWatchHits(raw: unknown): Promise<void> {
+  const rec = parseWatchHitRecord(raw);
+  if (!rec) {
+    console.warn('[wisp-wake] assess job carried a malformed watchRecord; not recorded');
+    report(new Error('assess job with a malformed watchRecord'), { op: 'watch_record_malformed' });
+    return;
+  }
+  try {
+    const written = await recordWatchHits(rec.watchId, rec.previousHash, { hash: rec.hash, count: rec.count });
+    if (!written) {
+      // Another writer recorded first, or the watch was deleted: left as stored.
+      console.warn('[wisp-wake] watch hit-set not recorded: the stored hash moved on or the watch is gone', { watchId: rec.watchId });
+    }
+  } catch (err) {
+    console.error('[wisp-wake] could not record a watch hit-set', { watchId: rec.watchId, error: errMessage(err) });
+    report(err, { op: 'watch_record' });
   }
 }
 

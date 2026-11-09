@@ -285,6 +285,20 @@ describe('enqueueAssessment', () => {
     expect(h.pauseGrant).not.toHaveBeenCalled();
   });
 
+  // #11424: the watch hit summary is written into trigger_ref as the scheduler
+  // sent it, and parseWispTriggerRef reads the same summary back.
+  it('a watch reason\'s hit summary round-trips through trigger_ref', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([]); // no watermark
+    const hits = { change: 'cleared' as const, subject: 'alert' as const, orgId: ORG, partnerWide: false, count: 0, previousCount: 2, ids: [] };
+    const res = await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'watch', watchId: WATCH, hits } });
+    expect(res).toEqual({ runId: RUN });
+    const input = h.createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: Record<string, unknown> };
+    expect(input.triggerRef).toEqual({ wisp: { grantId: GRANT, grantRevisionId: REV, reason: { kind: 'watch', watchId: WATCH, hits }, watermark: null } });
+    // As stored (JSON) and read back.
+    expect(parseWispTriggerRef(JSON.parse(JSON.stringify(input.triggerRef)))?.reason).toEqual({ kind: 'watch', watchId: WATCH, hits });
+  });
+
   it('happy path passes grant, profile assessment, kind triage, triggerKind schedule and the watermark in triggerRef', async () => {
     const finished = new Date('2026-10-24T08:00:00.000Z');
     h.results.push([grantRow()]);
@@ -900,6 +914,19 @@ describe('parseWispTriggerRef', () => {
     expect(parseWispTriggerRef({ wisp: { ...ok, reason: { kind: 'bogus' } } })).toBeNull();
     expect(parseWispTriggerRef({ wisp: { ...ok, watermark: 'not a date' } })).toBeNull();
     expect(parseWispTriggerRef({ wisp: { ...ok, reason: { kind: 'watch' } } })).toBeNull();
+  });
+
+  // #11424: the scheduler's watch hit summary survives the trigger_ref
+  // round-trip; a malformed one is dropped without losing the watch reason.
+  it('keeps a well-formed watch hit summary and drops a malformed one, keeping the watch reason', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    const hits = { change: 'cleared', subject: 'alert', orgId: ORG, partnerWide: false, count: 0, previousCount: 1, ids: [] };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { kind: 'watch', watchId: WATCH, hits } } })).toEqual({
+      ...base, reason: { kind: 'watch', watchId: WATCH, hits },
+    });
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { kind: 'watch', watchId: WATCH, hits: { ...hits, change: 'bogus' } } } })).toEqual({
+      ...base, reason: { kind: 'watch', watchId: WATCH },
+    });
   });
 
   // #10388: the event's subject ids survive the trigger_ref round-trip; a

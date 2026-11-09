@@ -75,6 +75,7 @@ import { assessableOrgIds } from './assessableOrgs';
 import { readinessInventory } from './readiness';
 import { getOrCreateThread, seedContextForSession, updateThreadPicture } from './threads';
 import { listWatches } from './watches';
+import { parseWatchHitSummary } from './watchHits';
 import { incWispAssessment } from '../wispMetrics';
 import type {
   AssessmentDigest,
@@ -729,8 +730,12 @@ function parseReason(v: unknown): AssessmentReason | null {
         : null;
     case 'tick':
       return { kind: 'tick' };
-    case 'watch':
-      return isNonEmptyString(r.watchId) ? { kind: 'watch', watchId: r.watchId } : null;
+    case 'watch': {
+      if (!isNonEmptyString(r.watchId)) return null;
+      // #11424: the scheduler's hit summary; a malformed one is dropped, not the reason.
+      const hits = parseWatchHitSummary(r.hits);
+      return hits ? { kind: 'watch', watchId: r.watchId, hits } : { kind: 'watch', watchId: r.watchId };
+    }
     case 'onboarding':
       return { kind: 'onboarding' };
     default:
