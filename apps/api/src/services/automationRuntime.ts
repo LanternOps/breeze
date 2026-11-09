@@ -482,10 +482,18 @@ const QUEUED_OFFLINE_MESSAGE = 'Queued — device offline';
  */
 const QUEUED_UNDELIVERED_MESSAGE = 'Queued — delivery to the agent failed; will retry on its next check-in';
 
+/**
+ * #4142 — the relay could not confirm delivery ('indeterminate'). The command
+ * may already be running and is NOT retried (the claim is kept), so neither
+ * "device offline" nor "will retry" is true.
+ */
+const QUEUED_UNCONFIRMED_MESSAGE = 'Queued — delivery to the agent is unconfirmed; the result will arrive when the agent reports';
+
 function queuedMessageFor(deliveryOutcome: string | undefined): string {
   // `undefined` is treated as the offline case: it is what the pre-W4 result
   // shape carried, and 'no_agent' is overwhelmingly the reason a dispatch is
   // undelivered.
+  if (deliveryOutcome === 'indeterminate') return QUEUED_UNCONFIRMED_MESSAGE;
   return deliveryOutcome === undefined || deliveryOutcome === 'no_agent'
     ? QUEUED_OFFLINE_MESSAGE
     : QUEUED_UNDELIVERED_MESSAGE;
