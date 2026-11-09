@@ -2,6 +2,8 @@
 anchor: LanternOps/breeze#10425
 status: plan drafted, awaiting owner approval
 date: 2026-11-08
+tracking_issue: LanternOps/breeze#11489
+
 ---
 
 # Wisp Self-Knowledge and Closed Loops Implementation Plan
