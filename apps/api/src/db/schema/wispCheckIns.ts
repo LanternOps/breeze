@@ -25,7 +25,7 @@ import { wispThreads } from './wispThreads';
  * against the row's own `created_at`, not `now()`.
  *
  * Event check-ins (W04 #11493, #10410;
- * migrations/2027-01-22-231700-wisp-check-ins-event-triggers.sql): a row with
+ * migrations/2027-01-22-232000-wisp-check-ins-event-triggers.sql): a row with
  * `trigger_kind <> 'time'` waits for an event on `trigger_subject_id` (a
  * provenance pointer, no FK: a deleted subject is a fire-time condition), and
  * its `due_at` is the deadline. `fire_reason` records why it fired and is also
