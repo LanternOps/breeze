@@ -873,6 +873,17 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-wisp', 'executing', 'failed', { errorCode: 'wisp_ceiling_refused' });
     });
 
+    it('#10428 W06 Review Focus 3: a standing instruction confirmed during the wait refuses the release with its copy', async () => {
+      const reason = 'Refused: this now conflicts with a standing instruction. Ask the user to lift it, or act from the device page.';
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+        ok: false, errorCode: 'standing_instruction_denied', details: { reason, instructionId: 'i-1', text: 't' },
+      } as IntentReleaseRevalidation);
+
+      const result = await createSessionPreToolUse(wispSession())('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({ allowed: false, error: reason });
+    });
+
     it('an approved release still inside the ceiling runs under the narrowed auth', async () => {
       const result = await createSessionPreToolUse(wispSession())('execute_command', { command: 'whoami' });
       expect(wisp.enforceWispCeiling).toHaveBeenCalledTimes(2);
@@ -1715,7 +1726,9 @@ describe('createSessionPreToolUse — standing instructions (#10428 W06 Task 3)'
     const result = await createSessionPreToolUse(session)('execute_command', STOP);
 
     expect(result).toEqual({ allowed: false, error: REFUSAL });
-    expect(standing.check).toHaveBeenCalledWith({ ceiling: CEILING, toolName: 'execute_command', input: STOP });
+    expect(standing.check).toHaveBeenCalledWith({
+      ceiling: CEILING, toolName: 'execute_command', input: STOP, auth: expect.objectContaining({ narrowedFor: 'session-1' }),
+    });
     expect(approvalCards(session)).toHaveLength(0);
     expect(waitForApproval).not.toHaveBeenCalled();
     expectOnlyTheRefusalRow(REFUSAL);

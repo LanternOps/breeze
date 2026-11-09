@@ -68,6 +68,13 @@ vi.mock('../wisp/grantAuthority', async (importOriginal) => ({
 
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
+const evaluateStandingInstructions = vi.hoisted(() => vi.fn());
+vi.mock('../wisp/standingInstructionGate', () => ({
+  evaluateStandingInstructions,
+  standingConflictDescription: (text: string, description: string) => `Conflicts with a remembered instruction: '${text}'. ${description}`,
+  STANDING_CHECK_UNAVAILABLE_MESSAGE: "Couldn't check remembered instructions; try again.",
+}));
+
 import { finalizeAssessment } from './runFinalizers';
 import { GrantInactiveError, type GrantCeiling } from '../wisp/grantAuthority';
 import type { AssessmentRunContext, LoopResult, RunContext } from './runLoopTypes';
@@ -154,6 +161,7 @@ beforeEach(() => {
   deliverInApp.mockResolvedValue({ created: true });
   notifyUser.mockResolvedValue({ inApp: true, pushed: 1, suppressed: null });
   createActionIntent.mockResolvedValue({ id: 'intent-1', status: 'pending_approval' });
+  evaluateStandingInstructions.mockResolvedValue({ action: 'none' });
   rollupPartnerPicture.mockResolvedValue('picture');
   renderReadinessSummary.mockReturnValue("I can watch tickets here. I can't watch backups (no backup integration configured).");
 });
@@ -462,6 +470,46 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       await finalizeAssessment(makeCtx(), result);
       expect(createActionIntent).toHaveBeenCalledTimes(AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun);
       expect(result.outcome.assessmentSkipped).toEqual(['propose_cap']);
+    });
+  });
+
+  describe('propose_action standing instructions (#10428)', () => {
+    const proposal = { toolName: 'run_script', input: { scriptId: 's-1' }, reason: 'clear the spooler' };
+
+    it('refuse → propose_standing_instruction, no intent, gate called with the ceiling', async () => {
+      evaluateStandingInstructions.mockResolvedValue({ action: 'refuse', error: 'nope', match: {} });
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(evaluateStandingInstructions).toHaveBeenCalledWith(expect.objectContaining({
+        ceiling: expect.objectContaining({ grantId: GRANT_ID }), toolName: 'run_script', input: { scriptId: 's-1' },
+      }));
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_standing_instruction']);
+    });
+
+    it('lookup throws → propose_standing_instruction_unverified, no intent (fails closed)', async () => {
+      evaluateStandingInstructions.mockRejectedValue(new Error('db down'));
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_standing_instruction_unverified']);
+    });
+
+    it('warn → intent reason is prefixed with the conflict description', async () => {
+      evaluateStandingInstructions.mockResolvedValue({ action: 'warn', text: 'no reboots on Fridays', matches: [] });
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).toHaveBeenCalledTimes(1);
+      expect(createActionIntent.mock.calls[0]![1]).toMatchObject({
+        reason: `Conflicts with a remembered instruction: 'no reboots on Fridays'. Proposed by Wisp assessment ${RUN_ID}: clear the spooler`,
+      });
+    });
+
+    it('none → unchanged reason (control)', async () => {
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent.mock.calls[0]![1]).toMatchObject({ reason: `Proposed by Wisp assessment ${RUN_ID}: clear the spooler` });
+      expect(result.outcome.assessmentSkipped).toBeUndefined();
     });
   });
 

@@ -1130,12 +1130,14 @@ const STANDING_CHECK_UNAVAILABLE = "Couldn't check remembered instructions; try 
  * a Wisp Tier >= 2 call reaches it).
  */
 async function standingInstructionCheck(
+  session: ActiveSession,
   wispState: WispCallState,
   toolName: string,
   input: Record<string, unknown>,
 ): Promise<{ action: 'refuse'; error: string } | { action: 'warn'; text: string } | { action: 'none' }> {
   try {
-    return await checkStandingInstructionsForCall({ ceiling: wispState.ceiling, toolName, input });
+    // The call's own reach expands a run_script group target to its devices.
+    return await checkStandingInstructionsForCall({ ceiling: wispState.ceiling, toolName, input, auth: callReach(session, wispState) });
   } catch (err) {
     console.error(`[AI-SDK] Standing-instruction check failed for '${toolName}'; refusing`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
@@ -1673,7 +1675,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // Narrowing only. Re-checked after a Tier-2 card's wait below.
     let standingConflict: { text: string } | null = null;
     if (guardrailCheck.tier >= 2 && wispCall.current && !flowTool && !tenant) {
-      const standing = await standingInstructionCheck(wispCall.current, toolName, input);
+      const standing = await standingInstructionCheck(session, wispCall.current, toolName, input);
       if (standing.action === 'refuse') return { allowed: false, error: standing.error };
       if (standing.action === 'warn') standingConflict = { text: standing.text };
     }
@@ -2759,9 +2761,11 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             );
             // Wisp W04 (Review Focus 2): a Wisp ceiling refusal at release
             // (services/wisp/releaseCeiling.ts) carries fixed user-facing copy
-            // in details.reason; only `wisp_*` codes may surface it.
+            // in details.reason; only `wisp_*` codes may surface it, and the
+            // standing-instruction refusal (#10428 W06), which uses the same seam.
             const wispReleaseReason =
-              revalidation.errorCode.startsWith('wisp_') && typeof revalidation.details?.reason === 'string'
+              (revalidation.errorCode.startsWith('wisp_') || revalidation.errorCode === 'standing_instruction_denied')
+              && typeof revalidation.details?.reason === 'string'
                 ? revalidation.details.reason
                 : undefined;
             return await failMatchedPlanStep({
@@ -3301,7 +3305,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         // so no release re-check would see an instruction confirmed while it
         // waited. Check again before running; a refusal now stops the call.
         if (wispCall.current && !flowTool && !tenant) {
-          const standing = await standingInstructionCheck(wispCall.current, toolName, input);
+          const standing = await standingInstructionCheck(session, wispCall.current, toolName, input);
           if (standing.action === 'refuse') {
             try {
               await withDbAccessContext(

@@ -5,10 +5,17 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { findMatches, captureException } = vi.hoisted(() => ({
+const { findMatches, captureException, normalizeGroup } = vi.hoisted(() => ({
   findMatches: vi.fn(),
   captureException: vi.fn(),
+  normalizeGroup: vi.fn(),
 }));
+vi.mock('../actionIntents/runScriptGroupTarget', () => {
+  class RunScriptGroupTargetError extends Error {
+    constructor(message: string, readonly code: string) { super(message); }
+  }
+  return { normalizeRunScriptGroupTarget: (...args: unknown[]) => normalizeGroup(...args), RunScriptGroupTargetError };
+});
 
 vi.mock('./memoryBroker', async (importOriginal) => ({
   ...await importOriginal<typeof import('./memoryBroker')>(),
@@ -46,6 +53,7 @@ const match = (over: Partial<StandingInstructionMatch> = {}): StandingInstructio
 beforeEach(() => {
   findMatches.mockReset();
   captureException.mockReset();
+  normalizeGroup.mockReset();
 });
 
 describe('suppliedStandingDeviceIds', () => {
@@ -110,5 +118,33 @@ describe('standingConflictDescription', () => {
   it('prefixes the card description so every channel shows the conflict', () => {
     expect(standingConflictDescription("don't reboot PC-01", 'Install 3 patches on PC-01'))
       .toBe("Conflicts with a remembered instruction: 'don't reboot PC-01'. Install 3 patches on PC-01");
+  });
+});
+
+describe('run_script { groupId } (the group is expanded to its devices)', () => {
+  const GROUP = '00000000-0000-4000-8000-0000000000a9';
+  const ORG = '00000000-0000-4000-8000-0000000000b9';
+  const reach = { scope: 'organization', orgId: ORG } as never;
+
+  it('checks the group members, resolved under the caller reach in the write org', async () => {
+    normalizeGroup.mockResolvedValue({ args: { deviceIds: [PC01, PC02] } });
+    findMatches.mockResolvedValue([match()]);
+    const out = await evaluateStandingInstructions({ ceiling, auth: reach, toolName: 'run_script', input: { scriptId: 's', groupId: GROUP } });
+    expect(normalizeGroup).toHaveBeenCalledWith(reach, { scriptId: 's', groupId: GROUP }, ORG);
+    expect(findMatches).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: [PC01, PC02] }));
+    expect(out.action).toBe('refuse');
+  });
+
+  it('a group the reach cannot resolve refuses with the resolver message', async () => {
+    const { RunScriptGroupTargetError } = await import('../actionIntents/runScriptGroupTarget');
+    normalizeGroup.mockRejectedValue(new RunScriptGroupTargetError('Device group not found', 'group_target_not_found'));
+    const out = await checkStandingInstructionsForCall({ ceiling, auth: reach, toolName: 'run_script', input: { scriptId: 's', groupId: GROUP } });
+    expect(out).toEqual({ action: 'refuse', error: 'Device group not found' });
+    expect(findMatches).not.toHaveBeenCalled();
+  });
+
+  it('without a caller reach a group target fails closed (never "no devices")', async () => {
+    await expect(evaluateStandingInstructions({ ceiling, toolName: 'run_script', input: { scriptId: 's', groupId: GROUP } }))
+      .rejects.toThrow(/group/);
   });
 });
