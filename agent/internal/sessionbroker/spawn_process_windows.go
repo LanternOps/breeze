@@ -7,33 +7,84 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// SpawnProcessInSession launches an arbitrary binary in the specified
+// createProcessAsUser is windows.CreateProcessAsUser; a var so tests can
+// capture the launch.
+var createProcessAsUser = windows.CreateProcessAsUser
+
+// SpawnProcessInSessionWithArgs launches binaryPath with args in the specified
 // Windows session as the signed-in user, using the user token strategies of
-// AcquireInteractiveUserToken. It never falls back to SYSTEM: with nobody
-// signed in it returns ErrNoInteractiveUser and launches nothing (#10379).
+// AcquireInteractiveUserToken, and returns the launched process's PID. It
+// never falls back to SYSTEM: with nobody signed in it returns
+// ErrNoInteractiveUser and launches nothing (#10379).
 //
-// Uses cmd.exe as a wrapper because CreateProcessAsUser returns
-// "Access is denied" for Tauri binaries — likely SmartScreen/WDAC.
-func SpawnProcessInSession(binaryPath string, sessionID uint32) error {
-	return SpawnProcessInSessionWithArgs(binaryPath, nil, sessionID)
+// The target is launched directly. It used to run under
+// `cmd.exe /c start "" <binary>`, so the logged PID was cmd.exe's and the
+// helper watcher could not track the real process (#6923).
+func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32) (uint32, error) {
+	process, pid, err := startProcessInSession(binaryPath, args, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	_ = windows.CloseHandle(process)
+	return pid, nil
 }
 
-// SpawnProcessInSessionWithArgs launches a binary plus args in the specified Windows session.
-func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32) error {
-	// #6872: cmd.exe always exists, so CreateProcessAsUser(cmd.exe /c start
-	// "" "<binary>") succeeds even when <binary> does not — the log then
-	// claims a spawn with cmd.exe's PID and the user gets a "Windows cannot
-	// find" dialog. Check the target first.
+// RunProcessInSessionWithArgs launches binaryPath like
+// SpawnProcessInSessionWithArgs, then waits up to timeout for it to exit and
+// returns its exit code. When the wait runs out it returns
+// ErrProcessWaitTimeout and leaves the process running.
+func RunProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32, timeout time.Duration) (uint32, error) {
+	process, pid, err := startProcessInSession(binaryPath, args, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = windows.CloseHandle(process) }()
+
+	// windows.INFINITE would wait forever; cap just below it.
+	waitMs := uint32(windows.INFINITE - 1)
+	if ms := timeout.Milliseconds(); ms < int64(waitMs) {
+		waitMs = uint32(max(ms, 0))
+	}
+	event, err := windows.WaitForSingleObject(process, waitMs)
+	if err != nil {
+		return 0, fmt.Errorf("wait for %s (pid %d): %w", binaryPath, pid, err)
+	}
+	if event == uint32(windows.WAIT_TIMEOUT) {
+		return 0, fmt.Errorf("%w: %s (pid %d) still running after %s", ErrProcessWaitTimeout, binaryPath, pid, timeout)
+	}
+	var code uint32
+	if err := windows.GetExitCodeProcess(process, &code); err != nil {
+		return 0, fmt.Errorf("exit code of %s (pid %d): %w", binaryPath, pid, err)
+	}
+	return code, nil
+}
+
+// directLaunchCommandLine is the lpCommandLine for launching binaryPath with
+// args directly: argv[0] is the binary and every element is escaped by the
+// CommandLineToArgvW rules, so the target receives each arg exactly. No
+// cmd.exe parses the line, so its metacharacters (& | < > ^ % ( )) are
+// ordinary characters and need no escaping.
+func directLaunchCommandLine(binaryPath string, args []string) string {
+	return windows.ComposeCommandLine(append([]string{binaryPath}, args...))
+}
+
+// startProcessInSession launches binaryPath with args as the signed-in user,
+// on the session's interactive desktop. The caller closes the returned
+// process handle.
+func startProcessInSession(binaryPath string, args []string, sessionID uint32) (windows.Handle, uint32, error) {
+	// #6872: report a missing target as ErrBinaryMissing before acquiring a
+	// token, rather than as a launch failure.
 	if _, statErr := os.Stat(binaryPath); statErr != nil {
 		if os.IsNotExist(statErr) {
-			return fmt.Errorf("%w: %s", ErrBinaryMissing, binaryPath)
+			return 0, 0, fmt.Errorf("%w: %s", ErrBinaryMissing, binaryPath)
 		}
-		return fmt.Errorf("stat spawn target %s: %w", binaryPath, statErr)
+		return 0, 0, fmt.Errorf("stat spawn target %s: %w", binaryPath, statErr)
 	}
 
 	// #10379: a user token or nothing. The SYSTEM fallback launched Breeze
@@ -41,38 +92,28 @@ func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID u
 	// watcher crash-looped.
 	dupToken, envBlock, identity, err := AcquireInteractiveUserToken(sessionID)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer dupToken.Close()
 	if envBlock != nil {
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	quoted := append([]string{fmt.Sprintf(`"%s"`, binaryPath)}, quoteWindowsArgs(args)...)
-	command := strings.Join(quoted, " ")
-
-	// Build command: cmd.exe /c start "" "path\to\binary.exe" [args...]
-	sysRoot := os.Getenv("SystemRoot")
-	if sysRoot == "" {
-		sysRoot = `C:\Windows`
-	}
-	cmdExe := sysRoot + `\System32\cmd.exe`
-
-	appName, err := windows.UTF16PtrFromString(cmdExe)
+	appName, err := windows.UTF16PtrFromString(binaryPath)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString appName: %w", err)
+		return 0, 0, fmt.Errorf("UTF16PtrFromString appName: %w", err)
 	}
-
-	cmdLine, err := windows.UTF16PtrFromString(
-		fmt.Sprintf(`"%s" /c start "" %s`, cmdExe, command),
-	)
+	cmdLine, err := windows.UTF16PtrFromString(directLaunchCommandLine(binaryPath, args))
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString cmdLine: %w", err)
+		return 0, 0, fmt.Errorf("UTF16PtrFromString cmdLine: %w", err)
 	}
-
+	workDir, err := windows.UTF16PtrFromString(filepath.Dir(binaryPath))
+	if err != nil {
+		return 0, 0, fmt.Errorf("UTF16PtrFromString workDir: %w", err)
+	}
 	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString desktop: %w", err)
+		return 0, 0, fmt.Errorf("UTF16PtrFromString desktop: %w", err)
 	}
 
 	si := windows.StartupInfo{
@@ -81,7 +122,10 @@ func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID u
 	}
 	var pi windows.ProcessInformation
 
-	err = windows.CreateProcessAsUser(
+	// CREATE_NO_WINDOW: the agent service has no console, and a console
+	// target (taskkill) would otherwise open a console window on the user's
+	// desktop. GUI targets ignore the flag.
+	if err := createProcessAsUser(
 		dupToken,
 		appName,
 		cmdLine,
@@ -90,16 +134,13 @@ func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID u
 		false,
 		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
 		envBlock,
-		windows.StringToUTF16Ptr(filepath.Dir(binaryPath)),
+		workDir,
 		&si,
 		&pi,
-	)
-	if err != nil {
-		return fmt.Errorf("CreateProcessAsUser(cmd.exe, session=%d, binary=%s): %w", sessionID, binaryPath, err)
+	); err != nil {
+		return 0, 0, fmt.Errorf("CreateProcessAsUser(session=%d, binary=%s): %w", sessionID, binaryPath, err)
 	}
-
-	windows.CloseHandle(pi.Thread)
-	windows.CloseHandle(pi.Process)
+	_ = windows.CloseHandle(pi.Thread)
 
 	log.Info("spawned process in session",
 		"sessionId", sessionID,
@@ -107,58 +148,7 @@ func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID u
 		"binary", binaryPath,
 		"identity", identity,
 	)
-	return nil
-}
-
-func quoteWindowsArgs(args []string) []string {
-	quoted := make([]string, 0, len(args))
-	for _, arg := range args {
-		// 1. Escape cmd.exe metacharacters with ^ (must come first so the ^
-		//    we insert isn't itself re-escaped).
-		var buf strings.Builder
-		for i := 0; i < len(arg); i++ {
-			switch arg[i] {
-			case '&', '|', '<', '>', '^', '(', ')', '%':
-				buf.WriteByte('^')
-			}
-			buf.WriteByte(arg[i])
-		}
-		escaped := buf.String()
-
-		// 2. MSVCRT convention: backslashes immediately before a double-quote
-		//    must be doubled, then the quote itself is escaped with a backslash.
-		var out strings.Builder
-		for i := 0; i < len(escaped); i++ {
-			if escaped[i] == '"' {
-				// Count preceding backslashes in the source string
-				nbs := 0
-				for j := i - 1; j >= 0 && escaped[j] == '\\'; j-- {
-					nbs++
-				}
-				// Double existing backslashes before the quote
-				for k := 0; k < nbs; k++ {
-					out.WriteByte('\\')
-				}
-				out.WriteString(`\"`)
-			} else {
-				out.WriteByte(escaped[i])
-			}
-		}
-
-		// 3. Double trailing backslashes before the wrapping close-quote,
-		//    otherwise they would escape the closing " (e.g. C:\path\ → "C:\path\\").
-		result := out.String()
-		nbs := 0
-		for i := len(result) - 1; i >= 0 && result[i] == '\\'; i-- {
-			nbs++
-		}
-		for k := 0; k < nbs; k++ {
-			out.WriteByte('\\')
-		}
-
-		quoted = append(quoted, fmt.Sprintf(`"%s"`, out.String()))
-	}
-	return quoted
+	return pi.Process, pi.ProcessId, nil
 }
 
 // userTokenStrategy is one way to obtain the signed-in user's primary token

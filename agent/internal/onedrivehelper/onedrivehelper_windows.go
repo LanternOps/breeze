@@ -15,7 +15,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 
 	"github.com/breeze-rmm/agent/internal/logging"
-	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 var log = logging.L("onedrivehelper")
@@ -395,8 +394,8 @@ func sessionUpns(sid string) []string {
 // so an unexpanded literal like `%LOCALAPPDATA%\...` can never resolve — that
 // would kill OneDrive with no way to bring it back. If no launchable path is
 // found for a session, we skip that session's taskkill entirely: failure mode
-// is "no restart", never "killed and not restarted". Errors from the spawn
-// itself are ignored: OneDrive also picks changes up on its own schedule.
+// is "no restart", never "killed and not restarted". A failed launch is only
+// logged: OneDrive also picks changes up on its own schedule.
 func restartOneDrive(sessions []userSession) {
 	machineExe := `C:\Program Files\Microsoft OneDrive\OneDrive.exe`
 	machineExeOK := false
@@ -415,9 +414,13 @@ func restartOneDrive(sessions []userSession) {
 			// way to relaunch.
 			continue
 		}
-		_ = sessionbroker.SpawnProcessInSessionWithArgs(
-			`C:\Windows\System32\taskkill.exe`, []string{"/f", "/im", "OneDrive.exe"}, s.sessionID)
-		_ = sessionbroker.SpawnProcessInSessionWithArgs(exe, []string{"/background"}, s.sessionID)
+		killErr, relaunchErr := restartOneDriveInSession(`C:\Windows\System32\taskkill.exe`, exe, s.sessionID)
+		if killErr != nil {
+			log.Debug("onedrive restart: taskkill did not complete", "sessionId", s.sessionID, "error", killErr.Error())
+		}
+		if relaunchErr != nil {
+			log.Warn("onedrive restart: relaunch failed", "sessionId", s.sessionID, "binary", exe, "error", relaunchErr.Error())
+		}
 	}
 }
 

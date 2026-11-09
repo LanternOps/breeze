@@ -1436,7 +1436,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 				if err != nil {
 					return 0, fmt.Errorf("invalid session key %q: %w", sessionKey, err)
 				}
-				return 0, sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
+				// #6923: the direct launch returns Assist's own PID, so the
+				// watcher tracks the real process.
+				pid, err := sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
+				return int(pid), err
 			}),
 		)
 	} else {
