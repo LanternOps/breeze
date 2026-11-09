@@ -20,7 +20,8 @@ export type WispSpecialistKindLabel =
   | 'patch_plan'
   | 'remediation_research'
   | 'bulk_ticket_reply'
-  | 'device_troubleshooting';
+  | 'device_troubleshooting'
+  | 'assessment';
 
 /** Copy of `WispGrantPauseReason` (db/schema/wisp.ts) — keep in sync. */
 export type WispGrantPauseReasonLabel =

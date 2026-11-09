@@ -29,7 +29,7 @@ import {
   WATCH_PARAMS_MAX_BYTES,
   WATCH_PARAMS_MAX_KEYS,
 } from '../types/wispConcerns';
-import { WISP_SPECIALIST_KINDS, type WispSpecialistKind } from './wispSpecialists';
+import { WISP_ASSESSMENT_REQUEST_KINDS, type WispAssessmentRequestKind, type WispSpecialistKind } from './wispSpecialists';
 
 const jsonBytes = (o: unknown): number => {
   try {
@@ -140,7 +140,7 @@ export type ProposeActionInput = z.infer<typeof proposeActionSchema>;
  * (`apps/api/src/services/wisp/specialistDispatch.ts`).
  */
 export const requestSpecialistSchema = z.object({
-  kind: z.enum(WISP_SPECIALIST_KINDS),
+  kind: z.enum(WISP_ASSESSMENT_REQUEST_KINDS as [WispAssessmentRequestKind, ...WispAssessmentRequestKind[]]),
   params: z.record(z.string(), z.unknown()),
   reason: z.string().trim().min(10).max(500),
 });

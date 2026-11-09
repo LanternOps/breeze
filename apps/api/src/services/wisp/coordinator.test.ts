@@ -57,7 +57,7 @@ vi.mock('./grantAuthority', async (orig) => ({
 vi.mock('./budget', () => ({ chargeableUnderGrant: h.chargeableUnderGrant }));
 vi.mock('./specialistLaunchers', async (orig) => {
   const actual = await orig<typeof import('./specialistLaunchers')>();
-  const kinds = ['sweep', 'analysis', 'operator_recipe', 'patch_plan', 'remediation_research', 'bulk_ticket_reply', 'device_troubleshooting'];
+  const kinds = ['sweep', 'analysis', 'operator_recipe', 'patch_plan', 'remediation_research', 'bulk_ticket_reply', 'device_troubleshooting', 'assessment'];
   for (const k of kinds) h.launch[k] = vi.fn(async () => ({ admitted: true, runId: `run-${k}` }));
   for (const k of kinds) h.prereq[k] = vi.fn(async () => null);
   return {
@@ -107,6 +107,7 @@ const PARAMS: Record<SpecialistKind, Record<string, unknown>> = {
   remediation_research: { deviceId: DEVICE },
   bulk_ticket_reply: { concernId: null, ticketIds: [TICKET], message: 'We are on it.' },
   device_troubleshooting: { deviceId: DEVICE, goal: 'Outlook crashes on start' },
+  assessment: { scope: 'orgs_with_open_alerts' },
 };
 
 function base(o: { kind?: SpecialistKind; params?: Record<string, unknown>; orgId?: string; requestedByRunId?: string | null } = {}) {
@@ -156,6 +157,49 @@ beforeEach(() => {
   for (const f of Object.values(h.launch)) f.mockResolvedValue({ admitted: true, runId: 'run-x' });
   for (const f of Object.values(h.prereq)) f.mockResolvedValue(null);
   seed();
+});
+
+// #10406: the assessment kind is chat-only. An assessment's own request (the
+// run path) or an approval card raised by one may never start more
+// assessments; the refusal comes before the grant budget is read.
+describe('chat-only assessment kind (#10406)', () => {
+  it('the run path is refused unknown_kind before the budget is read', async () => {
+    await expect(requestSpecialist(base({ kind: 'assessment' }), { requester: requesterOf('run') })).resolves.toEqual({ refused: 'unknown_kind' });
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(h.raiseSpecialistIntent).not.toHaveBeenCalled();
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('the approval path is refused unknown_kind too', async () => {
+    await expect(requestSpecialist(base({ kind: 'assessment' }), { requester: requesterOf('approval') })).resolves.toEqual({ refused: 'unknown_kind' });
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('a chat user reaches the launcher, gated on ai_agents:write and alerts:read', async () => {
+    const r = await requestSpecialist(base({ kind: 'assessment', requestedByRunId: null }), { requester: requesterOf('user') });
+    expect(r).toEqual({ admitted: true, runId: 'run-x' });
+    expect(h.launch.assessment).toHaveBeenCalledTimes(1);
+    expect(h.launch.assessment!.mock.calls[0]![0]).toMatchObject({ orgId: ORG, params: { scope: 'orgs_with_open_alerts' } });
+  });
+
+  it('a chat user without alerts:read is refused permission_missing', async () => {
+    h.getUserPermissions.mockResolvedValue(perms([{ resource: 'ai_agents', action: 'write' }]));
+    await expect(requestSpecialist(base({ kind: 'assessment', requestedByRunId: null }), { requester: requesterOf('user') }))
+      .resolves.toEqual({ refused: 'permission_missing' });
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('scope defaults to org; any other key or value is invalid_params', async () => {
+    const r = await requestSpecialist(base({ kind: 'assessment', params: {}, requestedByRunId: null }), { requester: requesterOf('user') });
+    expect(r).toEqual({ admitted: true, runId: 'run-x' });
+    expect(h.launch.assessment!.mock.calls[0]![0]).toMatchObject({ params: { scope: 'org' } });
+    for (const params of [{ scope: 'all' }, { scope: 'org', orgIds: [ORG_B] }]) {
+      seed();
+      await expect(requestSpecialist(base({ kind: 'assessment', params, requestedByRunId: null }), { requester: requesterOf('user') }))
+        .resolves.toEqual({ refused: 'invalid_params' });
+    }
+  });
 });
 
 // #10144: the cheap, deterministic gates the chat tool runs BEFORE raising an

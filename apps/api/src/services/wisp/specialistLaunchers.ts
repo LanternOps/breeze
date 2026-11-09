@@ -118,6 +118,15 @@ export const troubleshootParamsSchema = z.strictObject({
   continueFromRunId: z.uuid().optional(),
 });
 
+/**
+ * #10406: `org` assesses the anchor org; `orgs_with_open_alerts` expands to up
+ * to ONBOARDING_ORG_LIMIT assessable ceiling orgs with open alerts, most
+ * severe first (launchAssessment).
+ */
+export const assessmentParamsSchema = z.strictObject({
+  scope: z.enum(['org', 'orgs_with_open_alerts']).default('org'),
+});
+
 const PARAMS_SCHEMAS: Readonly<Record<SpecialistKind, z.ZodType>> = Object.freeze({
   sweep: sweepParamsSchema,
   analysis: analysisParamsSchema,
@@ -126,6 +135,7 @@ const PARAMS_SCHEMAS: Readonly<Record<SpecialistKind, z.ZodType>> = Object.freez
   remediation_research: researchParamsSchema,
   bulk_ticket_reply: bulkTicketReplyParamsSchema,
   device_troubleshooting: troubleshootParamsSchema,
+  assessment: assessmentParamsSchema,
 });
 
 /** The parsed params for `kind`, or null when they do not fit its schema. */
@@ -408,6 +418,9 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
     const resolved = await resolveEffectiveAgentSystem(orgId, 'troubleshoot');
     return resolved ? agentOffRefusal(resolved) : null;
   },
+  // #10406: each org's own admission (enqueueAssessment) owns the agent and
+  // budget checks; the launcher reports per org.
+  assessment: async () => null,
 });
 
 // ---------------------------------------------------------------------------
@@ -664,6 +677,11 @@ export async function launchBulkTicketReply(ctx: LaunchContext): Promise<LaunchR
   return { admitted: true, report };
 }
 
+/** #10406 — Wisp's own assessment from chat. Filled in by W03 Task 4. */
+export async function launchAssessment(_ctx: LaunchContext): Promise<LaunchResult> {
+  return { refused: 'admission_skipped', detail: 'not_implemented' };
+}
+
 export const SPECIALIST_LAUNCHERS: Readonly<Record<SpecialistKind, (ctx: LaunchContext) => Promise<LaunchResult>>> = Object.freeze({
   sweep: launchSweep,
   analysis: launchAnalysis,
@@ -672,4 +690,5 @@ export const SPECIALIST_LAUNCHERS: Readonly<Record<SpecialistKind, (ctx: LaunchC
   remediation_research: launchRemediationResearch,
   bulk_ticket_reply: launchBulkTicketReply,
   device_troubleshooting: launchDeviceTroubleshooting,
+  assessment: launchAssessment,
 });

@@ -744,7 +744,7 @@ describe('launchBulkTicketReply', () => {
 describe('SPECIALIST_LAUNCHERS', () => {
   it('has exactly the policy kinds', () => {
     expect(Object.keys(SPECIALIST_LAUNCHERS).sort()).toEqual([...SPECIALIST_KINDS].sort());
-    expect(SPECIALIST_KINDS).toHaveLength(7);
+    expect(SPECIALIST_KINDS).toHaveLength(8);
   });
 });
 
