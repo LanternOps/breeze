@@ -62,7 +62,7 @@ import type { WispSessionGrant } from './wisp/chatCeiling';
 import { appendWispAssistantText, beginWispTurn, type WispCurrentTurn } from './wisp/turnRecord';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { exitPreStreamTiming, timePreStreamPhase } from './aiPreStreamTiming';
-import { MAX_TOOL_RESULT_CHARS, redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
+import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isUnknownToolErrorText } from '@breeze/shared';
 import { hasCoreAiToolName } from './aiToolNames';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
@@ -1313,7 +1313,7 @@ export class StreamingSessionManager {
           // `session.orgId` only when `toolAuth` carries none (non-device
           // sessions, whose org doesn't drift the same way).
           [
-            ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId, () => session.toolExposure?.resultCharBudget ?? MAX_TOOL_RESULT_CHARS),
+            ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId, () => session.toolExposure?.resultCharBudget),
             // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
             ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
           ].filter((extra) => sessionTools.exposure.names === null || sessionTools.keepsExtra(extra.name)),

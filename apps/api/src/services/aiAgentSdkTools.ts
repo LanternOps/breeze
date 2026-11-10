@@ -22,7 +22,7 @@ import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
-import { compactToolResultForChat, MAX_TOOL_RESULT_CHARS } from './aiToolOutput';
+import { compactToolResultForChat } from './aiToolOutput';
 import { bareToolName, normaliseDispatchResult } from './wisp/dispatchEvidence';
 import { incWispDispatchUnverified } from './wispMetrics';
 import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
@@ -937,7 +937,7 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
 function preToolUseDenialResult(
   toolName: string,
   check: { error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
-  maxChars: number = MAX_TOOL_RESULT_CHARS,
+  maxChars?: number,
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
@@ -957,14 +957,15 @@ function preToolUseDenialResult(
 
 /**
  * The chat result budget for the live session (#11394): a constrained tool
- * profile gets smaller results; `full`, no `toolExposure`, no session, or a
- * throwing accessor all stay at the 8000 default.
+ * profile gets smaller results. `undefined` (no session, no `toolExposure`, a
+ * throwing accessor) lets `compactToolResultForChat` apply its own default
+ * (MAX_TOOL_RESULT_CHARS, 8,000), so `full` sessions are byte-identical.
  */
-export function sessionResultCharBudget(getActiveSession?: () => ActiveSession | undefined): number {
+export function sessionResultCharBudget(getActiveSession?: () => ActiveSession | undefined): number | undefined {
   try {
-    return getActiveSession?.()?.toolExposure?.resultCharBudget ?? MAX_TOOL_RESULT_CHARS;
+    return getActiveSession?.()?.toolExposure?.resultCharBudget;
   } catch {
-    return MAX_TOOL_RESULT_CHARS;
+    return undefined;
   }
 }
 

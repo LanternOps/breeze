@@ -42,10 +42,11 @@ const textOf = (r: { content: Array<{ type: string; text?: string }> }) => r.con
 describe('sessionResultCharBudget', () => {
   it('reads the session budget, defaulting to 8000 when absent, undefined or throwing', () => {
     expect(sessionResultCharBudget(() => withBudget(2000))).toBe(2000);
-    expect(sessionResultCharBudget(() => withBudget())).toBe(MAX_TOOL_RESULT_CHARS);
-    expect(sessionResultCharBudget(() => undefined)).toBe(MAX_TOOL_RESULT_CHARS);
-    expect(sessionResultCharBudget(undefined)).toBe(MAX_TOOL_RESULT_CHARS);
-    expect(sessionResultCharBudget(() => { throw new Error('boom'); })).toBe(MAX_TOOL_RESULT_CHARS);
+    // undefined → compactToolResultForChat's own default (MAX_TOOL_RESULT_CHARS).
+    expect(sessionResultCharBudget(() => withBudget())).toBeUndefined();
+    expect(sessionResultCharBudget(() => undefined)).toBeUndefined();
+    expect(sessionResultCharBudget(undefined)).toBeUndefined();
+    expect(sessionResultCharBudget(() => { throw new Error('boom'); })).toBeUndefined();
   });
 });
 
