@@ -594,8 +594,10 @@ export async function enforceExistingFactorStepUp(
  * so still one spend in total) on a single exchange for a
  * `register_approver_device` grant, standing in for the password proof that
  * route takes from password accounts. That route runs its stronger-factor gate
- * (TOTP or passkey, {@link userHasStrongerReauthFactor}) first, so an SMS-only
- * account is the only protected shape that reaches this road from there. The
+ * ({@link userHasStrongerReauthFactor}) first, so a protected account reaches
+ * this road from there only when that gate reports no TOTP/passkey: SMS-only,
+ * `ENABLE_2FA=false`, or a factor shape the gate does not count (it checks
+ * `mfaMethod === 'totp'` and live passkeys only). The
  * approver-registration routes themselves still accept ONLY a
  * `register_approver_device` grant; an SSO grant presented to them directly
  * fails bindsMatch on the operation.

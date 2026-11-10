@@ -268,10 +268,11 @@ authenticatorRoutes.post(
       rejectionStatus: 400,
     });
     if (proofError) {
-      // Only a request that committed to the SSO road is audited here; a
-      // rejected password keeps its historical (unaudited) behaviour. Never
-      // the grant value itself.
-      if (!currentPassword && ssoReauthGrantId) {
+      // Only a request that committed to the SSO road, and whose proof was
+      // REJECTED (400), is audited here: a 503 from the resolver is an infra
+      // failure, not a refused grant, and a rejected password keeps its
+      // historical (unaudited) behaviour. Never the grant value itself.
+      if (!currentPassword && ssoReauthGrantId && proofError.status === 400) {
         writeAuthAudit(c, {
           orgId: auth.orgId ?? undefined,
           action: 'auth.authenticator.register_grant.denied',

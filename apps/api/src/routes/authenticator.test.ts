@@ -946,9 +946,11 @@ describe('approver device routes', () => {
         expect.objectContaining({ operation: 'register_approver_device', sid: 'sid-123' }),
       );
       // The proof is redeemed BEFORE the new grant is minted.
-      expect(helperMocks.resolveEnrollmentStepUp.mock.invocationCallOrder[0]).toBeLessThan(
-        grantMocks.mintStepUpGrant.mock.invocationCallOrder[0],
-      );
+      const [resolveOrder] = helperMocks.resolveEnrollmentStepUp.mock.invocationCallOrder;
+      const [mintOrder] = grantMocks.mintStepUpGrant.mock.invocationCallOrder;
+      expect(resolveOrder).toBeDefined();
+      expect(mintOrder).toBeDefined();
+      expect(resolveOrder!).toBeLessThan(mintOrder!);
       expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -1044,6 +1046,18 @@ describe('approver device routes', () => {
       );
       const res = await postJson('/register-grant', { currentPassword: 'wrong', ssoReauthGrantId: 'g' });
       expect(res.status).toBe(400);
+      expect(helperMocks.writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ reason: 'sso_reauth_rejected' }),
+      );
+    });
+
+    it('an infra failure from the resolver on the SSO road is not audited as a rejected proof', async () => {
+      helperMocks.resolveEnrollmentStepUp.mockImplementation(async (c: any) =>
+        c.json({ error: 'Service temporarily unavailable' }, 503),
+      );
+      const res = await postJson('/register-grant', { ssoReauthGrantId: 'g' });
+      expect(res.status).toBe(503);
       expect(helperMocks.writeAuthAudit).not.toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ reason: 'sso_reauth_rejected' }),

@@ -288,6 +288,25 @@ describe('POST /authenticator/register-grant — SSO re-auth road (#9007)', () =
     expect(await res.json()).toEqual(SSO_EXPIRED);
   });
 
+  it('a grant minted before a password/membership change (stale auth_epoch) is refused', async () => {
+    const staleGrant = await mintSsoGrant('enroll_first_factor', { authEpoch: EPOCHS.authEpoch - 1 });
+
+    const res = await postRegisterGrant({ ssoReauthGrantId: staleGrant });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(SSO_EXPIRED);
+  });
+
+  it('a bearer with no sid: 503 and the SSO grant is not consumed', async () => {
+    const ssoGrant = await mintSsoGrant('enroll_first_factor');
+    bearer.sid = undefined;
+
+    const res = await postRegisterGrant({ ssoReauthGrantId: ssoGrant });
+
+    expect(res.status).toBe(503);
+    expect(await validateStepUpGrant(ssoGrant!, { ...REGISTER_BIND, operation: 'enroll_first_factor' })).toBe(true);
+  });
+
   it('a register_approver_device grant presented as ssoReauthGrantId is refused (purpose mismatch)', async () => {
     const registerGrant = await mintStepUpGrant(REGISTER_BIND);
 
@@ -355,6 +374,21 @@ describe('POST /authenticator/register-grant — SSO re-auth road (#9007)', () =
     expect(await validateStepUpGrant(manageGrant!, { ...REGISTER_BIND, operation: 'sso_reauth_manage_factor' })).toBe(true);
   });
 
+  it('stronger factor (passkey) with a valid SSO grant: 403 before the grant is touched', async () => {
+    account.passkeyCount = 1;
+    const manageGrant = await mintSsoGrant('sso_reauth_manage_factor');
+
+    const res = await postRegisterGrant({ ssoReauthGrantId: manageGrant });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'stronger_factor_required' });
+    expect(await validateStepUpGrant(manageGrant!, { ...REGISTER_BIND, operation: 'sso_reauth_manage_factor' })).toBe(true);
+  });
+
+  // The route's own epochs-before-proof ORDER is pinned in authenticator.test.ts
+  // ('epochs unavailable 503s BEFORE the resolver consumes the grant'); the
+  // resolver re-checks epochs before its GETDEL too, so this end-to-end case
+  // pins the outcome, not the route's ordering.
   it('epochs unavailable: 503 and the single-use SSO grant survives for a retry', async () => {
     const ssoGrant = await mintSsoGrant('enroll_first_factor');
     mocks.getUserEpochs.mockResolvedValue(null);
@@ -380,6 +414,22 @@ describe('POST /authenticator/register-grant — SSO re-auth road (#9007)', () =
       expect(await validateStepUpGrant(registerGrantId, REGISTER_BIND)).toBe(true);
       expect(mocks.verifyPassword).toHaveBeenCalledWith('$argon2id$hash', 'hunter2!');
       expect(mocks.rateLimiter).toHaveBeenCalledWith(fakeRedis, `authenticator:pwd:${USER_ID}`, 5, 300);
+      expect(auditActions()).toContainEqual(
+        expect.objectContaining({
+          action: 'auth.authenticator.register_grant.minted',
+          details: expect.objectContaining({ method: 'password' }),
+        }),
+      );
+    });
+
+    it('correct password plus a grant: the password decides and the grant is NOT consumed', async () => {
+      mocks.verifyPassword.mockResolvedValue(true);
+      const ssoGrant = await mintSsoGrant('enroll_first_factor');
+
+      const res = await postRegisterGrant({ currentPassword: 'hunter2!', ssoReauthGrantId: ssoGrant });
+
+      expect(res.status).toBe(200);
+      expect(await validateStepUpGrant(ssoGrant!, { ...REGISTER_BIND, operation: 'enroll_first_factor' })).toBe(true);
       expect(auditActions()).toContainEqual(
         expect.objectContaining({
           action: 'auth.authenticator.register_grant.minted',
