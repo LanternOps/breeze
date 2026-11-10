@@ -23,6 +23,9 @@ import {
   connectionGatewayPatchSchema,
   connectionSettingsPatchSchema,
   offeringDetailsPatchSchema,
+  offeringToolSettingsPatchSchema,
+  aiToolAllowlistSchema,
+  AI_TOOL_PROFILES,
   manualOfferingCreateSchema,
   orgAssignmentsPutSchema,
   partnerAssignmentsPutSchema,
@@ -130,6 +133,46 @@ describe('offeringDetailsPatchSchema', () => {
     expect(offeringDetailsPatchSchema.safeParse({ ...base, requiredPermission: 'ai_models:premium' }).success).toBe(true);
     expect(offeringDetailsPatchSchema.safeParse({ ...base, requiredPermission: null }).success).toBe(true);
     expect(offeringDetailsPatchSchema.safeParse({ ...base, requiredPermission: 'billing:manage' }).success).toBe(false);
+  });
+  it('does not accept the tool fields yet: they ship dark until the write path validates merged state (#11393 W05)', () => {
+    const base = { expectedUpdatedAt: '2026-10-01T00:00:00.000Z' };
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolProfile: 'standard' }).success).toBe(false);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: 32768 }).success).toBe(false);
+  });
+});
+
+describe('tool profile and context window fields (#11394)', () => {
+  it('AI_TOOL_PROFILES is the closed set, auto first', () => {
+    expect(AI_TOOL_PROFILES).toEqual(['auto', 'full', 'standard', 'minimal', 'custom']);
+  });
+  it('accepts { toolProfile: custom, toolAllowlist: { domains: [devices], tools: [] } }', () => {
+    expect(offeringToolSettingsPatchSchema.safeParse({
+      toolProfile: 'custom', toolAllowlist: { domains: ['devices'], tools: [] },
+    }).success).toBe(true);
+  });
+  it('accepts an empty patch (both may be absent) and null allowlist', () => {
+    expect(offeringToolSettingsPatchSchema.safeParse({}).success).toBe(true);
+    expect(offeringToolSettingsPatchSchema.safeParse({ toolProfile: 'standard', toolAllowlist: null }).success).toBe(true);
+  });
+  it('rejects contextWindowOverride 1023 and 100000001, accepts the bounds and null', () => {
+    expect(offeringToolSettingsPatchSchema.safeParse({ contextWindowOverride: 1023 }).success).toBe(false);
+    expect(offeringToolSettingsPatchSchema.safeParse({ contextWindowOverride: 100_000_001 }).success).toBe(false);
+    expect(offeringToolSettingsPatchSchema.safeParse({ contextWindowOverride: 1.5e3 + 0.5 }).success).toBe(false);
+    expect(offeringToolSettingsPatchSchema.safeParse({ contextWindowOverride: 1024 }).success).toBe(true);
+    expect(offeringToolSettingsPatchSchema.safeParse({ contextWindowOverride: 100_000_000 }).success).toBe(true);
+    expect(offeringToolSettingsPatchSchema.safeParse({ contextWindowOverride: null }).success).toBe(true);
+  });
+  it('rejects an unknown domain, an unknown profile, a malformed tool name and extra keys', () => {
+    expect(aiToolAllowlistSchema.safeParse({ domains: ['weather'], tools: [] }).success).toBe(false);
+    expect(offeringToolSettingsPatchSchema.safeParse({ toolProfile: 'tiny' }).success).toBe(false);
+    expect(aiToolAllowlistSchema.safeParse({ domains: [], tools: ['Query-Devices'] }).success).toBe(false);
+    expect(aiToolAllowlistSchema.safeParse({ domains: [], tools: ['x'.repeat(65)] }).success).toBe(false);
+    expect(aiToolAllowlistSchema.safeParse({ domains: [], tools: [], extra: 1 }).success).toBe(false);
+  });
+  it('caps tools at 200', () => {
+    const tools = Array.from({ length: 201 }, (_, i) => `tool_${i}`);
+    expect(aiToolAllowlistSchema.safeParse({ domains: [], tools }).success).toBe(false);
+    expect(aiToolAllowlistSchema.safeParse({ domains: [], tools: tools.slice(0, 200) }).success).toBe(true);
   });
 });
 

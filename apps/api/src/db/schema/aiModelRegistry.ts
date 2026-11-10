@@ -18,7 +18,14 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { AI_CONNECTION_ROW_KINDS, ANTHROPIC_API_CONNECTION_KINDS, type AiConnectionRowKind } from '@breeze/shared';
+import {
+  AI_CONNECTION_ROW_KINDS,
+  AI_TOOL_PROFILES,
+  ANTHROPIC_API_CONNECTION_KINDS,
+  type AiConnectionRowKind,
+  type AiToolAllowlist,
+  type AiToolProfile,
+} from '@breeze/shared';
 import { aiPlatformModels } from './aiPlatformModels';
 import { llmProviderCatalog } from './llmProviderCatalog';
 import { organizations, partners } from './orgs';
@@ -28,7 +35,8 @@ import { users } from './users';
 export const PARTNER_AI_CONNECTION_KINDS = AI_CONNECTION_ROW_KINDS;
 export type PartnerAiConnectionKind = AiConnectionRowKind;
 const KIND_CHECK_LITERALS = PARTNER_AI_CONNECTION_KINDS.map((k) => `'${k}'`).join(', ');
-const ANTHROPIC_API_CHECK_LITERALS = ANTHROPIC_API_CONNECTION_KINDS.map((k) => `'${k}'`).join(', ');
+const TOOL_PROFILE_CHECK_LITERALS = AI_TOOL_PROFILES.map((p) => `'${p}'`).join(', ');
+const ANTHROPIC_API_CHECK_LITERALS =ANTHROPIC_API_CONNECTION_KINDS.map((k) => `'${k}'`).join(', ');
 
 /**
  * Shape 3 (partner axis). `api_key_encrypted` is registered row-bound under
@@ -101,6 +109,19 @@ export const partnerAiModels = pgTable('partner_ai_models', {
   /** W03 connection discovery (#7601): NULL until a sync observes the model; never-seen rows are never aged. */
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
   missedSyncCount: integer('missed_sync_count').notNull().default(0),
+  /**
+   * Tool profiles (#11393 W01, ships dark): which tools and prompt a surface
+   * gives this model. `auto` + unknown window = `full` = today's behaviour.
+   */
+  toolProfile: text('tool_profile').$type<AiToolProfile>().notNull().default('auto'),
+  /** Present exactly when `toolProfile = 'custom'` (tool_allowlist_chk). */
+  toolAllowlist: jsonb('tool_allowlist').$type<AiToolAllowlist>(),
+  /** Context window facts. Precedence: override → min(discovered, fresh observed) → unknown (W02). */
+  contextWindowOverride: integer('context_window_override'),
+  contextWindowDiscovered: integer('context_window_discovered'),
+  contextWindowObserved: integer('context_window_observed'),
+  contextWindowObservedAt: timestamp('context_window_observed_at', { withTimezone: true }),
+  contextWindowObservedConfigVersion: integer('context_window_observed_config_version'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -122,6 +143,10 @@ export const partnerAiModels = pgTable('partner_ai_models', {
   index('partner_ai_models_refusal_fallback_idx').on(t.refusalFallbackOfferingId).where(sql`${t.refusalFallbackOfferingId} IS NOT NULL`),
   check('partner_ai_models_source_chk', sql`${t.source} IN ('platform', 'discovered', 'manual', 'catalog')`),
   check('partner_ai_models_lifecycle_chk', sql`${t.lifecycle} IN ('available', 'missing', 'retired')`),
+  check('partner_ai_models_tool_profile_chk', sql`${t.toolProfile} IN (${sql.raw(TOOL_PROFILE_CHECK_LITERALS)})`),
+  check('partner_ai_models_tool_allowlist_chk', sql`(${t.toolProfile} = 'custom') = (${t.toolAllowlist} IS NOT NULL)`),
+  check('partner_ai_models_context_window_override_chk', sql`${t.contextWindowOverride} IS NULL OR ${t.contextWindowOverride} BETWEEN 1024 AND 100000000`),
+  check('partner_ai_models_context_window_observed_chk', sql`num_nulls(${t.contextWindowObserved}, ${t.contextWindowObservedAt}, ${t.contextWindowObservedConfigVersion}) IN (0, 3)`),
 ]);
 
 export type PartnerAiModelRow = typeof partnerAiModels.$inferSelect;

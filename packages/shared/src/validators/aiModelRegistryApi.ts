@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { AI_AGENT_ESCALATION_ROLES, AI_SURFACE_ROLES, AI_SURFACES, MAX_FALLBACK_OFFERINGS, type AiSurface } from '../constants/aiSurfaces';
 import { BYO_MODEL_ID_PATTERN } from '../constants/aiConnectionKinds';
+import { AI_TOOL_DOMAINS } from '../types/aiToolDomains';
 import { INFERENCE_GEO_PATTERN, modelRatesSchema, offeringOptionsSchema } from './aiModelOptions';
 
 /**
@@ -137,6 +138,38 @@ export const offeringDetailsPatchSchema = z.object({
   refusalFallbackOfferingId: uuid.nullable().optional(),
 }).strict();
 export type OfferingDetailsPatch = z.infer<typeof offeringDetailsPatchSchema>;
+
+/**
+ * Tool profiles for small-context models (#11393, spec
+ * 2026-11-06-small-model-tool-profiles). `auto` picks from a known context
+ * window and is `full` while the window is unknown; `custom` carries an
+ * allow-list. Mirrored by `partner_ai_models_tool_profile_chk`.
+ */
+export const AI_TOOL_PROFILES = ['auto', 'full', 'standard', 'minimal', 'custom'] as const;
+export type AiToolProfile = (typeof AI_TOOL_PROFILES)[number];
+
+/** A `custom` profile's allow-list: whole domains plus single tools, intersected with each surface's set at runtime. */
+export const aiToolAllowlistSchema = z.object({
+  domains: z.array(z.enum(AI_TOOL_DOMAINS)).max(AI_TOOL_DOMAINS.length),
+  tools: z.array(z.string().regex(/^[a-z0-9_]{1,64}$/)).max(200),
+}).strict();
+export type AiToolAllowlist = z.infer<typeof aiToolAllowlistSchema>;
+
+export const CONTEXT_WINDOW_OVERRIDE_MIN = 1024;
+export const CONTEXT_WINDOW_OVERRIDE_MAX = 100_000_000;
+
+/**
+ * The offering's tool fields as a patch fragment. Not part of
+ * `offeringDetailsPatchSchema` yet: the profile ships dark until the write
+ * path validates `custom ⇔ allowlist` against the merged stored state
+ * (#11393 W05). Only the shape is checked here; both fields may be absent.
+ */
+export const offeringToolSettingsPatchSchema = z.object({
+  toolProfile: z.enum(AI_TOOL_PROFILES).optional(),
+  toolAllowlist: aiToolAllowlistSchema.nullable().optional(),
+  contextWindowOverride: z.number().int().min(CONTEXT_WINDOW_OVERRIDE_MIN).max(CONTEXT_WINDOW_OVERRIDE_MAX).nullable().optional(),
+}).strict();
+export type OfferingToolSettingsPatch = z.infer<typeof offeringToolSettingsPatchSchema>;
 
 const configurableSurface = z.enum(CONFIGURABLE_AI_SURFACES as unknown as [AiSurface, ...AiSurface[]]);
 /** W09 (#7607): `default` on every surface; ai_agents also has the escalation stages (checked per surface below). */
