@@ -195,11 +195,34 @@ Every nudge accepts feedback, and Wisp uses it to tune what it raises. The threa
 
 Every morning brief, concern nudge and digest is also kept on the Wisp thread as a post. Wisp records the post whatever your channel settings are, so it is kept even when both the in-app and push channels are off. Clearing notifications does not remove these posts. A retried delivery never creates a duplicate, because each delivery produces one post. The budget notice and other system notices are not posts; they stay notifications only. A paused thread still shows its history, and a revoked or expired delegation does not.
 
+## Check-ins
+
+Wisp can schedule a **check-in** to come back to something later. The thread shows each scheduled check-in with **Cancel**, and a check-in that has fired offers **Run now**.
+
+A check-in can wait for **a time** or **an event**:
+
+- **A time.** It fires after the delay Wisp chose.
+- **An event.** It fires when a device comes online, a script or device command finishes, or an agent run settles. Each has a deadline, 24 hours by default and at most 7 days. If the event has not happened by then, the check-in fires anyway and says so, for example "Did not happen by 15:40 UTC: the device is still offline". When it fires, Breeze re-reads the device, script, command or run, so a stale event fires nothing. Device commands are checked on Wisp's 5-minute tick only. A check-in whose device, script, command or run is deleted, or moves outside the grant, is cancelled with a reason instead of firing.
+
+By default a check-in only posts a reminder to the thread. A check-in can instead **check on its own**: when it fires, Wisp runs one read-only assessment of one organization under the grant and posts what it found, linked to the run. Scheduling one always asks for approval on a card, because it spends the grant's budget while nobody is watching. If the grant changed since the check-in was scheduled, today's budget is spent or the check cannot start, Wisp runs nothing and posts "I couldn't check on my own: … Run it now?" instead.
+
 ## Memory
 
 Wisp keeps short notes: your preferences, standing instructions, facts, and decisions ("leave that firewall alone until the renewal"). Notes belong to you, to an organization or to the partner.
 
 Wisp writes notes; **people confirm, correct or retract them**. Open **Settings → Wisp memory** (`/settings/wisp-memory`) to review what Wisp has recorded and retract anything wrong. Each note is attributed to Wisp acting for you.
+
+### Standing instructions
+
+When a chat message gives a standing instruction, such as "don't reboot PC-01 and PC-02" or "never patch the CEO laptop", Wisp saves it to your own memory as unconfirmed, and a chip under its reply offers **Keep**, **Keep for everyone at &lt;organization&gt;** (only when every named device is in one organization) and **Forget**. Where Wisp can enforce the instruction, the chip shows exactly what it will refuse, for example "Wisp will not propose: reboot · PC-01, PC-02 · no end date".
+
+- Quoted lines and pasted blocks, such as a forwarded email or ticket, are never read as instructions.
+- Device names are matched only to devices inside the grant. A name that does not match exactly one device saves the instruction as a plain note.
+- Reading an instruction from a message is one small model call, charged to the grant's background budget and capped at 20 per grant per UTC day. It is skipped when the grant or organization budget is spent.
+
+Once you tap **Keep**, Wisp refuses to propose an action that breaks an unconditional "don't" on named devices: "Refused: matches a standing instruction ('don't reboot PC-01'). Ask the user to lift it." The check runs in chat, on assessment and troubleshooting proposals, and again when an approved action is released, so an approval raised before you kept the instruction is refused at release. A patch install counts as a reboot, because AI-initiated patch jobs reboot when a patch needs it. You can still act yourself from the device page.
+
+An instruction you have not kept yet, one with a condition ("during business hours"), or an action that only might break it (a script could reboot the device) never blocks. The approval card shows a red **Conflicts with a remembered instruction** banner, and Wisp asks for approval even where the grant would normally run the action without asking.
 
 ## Budgets
 

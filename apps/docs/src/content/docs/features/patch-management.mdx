@@ -70,6 +70,10 @@ A patch whose source published no severity, and that the agent cannot rate, is s
 
 A patch whose latest install reported success but needs a restart stays pending on the device until it restarts. From v0.121.0 the device's **Patches** tab shows such a row as **Installed, reboot required** instead of an untouched pending patch, and it no longer counts as awaiting approval. An install started from the device's **Patches** tab (or from vulnerability remediation) also counts as an install attempt: a newer one replaces an older failed patch job in the **Install failed** status, and its own failure shows its own reason.
 
+### Install dates
+
+From the 0.128.0 agent, installed updates show the date the operating system recorded for the install: Windows Update history on Windows, install history on macOS, and the program's install date for winget and Chocolatey packages. A later scan that cannot read a date keeps the date already shown, as long as the installed version is the same; a new version clears it until a date is reported. Where the operating system has no date (Linux packages, Homebrew, or a winget or Chocolatey package whose name doesn't match an installed program exactly), the row shows **Installed (date unknown)**. The customer portal's **Last patch** date fills in once dates arrive.
+
 ### Approval on a device's Patches tab
 
 The **Approval** column on a device's **Patches** tab shows what the next scheduled patch run would do with each pending patch. Breeze works this out with the same rules the scheduled run uses, against the update ring the device's patch policy links to:
