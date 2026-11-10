@@ -160,8 +160,10 @@ export const CURATED_PROFILES: Readonly<Record<ProfiledSurface, Readonly<Record<
  * Measured fixed prefix (system prompt + advertised schemas, bytes/3) per
  * surface and profile, used by `auto`. PLACEHOLDER until W03 measures the
  * advertised upstream request (`ai:tool-capture --profile`): `null` means
- * "not measured", and `auto` treats an unmeasured profile as not fitting, so
- * no constrained profile is auto-picked before W03 + W02 land.
+ * "not measured". If ANY of a surface's three prefixes is unmeasured,
+ * `pickAutoProfile` answers `full` for that surface (nothing is constrained on
+ * a guess), so no constrained profile is auto-picked before W03 measures all
+ * three and W02 supplies a window.
  */
 export type ProfilePrefixTokens = Readonly<Record<ProfiledSurface, Readonly<Record<'minimal' | 'standard' | 'full', number | null>>>>;
 export const PROFILE_PREFIX_TOKENS: ProfilePrefixTokens = Object.freeze({

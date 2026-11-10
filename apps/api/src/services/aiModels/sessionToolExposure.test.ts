@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ToolProfileUnderpoweredError, bareToolName, finalizeSessionToolExposure, type SessionToolExposureInput } from './sessionToolExposure';
+import { ToolProfileUnderpoweredError, allowedToolsUnder, bareToolName, finalizeSessionToolExposure, type SessionToolExposureInput } from './sessionToolExposure';
 import { FULL_IDENTITY_FINGERPRINT, type ToolProfileFacts } from './toolExposure';
 import { CHAT_MINIMAL_TOOLS } from './toolProfiles';
 
@@ -53,16 +53,27 @@ describe('finalizeSessionToolExposure (#11394)', () => {
     expect(r.allowedTools).toEqual(['mcp__breeze__query_devices', 'mcp__breeze__set_device_context', `mcp__breeze__${TENANT.name}`]);
   });
 
-  it('helper: client-declared tools are intersected with the profile too', () => {
-    const allowed = ['mcp__breeze__get_device_details', 'mcp__breeze__execute_command', 'mcp__helper_client__open_settings'];
-    const minimal = finalizeSessionToolExposure(input({ surface: 'helper', allowedTools: allowed, breezeServer: false, extraTools: [], facts: facts({ toolProfile: 'minimal' }) }));
-    expect(minimal.allowedTools).toEqual(['mcp__breeze__get_device_details']);
-    expect(minimal.onlyTools).toBeUndefined();
-    const custom = finalizeSessionToolExposure(input({
-      surface: 'helper', allowedTools: allowed, breezeServer: false, extraTools: [],
-      facts: facts({ toolProfile: 'custom', toolAllowlist: { domains: [], tools: ['open_settings', 'get_device_details'] } }),
+  it('helper with only client-declared tools keeps them under every profile (no curated list describes them)', () => {
+    const allowed = ['mcp__helper_client__open_settings', 'mcp__helper_client__restart_print_spooler'];
+    for (const profile of ['minimal', 'standard'] as const) {
+      const r = finalizeSessionToolExposure(input({ surface: 'helper', allowedTools: allowed, breezeServer: false, extraTools: [], facts: facts({ toolProfile: profile }) }));
+      expect(r.allowedTools, profile).toEqual(allowed);
+      expect(r.onlyTools).toBeUndefined();
+    }
+  });
+
+  it('a narrower entry without set_device_context (the topology turn) is not refused for a floor it never offered', () => {
+    const topology = ['mcp__breeze__get_topology', 'mcp__breeze__query_devices'];
+    const r = finalizeSessionToolExposure(input({ allowedTools: topology, extraTools: [], facts: facts({ toolProfile: 'minimal' }) }));
+    expect(r.allowedTools).toEqual(['mcp__breeze__query_devices']);
+  });
+
+  it('allowedToolsUnder keeps a caller list narrowed on reuse, even when the caller hands back a wider list', () => {
+    const r = finalizeSessionToolExposure(input({
+      surface: 'helper', allowedTools: ['mcp__breeze__get_device_details'], extraTools: [], facts: facts({ toolProfile: 'minimal' }),
     }));
-    expect(custom.allowedTools).toEqual(['mcp__breeze__get_device_details', 'mcp__helper_client__open_settings']);
+    expect(allowedToolsUnder(r.exposure, ['mcp__breeze__get_device_details', 'mcp__breeze__execute_command']))
+      .toEqual(['mcp__breeze__get_device_details']);
   });
 
   it('helper on the Breeze server: registration narrows to the profile within the level list', () => {

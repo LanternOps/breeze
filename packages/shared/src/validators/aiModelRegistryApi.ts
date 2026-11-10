@@ -164,9 +164,15 @@ export const CONTEXT_WINDOW_OVERRIDE_MAX = 100_000_000;
  * path validates `custom ⇔ allowlist` against the merged stored state
  * (#11393 W05). Only the shape is checked here; both fields may be absent.
  */
+/** A `custom` allow-list must name something: an empty one would leave a surface with no tools and no refusal. */
+const nonEmptyToolAllowlistSchema = aiToolAllowlistSchema.refine(
+  (a) => a.domains.length + a.tools.length > 0,
+  { message: 'Choose at least one tool area or tool.' },
+);
+
 export const offeringToolSettingsPatchSchema = z.object({
   toolProfile: z.enum(AI_TOOL_PROFILES).optional(),
-  toolAllowlist: aiToolAllowlistSchema.nullable().optional(),
+  toolAllowlist: nonEmptyToolAllowlistSchema.nullable().optional(),
   contextWindowOverride: z.number().int().min(CONTEXT_WINDOW_OVERRIDE_MIN).max(CONTEXT_WINDOW_OVERRIDE_MAX).nullable().optional(),
 }).strict();
 export type OfferingToolSettingsPatch = z.infer<typeof offeringToolSettingsPatchSchema>;

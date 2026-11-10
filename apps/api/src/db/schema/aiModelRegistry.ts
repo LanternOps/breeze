@@ -36,7 +36,7 @@ export const PARTNER_AI_CONNECTION_KINDS = AI_CONNECTION_ROW_KINDS;
 export type PartnerAiConnectionKind = AiConnectionRowKind;
 const KIND_CHECK_LITERALS = PARTNER_AI_CONNECTION_KINDS.map((k) => `'${k}'`).join(', ');
 const TOOL_PROFILE_CHECK_LITERALS = AI_TOOL_PROFILES.map((p) => `'${p}'`).join(', ');
-const ANTHROPIC_API_CHECK_LITERALS =ANTHROPIC_API_CONNECTION_KINDS.map((k) => `'${k}'`).join(', ');
+const ANTHROPIC_API_CHECK_LITERALS = ANTHROPIC_API_CONNECTION_KINDS.map((k) => `'${k}'`).join(', ');
 
 /**
  * Shape 3 (partner axis). `api_key_encrypted` is registered row-bound under

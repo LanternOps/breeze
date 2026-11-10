@@ -38,12 +38,23 @@ export function requiredToolsFor(surface: AiSurface, run?: RunFloorRef): string[
 
 export type SurfaceCoverage = { ok: true } | { ok: false; missing: string[] };
 
-/** Does the exposure keep every tool the surface needs? The identity exposure (names null) always does. */
-export function checkSurfaceCoverage(surface: AiSurface, exposure: ToolExposure, run?: RunFloorRef): SurfaceCoverage {
+/**
+ * Does the exposure keep every tool the surface needs? The identity exposure
+ * (names null) always does. With `offered` (what this session would register
+ * without a profile), only required tools the session actually offers count:
+ * a profile only removes, so it cannot be blamed for a tool a narrower entry
+ * (the topology turn's read-only list) never had.
+ */
+export function checkSurfaceCoverage(
+  surface: AiSurface,
+  exposure: ToolExposure,
+  run?: RunFloorRef,
+  offered?: ReadonlySet<string>,
+): SurfaceCoverage {
   if (surface === 'ai_agents' && !run) throw new Error('checkSurfaceCoverage(ai_agents) needs the run');
   if (exposure.names === null) return { ok: true };
   const kept = new Set([...exposure.names, ...exposure.extraToolNames]);
-  const missing = requiredToolsFor(surface, run).filter((name) => !kept.has(name));
+  const missing = requiredToolsFor(surface, run).filter((name) => !kept.has(name) && (!offered || offered.has(name)));
   return missing.length === 0 ? { ok: true } : { ok: false, missing };
 }
 

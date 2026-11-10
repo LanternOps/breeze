@@ -169,6 +169,11 @@ describe('tool profile and context window fields (#11394)', () => {
     expect(aiToolAllowlistSchema.safeParse({ domains: [], tools: ['x'.repeat(65)] }).success).toBe(false);
     expect(aiToolAllowlistSchema.safeParse({ domains: [], tools: [], extra: 1 }).success).toBe(false);
   });
+  it('rejects an empty custom allow-list in the patch (a surface would be left with no tools)', () => {
+    expect(offeringToolSettingsPatchSchema.safeParse({ toolProfile: 'custom', toolAllowlist: { domains: [], tools: [] } }).success).toBe(false);
+    expect(offeringToolSettingsPatchSchema.safeParse({ toolProfile: 'custom', toolAllowlist: { domains: [], tools: ['search_logs'] } }).success).toBe(true);
+  });
+
   it('caps tools at 200', () => {
     const tools = Array.from({ length: 201 }, (_, i) => `tool_${i}`);
     expect(aiToolAllowlistSchema.safeParse({ domains: [], tools }).success).toBe(false);

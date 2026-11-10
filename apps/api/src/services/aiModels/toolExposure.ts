@@ -78,8 +78,14 @@ export const RESULT_CHAR_BUDGET = { minimal: 2000, standard: 4000, full: 8000, c
 /** The fingerprint of the identity exposure (leaf module, shared with turnBinding). */
 export { FULL_IDENTITY_FINGERPRINT };
 
+/**
+ * Kept under every profile when the surface registers them. Chat keeps
+ * `propose_action_plan` regardless of the approval mode: the live query (and
+ * its registration) outlives an org's approval-mode change, which is
+ * re-read on reuse without rotating the query.
+ */
 const ALWAYS_KEEP: Readonly<Partial<Record<AiSurface, readonly string[]>>> = {
-  chat: ['set_device_context'],
+  chat: ['set_device_context', 'propose_action_plan'],
 };
 const PLAN_APPROVAL_MODES: ReadonlySet<AiApprovalMode> = new Set(['action_plan', 'hybrid_plan']);
 
@@ -160,7 +166,7 @@ export function toolProfileKey(
   const { profile, tooSmall } = effectiveToolProfile(facts, surface, opts);
   if (profile === 'full') return null;
   const allowlist = profile === 'custom' && facts.toolAllowlist
-    ? { d: [...facts.toolAllowlist.domains].sort(), t: [...facts.toolAllowlist.tools].sort() }
+    ? { d: [...(facts.toolAllowlist.domains ?? [])].sort(), t: [...(facts.toolAllowlist.tools ?? [])].sort() }
     : null;
   const payload = JSON.stringify({ p: profile, a: allowlist, g: facts.transport, s: tooSmall });
   return createHash('sha256').update(payload).digest('hex').slice(0, 16);

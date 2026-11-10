@@ -73,9 +73,9 @@ describe('resolveToolExposure', () => {
     expect(e.names).toEqual(['get_device_details', 'query_devices']);
   });
 
-  it('minimal chat keeps exactly the curated set present plus set_device_context, nothing else', () => {
+  it('minimal chat keeps exactly the curated set present plus the chat always-keep set (set_device_context, propose_action_plan), nothing else', () => {
     const e = resolveToolExposure(input({ facts: facts({ toolProfile: 'minimal' }) }));
-    expect(new Set(e.names)).toEqual(new Set([...CHAT_MINIMAL_TOOLS, 'set_device_context']));
+    expect(new Set(e.names)).toEqual(new Set([...CHAT_MINIMAL_TOOLS, 'set_device_context', 'propose_action_plan']));
   });
 
   it('custom execute_command on helper basic is dropped (not in the surface set) and reported', () => {
@@ -108,14 +108,25 @@ describe('resolveToolExposure', () => {
 
   it('set_device_context always kept for chat, even under a custom list without it', () => {
     const e = resolveToolExposure(input({ facts: facts({ toolProfile: 'custom', toolAllowlist: { domains: [], tools: ['query_devices'] } }) }));
-    expect(e.names).toEqual(['query_devices', 'set_device_context']);
+    expect(e.names).toEqual(['query_devices', 'set_device_context', 'propose_action_plan']);
   });
 
-  it('propose_action_plan kept only when the approval mode needs it', () => {
+  it('chat keeps propose_action_plan under every approval mode (the live query outlives a mode change)', () => {
     const base = input({ facts: facts({ toolProfile: 'minimal' }) });
-    expect(resolveToolExposure({ ...base, approvalMode: 'per_step' }).names).not.toContain('propose_action_plan');
-    expect(resolveToolExposure({ ...base, approvalMode: 'action_plan' }).names).toContain('propose_action_plan');
-    expect(resolveToolExposure({ ...base, approvalMode: 'hybrid_plan' }).names).toContain('propose_action_plan');
+    for (const approvalMode of [undefined, 'per_step', 'action_plan', 'hybrid_plan', 'auto_approve'] as const) {
+      expect(resolveToolExposure({ ...base, ...(approvalMode ? { approvalMode } : {}) }).names).toContain('propose_action_plan');
+    }
+  });
+
+  it('a non-chat surface keeps propose_action_plan only when the approval mode needs it', () => {
+    const base = input({ surface: 'helper', facts: facts({ toolProfile: 'minimal' }), surfaceBaseSet: ['get_device_details', 'propose_action_plan'] });
+    expect(resolveToolExposure({ ...base, approvalMode: 'per_step' }).names).toEqual(['get_device_details']);
+    expect(resolveToolExposure({ ...base, approvalMode: 'action_plan' }).names).toEqual(['get_device_details', 'propose_action_plan']);
+  });
+
+  it('toolProfileKey survives an allow-list missing its arrays (a stored row that does not parse)', () => {
+    const broken = { domains: undefined, tools: undefined } as unknown as ToolProfileFacts['toolAllowlist'];
+    expect(() => toolProfileKey(facts({ toolProfile: 'custom', toolAllowlist: broken }), 'chat')).not.toThrow();
   });
 
   it('a surface outside the profiled set is never narrowed', () => {
@@ -132,7 +143,7 @@ describe('resolveToolExposure', () => {
 
   it('a custom profile with no allow-list (impossible under the CHECK) exposes only the always-keep set', () => {
     const e = resolveToolExposure(input({ facts: facts({ toolProfile: 'custom', toolAllowlist: null }) }));
-    expect(e.names).toEqual(['set_device_context']);
+    expect(e.names).toEqual(['set_device_context', 'propose_action_plan']);
   });
 
   it('fingerprint changes on one custom name; unchanged by base or extra order', () => {

@@ -74,19 +74,28 @@ export function finalizeSessionToolExposure(input: SessionToolExposureInput): Se
   const { surface, facts, allowedTools, extraTools, approvalMode, breezeServer } = input;
   // The identity exposure never reads the base set: skip enumerating the registry.
   const constrained = effectiveToolProfile(facts, surface).profile !== 'full';
-  const surfaceBaseSet = !constrained ? [] : allowedTools ? allowedTools.map(bareToolName) : input.registryNames();
+  // A helper session that registers only its client-declared tools (a
+  // `mcpServerFactory`, not the Breeze server) has nothing the curated helper
+  // lists describe: those tools are the client's own small set and are kept
+  // as extras rather than filtered to zero.
+  const clientDeclaredOnly = surface === 'helper' && !breezeServer;
+  const callerNames = allowedTools ? allowedTools.map(bareToolName) : [];
+  const surfaceBaseSet = !constrained || clientDeclaredOnly ? [] : allowedTools ? callerNames : input.registryNames();
   const exposure = resolveToolExposure({
     surface,
     facts,
     surfaceBaseSet,
-    extraTools,
+    extraTools: clientDeclaredOnly && constrained
+      ? [...extraTools, ...callerNames.map((name) => ({ name, domain: null, alwaysKeep: true }))]
+      : extraTools,
     ...(approvalMode ? { approvalMode } : {}),
   }, { domainOf: input.domainOf });
   if (exposure.names === null) {
     return { exposure, allowedTools: allowedTools ? [...allowedTools] : undefined, onlyTools: undefined, keepsExtra: () => true };
   }
   if (surface !== 'ai_agents') {
-    const coverage = checkSurfaceCoverage(surface, exposure);
+    const offered = new Set([...surfaceBaseSet, ...extraTools.map((t) => t.name), ...callerNames]);
+    const coverage = checkSurfaceCoverage(surface, exposure, undefined, offered);
     if (!coverage.ok) throw new ToolProfileUnderpoweredError(surface, coverage.missing);
   }
   const registry = new Set(input.registryNames());
