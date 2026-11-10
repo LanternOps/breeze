@@ -10,6 +10,7 @@ import { extractApiError } from '@/lib/apiError';
 import { showToast } from '@/components/shared/Toast';
 import { ActionMenu, type ActionMenuItem } from '@/components/shared/ActionMenu';
 import { runAction, ActionError } from '@/lib/runAction';
+import { usePermissions } from '@/lib/permissions';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SessionPickerModal from './SessionPickerModal';
@@ -27,6 +28,12 @@ export interface RemoteToolOption {
 
 /** What a connect attempt launches: whatever the default resolves to, or a pick from the menu. */
 type ConnectChoice = { kind: 'builtin' } | { kind: 'provider'; id: string };
+
+// #11621: the 403 code every remote-access route (/remote/*, and POST
+// /devices/:id/remote-access-launch) answers a caller without `remote:access`
+// with. Mirrors REMOTE_ACCESS_PERMISSION_REQUIRED_CODE in
+// apps/api/src/routes/remote/remoteAccessDenial.ts.
+const REMOTE_ACCESS_PERMISSION_REQUIRED = 'REMOTE_ACCESS_PERMISSION_REQUIRED';
 
 // 404 codes from POST /devices/:id/remote-access-launch meaning "the picked
 // tool cannot launch on this device any more" (the API's skip reasons), as
@@ -149,6 +156,14 @@ function desktopAccessUnavailableReason(
 
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null, helperLifecycleMode = null, remoteAccessProviders = null, remoteAccessDefaultProviderId = null }: Props) {
   const { t } = useTranslation('remote');
+  // #11621: every Connect entry point renders this component, so the
+  // `remote:access` gate lives here. Grants still loading (undefined) are not
+  // treated as missing — the server re-checks, and a refusal flips
+  // `serverDeniedRemoteAccess` so a stale client grant list can't keep
+  // offering a click that cannot succeed.
+  const { permissions, can } = usePermissions();
+  const [serverDeniedRemoteAccess, setServerDeniedRemoteAccess] = useState(false);
+  const lacksRemoteAccess = serverDeniedRemoteAccess || (permissions !== undefined && !can('remote', 'access'));
   // #9026: the full-size button stays focusable while unavailable
   // (aria-disabled) and points at this visually-hidden reason.
   const reasonId = useId();
@@ -360,6 +375,14 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     // should refresh. In every case, falling through to WebRTC would
     // mask the real failure mode.
     const failure = await launchRes.json().catch(() => ({})) as { code?: unknown };
+    // #11621: the caller's role lacks remote:access. Expected, not a fault:
+    // name the permission and switch the control to its unavailable state.
+    if (launchRes.status === 403 && failure.code === REMOTE_ACCESS_PERMISSION_REQUIRED) {
+      showToast({ type: 'error', message: t('connectDesktopButton.unavailable.remoteAccessPermission') });
+      setServerDeniedRemoteAccess(true);
+      setStatus('idle');
+      return;
+    }
     // A launcher-side 404 carries the resolver's skip reason as `code`; a
     // device that is gone ("Device not found") carries none.
     const toolGone = launchRes.status === 404
@@ -511,6 +534,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           if (code === 'agent_upgrade_required') return t('connectDesktopButton.errors.agentUpgradeRequired');
           if (code === 'NOT_FOUND') return t('connectDesktopButton.errors.deviceNotFoundOrAccessDenied');
           if (code === 'ACCESS_DENIED') return t('connectDesktopButton.errors.siteAccessDenied');
+          if (code === REMOTE_ACCESS_PERMISSION_REQUIRED) return t('connectDesktopButton.unavailable.remoteAccessPermission');
           return undefined;
         },
         parseSuccess: (data) => data as { id: string },
@@ -623,6 +647,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       // A 401 is the auth redirect's business; a non-401 ActionError was
       // already toasted by runAction, so only the inline label is set here.
       if (err instanceof ActionError && err.status === 401) return;
+      // #11621: a missing remote:access grant is not a connection failure —
+      // runAction already toasted the reason; show the control as unavailable.
+      if (err instanceof ActionError && err.code === REMOTE_ACCESS_PERMISSION_REQUIRED) {
+        setServerDeniedRemoteAccess(true);
+        setStatus('idle');
+        return;
+      }
       setError(
         err instanceof ActionError
           ? err.message
@@ -1100,9 +1131,17 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       ? t('connectDesktopButton.policyDisabledNamed', { name: remoteAccessPolicy.policyName })
       : t('connectDesktopButton.policyDisabled')
     : null;
-  const unavailableTitle = policyTitle ?? desktopAccessUnavailable ?? headlessTitle;
+  // #11621: the role-level reason wins — no device or policy state matters if
+  // the user may not start remote access at all.
+  const permissionTitle = lacksRemoteAccess ? t('connectDesktopButton.unavailable.remoteAccessPermission') : null;
+  const unavailableTitle = permissionTitle ?? policyTitle ?? desktopAccessUnavailable ?? headlessTitle;
+  // A device-side reason reads "Desktop unavailable"; a missing grant keeps
+  // the action's own name so the reason explains why it can't be used.
+  const unavailableLabel = permissionTitle
+    ? t('connectDesktopButton.connectDesktop')
+    : t('connectDesktopButton.desktopUnavailable');
 
-  if (policyDisabled || isHeadless || desktopAccessUnavailable) {
+  if (lacksRemoteAccess || policyDisabled || isHeadless || desktopAccessUnavailable) {
     if (iconOnly) {
       return (
         <div className={`relative ${className}`}>
@@ -1128,7 +1167,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
             className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-muted-foreground cursor-not-allowed opacity-50"
           >
             <MonitorOff className="h-4 w-4" />
-            {t('connectDesktopButton.desktopUnavailable')}
+            {unavailableLabel}
           </button>
         </div>
       );
@@ -1144,7 +1183,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           className="flex h-9 items-center gap-2 rounded-md border bg-background px-4 text-sm font-medium text-muted-foreground cursor-not-allowed"
         >
           <MonitorOff className="h-4 w-4" aria-hidden="true" />
-          {t('connectDesktopButton.desktopUnavailable')}
+          {unavailableLabel}
         </button>
         {unavailableTitle && <span id={reasonId} className="sr-only">{unavailableTitle}</span>}
       </div>

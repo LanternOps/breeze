@@ -1037,8 +1037,42 @@ export function requireOrg(c: Context, next: Next) {
   return next();
 }
 
+/**
+ * A readable, machine-coded refusal a gate can opt into instead of the bare
+ * "Permission denied". Used where a denial reaches a user who needs to know
+ * WHICH grant they are missing (e.g. remote desktop, #11621). The status stays
+ * 403 and the response shape stays `{ error, message }` plus `code`.
+ */
+export interface PermissionDenial {
+  message: string;
+  code: string;
+}
+
+/** 403 carrying a {@link PermissionDenial}; the body includes `code` on every error path. */
+export class PermissionDeniedError extends HTTPException {
+  readonly code: string;
+
+  constructor(denial: PermissionDenial) {
+    super(403, { message: denial.message });
+    this.code = denial.code;
+    this.name = 'PermissionDeniedError';
+  }
+
+  // A fresh Response every call: a body may only be read once.
+  override getResponse(): Response {
+    return Response.json(
+      { error: this.message, message: this.message, code: this.code },
+      { status: 403 },
+    );
+  }
+}
+
 // Permission-based middleware
-export function requirePermission(resource: string, action: string) {
+export function requirePermission(
+  resource: string,
+  action: string,
+  options?: { denial?: PermissionDenial },
+) {
   return markPermissionGate(async (c: Context, next: Next) => {
     const auth = c.get('auth');
 
@@ -1064,10 +1098,12 @@ export function requirePermission(resource: string, action: string) {
     });
 
     if (!userPerms) {
+      if (options?.denial) throw new PermissionDeniedError(options.denial);
       throw new HTTPException(403, { message: 'No permissions found' });
     }
 
     if (!hasPermission(userPerms, resource, action)) {
+      if (options?.denial) throw new PermissionDeniedError(options.denial);
       throw new HTTPException(403, { message: 'Permission denied' });
     }
 

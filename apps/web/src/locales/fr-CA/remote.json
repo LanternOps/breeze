@@ -105,6 +105,7 @@
       "missingEntitlement": "Le bureau de la fenêtre de connexion est bloqué jusqu’à ce que le droit requis Apple soit approuvé",
       "missingPermission": "Les autorisations macOS requises pour l’accès au bureau sans surveillance sont toujours manquantes",
       "noDisplaySession": "Aucune session graphique active — connectez-vous d’abord via RDP ou la console",
+      "remoteAccessPermission": "Le bureau à distance requiert l’autorisation Accès à distance (remote:access), que votre rôle n’inclut pas. Demandez à un administrateur de l’ajouter à votre rôle.",
       "unsupportedOs": "macOS bloque la saisie clavier et souris à distance dans la fenêtre de connexion : le Bureau à distance ne peut donc pas contrôler ce Mac à cet endroit. Activez le relais VNC dans la politique de configuration de l’appareil pour vous connecter à l’écran de connexion.",
       "virtualDisplay": "Aucun écran pouvant être capturé n’est disponible sur ce Mac. Activez le relais VNC pour vous connecter au moyen du partage d’écran macOS.",
       "waylandUnsupported": "Il s’agit d’un bureau Wayland — le bureau à distance nécessite un agent plus récent",

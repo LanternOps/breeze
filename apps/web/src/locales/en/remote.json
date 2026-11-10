@@ -105,6 +105,7 @@
       "missingEntitlement": "Login-window desktop is blocked until the required Apple entitlement is approved",
       "missingPermission": "macOS permissions required for unattended desktop access are still missing",
       "noDisplaySession": "No active graphical session — log in via RDP or the console first",
+      "remoteAccessPermission": "Remote desktop needs the Remote Access permission (remote:access), which your role doesn't include. Ask an administrator to add it to your role.",
       "unsupportedOs": "macOS blocks remote keyboard and mouse input at the login window, so Remote Desktop can't control this Mac there. Enable VNC Relay in the device's configuration policy to connect at the login screen.",
       "virtualDisplay": "No capturable display is available for this Mac. Enable VNC Relay to connect via macOS Screen Sharing.",
       "waylandUnsupported": "This is a Wayland desktop — remote desktop needs a newer agent",
