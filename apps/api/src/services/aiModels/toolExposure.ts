@@ -17,7 +17,6 @@
 import { createHash } from 'node:crypto';
 import type { AiAgentRunProfile, AiApprovalMode, AiSurface, AiToolDomain, AiToolProfile } from '@breeze/shared';
 import { CONTEXT_MIN_OUTPUT_TOKENS } from './gateway/openai/contextWindow';
-import { getToolDomain } from '../aiTools';
 import { FULL_IDENTITY_FINGERPRINT, type ToolProfileFacts } from './toolProfileFacts';
 import {
   CURATED_PROFILES,
@@ -132,31 +131,63 @@ function fingerprintOf(names: readonly string[], extras: readonly string[], comp
   return createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
 
+/** The profile a surface applies for these facts; `full` for an unprofiled surface or an unknown/unmeasured `auto`. */
+export function effectiveToolProfile(
+  facts: ToolProfileFacts,
+  surface: AiSurface,
+  opts: { prefixTokens?: ProfilePrefixTokens } = {},
+): { profile: ResolvedToolProfile; tooSmall: boolean } {
+  if (!isProfiledSurface(surface)) return { profile: 'full', tooSmall: false };
+  if (facts.toolProfile !== 'auto') return { profile: facts.toolProfile, tooSmall: false };
+  if (facts.effectiveWindow === null) return { profile: 'full', tooSmall: false };
+  const picked = pickAutoProfile(facts.effectiveWindow, surface, opts.prefixTokens);
+  return picked === 'too_small' ? { profile: 'minimal', tooSmall: true } : { profile: picked, tooSmall: false };
+}
+
+/**
+ * The tool profile's part of the live-query key, from facts alone, so a
+ * reused session can compare it every turn without resolving tenant tools or
+ * the approval mode. `null` for the identity exposure (the key is then
+ * byte-identical to before tool profiles). Inputs fixed only at session
+ * creation (approval mode, tenant/flow tools) do not rotate an idle query,
+ * the same as they never did.
+ */
+export function toolProfileKey(
+  facts: ToolProfileFacts,
+  surface: AiSurface,
+  opts: { prefixTokens?: ProfilePrefixTokens } = {},
+): string | null {
+  const { profile, tooSmall } = effectiveToolProfile(facts, surface, opts);
+  if (profile === 'full') return null;
+  const allowlist = profile === 'custom' && facts.toolAllowlist
+    ? { d: [...facts.toolAllowlist.domains].sort(), t: [...facts.toolAllowlist.tools].sort() }
+    : null;
+  const payload = JSON.stringify({ p: profile, a: allowlist, g: facts.transport, s: tooSmall });
+  return createHash('sha256').update(payload).digest('hex').slice(0, 16);
+}
+
+export interface ResolveToolExposureOptions {
+  prefixTokens?: ProfilePrefixTokens;
+  /**
+   * A base-set tool's domain, for a `custom` allow-list's domains. Injected
+   * (the registry's `getToolDomain`) so this module stays out of the tool
+   * registry's import graph; without it only extra tools match by domain.
+   */
+  domainOf?: (name: string) => AiToolDomain | undefined;
+}
+
 export function resolveToolExposure(
   input: ToolExposureInput,
-  opts: { prefixTokens?: ProfilePrefixTokens } = {},
+  opts: ResolveToolExposureOptions = {},
 ): ToolExposure {
   for (const key of Object.keys(input)) {
     if (!TOOL_EXPOSURE_INPUT_KEYS.has(key)) throw new Error(`resolveToolExposure: unexpected key: ${key}`);
   }
   const { surface, facts, surfaceBaseSet, extraTools, approvalMode } = input;
-  if (!isProfiledSurface(surface)) return identity(extraTools);
-
-  let profile: ResolvedToolProfile;
-  let tooSmall = false;
-  if (facts.toolProfile === 'auto') {
-    if (facts.effectiveWindow === null) return identity(extraTools);
-    const picked = pickAutoProfile(facts.effectiveWindow, surface, opts.prefixTokens);
-    if (picked === 'too_small') {
-      profile = 'minimal';
-      tooSmall = true;
-    } else {
-      profile = picked;
-    }
-  } else {
-    profile = facts.toolProfile;
-  }
-  if (profile === 'full') return identity(extraTools);
+  const effective = effectiveToolProfile(facts, surface, opts);
+  if (effective.profile === 'full') return identity(extraTools);
+  const { profile, tooSmall } = effective;
+  if (!isProfiledSurface(surface)) return identity(extraTools); // unreachable: effectiveToolProfile answers full
 
   const alwaysKeep = new Set(ALWAYS_KEEP[surface] ?? []);
   if (approvalMode && PLAN_APPROVAL_MODES.has(approvalMode)) alwaysKeep.add('propose_action_plan');
@@ -174,7 +205,8 @@ export function resolveToolExposure(
     keepName = (name) => curated.has(name);
   }
 
-  const names = surfaceBaseSet.filter((n) => alwaysKeep.has(n) || keepName(n, getToolDomain(n)));
+  const domainOf = opts.domainOf ?? (() => undefined);
+  const names = surfaceBaseSet.filter((n) => alwaysKeep.has(n) || keepName(n, domainOf(n)));
   const extraToolNames = extraTools.filter((t) => t.alwaysKeep || keepName(t.name, t.domain)).map((t) => t.name);
   const compactSchemas = facts.transport === 'gateway';
   const promptMode = 'constrained';

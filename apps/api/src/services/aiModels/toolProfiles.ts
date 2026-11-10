@@ -13,7 +13,6 @@
  * No AI tool is added by this feature; every name here is already declared.
  */
 import type { AiSurface } from '@breeze/shared';
-import { CLIENT_TOOL_REGISTRIES } from '../clientAiTools';
 
 export type ConstrainedProfile = 'minimal' | 'standard';
 export type ProfiledSurface = 'chat' | 'helper' | 'script_builder' | 'ai_agents' | 'office_chat';
@@ -125,15 +124,23 @@ const SCRIPT_BUILDER_STANDARD_TOOLS = [
   'execute_script_on_device',
 ] as const;
 
-function officeClientToolNames(mutating: boolean | 'any'): string[] {
-  const names = new Set<string>();
-  for (const registry of Object.values(CLIENT_TOOL_REGISTRIES)) {
-    for (const [name, def] of Object.entries(registry)) {
-      if (mutating === 'any' || def.mutating === mutating) names.add(name);
-    }
-  }
-  return [...names].sort();
-}
+/**
+ * Office client tool names across hosts (CLIENT_TOOL_REGISTRIES), listed
+ * rather than derived so this module stays out of the client registry's
+ * import graph; toolProfiles.contract.test.ts pins both lists to the registry
+ * (`minimal` = every non-mutating name, `standard` = every name).
+ */
+const OFFICE_MINIMAL_TOOLS = [
+  'extract_action_items', 'get_document_overview', 'get_message_metadata', 'get_presentation_overview',
+  'get_workbook_overview', 'read_cell_details', 'read_range', 'read_selection', 'search_workbook', 'summarize_thread',
+] as const;
+
+const OFFICE_STANDARD_TOOLS = [
+  ...OFFICE_MINIMAL_TOOLS,
+  'add_slide', 'clear_range', 'create_chart', 'create_pivot_table', 'create_sheet', 'create_table', 'draft_reply',
+  'find_replace', 'format_range', 'format_selection', 'format_text', 'insert_formula', 'insert_text', 'insert_text_box',
+  'sort_range', 'write_range',
+] as const;
 
 /**
  * Per surface, per constrained profile. AI agents use the chat lists (they
@@ -146,7 +153,7 @@ export const CURATED_PROFILES: Readonly<Record<ProfiledSurface, Readonly<Record<
   ai_agents: { minimal: CHAT_MINIMAL_TOOLS, standard: CHAT_STANDARD_TOOLS },
   helper: { minimal: HELPER_MINIMAL_TOOLS, standard: HELPER_STANDARD_TOOLS },
   script_builder: { minimal: SCRIPT_BUILDER_MINIMAL_TOOLS, standard: SCRIPT_BUILDER_STANDARD_TOOLS },
-  office_chat: { minimal: officeClientToolNames(false), standard: officeClientToolNames('any') },
+  office_chat: { minimal: OFFICE_MINIMAL_TOOLS, standard: OFFICE_STANDARD_TOOLS },
 });
 
 /**

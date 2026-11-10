@@ -75,6 +75,19 @@ describe('curated tool profiles (#11394)', () => {
     expect(new Set(standard).size).toBe(standard.length);
   });
 
+  it('office lists match the client registries: minimal = every non-mutating name, standard = every name', () => {
+    const all = new Set<string>();
+    const readOnly = new Set<string>();
+    for (const registry of Object.values(CLIENT_TOOL_REGISTRIES)) {
+      for (const [name, def] of Object.entries(registry)) {
+        all.add(name);
+        if (!def.mutating) readOnly.add(name);
+      }
+    }
+    expect([...CURATED_PROFILES.office_chat.minimal].sort()).toEqual([...readOnly].sort());
+    expect([...CURATED_PROFILES.office_chat.standard].sort()).toEqual([...all].sort());
+  });
+
   it('minimal ⊂ standard on every surface, and neither is empty', () => {
     for (const surface of PROFILED_SURFACES) {
       const { minimal, standard } = CURATED_PROFILES[surface];

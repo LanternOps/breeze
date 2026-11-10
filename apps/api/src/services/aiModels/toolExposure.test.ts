@@ -6,9 +6,11 @@ import {
   TOOL_EXPOSURE_INPUT_KEYS,
   pickAutoProfile,
   resolveToolExposure,
+  toolProfileKey,
   type ToolExposureInput,
   type ToolProfileFacts,
 } from './toolExposure';
+import { getToolDomain } from '../aiTools';
 import { CHAT_MINIMAL_TOOLS, type ProfilePrefixTokens } from './toolProfiles';
 
 const facts = (over: Partial<ToolProfileFacts> = {}): ToolProfileFacts => ({
@@ -86,10 +88,10 @@ describe('resolveToolExposure', () => {
     expect(e.droppedCustomNames).toEqual(['execute_command']);
   });
 
-  it('custom domains keep every surface tool of that domain', () => {
+  it('custom domains keep every surface tool of that domain (domain lookup injected)', () => {
     const e = resolveToolExposure(input({
       facts: facts({ toolProfile: 'custom', toolAllowlist: { domains: ['backup'], tools: [] } }),
-    }));
+    }), { domainOf: getToolDomain });
     expect(e.names).toEqual(expect.arrayContaining(['query_backups', 'set_device_context']));
     expect(e.names).not.toContain('query_devices');
   });
@@ -157,6 +159,26 @@ describe('resolveToolExposure', () => {
     expect([...TOOL_EXPOSURE_INPUT_KEYS].sort()).toEqual(['approvalMode', 'extraTools', 'facts', 'runProfile', 'surface', 'surfaceBaseSet']);
     expect(() => resolveToolExposure({ ...input(), pageContext: { type: 'device' } } as unknown as ToolExposureInput))
       .toThrow(/unexpected key: pageContext/);
+  });
+});
+
+describe('toolProfileKey (the live-query key segment)', () => {
+  it('is null for the identity exposure: auto/unknown, explicit full, unprofiled surface', () => {
+    expect(toolProfileKey(facts(), 'chat')).toBeNull();
+    expect(toolProfileKey(facts({ toolProfile: 'full' }), 'chat')).toBeNull();
+    expect(toolProfileKey(facts({ toolProfile: 'minimal' }), 'script_reviewer')).toBeNull();
+  });
+
+  it('moves with the profile, the transport and any allow-list edit; ignores allow-list order', () => {
+    const minimal = toolProfileKey(facts({ toolProfile: 'minimal' }), 'chat');
+    expect(minimal).toMatch(/^[0-9a-f]{16}$/);
+    expect(toolProfileKey(facts({ toolProfile: 'standard' }), 'chat')).not.toBe(minimal);
+    expect(toolProfileKey(facts({ toolProfile: 'minimal', transport: 'anthropic' }), 'chat')).not.toBe(minimal);
+    const a = toolProfileKey(facts({ toolProfile: 'custom', toolAllowlist: { domains: ['devices', 'backup'], tools: ['b', 'a'] } }), 'chat');
+    const b = toolProfileKey(facts({ toolProfile: 'custom', toolAllowlist: { domains: ['backup', 'devices'], tools: ['a', 'b'] } }), 'chat');
+    const c = toolProfileKey(facts({ toolProfile: 'custom', toolAllowlist: { domains: ['backup', 'devices'], tools: ['a'] } }), 'chat');
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
   });
 });
 

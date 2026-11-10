@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERIES, type AiToolDomain } from '@breeze/shared';
 /**
  * AI Agent SDK Tool Definitions
  *
@@ -16,7 +16,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
+import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolDomain, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
 import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
@@ -888,6 +888,11 @@ export function listChatSurfaceToolNames(): string[] {
   const declared = breezeToolTemplate().declarations;
   const names = new Set(declared.map((t) => t.name).filter((name) => registered.has(name)));
   return [...names].sort();
+}
+
+/** #11393: a registry tool's domain, for a `custom` tool profile's domain allow-list. */
+export function chatToolDomain(name: string): AiToolDomain | undefined {
+  return getToolDomain(name);
 }
 
 // All tool names, prefixed for SDK MCP format
