@@ -2,8 +2,10 @@
  * #11610 — can a run-mode check-in actually run for this org? A run check-in
  * admits ONE assessment run, which is a `triage` run, so it needs an ENABLED
  * Triage agent (partner baseline → org override) and the server's agent kill
- * switch on. The same three conditions admission checks (runService rules 1-2);
- * scheduling asks up front so the model never promises a check that cannot run.
+ * switch on — the agent-readiness conditions admission checks (runService rules
+ * 1-2). Fire-time skips outside these (budget, grant changes) still degrade to
+ * a post that names them. A resolver failure propagates rather than reading as
+ * "ready".
  */
 import { envFlag } from '../../config/env';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
@@ -26,7 +28,7 @@ export function runCheckInBlockerMessage(blocker: RunCheckInBlocker): string {
     case 'kill_switch_off':
       return 'AI agents are turned off on this server, so Wisp cannot check on its own. An administrator has to turn them on. Use mode notify.';
     case 'mode_off':
-      return "This organization's Triage agent is set to mode Off, so Wisp cannot check on its own. Set it to Shadow or Act under Settings → AI Agents, or use mode notify.";
+      return "This organization's Triage agent is set to mode Off, so Wisp cannot check on its own. Check its mode under Settings → AI Agents (an administrator may need to change it), or use mode notify.";
     case 'agent_disabled':
     case 'no_effective_agent':
       return 'No Triage agent is switched on for this organization, so Wisp cannot check on its own. Turn one on under Settings → AI Agents, or use mode notify.';
