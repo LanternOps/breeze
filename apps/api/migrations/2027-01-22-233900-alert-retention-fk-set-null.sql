@@ -20,7 +20,8 @@
 -- Locking. `alerts` takes writes on every alert raise and close, and both
 -- children can be large. So, outside a transaction (same shape as
 -- 2026-12-13-110200-org-erasure-fk-child-actions.sql):
---   1. One DO block swaps each constraint NOT VALID (catalog only, no scan).
+--   1. One DO block per child swaps its constraint NOT VALID (catalog only,
+--      no scan), each its own statement and so its own short transaction.
 --      Dropping an FK removes its RI triggers from BOTH tables, so this takes
 --      ACCESS EXCLUSIVE on the child AND on alerts for the duration of the
 --      statement -- milliseconds once granted. lock_timeout bounds the wait
@@ -43,6 +44,8 @@
 
 SET lock_timeout = '5s';
 
+-- One statement per child table, so the ACCESS EXCLUSIVE lock on alerts and
+-- one child is never held while waiting for the other child's lock.
 DO $$
 DECLARE
   spec record;
@@ -50,7 +53,45 @@ DECLARE
 BEGIN
   FOR spec IN
     SELECT * FROM (VALUES
-      ('log_correlations',      'alert_id', 'log_correlations_alert_id_alerts_id_fk'),
+      ('log_correlations', 'alert_id', 'log_correlations_alert_id_alerts_id_fk')
+    ) AS s(tbl, col, con_name)
+  LOOP
+    FOR con IN
+      SELECT c.conname
+        FROM pg_constraint c
+        JOIN pg_attribute a
+          ON a.attrelid = c.conrelid
+         AND a.attnum = c.conkey[1]
+       WHERE c.contype = 'f'
+         AND c.conrelid = format('public.%I', spec.tbl)::regclass
+         AND c.confrelid = 'public.alerts'::regclass
+         AND array_length(c.conkey, 1) = 1
+         AND a.attname = spec.col
+         AND (c.confdeltype <> 'n' OR c.conname <> spec.con_name)
+    LOOP
+      EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT %I', spec.tbl, con.conname);
+    END LOOP;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+       WHERE conrelid = format('public.%I', spec.tbl)::regclass
+         AND conname = spec.con_name
+    ) THEN
+      EXECUTE format(
+        'ALTER TABLE public.%I ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES public.alerts(id) ON DELETE SET NULL NOT VALID',
+        spec.tbl, spec.con_name, spec.col
+      );
+    END IF;
+  END LOOP;
+END $$;
+
+DO $$
+DECLARE
+  spec record;
+  con record;
+BEGIN
+  FOR spec IN
+    SELECT * FROM (VALUES
       ('network_change_events', 'alert_id', 'network_change_events_alert_id_alerts_id_fk')
     ) AS s(tbl, col, con_name)
   LOOP

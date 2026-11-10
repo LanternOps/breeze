@@ -10,7 +10,7 @@
  * (`active` / `acknowledged` / `suppressed`) is never eligible, at any age.
  * Two guards then keep closed rows that something still reads:
  *
- *  1. Newest closed alert per (rule, device, subject) — the cursor guard
+ *  1. Newest closed alert per (rule, owner kind, device, subject) — the cursor guard
  *     (#10538). Before re-opening an event-based rule, the alert sweep reads
  *     the frozen evidence cursor from the newest closed alert of that key
  *     (`services/alertLifecycle/cursor.ts` `closedCursorsQuery`), with no age
@@ -20,7 +20,11 @@
  *     all kept (a safe superset). `device_id` is nullable (non-device owners),
  *     so the key compares it with IS NOT DISTINCT FROM: a plain `=` would make
  *     every NULL-keyed row "the newest" and keep them all forever (plan
- *     correction 5). An alert with no rule has no cursor and no such guard.
+ *     correction 5). The key also includes `owner_kind`, because the reader
+ *     reads device-owned rows only and a topology-site alert carries its
+ *     origin `device_id` as provenance: without it, a newer topology alert
+ *     would shield nothing the reader uses and expose the device cursor row.
+ *     An alert with no rule has no cursor and no such guard.
  *     Served by `alerts_rule_device_subject_closed_idx`.
  *
  *  2. Ticket-linked alerts (OD 7, plan correction 4). An alert referenced by
@@ -37,9 +41,17 @@
  * 2027-01-22-233900 — `log_correlations` and `network_change_events`, which
  * were NO ACTION and would have aborted the delete.
  *
+ * A closed alert with neither close stamp (legacy or hand-edited rows) is never
+ * eligible — `NULL < cutoff` is not true — and never shields an older one. It
+ * fails safe: kept, not counted.
+ *
  * A correlation group is eligible once nothing points into it: no root alert,
  * no member, and `last_seen_at` past the same window. It runs second, so a
- * group whose last alert was removed above can go in the same run.
+ * group whose root and members were removed above goes in the same run.
+ * Consequence for the report: in report mode no alert is removed first, so
+ * `alert_correlation_group_retention`'s eligible count is a LOWER BOUND on
+ * what the first enforcing run deletes (it also takes the groups emptied by
+ * that run's alert deletes). The `alert_retention` count has no such gap.
  *
  * REPORT FIRST
  * ------------
@@ -57,7 +69,6 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import { getBullMQConnection } from '../services/redis';
-import { captureException } from '../services/sentry';
 import {
   parsePositiveIntEnv,
   resolveRetentionDays,
@@ -97,6 +108,7 @@ export const ALERT_RETENTION_TARGET: RetentionTarget = {
     AND (alerts.rule_id IS NULL OR EXISTS (
       SELECT 1 FROM alerts n
       WHERE n.rule_id = alerts.rule_id
+        AND n.owner_kind = alerts.owner_kind
         AND n.device_id IS NOT DISTINCT FROM alerts.device_id
         AND COALESCE(n.subject_key, '') = COALESCE(alerts.subject_key, '')
         AND n.status IN ${CLOSED}
@@ -177,12 +189,10 @@ export async function initializeAlertRetention(): Promise<void> {
     retentionWorker = createAlertRetentionWorker();
     attachWorkerObservability(retentionWorker, 'alertRetention');
 
-    retentionWorker.on('error', (error) => {
-      console.error(`${LOG_PREFIX} Worker error:`, error);
-      captureException(error);
-    });
     retentionWorker.on('failed', (job, error) => {
-      // Each failed target was already captured by runRetentionTargets.
+      // No captureException here: runRetentionTargets captured each failed
+      // target with its table tag, and attachWorkerObservability captures the
+      // job failure itself.
       console.error(`${LOG_PREFIX} Job ${job?.id} failed:`, error);
     });
 

@@ -82,9 +82,10 @@ describe('alerts-family retention (#4342 W3)', () => {
       expect(text).not.toMatch(/'active'|'acknowledged'|'suppressed'/);
     });
 
-    it('keeps the newest closed alert per (rule, device, subject), NULL device included', () => {
+    it('keeps the newest closed alert per (rule, owner kind, device, subject), NULL device included', () => {
       expect(text).toContain('alerts.rule_id IS NULL OR EXISTS');
       expect(text).toContain('n.rule_id = alerts.rule_id');
+      expect(text).toContain('n.owner_kind = alerts.owner_kind');
       expect(text).toContain('n.device_id IS NOT DISTINCT FROM alerts.device_id');
       expect(text).toContain("COALESCE(n.subject_key, '') = COALESCE(alerts.subject_key, '')");
       expect(text).toContain("n.status IN ('resolved', 'dismissed')");

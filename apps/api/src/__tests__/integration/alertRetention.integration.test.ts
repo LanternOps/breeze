@@ -17,8 +17,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { inArray, sql } from 'drizzle-orm';
 
 import {
+  aiAgentRuns,
+  aiAgents,
+  aiAlertVerdicts,
   alertCorrelationGroups,
   alertCorrelationMembers,
+  alertCorrelations,
   alertNotifications,
   alertRules,
   alerts,
@@ -55,25 +59,32 @@ async function seed() {
   type AlertOpts = {
     status?: 'active' | 'acknowledged' | 'suppressed' | 'resolved' | 'dismissed';
     closedDaysAgo?: number; ruleId?: string | null; deviceId?: string | null; subjectKey?: string | null;
-    dismissed?: boolean;
+    /** Explicit close stamps (days ago, or null), regardless of status: reopened or legacy rows. */
+    resolvedDaysAgo?: number | null; dismissedDaysAgo?: number | null;
+    /** A topology-site-owned alert; `deviceId` is then provenance only. */
+    topologySite?: boolean;
   };
   const insertAlert = async (o: AlertOpts = {}): Promise<string> => {
     const status = o.status ?? 'resolved';
     const closedAt = o.closedDaysAgo === undefined ? null : daysAgo(o.closedDaysAgo);
     const deviceId = o.deviceId === undefined ? f.device.id : o.deviceId;
+    const stamp = (d: number | null | undefined, fallback: Date | null) =>
+      d === undefined ? fallback : d === null ? null : daysAgo(d);
     const [row] = await db.insert(alerts).values({
       orgId,
       ruleId: o.ruleId === undefined ? null : o.ruleId,
       deviceId,
-      ownerKind: deviceId ? 'device' : 'backup_workload',
-      ownerRef: deviceId ? null : `workload-${randomUUID().slice(0, 8)}`,
+      ownerKind: o.topologySite ? 'topology_site' : deviceId ? 'device' : 'backup_workload',
+      ownerRef: o.topologySite || deviceId ? null : `workload-${randomUUID().slice(0, 8)}`,
+      topologySiteId: o.topologySite ? f.site.id : null,
+      topologySourceKey: o.topologySite ? `topology:${randomUUID().replace(/-/g, '').repeat(2)}` : null,
       subjectKey: o.subjectKey ?? null,
       status,
       severity: 'medium',
       title: 'retention fixture',
       triggeredAt: daysAgo(400),
-      resolvedAt: status === 'resolved' ? closedAt : null,
-      dismissedAt: status === 'dismissed' ? closedAt : null,
+      resolvedAt: stamp(o.resolvedDaysAgo, status === 'resolved' ? closedAt : null),
+      dismissedAt: stamp(o.dismissedDaysAgo, status === 'dismissed' ? closedAt : null),
     }).returning({ id: alerts.id });
     return row!.id;
   };
@@ -142,8 +153,10 @@ describe('closed-alert retention (#4342 W3)', () => {
   it('never deletes an open alert, a closed alert inside the window, or a ticket-linked one', async () => {
     const f = await seed();
     const db = getTestDb();
+    // Open alerts carrying a stale close stamp (reopened or legacy rows): only
+    // the status filter keeps them, not a NULL close time.
     const open = await Promise.all((['active', 'acknowledged', 'suppressed'] as const).map((status) =>
-      f.insertAlert({ status, ruleId: null, deviceId: null })));
+      f.insertAlert({ status, ruleId: null, deviceId: null, resolvedDaysAgo: 300, dismissedDaysAgo: 300 })));
     const recent = await f.insertAlert({ closedDaysAgo: 5 });
 
     const linkedTicket = await f.insertAlert({ closedDaysAgo: 200 });
@@ -193,10 +206,32 @@ describe('closed-alert retention (#4342 W3)', () => {
       INSERT INTO log_correlations (org_id, rule_id, pattern, first_seen, last_seen, occurrences, affected_devices, alert_id)
       VALUES (${f.orgId}, ${lcRule!.id}, 'boom', now(), now(), 3, '[]'::jsonb, ${doomed}) RETURNING id`);
 
+    const [baseline] = await db.execute<{ id: string }>(sql`
+      INSERT INTO network_baselines (org_id, site_id, subnet) VALUES (${f.orgId}, ${f.site.id}, '10.0.0.0/24') RETURNING id`);
+    const [changeEvent] = await db.execute<{ id: string }>(sql`
+      INSERT INTO network_change_events (org_id, site_id, baseline_id, event_type, ip_address, alert_id)
+      VALUES (${f.orgId}, ${f.site.id}, ${baseline!.id}, 'new_device', '10.0.0.5', ${doomed}) RETURNING id`);
+    const survivor = await f.insertAlert({ status: 'active' });
+    await db.insert(alertCorrelations).values({ parentAlertId: survivor, childAlertId: doomed, correlationType: 'test' });
+    const [agent] = await db.insert(aiAgents).values({
+      orgId: f.orgId, partnerId: null, kind: 'triage', name: `ret-agent-${randomUUID().slice(0, 8)}`, createdBy: f.actor.id,
+    }).returning();
+    const [run] = await db.insert(aiAgentRuns).values({
+      agentId: agent!.id, orgId: f.orgId, triggerKind: 'alert', dedupeKey: `ret-${randomUUID()}`,
+      modeAtStart: 'shadow', policySnapshot: { schemaVersion: 1 } as never,
+    }).returning();
+    await db.insert(aiAlertVerdicts).values({
+      orgId: f.orgId, runId: run!.id, alertId: doomed, classification: 'actionable', confidence: '0.80', rationale: 'fixture',
+    });
+
     const job = await loadJob('true');
     await job.runAlertRetention(JOB);
 
-    expect(await liveAlertIds([doomed])).toEqual(new Set());
+    expect(await liveAlertIds([doomed, survivor])).toEqual(new Set([survivor]));
+    expect(await db.select().from(aiAlertVerdicts).where(inArray(aiAlertVerdicts.alertId, [doomed]))).toHaveLength(0);
+    expect(await db.select().from(alertCorrelations).where(inArray(alertCorrelations.childAlertId, [doomed]))).toHaveLength(0);
+    const [ce] = await db.execute<{ alert_id: string | null }>(sql`SELECT alert_id FROM network_change_events WHERE id = ${changeEvent!.id}`);
+    expect(ce).toEqual({ alert_id: null });
     expect(await db.select().from(alertNotifications).where(inArray(alertNotifications.alertId, [doomed]))).toHaveLength(0);
     const [s] = await db.select({ alertId: remediationSuggestions.alertId }).from(remediationSuggestions)
       .where(inArray(remediationSuggestions.id, [suggestion!.id]));
@@ -209,20 +244,87 @@ describe('closed-alert retention (#4342 W3)', () => {
     const f = await seed();
     const db = getTestDb();
     const memberAlert = await f.insertAlert({ status: 'active' });
-    const group = (key: string, lastSeenDaysAgo: number) => db.insert(alertCorrelationGroups).values({
-      orgId: f.orgId, groupKey: key, firstSeenAt: daysAgo(lastSeenDaysAgo + 1), lastSeenAt: daysAgo(lastSeenDaysAgo),
+    const group = (key: string, lastSeenDaysAgo: number, rootAlertId: string | null = null) => db.insert(alertCorrelationGroups).values({
+      orgId: f.orgId, groupKey: key, rootAlertId, firstSeenAt: daysAgo(lastSeenDaysAgo + 1), lastSeenAt: daysAgo(lastSeenDaysAgo),
     }).returning({ id: alertCorrelationGroups.id }).then((r) => r[0]!.id);
     const orphan = await group('orphan', 200);
     const withMember = await group('member', 200);
     const recent = await group('recent', 5);
-    await db.insert(alertCorrelationMembers).values({ orgId: f.orgId, groupId: withMember, alertId: memberAlert });
+    // Root set, no member: kept while its root alert survives.
+    const rooted = await group('rooted', 200, memberAlert);
+    // Root and only member are a closed alert the first target deletes: the FK
+    // clears the root and cascades the member, so the second target takes the
+    // group in the same run.
+    const doomedAlert = await f.insertAlert({ closedDaysAgo: 200 });
+    const sameRun = await group('same-run', 200, doomedAlert);
+    await db.insert(alertCorrelationMembers).values([
+      { orgId: f.orgId, groupId: withMember, alertId: memberAlert },
+      { orgId: f.orgId, groupId: sameRun, alertId: doomedAlert },
+    ]);
 
     const job = await loadJob('true');
     await job.runAlertRetention(JOB);
 
+    expect(await liveAlertIds([doomedAlert])).toEqual(new Set());
     const left = await db.select({ id: alertCorrelationGroups.id }).from(alertCorrelationGroups)
-      .where(inArray(alertCorrelationGroups.id, [orphan, withMember, recent]));
-    expect(new Set(left.map((r) => r.id))).toEqual(new Set([withMember, recent]));
+      .where(inArray(alertCorrelationGroups.id, [orphan, withMember, recent, rooted, sameRun]));
+    expect(new Set(left.map((r) => r.id))).toEqual(new Set([withMember, recent, rooted]));
+  });
+
+  it('keep-newest is per rule and per device: another key never shields a row', async () => {
+    const f = await seed();
+    const db = getTestDb();
+    const [otherRule] = await db.insert(alertRules).values({
+      orgId: f.orgId, templateId: (await db.select({ t: alertRules.templateId }).from(alertRules)
+        .where(inArray(alertRules.id, [f.ruleId])))[0]!.t,
+      name: 'other rule', targetType: 'organization', targetId: f.orgId,
+    }).returning();
+    const [otherDevice] = await db.execute<{ id: string }>(sql`
+      INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+      VALUES (${f.orgId}, ${f.site.id}, ${randomUUID()}, 'ret-other', 'linux', '1', 'amd64', '1') RETURNING id`);
+    // Only closed alert of (rule R, device D): its own newest, kept even though
+    // another device and another rule each have a newer closed alert.
+    const onlyForKey = await f.insertAlert({ ruleId: f.ruleId, closedDaysAgo: 300 });
+    const newerOtherDevice = await f.insertAlert({ ruleId: f.ruleId, deviceId: otherDevice!.id, closedDaysAgo: 100 });
+    const newerOtherRule = await f.insertAlert({ ruleId: otherRule!.id, closedDaysAgo: 100 });
+
+    const job = await loadJob('true');
+    await job.runAlertRetention(JOB);
+
+    expect(await liveAlertIds([onlyForKey, newerOtherDevice, newerOtherRule]))
+      .toEqual(new Set([onlyForKey, newerOtherDevice, newerOtherRule]));
+  });
+
+  it('only a newer CLOSED alert of the same owner kind supersedes; ties and a dismissed newest are kept', async () => {
+    const f = await seed();
+    // An open alert with a newer stale close stamp is not what the cursor reader picks.
+    const shieldedByOpen = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'open', closedDaysAgo: 300 });
+    const openNewer = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'open', status: 'active', resolvedDaysAgo: 100 });
+    // A topology-site alert (device_id is provenance) is not a device-owned cursor row.
+    const deviceOwned = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'topo', closedDaysAgo: 300 });
+    const topoNewer = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'topo', closedDaysAgo: 100, topologySite: true });
+    // Newest is dismissed, older is resolved: the dismissed one is the newest.
+    const olderResolved = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'dis', closedDaysAgo: 300 });
+    const newestDismissed = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'dis', status: 'dismissed', closedDaysAgo: 100 });
+    // Two rows tied on the newest close time are both kept; the older goes.
+    const tieOlder = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'tie', closedDaysAgo: 300 });
+    const tiedAt = daysAgo(100);
+    const tieA = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'tie', closedDaysAgo: 100 });
+    const tieB = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'tie', closedDaysAgo: 100 });
+    await getTestDb().update(alerts).set({ resolvedAt: tiedAt }).where(inArray(alerts.id, [tieA, tieB]));
+    // A closed alert with no close stamp is never eligible, and never shields an older one.
+    const noStamp = await f.insertAlert({ ruleId: null, resolvedDaysAgo: null });
+    const olderThanNoStamp = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'nostamp', closedDaysAgo: 300 });
+    const noStampKeyed = await f.insertAlert({ ruleId: f.ruleId, subjectKey: 'nostamp', resolvedDaysAgo: null });
+
+    const job = await loadJob('true');
+    await job.runAlertRetention(JOB);
+
+    const all = [shieldedByOpen, openNewer, deviceOwned, topoNewer, olderResolved, newestDismissed,
+      tieOlder, tieA, tieB, noStamp, olderThanNoStamp, noStampKeyed];
+    expect(await liveAlertIds(all)).toEqual(new Set([
+      shieldedByOpen, openNewer, deviceOwned, topoNewer, newestDismissed, tieA, tieB, noStamp, olderThanNoStamp, noStampKeyed,
+    ]));
   });
 
   it('report mode deletes nothing and counts exactly what enforce removes', async () => {
