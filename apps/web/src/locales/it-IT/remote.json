@@ -49,7 +49,8 @@
       "securityCheckToast": "Avvio remoto non disponibile: controllo di sicurezza non riuscito. Contatta l'amministratore.",
       "securityPolicy": "Avvio remoto bloccato dai criteri di sicurezza",
       "server": "Avvio remoto non riuscito: errore del server. Contatta l'amministratore.",
-      "vncTunnelFailed": "Impossibile aprire il tunnel VNC"
+      "vncTunnelFailed": "Impossibile aprire il tunnel VNC",
+      "providerUnavailable": "Questo strumento remoto non è più disponibile per questo dispositivo. Aggiorna la pagina e riprova."
     },
     "fallback": {
       "linuxFirstRun": "Su Linux, rendi eseguibile il file scaricato (chmod +x) ed eseguilo una volta. In questo modo il visualizzatore viene registrato e da quel momento le sessioni si apriranno automaticamente.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Impossibile autenticarsi sul server grafico (autorità X)",
       "x11ConnectFailed": "Impossibile connettersi al server grafico su questo dispositivo"
     },
-    "opensNewWindow": "(si apre in una nuova finestra)"
+    "opensNewWindow": "(si apre in una nuova finestra)",
+    "split": {
+      "builtInViewer": "Visualizzatore integrato",
+      "connectWith": "Connetti con {{name}}",
+      "connectWithBuiltIn": "Connetti con il visualizzatore integrato",
+      "menuLabel": "Scegli come connetterti",
+      "opensInBrowser": "Si apre in una nuova scheda del browser"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Creazione del tunnel in corso...",
@@ -209,6 +217,7 @@
       "copy": "Copia",
       "delete": "Elimina",
       "download": "Scarica",
+      "mkdir": "Nuova cartella",
       "move": "Sposta",
       "purge": "Elimina definitivamente",
       "restore": "Ripristina",
@@ -250,6 +259,7 @@
     "emptyDirectory": "Directory vuota",
     "errors": {
       "copy": "Impossibile copiare",
+      "createFolder": "Impossibile creare la cartella",
       "delete": "Impossibile eliminare",
       "download": "Impossibile scaricare",
       "downloadTooLarge": "Troppo grande per il download ({{size}}). Il browser file trasferisce file fino a {{max}}.",
@@ -264,6 +274,15 @@
     "home": "Home",
     "modified": "Modificato",
     "moveTo": "Sposta in",
+    "newFolder": {
+      "action": "Nuova cartella",
+      "title": "Nuova cartella",
+      "nameLabel": "Nome della cartella",
+      "location": "Verrà creata in {{path}}",
+      "created": "Cartella {{name}} creata",
+      "invalidName": "Il nome della cartella non può contenere separatori di percorso né caratteri non consentiti dal file system di questo dispositivo.",
+      "nameExists": "Qui esiste già un file o una cartella con questo nome."
+    },
     "selectedCount": "Numero selezionato",
     "size": "Dimensione",
     "title": "Gestione file",
@@ -318,7 +337,8 @@
     "title": "Gestione processi",
     "totalCpu": "CPU totale",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitora questo"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -643,9 +663,10 @@
     },
     "stopService": "Arresta servizio",
     "summary": "{{shown}} servizi su {{total}} in {{device}}",
-    "title": "Titolo",
+    "title": "Servizi",
     "windowsOnlyDescription": "Gestione servizi è disponibile solo per i dispositivi Windows. {{device}} esegue {{os}}.",
-    "windowsOnlyTitle": "Titolo solo Windows"
+    "windowsOnlyTitle": "Solo Windows",
+    "monitorThis": "Monitora questo"
   },
   "sessionHistory": {
     "columns": {

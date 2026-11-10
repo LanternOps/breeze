@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type linuxWallpaperBackend struct{}
@@ -22,13 +23,13 @@ func (b *linuxWallpaperBackend) GetCurrent() (*WallpaperState, error) {
 
 	switch de {
 	case "gnome", "cinnamon":
-		out, err := exec.Command("gsettings", "get", "org.gnome.desktop.background", "picture-uri").Output()
+		out, err := procspawn.Command("gsettings", "get", "org.gnome.desktop.background", "picture-uri").Output()
 		if err != nil {
 			return state, nil
 		}
 		state.WallpaperPath = unquoteGSettings(string(out))
 	case "xfce":
-		out, err := exec.Command("xfconf-query", "-c", "xfce4-desktop",
+		out, err := procspawn.Command("xfconf-query", "-c", "xfce4-desktop",
 			"-p", "/backdrop/screen0/monitor0/workspace0/last-image").Output()
 		if err != nil {
 			return state, nil
@@ -43,23 +44,23 @@ func (b *linuxWallpaperBackend) SetSolidBlack() error {
 	switch de {
 	case "gnome", "cinnamon":
 		// Remove wallpaper image, set solid color to black
-		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", "").Run(); err != nil {
+		if err := procspawn.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", "").Run(); err != nil {
 			slog.Debug("gsettings set picture-uri failed", "error", err.Error())
 		}
-		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", "").Run(); err != nil {
+		if err := procspawn.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", "").Run(); err != nil {
 			slog.Debug("gsettings set picture-uri-dark failed", "error", err.Error())
 		}
-		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "primary-color", "#000000").Run(); err != nil {
+		if err := procspawn.Command("gsettings", "set", "org.gnome.desktop.background", "primary-color", "#000000").Run(); err != nil {
 			slog.Debug("gsettings set primary-color failed", "error", err.Error())
 		}
-		if err := exec.Command("gsettings", "set", "org.gnome.desktop.background", "color-shading-type", "solid").Run(); err != nil {
+		if err := procspawn.Command("gsettings", "set", "org.gnome.desktop.background", "color-shading-type", "solid").Run(); err != nil {
 			slog.Debug("gsettings set color-shading-type failed", "error", err.Error())
 		}
 		return nil
 	case "xfce":
-		_ = exec.Command("xfconf-query", "-c", "xfce4-desktop",
+		_ = procspawn.Command("xfconf-query", "-c", "xfce4-desktop",
 			"-p", "/backdrop/screen0/monitor0/workspace0/last-image", "-s", "").Run()
-		_ = exec.Command("xfconf-query", "-c", "xfce4-desktop",
+		_ = procspawn.Command("xfconf-query", "-c", "xfce4-desktop",
 			"-p", "/backdrop/screen0/monitor0/workspace0/color1",
 			"-t", "uint", "-s", "0",
 			"-t", "uint", "-s", "0",
@@ -83,11 +84,11 @@ func (b *linuxWallpaperBackend) Restore(state *WallpaperState) error {
 
 	switch de {
 	case "gnome", "cinnamon":
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", state.WallpaperPath).Run()
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", state.WallpaperPath).Run()
+		_ = procspawn.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", state.WallpaperPath).Run()
+		_ = procspawn.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", state.WallpaperPath).Run()
 		return nil
 	case "xfce":
-		return exec.Command("xfconf-query", "-c", "xfce4-desktop",
+		return procspawn.Command("xfconf-query", "-c", "xfce4-desktop",
 			"-p", "/backdrop/screen0/monitor0/workspace0/last-image",
 			"-s", state.WallpaperPath).Run()
 	default:

@@ -732,6 +732,26 @@ describe('metrics routes', () => {
     expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
+  it('normalises the raw fallback bucket to ISO UTC, matching the rollup path (#11284)', async () => {
+    const { db } = await import('../db');
+    const selectMock = vi.mocked(db.select);
+    mockRollupTrendRows(selectMock, []);
+    mockRawTrendRows(selectMock, [
+      { bucket: '2026-06-18 00:00:00', cpu: 21.2, memory: 75.8 },
+      { bucket: '2026-06-19 00:00:00+00', cpu: 30, memory: 40 },
+    ]);
+
+    const res = await app.request('/trends?range=7d', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { timestamp: '2026-06-18T00:00:00.000Z', cpu: 21, memory: 76 },
+      { timestamp: '2026-06-19T00:00:00.000Z', cpu: 30, memory: 40 },
+    ]);
+  });
+
   it('requires scrape token for /scrape endpoint', async () => {
     const unauthorizedRes = await app.request('/scrape');
     expect(unauthorizedRes.status).toBe(401);
@@ -1981,6 +2001,22 @@ describe('backup storage-session and helper-capability metrics', () => {
       { labels: { outcome: 'mismatch' }, value: 1 },
     ]));
     for (const s of series) expect(Object.keys(s.labels)).toEqual(['outcome']);
+  });
+
+  it('counts snapshot file index events by event and outcome (#11026)', async () => {
+    const { recordSnapshotFileIndex } = await import('../services/backupMetrics');
+    recordSnapshotFileIndex('inline_dropped', 'dropped');
+    recordSnapshotFileIndex('hydration', 'complete');
+    recordSnapshotFileIndex('hydration', 'complete');
+    recordSnapshotFileIndex('hydration', 'manifest_missing');
+
+    const series = await seriesOf('breeze_backup_snapshot_file_index_total');
+    expect(series).toEqual(expect.arrayContaining([
+      { labels: { event: 'inline_dropped', outcome: 'dropped' }, value: 1 },
+      { labels: { event: 'hydration', outcome: 'complete' }, value: 2 },
+      { labels: { event: 'hydration', outcome: 'manifest_missing' }, value: 1 },
+    ]));
+    for (const s of series) expect(Object.keys(s.labels).sort()).toEqual(['event', 'outcome']);
   });
 
   it('counts restore integrity expectations by command type, status and reason', async () => {

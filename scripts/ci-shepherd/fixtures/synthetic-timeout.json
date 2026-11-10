@@ -1,0 +1,63 @@
+{
+  "name": "synthetic-timeout",
+  "synthetic": true,
+  "source": { "run": 900000002, "pr": 900002, "recordedAt": "2026-11-08" },
+  "prFiles": ["apps/api/src/services/alerts.ts"],
+  "facts": {
+    "run": {
+      "id": 900000002,
+      "attempt": 1,
+      "headSha": "3333333333333333333333333333333333333333",
+      "headBranch": "gh-readonly-queue/main/pr-900002-2222222222222222222222222222222222222222",
+      "headRepo": "LanternOps/breeze",
+      "event": "merge_group",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-11-08T10:00:00Z",
+      "updatedAt": "2026-11-08T11:00:00Z",
+      "pr": 900002
+    },
+    "jobs": [
+      {
+        "id": 900000201,
+        "name": "Integration Tests (shard 2/16)",
+        "jobId": "integration-test",
+        "conclusion": "cancelled",
+        "startedAt": "2026-11-08T10:02:00Z",
+        "completedAt": "2026-11-08T10:56:30Z",
+        "timeoutMinutes": 55,
+        "label": "integration-2",
+        "runner": "vitest",
+        "failedStep": "Run integration tests",
+        "annotations": ["The job has exceeded the maximum execution time of 55m0s"],
+        "logStatus": 200,
+        "logTail": " ✓ src/__tests__/integration/a.integration.test.ts (4 tests)\n##[error]The operation was canceled.",
+        "logAttempts": [{ "failures": [], "truncated": false, "unattributed": false, "buildFailed": false, "raceDetected": false, "timedOut": false }],
+        "report": null,
+        "reportError": "not_uploaded",
+        "errors": []
+      },
+      {
+        "id": 900000299,
+        "name": "CI Success",
+        "jobId": "ci-success",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T10:58:00Z",
+        "completedAt": "2026-11-08T10:58:10Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Check all jobs passed",
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "ciSuccess": "present",
+    "gate": null
+  }
+}

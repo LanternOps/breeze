@@ -3,14 +3,14 @@ title: Monitors
 description: Define alert conditions, device responses and delivery once, then attach them to configuration policies.
 ---
 
-A monitor combines **what to watch**, **severity and noise**, **responses**,
+A monitor combines **what to watch**, **severity and alert lifecycle**, **responses**,
 **delivery**, and **escalation**. Author it at **Alerts → Monitors**.
 
 ## Create and deploy
 
 1. Select **New monitor**, choose a kind and configure its condition.
-2. Choose severity, cooldown and automatic resolution. See
-   [When alerts close on their own](/features/alerts/#when-alerts-close-on-their-own).
+2. Choose severity, then automatic resolution, re-arm and cooldown, or let them
+   inherit. See [Alert lifecycle](#alert-lifecycle).
 3. Add up to ten responses. Responses execute on the device that breached.
 4. In **Notify**, use **Inherit**, **use these channels instead**, or **inbox only**.
    The inherited preview shows eligible channels, skipped destinations with their reasons, escalation and the winning source.
@@ -120,6 +120,118 @@ behavior. The policy tab shows inherited attachments being ignored. Conversion m
 set this mode automatically; change it only after reviewing the resulting device
 coverage. The device Monitoring tab shows the effective result.
 
+## Alert lifecycle
+
+An **episode** is one alert from the moment it opens until it closes. Three
+settings decide how an episode ends and when the next one can start. The re-arm
+setting, the **Lifecycle defaults** card and **Clears when** are available in
+releases after v0.126.0.
+
+| Setting | What it does | Built-in default |
+|---|---|---|
+| **Auto-resolve** | Closes the alert when its condition clears, including an alert someone acknowledged or suppressed. | Off |
+| **Re-arm** | Decides what can open the next alert once this one closes. | New evidence |
+| **Cooldown** | Waits this long after an alert closes before another can open (0–1440 minutes). | 5 minutes |
+
+Re-arm has two modes:
+
+- **New evidence** opens a new alert only for an event the closed alert has not
+  seen. An event still inside the monitor's window does not page you twice.
+- **After N minutes** (1–1440) also lets those older events re-open the alert
+  once N minutes have passed since it closed. Use it if you want a reminder
+  while a problem persists.
+
+Re-arm applies to evidence-based conditions, such as event logs. A new event
+during the cooldown is delayed rather than lost, unless the monitor's window is
+shorter than the cooldown and the event ages out first. The editor warns you
+when that can happen.
+
+Alerts that need a person never auto-resolve, and a device with no current data
+never resolves an alert. See
+[When alerts close on their own](/features/alerts/#when-alerts-close-on-their-own).
+
+### Where to set it
+
+Each setting resolves in this order, and the first level with a value wins:
+
+1. **The monitor**, in the editor's **Alert lifecycle** section. Each field offers
+   Inherit, and shows which default it overrides when you set a value.
+2. **The organization**, in the **Lifecycle defaults** card on **Alerts → Monitors**,
+   with that organization selected.
+3. **The partner**, in the same card at partner scope.
+4. **The built-in default** in the table above.
+
+A partner-wide monitor resolves against each device's organization, so two
+organizations can get different values from one monitor.
+
+An alert keeps the values it opened with. Changing a setting affects the next
+episode, not one already open. The alert's page shows what it is using, for
+example _Re-arms on new evidence · cooldown 5 min (partner default)_. The brackets
+name where the cooldown came from. Alerts opened before this line existed do not
+show it.
+
+### Clears when
+
+By default an alert clears when its trigger stops matching. For an event-log
+condition that means when the matching events age out of the window, which says
+nothing about whether the problem is actually over. **Clears when** names the
+event that does.
+
+It appears on event-log monitors when auto-resolve is on. Select **Add a recovery
+condition**. The form starts from the trigger's category and source, at
+Information level with a 60-minute window. Add a message so that only the
+recovery event matches. A condition with no source or message clears on any event
+in that category that the agent collects.
+
+An alert clears only on an event logged after its own trigger event, so a recovery
+event left in the log by an earlier incident cannot close a new one.
+
+Level is a minimum: **Information** also matches Warning, Error and Critical
+events. Below Error, Application events are collected only from the agent's
+built-in providers and the
+[providers you add in a policy](/features/event-log-forwarding/#collect-warning-and-information-events-from-more-application-providers). The editor warns
+you when a recovery event would not be collected, because that alert would never
+clear.
+
+Other monitor kinds always clear on the inverse of their trigger.
+
+A condition saved through the API in the older raw format appears read-only as
+**Custom recovery condition (API)**. Saving the monitor keeps it unchanged.
+**Replace** swaps it for an editable condition when you save. If the editor says
+the condition can't be evaluated, that monitor's alerts never auto-resolve until
+you replace it. Changing such a monitor's kind removes the condition.
+
+### Recipe: a UPS on battery
+
+Alert when a Windows server's UPS goes on battery, and clear when power returns.
+APC PowerChute logs both events to the Application log, and its provider is a
+built-in one, so it needs no policy entry. Check that the device's Event Logs
+policy collects the Application category at Information level.
+
+| | Category | Level | Source matches | Message matches |
+|---|---|---|---|---|
+| **Trigger** | Application | Warning | `APCPBEAgent` | `On Battery` |
+| **Clears when** | Application | Information | `APCPBEAgent` | `Power Restored` |
+
+Set **Auto-resolve** to **On** on the monitor, or inherit it from a default that
+is on. Check the exact message text against the events your UPS software writes.
+
+### Upgrading from before v0.126.0
+
+These changes apply to every event-log alert, with no setting to enable them:
+
+- An event-log alert no longer re-opens on events an earlier alert already saw, so
+  you may see fewer alerts and fewer `alert.resolved` events.
+- A recovery event clears an alert only if it is newer than the trigger.
+- Acknowledged and suppressed alerts now auto-resolve when auto-resolve is on.
+- Breach episodes for event-log monitors now end when the alert closes rather than
+  when events age out of the window. `recurrenceThreshold` may therefore count
+  more, shorter episodes.
+
+In releases after v0.126.0, you can get repeat alerts back while a problem
+persists: set re-arm to **After N minutes** on a monitor or in the lifecycle
+defaults.
+
 ## Legacy rules
 
 v0.117.0 introduced conversion of legacy alert rules and service/process
@@ -151,8 +263,10 @@ Test monitors with `POST /monitor-definitions/:id/test`.
 ### Built-in alerts
 
 Breeze raises some alerts itself rather than through a monitor: **Patch job failures**,
-**Reboot pending too long**, and policy-violation alerts. Each rule belongs to one
-organization (policy violations get one per policy), is created the first time its
+**Reboot pending too long**, policy-violation alerts, and
+[new remote access tool alerts](/features/management-posture/#new-remote-access-tool-alerts).
+Each rule belongs to one organization (policy violations get one per policy, new
+remote access tools one per tool), is created the first time its
 alert fires, and is never offered for conversion. **Alerts → Monitors** lists them under **Built-in alerts** with an
 **Active** switch per organization. Switching one off stops new alerts of that kind
 for that organization and stays off; alerts that are already open stay open until

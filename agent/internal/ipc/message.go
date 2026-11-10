@@ -49,6 +49,14 @@ const (
 	// helper -> agent, once per desktop session at teardown: what crossed the
 	// clipboard channel, for the central audit log (#1012).
 	TypeDesktopClipboardSummary = "desktop_clipboard_summary"
+	// Clipboard read through the user helper (#8393). A desktop session hosted
+	// by the Windows system helper runs as SYSTEM, which cannot read registered
+	// clipboard formats (PNG, JFIF) the logged-on user copied. The helper asks
+	// the service (desktop_clipboard_read), the service reads through the
+	// user-role helper in the same Windows session and answers
+	// (desktop_clipboard_read_result).
+	TypeDesktopClipboardRead       = "desktop_clipboard_read"        // helper -> agent
+	TypeDesktopClipboardReadResult = "desktop_clipboard_read_result" // agent -> helper
 
 	// Console user changed — agent notifies helpers to switch input mode
 	TypeConsoleUserChanged = "console_user_changed"
@@ -663,6 +671,29 @@ type ClipboardTransferCount struct {
 type DesktopClipboardSummaryNotice struct {
 	SessionID string           `json:"sessionId"`
 	Clipboard ClipboardSummary `json:"clipboard"`
+}
+
+// DesktopClipboardReadRequest asks the service to read the clipboard through
+// the user-role helper in the requesting helper's Windows session. SessionID is
+// the desktop session the read is for; the service answers only the helper that
+// owns it.
+type DesktopClipboardReadRequest struct {
+	SessionID string `json:"sessionId"`
+}
+
+// DesktopClipboardReadResult is the service's answer. Exactly one outcome is
+// set: content (Type and its fields), NoSupportedFormat (the user helper saw
+// nothing it can read either), Unavailable (no user helper in that Windows
+// session), or Error (the read failed; the clipboard is unknown).
+type DesktopClipboardReadResult struct {
+	Type              string `json:"type,omitempty"`
+	Text              string `json:"text,omitempty"`
+	RTF               []byte `json:"rtf,omitempty"`
+	Image             []byte `json:"image,omitempty"`
+	ImageFormat       string `json:"imageFormat,omitempty"`
+	NoSupportedFormat bool   `json:"noSupportedFormat,omitempty"`
+	Unavailable       bool   `json:"unavailable,omitempty"`
+	Error             string `json:"error,omitempty"`
 }
 
 // LaunchProcessRequest asks the user-role helper to launch a binary.

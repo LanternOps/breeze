@@ -77,6 +77,21 @@ describe('getConvertedInvoicePayment (#3740)', () => {
     expect(await getConvertedInvoicePayment(INVOICE_ID, ORG_ID)).toBeNull();
   });
 
+  // #3803 item 8: the mint refuses a balance the currency cannot express
+  // (BALANCE_NOT_REPRESENTABLE), so no button may be offered for one.
+  it('returns null for a legacy JPY balance the currency cannot express, before the partner lookup', async () => {
+    dbResults.push([invoiceRow({ currencyCode: 'JPY', balance: '1000.50' })]);
+    expect(await getConvertedInvoicePayment(INVOICE_ID, ORG_ID)).toBeNull();
+    expect(isPayOnAcceptAvailable).not.toHaveBeenCalled();
+  });
+
+  it('offers a whole-unit JPY balance unchanged', async () => {
+    dbResults.push([invoiceRow({ currencyCode: 'JPY', balance: '1001.00' })]);
+    expect(await getConvertedInvoicePayment(INVOICE_ID, ORG_ID)).toEqual({
+      amount: '1001.00', currencyCode: 'JPY', isDeposit: false, invoiceNumber: 'INV-0042',
+    });
+  });
+
   it('returns null when the partner cannot take online payment', async () => {
     isPayOnAcceptAvailable.mockResolvedValue(false);
     dbResults.push([invoiceRow()]);

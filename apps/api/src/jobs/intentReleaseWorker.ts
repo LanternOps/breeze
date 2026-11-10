@@ -1422,7 +1422,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     let recomputed: { digest: string | null; context?: ToolExecutionContext };
     try {
       recomputed = await withSystemDbAccessContext(() =>
-        computeEffectDigestForRelease(intent.actionName, intent.arguments, db),
+        computeEffectDigestForRelease(intent.actionName, intent.arguments, db, { intentOrgId: intent.orgId }),
       );
     } catch (err) {
       // Fail closed with a categorized code, like every other step in this
@@ -2451,6 +2451,22 @@ async function releaseAndNotify(intentId: string): Promise<{ released: boolean }
   } catch (err) {
     console.error(`[IntentReleaseWorker] outcome notification failed for intent ${intentId}:`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+
+  // Wisp delegation W2 (#11085): a step a device-troubleshooting run proposed
+  // reports its outcome into the Wisp thread. Same rule as above — after the
+  // release, never allowed to undo it. A no-op (`posted: false`) for every
+  // other intent; a redelivered job hits the post's dedupe key, and a failed
+  // one is re-swept by the grant reconciler. Lazy: keeps the Wisp notify
+  // graph off this worker's import closure.
+  try {
+    const { postSpecialistStepOutcome } = await import('../services/wisp/specialistResult');
+    await runOutsideDbContext(() => postSpecialistStepOutcome(intentId));
+  } catch (err) {
+    console.error(`[IntentReleaseWorker] specialist step post-back failed for intent ${intentId}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      op: 'wisp.specialistResult.release', intentId,
+    });
   }
 
   return { released: true };

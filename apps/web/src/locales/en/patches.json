@@ -356,6 +356,7 @@
     "tabs": {
       "compliance": "Compliance",
       "patches": "Patches",
+      "vendorUpdates": "Vendor updates",
       "jobs": "Jobs",
       "updateRings": "Update Rings"
     },
@@ -486,9 +487,11 @@
     "rebootDone": "Completed",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Skipped: none of the pending updates on this device are approved.",
       "ring_deleted": "Cancelled before dispatch: the update ring was deleted.",
       "ring_disabled": "Cancelled before dispatch: the update ring was disabled.",
-      "ring_unavailable": "Skipped: the update ring was deleted or disabled before this device was dispatched."
+      "ring_unavailable": "Skipped: the update ring was deleted or disabled before this device was dispatched.",
+      "all_managed_by_vendor_updates": "Skipped: every pending update on this device is managed by Vendor updates, so no approval is needed."
     },
     "errors": {
       "load": "Failed to load patch job"
@@ -673,5 +676,38 @@
       "hold_one": "{{count}}-day hold",
       "hold_other": "{{count}}-day hold"
     }
+  },
+  "vendorUpdates": {
+    "description": "Each maker's own update tool, kept running on a schedule by a configuration policy. Devices no such policy reaches show as Not managed.",
+    "loadError": "Could not load vendor updates.",
+    "retry": "Try again",
+    "pickOrganization": "Select an organization to see its vendor updates.",
+    "loading": "Loading vendor updates",
+    "empty": "No devices match this filter.",
+    "vendorFilter": "Vendor",
+    "allVendors": "All vendors",
+    "state": {
+      "upToDate": "Up to date",
+      "overdue": "Overdue",
+      "failing": "Failing",
+      "notSupported": "Not supported",
+      "notManaged": "Not managed",
+      "waitingForReboot": "Waiting for restart",
+      "rebootOverdue": "Restart overdue"
+    },
+    "columns": {
+      "device": "Device",
+      "organization": "Organization",
+      "site": "Site",
+      "vendor": "Vendor",
+      "state": "State",
+      "lastRun": "Last run",
+      "lastSuccess": "Last success"
+    },
+    "never": "Never",
+    "scheduleNotHandedBack": "Breeze could not hand the vendor tool's schedule back",
+    "range": "{{from}}–{{to}} of {{total}}",
+    "previous": "Previous",
+    "next": "Next"
   }
 }

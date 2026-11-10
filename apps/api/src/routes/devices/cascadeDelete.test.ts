@@ -683,6 +683,8 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     linkGroupId?: string | null;
     /** Serve a pending `device_remove` self_uninstall to the refusal probe. */
     pendingUninstall?: boolean;
+    /** #11153 — the confirmed-uninstall gate's state. Default 'completed'. */
+    uninstallState?: string;
     /** Lock returns zero rows (device vanished between lookup and lock). */
     deviceMissing?: boolean;
     detachedTopologyAlerts?: number;
@@ -726,6 +728,11 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
           if (text.startsWith('UPDATE alerts SET device_id = NULL')) {
             return pgResult([], opts.detachedTopologyAlerts ?? 0);
           }
+          // #11153 — the confirmed-uninstall gate (devicePurgeUninstallGate.ts).
+          // Checked first: it names the self_uninstall type too.
+          if (text.includes('uninstall_state')) {
+            return pgResult([{ uninstall_state: opts.uninstallState ?? 'completed' }]);
+          }
           // The purge refusal probe (deviceLifecycle.ts). Distinct from the
           // cascade's own `DELETE FROM device_commands` — only the probe names
           // the self_uninstall type.
@@ -765,7 +772,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(res.status).toBe(200);
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'device.permanent_delete',
-      details: { detachedTopologyAlerts: 2 },
+      details: { detachedTopologyAlerts: 2, force: false, forced: false, uninstallState: 'completed' },
     }));
   });
 
@@ -838,7 +845,9 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
             const text = sqlToText(q);
             const rows: Record<string, unknown>[] = text.includes('FOR UPDATE')
               ? [{ id: DEVICE.id, status: 'decommissioned', link_group_id: null }]
-              : text.includes('pg_settings') ? [{ prior_ms: '0' }] : [];
+              : text.includes('pg_settings') ? [{ prior_ms: '0' }]
+              // #11153 — a confirmed uninstall, so the purge reaches the cascade.
+              : text.includes('uninstall_state') ? [{ uninstall_state: 'completed' }] : [];
             Object.defineProperty(rows, 'count', { value: rows.length, enumerable: false });
             return rows;
           }),
@@ -1173,6 +1182,86 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     // be reported after it.
     expect(statements.some((s) => s.startsWith('DELETE FROM devices'))).toBe(false);
     expect(statements.some((s) => s.startsWith('DELETE FROM device_commands'))).toBe(false);
+  });
+
+  /**
+   * #11153 — a device whose agent never confirmed it came off (failed,
+   * expired or cancelled uninstall, or none queued) is refused with its state
+   * unless the operator explicitly sends `force: true`.
+   */
+  it('refuses with 409 UNINSTALL_NOT_CONFIRMED and the state when the agent never confirmed (#11153)', async () => {
+    rigDeviceLookup(DEVICE);
+    const statements = rigDeleteTransaction({ uninstallState: 'expired' });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'UNINSTALL_NOT_CONFIRMED', uninstallState: 'expired' });
+    expect(statements.some((s) => s.startsWith('DELETE FROM devices'))).toBe(false);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('deletes an unconfirmed device when force: true is sent, and audits force + state (#11153)', async () => {
+    rigDeviceLookup(DEVICE);
+    const statements = rigDeleteTransaction({ uninstallState: 'none' });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: true }),
+    });
+
+    expect(res.status).toBe(200);
+    // The gate was consulted (and overridden), not skipped.
+    expect(statements.some((s) => s.includes('uninstall_state'))).toBe(true);
+    expect(await auditDetails()).toMatchObject({ force: true, forced: true, uninstallState: 'none' });
+  });
+
+  it('audits force: false and the confirmed state on an ordinary bodyless delete (#11153)', async () => {
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction({ uninstallState: 'completed' });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await auditDetails()).toMatchObject({ force: false, forced: false, uninstallState: 'completed' });
+  });
+
+  it('records force: true but forced: false when force was sent for an already-confirmed device (#11153)', async () => {
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction({ uninstallState: 'completed' });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await auditDetails()).toMatchObject({ force: true, forced: false, uninstallState: 'completed' });
+  });
+
+  it.each([
+    ['a string', { force: 'true' }],
+    ['an unknown key', { force: true, skipChecks: true }],
+  ])('rejects %s in the body with 400 and deletes nothing (#11153)', async (_label, body) => {
+    rigDeviceLookup(DEVICE);
+    const statements = rigDeleteTransaction({ uninstallState: 'none' });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(400);
+    expect(statements.some((s) => s.startsWith('DELETE FROM devices'))).toBe(false);
   });
 
   /**

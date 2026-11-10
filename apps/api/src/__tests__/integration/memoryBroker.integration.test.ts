@@ -8,7 +8,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { aiMemoryBlocks } from '../../db/schema';
 import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from '../../services/wisp/grantAuthority';
@@ -17,8 +17,11 @@ import {
   MemoryValidationError,
   recallForGrant,
   rememberForGrant,
+  rememberInstructionGroupForGrant,
   type RememberInput,
 } from '../../services/wisp/memoryBroker';
+import { standingInstructionSubjectKey } from '../../services/wisp/standingInstructions';
+import type { StandingInstructionContent } from '@breeze/shared';
 import {
   SYSTEM_CTX, blockValues, cleanupMemoryBlocks, insertAiSession, insertBlock, seedMemoryFixture,
   type MemoryFixture,
@@ -398,5 +401,87 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
     const older = await insertBlock(f.partnerA, { kind: 'partner' }, { subjectKey: 'ord.confirmed', status: 'confirmed', updatedAt: new Date(base) });
     const newer = await insertBlock(f.partnerA, { kind: 'partner' }, { subjectKey: 'ord.unconfirmed', updatedAt: new Date(base + 10_000_000_000) });
     expect((await recallForGrant(c, { subjectKeyPrefix: 'ord.' })).map((b) => b.id)).toEqual([older.id, newer.id]);
+  });
+});
+
+describe('rememberInstructionGroupForGrant (#10428, W05)', () => {
+  const instruction = (over: Partial<StandingInstructionContent> = {}): StandingInstructionContent => ({
+    instructionId: randomUUID(), effect: 'deny', verb: 'reboot', deviceId: randomUUID(), condition: null, until: null,
+    text: "don't reboot PC-01", targetLabels: ['PC-01'], sourceMessageId: null, captureId: randomUUID(), ...over,
+  });
+  const block = (f: MemoryFixture, content: StandingInstructionContent): RememberInput => ({
+    owner: { kind: 'user', userId: f.uA1 },
+    blockType: 'standing_instruction',
+    subjectKey: standingInstructionSubjectKey(content),
+    content,
+    confidence: 'medium',
+  });
+
+  it('writes every block of a group unconfirmed and grant-stamped, sharing the instructionId', async () => {
+    const f = await seedMemoryFixture();
+    const c = ceiling(f);
+    const instructionId = randomUUID();
+    const a = instruction({ instructionId });
+    const b = instruction({ instructionId });
+    const written = await rememberInstructionGroupForGrant(c, [block(f, a), block(f, b)]);
+    expect(written).toHaveLength(2);
+    for (const w of written) {
+      expect(w.status).toBe('unconfirmed');
+      expect(w.authoredByGrantId).toBe(c.grantId);
+      expect(w.authoredByGrantRevisionId).toBe(c.revisionId);
+      expect(w.content.instructionId).toBe(instructionId);
+    }
+  });
+
+  it('restating the same clause supersedes its own earlier unconfirmed copy', async () => {
+    const f = await seedMemoryFixture();
+    const c = ceiling(f);
+    const content = instruction();
+    const [first] = await rememberInstructionGroupForGrant(c, [block(f, content)]);
+    const [second] = await rememberInstructionGroupForGrant(c, [block(f, { ...content, instructionId: randomUUID() })]);
+    expect((await rowById(first!.id))?.supersededById).toBe(second!.id);
+    expect((await rowById(second!.id))?.supersededById).toBeNull();
+  });
+
+  it('Review Focus 2: two different clauses on the same device and verb both stay live', async () => {
+    const f = await seedMemoryFixture();
+    const c = ceiling(f);
+    const deviceId = randomUUID();
+    const hours = instruction({ deviceId, condition: 'during business hours', text: 'never reboot PC-01 during business hours' });
+    const friday = instruction({ deviceId, until: '2027-02-05T17:00:00+00:00', text: "don't reboot PC-01 until Friday" });
+    expect(standingInstructionSubjectKey(hours)).not.toBe(standingInstructionSubjectKey(friday));
+    const [one] = await rememberInstructionGroupForGrant(c, [block(f, hours)]);
+    const [two] = await rememberInstructionGroupForGrant(c, [block(f, friday)]);
+    expect((await rowById(one!.id))?.supersededById).toBeNull();
+    expect((await rowById(two!.id))?.supersededById).toBeNull();
+  });
+
+  it('is all or nothing: one block outside the ceiling writes none of the group', async () => {
+    const f = await seedMemoryFixture();
+    const c = ceiling(f);
+    const good = instruction();
+    const err = await caught(() => rememberInstructionGroupForGrant(c, [
+      block(f, good),
+      { ...block(f, instruction()), owner: { kind: 'user', userId: f.uA2 } },
+    ]));
+    expect(err).toBeInstanceOf(CeilingViolationError);
+    expect(await rowsWithSubject(standingInstructionSubjectKey(good))).toEqual([]);
+  });
+
+  it('refuses an inactive grant before any write', async () => {
+    const f = await seedMemoryFixture();
+    const content = instruction();
+    const err = await caught(() => rememberInstructionGroupForGrant(ceiling(f, { status: 'paused' }), [block(f, content)]));
+    expect(err).toBeInstanceOf(GrantInactiveError);
+    expect(await rowsWithSubject(standingInstructionSubjectKey(content))).toEqual([]);
+  });
+
+  it('the standing-device partial index exists', async () => {
+    const rows = await withDbAccessContext(SYSTEM_CTX, () => db.execute(sql`
+      SELECT indexdef FROM pg_indexes WHERE indexname = 'ai_memory_blocks_standing_device_idx'`));
+    const defs = (rows as unknown as Array<{ indexdef: string }>).map((r) => r.indexdef);
+    expect(defs).toHaveLength(1);
+    expect(defs[0]).toContain("(content ->> 'deviceId'::text)");
+    expect(defs[0]).toContain("block_type = 'standing_instruction'::text");
   });
 });

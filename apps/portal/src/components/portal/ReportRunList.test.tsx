@@ -376,6 +376,26 @@ describe('ReportRunList', () => {
     expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
   });
 
+  // #11018 W2: customer-safe, unlike its MSP-internal sibling below, and evidence
+  // rather than self-service: listed once delivered, never generated here.
+  it('shows a delivered ticket_sla_performance run with PDF and CSV', () => {
+    const slaRun: PortalRunDto = {
+      ...run,
+      id: 'run-sla',
+      name: 'Service evidence — SLA performance',
+      type: 'ticket_sla_performance',
+      csvAvailable: true,
+    };
+    render(<ReportRunList initialRuns={[slaRun]} timezone="UTC" />);
+    expect(screen.getByTestId('portal-report-run-row-run-sla')).toBeInTheDocument();
+    expect(screen.getByText('SLA performance')).toBeInTheDocument();
+    expect(screen.queryByText(/service evidence/i)).toBeNull();
+    expect(screen.getByTestId('portal-report-run-pdf-run-sla')).toBeInTheDocument();
+    expect(screen.getByTestId('portal-report-run-csv-run-sla')).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-reports-generate-ticket-sla-performance')).toBeNull();
+    expect(screen.queryByText(/generate .*sla/i)).toBeNull();
+  });
+
   // #3198 W03, plus ai_usage_by_client (#7608 W10). These types are internal
   // by construction: they are absent from PORTAL_REPORT_TYPES, never portal_self_service, and their definitions
   // are org- or partner-owned MSP reports. If a row of one ever reaches this

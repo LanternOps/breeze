@@ -1,8 +1,14 @@
-// Pure helpers for the UniFi integration panel, split out of
-// UnifiIntegration.tsx (#2382) — no behavior change, verbatim moves.
+// Pure helpers for the UniFi integration panel. Most were split out of
+// UnifiIntegration.tsx (#2382) as verbatim moves; groupSitesByOrg and
+// defaultControllerSiteId are newer (#11502).
 
 import { fetchAllDevices } from "@/lib/devicesFetch";
-import type { AgentDevice } from "./unifiTypes";
+import type {
+  AgentDevice,
+  BreezeSiteOption,
+  OrgOption,
+  SiteGroup,
+} from "./unifiTypes";
 
 // Label for a collector-agent <option>. Empty/whitespace names must fall
 // through the same way nulls do — `displayName: ""` survives the API write
@@ -165,4 +171,47 @@ export function collectorStatusClasses(status: string): string {
     default:
       return "border-slate-200 bg-slate-50 text-slate-600";
   }
+}
+
+// Breeze sites grouped by organization for the <optgroup> pickers. Groups are
+// keyed by orgId, not name: two orgs can share a display name in an MSP
+// fleet, which would collide as duplicate React <optgroup> keys. Internal orgs
+// sort first (the usual home of a self-hosted collector agent), then by name.
+export function groupSitesByOrg(
+  sites: ReadonlyArray<BreezeSiteOption>,
+  orgs: ReadonlyArray<OrgOption>,
+  fallbackName: string,
+): SiteGroup[] {
+  const orgName = new Map(orgs.map((o) => [o.id, o.name]));
+  const internalOrgs = new Set(
+    orgs.filter((o) => o.type === "internal").map((o) => o.id),
+  );
+  const groups = new Map<string, SiteGroup>();
+  for (const s of sites) {
+    const group = groups.get(s.orgId) ?? {
+      id: s.orgId,
+      name: orgName.get(s.orgId) ?? fallbackName,
+      isInternal: internalOrgs.has(s.orgId),
+      sites: [],
+    };
+    group.sites.push(s);
+    groups.set(s.orgId, group);
+  }
+  return [...groups.values()].sort(
+    (a, b) =>
+      Number(b.isInternal) - Number(a.isInternal) ||
+      a.name.localeCompare(b.name),
+  );
+}
+
+// Default "collector agent location" for a self-hosted controller: the single
+// site of the single internal organization, when that is unambiguous. Anything
+// else (no internal org, several, or one with 2+ sites) yields null so we never
+// guess.
+export function defaultControllerSiteId(
+  groups: ReadonlyArray<SiteGroup>,
+): string | null {
+  const internal = groups.filter((g) => g.isInternal);
+  if (internal.length !== 1 || internal[0]!.sites.length !== 1) return null;
+  return internal[0]!.sites[0]!.id;
 }

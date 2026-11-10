@@ -11,6 +11,9 @@ import (
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 const registryKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
@@ -36,7 +39,7 @@ func uninstallPackage() error {
 // uninstallProductCode runs msiexec /x for one ProductCode. Exit 3010 (reboot
 // required) counts as success.
 func uninstallProductCode(productCode string) error {
-	cmd := exec.Command("msiexec", "/x", productCode, "/qn", "/norestart")
+	cmd := procspawn.Command("msiexec", "/x", productCode, "/qn", "/norestart")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 3010 {
@@ -121,7 +124,7 @@ func installPackage(msiPath, binaryPath, version string) error {
 // runMSIInstall runs the MSI installer silently.
 // Exit code 3010 means success but reboot required — treated as success.
 func runMSIInstall(msiPath string) error {
-	cmd := exec.Command("msiexec", "/i", msiPath, "/qn", "/norestart")
+	cmd := procspawn.Command("msiexec", "/i", msiPath, "/qn", "/norestart")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Exit code 3010 = ERROR_SUCCESS_REBOOT_REQUIRED
@@ -155,7 +158,7 @@ func msiReinstallArgs(msiPath string) []string {
 // msiPath (#6868). The caller's on-disk version check still decides whether
 // the files were actually replaced.
 func runMSIReinstall(msiPath string) error {
-	cmd := exec.Command("msiexec", msiReinstallArgs(msiPath)...)
+	cmd := procspawn.Command("msiexec", msiReinstallArgs(msiPath)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		exitErr, ok := err.(*exec.ExitError)
@@ -263,7 +266,9 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 		return 0, fmt.Errorf("invalid session key %q: %w", sessionKey, err)
 	}
 
-	dupToken, envBlock, identity, err := acquireSpawnToken(uint32(sessionNum))
+	// #10379: as the signed-in user or not at all; ErrNoActiveSession
+	// (sessionbroker.ErrNoInteractiveUser) when nobody is signed in.
+	dupToken, envBlock, identity, err := sessionbroker.AcquireInteractiveUserToken(uint32(sessionNum))
 	if err != nil {
 		return 0, err
 	}
@@ -324,164 +329,4 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 		"identity", identity,
 	)
 	return int(pi.ProcessId), nil
-}
-
-func acquireSpawnToken(sessionID uint32) (windows.Token, *uint16, string, error) {
-	token, envBlock, err := getSpawnTokenViaWTS(sessionID)
-	if err == nil {
-		return token, envBlock, "user (WTS)", nil
-	}
-	wtsErr := err
-	log.Debug("WTSQueryUserToken failed, trying explorer.exe token",
-		"sessionId", sessionID, "error", err.Error())
-
-	token, envBlock, err = getSpawnTokenViaExplorer(sessionID)
-	if err == nil {
-		return token, envBlock, "user (explorer)", nil
-	}
-
-	log.Warn("all user token strategies failed, falling back to SYSTEM",
-		"sessionId", sessionID,
-		"wtsError", wtsErr.Error(),
-		"explorerError", err.Error(),
-	)
-
-	token, _, err = getSystemTokenForSpawn(sessionID)
-	if err != nil {
-		return 0, nil, "", err
-	}
-	return token, nil, "SYSTEM", nil
-}
-
-func getSpawnTokenViaWTS(sessionID uint32) (windows.Token, *uint16, error) {
-	var userToken windows.Token
-	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
-		return 0, nil, fmt.Errorf("WTSQueryUserToken(session=%d): %w", sessionID, err)
-	}
-	defer userToken.Close()
-
-	var dupToken windows.Token
-	if err := windows.DuplicateTokenEx(
-		userToken,
-		windows.MAXIMUM_ALLOWED,
-		nil,
-		windows.SecurityImpersonation,
-		windows.TokenPrimary,
-		&dupToken,
-	); err != nil {
-		return 0, nil, fmt.Errorf("DuplicateTokenEx (user): %w", err)
-	}
-
-	var envBlock *uint16
-	if err := windows.CreateEnvironmentBlock(&envBlock, dupToken, false); err != nil {
-		dupToken.Close()
-		return 0, nil, fmt.Errorf("CreateEnvironmentBlock: %w", err)
-	}
-
-	return dupToken, envBlock, nil
-}
-
-func getSpawnTokenViaExplorer(sessionID uint32) (windows.Token, *uint16, error) {
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
-	if err != nil {
-		return 0, nil, fmt.Errorf("CreateToolhelp32Snapshot: %w", err)
-	}
-	defer windows.CloseHandle(snapshot)
-
-	var pe windows.ProcessEntry32
-	pe.Size = uint32(unsafe.Sizeof(pe))
-	if err := windows.Process32First(snapshot, &pe); err != nil {
-		return 0, nil, fmt.Errorf("Process32First: %w", err)
-	}
-
-	for {
-		name := windows.UTF16ToString(pe.ExeFile[:])
-		if strings.EqualFold(name, "explorer.exe") {
-			var procSessionID uint32
-			if err := windows.ProcessIdToSessionId(pe.ProcessID, &procSessionID); err == nil && procSessionID == sessionID {
-				token, envBlock, err := tokenFromProcessID(pe.ProcessID)
-				if err == nil {
-					return token, envBlock, nil
-				}
-				log.Debug("failed to get token from explorer.exe", "pid", pe.ProcessID, "error", err.Error())
-			}
-		}
-
-		if err := windows.Process32Next(snapshot, &pe); err != nil {
-			break
-		}
-	}
-
-	return 0, nil, fmt.Errorf("no explorer.exe found in session %d", sessionID)
-}
-
-func tokenFromProcessID(pid uint32) (windows.Token, *uint16, error) {
-	proc, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION, false, pid)
-	if err != nil {
-		return 0, nil, fmt.Errorf("OpenProcess(%d): %w", pid, err)
-	}
-	defer windows.CloseHandle(proc)
-
-	var procToken windows.Token
-	if err := windows.OpenProcessToken(proc, windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY, &procToken); err != nil {
-		return 0, nil, fmt.Errorf("OpenProcessToken(%d): %w", pid, err)
-	}
-	defer procToken.Close()
-
-	var dupToken windows.Token
-	if err := windows.DuplicateTokenEx(
-		procToken,
-		windows.MAXIMUM_ALLOWED,
-		nil,
-		windows.SecurityImpersonation,
-		windows.TokenPrimary,
-		&dupToken,
-	); err != nil {
-		return 0, nil, fmt.Errorf("DuplicateTokenEx(%d): %w", pid, err)
-	}
-
-	var envBlock *uint16
-	if err := windows.CreateEnvironmentBlock(&envBlock, dupToken, false); err != nil {
-		dupToken.Close()
-		return 0, nil, fmt.Errorf("CreateEnvironmentBlock(%d): %w", pid, err)
-	}
-
-	return dupToken, envBlock, nil
-}
-
-func getSystemTokenForSpawn(sessionID uint32) (windows.Token, bool, error) {
-	proc, err := windows.GetCurrentProcess()
-	if err != nil {
-		return 0, false, fmt.Errorf("GetCurrentProcess: %w", err)
-	}
-
-	var processToken windows.Token
-	if err := windows.OpenProcessToken(proc, windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY, &processToken); err != nil {
-		return 0, false, fmt.Errorf("OpenProcessToken: %w", err)
-	}
-	defer processToken.Close()
-
-	var dupToken windows.Token
-	if err := windows.DuplicateTokenEx(
-		processToken,
-		windows.MAXIMUM_ALLOWED,
-		nil,
-		windows.SecurityImpersonation,
-		windows.TokenPrimary,
-		&dupToken,
-	); err != nil {
-		return 0, false, fmt.Errorf("DuplicateTokenEx: %w", err)
-	}
-
-	if err := windows.SetTokenInformation(
-		dupToken,
-		windows.TokenSessionId,
-		(*byte)(unsafe.Pointer(&sessionID)),
-		uint32(unsafe.Sizeof(sessionID)),
-	); err != nil {
-		dupToken.Close()
-		return 0, false, fmt.Errorf("SetTokenInformation(TokenSessionId=%d): %w", sessionID, err)
-	}
-
-	return dupToken, true, nil
 }

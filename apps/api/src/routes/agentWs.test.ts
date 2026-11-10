@@ -31,7 +31,9 @@ vi.mock('../db', () => ({
     update: vi.fn()
   },
   withSystemDbAccessContext: vi.fn((fn: any) => fn()),
-  withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn())
+  withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+  withDbTransaction: vi.fn((fn: any) => fn()),
+  withDbTransactionIfHeld: vi.fn((fn: any) => fn()),
 }));
 
 // #6354 W02: the late caller-rejection branch imports the caller leaf module.
@@ -65,15 +67,15 @@ vi.mock('../jobs/offlineDetector', () => ({
   transitionDeviceOffline: transitionDeviceOfflineMock,
 }));
 
-const { shouldDeferOfflineTransitionMock, recordOfflineDeferredMock } = vi.hoisted(() => ({
-  shouldDeferOfflineTransitionMock: vi.fn(() => false),
-  recordOfflineDeferredMock: vi.fn(),
-}));
+const { beginOfflineTransitionMock, releaseOfflineWriteMock } = vi.hoisted(() => {
+  const releaseOfflineWriteMock = vi.fn();
+  return {
+    releaseOfflineWriteMock,
+    beginOfflineTransitionMock: vi.fn((_event: 'close' | 'error'): (() => void) | null => releaseOfflineWriteMock),
+  };
+});
 vi.mock('../services/admission/admissionRuntime', () => ({
-  shouldDeferOfflineTransition: shouldDeferOfflineTransitionMock,
-}));
-vi.mock('../services/admission/admissionMetrics', () => ({
-  recordOfflineDeferred: recordOfflineDeferredMock,
+  beginOfflineTransition: beginOfflineTransitionMock,
 }));
 
 const { recordDesktopClipboardSummaryMock } = vi.hoisted(() => ({
@@ -303,6 +305,14 @@ vi.mock('../services/agentPresence', () => ({
   readAgentPresence: vi.fn(async () => null),
 }));
 
+// #10542: the peer-drop reconnect hold. Default (and after resetAllMocks):
+// undefined, i.e. not 'held', so every other suite sees the immediate end.
+vi.mock('../services/desktopReconnectGrace', () => ({
+  DESKTOP_RECONNECT_GRACE_MS: 20_000,
+  holdDesktopPeerDropForReconnect: vi.fn(async () => 'end_now'),
+  endHeldDesktopSessionNow: vi.fn(async () => false),
+}));
+
 vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
   // The real terminalWs ping loop consults this; never revoked in these suites.
@@ -396,6 +406,11 @@ vi.mock('../services/agentWorkExpectation', () => ({
 // #3000: the Redis-available branch of the backup-result handler enqueues
 // instead of persisting inline. Mocked so both transports can be asserted —
 // previously the queued branch had no coverage at all.
+vi.mock('../jobs/backupCatchUp', () => ({
+  deviceHasBackupCatchUp: vi.fn(() => 'has-backup-catch-up'),
+  dispatchBackupCatchUpJobs: vi.fn(async () => 0),
+}));
+
 vi.mock('../jobs/backupEnqueue', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../jobs/backupEnqueue')>();
   return {
@@ -444,6 +459,7 @@ vi.mock('../services/sentry', async (importOriginal) => {
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbAccessContext } from '../db';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, supportSessions } from '../db/schema';
 import { captureException, captureMessage } from '../services/sentry';
+import { dispatchBackupCatchUpJobs } from '../jobs/backupCatchUp';
 import {
   createAgentWsHandlers,
   createAgentWsRoutes,
@@ -478,6 +494,7 @@ import {
   reconcileSoftwareInstallResult,
 } from '../services/softwareDeploymentResult';
 import { getRedis, isRedisAvailable } from '../services/redis';
+import { orphanedResultExpectationKey } from '../services/orphanedResultExpectations';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
@@ -508,11 +525,12 @@ import {
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { createAuditLogAsync } from '../services/auditService';
 import { registerTunnelOwnership } from './tunnelWs';
-import { handleDesktopFrame, settleDesktopStreamStart, closeDesktopRelayForStop } from './desktopWs';
+import { handleDesktopFrame, settleDesktopStreamStart, closeDesktopRelayForStop, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { rateLimiter } from '../services/rate-limit';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { endHeldDesktopSessionNow, holdDesktopPeerDropForReconnect } from '../services/desktopReconnectGrace';
 import { publishEvent } from '../services/eventBus';
 import {
   consumeDispatchedExpectation,
@@ -1683,6 +1701,51 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
     );
   });
 
+  describe('missed-schedule backup catch-up on connect (#11013)', () => {
+    const agent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const deviceRow = (hasBackupCatchUp: boolean) => ({
+      id: 'device-123', siteId: 'site-test', hostname: 'h', agentVersion: '1', isEphemeral: false, hasBackupCatchUp,
+    });
+
+    beforeEach(() => {
+      vi.mocked(dispatchBackupCatchUpJobs).mockReset();
+      vi.mocked(dispatchBackupCatchUpJobs).mockResolvedValue(1);
+      vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    });
+
+    it('dispatches the device\'s waiting jobs', async () => {
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([deviceRow(true)]) as any);
+
+      await createAgentWsHandlers('agent-123', agent).onOpen({}, wsMock() as any);
+
+      expect(dispatchBackupCatchUpJobs).toHaveBeenCalledWith('device-123');
+    });
+
+    it('pays no further query for a device with nothing waiting', async () => {
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([deviceRow(false)]) as any);
+
+      await createAgentWsHandlers('agent-123', agent).onOpen({}, wsMock() as any);
+
+      expect(dispatchBackupCatchUpJobs).not.toHaveBeenCalled();
+    });
+
+    it('keeps the connection up and reports when the dispatch fails', async () => {
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([deviceRow(true)]) as any);
+      const failure = new Error('redis down');
+      vi.mocked(dispatchBackupCatchUpJobs).mockRejectedValueOnce(failure);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const ws = wsMock();
+
+      await createAgentWsHandlers('agent-123', agent).onOpen({}, ws as any);
+      await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(
+        failure, undefined, { backup_dispatch_issue: 'catch-up-connect-failed' },
+      ));
+
+      expect(ws.close).not.toHaveBeenCalled();
+      errorSpy.mockRestore();
+    });
+  });
+
   it('excludes decommissioned/quarantined rows when flipping a device offline on disconnect', async () => {
     const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
 
@@ -2808,6 +2871,119 @@ describe('agent websocket command results', () => {
     const setArg = sessionSetSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(setArg.status).toBe('disconnected');
     expect('errorMessage' in setArg).toBe(false);
+  });
+
+  describe('#10542 — peer drop during a viewer reconnect', () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const peerDrop = (result: Record<string, unknown> = {}) => ({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-disconnect-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-123', event: 'peer_disconnected', ...result },
+      }),
+    });
+
+    it('holds the end (no terminal write, no token revoke) when the drop follows a viewer reconnect', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      vi.mocked(holdDesktopPeerDropForReconnect).mockResolvedValue('held');
+      vi.mocked(isDesktopSessionOwnedByAgent).mockReturnValue(false);
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123', terminalGeneration: 1 }]) as any);
+
+      await handlers.onMessage(peerDrop() as any, ws as any);
+
+      expect(holdDesktopPeerDropForReconnect).toHaveBeenCalledWith({
+        sessionId: 'session-123',
+        deviceId: 'device-123',
+        stopReason: null,
+        relayOwned: false,
+      });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(revokeViewerSession).not.toHaveBeenCalled();
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    });
+
+    it('Finding #5 unchanged: a drop with no reconnect in flight ends the session and revokes the viewer token at once', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      vi.mocked(holdDesktopPeerDropForReconnect).mockResolvedValue('end_now');
+      const sessionSetSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'session-123', terminalGeneration: 1 }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: sessionSetSpy } as any);
+
+      await handlers.onMessage(peerDrop() as any, ws as any);
+
+      expect(sessionSetSpy).toHaveBeenCalledTimes(1);
+      expect((sessionSetSpy.mock.calls[0]![0] as Record<string, unknown>).status).toBe('disconnected');
+      expect(revokeViewerSession).toHaveBeenCalledWith('session-123');
+    });
+
+    it('passes the agent stop reason through, so a deliberate stop is never held', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      vi.mocked(holdDesktopPeerDropForReconnect).mockResolvedValue('end_now');
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123', terminalGeneration: 1 }]) as any);
+
+      await handlers.onMessage(peerDrop({ stopReason: 'capture failed' }) as any, ws as any);
+
+      expect(holdDesktopPeerDropForReconnect).toHaveBeenCalledWith(
+        expect.objectContaining({ stopReason: 'capture failed' }),
+      );
+      expect(revokeViewerSession).toHaveBeenCalledWith('session-123');
+    });
+
+    it('ends at once when the hold decision itself throws', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(holdDesktopPeerDropForReconnect).mockRejectedValue(new Error('boom'));
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123', terminalGeneration: 1 }]) as any);
+
+      await handlers.onMessage(peerDrop() as any, ws as any);
+
+      expect(db.update).toHaveBeenCalled();
+      expect(revokeViewerSession).toHaveBeenCalledWith('session-123');
+      errSpy.mockRestore();
+    });
+
+    it('tells the hold decision when this agent owns a WebSocket-relay stream for the session', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      vi.mocked(holdDesktopPeerDropForReconnect).mockResolvedValue('end_now');
+      vi.mocked(isDesktopSessionOwnedByAgent).mockReturnValue(true);
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'session-123', terminalGeneration: 1 }]) as any);
+
+      await handlers.onMessage(peerDrop() as any, ws as any);
+
+      expect(holdDesktopPeerDropForReconnect).toHaveBeenCalledWith(expect.objectContaining({ relayOwned: true }));
+    });
+
+    it('a desk-userend report cuts a held session short, bound to the reporting device', async () => {
+      const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws);
+      recordDesktopSessionEndedByUserMock.mockResolvedValue('recorded');
+
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'command_result',
+          commandId: 'desk-userend-session-123',
+          status: 'completed',
+          result: { sessionId: 'session-123', event: 'ended_by_user' },
+        }),
+      } as any, ws as any);
+
+      expect(endHeldDesktopSessionNow).toHaveBeenCalledWith('session-123', 'device-123');
+    });
   });
 
   it('rejects desktop start failures with mismatched session IDs', async () => {
@@ -7497,6 +7673,145 @@ describe('orphaned SNMP poll outcomes (#6021)', () => {
   });
 });
 
+// #4135: the dispatch record that authorizes an orphaned result lives in
+// Redis, so a result that reaches a replica other than the one that sent the
+// command (the agent reconnected elsewhere) is still honored.
+describe('orphaned result expectations are shared across replicas (#4135)', () => {
+  const agentId = 'agent-replica-hop';
+  const snmpDeviceId = '44444444-4444-4444-8444-444444444444';
+  const deviceId = '55555555-5555-4555-8555-555555555555';
+  const orgId = '66666666-6666-4666-8666-666666666666';
+
+  /** One Redis that several replicas would share: a TTL-aware key/value map. */
+  function sharedRedis(entries: Map<string, { value: string; expiresAt: number }> = new Map()) {
+    const live = (key: string): string | null => {
+      const entry = entries.get(key);
+      if (!entry) return null;
+      if (entry.expiresAt <= Date.now()) {
+        entries.delete(key);
+        return null;
+      }
+      return entry.value;
+    };
+    return {
+      entries,
+      status: 'ready',
+      get: vi.fn(async (key: string) => live(key)),
+      set: vi.fn(async (key: string, value: string, _px: 'PX', ttlMs: number) => {
+        entries.set(key, { value, expiresAt: Date.now() + ttlMs });
+        return 'OK';
+      }),
+      getdel: vi.fn(async (key: string) => {
+        const value = live(key);
+        entries.delete(key);
+        return value;
+      }),
+    };
+  }
+
+  async function dispatchSnmpPoll(commandId: string, redis: ReturnType<typeof sharedRedis>) {
+    await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
+    vi.mocked(getRedis).mockReturnValue(redis as never);
+    expect(sendCommandToAgent(agentId, {
+      id: commandId, type: 'snmp_poll', payload: { deviceId: snmpDeviceId },
+    })).toBe(true);
+    await vi.waitFor(() => expect(redis.set).toHaveBeenCalledTimes(1));
+  }
+
+  function failedPoll(commandId: string) {
+    return { type: 'command_result' as const, commandId, status: 'failed' as const, error: 'walk timeout' };
+  }
+
+  function captureSnmpWrites() {
+    const set = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ orgId }]) })) }));
+    vi.mocked(db.update).mockClear().mockReturnValue({ set } as any);
+    return set;
+  }
+
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    vi.mocked(getRedis).mockReturnValue(null);
+    vi.mocked(isRedisAvailable).mockReturnValue(false);
+  });
+
+  it('records the dispatch in Redis with the 30-minute expectation TTL', async () => {
+    const redis = sharedRedis();
+    await dispatchSnmpPoll('snmp-replica-record', redis);
+
+    const [key, value, mode, ttlMs] = redis.set.mock.calls[0]!;
+    expect(key).toBe(orphanedResultExpectationKey(agentId, 'snmp-replica-record'));
+    expect(mode).toBe('PX');
+    expect(ttlMs).toBeGreaterThan(29 * 60 * 1000);
+    expect(ttlMs).toBeLessThanOrEqual(30 * 60 * 1000);
+    expect(JSON.parse(value)).toMatchObject({ agentId, kind: 'snmp', targetId: snmpDeviceId });
+  });
+
+  it('honors a result whose dispatch record exists only in Redis, exactly once', async () => {
+    const dispatcher = sharedRedis();
+    await dispatchSnmpPoll('snmp-replica-consume', dispatcher);
+    // The replica that receives the result sees the same Redis contents.
+    const receiver = sharedRedis(new Map(dispatcher.entries));
+    vi.mocked(getRedis).mockReturnValue(receiver as never);
+    const set = captureSnmpWrites();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await processOrphanedCommandResult(agentId, deviceId, failedPoll('snmp-replica-consume'));
+      expect(set).toHaveBeenCalledWith({ lastError: 'walk timeout', lastErrorAt: expect.any(Date), lastStatus: 'warning' });
+      expect(receiver.getdel).toHaveBeenCalledWith(dispatchedKey(dispatcher));
+      expect(receiver.entries.size).toBe(0);
+
+      await processOrphanedCommandResult(agentId, deviceId, failedPoll('snmp-replica-consume'));
+      expect(set).toHaveBeenCalledTimes(1);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('keeps no in-process copy while Redis is reachable', async () => {
+    await dispatchSnmpPoll('snmp-replica-no-shadow', sharedRedis());
+    // Redis no longer holds the record (another replica consumed it, or it
+    // expired): this process must not resurrect it from memory.
+    vi.mocked(getRedis).mockReturnValue(sharedRedis() as never);
+    const set = captureSnmpWrites();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await processOrphanedCommandResult(agentId, deviceId, failedPoll('snmp-replica-no-shadow'));
+      expect(set).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('honors a monitor result from Redis with a single read (no dispatch peek)', async () => {
+    const redis = sharedRedis();
+    await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
+    vi.mocked(getRedis).mockReturnValue(redis as never);
+    expect(sendCommandToAgent(agentId, {
+      id: 'mon-replica-1', type: 'network_ping', payload: { monitorId: 'monitor-replica' },
+    })).toBe(true);
+    await vi.waitFor(() => expect(redis.set).toHaveBeenCalledTimes(1));
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ id: deviceId, orgId }]) as any);
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    vi.mocked(enqueueMonitorCheckResult).mockResolvedValue('job-1' as never);
+
+    await processOrphanedCommandResult(agentId, deviceId, {
+      type: 'command_result', commandId: 'mon-replica-1', status: 'completed',
+      result: { monitorId: 'monitor-replica', status: 'online', responseMs: 7 },
+    });
+
+    expect(enqueueMonitorCheckResult).toHaveBeenCalledWith(
+      'monitor-replica', expect.objectContaining({ status: 'online' }), expect.anything(), { orgId, deviceId },
+    );
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.getdel).toHaveBeenCalledTimes(1);
+    expect(redis.entries.size).toBe(0);
+  });
+
+  function dispatchedKey(redis: ReturnType<typeof sharedRedis>): string {
+    return redis.set.mock.calls[0]![0];
+  }
+});
+
 
 describe('cleanup supplemental command results', () => {
   beforeEach(() => { vi.resetAllMocks(); });
@@ -7654,6 +7969,10 @@ describe('#6836 — onClose survives a markOffline context-prologue failure', ()
 
     // The failure is reported, not swallowed.
     expect(captureException).toHaveBeenCalledWith(markOfflineFailure);
+
+    // #9520: the admission write slot is returned even though the context never opened.
+    expect(beginOfflineTransitionMock).toHaveBeenCalledWith('close');
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -8385,8 +8704,8 @@ describe('W08 admission integration', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    // resetAllMocks drops the hoisted default; re-arm the not-shedding state.
-    shouldDeferOfflineTransitionMock.mockReturnValue(false);
+    // resetAllMocks drops the hoisted default; re-arm "write now".
+    beginOfflineTransitionMock.mockReturnValue(releaseOfflineWriteMock);
   });
 
   async function openThenClose(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
@@ -8400,18 +8719,31 @@ describe('W08 admission integration', () => {
     await handlers.onClose({}, ws as any);
   }
 
-  it('leaves the offline flip to the offline detector while admission is shedding', async () => {
-    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+  it('leaves the offline flip to the offline detector when admission defers the write', async () => {
+    beginOfflineTransitionMock.mockReturnValue(null);
     await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(beginOfflineTransitionMock).toHaveBeenCalledWith('close');
     expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
-    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('close');
     expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled(); // presence still cleared at once
   });
 
-  it('still flips offline at once when admission is not shedding', async () => {
+  it('flips offline at once when admission admits the write, and returns the write slot after it', async () => {
+    transitionDeviceOfflineMock.mockImplementation(async () => {
+      expect(releaseOfflineWriteMock).not.toHaveBeenCalled();         // held for the whole write
+      return { transitioned: true };
+    });
     await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
     expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
-    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the write slot when the offline write fails (#9520)', async () => {
+    transitionDeviceOfflineMock.mockRejectedValue(new Error('pool timeout'));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    spy.mockRestore();
+    expect(transitionDeviceOfflineMock).toHaveBeenCalled();
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
   });
 
   async function openThenError(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
@@ -8426,18 +8758,25 @@ describe('W08 admission integration', () => {
     spy.mockRestore();
   }
 
-  it('onError leaves the offline flip to the offline detector while admission is shedding', async () => {
-    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+  it('onError leaves the offline flip to the offline detector when admission defers the write', async () => {
+    beginOfflineTransitionMock.mockReturnValue(null);
     await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(beginOfflineTransitionMock).toHaveBeenCalledWith('error');
     expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
-    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('error');
     expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled();
   });
 
-  it('onError still flips offline at once when admission is not shedding', async () => {
+  it('onError flips offline at once when admission admits the write, and returns the write slot after it', async () => {
     await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
     expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
-    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('onError returns the write slot when the offline write fails (#9520)', async () => {
+    transitionDeviceOfflineMock.mockRejectedValue(new Error('pool timeout'));
+    await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).toHaveBeenCalled();
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns the admission setup slot even when onOpen throws', async () => {

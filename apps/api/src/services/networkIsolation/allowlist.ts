@@ -9,9 +9,9 @@ import {
 /**
  * The management-plane allowlist for an isolated device (spec §3.4). The server builds it from its own
  * environment on every isolate and every heartbeat; the agent resolves the host names and installs
- * numeric permits. Neither the AI nor an operator supplies entries: every entry built here is
- * `scope: 'breeze'` (Breeze processes only, where the OS can match a process), and a `scope: 'any'`
- * entry can only arrive through `policyExtras` (the W4 containment policy).
+ * numeric permits. No isolate request supplies entries: every entry built here is `scope: 'breeze'`
+ * (Breeze processes only, where the OS can match a process), and a `scope: 'any'` entry can only arrive
+ * through `policyExtras`, from the saved containment policy.
  *
  * Address literals become single-address `cidr` entries (`/32`, `/128`); `host` entries are DNS names
  * only. Nothing here resolves a name and no resolved address is ever stored (allow_snapshot keeps this

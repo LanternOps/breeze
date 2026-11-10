@@ -36,6 +36,10 @@ describe('WISP_SELF_STATE_TOOLS contract (#10392)', () => {
       raise_concern: 'adds_row',
       link_entity: 'adds_row',
       snooze_concern: 'own_concern',
+      // #10991 W03: a check-in on this grant's own thread; cancel is keyed on the grant.
+      // W07 (#10410): only a notify check-in skips the card; mode run spends grant budget.
+      schedule_check_in: 'notify_check_in',
+      cancel_check_in: 'own_thread',
     });
   });
 
@@ -68,7 +72,7 @@ describe('WISP_SELF_STATE_TOOLS contract (#10392)', () => {
 
   // resolve_concern: resolveConcern always writes a shared (org/partner-owned)
   // concern_outcome memory block — the same reason org/partner remember keeps its card.
-  it.each(['resolve_concern', 'confirm_memory', 'retract_memory', 'create_watch', 'launch_specialist', 'manage_patches', 'execute_command'])(
+  it.each(['resolve_concern', 'confirm_memory', 'retract_memory', 'create_watch', 'launch_specialist', 'manage_patches', 'execute_command', 'list_check_ins'])(
     '%s is not a member',
     (tool) => {
       expect(WISP_SELF_STATE_TOOLS.has(tool)).toBe(false);

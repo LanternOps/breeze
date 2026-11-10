@@ -7,12 +7,13 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // RecoveryKey is one escrowable disk-encryption recovery key. JSON tags match
@@ -218,7 +219,7 @@ func RotateFileVaultKey(username, password, currentRecoveryKey string) (Recovery
 	plist := buildFileVaultAuthPlist(username, password, currentRecoveryKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "fdesetup", "changerecovery", "-personal", "-inputplist")
+	cmd := procspawn.CommandContext(ctx, "fdesetup", "changerecovery", "-personal", "-inputplist")
 	cmd.Stdin = strings.NewReader(plist)
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)

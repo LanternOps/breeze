@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetInvalidStoredSettingsReportsForTest } from './invalidStoredSettingsReport';
 
 // ============================================
 // Mocks for containment resolution. Harness shape copied
@@ -156,18 +157,18 @@ function resolveRows(rows: unknown[]) {
   return resolveContainmentPolicy('device-1');
 }
 
-beforeEach(() => { vi.clearAllMocks(); selectMock.mockReset(); });
+beforeEach(() => { vi.clearAllMocks(); selectMock.mockReset(); resetInvalidStoredSettingsReportsForTest(); });
 
 describe('resolveContainmentPolicy', () => {
   it('no policy returns W1 defaults and their content revision', async () => {
     expect(await resolveRows([])).toEqual({ ...DEFAULTS, revision: DEFAULT_REVISION,
-      isPlatformDefault: true, invalidStoredSettings: false, sourcePolicyId: null, featureLinkId: null });
+      isPlatformDefault: true, invalidStoredSettings: false, sourcePolicyId: null, featureLinkId: null, refusedGroups: [] });
   });
 
   it('unknown device returns the same defaults without querying assignments', async () => {
     selectMock.mockReturnValueOnce(makeChain([]));
     expect(await resolveContainmentPolicy('unknown')).toEqual({ ...DEFAULTS, revision: DEFAULT_REVISION,
-      isPlatformDefault: true, invalidStoredSettings: false, sourcePolicyId: null, featureLinkId: null });
+      isPlatformDefault: true, invalidStoredSettings: false, sourcePolicyId: null, featureLinkId: null, refusedGroups: [] });
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
@@ -206,13 +207,62 @@ describe('resolveContainmentPolicy', () => {
     expect(JSON.stringify(query.where.mock.calls)).not.toContain('self-selected-group');
   });
 
+  describe('refused groups (#10100)', () => {
+    const refused = [
+      { id: 'carries-policy', refusedFields: ['os_version'] },
+      { id: 'no-policy-here', refusedFields: ['hostname'] },
+    ];
+    const reads = (assignments: unknown[], memberships = [{ groupId: 'carries-policy' }, { groupId: 'no-policy-here' }]) => {
+      selectMock.mockReturnValueOnce(makeChain([DEVICE]))
+        .mockReturnValueOnce(makeChain([{ partnerId: 'partner-1', type: 'customer' }]))
+        .mockReturnValueOnce(makeChain(memberships))
+        .mockReturnValueOnce(makeChain(assignments))
+        .mockReturnValueOnce(makeChain([{ targetId: 'carries-policy' }]));
+      vi.mocked(resolveExecutionSafeGroupIds).mockResolvedValueOnce({ allowedGroupIds: [], refusedGroups: refused });
+    };
+    it('names only the refused groups that carry a containment policy', async () => {
+      reads([]);
+      const result = await resolveContainmentPolicy('device-1');
+      expect(result.refusedGroups).toEqual([refused[0]]);
+      expect(result.isPlatformDefault).toBe(true);
+    });
+    it('still gives a refused group nothing: its policy does not win and its permits do not apply', async () => {
+      reads([]);
+      const result = await resolveContainmentPolicy('device-1');
+      expect(result.extraAllow).toEqual([]);
+      expect(JSON.stringify(selectMock.mock.results[3]!.value.where.mock.calls)).not.toContain('carries-policy');
+    });
+    it('looks them up by containment feature, active status and the device-group level', async () => {
+      reads([]);
+      await resolveContainmentPolicy('device-1');
+      const lookup = selectMock.mock.results[4]!.value;
+      expect(JSON.stringify(lookup.innerJoin.mock.calls)).toContain('containment');
+      expect(JSON.stringify(lookup.innerJoin.mock.calls)).toContain('active');
+      const where = JSON.stringify(lookup.where.mock.calls);
+      for (const needle of ['device_group', 'carries-policy', 'no-policy-here']) expect(where).toContain(needle);
+    });
+    it('reports them next to a policy that won from another level', async () => {
+      reads([row({ version: 1 }, 'organization')]);
+      const result = await resolveContainmentPolicy('device-1');
+      expect(result).toMatchObject({ isPlatformDefault: false, refusedGroups: [refused[0]] });
+    });
+    it('does not change the revision: a refusal is not a settings change', async () => {
+      reads([]);
+      expect((await resolveContainmentPolicy('device-1')).revision).toBe(DEFAULT_REVISION);
+    });
+    it('runs no extra query when nothing was refused', async () => {
+      await resolveRows([]);
+      expect(selectMock).toHaveBeenCalledTimes(4);
+    });
+  });
+
   it.each([null, {}, { version: 2 }, { version: 1, extraAllow: [{ host: 'private.example.test', proto: 'tcp', ports: [443], label: 'private', unexpected: true }] }])(
     'malformed stored settings %j fail closed with only issue paths logged', async (settings) => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const result = await resolveRows([row(settings)]);
         expect(result).toEqual({ ...DEFAULTS, revision: expect.stringMatching(/^c1i:[0-9a-f]{32}$/),
-          isPlatformDefault: false, invalidStoredSettings: true, sourcePolicyId: 'policy-link-1', featureLinkId: 'link-1' });
+          isPlatformDefault: false, invalidStoredSettings: true, sourcePolicyId: 'policy-link-1', featureLinkId: 'link-1', refusedGroups: [] });
         // A policy going invalid is itself a revision change.
         expect(result.revision).not.toBe(DEFAULT_REVISION);
         expect(warn).toHaveBeenCalledWith(expect.stringContaining('containment'), {

@@ -3,6 +3,8 @@ import { z } from 'zod';
 export const TOOL_SOURCE_SLUG_RE = /^[a-z][a-z0-9]{1,23}$/;
 export const SOURCE_TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 export const QUALIFIED_TOOL_NAME_MAX = 64;
+export const TOOL_SOURCE_SLUG_MESSAGE =
+  'Slug must be 2-24 characters: lowercase letters and numbers only, starting with a letter (no hyphens or underscores)';
 export const RESERVED_TOOL_SOURCE_SLUGS: ReadonlySet<string> = new Set(['mcp', 'breeze', 'core', 'flow', 'ext']);
 
 const httpsUrl = z.string().url().refine((u) => u.startsWith('https://'), 'must be an https URL');
@@ -22,7 +24,7 @@ export const TOOL_SOURCE_KINDS = ['mcp', 'openapi'] as const;
 
 const sourceCore = z.object({
   name: z.string().min(1).max(120),
-  slug: z.string().regex(TOOL_SOURCE_SLUG_RE).refine((s) => !RESERVED_TOOL_SOURCE_SLUGS.has(s), 'reserved slug'),
+  slug: z.string().regex(TOOL_SOURCE_SLUG_RE, TOOL_SOURCE_SLUG_MESSAGE).refine((s) => !RESERVED_TOOL_SOURCE_SLUGS.has(s), 'reserved slug'),
   kind: z.enum(TOOL_SOURCE_KINDS),
   // For an `openapi` source this is the API BASE url — the origin the
   // credential is pinned to (`credentialOriginFor(endpointUrl)`), and the only

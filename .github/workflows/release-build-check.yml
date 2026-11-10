@@ -35,6 +35,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
+      # No gha layer cache: this runs on PR refs only, where an export is
+      # readable by that PR alone and still counts toward the repo's 10 GB
+      # cache limit (#10762). A cold build fits the 30-minute timeout.
       - name: Build and export release distribution
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
@@ -46,8 +49,6 @@ jobs:
           build-args: |
             APP_VERSION=release-build-check
             PUBLIC_APP_VERSION=release-build-check
-          cache-from: type=gha,scope=release-build-check-${{ matrix.app }}
-          cache-to: type=gha,mode=max,scope=release-build-check-${{ matrix.app }}
 
       # Exercise the same context override as release.yml before a tag publishes
       # an image. No registry credentials or application startup are necessary.

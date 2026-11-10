@@ -6,14 +6,15 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // Seams — swapped by tests (see bmr/restore_linux.go:29 for the pattern).
 var (
 	runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, name, args...).Output()
+		return procspawn.CommandContext(ctx, name, args...).Output()
 	}
 	readFile = os.ReadFile
 	statPath = os.Stat

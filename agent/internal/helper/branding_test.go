@@ -391,7 +391,7 @@ func TestReadHelperConfigRefusesSymlinkWithoutLeak(t *testing.T) {
 func TestReadHelperConfigRefusesOversize(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "helper_config.yaml")
-	big := "pad: " + strings.Repeat("A", maxHelperConfigBytes+10) + "\n"
+	big := "pad: " + strings.Repeat("A", maxUntrustedFileBytes+10) + "\n"
 	if err := os.WriteFile(path, []byte(big), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -412,8 +412,8 @@ func TestReadHelperConfigRefusesOversize(t *testing.T) {
 func TestReadHelperConfigAtLimitStillReads(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "helper_config.yaml")
-	content := "pad: " + strings.Repeat("A", maxHelperConfigBytes-6) + "\n"
-	if len(content) != maxHelperConfigBytes {
+	content := "pad: " + strings.Repeat("A", maxUntrustedFileBytes-6) + "\n"
+	if len(content) != maxUntrustedFileBytes {
 		t.Fatalf("setup: %d", len(content))
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

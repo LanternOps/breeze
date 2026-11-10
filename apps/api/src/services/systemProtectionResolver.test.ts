@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetInvalidStoredSettingsReportsForTest } from './invalidStoredSettingsReport';
 
 // ============================================
 // Mocks for resolveSystemProtectionForDevice (#4609 W03). Harness shape copied
@@ -159,6 +160,7 @@ function row(
 
 describe('resolveSystemProtectionForDevice', () => {
   beforeEach(() => {
+    resetInvalidStoredSettingsReportsForTest();
     vi.clearAllMocks();
     selectMock.mockReset();
   });

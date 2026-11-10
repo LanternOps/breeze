@@ -26,6 +26,11 @@ const job = (name) => {
   return match[1];
 };
 const summary = job('ci-success');
+// W05 (#10749): a job CI Success has a thin `case` arm for may end its `if:` with the
+// clause naming its own id; nothing else may follow the gates pinned here.
+const thinArms = new Set([...summary.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gmu)].map((m) => m[1]));
+const thinOpt = (name) => (thinArms.has(name)
+  ? `(?: && !contains\\(needs\\.changes\\.outputs\\.thin_skip, ',${name},'\\))?` : '');
 const classify = (paths) =>
   spawnSync('bash', [new URL('./classify-pr-paths.sh', import.meta.url).pathname], {
     encoding: 'utf8',
@@ -58,7 +63,7 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
     [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true\napi=true\nweb=true\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=true\nreader_tests=apps/api/src/db/bootstrapDocs.test.ts'],
     [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
     [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true\napi=false\nweb=false\nportal=false\naddins=false\nm365=false\nrust=false\ntopology_browser=false\nagent_code=false\nintegration=true\npath_readers=false\nreader_tests='],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=false\ntopology_browser=false\nagent_code=true\nintegration=true\npath_readers=false\nreader_tests='],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
@@ -86,10 +91,12 @@ test('classifier: app output — the CI-plumbing allowlist is app=false, everyth
     // Explicit exceptions carved OUT of the allowlist → app=true
     [['.github/workflows/ci.yml'], 'app=true'],
     [['.github/scripts/classify-pr-paths.sh'], 'app=true'],
-    // prepare-ci-apt-sources.mjs is consumed by rust-check and
-    // guided-setup-smoke (both HEAVY jobs, not lint/check-migrations/
-    // security-audit), so it must not fast-track past the app gate.
+    // prepare-ci-apt-sources.mjs is consumed by guided-setup-smoke (a HEAVY
+    // job, not lint/check-migrations/security-audit), so it must not fast-track
+    // past the app gate.
     [['.github/scripts/prepare-ci-apt-sources.mjs'], 'app=true'],
+    // tauri-apt.sh installs rust-check's system dependencies.
+    [['.github/scripts/tauri-apt.sh'], 'app=true'],
     // check-agent-binary-signatures.sh is consumed by build-agent (a HEAVY
     // job), so it must not fast-track past the app gate either.
     [['scripts/security/check-agent-binary-signatures.sh'], 'app=true'],
@@ -359,6 +366,8 @@ test('every code job is gated on the classifier', () => {
     // W4 (#10748): advisory provenance written after a green CI Success on any PR
     // (docs-only included); continue-on-error, never a gate. Pinned in queue-selection.test.mjs.
     'provenance-record',
+    // W02 (#10746): dispatch-only replay of the gate verdict; never a gate. Pinned in ci-gate.test.mjs.
+    'ci-gate-replay',
     'docs-check', // gated on the `docs` output instead — it is the one job a docs-only PR must run
     'build-mobile-ios', // inherits the gate through mobile-native-changes (pinned by mobile-native-ci.test.mjs)
     'recovery-media-e2e', // compound gate (code AND agent) — asserted separately below
@@ -376,7 +385,7 @@ test('every code job is gated on the classifier', () => {
   // Per-area jobs carry an extra area clause AFTER the code/app gate; the exact
   // per-area `if:` lines are pinned by ci-area-gating.test.mjs. The prefix is
   // still required here, so a docs-only or tooling-only PR still skips them.
-  const areaGated = /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && (needs\.changes\.outputs\.(api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|\(needs\.changes\.outputs\.api == 'true' \|\| needs\.changes\.outputs\.web == 'true' \|\| needs\.changes\.outputs\.portal == 'true'\))$/mu;
+  const areaGated = (name) => new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true' && (needs\\.changes\\.outputs\\.(api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|\\(needs\\.changes\\.outputs\\.api == 'true' \\|\\| needs\\.changes\\.outputs\\.web == 'true' \\|\\| needs\\.changes\\.outputs\\.portal == 'true'\\))${thinOpt(name)}$`, 'mu');
   for (const name of jobs) {
     if (exempt.has(name)) continue;
     const body = job(name);
@@ -384,14 +393,14 @@ test('every code job is gated on the classifier', () => {
     if (name === 'check-migrations') {
       // code AND api, never app: it is the release-lineage guard for tooling-only PRs.
       assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.api == 'true'$/mu, name);
-    } else if (areaGated.test(body)) {
+    } else if (areaGated(name).test(body)) {
       continue;
     } else if (codeOnly.has(name)) {
       assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, `${name} must be skipped on a docs-only PR, and stay code-only (not app-gated)`);
     } else {
       assert.match(
         body,
-        /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true'$/mu,
+        new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true'${thinOpt(name)}$`, 'mu'),
         `${name} must be skipped on a docs-only OR tooling-only PR`,
       );
     }
@@ -688,6 +697,10 @@ for (const path of [
   '.github/scripts/mobile-native-ci.test.mjs',
   // its drift test (agent/cmd/breeze-backup/ci_gate_test.go) runs in test-agent.
   '.github/scripts/qemu-gate-paths.txt',
+  // apps/api/vitest.integration.config.ts imports it: it shards integration-test (W07a, #10751).
+  '.github/scripts/shard-partition.mjs',
+  // ...and typecheck (tsconfig.tests.json) checks that import against these types.
+  '.github/scripts/shard-partition.d.mts',
 ]) {
   test(`classifier: ${path} is executed by a heavy job, so it is an app change`, () => {
     const r = classify([path]);
@@ -704,8 +717,11 @@ test('every explicit app=true carve-out in the classifier is still referenced by
     '.github/workflows/ci.yml',
     '.github/scripts/classify-pr-paths.sh',
     '.github/scripts/prepare-ci-apt-sources.mjs',
+    '.github/scripts/tauri-apt.sh',
     '.github/scripts/mobile-native-ci.test.mjs',
     '.github/scripts/qemu-gate-paths.txt',
+    '.github/scripts/shard-partition.mjs',
+    '.github/scripts/shard-partition.d.mts',
     'scripts/security/check-agent-binary-signatures.sh',
     'scripts/release/verify-release-images.sh',
   ]) {
@@ -713,6 +729,8 @@ test('every explicit app=true carve-out in the classifier is still referenced by
   }
   const smoke = readFileSync(new URL('../../scripts/smoke-guided-setup.sh', import.meta.url), 'utf8');
   assert.ok(smoke.includes('scripts/release/verify-release-images.sh'));
+  const integrationConfig = readFileSync(new URL('../../apps/api/vitest.integration.config.ts', import.meta.url), 'utf8');
+  assert.ok(integrationConfig.includes("from '../../.github/scripts/shard-partition.mjs'"));
 });
 
 test('the tooling-only path still validates workflow files: lint runs the workflow-security suite', () => {
@@ -995,7 +1013,7 @@ test('integration-test is gated on the integration output, which the changes job
   assert.match(job('changes'), /^      integration: \$\{\{ steps\.classify\.outputs\.integration \}\}$/mu);
   assert.match(
     job('integration-test'),
-    /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && needs\.changes\.outputs\.integration == 'true'$/mu,
+    new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true' && needs\\.changes\\.outputs\\.integration == 'true'${thinOpt('integration-test')}$`, 'mu'),
   );
   assert.match(summary, /^          INTEGRATION_CHANGED: \$\{\{ needs\.changes\.outputs\.integration \}\}$/mu);
   assert.match(

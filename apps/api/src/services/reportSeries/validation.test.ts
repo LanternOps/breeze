@@ -41,6 +41,17 @@ describe('assertSeriesTypeSupported', () => {
     }
   });
 
+  it('series refuses ticket_sla_performance (managed_evidence)', () => {
+    let body: unknown;
+    try {
+      assertSeriesTypeSupported('ticket_sla_performance');
+    } catch (err) {
+      body = (err as { body?: unknown }).body;
+    }
+    expect(codeOf(() => assertSeriesTypeSupported('ticket_sla_performance'))).toBe('series_type_unsupported');
+    expect(body).toEqual({ type: 'ticket_sla_performance', reason: 'managed_evidence' });
+  });
+
   it('refuses managed-evidence types and unknown strings', () => {
     for (const type of ['threat_detection_review', 'endpoint_management_review', 'vulnerability_management', 'identity_access_review', 'nope']) {
       expect(codeOf(() => assertSeriesTypeSupported(type))).toBe('series_type_unsupported');

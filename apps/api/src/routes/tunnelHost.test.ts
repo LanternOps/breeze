@@ -284,7 +284,7 @@ describe('/__bz/ping and reserved paths', () => {
 describe('proxied requests', () => {
   it('runs every gate, forwards the unmodified device path, and refreshes the cookie', async () => {
     const cookie = await enter();
-    const res = await req('/cgi-bin/status.cgi?x=1', sameOrigin(cookie, { authorization: 'Bearer app', referer: `${ORIGIN}/a` }));
+    const res = await req('/cgi-bin/status.cgi?x=1', sameOrigin(cookie, { authorization: 'Bearer app', referer: `${ANCESTOR}/devices` }));
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('device-ok');
     const payload = sendCommandMock.mock.calls[0]![1].payload;
@@ -306,6 +306,36 @@ describe('proxied requests', () => {
     expect(payload.headers.cookie).toEqual(['SID=dev']);
     expect(payload.headers.origin).toEqual(['http://192.168.1.50']);
     expect(Buffer.from(payload.bodyB64, 'base64').toString()).toBe('a=1');
+  });
+
+  // #11458: `Referrer-Policy: no-referrer` makes a browser send `Origin: null`
+  // on a same-origin form POST (a device login form).
+  it('admits a same-origin form POST whose Origin is null and forwards no Origin for it', async () => {
+    const cookie = await enter();
+    const res = await req('/login', { method: 'POST', body: 'pw=x', headers: { cookie, 'sec-fetch-site': 'same-origin', origin: 'null', 'content-type': 'application/x-www-form-urlencoded' } });
+    expect(res.status).toBe(200);
+    const payload = sendCommandMock.mock.calls[0]![1].payload;
+    expect(payload.method).toBe('POST');
+    expect(payload.path).toBe('/login');
+    expect(payload.headers.origin).toBeUndefined();
+  });
+
+  it('still refuses Origin: null from a cross-tunnel or Sec-Fetch-less request, before dispatch', async () => {
+    const cookie = await enter();
+    const variants: Array<Record<string, string>> = [{ 'sec-fetch-site': 'same-site' }, { 'sec-fetch-site': 'cross-site' }, { 'sec-fetch-site': 'none' }, {}];
+    for (const extra of variants) {
+      const res = await req('/login', { method: 'POST', body: 'pw=x', headers: { cookie, origin: 'null', ...extra } });
+      expect(res.status, JSON.stringify(extra)).toBe(403);
+    }
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('forwards a same-tunnel Referer rewritten to the device origin, but never one naming the enter page', async () => {
+    const cookie = await enter();
+    await req('/login', { method: 'POST', body: 'pw=x', headers: { cookie, 'sec-fetch-site': 'same-origin', origin: ORIGIN, referer: `${ORIGIN}/index.htm?lang=it` } });
+    expect(sendCommandMock.mock.calls[0]![1].payload.headers.referer).toEqual(['http://192.168.1.50/index.htm?lang=it']);
+    await req('/', sameOrigin(cookie, { referer: `${ORIGIN}/__bz/enter?t=TKT` }));
+    expect(sendCommandMock.mock.calls[1]![1].payload.headers.referer).toBeUndefined();
   });
 
   it('authenticates a tab with __Host-bzt-top and refreshes that cookie, with Lax device cookies', async () => {

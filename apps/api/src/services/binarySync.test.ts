@@ -2021,6 +2021,139 @@ describe("binarySync", () => {
         expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
       );
     });
+
+    // #11297: backup used to be re-signed with the per-deployment key even
+    // when the staged official manifest covered it, so an agent that trusts
+    // only the official key refused the backup artifact — and because the
+    // agent requires a matching backup artifact before it upgrades, the whole
+    // agent upgrade stalled. Backup now takes the same two tiers as the
+    // agent/user-helper/watchdog/helper loops.
+    describe("backup component (#11297)", () => {
+      function backupRows() {
+        return dbMocks.insertValues.mock.calls
+          .map((c: any[]) => c[0] as Record<string, unknown>)
+          .filter((v) => v.component === "backup");
+      }
+
+      function scanAgentAndBackup() {
+        fsMocks.readdir.mockResolvedValue([
+          "breeze-agent-linux-amd64",
+          "breeze-backup-linux-amd64",
+        ] as any);
+      }
+
+      it("registers a manifest-covered backup binary against the official key, not the per-deployment re-sign", async () => {
+        setLocalScanEnv();
+        scanAgentAndBackup();
+        const checksum = localAssetChecksum();
+        const official = makeOfficialLocalManifest([
+          { name: "breeze-agent-linux-amd64", sha256: checksum, size: 18, edition: "self-host" },
+          { name: "breeze-backup-linux-amd64", sha256: checksum, size: 18, edition: "self-host" },
+        ]);
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+        mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
+
+        await syncBinaries();
+
+        const rows = backupRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          component: "backup",
+          platform: "linux",
+          architecture: "amd64",
+          signingKeyId: "release-artifact-manifest-ed25519",
+          releaseManifest: official.manifest.toString("utf8"),
+          checksum,
+        });
+        expect(rows[0]!.downloadUrl).toContain("/agents/download/backup/linux/amd64");
+        // Both assets were covered — the per-deployment key signed nothing.
+        expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
+      });
+
+      it("falls back to per-deployment re-signing for a backup binary the manifest does not cover", async () => {
+        setLocalScanEnv();
+        scanAgentAndBackup();
+        const checksum = localAssetChecksum();
+        const official = makeOfficialLocalManifest([
+          { name: "breeze-agent-linux-amd64", sha256: checksum, size: 18, edition: "self-host" },
+        ]);
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+        mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
+
+        await syncBinaries();
+
+        const rows = backupRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ signingKeyId: "deploy-test-aaaaaaaa" });
+        expect(manifestSigningMocks.signManifest).toHaveBeenCalledTimes(1);
+      });
+
+      it("splits a mixed backup set: the covered arch registers officially, the uncovered arch is re-signed, each exactly once", async () => {
+        setLocalScanEnv();
+        fsMocks.readdir.mockResolvedValue([
+          "breeze-agent-linux-amd64",
+          "breeze-backup-linux-amd64",
+          "breeze-backup-linux-arm64",
+        ] as any);
+        const checksum = localAssetChecksum();
+        const official = makeOfficialLocalManifest([
+          { name: "breeze-agent-linux-amd64", sha256: checksum, size: 18, edition: "self-host" },
+          { name: "breeze-backup-linux-amd64", sha256: checksum, size: 18, edition: "self-host" },
+        ]);
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+        mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
+
+        await syncBinaries();
+
+        const rows = backupRows();
+        expect(rows).toHaveLength(2);
+        expect(rows.find((r) => r.architecture === "amd64")).toMatchObject({
+          signingKeyId: "release-artifact-manifest-ed25519",
+        });
+        expect(rows.find((r) => r.architecture === "arm64")).toMatchObject({
+          signingKeyId: "deploy-test-aaaaaaaa",
+        });
+        expect(manifestSigningMocks.signManifest).toHaveBeenCalledTimes(1);
+      });
+
+      it("excludes a backup binary the manifest refused from BOTH tiers (fail closed, D4 #3836)", async () => {
+        setLocalScanEnv();
+        scanAgentAndBackup();
+        const checksum = localAssetChecksum();
+        const official = makeOfficialLocalManifest([
+          { name: "breeze-agent-linux-amd64", sha256: checksum, size: 18, edition: "self-host" },
+          // Checksum disagrees with the local file → present but refused.
+          { name: "breeze-backup-linux-amd64", sha256: "b".repeat(64), size: 18, edition: "self-host" },
+        ]);
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+        mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        try {
+          await syncBinaries();
+
+          expect(backupRows()).toHaveLength(0);
+          // The operator is told backup auto-update is unavailable, not that
+          // the scanned binary "registered".
+          expect(
+            warnSpy.mock.calls.some((args) =>
+              String(args[0] ?? "").includes("Every local backup binary was refused"),
+            ),
+          ).toBe(true);
+          expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
+          expect(
+            errorSpy.mock.calls.some((args) =>
+              String(args[0] ?? "").includes("Checksum mismatch") &&
+              String(args[0] ?? "").includes("breeze-backup-linux-amd64"),
+            ),
+          ).toBe(true);
+        } finally {
+          errorSpy.mockRestore();
+          warnSpy.mockRestore();
+        }
+      });
+    });
   });
 
   // D4 (#3836): registerFromOfficialManifest's per-binary catch used to treat

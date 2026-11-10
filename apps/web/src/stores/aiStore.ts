@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
+import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel, WispFirstLookState } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
 import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
@@ -63,9 +63,18 @@ export type WispState = {
    * does not carry it); `null` = not paused.
    */
   pausedReason?: string | null;
+  /** #11145: how the grant's first look stands, for the surfaces with no timeline. `undefined` = not known. */
+  firstLookState?: WispFirstLookState;
   /** W05 spend meter (w00 A32): cents charged today under the grant, and when the UTC day resets. */
   spentTodayCents?: number;
   budgetResetsAt?: string;
+  /** #10414: the day's spend split into background work and chat (whole cents; they sum to `spentTodayCents`). Absent from an older server. */
+  backgroundCents?: number;
+  chatCents?: number;
+  /** #10973: the grant's unattended-reads switch is effective (the server's pinned AND live answer). */
+  unattendedReads?: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to the daily budget. */
+  summaryRefine?: boolean;
 } | null;
 
 export type WispTalkFocusRequest = {
@@ -180,6 +189,8 @@ interface AiState {
   updateWisp: (patch: Partial<NonNullable<WispState>>) => void;
   /** Close the current session and leave Wisp mode. */
   exitWispMode: () => Promise<void>;
+  /** #10289: close the current session and open a Breeze AI chat with no grant, even while one is active. */
+  startPlainChat: () => Promise<void>;
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
@@ -404,19 +415,23 @@ const claimSessionOwnership = (): (() => boolean) => {
 };
 
 /**
- * True while sendMessage re-sends a message after rolling a Wisp session at
- * the turn limit: a second refusal on the fresh session is shown, not retried.
+ * True while sendMessage re-sends a message after rolling a Wisp session (at
+ * the turn limit, or because the server had expired it): a second refusal on
+ * the fresh session is shown, not retried.
  */
-let resendingAfterTurnLimit = false;
+let resendingAfterRoll = false;
 
 /**
- * A Wisp thread is one conversation; its sessions are chunks with a turn
- * budget (`ai_sessions.max_turns`). When a chunk is spent, close it (its
- * summary lands on the thread) and open the next one under the same grant
- * and focus — what setWispFocus does for a focus change. True when the
- * store is bound to the new session.
+ * A Wisp thread is one conversation; its sessions are chunks. Open the next
+ * one under the same grant and focus — what setWispFocus does for a focus
+ * change. True when the store is bound to the new session.
+ *
+ * At the turn limit (`ai_sessions.max_turns`) the spent chunk is closed first
+ * (its summary lands on the thread). `closeOld: false` (#11430) is for a
+ * session the server already expired: it is retired there, and a close would
+ * re-stamp it 'closed'.
  */
-async function rollWispSession(get: AiGet, model?: AiModelChoice): Promise<boolean> {
+async function rollWispSession(get: AiGet, model?: AiModelChoice, opts: { closeOld?: boolean } = {}): Promise<boolean> {
   const w = get().wisp;
   if (!w) return false;
   // The thread keeps its model across chunks: the pick for the refused
@@ -427,7 +442,10 @@ async function rollWispSession(get: AiGet, model?: AiModelChoice): Promise<boole
       ? { offeringId: picker.current.offeringId, options: { ...(picker.current.options ?? {}) } }
       : undefined);
   const oldSessionId = get().sessionId;
-  if (oldSessionId) {
+  if (oldSessionId && opts.closeOld === false) {
+    // What a successful close does to the picker: it belongs to the old session.
+    resetModelPicker();
+  } else if (oldSessionId) {
     await get().closeSession();
     // A failed close leaves the old session bound (and open on the server);
     // the roll goes ahead, but say so rather than letting the next create
@@ -1119,21 +1137,47 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
-        if (refusal === 'turn_limit' && get().wisp && !resendingAfterTurnLimit) {
+        if (refusal === 'turn_limit' && get().wisp && !resendingAfterRoll) {
           // Nothing ran: roll the thread to a fresh session and carry this
           // message over. The optimistic bubble is re-added by the re-send.
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           if (!ownsStream()) return;
           if (await rollWispSession(get, model)) {
-            resendingAfterTurnLimit = true;
+            resendingAfterRoll = true;
             try {
               await get().sendMessage(trimmedContent);
             } finally {
-              resendingAfterTurnLimit = false;
+              resendingAfterRoll = false;
             }
             return;
           }
           set({ error: extractApiError(data, 'Failed to send message'), errorCode: code });
+          return;
+        }
+
+        if (refusal === 'expired' && get().wisp && !resendingAfterRoll) {
+          // #11430: the server retired this session (idle, 24 h cap, or a
+          // restart left the row behind) before the turn ran. One thread per
+          // grant, so the user never chose this session: open the next one and
+          // carry the message over, as at the turn limit — no banner, no toast.
+          // The old session is not closed: the server already retired it (and
+          // finalizes its thread summary, best effort).
+          set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
+          if (!ownsStream()) return;
+          if (await rollWispSession(get, model, { closeOld: false })) {
+            console.info(`[AiStore] Wisp session ${currentSessionId} had expired; continuing the thread on a fresh session`);
+            resendingAfterRoll = true;
+            try {
+              await get().sendMessage(trimmedContent);
+            } finally {
+              resendingAfterRoll = false;
+            }
+            return;
+          }
+          // The failed create already said why (keep it); otherwise the 410's own text.
+          set(get().error
+            ? { composerDraft: trimmedContent }
+            : { composerDraft: trimmedContent, error: extractApiError(data, 'Failed to send message'), errorCode: code });
           return;
         }
 
@@ -1769,6 +1813,20 @@ export const useAiStore = create<AiState>()(
     // surfaced over the plain chat the user is returning to.
     if (get().sessionId) await get().closeSession();
     set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
+  },
+
+  startPlainChat: async () => {
+    // A "Talk to Wisp" still in flight must not put the grant back afterwards,
+    // and a newer Talk (or a second pick) during the close wins over this one.
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    if (get().wisp) await get().exitWispMode();
+    else if (get().sessionId) await get().closeSession();
+    if (sequence !== wispTalkSequence) return;
+    // Unbind even after a failed close, or a rehydrating grant could still
+    // claim the old session. createSession sends no grant once `wisp` is null.
+    set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
+    await get().createSession();
   },
     }),
     {

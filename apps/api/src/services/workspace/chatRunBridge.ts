@@ -30,10 +30,12 @@
  * context could be reused, and the org axis is re-asserted in the predicate.
  */
 import Redis from 'ioredis';
-import { and, eq } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
 import type { AiRunResultArtifactRef } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import { aiAgentRuns } from '../../db/schema';
+import { actionIntents } from '../../db/schema/actionIntents';
+import { wrapUntrustedData } from '../aiInputSanitizer';
 import { aiRunArtifacts } from '../../db/schema/aiWorkspace';
 import { resolveRedisUrl } from '../redis';
 import { streamingSessionManager, type ActiveSession } from '../streamingSessionManager';
@@ -55,17 +57,26 @@ export interface WatchedRun {
   orgId: string;
 }
 
+/** `awaiting_approval` (#11084): a device-troubleshooting run settled with steps waiting for a person. */
+export type RunDeliveryStatus = 'completed' | 'failed' | 'awaiting_approval';
+
 export interface PendingRunResult {
   runId: string;
-  status: 'completed' | 'failed';
+  status: RunDeliveryStatus;
+  /** The run's profile; `device_troubleshooting` changes how the result is worded to the model. */
+  profile?: string;
   summary: string | null;
   artifacts: AiRunResultArtifactRef[];
+  pendingIntentCount?: number;
 }
 
 interface RunDelivery {
-  status: 'completed' | 'failed';
+  status: RunDeliveryStatus;
+  profile?: string;
   summary: string | null;
   artifacts: AiRunResultArtifactRef[];
+  /** Set with `awaiting_approval` only: the run's intents still pending a decision. */
+  pendingIntentCount?: number;
 }
 
 type RunReader = (runId: string, orgId: string) => Promise<RunDelivery | null>;
@@ -81,7 +92,7 @@ async function readRunForDelivery(runId: string, orgId: string): Promise<RunDeli
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [run] = await db
-        .select({ status: aiAgentRuns.status, summary: aiAgentRuns.summary })
+        .select({ status: aiAgentRuns.status, profile: aiAgentRuns.profile, summary: aiAgentRuns.summary })
         .from(aiAgentRuns)
         .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId)))
         .limit(1);
@@ -97,12 +108,35 @@ async function readRunForDelivery(runId: string, orgId: string): Promise<RunDeli
         .from(aiRunArtifacts)
         .where(and(eq(aiRunArtifacts.runId, runId), eq(aiRunArtifacts.orgId, orgId)));
 
+      // `bytes` is a bigint column: Drizzle hands it back as a string on some
+      // drivers, and the wire type is a number.
+      const refs = artifacts.map((a) => ({ ...a, bytes: Number(a.bytes) }));
+      if (run.status === 'awaiting_approval') {
+        // The count is decoration on a delivery that has already been unwatched:
+        // a failed read leaves it unset (the card says "steps are waiting"), and
+        // never costs the person the result.
+        let pendingIntentCount: number | undefined;
+        try {
+          const [pending] = await withDbTransaction(() => db
+            .select({ n: count() })
+            .from(actionIntents)
+            .where(and(
+              eq(actionIntents.requestingAgentRunId, runId),
+              eq(actionIntents.orgId, orgId),
+              eq(actionIntents.status, 'pending_approval'),
+            )));
+          pendingIntentCount = Number(pending?.n ?? 0);
+        } catch (err) {
+          console.error('[ChatRunBridge] pending intent count failed', { runId, err });
+          captureException(err);
+        }
+        return { status: 'awaiting_approval' as const, profile: run.profile, summary: run.summary, artifacts: refs, pendingIntentCount };
+      }
       return {
         status: run.status === 'completed' ? ('completed' as const) : ('failed' as const),
+        profile: run.profile,
         summary: run.summary,
-        // `bytes` is a bigint column: Drizzle hands it back as a string on some
-        // drivers, and the wire type is a number.
-        artifacts: artifacts.map((a) => ({ ...a, bytes: Number(a.bytes) })),
+        artifacts: refs,
       };
     }),
   );
@@ -212,6 +246,23 @@ export function watchRunForSession(watch: WatchedRun): void {
   getChatRunBridge().watch(watch);
 }
 
+/**
+ * #11084 — attach a Wisp hand-off to the chat that made it, when that chat can
+ * take the delivery. A partner-wide Wisp chat can hand off a device in another
+ * org; `deliverRunEvent`'s tenant assertion stays strict, so such a run is not
+ * watched rather than reported as a registry bug. Its card still polls. Returns
+ * whether the watch was registered.
+ */
+export function watchRunForOriginSession(watch: WatchedRun): boolean {
+  const session = streamingSessionManager.get(watch.sessionId);
+  if (!session || session.orgId !== watch.orgId || session.breezeSessionId !== watch.sessionId) {
+    incChatRunDelivery('not_attached');
+    return false;
+  }
+  getChatRunBridge().watch(watch);
+  return true;
+}
+
 export function unwatchRun(runId: string): void {
   getChatRunBridge().unwatch(runId);
 }
@@ -222,7 +273,9 @@ export async function shutdownChatRunBridge(): Promise<void> {
   instance = null;
 }
 
-const TERMINAL_EVENT_TYPES = new Set(['ai.agent.run.completed', 'ai.agent.run.failed']);
+// #11084: `awaiting_approval` is terminal for an agent run (it never resumes;
+// a person's decision releases each intent on its own), so it is a delivery.
+const TERMINAL_EVENT_TYPES = new Set(['ai.agent.run.completed', 'ai.agent.run.failed', 'ai.agent.run.awaiting_approval']);
 
 /**
  * The pure half: one published event → at most one SSE publish and one queued
@@ -308,12 +361,13 @@ export async function deliverRunEvent(event: {
     status: delivery.status,
     summary: delivery.summary,
     artifacts: delivery.artifacts,
+    ...(delivery.pendingIntentCount !== undefined ? { pendingIntentCount: delivery.pendingIntentCount } : {}),
   });
 
   const pending: PendingRunResult[] = session.pendingRunResults ?? (session.pendingRunResults = []);
   pending.push({ runId, ...delivery });
   while (pending.length > MAX_PENDING_RUN_RESULTS) pending.shift();
-  incChatRunDelivery(delivery.status === 'completed' ? 'completed' : 'failed');
+  incChatRunDelivery(delivery.status);
 }
 
 /**
@@ -342,8 +396,13 @@ export function drainPendingRunResults(session: ActiveSession): string | null {
         .map((a) => `  - ${a.name} (${a.bytes} bytes, ${a.contentType}, handle ${a.handle})`)
         .join('\n')
       : '  (none)';
-    const summary = result.summary ?? '(no summary was produced)';
-    return `Analysis run ${result.runId} ${result.status}.\nSummary: ${summary}\nFiles it produced:\n${artifacts}`;
+    // The summary is model-written, often from device output (rule 6a): fenced as DATA.
+    const summary = result.summary ? wrapUntrustedData('agent_run_summary', result.summary) : '(no summary was produced)';
+    const waiting = result.status === 'awaiting_approval' && result.pendingIntentCount !== 0
+      ? `\nSteps waiting for approval: ${result.pendingIntentCount ?? 'some'} (in /approvals).`
+      : '';
+    const label = result.profile === 'device_troubleshooting' ? 'Device troubleshooting run' : 'Run';
+    return `${label} ${result.runId} ${result.status}.${waiting}\nSummary: ${summary}\nFiles it produced:\n${artifacts}`;
   });
 
   return [

@@ -44,7 +44,7 @@ const MESSAGES: Readonly<Record<SpecialistRefusal, string>> = Object.freeze({
   budget_exhausted: "This Wisp grant has used today's AI budget. Try again tomorrow.",
   permission_missing: 'This specialist needs a permission that the Wisp grant or the person asking does not hold.',
   workspace_execute_required: 'Sandbox analysis needs the ai_workspace:execute permission, in the Wisp grant and for the person asking.',
-  unknown_kind: 'That is not a specialist kind. Use sweep, analysis, operator_recipe, patch_plan, remediation_research or bulk_ticket_reply.',
+  unknown_kind: 'That is not a specialist kind. Use sweep, analysis, operator_recipe, patch_plan, remediation_research, bulk_ticket_reply, device_troubleshooting or assessment.',
   invalid_params: 'The params do not fit this specialist kind (see detail). Correct the call and try again.',
   device_not_in_org: 'That device is not in this organization.',
   no_sweep_schedule: `No enabled health-sweep schedule covers this organization. Turn one on under ${AGENTS_SETTINGS}, then ask again.`,
@@ -53,15 +53,28 @@ const MESSAGES: Readonly<Record<SpecialistRefusal, string>> = Object.freeze({
   admission_skipped: 'The agent did not accept the run (see detail): a limit, cooldown, maintenance window or budget stopped it. Try again later.',
   too_many_requests: 'An assessment can request only a few specialists at a time.',
   bulk_reply_incomplete: 'The bulk reply stopped part-way or sent nothing. Check the report before sending again.',
+  continuation_refused: 'That earlier troubleshooting run cannot be continued from here (see detail). Start a new run instead.',
 });
 
 /** Sentences for the `detail` a code carries, where the detail changes the next step. */
 const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Record<string, string>>>>> = Object.freeze({
+  // #10406: a chat-only kind (assessment) asked for by an assessment or its card.
+  unknown_kind: { chat_only: 'Only a person in chat can start a Wisp assessment; an assessment cannot start another one.' },
   wisp_disabled: { ai_kill_switch: 'AI actions are paused by the AI kill switch. An administrator has to lift it.' },
   org_out_of_ceiling: { site_restricted: 'This Wisp grant is limited to specific sites, and specialists work on a whole organization.' },
   invalid_params: {
     unknown_recipe: 'That recipe (workflowKey and workflowVersion) is not a released Operator recipe.',
     actor_required: 'A bulk ticket reply needs a person to approve the exact tickets and message.',
+  },
+  // #11085: why a device_troubleshooting run cannot be continued.
+  continuation_refused: {
+    not_found: 'That earlier run was not found.',
+    not_troubleshooting: 'Only a device troubleshooting run can be continued.',
+    other_org: 'That earlier run belongs to another organization.',
+    other_device: 'That earlier run worked on a different device. Continue it on the same device.',
+    other_grant: 'That earlier run was started under a different Wisp grant.',
+    not_settled: 'That earlier run is still running. Wait for it to finish, then continue it.',
+    chain_limit: 'That run has already been continued as far as allowed. Start a new run instead.',
   },
   // Admission skips (runService AgentRunSkipReason) that a person can act on.
   admission_skipped: {
@@ -72,6 +85,10 @@ const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Recor
     analysis_not_available: 'Sandbox analysis is not available on this server.',
     enqueue_failed: 'The run could not be queued. Try again in a minute.',
     grant_refused: 'The Wisp grant no longer allows this run.',
+    // #10406: the on-demand assessment launcher.
+    no_open_alerts: 'No organization this Wisp grant can assess has open alerts, so there is nothing to go through.',
+    no_assessable_orgs: 'This Wisp grant cannot assess that organization: it reaches it only through specific sites, or a needed permission is missing.',
+    queue_unavailable: 'The assessments could not be queued. Try again in a minute.',
   },
 });
 

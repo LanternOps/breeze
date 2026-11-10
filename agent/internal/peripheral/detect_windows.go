@@ -4,8 +4,9 @@ package peripheral
 
 import (
 	"encoding/json"
-	"os/exec"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type wmiPnPEntity struct {
@@ -25,7 +26,7 @@ func DetectPeripherals() ([]DetectedPeripheral, error) {
 		`Select-Object Name, Manufacturer, DeviceID, PNPClass, Service, Status | ` +
 		`ConvertTo-Json -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err

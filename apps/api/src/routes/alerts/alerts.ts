@@ -1,17 +1,15 @@
-import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { isDeviceOwned } from '../../services/alertOwner';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
 import { z } from 'zod';
 import { and, or, eq, ne, sql, desc, gte, lte, inArray, isNull, notExists, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import {
   aiAlertVerdicts,
   alertCorrelationGroups,
   alertCorrelationMembers,
   alertRules,
-  alertTemplates,
   alerts,
   notificationChannels,
   alertNotifications,
@@ -23,6 +21,7 @@ import {
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { isAutomationPrincipal, isFlowPrincipal } from '../../middleware/principalKind';
 import { setCooldown } from '../../services/alertCooldown';
+import { lifecycleForAlert } from '../../services/alertLifecycle/resolve';
 import {
   ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
   ALERT_CAS_LOST_MESSAGE,
@@ -748,7 +747,8 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          // Savepoint so a failed UPDATE rolls back and later iterations still run (#11203).
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'acknowledged',
@@ -756,7 +756,7 @@ alertsRoutes.post(
               acknowledgedBy: auth.user.id,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else if (action === 'suppress') {
           // A resolved or dismissed alert can't be suppressed (matches the single endpoint).
           if (alert.status === 'resolved' || alert.status === 'dismissed') {
@@ -764,14 +764,14 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'suppressed',
               suppressedUntil,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else if (action === 'dismiss') {
           // Dismiss is terminal and valid from ANY other status — it exists
           // precisely so already-resolved alerts can be cleared for good.
@@ -780,7 +780,7 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'dismissed',
@@ -788,14 +788,14 @@ alertsRoutes.post(
               dismissedBy: auth.user.id,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else {
           if (alert.status === 'resolved' || alert.status === 'dismissed') {
             results.skipped++;
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'resolved',
@@ -804,7 +804,7 @@ alertsRoutes.post(
               resolutionReason: 'manual',
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         }
         if (written.length === 0) {
           // Status changed between our snapshot and the write — don't emit
@@ -1043,23 +1043,9 @@ alertsRoutes.post(
     }
     try {
       if (alert.ruleId && isDeviceOwned(alert)) {
-        const [rule] = await db
-          .select()
-          .from(alertRules)
-          .where(eq(alertRules.id, alert.ruleId))
-          .limit(1);
-
-        if (rule) {
-          const [template] = await db
-            .select()
-            .from(alertTemplates)
-            .where(eq(alertTemplates.id, rule.templateId))
-            .limit(1);
-
-          const overrides = rule.overrideSettings as Record<string, unknown> | null;
-          const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-            template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
-          await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+        const lifecycle = await lifecycleForAlert(alert);
+        if (lifecycle) {
+          await setCooldown(alert.ruleId, alert.deviceId, lifecycle.cooldownMinutes, alert.subjectKey ?? undefined);
         }
       }
     } catch (error) {

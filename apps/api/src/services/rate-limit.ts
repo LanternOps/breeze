@@ -184,13 +184,14 @@ export async function rateLimiter(
     // exactly the number a well-behaved client reads to decide when to retry
     // (#3984).
     //
-    // NOTE on current callers: both `refundOnReject: true` call sites
-    // (apps/api/src/routes/auth/login.ts's /auth/refresh limiter, and
-    // pamReconciliationRateLimit.ts) pass `cost = 1`, and at cost 1 a
+    // NOTE on current callers: the `refundOnReject: true` call sites
+    // (apps/api/src/routes/auth/login.ts's /auth/refresh limiter,
+    // pamReconciliationRateLimit.ts, and middleware/rateLimitBudget.ts) pass
+    // `cost = 1`, and at cost 1 a
     // rejection means `count` was already `>= limit + 1` BEFORE this call's
     // own entry, so refunding just this call's own 1 entry never brings
     // `effectiveCount` below `limit` — `remaining` is still correctly 0
-    // either way. This fix has no observable effect on those two call sites
+    // either way. This fix has no observable effect on those call sites
     // today; it corrects the general `rateLimiter()` contract for any
     // caller (present or future) that passes a weighted `cost > 1`, where a
     // single rejected call CAN refund enough to restore real capacity.

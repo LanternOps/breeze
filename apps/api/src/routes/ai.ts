@@ -37,6 +37,7 @@ import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } f
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { redactPersistedToolInput } from '../services/aiToolOutput';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { exitPreStreamTiming, timePreStreamPhase, withPreStreamTiming } from '../services/aiPreStreamTiming';
 import { registerAiAttachRoute } from './aiAttach';
 import { drainPendingRunResults } from '../services/workspace/chatRunBridge';
 import {
@@ -57,7 +58,7 @@ import {
   toolRateLimitMultiplierSchema,
 } from '../services/aiToolRateLimits';
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, isNotNull, isNull, ne, notExists, notInArray, or, sql as drizzleSql, type SQL } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
@@ -75,6 +76,7 @@ import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { persistAutoSessionTitle } from '../services/aiSessionTitle';
+import { expireIfStale, isExpirableChatSession } from '../services/aiSessionExpiry';
 import {
   draftTicketFromTranscript,
   ThinTranscriptError,
@@ -96,6 +98,8 @@ import { oneShotUnavailableAnswer } from '../services/aiModels/oneShotUnavailabl
 import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { resolveSessionTurn } from '../services/aiModels/sessionModel';
 import { loadContinuationSummary, withContinuationContext } from '../services/aiModels/continuation';
+// A leaf module (db + sanitizer): it does not load the Wisp graph.
+import { loadFiredCheckIns, markCheckInsConsumed, renderCheckInBlock, type FiredCheckIn } from '../services/wisp/checkInTurn';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
@@ -108,6 +112,8 @@ import type { PreparedTopologyInvestigation } from '../services/topology/aiInves
 const loadTopologyTurn = () => import('./aiTopologyTurn');
 // W05 (#7603): the continuation handler, loaded on first use for the same reason.
 const loadSessionContinuation = () => import('./aiSessionContinue');
+// #10426: the Wisp standing-state block, only for a Wisp session (it loads the Wisp graph).
+const loadStandingStateTurn = () => import('../services/wisp/standingStateTurn');
 /** Topology sessions get a fixed title: no model or evidence text ever names a session. */
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import {
@@ -344,12 +350,30 @@ aiRoutes.get(
       return c.json({ error: 'Session not found' }, 404);
     }
 
+    // #11430: a client resumes from this read, so it must not call a session
+    // 'active' that the next send refuses with 410. A chat session past the
+    // send's own age/idle rule, with no turn running, is stamped 'expired' here
+    // (Wisp summary finalized after commit) and reported as such. The stamp is
+    // housekeeping: if it fails, the read still answers (savepoint, so the
+    // request transaction survives) and the idle sweep retires the row later.
+    let session = result.session;
+    if (isExpirableChatSession(session)) {
+      try {
+        if (await withDbTransaction(() => expireIfStale(result.session, Date.now(), { unlessTurnInFlight: true }))) {
+          session = { ...session, status: 'expired' as const };
+        }
+      } catch (err) {
+        console.error(`[AI] Could not stamp stale session ${sessionId} expired on read; the idle sweep will retire it:`, err);
+        captureException(err);
+      }
+    }
+
     // W05: what ran the last turn, persisted on the (owner-bound) session row
     // — no extra query, and never a guess from ledger rows (D13). Parsed, so
     // an unrecognised stored value reads as absent; the web store reads it
     // off `session`, the plan's contract names the top-level field.
-    const lastTurnModel = lastTurnModelOf(result.session);
-    return c.json({ ...result, session: { ...result.session, lastTurnModel }, lastTurnModel });
+    const lastTurnModel = lastTurnModelOf(session);
+    return c.json({ ...result, session: { ...session, lastTurnModel }, lastTurnModel });
   }
 );
 
@@ -794,7 +818,9 @@ aiRoutes.post(
   requireAiUse,
   requireMfa(),
   zValidator('json', sendAiMessageSchema),
-  async (c) => {
+  // #11004: everything before streamSSE returns runs on the main thread ahead
+  // of the first byte; time it per phase and warn once when a phase is slow.
+  async (c) => withPreStreamTiming('chat.message', { sessionId: c.req.param('id') }, async () => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
     const body = c.req.valid('json');
@@ -808,7 +834,7 @@ aiRoutes.post(
     // Pre-flight checks (rate limits, budget, session status, input sanitization).
     // #10415: not wrapped in inRequestDb — the pre-flight opens its own DB
     // phases with it and runs the Redis rate limit between them.
-    const preflight = await runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c, body.model, inRequestDb);
+    const preflight = await timePreStreamPhase('preflight', () => runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c, body.model, inRequestDb));
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_not_configured') return c.json(AI_NOT_CONFIGURED_BODY, 503);
@@ -821,7 +847,8 @@ aiRoutes.post(
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
-      if (err.includes('expired')) return c.json({ error: err }, 410);
+      // #11430: coded so a client can tell a retired session (nothing ran; a fresh one can carry the message) from any other refusal.
+      if (err.includes('expired')) return c.json({ error: err, code: 'session_expired' }, 410);
       return c.json({ error: err }, 400);
     }
 
@@ -874,7 +901,7 @@ aiRoutes.post(
     // turn (below), never the system prompt. Read here, in its own short
     // caller-scoped context, before anything is reserved or claimed.
     const continuationSummary = !topology && dbSession.continuedFromSessionId && !dbSession.sdkSessionId
-      ? await inRequestDb(() => loadContinuationSummary(sessionId))
+      ? await timePreStreamPhase('continuationSummary', () => inRequestDb(() => loadContinuationSummary(sessionId)))
       : null;
     if (!topology && dbSession.continuedFromSessionId && !dbSession.sdkSessionId && continuationSummary === null) {
       // The continuation was created with a summary; it is gone (or unreadable).
@@ -883,6 +910,55 @@ aiRoutes.post(
         orgId: dbSession.orgId, sessionId, continuedFromSessionId: dbSession.continuedFromSessionId,
       });
       captureException(new Error('continuation summary missing on first turn'), undefined, { org_id: dbSession.orgId });
+    }
+
+    // Wisp check-in timers W04 (#10995; spec §4): check-ins this grant's
+    // timers fired since the last turn ride on THIS turn as delimited,
+    // sanitised, untrusted background (services/wisp/checkInTurn.ts) — never
+    // the system prompt. Read here, before anything is reserved or claimed;
+    // consumed only once the turn is dispatched (below), so a refused turn
+    // leaves them for the next one. A failed read never blocks the turn.
+    // Only the rows actually rendered into the block are consumed later.
+    let firedCheckIns: FiredCheckIn[] = [];
+    let checkInBlock: string | null = null;
+    const wispGrantId = !topology ? dbSession.wispGrantId : null;
+    if (wispGrantId) {
+      try {
+        const rows = await inRequestDb(() => loadFiredCheckIns(wispGrantId, auth.user.id));
+        checkInBlock = renderCheckInBlock(rows);
+        firedCheckIns = rows;
+      } catch (err) {
+        console.warn('[AI] failed to read fired Wisp check-ins; sending the turn without them', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_check_in_phase: 'read' }, { fingerprint: ['wisp-check-in-turn', 'read'] });
+      }
+    }
+
+    // #10426: Wisp's standing state (loop cadence, first look, concerns,
+    // watches, check-ins, spend, alerts) rides on THIS turn ahead of the
+    // check-ins, so the system prompt stays cache-stable
+    // (services/wisp/standingStateTurn.ts; facts cached up to 60 s). Null
+    // when nothing changed since the last block this session was sent;
+    // recorded as sent only once the turn is dispatched (below). A failure
+    // never blocks the turn.
+    let standingState: { block: string; hash: string } | null = null;
+    // Held from this import, so nothing after dispatch can fail on loading it.
+    let markStandingStateSent: ((sessionId: string, hash: string) => Promise<void>) | null = null;
+    const wispGrantRevisionId = wispGrantId ? dbSession.wispGrantRevisionId : null;
+    if (wispGrantId && wispGrantRevisionId) {
+      try {
+        const standingStateTurn = await loadStandingStateTurn();
+        markStandingStateSent = standingStateTurn.markStandingStateSent;
+        standingState = await timePreStreamPhase('wispStandingState', () => standingStateTurn.standingStateForTurn({
+          grantId: wispGrantId, revisionId: wispGrantRevisionId, sessionId, auth,
+        }));
+      } catch (err) {
+        console.warn('[AI] failed to build the Wisp standing state; sending the turn without it', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_standing_state_phase: 'read' });
+      }
     }
 
     // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
@@ -900,7 +976,7 @@ aiRoutes.post(
       // session is busy for any other reason (model actively working), or the
       // turn doesn't conclude in time, fall back to a 409 as before.
       // #3127: runs with no DB context held (see inRequestDb above).
-      const settle = await settleBlockedTurnForNewMessage(priorSession);
+      const settle = await timePreStreamPhase('settlePriorTurn', () => settleBlockedTurnForNewMessage(priorSession));
       if (settle !== 'concluded') {
         await abortTopology();
         // #9427: coded so a client can attach to the running turn instead.
@@ -930,26 +1006,30 @@ aiRoutes.post(
     let previous: Awaited<ReturnType<typeof readPreviousTurn>>;
     let transition: Awaited<ReturnType<typeof planModelTransition>>;
     try {
-      previous = await readPreviousTurn({ orgId: dbSession.orgId, sessionId });
-      // The preflight's session row predates resolveModel's lazy partner
-      // cutover, which stamps a pre-W03 session's offering_id: re-read it so a
-      // plain same-offering message is not refused as fit_unverifiable.
-      const freshOfferingId = await readSessionOfferingId({ orgId: dbSession.orgId, sessionId });
-      const priorTurn = previous;
-      ({ model, transition } = await planTransitionWithFailover({
-        first: resolvedModel,
-        plan: (target) => planModelTransition({
-          orgId: dbSession.orgId,
-          sdkSessionId: dbSession.sdkSessionId,
-          sessionOfferingId: freshOfferingId === undefined ? (dbSession.offeringId ?? null) : freshOfferingId,
-          previous: priorTurn,
-          target,
-          systemPrompt: topology ? topology.systemPrompt : systemPrompt,
-          pendingUserTurn: topology ? topology.prompt : sanitizedContent,
-        }),
-        reResolve: (excludeOfferingIds) => resolveSessionTurn({
-          sessionId, surface: resolvedModel.surface, userId: auth.user.id, transport: resolvedModel.transport, excludeOfferingIds,
-        }),
+      // Values come back out of the timed phase (not assigned inside it) so
+      // definite-assignment analysis still sees them.
+      ({ previous, model, transition } = await timePreStreamPhase('modelTransition', async () => {
+        const priorTurn = await readPreviousTurn({ orgId: dbSession.orgId, sessionId });
+        // The preflight's session row predates resolveModel's lazy partner
+        // cutover, which stamps a pre-W03 session's offering_id: re-read it so a
+        // plain same-offering message is not refused as fit_unverifiable.
+        const freshOfferingId = await readSessionOfferingId({ orgId: dbSession.orgId, sessionId });
+        const planned = await planTransitionWithFailover({
+          first: resolvedModel,
+          plan: (target) => planModelTransition({
+            orgId: dbSession.orgId,
+            sdkSessionId: dbSession.sdkSessionId,
+            sessionOfferingId: freshOfferingId === undefined ? (dbSession.offeringId ?? null) : freshOfferingId,
+            previous: priorTurn,
+            target,
+            systemPrompt: topology ? topology.systemPrompt : systemPrompt,
+            pendingUserTurn: topology ? topology.prompt : sanitizedContent,
+          }),
+          reResolve: (excludeOfferingIds) => resolveSessionTurn({
+            sessionId, surface: resolvedModel.surface, userId: auth.user.id, transport: resolvedModel.transport, excludeOfferingIds,
+          }),
+        });
+        return { previous: priorTurn, model: planned.model, transition: planned.transition };
       }));
     } catch (err) {
       // Nothing is reserved yet; release the topology lease like every other refusal.
@@ -991,7 +1071,7 @@ aiRoutes.post(
     // the request schema starts carrying a client-generated id.
     let reservation;
     try {
-      reservation = await reserveAiBudget({
+      reservation = await timePreStreamPhase('budgetReserve', () => reserveAiBudget({
         orgId: dbSession.orgId,
         billingSource: model.funding,
         sessionId,
@@ -1000,7 +1080,7 @@ aiRoutes.post(
         // W05 spike constraint 3: claimed only against the turn this plan
         // read, and never re-stamped mid-turn.
         sessionSwitchGuard: { expectedPreviousChatReservationId: previous?.reservationId ?? null },
-      });
+      }));
     } catch (err) {
       await abortTopology();
       if (err instanceof AiBudgetSessionBusyError) return c.json({ error: err.message, code: 'turn_in_progress' }, 409);
@@ -1016,7 +1096,7 @@ aiRoutes.post(
     type ActiveChatSession = Awaited<ReturnType<typeof streamingSessionManager.getOrCreate>>;
     const subscriptionId = crypto.randomUUID();
     let subscribedSession: ActiveChatSession | null = null;
-    const dispatch = await inRequestDb(async (): Promise<
+    const dispatch = await timePreStreamPhase('dispatch', () => inRequestDb(async (): Promise<
       | { kind: 'dispatched'; activeSession: ActiveChatSession; events: ReturnType<ActiveChatSession['eventBus']['subscribe']> }
       | { kind: 'refused'; response: Response }
       | { kind: 'failed'; error: unknown }
@@ -1059,7 +1139,11 @@ aiRoutes.post(
 
       // The topology runtime is bound by the transition itself, and only when
       // this request wins the slot (PR #7147 F1).
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model) })) {
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, {
+        topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model),
+        // #10428: the technician's own text, for a Wisp session's turn-end instruction capture.
+        ...(topology ? {} : { userMessage: sanitizedContent }),
+      })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session', code: 'turn_in_progress' }, 409) };
       }
 
@@ -1114,9 +1198,12 @@ aiRoutes.post(
       // above) as delimited, sanitised, untrusted background — never the
       // system prompt. The persisted user row above keeps the plain text, so
       // the prefix reaches only the model.
-      const turnContent = topology
+      const baseTurn = topology
         ? topology.prompt
         : continuationSummary ? withContinuationContext(continuationSummary, sanitizedContent) : sanitizedContent;
+      // W04 (#10995) / #10426: after any analysis results (outermost), the
+      // standing state, then fired check-ins; the user's own text stays last.
+      const turnContent = [standingState?.block, checkInBlock, baseTurn].filter(Boolean).join('\n\n');
       // Subscribe BEFORE the turn is pushed: the session event bus has no
       // replay, and a fast transport can publish the turn's events (even its
       // error and done) before the SSE callback below would run.
@@ -1132,7 +1219,7 @@ aiRoutes.post(
       // the subscription so the bus doesn't keep a dead queue.
       subscribedSession?.eventBus.unsubscribe(subscriptionId);
       throw err;
-    });
+    }));
     if (dispatch.kind !== 'dispatched') {
       // Released only after the dispatch context has closed, so the release's
       // own system transaction never runs beside a held request connection.
@@ -1150,7 +1237,40 @@ aiRoutes.post(
     }
     const { activeSession, events } = dispatch;
 
-    return streamSSE(c, async (stream) => {
+    // W04 (#10995): the turn carrying the check-ins is dispatched, so they are
+    // consumed now (fired → consumed; a row cancelled meanwhile stays
+    // cancelled). A failure only means they are prepended again next turn.
+    if (wispGrantId && firedCheckIns.length > 0) {
+      const ids = firedCheckIns.map((row) => row.id);
+      try {
+        const consumed = await inRequestDb(() => markCheckInsConsumed({ grantId: wispGrantId, ids }));
+        if (consumed === 0) {
+          // Every row was cancelled since the read — or the UPDATE matched
+          // nothing under RLS, which would re-prepend them every turn.
+          console.warn('[AI] no Wisp check-in was marked consumed', { orgId: dbSession.orgId, sessionId, grantId: wispGrantId, ids });
+        }
+      } catch (err) {
+        console.warn('[AI] failed to mark Wisp check-ins consumed; they will be prepended again next turn', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, ids, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_check_in_phase: 'consume' }, { fingerprint: ['wisp-check-in-turn', 'consume'] });
+      }
+    }
+    // #10426: the model has this standing state now; an unchanged one is not
+    // re-sent. A failure only re-sends it next turn: logged, never thrown.
+    if (standingState && markStandingStateSent) {
+      try {
+        await markStandingStateSent(sessionId, standingState.hash);
+      } catch (err) {
+        // The turn is already dispatched: never fail its response over this.
+        console.warn('[AI] failed to record the Wisp standing state as sent; it is sent again next turn', {
+          orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // The stream outlives the timed request: detach it from the timer.
+    return exitPreStreamTiming(() => streamSSE(c, async (stream) => {
       // #9427: a client that goes away stops listening at once; the turn is
       // NOT interrupted (another surface may be attached to it).
       stream.onAbort(() => {
@@ -1182,8 +1302,8 @@ aiRoutes.post(
       } finally {
         activeSession.eventBus.unsubscribe(subscriptionId);
       }
-    });
-  }
+    }));
+  })
 );
 
 // ============================================

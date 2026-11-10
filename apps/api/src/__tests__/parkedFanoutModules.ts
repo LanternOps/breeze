@@ -31,6 +31,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/monitorScriptWorker.ts': { guards: 2, reason: 'partner-wide script monitor org and device fan-out' },
   'jobs/automationWorker.ts': { guards: 2, reason: 'automation assignment devices and event triggers' },
   'jobs/backupWorker.ts': { guards: 3, reason: 'scheduled backup org enumeration and dispatch' },
+  'jobs/backupCatchUp.ts': { guards: 1, reason: 'per-tick sweep of connected devices with a backup waiting for them (#11013)' },
   'jobs/cisJobs.ts': { guards: 1, reason: 'scheduled CIS scan targets' },
   'jobs/securityScanJobs.ts': { guards: 1, reason: 'scheduled security scans' },
   'services/securityScanSweepTargets.ts': { guards: 1, reason: 'IOC sweep target selection' },
@@ -39,6 +40,15 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/auditBaselineJobs.ts': { guards: 4, reason: 'audit policy collection' },
   'services/auditBaselineService.ts': { guards: 1, reason: 'default audit baseline seeding over orgs' },
   'jobs/maintenanceRebootWorker.ts': { guards: 1, reason: 'maintenance reboot candidates' },
+  'jobs/oemUpdatesWorker.ts': { guards: 1, reason: 'vendor update not-returned monitor over armed status rows' },
+  'services/oemUpdates/candidates.ts': { guards: 1, reason: 'due-device selection for scheduled vendor update runs' },
+  'services/oemUpdates/rebootSweep.ts': { guards: 1, reason: 'overnight reboots owed by scheduled vendor update runs' },
+  'services/oemUpdates/laneDelivery.ts': { guards: 1, reason: 'which update classes a vendor lane delivers on a device: a parked device has none, so its patch jobs are unchanged' },
+  'services/oemUpdates/releaseSweep.ts': { guards: 1, reason: 'vendor schedule releases for devices with no enabled lane' },
+  'services/oemUpdates/overdueSweep.ts': { guards: 1, reason: 'devices that are overdue for a vendor update run or restart, for their alerts' },
+  'services/oemUpdates/policySideStore.ts': { guards: 1, reason: 'the per-device vendor update policy side the fleet view counts from (#11242): every fleet device, the holding org left out' },
+  'services/oemUpdates/resolver.ts': { guards: 1, reason: 'vendor updates link resolution for a device set (no partner-level assignment for a parked device)' },
+  'services/oemUpdates/dispatch.ts': { guards: 2, reason: 'the one seam that queues a vendor update run or release refuses a parked device with its own code' },
   'jobs/softwareRemediationWorker.ts': { guards: 2, reason: 'software remediation per device' },
   'jobs/softwareComplianceWorker.ts': { guards: 1, reason: 'software policy compliance checks' },
   'jobs/peripheralJobs.ts': { guards: 3, reason: 'peripheral policy distribution and reconciliation' },
@@ -100,3 +110,8 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/unifi/unifiCollectorService.ts': { guards: 1, reason: '1 guarded site' },
   'services/wakeOnLan.ts': { guards: 2, reason: '2 guarded sites' },
 };
+
+// services/wakeAttempts.ts is ledger-only: it neither reads devices nor selects
+// work, so parkedFanout.contract.test.ts does not discover it. dispatchWake
+// (classified above) gates both target and relay before opening an attempt;
+// result ingestion only updates an existing pending row in the caller context.

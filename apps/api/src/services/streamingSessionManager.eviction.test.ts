@@ -138,16 +138,30 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (i: unknown) => i,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import {
   StreamingSessionManager,
   SessionEventBus,
   PROCESSING_STALL_TIMEOUT_MS,
+  turnTimeoutMsFor,
   type ActiveSession,
   type SessionState,
 } from './streamingSessionManager';
+import { LONGEST_TURN_MS } from './aiSessionExpiry';
+import { AI_APPROVAL_TIMEOUT_MAX_MINUTES } from '@breeze/shared';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import type { AuthContext } from '../middleware/auth';
+
+// #11430: the out-of-band expiry paths treat a session's unsettled budget
+// reservation as a running turn for LONGEST_TURN_MS after admission. If a turn
+// could outlive that, the read or the idle sweep could retire it mid-answer.
+describe('LONGEST_TURN_MS (aiSessionExpiry) covers the longest turn this manager allows', () => {
+  it('is at least the turn timeout at the largest configurable approval wait', () => {
+    expect(LONGEST_TURN_MS).toBeGreaterThanOrEqual(turnTimeoutMsFor(AI_APPROVAL_TIMEOUT_MAX_MINUTES * 60_000));
+  });
+});
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -588,6 +602,21 @@ describe('StreamingSessionManager eviction (#4514)', () => {
       expect(finalizeMock.mock.calls.map((c) => c[0])).toEqual(['kept']);
       // Outside the org-scoped write context.
       expect(ctxAtFinalize).toBeUndefined();
+    });
+
+    it("a session's slow model summary does not hold back the digest of the next one (#10390)", async () => {
+      mockState.nextRows = [{ id: 'slow' }, { id: 'next' }];
+      let releaseSlow: (v: { updated: boolean }) => void = () => undefined;
+      finalizeMock.mockImplementationOnce(() => new Promise((resolve) => { releaseSlow = resolve; }));
+      seed(manager, 'slow', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'next', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+
+      internals(manager).evictStaleSessions();
+      await settle();
+      await settle();
+
+      expect(finalizeMock.mock.calls.map((c) => c[0])).toEqual(['slow', 'next']);
+      releaseSlow({ updated: false });
     });
 
     it('does not finalize when the write itself failed', async () => {

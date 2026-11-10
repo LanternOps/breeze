@@ -3,7 +3,7 @@ vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/deviceGroupOwnership')>()),
   findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
 }));
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import {
   softwareRoutes,
@@ -1259,6 +1259,180 @@ describe('software routes', () => {
         expect(res.status).toBe(502);
         expect(body.error).not.toMatch(/ENOENT|secret-path/);
         expect(body.error).toMatch(/object storage/i);
+      });
+    });
+
+    describe('partner-wide packages (#11413)', () => {
+      const PARTNER = 'partner-123';
+      const partnerRow = {
+        id: catalogId, orgId: null, partnerId: PARTNER, integrationProvider: null, name: 'Partner Tool',
+      };
+      const s1Row = { ...partnerRow, integrationProvider: 'sentinelone', name: 'SentinelOne' };
+      const orgRow = {
+        id: catalogId, orgId: 'org-123', partnerId: null, integrationProvider: null, name: 'Acme Tool',
+      };
+
+      const asPartner = (overrides: Record<string, unknown> = {}) => {
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+            userId: 'user-123',
+            scope: 'partner',
+            orgId: null,
+            partnerId: PARTNER,
+            partnerOrgAccess: 'all',
+            accessibleOrgIds: ['org-a', 'org-b'],
+            canAccessOrg: () => true,
+            ...overrides,
+          });
+          return next();
+        });
+      };
+      const captureInsert = () => {
+        const captured: { values?: Record<string, any> } = {};
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) =>
+          fn({
+            insert: () => ({
+              values: (v: Record<string, any>) => {
+                captured.values = v;
+                return { returning: async () => [{ id: 'ver-1', ...v }] };
+              },
+            }),
+            update: () => ({
+              set: () => ({
+                where: () => ({
+                  then: (resolve: any) => resolve(undefined),
+                  returning: async () => [{ id: 'ver-1', ...captured.values }],
+                }),
+              }),
+            }),
+          }),
+        );
+        return captured;
+      };
+      const upload = async (
+        row: unknown,
+        { query = '', fields = {}, fileName = 'pkg.msi' }: { query?: string; fields?: Record<string, string>; fileName?: string } = {},
+      ) => {
+        vi.mocked(isS3Configured).mockReturnValueOnce(true);
+        vi.mocked(db.select).mockReturnValueOnce(selectResult([row]));
+        const captured = captureInsert();
+        const fd = new FormData();
+        fd.append('version', '1.0.0');
+        for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+        fd.append('file', new File(['payload'], fileName, { type: 'application/octet-stream' }));
+        const res = await app.request(`/software/catalog/${catalogId}/versions/upload${query}`, {
+          method: 'POST', headers: { Authorization: 'Bearer token' }, body: fd,
+        });
+        return { res, captured };
+      };
+      const partnerKey = `software/partner/${PARTNER}/${catalogId}/`;
+
+      // Refused requests never consume the queued transaction/select/auth
+      // *Once values; drop them so they cannot leak into the next test.
+      afterEach(() => {
+        vi.mocked(db.select).mockReset().mockImplementation(() => chainMock([]));
+        vi.mocked(db.transaction).mockReset().mockImplementation((async (fn: any) => fn({
+          update: vi.fn(() => chainMock([])),
+          insert: vi.fn(() => chainMock([])),
+        })) as any);
+        vi.mocked(authMiddleware).mockReset().mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+            userId: 'user-123',
+            scope: authState.scope,
+            orgId: authState.orgId,
+            partnerId: authState.partnerId,
+            accessibleOrgIds: authState.accessibleOrgIds,
+            allowedSiteIds: authState.allowedSiteIds,
+            canAccessOrg: (orgId: string) => orgId === 'org-123',
+          });
+          return next();
+        });
+      });
+
+      it('partner admin uploads to a partner-wide package without ?orgId -> 201, partner-keyed s3Key', async () => {
+        asPartner();
+        const { res, captured } = await upload(partnerRow);
+        expect(res.status).toBe(201);
+        expect(uploadBinary).toHaveBeenCalledTimes(1);
+        const key = vi.mocked(uploadBinary).mock.calls[0]![1];
+        expect(key.startsWith(partnerKey)).toBe(true);
+        expect(key.endsWith('/pkg.msi')).toBe(true);
+        expect(captured.values!.s3Key).toBe(key);
+        expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ orgId: null, action: 'software.catalog.version.upload' }),
+        );
+      });
+
+      it('partner admin with ?orgId=<child org> still uploads to the partner-keyed path', async () => {
+        asPartner();
+        const { res, captured } = await upload(partnerRow, { query: '?orgId=org-a' });
+        expect(res.status).toBe(201);
+        const key = vi.mocked(uploadBinary).mock.calls[0]![1];
+        expect(key.startsWith(partnerKey)).toBe(true);
+        expect(captured.values!.s3Key).toBe(key);
+      });
+
+      it("partner user with orgAccess 'selected' -> 403, nothing uploaded", async () => {
+        asPartner({ partnerOrgAccess: 'selected' });
+        const { res } = await upload(partnerRow);
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({
+          error: 'Modifying a partner-wide package requires full partner org access (orgAccess must be "all")',
+        });
+        expect(uploadBinary).not.toHaveBeenCalled();
+      });
+
+      it('org-scope token -> 404 on a partner package, nothing uploaded', async () => {
+        const { res } = await upload(partnerRow);
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Catalog item not found' });
+        expect(uploadBinary).not.toHaveBeenCalled();
+      });
+
+      it('blank args on the S1 .msi package store the package template', async () => {
+        asPartner();
+        const { res, captured } = await upload(s1Row);
+        expect(res.status).toBe(201);
+        expect(captured.values!.silentInstallArgs).toBe('SITE_TOKEN={s1_site_token} /q /NORESTART');
+      });
+
+      it('S1 .msi with args lacking {s1_site_token} -> 400, nothing uploaded', async () => {
+        asPartner();
+        const { res } = await upload(s1Row, { fields: { silentInstallArgs: '/q /NORESTART' } });
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ issues: ['install_args_missing_placeholders'] });
+        expect(uploadBinary).not.toHaveBeenCalled();
+      });
+
+      it('org-owned upload is unchanged: org key and generic msiexec default', async () => {
+        const { res, captured } = await upload(orgRow);
+        expect(res.status).toBe(201);
+        const key = vi.mocked(uploadBinary).mock.calls[0]![1];
+        expect(key.startsWith(`software/org-123/${catalogId}/`)).toBe(true);
+        expect(captured.values!.s3Key).toBe(key);
+        expect(captured.values!.silentInstallArgs).toBe('msiexec /i "{file}" /qn /norestart');
+      });
+
+      // Org-owned rows keep their historical ?orgId resolution: a multi-org
+      // partner in the All-organizations view (no ?orgId) cannot resolve an
+      // org and gets the resolver's 400, exactly as before #11413 — the
+      // read-style canAccessOrg fallback must not loosen the upload path.
+      it('org-owned upload from a multi-org partner with no ?orgId keeps the 400', async () => {
+        asPartner();
+        const { res } = await upload(orgRow);
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe('orgId is required for this scope');
+        expect(uploadBinary).not.toHaveBeenCalled();
+      });
+
+      it('org-owned upload with ?orgId naming a different accessible org → 404', async () => {
+        asPartner();
+        const { res } = await upload(orgRow, { query: '?orgId=org-a' });
+        expect(res.status).toBe(404);
+        expect(uploadBinary).not.toHaveBeenCalled();
       });
     });
 

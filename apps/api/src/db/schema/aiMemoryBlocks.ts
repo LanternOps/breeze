@@ -1,6 +1,7 @@
 import {
   index, jsonb, pgTable, text, timestamp, uuid, varchar, type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import type {
   MemoryBlockStatus, MemoryBlockTypeName, MemoryConfidence, MemoryOwnerKind,
 } from '@breeze/shared';
@@ -39,6 +40,10 @@ export const aiMemoryBlocks = pgTable('ai_memory_blocks', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   tenantOwnerSubjectIdx: index('ai_memory_blocks_tenant_owner_subject_idx').on(t.tenantPartnerId, t.ownerKind, t.subjectKey),
+  // #10428: every live standing instruction for a target device (the enforcement matcher, feature #11489).
+  standingDeviceIdx: index('ai_memory_blocks_standing_device_idx')
+    .on(t.tenantPartnerId, sql`(${t.content}->>'deviceId')`)
+    .where(sql`${t.blockType} = 'standing_instruction'`),
 }));
 
 export type AiMemoryBlockRow = typeof aiMemoryBlocks.$inferSelect;

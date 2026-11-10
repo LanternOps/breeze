@@ -36,7 +36,7 @@ const ORG_TARGET_WRITERS: Record<string, string> = {
   'routes/huntress.ts': 'POST /huntress/organizations/map',
   'routes/sentinelOne.ts': 'POST /s1/organizations/map',
   'services/pax8SyncService.ts': 'POST /pax8/companies/map (mapPax8Company)',
-  'routes/unifi/index.ts': 'PUT /unifi/mappings (the site\'s org)',
+  'services/unifi/unifiMappingWrites.ts': 'PUT /unifi/mappings (the site\'s org, resolveUnifiMappingTargets)',
   'services/backupProviders/mapping.ts': 'PUT /backup/providers/customers/:id/mapping (remapCustomer) and sync-time auto-mapping',
   'services/edrProviders/mapping.ts': 'PUT /edr/tenants/:id/mapping (remapEdrTenant) and sync-time auto-mapping',
   'routes/psa.ts': 'POST /psa/connections (organization-owned)',
@@ -53,6 +53,9 @@ const ORG_TARGET_WRITERS: Record<string, string> = {
   // calls the same service refuses a holding org too. Pinned by name so neither guard can be dropped.
   'routes/softwareInventory.ts': 'POST /software-inventory/approve, /deny, /clear (default allow/blocklist + config-policy link)',
   'services/aiToolsSoftwareInventory.ts': 'manage_software_inventory approve / deny / clear (same service as the route)',
+  // W17 (#6788): the C2C config writes moved to services/c2cConfigService.ts, so routes/c2c/configs.ts left the discovery
+  // below; the holding-org refusal moved with them and now covers the route and the manage_c2c_configs tool alike.
+  'services/c2cConfigService.ts': 'POST /c2c/configs and manage_c2c_configs create (createC2cConfig)',
 };
 
 describe('contract: integration mappings and connections never target a holding org', () => {
@@ -82,7 +85,8 @@ const DISCOVERED_EXEMPT: Record<string, string> = {
 
 /** Pinned: files the discovery finds (guarded + exempt). Update on purpose. */
 // 19 -> 18 (W12, #6782): routes/softwareInventory.ts no longer writes config tables itself (see ORG_TARGET_WRITERS).
-const DISCOVERED_FILES = 18;
+// 18 -> 17 (W17, #6788): routes/c2c/configs.ts no longer writes config tables itself (see ORG_TARGET_WRITERS).
+const DISCOVERED_FILES = 17;
 
 describe('contract: discovered org-targeted config writes refuse a holding org', () => {
   const discovered = walk(join(SRC, 'routes'))

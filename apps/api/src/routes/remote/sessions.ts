@@ -4,7 +4,7 @@ import { ERROR_CODES } from '@breeze/shared';
 import { jsonError } from '../../lib/jsonError';
 import { z } from 'zod';
 import { and, eq, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import {
   remoteSessions,
   devices,
@@ -313,39 +313,43 @@ sessionRoutes.post(
     // hard-refresh may not fire the WS onClose, leaving stale rows that
     // block new connections or confuse the agent's session broker.
     try {
-      const staleUpdate = db
-        .update(remoteSessions)
-        .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
-        .where(
-          and(
-            eq(remoteSessions.deviceId, data.deviceId),
-            eq(remoteSessions.type, data.type),
-            // Caller-owned only: this is a same-caller reconnect cleanup (a
-            // browser hard-refresh dropping the old tab's WS), not a
-            // cross-user termination primitive. Without this predicate any
-            // caller with org access to the device could disconnect and
-            // agent-stop a colleague's in-progress session just by starting
-            // a same-type session of their own.
-            eq(remoteSessions.userId, auth.user.id),
-            inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
-          )
-        ) as unknown as Promise<unknown> & {
-          returning?: (fields: ReturnType<typeof terminalSessionReturning>) => Promise<Array<Parameters<typeof toTerminalSessionRow>[0]>>;
-        };
+      // Savepoint around the UPDATE so a failed statement rolls back and the
+      // request transaction survives the catch below (#11203). Teardown runs
+      // outside it in its own system context.
+      const revoked = await withDbTransaction(async () => {
+        const staleUpdate = db
+          .update(remoteSessions)
+          .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
+          .where(
+            and(
+              eq(remoteSessions.deviceId, data.deviceId),
+              eq(remoteSessions.type, data.type),
+              // Caller-owned only: this is a same-caller reconnect cleanup (a
+              // browser hard-refresh dropping the old tab's WS), not a
+              // cross-user termination primitive. Without this predicate any
+              // caller with org access to the device could disconnect and
+              // agent-stop a colleague's in-progress session just by starting
+              // a same-type session of their own.
+              eq(remoteSessions.userId, auth.user.id),
+              inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
+            )
+          ) as unknown as Promise<unknown> & {
+            returning?: (fields: ReturnType<typeof terminalSessionReturning>) => Promise<Array<Parameters<typeof toTerminalSessionRow>[0]>>;
+          };
 
-      if (typeof staleUpdate.returning === 'function') {
-        const revoked = (await staleUpdate.returning(terminalSessionReturning())).map(toTerminalSessionRow);
-        // Revoke viewer tokens AND push the agent stop so a stale row for a
-        // still-live desktop/terminal doesn't leave the stream running.
-        await teardownDisconnectedSessions(revoked);
-      } else {
+        if (typeof staleUpdate.returning === 'function') {
+          return (await staleUpdate.returning(terminalSessionReturning())).map(toTerminalSessionRow);
+        }
         await staleUpdate;
-      }
+        return null;
+      });
+      // Revoke viewer tokens AND push the agent stop so a stale row for a
+      // still-live desktop/terminal doesn't leave the stream running.
+      if (revoked) await teardownDisconnectedSessions(revoked);
     } catch (err) {
-      // The UPDATE may already have committed when this fires (a row-shape
-      // error in the post-UPDATE mapping, for instance), which would leave
-      // rows terminal with no viewer revocation and no stop — so it is
-      // escalated, not just logged.
+      // The UPDATE may already have been applied when this fires (a teardown
+      // failure, for instance), which would leave rows terminal with no viewer
+      // revocation and no stop — so it is escalated, not just logged.
       console.error('[remote] Failed to terminate stale sessions for device', data.deviceId, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
@@ -1040,10 +1044,11 @@ sessionRoutes.post(
     // Look up GPU vendor from device hardware inventory
     let gpuVendor: string | undefined;
     try {
-      const [hw] = await db.select({ gpuModel: deviceHardware.gpuModel })
+      // Savepoint so a failed read does not abort the request transaction (#11203).
+      const [hw] = await withDbTransaction(async () => db.select({ gpuModel: deviceHardware.gpuModel })
         .from(deviceHardware)
         .where(eq(deviceHardware.deviceId, device.id))
-        .limit(1);
+        .limit(1));
       if (hw?.gpuModel) {
         const g = hw.gpuModel.toLowerCase();
         if (g.includes('nvidia') || g.includes('geforce') || g.includes('quadro') || g.includes('rtx')) {
@@ -1481,10 +1486,15 @@ sessionRoutes.post(
       // a failed delivery (see DispatchOutcome in services/agentCommandRelay).
       // A bare catch would therefore have been silent for every real
       // non-delivery, so branch on the status explicitly.
-      void dispatchCommandToAgent(
-        device.agentId,
+      //
+      // Outside the request's DB context: the relay refuses to run inside a
+      // held one (#4142), and this send does not wait on the commit (the row
+      // update is already final). Nothing here touches the database.
+      const stopAgentId = device.agentId;
+      void runOutsideDbContext(() => dispatchCommandToAgent(
+        stopAgentId,
         buildStopDesktopCommand(sessionId, terminalGeneration),
-      ).then((outcome) => {
+      )).then((outcome) => {
         if (outcome.status === 'sent') return;
         const detail = outcome.status === 'infrastructure_error' ? ` (${outcome.message})` : '';
         console.warn(

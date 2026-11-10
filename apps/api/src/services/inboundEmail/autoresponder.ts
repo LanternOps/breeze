@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransactionIfHeld } from '../../db';
 import { partners } from '../../db/schema';
 import { getConfig } from '../../config/validate';
 import { getRedis } from '../redis';
@@ -42,13 +42,13 @@ function inboundDomainOrUndefined(): string | undefined {
 // into processInboundEmail's catch, rolling back the JUST-CREATED ticket and
 // logging the inbound as 'failed'. The module invariant is "best-effort must
 // never undo ticket creation" (the same reason capAllows() is try/caught), so
-// wrap the read and fail CLOSED to SUPPRESS (return false) on any error: a
-// transient settings lookup can never roll back ticket creation. Capture for
-// visibility, then deny.
+// run the read in a savepoint and fail CLOSED to SUPPRESS (return false) on any
+// error. The savepoint is what protects the ticket: a catch alone still rethrows
+// when the work transaction ends (#11225). Capture for visibility, then deny.
 async function autoresponderEnabled(partnerId: string): Promise<boolean> {
   try {
-    const rows = await db.select({ settings: partners.settings })
-      .from(partners).where(eq(partners.id, partnerId)).limit(1);
+    const rows = await withDbTransactionIfHeld(() => db.select({ settings: partners.settings })
+      .from(partners).where(eq(partners.id, partnerId)).limit(1));
     const settings = rows[0]?.settings as
       | { ticketing?: { inbound?: { autoresponderEnabled?: boolean } } }
       | undefined;

@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { WISP_SPECIALIST_KINDS, type RequestSpecialistInput } from '@breeze/shared';
+import { WISP_ASSESSMENT_REQUEST_KINDS, WISP_SPECIALIST_KINDS, type RequestSpecialistInput } from '@breeze/shared';
 
 const RUN_ID = '00000000-0000-4000-8000-0000000000a1';
 const ORG_ID = '00000000-0000-4000-8000-0000000000a2';
@@ -64,7 +64,7 @@ vi.mock('./coordinator', async (importOriginal) => ({
 
 import { deriveRequestId } from './coordinator';
 import { dispatchSpecialistRequests } from './specialistDispatch';
-import { MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT, SPECIALIST_KINDS } from './specialistPolicy';
+import { MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT, SPECIALIST_KINDS, SPECIALIST_KIND_POLICY } from './specialistPolicy';
 import type { LoopResult, RunContext } from '../aiAgents/runLoopTypes';
 
 function ctxFor(run: Partial<{ profile: string; grantId: string | null; grantRevisionId: string | null }> = {}): RunContext {
@@ -124,6 +124,25 @@ describe('dispatchSpecialistRequests (Wisp W07)', () => {
       { requester: { kind: 'run' }, requestId: deriveRequestId(RUN_ID, 1), reason: 'Patch backlog grew' },
     ]);
     expect(deriveRequestId(RUN_ID, 0)).not.toBe(deriveRequestId(RUN_ID, 1));
+  });
+
+  it('hands a device_troubleshooting request to the coordinator with its params; a needsApproval answer is recorded as a card, not an admission or a launched run (#11084)', async () => {
+    const params = { deviceId: '00000000-0000-4000-8000-0000000000d1', symptom: 'slow logins' };
+    requestSpecialist.mockResolvedValueOnce({ needsApproval: true, intentId: 'intent-ts' });
+    const result = resultWith([req('device_troubleshooting', 'Logins on the device are slow', params)]);
+    await dispatchSpecialistRequests(ctxFor(), result);
+
+    expect(requestSpecialist).toHaveBeenCalledTimes(1);
+    expect(requestSpecialist.mock.calls[0]).toEqual([
+      { grantId: GRANT_ID, grantRevisionId: REVISION_ID, orgId: ORG_ID, kind: 'device_troubleshooting', params, requestedByRunId: RUN_ID },
+      { requester: { kind: 'run' }, requestId: deriveRequestId(RUN_ID, 0), reason: 'Logins on the device are slow' },
+    ]);
+    const [recorded] = result.outcome.assessment!.specialistResults!;
+    expect(recorded).toEqual({
+      requestId: deriveRequestId(RUN_ID, 0), kind: 'device_troubleshooting', needsApproval: true, intentId: 'intent-ts',
+    });
+    expect(recorded).not.toHaveProperty('admitted');
+    expect(recorded).not.toHaveProperty('runId');
   });
 
   it('caps at MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT and records too_many_requests for the rest without calling the coordinator', async () => {
@@ -231,5 +250,11 @@ describe('dispatchSpecialistRequests (Wisp W07)', () => {
 describe('specialist kind parity (shared ↔ API)', () => {
   it('WISP_SPECIALIST_KINDS (shared) equals SPECIALIST_KINDS (specialistPolicy.ts)', () => {
     expect([...WISP_SPECIALIST_KINDS]).toEqual([...SPECIALIST_KINDS]);
+  });
+
+  // #10406: request_specialist (the assessment's outcome tool) never offers a
+  // chat-only kind; the coordinator refuses one anyway (unknown_kind).
+  it('WISP_ASSESSMENT_REQUEST_KINDS (shared) equals the kinds that are not chatOnly', () => {
+    expect([...WISP_ASSESSMENT_REQUEST_KINDS]).toEqual(SPECIALIST_KINDS.filter((k) => !SPECIALIST_KIND_POLICY[k].chatOnly));
   });
 });

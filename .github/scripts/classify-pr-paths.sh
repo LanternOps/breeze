@@ -37,7 +37,8 @@
 # exceptions carve out files the allowlisted directories contain that a
 # HEAVY job (not lint/check-migrations/security-audit) actually consumes:
 # ci.yml itself; this classifier; prepare-ci-apt-sources.mjs (used by
-# rust-check and guided-setup-smoke); check-agent-binary-signatures.sh (used
+# guided-setup-smoke); tauri-apt.sh (used by rust-check);
+# check-agent-binary-signatures.sh (used
 # by build-agent); verify-release-images.sh (copied and run by
 # scripts/smoke-guided-setup.sh inside guided-setup-smoke — an INDIRECT
 # consumer, so grep the scripts heavy jobs call, not just ci.yml);
@@ -54,7 +55,9 @@
 # A wrong area gate SILENTLY skips a whole area's tests, so they fail OPEN:
 #   - shared/global inputs (packages/**, the root manifests and lockfile,
 #     patches/**, root tsconfig*, ci.yml, .github/scripts/**, docker/**,
-#     root docker-compose* / Dockerfile*, scripts/**, ee/**) set EVERY area;
+#     root docker-compose* / Dockerfile*, scripts/**, ee/**) set EVERY area,
+#     except that packages/shared/** only sets `rust` for files the Rust
+#     sources read (see the case below);
 #   - a code path that matches no area rule (e2e-tests/**, a new
 #     top-level dir or app, ...) sets EVERY area;
 #   - an area whose tests READ another area's files is also set when those
@@ -204,8 +207,11 @@ topology_browser=false
 agent_code=false
 integration=false
 seen=false
+all_areas_except_rust() {
+  api=true; web=true; portal=true; addins=true; m365=true
+}
 all_areas() {
-  api=true; web=true; portal=true; addins=true; m365=true; rust=true
+  all_areas_except_rust; rust=true
 }
 while IFS= read -r path; do
   [[ -z "${path}" ]] && continue
@@ -224,6 +230,15 @@ while IFS= read -r path; do
   # Area (first match wins). In a case pattern `*` also matches '/', so the
   # root-only globals below are anchored by their leading literal.
   case "${path}" in
+    # rust-check runs cargo and no JS build, so packages/shared reaches it only
+    # through the files the Rust sources embed or read in tests (ci-area-gating
+    # re-derives this list from them). test-viewer, which does use its TypeScript,
+    # is not area-gated. This applies in the merge queue too: both events classify.
+    packages/shared/src/fixtures/prompt-catalog/*|\
+    packages/shared/src/fixtures/prompt-host/*|\
+    packages/shared/src/promptCatalog/catalog/*|\
+    packages/shared/src/promptHost/kinds.ts) all_areas; agent_code=true ;;
+    packages/shared/*) all_areas_except_rust; agent_code=true ;;
     packages/*) all_areas; agent_code=true ;;
     package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|.node-version|.nvmrc|patches/*|tsconfig*.json) all_areas ;;
     .github/workflows/ci.yml|.github/scripts/*|docker/*|docker-compose*|Dockerfile*|scripts/*|ee/*) all_areas; agent_code=true ;;
@@ -240,6 +255,9 @@ while IFS= read -r path; do
     # aiAgentDiagnosisPrompt reads the whole agent/ tree, ...). The cross-area scan
     # in ci-area-gating.test.mjs (which walks agent/**/*.go too) proves the other
     # five areas read nothing under agent/.
+    # The two Go files the helper's Rust tests read (envelope.rs -> message.go,
+    # chat.rs -> chat.go; ci-area-gating re-derives this list) also set rust.
+    agent/internal/ipc/chat.go|agent/internal/ipc/message.go) api=true; agent_code=true; rust=true ;;
     agent/*) api=true; agent_code=true ;;
     *) all_areas; agent_code=true ;;
   esac
@@ -277,8 +295,13 @@ while IFS= read -r path; do
     .github/workflows/*.yml) : ;;
     .github/scripts/classify-pr-paths.sh) app=true ;;
     .github/scripts/prepare-ci-apt-sources.mjs) app=true ;;
+    .github/scripts/tauri-apt.sh) app=true ;;
     .github/scripts/mobile-native-ci.test.mjs) app=true ;;
     .github/scripts/qemu-gate-paths.txt) app=true ;;
+    # Imported by apps/api/vitest.integration.config.ts to shard integration-test,
+    # and its types are checked by typecheck through that config (W07a).
+    .github/scripts/shard-partition.mjs) app=true ;;
+    .github/scripts/shard-partition.d.mts) app=true ;;
     .github/scripts/*) : ;;
     scripts/security/check-agent-binary-signatures.sh) app=true ;;
     scripts/security/*) : ;;

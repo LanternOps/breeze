@@ -271,6 +271,9 @@ vi.mock('../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // The audit org resolver (#11225) wraps its caught lookup in a savepoint
+  // when a request transaction is held; with none here it is a pass-through.
+  withDbTransactionIfHeld: vi.fn(async (fn: () => any) => fn()),
   // PATCH /orgs/organizations/:id calls assertNotLocked, whose partner-axis
   // read now goes through readWithPartnerAxisVisibility (#2822). That helper
   // probes the ambient scope, so the factory must export it — `undefined`
@@ -7982,6 +7985,46 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(persistedSettings?.aiBudgets).toMatchObject({ toolRateLimitMultiplier: 4 });
+    });
+
+    // #9666: the partner AI Budgets tab clears "AI for all organizations" by
+    // leaving `enabled` out of the block. That only unlocks the orgs because
+    // this route replaces `aiBudgets` wholesale; a deep merge here would keep
+    // a stored `enabled:false` and leave AI off for every org.
+    it('replaces the stored aiBudgets block, so an omitted enabled is cleared', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = {
+        id: 'partner-123',
+        name: 'Acme MSP',
+        settings: { aiBudgets: { enabled: false, monthlyBudgetCents: 100 } },
+      };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      let persistedSettings: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          persistedSettings = data.settings as Record<string, unknown>;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: persistedSettings }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { aiBudgets: { monthlyBudgetCents: 5000 } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(persistedSettings?.aiBudgets).toEqual({ monthlyBudgetCents: 5000 });
     });
 
     it('normalises aiBudgets.alertThresholdPercents before persisting', async () => {

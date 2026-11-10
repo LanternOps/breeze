@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func collectIdentityStatus() IdentityStatus {
@@ -15,7 +17,7 @@ func collectIdentityStatus() IdentityStatus {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	adOutput, err := exec.CommandContext(ctx, "dsconfigad", "-show").CombinedOutput()
+	adOutput, err := procspawn.CommandContext(ctx, "dsconfigad", "-show").CombinedOutput()
 	if err != nil {
 		if !errors.Is(err, exec.ErrNotFound) {
 			log.Debug("dsconfigad command failed", "error", err)
@@ -42,7 +44,7 @@ func collectIdentityStatus() IdentityStatus {
 	// Method 1: Check for MDM client preferences (locale-invariant).
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel2()
-	mdmPref, err := exec.CommandContext(ctx2, "defaults", "read", "/Library/Preferences/com.apple.mdmclient").CombinedOutput()
+	mdmPref, err := procspawn.CommandContext(ctx2, "defaults", "read", "/Library/Preferences/com.apple.mdmclient").CombinedOutput()
 	if err == nil && len(mdmPref) > 0 && !strings.Contains(string(mdmPref), "does not exist") {
 		id.MdmUrl = "enrolled"
 	}
@@ -51,7 +53,7 @@ func collectIdentityStatus() IdentityStatus {
 	if id.MdmUrl == "" {
 		ctx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel3()
-		profXml, err := exec.CommandContext(ctx3, "profiles", "list", "-output", "stdout-xml").CombinedOutput()
+		profXml, err := procspawn.CommandContext(ctx3, "profiles", "list", "-output", "stdout-xml").CombinedOutput()
 		if err == nil && strings.Contains(string(profXml), "com.apple.mdm") {
 			id.MdmUrl = "enrolled"
 		}
@@ -61,7 +63,7 @@ func collectIdentityStatus() IdentityStatus {
 	if id.MdmUrl == "" {
 		ctx4, cancel4 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel4()
-		profOutput, err := exec.CommandContext(ctx4, "profiles", "status", "-type", "enrollment").CombinedOutput()
+		profOutput, err := procspawn.CommandContext(ctx4, "profiles", "status", "-type", "enrollment").CombinedOutput()
 		if err == nil {
 			profText := strings.ToLower(string(profOutput))
 			if strings.Contains(profText, "enrolled to an mdm server") || strings.Contains(profText, "mdm enrollment: yes") {

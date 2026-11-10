@@ -156,6 +156,10 @@ export const SKIP_REASON_REFUSALS = {
   max_concurrent_assessment_runs: 'max_concurrent_analysis_runs',
   assessment_rate: 'analysis_rate',
   assessment_requires_grant: 'analysis_not_available',
+  // Wisp delegation W1 (#11084) — device_troubleshooting volume guards; unreachable here.
+  max_concurrent_troubleshoot_runs: 'max_concurrent_analysis_runs',
+  troubleshoot_rate: 'analysis_rate',
+  troubleshoot_requires_grant: 'analysis_not_available',
 } satisfies Record<AgentRunSkipReason, AnalysisAdmissionRefusal>;
 
 /** Extra sentence for the reasons whose refusal alone would mislead. */

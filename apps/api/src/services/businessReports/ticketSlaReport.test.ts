@@ -383,4 +383,386 @@ describe('generateTicketSlaAttainmentReport', () => {
     const s = summaryOf(await generateTicketSlaAttainmentReport(orgScope, {}, orgAuthority));
     expect(s.notes.join(' ')).toMatch(/breached tickets first/i);
   });
+
+  // #11018 Task 1.1: recorded on the file BEFORE the eligibility/due fragments
+  // moved to ticketSlaSql.ts. If this goes red, fix the fragment, not the snapshot.
+  it('staff SLA statements are byte-identical across the fragment extraction', async () => {
+    queueExecute([], EMPTY_OVERALL, []);
+    await generateTicketSlaAttainmentReport(orgScope, { period: AUGUST }, orgAuthority);
+    queueExecute([], EMPTY_OVERALL, []);
+    await generateTicketSlaAttainmentReport(partnerScope(), { period: AUGUST }, partnerAuthority);
+    expect(calls).toHaveLength(6);
+    expect(calls.map((c) => c.sql)).toMatchInlineSnapshot(`
+      [
+        "
+          WITH scoped AS (
+            SELECT
+              t.id, t.org_id, t.priority, t.category, t.assigned_to, t.subject,
+              t.ticket_number, t.internal_number, t.created_at,
+              t.first_response_at, t.resolved_at,
+              t.response_sla_minutes, t.resolution_sla_minutes,
+              COALESCE(t.response_due_at, t.created_at
+                + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
+              COALESCE(t.resolution_due_at, t.created_at
+                + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
+              COALESCE(t.sla_paused_minutes, 0) AS paused,
+              t.sla_breached_at, t.sla_breach_reason
+            FROM tickets t
+            WHERE t.deleted_at IS NULL
+              -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
+              AND t.merged_into_ticket_id IS NULL
+              -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
+              AND t.work_kind = 'support'
+              AND t.created_at >= $1 AND t.created_at < $2
+              AND t.org_id = $3
+          ),
+          outcomes AS (
+            SELECT s.*,
+              CASE
+                WHEN s.response_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.first_response_at IS NOT NULL
+                 AND s.first_response_at <= s.response_due_at
+                  THEN 'met'
+                WHEN s.first_response_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.response_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS response_outcome,
+              CASE
+                WHEN s.resolution_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.resolved_at IS NOT NULL
+                 AND s.resolved_at <= s.resolution_due_at
+                  THEN 'met'
+                WHEN s.resolved_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.resolution_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS resolution_outcome
+            FROM scoped s
+          )
+          SELECT o.priority::text AS group_key, o.priority::text AS group_label,
+            
+        COUNT(*)::int AS tickets_total,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'no_target'
+                           AND o.resolution_outcome = 'no_target')::int AS no_sla_tickets,
+        COUNT(*) FILTER (WHERE o.response_outcome IN ('met', 'missed'))::int AS response_eligible,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'met')::int AS response_met,
+        COUNT(*) FILTER (WHERE o.resolution_outcome IN ('met', 'missed'))::int AS resolution_eligible,
+        COUNT(*) FILTER (WHERE o.resolution_outcome = 'met')::int AS resolution_met,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'missed'
+                            OR o.resolution_outcome = 'missed')::int AS breaches
+          FROM outcomes o
+          LEFT JOIN organizations org ON org.id = o.org_id
+          LEFT JOIN users u ON u.id = o.assigned_to
+          GROUP BY o.priority, o.priority::text
+          ORDER BY o.priority DESC",
+        "
+          WITH scoped AS (
+            SELECT
+              t.id, t.org_id, t.priority, t.category, t.assigned_to, t.subject,
+              t.ticket_number, t.internal_number, t.created_at,
+              t.first_response_at, t.resolved_at,
+              t.response_sla_minutes, t.resolution_sla_minutes,
+              COALESCE(t.response_due_at, t.created_at
+                + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
+              COALESCE(t.resolution_due_at, t.created_at
+                + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
+              COALESCE(t.sla_paused_minutes, 0) AS paused,
+              t.sla_breached_at, t.sla_breach_reason
+            FROM tickets t
+            WHERE t.deleted_at IS NULL
+              -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
+              AND t.merged_into_ticket_id IS NULL
+              -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
+              AND t.work_kind = 'support'
+              AND t.created_at >= $1 AND t.created_at < $2
+              AND t.org_id = $3
+          ),
+          outcomes AS (
+            SELECT s.*,
+              CASE
+                WHEN s.response_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.first_response_at IS NOT NULL
+                 AND s.first_response_at <= s.response_due_at
+                  THEN 'met'
+                WHEN s.first_response_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.response_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS response_outcome,
+              CASE
+                WHEN s.resolution_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.resolved_at IS NOT NULL
+                 AND s.resolved_at <= s.resolution_due_at
+                  THEN 'met'
+                WHEN s.resolved_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.resolution_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS resolution_outcome
+            FROM scoped s
+          )
+          SELECT 
+        COUNT(*)::int AS tickets_total,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'no_target'
+                           AND o.resolution_outcome = 'no_target')::int AS no_sla_tickets,
+        COUNT(*) FILTER (WHERE o.response_outcome IN ('met', 'missed'))::int AS response_eligible,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'met')::int AS response_met,
+        COUNT(*) FILTER (WHERE o.resolution_outcome IN ('met', 'missed'))::int AS resolution_eligible,
+        COUNT(*) FILTER (WHERE o.resolution_outcome = 'met')::int AS resolution_met,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'missed'
+                            OR o.resolution_outcome = 'missed')::int AS breaches,
+            COUNT(*) FILTER (WHERE (o.response_outcome = 'missed' OR o.resolution_outcome = 'missed')
+                               AND o.sla_breached_at IS NULL)::int AS recomputed_breach_not_stamped,
+            COUNT(*) FILTER (WHERE o.sla_breached_at IS NOT NULL
+                               AND o.response_outcome <> 'missed'
+                               AND o.resolution_outcome <> 'missed')::int AS stamped_not_recomputed_breach,
+            (SELECT name FROM organizations WHERE id = $4) AS scope_org_name
+          FROM outcomes o",
+        "
+          WITH scoped AS (
+            SELECT
+              t.id, t.org_id, t.priority, t.category, t.assigned_to, t.subject,
+              t.ticket_number, t.internal_number, t.created_at,
+              t.first_response_at, t.resolved_at,
+              t.response_sla_minutes, t.resolution_sla_minutes,
+              COALESCE(t.response_due_at, t.created_at
+                + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
+              COALESCE(t.resolution_due_at, t.created_at
+                + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
+              COALESCE(t.sla_paused_minutes, 0) AS paused,
+              t.sla_breached_at, t.sla_breach_reason
+            FROM tickets t
+            WHERE t.deleted_at IS NULL
+              -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
+              AND t.merged_into_ticket_id IS NULL
+              -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
+              AND t.work_kind = 'support'
+              AND t.created_at >= $1 AND t.created_at < $2
+              AND t.org_id = $3
+          ),
+          outcomes AS (
+            SELECT s.*,
+              CASE
+                WHEN s.response_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.first_response_at IS NOT NULL
+                 AND s.first_response_at <= s.response_due_at
+                  THEN 'met'
+                WHEN s.first_response_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.response_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS response_outcome,
+              CASE
+                WHEN s.resolution_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.resolved_at IS NOT NULL
+                 AND s.resolved_at <= s.resolution_due_at
+                  THEN 'met'
+                WHEN s.resolved_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.resolution_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS resolution_outcome
+            FROM scoped s
+          )
+          SELECT
+            o.id::text AS id, o.ticket_number, o.internal_number,
+            o.org_id::text AS org_id, org.name AS org_name,
+            o.subject, o.priority::text AS priority, o.category,
+            o.assigned_to::text AS assigned_to, u.name AS assigned_to_name,
+            to_char(o.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
+            to_char(o.first_response_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS first_response_at,
+            to_char(o.resolved_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS resolved_at,
+            o.response_sla_minutes, o.resolution_sla_minutes, o.paused,
+            o.response_outcome, o.resolution_outcome,
+            to_char(o.sla_breached_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS sla_breached_at, o.sla_breach_reason
+          FROM outcomes o
+          LEFT JOIN organizations org ON org.id = o.org_id
+          LEFT JOIN users u ON u.id = o.assigned_to
+          
+          -- Breaches first (fix round item 2): the cap must never drop an older
+          -- breach to keep a newer on-time ticket; same predicate as COUNTERS.breaches.
+          ORDER BY (o.response_outcome = 'missed' OR o.resolution_outcome = 'missed') DESC, o.created_at DESC, o.id
+          LIMIT $4",
+        "
+          WITH scoped AS (
+            SELECT
+              t.id, t.org_id, t.priority, t.category, t.assigned_to, t.subject,
+              t.ticket_number, t.internal_number, t.created_at,
+              t.first_response_at, t.resolved_at,
+              t.response_sla_minutes, t.resolution_sla_minutes,
+              COALESCE(t.response_due_at, t.created_at
+                + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
+              COALESCE(t.resolution_due_at, t.created_at
+                + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
+              COALESCE(t.sla_paused_minutes, 0) AS paused,
+              t.sla_breached_at, t.sla_breach_reason
+            FROM tickets t
+            WHERE t.deleted_at IS NULL
+              -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
+              AND t.merged_into_ticket_id IS NULL
+              -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
+              AND t.work_kind = 'support'
+              AND t.created_at >= $1 AND t.created_at < $2
+              AND t.org_id = ANY(ARRAY[$3::uuid, $4::uuid])
+          ),
+          outcomes AS (
+            SELECT s.*,
+              CASE
+                WHEN s.response_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.first_response_at IS NOT NULL
+                 AND s.first_response_at <= s.response_due_at
+                  THEN 'met'
+                WHEN s.first_response_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.response_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS response_outcome,
+              CASE
+                WHEN s.resolution_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.resolved_at IS NOT NULL
+                 AND s.resolved_at <= s.resolution_due_at
+                  THEN 'met'
+                WHEN s.resolved_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.resolution_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS resolution_outcome
+            FROM scoped s
+          )
+          SELECT o.org_id::text AS group_key, COALESCE(org.name, 'Unknown organization') AS group_label,
+            
+        COUNT(*)::int AS tickets_total,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'no_target'
+                           AND o.resolution_outcome = 'no_target')::int AS no_sla_tickets,
+        COUNT(*) FILTER (WHERE o.response_outcome IN ('met', 'missed'))::int AS response_eligible,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'met')::int AS response_met,
+        COUNT(*) FILTER (WHERE o.resolution_outcome IN ('met', 'missed'))::int AS resolution_eligible,
+        COUNT(*) FILTER (WHERE o.resolution_outcome = 'met')::int AS resolution_met,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'missed'
+                            OR o.resolution_outcome = 'missed')::int AS breaches
+          FROM outcomes o
+          LEFT JOIN organizations org ON org.id = o.org_id
+          LEFT JOIN users u ON u.id = o.assigned_to
+          GROUP BY o.org_id, COALESCE(org.name, 'Unknown organization')
+          ORDER BY 2, 1",
+        "
+          WITH scoped AS (
+            SELECT
+              t.id, t.org_id, t.priority, t.category, t.assigned_to, t.subject,
+              t.ticket_number, t.internal_number, t.created_at,
+              t.first_response_at, t.resolved_at,
+              t.response_sla_minutes, t.resolution_sla_minutes,
+              COALESCE(t.response_due_at, t.created_at
+                + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
+              COALESCE(t.resolution_due_at, t.created_at
+                + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
+              COALESCE(t.sla_paused_minutes, 0) AS paused,
+              t.sla_breached_at, t.sla_breach_reason
+            FROM tickets t
+            WHERE t.deleted_at IS NULL
+              -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
+              AND t.merged_into_ticket_id IS NULL
+              -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
+              AND t.work_kind = 'support'
+              AND t.created_at >= $1 AND t.created_at < $2
+              AND t.org_id = ANY(ARRAY[$3::uuid, $4::uuid])
+          ),
+          outcomes AS (
+            SELECT s.*,
+              CASE
+                WHEN s.response_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.first_response_at IS NOT NULL
+                 AND s.first_response_at <= s.response_due_at
+                  THEN 'met'
+                WHEN s.first_response_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.response_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS response_outcome,
+              CASE
+                WHEN s.resolution_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.resolved_at IS NOT NULL
+                 AND s.resolved_at <= s.resolution_due_at
+                  THEN 'met'
+                WHEN s.resolved_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.resolution_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS resolution_outcome
+            FROM scoped s
+          )
+          SELECT 
+        COUNT(*)::int AS tickets_total,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'no_target'
+                           AND o.resolution_outcome = 'no_target')::int AS no_sla_tickets,
+        COUNT(*) FILTER (WHERE o.response_outcome IN ('met', 'missed'))::int AS response_eligible,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'met')::int AS response_met,
+        COUNT(*) FILTER (WHERE o.resolution_outcome IN ('met', 'missed'))::int AS resolution_eligible,
+        COUNT(*) FILTER (WHERE o.resolution_outcome = 'met')::int AS resolution_met,
+        COUNT(*) FILTER (WHERE o.response_outcome = 'missed'
+                            OR o.resolution_outcome = 'missed')::int AS breaches,
+            COUNT(*) FILTER (WHERE (o.response_outcome = 'missed' OR o.resolution_outcome = 'missed')
+                               AND o.sla_breached_at IS NULL)::int AS recomputed_breach_not_stamped,
+            COUNT(*) FILTER (WHERE o.sla_breached_at IS NOT NULL
+                               AND o.response_outcome <> 'missed'
+                               AND o.resolution_outcome <> 'missed')::int AS stamped_not_recomputed_breach,
+            NULL::text AS scope_org_name
+          FROM outcomes o",
+        "
+          WITH scoped AS (
+            SELECT
+              t.id, t.org_id, t.priority, t.category, t.assigned_to, t.subject,
+              t.ticket_number, t.internal_number, t.created_at,
+              t.first_response_at, t.resolved_at,
+              t.response_sla_minutes, t.resolution_sla_minutes,
+              COALESCE(t.response_due_at, t.created_at
+                + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
+              COALESCE(t.resolution_due_at, t.created_at
+                + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
+              COALESCE(t.sla_paused_minutes, 0) AS paused,
+              t.sla_breached_at, t.sla_breach_reason
+            FROM tickets t
+            WHERE t.deleted_at IS NULL
+              -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
+              AND t.merged_into_ticket_id IS NULL
+              -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
+              AND t.work_kind = 'support'
+              AND t.created_at >= $1 AND t.created_at < $2
+              AND t.org_id = ANY(ARRAY[$3::uuid, $4::uuid])
+          ),
+          outcomes AS (
+            SELECT s.*,
+              CASE
+                WHEN s.response_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.first_response_at IS NOT NULL
+                 AND s.first_response_at <= s.response_due_at
+                  THEN 'met'
+                WHEN s.first_response_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.response_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS response_outcome,
+              CASE
+                WHEN s.resolution_sla_minutes IS NULL THEN 'no_target'
+                WHEN s.resolved_at IS NOT NULL
+                 AND s.resolved_at <= s.resolution_due_at
+                  THEN 'met'
+                WHEN s.resolved_at IS NOT NULL THEN 'missed'
+                WHEN now() > s.resolution_due_at THEN 'missed'
+                ELSE 'pending'
+              END AS resolution_outcome
+            FROM scoped s
+          )
+          SELECT
+            o.id::text AS id, o.ticket_number, o.internal_number,
+            o.org_id::text AS org_id, org.name AS org_name,
+            o.subject, o.priority::text AS priority, o.category,
+            o.assigned_to::text AS assigned_to, u.name AS assigned_to_name,
+            to_char(o.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
+            to_char(o.first_response_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS first_response_at,
+            to_char(o.resolved_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS resolved_at,
+            o.response_sla_minutes, o.resolution_sla_minutes, o.paused,
+            o.response_outcome, o.resolution_outcome,
+            to_char(o.sla_breached_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS sla_breached_at, o.sla_breach_reason
+          FROM outcomes o
+          LEFT JOIN organizations org ON org.id = o.org_id
+          LEFT JOIN users u ON u.id = o.assigned_to
+          
+          -- Breaches first (fix round item 2): the cap must never drop an older
+          -- breach to keep a newer on-time ticket; same predicate as COUNTERS.breaches.
+          ORDER BY (o.response_outcome = 'missed' OR o.resolution_outcome = 'missed') DESC, o.created_at DESC, o.id
+          LIMIT $5",
+      ]
+    `);
+  });
 });

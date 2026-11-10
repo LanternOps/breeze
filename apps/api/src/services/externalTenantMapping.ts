@@ -1,8 +1,9 @@
 /**
  * PURE vendor-tenant -> Breeze-org auto-mapping rules, shared by every external
- * provider framework (backup, EDR). Both inputs are already scoped to ONE
- * connection and ONE partner by the caller; nothing here widens that.
+ * provider framework (backup, EDR, Pax8; UniFi sites next). Both inputs are already scoped
+ * to ONE connection and ONE partner by the caller; nothing here widens that.
  */
+import { exactOrgMatchKey, normalizeOrgMatchName } from '@breeze/shared';
 
 /**
  * Version/variant-agnostic UUID shape — deliberately NOT the RFC-4122-strict
@@ -32,12 +33,6 @@ export type AutoMapNameSuggestion = {
   orgId: string;
 };
 
-function normalizeName(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const normalized = value.trim().toLowerCase();
-  return normalized.length > 0 ? normalized : null;
-}
-
 /**
  * Only an external code commits automatically -- it is an identifier the MSP
  * typed on purpose. A normalized-name match is NEVER written here (renaming an
@@ -66,38 +61,143 @@ export function resolveAutoMappings(
   return out;
 }
 
+export type OrgMatchTier = 'exact' | 'normalized';
+
+/**
+ * Suggestion policy for several external records reaching one org. It decides
+ * what Breeze SUGGESTS, never what a person may save.
+ * - `one_to_one` (Pax8, backup, EDR): every record that reaches the same org is
+ *   `contested`, so none of them is offered for one-click accept.
+ * - `many_to_one` (for UniFi sites, a later wave): several sites legitimately
+ *   belong to one customer.
+ */
+export type MatchCardinality = 'one_to_one' | 'many_to_one';
+
+export interface ExternalNameRecord {
+  id: string;
+  name: string | null;
+}
+
+export type OrgNameMatch =
+  | { status: 'match'; orgId: string; tier: OrgMatchTier; matchKey: string }
+  /** Two or more orgs share the record's key. Ids sorted ascending. */
+  | { status: 'ambiguous'; candidateOrgIds: string[]; tier: OrgMatchTier; matchKey: string }
+  /** `one_to_one` only: other records reach the same org. Record ids sorted ascending. */
+  | { status: 'contested'; orgId: string; tier: OrgMatchTier; matchKey: string; contestedWith: string[] }
+  | { status: 'none' };
+
+function indexOrgsByKey(
+  orgs: readonly AutoMapOrgRow[],
+  keyOf: (name: string) => string | null,
+): Map<string, string[]> {
+  const byKey = new Map<string, Set<string>>();
+  for (const org of orgs) {
+    const key = keyOf(org.name);
+    if (!key) continue;
+    const bucket = byKey.get(key);
+    if (bucket) bucket.add(org.id);
+    else byKey.set(key, new Set([org.id]));
+  }
+  // Sorted so an ambiguous result never depends on the order orgs were loaded in.
+  return new Map([...byKey].map(([key, ids]) => [key, [...ids].sort()]));
+}
+
+function matchOneRecord(
+  name: string | null,
+  exactIndex: Map<string, string[]>,
+  normalizedIndex: Map<string, string[]>,
+): OrgNameMatch {
+  const tiers: Array<[OrgMatchTier, string | null, Map<string, string[]>]> = [
+    ['exact', exactOrgMatchKey(name), exactIndex],
+    ['normalized', normalizeOrgMatchName(name), normalizedIndex],
+  ];
+  for (const [tier, matchKey, index] of tiers) {
+    if (!matchKey) continue;
+    // The normalized tier runs only when the exact tier found zero orgs, so an
+    // exact hit on `Acme Inc` beats a normalized tie with `Acme LLC`.
+    const candidates = index.get(matchKey);
+    if (!candidates) continue;
+    if (candidates.length === 1) return { status: 'match', orgId: candidates[0]!, tier, matchKey };
+    return { status: 'ambiguous', candidateOrgIds: candidates, tier, matchKey };
+  }
+  return { status: 'none' };
+}
+
+/**
+ * Deterministic name matcher: `exact` (trim + lowercase), then `normalized`
+ * (corporate suffixes, punctuation and accents ignored). No fuzzy tier.
+ *
+ * Returns one entry per record id, and the result does not depend on the order
+ * of `records` or `orgs`. Matching never writes: a person confirms each
+ * suggestion through the integration's normal mapping route.
+ */
+export function matchExternalRecordsToOrgs(
+  records: readonly ExternalNameRecord[],
+  orgs: readonly AutoMapOrgRow[],
+  opts: { cardinality: MatchCardinality; excludedOrgIds?: ReadonlySet<string> },
+): Map<string, OrgNameMatch> {
+  const excluded = opts.excludedOrgIds;
+  const pool = excluded && excluded.size > 0 ? orgs.filter((o) => !excluded.has(o.id)) : orgs;
+  const exactIndex = indexOrgsByKey(pool, exactOrgMatchKey);
+  const normalizedIndex = indexOrgsByKey(pool, normalizeOrgMatchName);
+
+  const out = new Map<string, OrgNameMatch>();
+  for (const record of records) {
+    // Results are keyed by record id; a duplicate would silently drop a record
+    // and could hide a contest. Callers pass primary keys, so this never fires.
+    if (out.has(record.id)) throw new Error(`matchExternalRecordsToOrgs: duplicate record id ${record.id}`);
+    out.set(record.id, matchOneRecord(record.name, exactIndex, normalizedIndex));
+  }
+  if (opts.cardinality === 'many_to_one') return out;
+
+  const recordIdsByOrg = new Map<string, string[]>();
+  for (const [recordId, match] of out) {
+    if (match.status !== 'match') continue;
+    const bucket = recordIdsByOrg.get(match.orgId);
+    if (bucket) bucket.push(recordId);
+    else recordIdsByOrg.set(match.orgId, [recordId]);
+  }
+  for (const recordIds of recordIdsByOrg.values()) {
+    if (recordIds.length < 2) continue;
+    const sorted = [...recordIds].sort();
+    for (const recordId of sorted) {
+      const match = out.get(recordId);
+      if (match?.status !== 'match') continue;
+      out.set(recordId, {
+        status: 'contested',
+        orgId: match.orgId,
+        tier: match.tier,
+        matchKey: match.matchKey,
+        contestedWith: sorted.filter((id) => id !== recordId),
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Name-based candidates -- SUGGESTIONS ONLY. A human with full partner access
  * confirms one through the manual remap path.
  *
- * `alreadyClaimedOrgIds` lets a caller exclude orgs a same-pass external-code
- * commit already took.
+ * Runs `matchExternalRecordsToOrgs` with `one_to_one` cardinality and returns
+ * only its `match` entries, in input order. Two customers reaching one org are
+ * contested, so neither is suggested. `alreadyClaimedOrgIds` lets a caller
+ * exclude orgs a same-pass external-code commit already took.
  */
 export function resolveAutoMapNameSuggestions(
   rows: AutoMapTenantRow[],
   orgs: AutoMapOrgRow[],
   alreadyClaimedOrgIds: ReadonlySet<string> = new Set(),
 ): AutoMapNameSuggestion[] {
-  const orgsByName = new Map<string, string[]>();
-  for (const org of orgs) {
-    const key = normalizeName(org.name);
-    if (!key) continue;
-    const bucket = orgsByName.get(key);
-    if (bucket) bucket.push(org.id);
-    else orgsByName.set(key, [org.id]);
-  }
-
-  const claimed = new Set(alreadyClaimedOrgIds);
+  const matches = matchExternalRecordsToOrgs(
+    rows.map((row) => ({ id: row.id, name: row.vendorName })),
+    orgs,
+    { cardinality: 'one_to_one', excludedOrgIds: alreadyClaimedOrgIds },
+  );
   const out: AutoMapNameSuggestion[] = [];
   for (const row of rows) {
-    const key = normalizeName(row.vendorName);
-    if (!key) continue;
-    const candidates = orgsByName.get(key);
-    if (!candidates || candidates.length !== 1) continue;
-    const orgId = candidates[0]!;
-    if (claimed.has(orgId)) continue;
-    claimed.add(orgId);
-    out.push({ tenantId: row.id, orgId });
+    const match = matches.get(row.id);
+    if (match?.status === 'match') out.push({ tenantId: row.id, orgId: match.orgId });
   }
   return out;
 }

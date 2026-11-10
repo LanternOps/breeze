@@ -380,6 +380,7 @@
         "mrr_renewals": "MRR y renovaciones",
         "quote_win_rate": "Tasa de éxito de cotizaciones",
         "client_profitability": "Rentabilidad por cliente",
+        "ticket_sla_performance": "Rendimiento de SLA",
         "backup_status": "Estado de respaldo"
       },
       "threatDetection": {
@@ -409,6 +410,29 @@
         "noncompliant": "Sin cumplimiento",
         "notMeasured": "N/D",
         "staleEnrolments": "Inscripciones obsoletas"
+      },
+      "slaPerformance": {
+        "priority": "Prioridad",
+        "ticketsOpened": "Tickets abiertos",
+        "firstResponse": "Primera respuesta",
+        "resolution": "Resolución",
+        "target": "Objetivo",
+        "measured": "Medidos",
+        "withinSla": "% dentro del SLA",
+        "median": "Mediana",
+        "mean": "Media",
+        "varies": "varía",
+        "breaches": "Incumplimientos",
+        "breachCount_one": "{{count}} incumplimiento",
+        "breachCount_other": "{{count}} incumplimientos",
+        "unavailable": "No se pudo leer el resumen de SLA de esta ejecución, por lo que no se puede mostrar aquí. Vuelva a generar el informe.",
+        "notes": "Qué se mide",
+        "priorities": {
+          "urgent": "Urgente",
+          "high": "Alta",
+          "normal": "Normal",
+          "low": "Baja"
+        }
       },
       "identityAccess": {
         "notMeasured": "N/D",
@@ -486,6 +510,7 @@
         "mrr_renewals": "MRR y renovaciones",
         "quote_win_rate": "Tasa de éxito de cotizaciones",
         "client_profitability": "Rentabilidad por cliente",
+        "ticket_sla_performance": "Rendimiento de SLA",
         "backup_status": "Estado de respaldo"
       },
       "runsTable": {
@@ -812,6 +837,7 @@
           "os": "OS",
           "owner": "Propietario",
           "patch_level": "Nivel de parche",
+          "product_number": "Número de producto",
           "serial": "Serie",
           "site": "Sitio",
           "status": "Estado"
@@ -1038,6 +1064,7 @@
         "mrr_renewals": "MRR y renovaciones",
         "quote_win_rate": "Tasa de éxito de cotizaciones",
         "client_profitability": "Rentabilidad por cliente",
+        "ticket_sla_performance": "Rendimiento de SLA",
         "backup_status": "Estado de respaldo"
       },
       "schedules": {
@@ -1118,6 +1145,10 @@
         "quote_win_rate": {
           "name": "Tasa de éxito de cotizaciones",
           "description": "La proporción de cotizaciones enviadas que se ganaron, contada por oportunidad, de modo que una cotización revisada y reenviada cuenta una sola vez. La tasa principal incluye solo las oportunidades resueltas, con la cantidad aún abierta al lado. Los valores son antes de impuestos, un conjunto por moneda, sin conversión."
+        },
+        "ticket_sla_performance": {
+          "name": "Rendimiento de SLA",
+          "description": "Tiempos de respuesta y resolución frente al SLA, listos para el cliente, por prioridad y con incumplimientos."
         },
         "client_profitability": {
           "name": "Rentabilidad por cliente",
@@ -1273,6 +1304,12 @@
       "cancel": "Cancelar",
       "createReport": "Crear informe"
     },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Incluir asuntos de los tickets",
+      "includeSubjectsHelp": "Los informes entregados son visibles para todos los usuarios del portal de esta organización. Déjelo desactivado salvo que todos los usuarios puedan ver el asunto de cada ticket.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
     "clientProfitabilityOptions": {
       "groupBy": "Agrupar por",
       "groupByDefault": "Predeterminado según el alcance del informe",
@@ -1313,8 +1350,7 @@
         "series": "Un informe por organización",
         "seriesHint": "Una definición, con una copia independiente para cada organización que abarca, enviada a los contactos de esa organización.",
         "combined": "Todas las organizaciones combinadas",
-        "combinedHint": "Un informe combinado de todas sus organizaciones, para su propio equipo.",
-        "seriesUnavailableType": "Este tipo de informe no se puede enviar como un informe por organización."
+        "combinedHint": "Un informe combinado de todas sus organizaciones, para su propio equipo."
       },
       "schedule": {
         "label": "Con qué frecuencia se envía la copia de cada organización",

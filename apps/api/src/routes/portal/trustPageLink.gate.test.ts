@@ -11,6 +11,20 @@ const mocks = vi.hoisted(() => ({
   trustPageReads: 0,
 }));
 
+// Portal registration W3 (#11380): portalAuthMiddleware re-checks the portal
+// access policy on every request. Not under test here, so it resolves like an
+// org with no policy rows: password allowed, today's behaviour (the gate itself
+// is covered in authOrgStatusGate.test.ts and auth.logout.test.ts).
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/portalAccessPolicy')>();
+  return {
+    ...actual,
+    resolvePortalAccessPolicy: async (orgId: string) => ({
+      orgId, partnerId: 'partner-1', entraTenant: null,
+      ...actual.pickEffectivePortalAccessPolicy(null, null, actual.getPortalSignInCapabilities(), { entraTenantProven: false }),
+    }),
+  };
+});
 vi.mock('../../services/portal/timezone', () => ({ resolveOrgTimezone: vi.fn(async () => 'UTC') }));
 vi.mock('../../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async () => ({ orgId: '11111111-1111-4111-8111-111111111111', partnerId: 'partner-1' })),
@@ -25,7 +39,7 @@ vi.mock('../../db', () => {
       if (Object.hasOwn(columns, 'publishedAt')) { mocks.trustPageReads++; return []; }
       return [{
         id: 'pu-1', orgId: '11111111-1111-4111-8111-111111111111', email: 'customer@example.com',
-        name: 'Customer', contactId: null, authMethod: 'password', receiveNotifications: true,
+        name: 'Customer', contactId: null, authMethod: 'password', browserAccess: 'granted', receiveNotifications: true,
         status: 'active', authEpoch: 1,
       }];
     };

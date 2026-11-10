@@ -87,7 +87,6 @@ var (
 	serverURL        string
 	backupServerURL  string // seeded by bootstrap/enroll responses (#2288)
 	enrollmentSecret string
-	enrollSiteID     string
 	enrollDeviceRole string
 	forceEnroll      bool
 	quietEnroll      bool
@@ -324,10 +323,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
-	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Deprecated and ignored; the site comes from the enrollment key")
-	if err := enrollCmd.Flags().MarkDeprecated("site-id", siteIDDeprecationNotice); err != nil {
-		panic(err) // only fails if the flag above is not registered
-	}
+	enrollCmd.SetFlagErrorFunc(enrollFlagError)
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
@@ -1599,7 +1595,6 @@ func enrollDevice(enrollmentKey string) {
 	initEnrollLogging(cfg, quietEnroll)
 
 	enrollLog := logging.L("enroll")
-	warnIgnoredSiteID(enrollLog, enrollSiteID)
 
 	// Clear any stale enroll-last-error.txt from a previous failed
 	// attempt BEFORE any validation or early return. Every attempt
@@ -1873,6 +1868,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 			DiskTotalGB:             hardwareInfo.DiskTotalGB,
 			GPUModel:                hardwareInfo.GPUModel,
 			SerialNumber:            hardwareInfo.SerialNumber,
+			ProductSKU:              hardwareInfo.ProductSKU,
 			Manufacturer:            hardwareInfo.Manufacturer,
 			Model:                   hardwareInfo.Model,
 			MotherboardManufacturer: hardwareInfo.MotherboardManufacturer,

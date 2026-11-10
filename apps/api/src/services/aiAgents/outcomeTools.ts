@@ -64,6 +64,7 @@ import {
   raiseConcernSchema,
   requestSpecialistSchema,
   updateConcernSchema,
+  updateConcernToolShape,
   validateRequestSpecialist,
   type NudgeInput,
   type ProposeActionInput,
@@ -243,6 +244,10 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // returned here.
     case 'assessment':
       return ['record_concern', 'update_concern', 'nudge', 'propose_action', 'request_specialist'];
+    // Wisp delegation W1 (#11084) — no outcome tool: the run's output is its
+    // summary plus the approval intents its proposals mint.
+    case 'device_troubleshooting':
+      return [];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
@@ -980,10 +985,11 @@ export function buildOutcomeSdkTools(
         ) as SdkTool;
       }
       // Wisp W05b — the assessment tools. Raw shapes come straight from the
-      // shared W05a schemas (`.shape`); the AUTHORITY is still the full
-      // schema's `.parse()` in `validateOutcomeToolInput` (it carries the
-      // `update_concern` resolved-needs-outcome refinement a raw shape cannot
-      // express). Validate-only, static ack, no DB — `finalizeAssessment`
+      // shared W05a schemas; the AUTHORITY is still the full schema's `.parse()`
+      // in `validateOutcomeToolInput`, which carries what a raw shape cannot
+      // (`update_concern`'s refine and its outcome-implies-resolved transform,
+      // #11427). The handlers validate only; the run loop captures the parsed
+      // value, so the finalizer always sees the transformed call. Validate-only, static ack, no DB — `finalizeAssessment`
       // applies the captured calls after the run.
       case 'record_concern': {
         // #10387: an `org` subject can only be the run's org; `finalizeAssessment`
@@ -1014,8 +1020,9 @@ export function buildOutcomeSdkTools(
       case 'update_concern':
         return tool(
           'update_concern',
-          'Change severity/summary/evidence of an open concern, or resolve it with an outcome.',
-          updateConcernSchema.shape,
+          'Change severity/summary/evidence of an open concern, or close it. To close a concern send '
+          + "status: 'resolved' with an outcome (one sentence on how it ended); a summary edit alone keeps it open.",
+          updateConcernToolShape,
           async (input) => {
             validateOutcomeToolInput('update_concern', input); // throws → model retries
             return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
@@ -1050,7 +1057,7 @@ export function buildOutcomeSdkTools(
         return tool(
           'request_specialist',
           'Ask Wisp for a specialist (sweep, analysis, operator_recipe, patch_plan, remediation_research, '
-          + 'bulk_ticket_reply) on this org. The request is recorded now and handled by Wisp\'s coordinator after '
+          + 'bulk_ticket_reply, device_troubleshooting) on this org. The request is recorded now and handled by Wisp\'s coordinator after '
           + 'the assessment ends — nothing launches during this run. Kinds that ask first become an approval card '
           + 'for the person Wisp works for. At most 3 requests per assessment; extra requests are refused.',
           requestSpecialistSchema.shape,

@@ -232,6 +232,18 @@ describe('portal report routes', () => {
     expect(mocks.generateMock).not.toHaveBeenCalled();
   });
 
+  // #11018 W2: a customer reads a delivered SLA report, and never generates one.
+  it('rejects ticket_sla_performance without generating a report', async () => {
+    const response = await isolatedApp().request('/reports/generate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'ticket_sla_performance' }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(mocks.generateMock).not.toHaveBeenCalled();
+  });
+
   it('rejects non-portal report types without generating a report', async () => {
     const response = await isolatedApp().request('/reports/generate', {
       method: 'POST',

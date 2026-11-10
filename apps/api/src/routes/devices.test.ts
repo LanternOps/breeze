@@ -97,7 +97,10 @@ vi.mock('../services/permissions', () => ({
       const parts = prop.toLowerCase().split('_');
       return { resource: parts[0], action: parts.slice(1).join('_') };
     }
-  })
+  }),
+  // GET /devices/:id lists the Connect menu's tools only for a remote:access
+  // holder (#10922). Not the subject of this suite, so the menu stays empty.
+  hasPermission: vi.fn(() => false),
 }));
 
 vi.mock('drizzle-orm', () => {
@@ -277,6 +280,7 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     // Populate the `permissions` context value so getDeviceWithOrgAndSiteCheck
     // doesn't trip its "called without requirePermission" 500 safety throw.
@@ -417,6 +421,29 @@ describe('device routes', () => {
       expect(res.status).toBe(200);
       expect(JSON.stringify(where.mock.calls[0]![0])).toContain(allowedSiteId);
       expect(values).toHaveBeenCalledWith(expect.objectContaining({ siteId: allowedSiteId }));
+    });
+
+    // #11116: the web modal needs the minted key's id to run GET
+    // /enrollment-keys/:id on a remembered CLI token. The row id is chosen by
+    // the route and written in the insert, so the response id is the stored id.
+    it('returns the minted key id alongside the token (#11116)', async () => {
+      const siteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(siteRows([{ id: siteId }])) }),
+      } as any);
+      const values = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.token).toMatch(/^enroll_/);
+      expect(body.childKeyId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ id: body.childKeyId }));
     });
 
     // #7035: the automatic pick used to be `WHERE org_id = ? LIMIT 1` with no

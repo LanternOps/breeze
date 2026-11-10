@@ -120,9 +120,89 @@ test('classifier: a packages/shared-only diff is code+app, so it reaches test-sh
   assert.equal(out.app, 'true');
 });
 
+// rust-check runs cargo and no JS build, so packages/shared reaches it only through
+// files the Rust sources embed or read. test-viewer, which does consume the package's
+// TypeScript, is not area-gated. Issue #9847: every shared change was running the job.
+test('classifier: packages/shared sets every area except rust', () => {
+  for (const path of ['packages/shared/src/types/device.ts', 'packages/shared/package.json', 'packages/shared/src/promptHost/schema.ts']) {
+    assert.deepEqual(areasOf(classify([path])), { ...expectAreas('all'), rust: 'false' }, path);
+    assert.equal(classify([path]).agent_code, 'true', path);
+  }
+});
+
+test('classifier: a shared file the Rust build reads, alongside anything else, sets rust', () => {
+  assert.deepEqual(areasOf(classify(['packages/shared/src/fixtures/prompt-host/show.notice.json'])), expectAreas('all'));
+  assert.equal(classify(['packages/shared/src/types/device.ts', 'apps/helper/src-tauri/src/main.rs']).rust, 'true');
+  assert.equal(classify(['packages/shared/src/promptCatalog/catalog/common.json', 'packages/shared/src/types/device.ts']).rust, 'true');
+  // Rust embeds this one TypeScript file to assert the prompt kinds stay in step.
+  assert.equal(classify(['packages/shared/src/promptHost/kinds.ts']).rust, 'true');
+});
+
+// The other direction: a NEW include_str! outside the carve-out would silently stop
+// running rust-check for changes to the file it embeds. So re-derive the set from
+// what the Rust sources actually name, rather than trusting the classifier's list.
+test('classifier: every packages/ path the Tauri Rust sources read sets rust', () => {
+  const targets = new Set();
+  for (const root of ['apps/viewer/src-tauri', 'apps/helper/src-tauri']) {
+    for (const file of walk(root)) {
+      if (!/\.(rs|toml)$|tauri\.conf\.json$/u.test(file)) continue;
+      readFileSync(join(REPO_ROOT, file), 'utf8').split('\n').forEach((line, i) => {
+        if (/^\s*(\/\/|#)/u.test(line)) return;
+        assert.doesNotMatch(line, /"packages"/u, `${file}:${i + 1} builds a packages/ path this scan cannot follow`);
+        for (const m of line.matchAll(/"((?:\.\.\/)+packages\/[^"]+)"/gu)) targets.add(normalize(join(dirname(file), m[1])));
+      });
+    }
+  }
+  assert.ok(targets.size >= 5, `vacuous scan: ${[...targets]}`);
+  for (const target of targets) {
+    assert.ok(existsSync(join(REPO_ROOT, target)), `${target} does not exist: wrong resolution in this scan?`);
+    // A directory (the prompt-host FIXTURES const) stands for the files inside it.
+    const probe = statSync(join(REPO_ROOT, target)).isDirectory() ? `${target}/any.json` : target;
+    assert.equal(classify([probe]).rust, 'true', `${target} is read by the Rust build but does not set rust`);
+  }
+});
+
+// #11042: the helper's Rust tests also read Go sources under agent/internal/ipc
+// (wire-contract drift checks). agent/* otherwise sets only api + agent_code, so a
+// PR touching just those Go files would skip rust-check. Re-derive the set from
+// the Rust sources instead of trusting the classifier's list; the narrow set (not
+// a glob) is right because the Rust side names individual files.
+test('classifier: every agent/ path the Tauri Rust sources read sets rust (and keeps api + agent_code)', () => {
+  const targets = new Set();
+  for (const root of ['apps/viewer/src-tauri', 'apps/helper/src-tauri']) {
+    for (const file of walk(root)) {
+      if (!/\.(rs|toml)$|tauri\.conf\.json$/u.test(file)) continue;
+      readFileSync(join(REPO_ROOT, file), 'utf8').split('\n').forEach((line, i) => {
+        if (/^\s*(\/\/|#)/u.test(line)) return;
+        // Fail loudly on any agent/ literal the capture below cannot follow (a split
+        // join, a bare "agent" segment, a literal without the ../ prefix).
+        const rest = line.replace(/"((?:\.\.\/)+agent\/[^"]+)"/gu, (_, p) => { targets.add(normalize(join(root, p))); return '""'; });
+        assert.doesNotMatch(rest, /"[^"]*agent\/[^"]*"|(?:join|push|new)\("[^"]*agent"\)/u, `${file}:${i + 1} builds an agent/ path this scan cannot follow`);
+      });
+    }
+  }
+  // The literals are joined onto env!("CARGO_MANIFEST_DIR") (the src-tauri root).
+  assert.ok(targets.size >= 2, `vacuous scan: ${[...targets]}`);
+  for (const target of targets) {
+    assert.ok(existsSync(join(REPO_ROOT, target)), `${target} does not exist: wrong resolution in this scan?`);
+    const out = classify([target]);
+    assert.equal(out.rust, 'true', `${target} is read by the Rust tests but does not set rust`);
+    assert.equal(out.api, 'true', target);
+    assert.equal(out.agent_code, 'true', target);
+  }
+});
+
+test('classifier: an agent/internal/ipc file the Rust tests do not read leaves rust unset', () => {
+  for (const path of ['agent/internal/ipc/protocol.go', 'agent/internal/ipc/chat_test.go', 'agent/internal/heartbeat/heartbeat.go', 'agent/cmd/breeze-agent/main.go']) {
+    const out = classify([path]);
+    assert.equal(out.rust, 'false', path);
+    assert.equal(out.api, 'true', path);
+    assert.equal(out.agent_code, 'true', path);
+  }
+});
+
 test('classifier: shared/global inputs set every area', () => {
   for (const path of [
-    'packages/shared/src/types/device.ts',
     'packages/office-addin-core/src/x.ts',
     'package.json',
     'pnpm-lock.yaml',
@@ -381,11 +461,23 @@ const AREA_JOBS = {
 const STACK_JOBS = ['build-smoke-images', 'smoke-test', 'guided-setup-smoke'];
 const STACK_IF = `${APP_IF} && (needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.portal == 'true')`;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+// W05 (#10749): a job CI Success has a thin `case` arm for may end its `if:` with the
+// clause naming its own id (queue-selection.test.mjs requires it there). Any other
+// job, and any other suffix, still fails the exact pins below.
+const thinArms = new Set([...summary.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gmu)].map((m) => m[1]));
+const thinOpt = (name) => (thinArms.has(name) ? `(?:${escape(` && !contains(needs.changes.outputs.thin_skip, ',${name},')`)})?` : '');
+test('W05: the thin clause is allowed only on a job CI Success can count as satisfied', () => {
+  assert.equal(thinArms.size, 27);
+  assert.equal(thinOpt('smoke-test'), '');
+  assert.ok(new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-shared')}$`, 'mu').test(job('test-shared')));
+  assert.ok(!new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-shared')}$`, 'mu')
+    .test(`    if: ${APP_IF} && !contains(needs.changes.outputs.thin_skip, ',test-web,')\n`), 'another job\'s id is not accepted');
+});
 
 for (const [area, jobs] of Object.entries(AREA_JOBS)) {
   for (const name of jobs) {
     test(`${name} is gated on the ${area} area`, () => {
-      assert.match(job(name), new RegExp(`^    if: ${escape(`${APP_IF} && needs.changes.outputs.${area} == 'true'`)}$`, 'mu'));
+      assert.match(job(name), new RegExp(`^    if: ${escape(`${APP_IF} && needs.changes.outputs.${area} == 'true'`)}${thinOpt(name)}$`, 'mu'));
     });
   }
 }
@@ -401,7 +493,7 @@ for (const name of STACK_JOBS) {
 // It is an app-gated job (any packages/** diff sets code+app), not area-gated:
 // shared is a dependency of every area.
 test('test-shared runs the packages/shared vitest suite, gated on code AND app (#8373)', () => {
-  assert.match(job('test-shared'), new RegExp(`^    if: ${escape(APP_IF)}$`, 'mu'));
+  assert.match(job('test-shared'), new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-shared')}$`, 'mu'));
   assert.match(job('test-shared'), /^        run: pnpm --filter @breeze\/shared exec vitest run$/mu);
   assert.doesNotMatch(job('test-shared'), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu);
 });
@@ -415,7 +507,7 @@ test('ci-success needs test-shared and asserts it in both the app and non-app br
 // typecheck run in an app-gated job (any packages/** diff sets code+app), not
 // area-gated, like test-shared.
 test('test-document-ui runs the package suite and typecheck, gated on code AND app (#9414)', () => {
-  assert.match(job('test-document-ui'), new RegExp(`^    if: ${escape(APP_IF)}$`, 'mu'));
+  assert.match(job('test-document-ui'), new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-document-ui')}$`, 'mu'));
   assert.match(job('test-document-ui'), /^        run: pnpm --filter @breeze\/document-ui exec vitest run$/mu);
   assert.match(job('test-document-ui'), /^        run: pnpm --filter=@breeze\/document-ui typecheck$/mu);
   assert.doesNotMatch(job('test-document-ui'), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu);

@@ -318,6 +318,10 @@
     "generatingToken": "Generating token...",
     "multiFactorAuthenticationIsRequiredTo3": "Multi-factor authentication is required to generate installation tokens.",
     "generateNewToken": "Generate new token",
+    "generateNewLink": "Generate new link",
+    "cliTokenReuse": "Generated earlier. Valid until {{date}}, unless its device enrollments have all been used.",
+    "cliTokenReuseVerified": "Generated earlier. Valid until {{date}}.",
+    "linkReuse": "Generated earlier for {{platform}}. Valid until {{date}}.",
     "generateToken": "Generate token",
     "cliTokenNotGenerated": "No token yet. Choose the site, number of devices and expiry, then generate a token. Each token is a live enrollment key.",
     "cliCommandNeedsToken": "Generate a token first. The install command appears here once a token exists — until then there is nothing to run.",
@@ -430,6 +434,18 @@
         "message": "Remove {{hostname}}? It will be taken out of your active fleet and stop being monitored. History is kept and you can restore it later.",
         "confirm": "Remove"
       },
+      "forcePermanentDelete": {
+        "confirm": "Delete anyway",
+        "reason": {
+          "agentReturned": "An uninstall completed earlier, but the agent has checked in since (it was reinstalled).",
+          "cancelled": "The agent uninstall was cancelled before it ran.",
+          "expired": "The agent never came back to collect the uninstall before it expired.",
+          "failed": "The uninstall command ran on the device but reported a failure.",
+          "none": "No agent uninstall was queued for this device (it was removed with the agent left installed)."
+        },
+        "risk": "Deleting {{hostname}} now can leave the agent installed and running with nobody managing it. This cannot be undone.",
+        "title": "The agent did not confirm removal"
+      },
       "permanentDelete": {
         "title": "Delete {{hostname}} permanently?",
         "message": "This deletes all history for this device — tickets, alerts, patch and backup records. It cannot be undone.",
@@ -505,7 +521,10 @@
     "shutdown": "Shutdown",
     "deviceSettings": "Device Settings",
     "installHomebrew": "Install Homebrew",
-    "restartAgent": "Restart agent"
+    "restartAgent": "Restart agent",
+    "runVendorUpdates": "Run vendor updates",
+    "runVendorUpdatesHint": "Run the manufacturer's update tool on this device.",
+    "runVendorUpdatesAgentUpgradeRequired": "Agent upgrade required: vendor updates need agent {{version}} or later"
   },
   "deviceActivityFeed": {
     "activity": "Activity",
@@ -942,6 +961,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Backup status, jobs, snapshots, and verification",
     "theOsReportsAPendingReboot": "The OS reports a pending reboot (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Reboot pending",
+    "backupRunning": "Backup running",
+    "backupRunningTooltip": "A backup is running on this device. Open the Backup tab to see its progress.",
     "restartScheduled": "Restart scheduled",
     "restartInProgress": "Restarting",
     "restartScheduledFor": "Restart scheduled for {{time}}",
@@ -952,6 +973,7 @@
     "restartCannotBePostponed": "Cannot be postponed",
     "restartSourcePatchJob": "Requested by a patch installation",
     "restartSourceMaintenanceWindow": "Requested by a maintenance window",
+    "restartSourceOemUpdates": "Requested by a vendor update run",
     "restartSourceManual": "Requested by a technician",
     "restartSourceUnknown": "Scheduled restart",
     "agentV": "Agent v",
@@ -1035,6 +1057,10 @@
       "label": "approval",
       "byRing": "set by the linked update ring",
       "manualOnly": "manual approvals only (no update ring linked)"
+    },
+    "containment": {
+      "extraDestinations": "Extra destinations while isolated",
+      "invalid": "This policy’s containment settings are not valid, so isolation uses the fixed defaults with no extra destinations."
     },
     "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
     "featureOverriddenBy": "Overridden by {{policy}}"
@@ -1485,6 +1511,7 @@
     "cancel": "Cancel",
     "editDisplayName": "Edit display name",
     "serialNumber": "Serial Number",
+    "productSku": "Product Number",
     "manufacturer": "Manufacturer",
     "model": "Model",
     "deviceRole": "Device Role",
@@ -1654,6 +1681,7 @@
       "ram": "RAM %",
       "lastSeen": "Last Seen",
       "serial": "Serial",
+      "productSku": "Product Number",
       "assetTag": "Asset Tag",
       "location": "Location",
       "source": "Source"
@@ -1671,6 +1699,7 @@
       "ram": "Sort by RAM usage",
       "lastSeen": "Sort by last seen time",
       "serial": "Sort by serial number",
+      "productSku": "Sort by product number",
       "assetTag": "Sort by asset tag",
       "location": "Sort by location",
       "source": "Sort by source"
@@ -2116,6 +2145,8 @@
       "deferredUntil": "Auto-approves {{date}}",
       "deferredUntilTitle": "Update ring {{ring}} holds new patches for its deferral window. This one is approved on {{date}} and installs with the next scheduled patch run after that.",
       "excluded": "Excluded by policy",
+      "managedByVendorUpdates": "Managed by Vendor updates",
+      "managedByVendorUpdatesTitle": "The manufacturer's update tool delivers this on this device, so scheduled patch runs skip it.",
       "excludedSourceTitle": "The patch policy's sources do not cover this patch, so scheduled patch runs skip it.",
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",
@@ -2687,7 +2718,11 @@
       "bulkMaintenanceSuccess_one": "{{count}} device {{verb}} maintenance mode",
       "bulkMaintenanceSuccess_other": "{{count}} devices {{verb}} maintenance mode",
       "bulkPurgeFailed": "Permanent delete failed: {{reason}}",
-      "bulkPurgeNoneDeleted": "No device was deleted: {{reasons}}",
+      "bulkPurgeNoneDeleted": "No device was deleted. {{reasons}}",
+      "bulkPurgeSkipOther_one": "{{count}} skipped with reason {{code}}.",
+      "bulkPurgeSkipOther_other": "{{count}} skipped with reason {{code}}.",
+      "bulkPurgeSkipUninstallNotConfirmed_one": "{{count}} skipped because its agent never confirmed the uninstall. Delete it on its own from the device page.",
+      "bulkPurgeSkipUninstallNotConfirmed_other": "{{count}} skipped because their agents never confirmed the uninstall. Delete them one at a time from the device page.",
       "bulkWakeAllFailed": "Bulk Wake All Failed",
       "bulkWakeSent": "Bulk Wake Sent",
       "bulkWakeSomeFailed": "Bulk Wake Some Failed",
@@ -2754,8 +2789,8 @@
       "bulkMaintenanceSomeFailed_other": "{{count}} devices {{verb}} maintenance mode; {{failed}} failed: {{devices}}",
       "bulkPurgeDone_one": "{{count}} device permanently deleted",
       "bulkPurgeDone_other": "{{count}} devices permanently deleted",
-      "bulkPurgeDoneWithSkips_one": "{{count}} device permanently deleted; {{skipped}} skipped ({{reasons}})",
-      "bulkPurgeDoneWithSkips_other": "{{count}} devices permanently deleted; {{skipped}} skipped ({{reasons}})",
+      "bulkPurgeDoneWithSkips_one": "{{count}} device permanently deleted; {{reasons}}",
+      "bulkPurgeDoneWithSkips_other": "{{count}} devices permanently deleted; {{reasons}}",
       "bulkPurgeStarted_one": "Permanently deleting {{count}} device…",
       "bulkPurgeStarted_other": "Permanently deleting {{count}} devices…",
       "bulkRestoreAllFailed_one": "Failed to restore {{count}} device",
@@ -2775,7 +2810,8 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (you do not have access to its site or to the target site)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (no longer found; it may have been deleted)",
       "bulkMoveSiteNotMovedError": "{{devices}} (an unexpected error occurred; try again)",
-      "deviceMovedToSite": "{{hostname}} moved to a new site"
+      "deviceMovedToSite": "{{hostname}} moved to a new site",
+      "bulkWakeResult": "Sent to {{sent}}, skipped {{skipped}}"
     },
     "tryAgain": "Try again",
     "unknownDevice": "Unknown",
@@ -2813,7 +2849,18 @@
     "emptyOrgTitleUnnamed": "No devices in this organization yet",
     "emptyOrgDescription": "Install the agent on a machine in this organization to start monitoring it, or switch to all organizations to see the rest of your fleet.",
     "viewAllOrganizations": "View all organizations",
-    "importFromRmmShort": "Import"
+    "importFromRmmShort": "Import",
+    "wakeSkipReasons": {
+      "online": "already online",
+      "relayUnavailable": "with no online peer at their site",
+      "missingMac": "with no MAC on file (agent has not checked in)",
+      "missingSubnet": "with no usable IPv4 history",
+      "ipv6": "with IPv6 history only",
+      "relayDisconnected": "had relay disconnect mid-dispatch — retry",
+      "missingTarget": "not found or access denied",
+      "removed": "removed",
+      "invalidRelay": "with invalid relay override"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Add filter",
@@ -2894,6 +2941,13 @@
       "logShippingFailing": "Log Shipping Failing",
       "networkIsolation": {
         "active": "Isolated"
+      },
+      "helperVersion": "Helper Version",
+      "deviceFunction": "Device Function",
+      "hostsWorkloads": "Hosts Workloads",
+      "workloadRuntimes": "Workload Runtimes",
+      "warranty": {
+        "status": "Warranty Status"
       }
     }
   },
@@ -4861,6 +4915,11 @@
       "isolation_not_found": "This isolation episode could not be found.",
       "relay_unavailable": "A remote desktop relay is not available. Disable the relay option or configure TURN.",
       "invalid_allowlist": "The server’s isolation allowlist is invalid. Contact your administrator.",
+      "invalid_allowlist_server_url_missing": "This device has no agent server URL and AGENT_SERVER_URL is not set on the server. Set AGENT_SERVER_URL, then try again.",
+      "invalid_allowlist_server_url_invalid": "The agent server URL for this device is not a valid http(s) URL. Check the device’s server URL or AGENT_SERVER_URL.",
+      "invalid_allowlist_backup_url_invalid": "AGENT_BACKUP_SERVER_URL is not a valid http(s) URL. Correct it and try again.",
+      "invalid_allowlist_relay_config_invalid": "The TURN relay settings (TURN_HOST, TURN_TLS_HOST, TURN_PORT, TURN_TLS_PORT) are invalid. Correct them or turn off the relay option.",
+      "invalid_allowlist_policy_invalid": "The saved containment policy has an invalid or oversized allowlist entry. Review the policy’s allowed destinations.",
       "isolation_conflict": "The isolation episode changed. Refresh its status and try again.",
       "isolation_secret_unavailable": "Recovery codes are temporarily unavailable. Contact your administrator.",
       "approval_mismatch": "The approval does not match this isolation request.",
@@ -4868,6 +4927,123 @@
       "device_decommissioned": "A decommissioned device cannot start a new isolation.",
       "device_pending_assignment": "Assign this device to an organization before starting isolation.",
       "backup_helper_update_required": "Update the backup helper before starting isolation."
+    }
+  },
+  "runVendorUpdatesDialog": {
+    "title": "Run vendor updates",
+    "description": "Runs the {{vendor}} update tool on {{hostname}} now. It can install drivers and applications, and flash BIOS and firmware.",
+    "rebootLegend": "If the updates need a restart",
+    "whenFinishedLabel": "Reboot when finished",
+    "whenFinishedDescription": "Breeze restarts the device after the run, with the warning its patch policy sets. BIOS and firmware updates are included.",
+    "leaveToMeLabel": "Leave reboot to me",
+    "leaveToMeDescription": "Breeze does not restart the device. Someone restarts it later to finish the updates.",
+    "skippedNote": "BIOS and firmware updates are skipped with this choice, because they need a restart Breeze controls. Drivers and applications still run.",
+    "confirm": "Run updates",
+    "submitting": "Starting...",
+    "cancel": "Cancel",
+    "genericError": "Could not start vendor updates on this device.",
+    "queued": "Vendor updates started on {{hostname}}.",
+    "queuedSkipped": "Vendor updates started on {{hostname}}. BIOS and firmware were skipped.",
+    "refusal": {
+      "flagOff": "Vendor updates are not turned on for this organization.",
+      "laneClosed": "Vendor updates are not available yet for this device's manufacturer.",
+      "killSwitch": "Vendor updates are paused for this device's manufacturer.",
+      "agentTooOld": "This device's agent is too old for vendor updates. Update the agent to {{version}} or later.",
+      "notApplicable": "Vendor updates do not apply to this device.",
+      "notSupported": "The vendor's tool does not support this model.",
+      "ephemeral": "Vendor updates do not run on Quick Support devices.",
+      "parked": "Assign this device to an organization before running vendor updates.",
+      "offline": "The device is not online. Vendor updates only start on a device that is online now.",
+      "runInFlight": "A vendor update run is already in progress on this device.",
+      "noOpenCategories": "Nothing can run with this choice. BIOS and firmware are all that is available here: choose Reboot when finished.",
+      "decommissioned": "This device is decommissioned, so nothing can be sent to it.",
+      "cancelledAtClaim": "The run was cancelled before it reached the device. Try again."
+    }
+  },
+  "vendorUpdates": {
+    "title": "Vendor updates",
+    "refreshState": "Refresh",
+    "loadError": "Could not load vendor updates for this device.",
+    "retryLoad": "Try again",
+    "empty": "No vendor update has run on this device yet.",
+    "state": {
+      "upToDate": "Up to date",
+      "overdue": "Overdue",
+      "failing": "Failing",
+      "notSupported": "Not supported",
+      "notManaged": "Not managed",
+      "waitingForReboot": "Waiting for restart",
+      "rebootOverdue": "Restart overdue"
+    },
+    "stateDescription": {
+      "upToDate": "The last scheduled run finished.",
+      "overdue": "No run has finished since the schedule came due.",
+      "failing": "The last run did not finish. See below for what to do.",
+      "notSupported": "The vendor's tool does not support this model.",
+      "notManaged": "No policy schedules vendor updates here. You can still run them on demand.",
+      "notOffered": "Vendor updates are not available on this device right now.",
+      "waitingForReboot": "Updates are installed and take effect after the next restart.",
+      "rebootOverdue": "A restart has been waiting for more than three days."
+    },
+    "lastRunHeading": "Last run",
+    "outcomeLabel": "Outcome",
+    "noOutcomeYet": "Waiting for the device to report",
+    "errorCodeLabel": "Error code",
+    "toolVersionLabel": "Tool version",
+    "lastAttemptLabel": "Started",
+    "installedLabel": "Installed",
+    "failedLabel": "Failed",
+    "rebootLabel": "Restart",
+    "rebootPendingSince": "Restart needed since {{date}}",
+    "rebootNotNeeded": "No restart needed",
+    "outcome": {
+      "success": "Success",
+      "successRebootRequired": "Success, restart needed",
+      "noUpdates": "No updates found",
+      "partial": "Partly installed",
+      "failed": "Did not finish",
+      "notSupported": "Model not supported",
+      "toolUnavailable": "Tool unavailable",
+      "blockedOnBattery": "Blocked: on battery",
+      "blockedRebootPending": "Blocked: restart pending",
+      "blockedNoRecoveryKey": "Blocked: no recovery key",
+      "retryLater": "Will try again",
+      "interrupted": "Interrupted"
+    },
+    "outcomeHelp": {
+      "partial": "Some updates installed and some did not. Check the failed items below, then run vendor updates again.",
+      "failed": "The vendor's tool did not finish. Check the error code, then run vendor updates again.",
+      "notSupported": "The vendor's tool does not support this model, so Breeze stops asking until the tool version or the model changes.",
+      "toolUnavailable": "The vendor's update tool is not installed and could not be fetched. Check that the device can reach the vendor's download site.",
+      "blockedOnBattery": "BIOS and firmware only run on AC power with enough battery. Plug the device in, then run vendor updates again.",
+      "blockedRebootPending": "The device already has a restart waiting. Once it has restarted, run vendor updates again.",
+      "blockedNoRecoveryKey": "BIOS and firmware stay blocked until Breeze holds this device's current BitLocker recovery key. Back up the key to Breeze, then run vendor updates again.",
+      "retryLater": "The vendor's tool asked to try again later. Breeze did not change anything on the device.",
+      "interrupted": "The run stopped before it finished, usually because the device restarted or the agent stopped. Run vendor updates again."
+    },
+    "categoriesHeading": "What can run on this device",
+    "category": {
+      "bios": "BIOS",
+      "firmware": "Firmware",
+      "driver": "Drivers",
+      "application": "Applications"
+    },
+    "gateOpen": "Available",
+    "gateClosed": "Not available yet on {{vendor}}. Breeze turns on each update type only after testing it on real hardware.",
+    "itemResult": {
+      "installed": "installed",
+      "failed": "failed",
+      "skipped": "skipped"
+    },
+    "history": {
+      "heading": "Run history",
+      "loadError": "Could not load the run history.",
+      "noResult": "No readable result",
+      "bySchedule": "Schedule",
+      "byUnknown": "Unknown",
+      "range": "{{from}}-{{to}} of {{total}}",
+      "previousPage": "Previous",
+      "nextPage": "Next"
     }
   }
 }

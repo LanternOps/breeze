@@ -60,6 +60,7 @@ const KEY_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   operator_plan: 'AI Task Plan',
   list_operator_tasks: 'List AI Tasks',
   get_operator_task: 'Get AI Task',
+  create_operator_task: 'Create AI Task',
   operator_recipe: 'AI Task',
 };
 

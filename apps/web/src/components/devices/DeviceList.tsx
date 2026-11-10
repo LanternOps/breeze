@@ -46,7 +46,7 @@ import {
   matchesMergedListFilters,
   sortByDisplayName,
 } from "./mergedListFilter";
-import ConnectDesktopButton from "../remote/ConnectDesktopButton";
+import ConnectDesktopButton, { type RemoteToolOption } from "../remote/ConnectDesktopButton";
 // Single source of truth for "can this device still accept a queued command?".
 // Hoisted out of this file (#2465): the bulk bar in DevicesPage needs the SAME
 // rule, and re-deriving it per surface is exactly how the false "must be online"
@@ -340,6 +340,13 @@ export type Device = {
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**
+   * #10922 — detail endpoint only: the third-party tools this device can be
+   * opened with, and which one the Connect button's primary click launches.
+   * Empty unless the caller holds remote:access.
+   */
+  remoteAccessProviders?: RemoteToolOption[];
+  remoteAccessDefaultProviderId?: string | null;
+  /**
    * Server-detected asymmetry: timestamp at which the API stopped
    * receiving main-agent heartbeats while the watchdog is still
    * reporting in. Set by the heartbeat handler (#851 / Layer C).
@@ -371,6 +378,8 @@ export type Device = {
      * beside a manual asset's `serialNumber` in the same column.
      */
     serialNumber?: string;
+    /** device_hardware.product_sku (#9593); the opt-in Product Number column. */
+    productSku?: string;
   };
   /**
    * Headline device reliability score (0-100) from the existing
@@ -508,6 +517,7 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "hardwareHealth",
   // #9863 — the list joins device_warranty on the device subject only.
   "warranty",
+  "productSku",
   "vpn",
   // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
   "attention",
@@ -890,6 +900,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
     const cls = d.deviceClass ?? "agent";
     return (cls === "manual" ? d.serialNumber : cls === "agent" ? d.hardware?.serialNumber : null) || null;
   },
+  productSku: (d) => ((d.deviceClass ?? "agent") === "agent" ? d.hardware?.productSku || null : null),
   assetTag: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.assetTag || null : null),
   location: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.location || null : null),
   // #5213 — network-only, like class/type above; agent rows sort blanks-last.
@@ -2868,6 +2879,17 @@ export default function DeviceList({
         const value = cls === "manual" ? device.serialNumber : cls === "agent" ? device.hardware?.serialNumber : null;
         return (
           <td key="serial" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
+            {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
+    productSku: {
+      header: () => sortHeader("productSku", t("deviceList.tableColumns.productSku"), t("deviceList.sortBy.productSku")),
+      cell: (device) => {
+        const value = (device.deviceClass ?? "agent") === "agent" ? device.hardware?.productSku : null;
+        return (
+          <td key="productSku" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-product-sku`}>
             {value ? <span className="truncate" title={value}>{value}</span> : dash}
           </td>
         );

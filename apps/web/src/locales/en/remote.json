@@ -49,7 +49,8 @@
       "securityCheckToast": "Remote launch unavailable: security check failed. Please contact your administrator.",
       "securityPolicy": "Remote launch blocked by security policy",
       "server": "Remote launch failed: server error. Please contact your administrator.",
-      "vncTunnelFailed": "VNC tunnel failed to open"
+      "vncTunnelFailed": "VNC tunnel failed to open",
+      "providerUnavailable": "That remote tool is no longer available for this device. Refresh and try again."
     },
     "fallback": {
       "linuxFirstRun": "On Linux, make the download executable (chmod +x) and run it once. That registers the viewer, so sessions open automatically from then on.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Couldn't authenticate to the display server (X authority)",
       "x11ConnectFailed": "Couldn't connect to the display server on this device"
     },
-    "opensNewWindow": "(opens in a new window)"
+    "opensNewWindow": "(opens in a new window)",
+    "split": {
+      "builtInViewer": "Built-in viewer",
+      "connectWith": "Connect with {{name}}",
+      "connectWithBuiltIn": "Connect with the built-in viewer",
+      "menuLabel": "Choose how to connect",
+      "opensInBrowser": "Opens in a new browser tab"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Creating tunnel...",
@@ -209,6 +217,7 @@
       "copy": "Copy",
       "delete": "Delete",
       "download": "Download",
+      "mkdir": "New folder",
       "move": "Move",
       "purge": "Purge",
       "restore": "Restore",
@@ -250,6 +259,7 @@
     "emptyDirectory": "Empty Directory",
     "errors": {
       "copy": "Failed to copy",
+      "createFolder": "Failed to create folder",
       "delete": "Failed to delete",
       "download": "Failed to download",
       "downloadTooLarge": "Too large to download ({{size}}). The file browser transfers files up to {{max}}.",
@@ -264,6 +274,15 @@
     "home": "Home",
     "modified": "Modified",
     "moveTo": "Move To",
+    "newFolder": {
+      "action": "New folder",
+      "title": "New folder",
+      "nameLabel": "Folder name",
+      "location": "Will be created in {{path}}",
+      "created": "Created folder {{name}}",
+      "invalidName": "Folder names can't contain path separators or characters this device's file system doesn't allow.",
+      "nameExists": "A file or folder with this name already exists here."
+    },
     "selectedCount": "Selected Count",
     "size": "Size",
     "title": "File Manager",
@@ -318,7 +337,8 @@
     "title": "Process Manager",
     "totalCpu": "Total CPU",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitor this"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -643,9 +663,10 @@
     },
     "stopService": "Stop Service",
     "summary": "{{shown}} of {{total}} services on {{device}}",
-    "title": "Title",
+    "title": "Services",
     "windowsOnlyDescription": "The Services Manager is only available for Windows devices. {{device}} is running {{os}}.",
-    "windowsOnlyTitle": "Windows Only Title"
+    "windowsOnlyTitle": "Windows only",
+    "monitorThis": "Monitor this"
   },
   "sessionHistory": {
     "columns": {

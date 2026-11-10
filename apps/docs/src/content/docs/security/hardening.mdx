@@ -136,12 +136,15 @@ Breeze implements Redis-backed sliding window rate limiting:
 | Endpoint | Limit | Window |
 |---|---|---|
 | Login | 5 attempts | 5 minutes |
-| API (per user) | 100 requests | 60 seconds |
+| API (per signed-in user) | 600 requests (`USER_RATE_LIMIT_PER_MINUTE`) | 60 seconds |
+| API (per source IP, signed-in sessions) | 10 × the per-user limit (6,000 by default) | 60 seconds |
+| API (per source IP, anonymous and API-key traffic) | 600 requests | 60 seconds |
+| Agent WebSocket connections (per source IP) | 3,000 requests | 60 seconds |
 | Agent (per device) | 120 requests | 60 seconds |
 | Agent (per organization) | `max(600, devices × 12)`, capped at 20,000 | 60 seconds |
 | Enrollment (per source IP) | 10 attempts (`AGENT_ENROLL_RATE_LIMIT`) | 60 seconds (`AGENT_ENROLL_RATE_WINDOW_SECONDS`) |
 
-The per-user limit is checked right after authentication, before the request transaction opens and before permission and validation checks, so a limited request never holds a database connection. A request those later checks reject still counts against the budget.
+The per-user limit is checked right after authentication, before the request transaction opens and before permission and validation checks, so a limited request never holds a database connection. A request those later checks reject still counts against the budget. Since v0.127.0 each signed-in user has their own budget, so technicians who share an office IP address no longer throttle each other; the per-IP ceiling for signed-in sessions only bounds raw volume from one address. API keys are not sessions and keep the shared per-IP limit plus the key's own hourly limit.
 
 The per-organization agent limit caps total fleet traffic for any single tenant. It scales with the org's enrolled device count between a floor (`AGENT_ORG_RATE_LIMIT_PER_MIN`, default 600) and a hard platform ceiling (`AGENT_ORG_RATE_LIMIT_MAX`, default 20,000), with the per-device allowance set by `AGENT_ORG_RATE_LIMIT_PER_DEVICE` (default 12). A flat ceiling was previously applied to every tenant regardless of fleet size, which silently dropped patch inventory for larger orgs.
 

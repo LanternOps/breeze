@@ -7,71 +7,114 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// SpawnProcessInSession launches an arbitrary binary in the specified
-// Windows session as the logged-in user. Tries three strategies in order:
-//  1. WTSQueryUserToken — standard API, fails on Azure AD cloud-only sessions
-//  2. Explorer.exe token theft — find explorer.exe in the session and duplicate
-//     its token; works for any login type including Azure AD
-//  3. SYSTEM fallback — last resort, process runs as SYSTEM with session override
+// createProcessAsUser is windows.CreateProcessAsUser; a var so tests can
+// capture the launch.
+var createProcessAsUser = windows.CreateProcessAsUser
+
+// SpawnProcessInSessionWithArgs launches binaryPath with args in the specified
+// Windows session as the signed-in user, using the user token strategies of
+// AcquireInteractiveUserToken, and returns the launched process's PID. It
+// never falls back to SYSTEM: with nobody signed in it returns
+// ErrNoInteractiveUser and launches nothing (#10379).
 //
-// Uses cmd.exe as a wrapper because CreateProcessAsUser returns
-// "Access is denied" for Tauri binaries — likely SmartScreen/WDAC.
-func SpawnProcessInSession(binaryPath string, sessionID uint32) error {
-	return SpawnProcessInSessionWithArgs(binaryPath, nil, sessionID)
+// The target is launched directly, not via cmd.exe /c start, so the returned
+// PID is the target's own and the helper watcher can track it (#6923). The
+// "Access is denied" that once motivated the cmd.exe wrapper (#220) was seen
+// with a SYSTEM token; this path only ever launches with the user's token.
+func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32) (uint32, error) {
+	process, pid, err := startProcessInSession(binaryPath, args, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	_ = windows.CloseHandle(process)
+	return pid, nil
 }
 
-// SpawnProcessInSessionWithArgs launches a binary plus args in the specified Windows session.
-func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32) error {
-	// #6872: cmd.exe always exists, so CreateProcessAsUser(cmd.exe /c start
-	// "" "<binary>") succeeds even when <binary> does not — the log then
-	// claims a spawn with cmd.exe's PID and the user gets a "Windows cannot
-	// find" dialog. Check the target first.
+// RunProcessInSessionWithArgs launches binaryPath like
+// SpawnProcessInSessionWithArgs, then waits up to timeout for it to exit and
+// returns its exit code. When the wait runs out it returns
+// ErrProcessWaitTimeout and leaves the process running.
+func RunProcessInSessionWithArgs(binaryPath string, args []string, sessionID uint32, timeout time.Duration) (uint32, error) {
+	process, pid, err := startProcessInSession(binaryPath, args, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = windows.CloseHandle(process) }()
+
+	// windows.INFINITE would wait forever; cap just below it.
+	waitMs := uint32(windows.INFINITE - 1)
+	if ms := timeout.Milliseconds(); ms < int64(waitMs) {
+		waitMs = uint32(max(ms, 0))
+	}
+	event, err := windows.WaitForSingleObject(process, waitMs)
+	if err != nil {
+		return 0, fmt.Errorf("wait for %s (pid %d): %w", binaryPath, pid, err)
+	}
+	if event == uint32(windows.WAIT_TIMEOUT) {
+		return 0, fmt.Errorf("%w: %s (pid %d) still running after %s", ErrProcessWaitTimeout, binaryPath, pid, timeout)
+	}
+	var code uint32
+	if err := windows.GetExitCodeProcess(process, &code); err != nil {
+		return 0, fmt.Errorf("exit code of %s (pid %d): %w", binaryPath, pid, err)
+	}
+	return code, nil
+}
+
+// directLaunchCommandLine is the lpCommandLine for launching binaryPath with
+// args directly: argv[0] is the binary and every element is escaped by the
+// CommandLineToArgvW rules, so the target receives each arg exactly. No
+// cmd.exe parses the line, so its metacharacters (& | < > ^ % ( )) are
+// ordinary characters and need no escaping.
+func directLaunchCommandLine(binaryPath string, args []string) string {
+	return windows.ComposeCommandLine(append([]string{binaryPath}, args...))
+}
+
+// startProcessInSession launches binaryPath with args as the signed-in user,
+// on the session's interactive desktop. The caller closes the returned
+// process handle.
+func startProcessInSession(binaryPath string, args []string, sessionID uint32) (windows.Handle, uint32, error) {
+	// #6872: report a missing target as ErrBinaryMissing before acquiring a
+	// token, rather than as a launch failure.
 	if _, statErr := os.Stat(binaryPath); statErr != nil {
 		if os.IsNotExist(statErr) {
-			return fmt.Errorf("%w: %s", ErrBinaryMissing, binaryPath)
+			return 0, 0, fmt.Errorf("%w: %s", ErrBinaryMissing, binaryPath)
 		}
-		return fmt.Errorf("stat spawn target %s: %w", binaryPath, statErr)
+		return 0, 0, fmt.Errorf("stat spawn target %s: %w", binaryPath, statErr)
 	}
 
-	dupToken, envBlock, identity, err := acquireUserToken(sessionID)
+	// #10379: a user token or nothing. The SYSTEM fallback launched Breeze
+	// Assist into the logon-screen session, where it exits 101 and the
+	// watcher crash-looped.
+	dupToken, envBlock, identity, err := AcquireInteractiveUserToken(sessionID)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer dupToken.Close()
 	if envBlock != nil {
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	quoted := append([]string{fmt.Sprintf(`"%s"`, binaryPath)}, quoteWindowsArgs(args)...)
-	command := strings.Join(quoted, " ")
-
-	// Build command: cmd.exe /c start "" "path\to\binary.exe" [args...]
-	sysRoot := os.Getenv("SystemRoot")
-	if sysRoot == "" {
-		sysRoot = `C:\Windows`
-	}
-	cmdExe := sysRoot + `\System32\cmd.exe`
-
-	appName, err := windows.UTF16PtrFromString(cmdExe)
+	appName, err := windows.UTF16PtrFromString(binaryPath)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString appName: %w", err)
+		return 0, 0, fmt.Errorf("UTF16PtrFromString appName: %w", err)
 	}
-
-	cmdLine, err := windows.UTF16PtrFromString(
-		fmt.Sprintf(`"%s" /c start "" %s`, cmdExe, command),
-	)
+	cmdLine, err := windows.UTF16PtrFromString(directLaunchCommandLine(binaryPath, args))
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString cmdLine: %w", err)
+		return 0, 0, fmt.Errorf("UTF16PtrFromString cmdLine: %w", err)
 	}
-
+	workDir, err := windows.UTF16PtrFromString(filepath.Dir(binaryPath))
+	if err != nil {
+		return 0, 0, fmt.Errorf("UTF16PtrFromString workDir: %w", err)
+	}
 	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString desktop: %w", err)
+		return 0, 0, fmt.Errorf("UTF16PtrFromString desktop: %w", err)
 	}
 
 	si := windows.StartupInfo{
@@ -80,7 +123,10 @@ func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID u
 	}
 	var pi windows.ProcessInformation
 
-	err = windows.CreateProcessAsUser(
+	// CREATE_NO_WINDOW: the agent service has no console, and a console
+	// target (taskkill) would otherwise open a console window on the user's
+	// desktop. GUI targets ignore the flag.
+	if err := createProcessAsUser(
 		dupToken,
 		appName,
 		cmdLine,
@@ -89,16 +135,13 @@ func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID u
 		false,
 		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
 		envBlock,
-		windows.StringToUTF16Ptr(filepath.Dir(binaryPath)),
+		workDir,
 		&si,
 		&pi,
-	)
-	if err != nil {
-		return fmt.Errorf("CreateProcessAsUser(cmd.exe, session=%d, binary=%s): %w", sessionID, binaryPath, err)
+	); err != nil {
+		return 0, 0, fmt.Errorf("CreateProcessAsUser(session=%d, binary=%s): %w", sessionID, binaryPath, err)
 	}
-
-	windows.CloseHandle(pi.Thread)
-	windows.CloseHandle(pi.Process)
+	_ = windows.CloseHandle(pi.Thread)
 
 	log.Info("spawned process in session",
 		"sessionId", sessionID,
@@ -106,84 +149,68 @@ func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID u
 		"binary", binaryPath,
 		"identity", identity,
 	)
-	return nil
+	return pi.Process, pi.ProcessId, nil
 }
 
-func quoteWindowsArgs(args []string) []string {
-	quoted := make([]string, 0, len(args))
-	for _, arg := range args {
-		// 1. Escape cmd.exe metacharacters with ^ (must come first so the ^
-		//    we insert isn't itself re-escaped).
-		var buf strings.Builder
-		for i := 0; i < len(arg); i++ {
-			switch arg[i] {
-			case '&', '|', '<', '>', '^', '(', ')', '%':
-				buf.WriteByte('^')
-			}
-			buf.WriteByte(arg[i])
-		}
-		escaped := buf.String()
+// userTokenStrategy is one way to obtain the signed-in user's primary token
+// for a session. name is the identity description logged at spawn.
+type userTokenStrategy struct {
+	name    string
+	acquire func(sessionID uint32) (windows.Token, *uint16, error)
+}
 
-		// 2. MSVCRT convention: backslashes immediately before a double-quote
-		//    must be doubled, then the quote itself is escaped with a backslash.
-		var out strings.Builder
-		for i := 0; i < len(escaped); i++ {
-			if escaped[i] == '"' {
-				// Count preceding backslashes in the source string
-				nbs := 0
-				for j := i - 1; j >= 0 && escaped[j] == '\\'; j-- {
-					nbs++
-				}
-				// Double existing backslashes before the quote
-				for k := 0; k < nbs; k++ {
-					out.WriteByte('\\')
-				}
-				out.WriteString(`\"`)
-			} else {
-				out.WriteByte(escaped[i])
-			}
-		}
+// interactiveUserTokenStrategies are tried in order. A var so tests can
+// stand in for the Win32 calls.
+var interactiveUserTokenStrategies = []userTokenStrategy{
+	// WTSQueryUserToken: fast, works for local and domain accounts.
+	{name: "user (WTS)", acquire: func(sessionID uint32) (windows.Token, *uint16, error) {
+		token, envBlock, _, err := getUserTokenViaWTS(sessionID)
+		return token, envBlock, err
+	}},
+	// explorer.exe's token: works for Azure AD sessions, where
+	// WTSQueryUserToken can fail.
+	{name: "user (explorer)", acquire: getUserTokenViaExplorer},
+}
 
-		// 3. Double trailing backslashes before the wrapping close-quote,
-		//    otherwise they would escape the closing " (e.g. C:\path\ → "C:\path\\").
-		result := out.String()
-		nbs := 0
-		for i := len(result) - 1; i >= 0 && result[i] == '\\'; i-- {
-			nbs++
-		}
-		for k := 0; k < nbs; k++ {
-			out.WriteByte('\\')
-		}
+// systemTokenForSession is the SYSTEM fallback of acquireUserToken. A var so
+// tests can prove the user-only path never reaches it.
+var systemTokenForSession = getSystemTokenForSession
 
-		quoted = append(quoted, fmt.Sprintf(`"%s"`, out.String()))
+// AcquireInteractiveUserToken returns a primary token and environment block
+// for the user signed in to sessionID, and the identity description of the
+// strategy that produced it. It never returns a SYSTEM token: when no strategy
+// yields a user token (nobody is signed in to the session, or the user's
+// shell has not started yet) it fails with ErrNoInteractiveUser, which callers
+// treat as "wait for a user" (#10379). The caller closes the token and
+// destroys a non-nil environment block.
+func AcquireInteractiveUserToken(sessionID uint32) (windows.Token, *uint16, string, error) {
+	var failures []string
+	for _, s := range interactiveUserTokenStrategies {
+		token, envBlock, err := s.acquire(sessionID)
+		if err == nil {
+			return token, envBlock, s.name, nil
+		}
+		log.Debug("user token strategy failed", "sessionId", sessionID, "strategy", s.name, "error", err.Error())
+		failures = append(failures, s.name+": "+err.Error())
 	}
-	return quoted
+	return 0, nil, "", fmt.Errorf("session %d: %w (%s)", sessionID, ErrNoInteractiveUser, strings.Join(failures, "; "))
 }
 
-// acquireUserToken tries to get a user-identity token for the session.
+// acquireUserToken tries to get a user-identity token for the session and
+// falls back to the agent's SYSTEM token with the session overridden. Only
+// the desktop helper spawner (spawner_windows.go) uses it; launches that must
+// run as the user use AcquireInteractiveUserToken.
 // Returns token, environment block, identity description, error.
 func acquireUserToken(sessionID uint32) (windows.Token, *uint16, string, error) {
-	// Strategy 1: WTSQueryUserToken (fast, works for local accounts)
-	token, envBlock, _, err := getUserTokenViaWTS(sessionID)
+	token, envBlock, identity, err := AcquireInteractiveUserToken(sessionID)
 	if err == nil {
-		return token, envBlock, "user (WTS)", nil
-	}
-	wtsErr := err
-	log.Debug("WTSQueryUserToken failed, trying explorer.exe token",
-		"sessionId", sessionID, "error", err.Error())
-
-	// Strategy 2: steal token from explorer.exe in the session
-	token, envBlock, err = getUserTokenViaExplorer(sessionID)
-	if err == nil {
-		return token, envBlock, "user (explorer)", nil
+		return token, envBlock, identity, nil
 	}
 	log.Warn("all user token strategies failed, falling back to SYSTEM",
 		"sessionId", sessionID,
-		"wtsError", wtsErr.Error(),
-		"explorerError", err.Error())
+		"error", err.Error())
 
-	// Strategy 3: SYSTEM fallback
-	token, _, err = getSystemTokenForSession(sessionID)
+	token, _, err = systemTokenForSession(sessionID)
 	if err != nil {
 		return 0, nil, "", err
 	}

@@ -49,7 +49,8 @@
       "securityCheckToast": "Lancement à distance indisponible : le contrôle de sécurité a échoué. Contactez votre administrateur.",
       "securityPolicy": "Lancement à distance bloqué par la politique de sécurité",
       "server": "Échec du lancement à distance : erreur serveur. Contactez votre administrateur.",
-      "vncTunnelFailed": "Le tunnel VNC n'a pas pu s'ouvrir"
+      "vncTunnelFailed": "Le tunnel VNC n'a pas pu s'ouvrir",
+      "providerUnavailable": "Cet outil d'accès à distance n'est plus disponible pour cet appareil. Actualisez la page et réessayez."
     },
     "fallback": {
       "linuxFirstRun": "Sous Linux, rendez le fichier téléchargé exécutable (chmod +x) et lancez-le une fois. Cela enregistre la visionneuse ; les sessions s'ouvriront ensuite automatiquement.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Impossible de s’authentifier auprès du serveur d’affichage (autorité X)",
       "x11ConnectFailed": "Impossible de se connecter au serveur d’affichage de cet appareil"
     },
-    "opensNewWindow": "(s’ouvre dans une nouvelle fenêtre)"
+    "opensNewWindow": "(s’ouvre dans une nouvelle fenêtre)",
+    "split": {
+      "builtInViewer": "Visionneuse intégrée",
+      "connectWith": "Se connecter avec {{name}}",
+      "connectWithBuiltIn": "Se connecter avec la visionneuse intégrée",
+      "menuLabel": "Choisir le mode de connexion",
+      "opensInBrowser": "S'ouvre dans un nouvel onglet du navigateur"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Création du tunnel...",
@@ -209,6 +217,7 @@
       "copy": "Copier",
       "delete": "Supprimer",
       "download": "Télécharger",
+      "mkdir": "Nouveau dossier",
       "move": "Bouge",
       "purge": "Purger",
       "restore": "Restaurer",
@@ -250,6 +259,7 @@
     "emptyDirectory": "Répertoire vide",
     "errors": {
       "copy": "Impossible de copier",
+      "createFolder": "Impossible de créer le dossier",
       "delete": "Impossible de supprimer",
       "download": "Impossible de télécharger",
       "downloadTooLarge": "Trop volumineux pour être téléchargé ({{size}}). L’explorateur de fichiers transfère des fichiers jusqu’à {{max}}.",
@@ -264,6 +274,15 @@
     "home": "Accueil",
     "modified": "Modifié",
     "moveTo": "Déplacer vers",
+    "newFolder": {
+      "action": "Nouveau dossier",
+      "title": "Nouveau dossier",
+      "nameLabel": "Nom du dossier",
+      "location": "Sera créé dans {{path}}",
+      "created": "Dossier {{name}} créé",
+      "invalidName": "Le nom du dossier ne peut pas contenir de séparateurs de chemin ni de caractères interdits par le système de fichiers de cet appareil.",
+      "nameExists": "Un fichier ou un dossier portant ce nom existe déjà ici."
+    },
     "selectedCount": "Nombre sélectionné",
     "size": "Taille",
     "title": "Gestionnaire de fichiers",
@@ -318,7 +337,8 @@
     "title": "Responsable de processus",
     "totalCpu": "CPU total",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Surveiller ceci"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -643,9 +663,10 @@
     },
     "stopService": "Arrêter le service",
     "summary": "{{shown}} de {{total}} services sur {{device}}",
-    "title": "Titre",
+    "title": "Services",
     "windowsOnlyDescription": "Le Gestionnaire de Services n’est disponible que pour les appareils Windows. {{device}} court {{os}}.",
-    "windowsOnlyTitle": "Windows Seul titre"
+    "windowsOnlyTitle": "Windows seulement",
+    "monitorThis": "Surveiller ceci"
   },
   "sessionHistory": {
     "columns": {

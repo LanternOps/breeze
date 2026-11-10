@@ -14,7 +14,6 @@ import { ReportSeriesError } from './errors';
  */
 const SYSTEM_AUTHORED_REPORT_TYPES: ReadonlySet<string> = new Set(['ai_org_narrative', 'ai_fleet_design']);
 const BUSINESS_TYPES: ReadonlySet<string> = new Set(BUSINESS_REPORT_TYPES);
-
 function unsupported(type: string, reason: string): ReportSeriesError {
   return new ReportSeriesError('series_type_unsupported', 400, { type, reason });
 }

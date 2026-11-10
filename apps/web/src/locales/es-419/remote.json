@@ -49,7 +49,8 @@
       "securityCheckToast": "Inicio remoto no disponible: falló la verificación de seguridad. Comunícate con tu administrador.",
       "securityPolicy": "Inicio remoto bloqueado por la política de seguridad",
       "server": "Falló el inicio remoto: error del servidor. Comunícate con tu administrador.",
-      "vncTunnelFailed": "El túnel VNC no se pudo abrir"
+      "vncTunnelFailed": "El túnel VNC no se pudo abrir",
+      "providerUnavailable": "Esa herramienta remota ya no está disponible para este dispositivo. Actualiza la página e inténtalo de nuevo."
     },
     "fallback": {
       "linuxFirstRun": "En Linux, haz que el archivo descargado sea ejecutable (chmod +x) y ábrelo una vez. Eso registra el visor y, a partir de entonces, las sesiones se abren automáticamente.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "No se pudo autenticar en el servidor de pantalla (autoridad X)",
       "x11ConnectFailed": "No se pudo conectar al servidor de pantalla de este dispositivo"
     },
-    "opensNewWindow": "(se abre en una ventana nueva)"
+    "opensNewWindow": "(se abre en una ventana nueva)",
+    "split": {
+      "builtInViewer": "Visor integrado",
+      "connectWith": "Conectar con {{name}}",
+      "connectWithBuiltIn": "Conectar con el visor integrado",
+      "menuLabel": "Elige cómo conectarte",
+      "opensInBrowser": "Se abre en una pestaña nueva del navegador"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Creando túnel...",
@@ -209,6 +217,7 @@
       "copy": "Copiar",
       "delete": "Eliminar",
       "download": "Descargar",
+      "mkdir": "Nueva carpeta",
       "move": "Mover",
       "purge": "Purga",
       "restore": "Restaurar",
@@ -250,6 +259,7 @@
     "emptyDirectory": "Directorio vacío",
     "errors": {
       "copy": "No se pudo copiar",
+      "createFolder": "No se pudo crear la carpeta",
       "delete": "No se pudo eliminar",
       "download": "No se pudo descargar",
       "downloadTooLarge": "Demasiado grande para descargar ({{size}}). El explorador de archivos transfiere archivos de hasta {{max}}.",
@@ -264,6 +274,15 @@
     "home": "Inicio",
     "modified": "Modificado",
     "moveTo": "Convidar a",
+    "newFolder": {
+      "action": "Nueva carpeta",
+      "title": "Nueva carpeta",
+      "nameLabel": "Nombre de la carpeta",
+      "location": "Se creará en {{path}}",
+      "created": "Carpeta {{name}} creada",
+      "invalidName": "El nombre de la carpeta no puede contener separadores de ruta ni caracteres que el sistema de archivos de este dispositivo no permita.",
+      "nameExists": "Ya existe un archivo o una carpeta con este nombre aquí."
+    },
     "selectedCount": "Recuento seleccionado",
     "size": "Tamaño",
     "title": "Administrador de archivos",
@@ -318,7 +337,8 @@
     "title": "Gerente de Procesos",
     "totalCpu": "CPU total",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitorear esto"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -643,9 +663,10 @@
     },
     "stopService": "Detener servicio",
     "summary": "{{shown}} de los servicios {{total}} en {{device}}",
-    "title": "Título",
+    "title": "Servicios",
     "windowsOnlyDescription": "El Administrador de servicios solo está disponible para dispositivos Windows. {{device}} está ejecutando {{os}}.",
-    "windowsOnlyTitle": "Windows Solo Título"
+    "windowsOnlyTitle": "Solo Windows",
+    "monitorThis": "Monitorear esto"
   },
   "sessionHistory": {
     "columns": {

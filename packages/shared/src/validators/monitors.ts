@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import { automationActionSchema } from './automationActions';
 import { TIME_SYNC_FINDING_CODES } from '../constants/timeSync';
+import type { RearmMode } from '../utils/alertLifecycle';
+import {
+  alertCooldownMinutesSchema,
+  isValidRearmPair,
+  REARM_PAIR_MESSAGE,
+  rearmFieldsShape,
+} from './alertLifecycle';
 
 /**
  * Monitor definitions (#5287 W02).
@@ -304,6 +311,64 @@ export const monitorConditionSchemas = {
 export type MonitorConditionSchemas = typeof monitorConditionSchemas;
 export type NetworkCheckMonitorCondition = z.infer<typeof monitorConditionSchemas.network_check>;
 
+/**
+ * Kinds that have a distinct recovery signal, so an explicit "Clears when"
+ * condition means something (alert re-arm W3, #10765). Every other kind clears
+ * on the inverse of its trigger. The API's kind spec `recoverySupported` must
+ * agree (kinds/index.test.ts).
+ */
+export const RECOVERY_CONDITION_KINDS = ['event_log'] as const satisfies readonly MonitorKind[];
+export type RecoveryConditionKind = (typeof RECOVERY_CONDITION_KINDS)[number];
+
+export function isRecoveryConditionKind(kind: MonitorKind): kind is RecoveryConditionKind {
+  return (RECOVERY_CONDITION_KINDS as readonly MonitorKind[]).includes(kind);
+}
+
+/** Deepest group nesting worth walking; the engine bails at the same depth. */
+const MAX_RECOVERY_GROUP_DEPTH = 10;
+
+/**
+ * A pre-W3 raw alert-condition blob the engine can evaluate: a leaf with a
+ * `type`, or a `{ logic, conditions }` group of those. A `{ conditions: [...] }`
+ * group with no `logic` is NOT one: the engine reads it as a leaf with no type,
+ * so its alerts could never auto-resolve (#10935).
+ */
+export function isLegacyRecoveryCondition(value: unknown, depth = 0): boolean {
+  if (depth > MAX_RECOVERY_GROUP_DEPTH) return false;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if ('logic' in record) {
+    return (record.logic === 'and' || record.logic === 'or')
+      && Array.isArray(record.conditions)
+      && record.conditions.length > 0
+      && record.conditions.every((child) => isLegacyRecoveryCondition(child, depth + 1));
+  }
+  return typeof record.type === 'string' && record.type.length > 0;
+}
+
+/** True when `value` parses as `kind`'s schema and `kind` supports a recovery condition. */
+export function isKindShapedRecoveryCondition(kind: MonitorKind, value: unknown): boolean {
+  return isRecoveryConditionKind(kind) && monitorConditionSchemas[kind].safeParse(value).success;
+}
+
+/**
+ * Why `value` cannot be saved as `kind`'s recovery condition, worded to follow
+ * the field name, or null when it can. `allowLegacy` admits a raw blob (ND3): rows that already carry one stay
+ * editable, but a new monitor cannot start out with one.
+ */
+export function recoveryConditionProblem(
+  kind: MonitorKind,
+  value: unknown,
+  { allowLegacy }: { allowLegacy: boolean },
+): string | null {
+  if (value === null || value === undefined) return null;
+  if (allowLegacy && isLegacyRecoveryCondition(value)) return null;
+  if (!isRecoveryConditionKind(kind)) {
+    return `only supported for kinds: ${RECOVERY_CONDITION_KINDS.join(', ')}`;
+  }
+  return isKindShapedRecoveryCondition(kind, value) ? null : `does not match kind ${kind}`;
+}
+
 /** Responses reuse the automation action vocabulary verbatim. */
 export const monitorResponsesSchema = z.array(automationActionSchema).max(10);
 export const monitorDeliveryModeSchema = z.enum(['none', 'inherit', 'channels']);
@@ -317,8 +382,12 @@ const monitorDefinitionFields = {
   enabled: z.boolean(),
   condition: z.record(z.string(), z.unknown()),
   severity: monitorSeveritySchema,
-  cooldownMinutes: z.number().int().min(0).max(1440),
-  autoResolve: z.boolean(),
+  // Alert lifecycle overrides (#10765): null or omitted on create = inherit the
+  // device's org override, then its partner default. No create default: a new
+  // monitor inherits. The re-arm pair rule is in `refineDefinition`.
+  cooldownMinutes: alertCooldownMinutesSchema.nullable().optional(),
+  autoResolve: z.boolean().nullable().optional(),
+  ...rearmFieldsShape,
   autoResolveConditions: z.record(z.string(), z.unknown()).nullable().optional(),
   responses: monitorResponsesSchema,
   deliveryMode: monitorDeliveryModeSchema,
@@ -344,8 +413,6 @@ const baseDefinition = z.object(monitorDefinitionFields);
  */
 const createOnlyDefaults = {
   enabled: monitorDefinitionFields.enabled.default(true),
-  cooldownMinutes: monitorDefinitionFields.cooldownMinutes.default(5),
-  autoResolve: monitorDefinitionFields.autoResolve.default(false),
   responses: monitorDefinitionFields.responses.default([]),
   deliveryMode: monitorDefinitionFields.deliveryMode.default('inherit'),
   deliveryChannelIds: monitorDefinitionFields.deliveryChannelIds.default([]),
@@ -362,6 +429,9 @@ interface MonitorDefinitionShape {
   deliveryChannelIds?: string[];
   responses?: Array<{ type: string }>;
   aiAgentId?: string | null;
+  rearmMode?: RearmMode | null;
+  rearmDelayMinutes?: number | null;
+  autoResolveConditions?: Record<string, unknown> | null;
 }
 
 /**
@@ -373,9 +443,26 @@ interface MonitorDefinitionShape {
  * condition that does not match. The delivery check skips an absent
  * `deliveryChannelIds` for the same reason: create always has it from its
  * default, and an absent list on a PATCH means the stored channels stay.
+ *
+ * `allowLegacyRecovery` is true on update only: see `recoveryConditionProblem`.
+ * With no `kind` in the patch, a value that fits no recovery kind at all is
+ * still refused here; the service checks the rest against the stored kind.
  */
-function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(schema: T) {
+function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(
+  schema: T,
+  { allowLegacyRecovery }: { allowLegacyRecovery: boolean },
+) {
   return schema
+    .superRefine((v, ctx) => {
+      const value = v.autoResolveConditions;
+      if (value === undefined || value === null) return;
+      const options = { allowLegacy: allowLegacyRecovery };
+      const fitsSomeKind = RECOVERY_CONDITION_KINDS.some((kind) => recoveryConditionProblem(kind, value, options) === null);
+      const problem = v.kind
+        ? recoveryConditionProblem(v.kind, value, options)
+        : fitsSomeKind ? null : `does not match any of: ${RECOVERY_CONDITION_KINDS.join(', ')}`;
+      if (problem) ctx.addIssue({ code: 'custom', path: ['autoResolveConditions'], message: problem });
+    })
     .refine(
       (v) => {
         if (!v.kind) return true;
@@ -395,7 +482,8 @@ function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(schema: T
     .refine((v) => !(v.responses ?? []).some((a) => a.type === 'ai_triage') || !!v.aiAgentId, {
       message: 'ai_triage responses require aiAgentId',
       path: ['responses'],
-    });
+    })
+    .refine(isValidRearmPair, { message: REARM_PAIR_MESSAGE, path: ['rearmDelayMinutes'] });
 }
 
 /**
@@ -409,9 +497,10 @@ export const createMonitorDefinitionSchema = refineDefinition(
     ownerScope: z.enum(['organization', 'partner']).default('organization'),
     orgId: z.string().uuid().optional(),
   }),
+  { allowLegacyRecovery: false },
 );
 
-export const updateMonitorDefinitionSchema = refineDefinition(baseDefinition.partial());
+export const updateMonitorDefinitionSchema = refineDefinition(baseDefinition.partial(), { allowLegacyRecovery: true });
 
 export type CreateMonitorDefinitionInput = z.infer<typeof createMonitorDefinitionSchema>;
 export type UpdateMonitorDefinitionInput = z.infer<typeof updateMonitorDefinitionSchema>;

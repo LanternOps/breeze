@@ -3,6 +3,7 @@ import { Registry } from 'prom-client';
 
 import {
   RETENTION_JOB_NAMES,
+  recordMetricRollupCompactionStalled,
   recordRetentionRun,
   recordRollupRun,
   registerRetentionPrometheusMetrics,
@@ -73,6 +74,17 @@ describe('retention/rollup job metrics', () => {
     expect(await samplesFor(registry, 'breeze_retention_backlog_incomplete')).toHaveLength(0);
   });
 
+  it('publishes the stalled-month gauge only once the job has reported it (#10960)', async () => {
+    const name = 'breeze_metric_rollup_compaction_stalled_months';
+    expect(await samplesFor(registry, name)).toHaveLength(0);
+
+    recordMetricRollupCompactionStalled(2);
+    expect((await samplesFor(registry, name)).map((sample) => sample.value)).toEqual([2]);
+
+    recordMetricRollupCompactionStalled(0);
+    expect((await samplesFor(registry, name)).map((sample) => sample.value)).toEqual([0]);
+  });
+
   it('increments the rows-deleted counter and stamps last-run for the given job', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-31T12:00:00.000Z'));
@@ -117,6 +129,62 @@ describe('retention/rollup job metrics', () => {
 
     const backlog = await samplesFor(registry, 'breeze_retention_backlog_incomplete');
     expect(valueFor(backlog, { job_name: 'agent_log_retention' })).toBeUndefined();
+  });
+
+  // #4342 W0: report-only jobs publish what they WOULD delete. That gauge is
+  // the Gate G1 evidence an operator reads before enabling enforcement.
+  it('publishes rows-eligible from a report-only run without moving rows-deleted', async () => {
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
+
+    const text = await registry.getSingleMetricAsString('breeze_retention_rows_eligible');
+    expect(text).toContain('job_name="webhook_delivery_retention"} 12');
+
+    const deleted = await samplesFor(registry, 'breeze_retention_rows_deleted_total');
+    expect(valueFor(deleted, { job_name: 'webhook_delivery_retention' })).toBeUndefined();
+    // A report run stamps last-run like any other run.
+    const lastRun = await samplesFor(registry, 'breeze_retention_last_run_timestamp_seconds');
+    expect(valueFor(lastRun, { job_name: 'webhook_delivery_retention' })).toBeGreaterThan(0);
+  });
+
+  it('sets (does not accumulate) rows-eligible', async () => {
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 5 });
+
+    const eligible = await samplesFor(registry, 'breeze_retention_rows_eligible');
+    expect(valueFor(eligible, { job_name: 'webhook_delivery_retention' })).toBe(5);
+  });
+
+  // A job flipped between report and enforce must not leave the OTHER mode's
+  // gauge frozen: a stale backlog=1 keeps an alert firing on a report-only job,
+  // and a stale eligible count reads as current on an enforcing one.
+  it('clears the other mode\'s gauge when a job flips between report and enforce', async () => {
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
+    recordRetentionRun('webhook_delivery_retention', { rowsDeleted: 500, incomplete: true });
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'webhook_delivery_retention' })).toBeUndefined();
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_backlog_incomplete'), { job_name: 'webhook_delivery_retention' })).toBe(1);
+
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 7 });
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_backlog_incomplete'), { job_name: 'webhook_delivery_retention' })).toBeUndefined();
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'webhook_delivery_retention' })).toBe(7);
+  });
+
+  // A failed target reports { incomplete: true } with no rowsDeleted: that is
+  // not an enforce run, so it must not erase the last report evidence.
+  it('keeps the eligible gauge when an outcome carries neither count', async () => {
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
+    recordRetentionRun('webhook_delivery_retention', { incomplete: true });
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'webhook_delivery_retention' })).toBe(12);
+  });
+
+  it('publishes no rows-eligible series until a report run supplies one', async () => {
+    recordRetentionRun('audit_retention', { rowsDeleted: 5 });
+    expect(await samplesFor(registry, 'breeze_retention_rows_eligible')).toHaveLength(0);
+  });
+
+  it('clamps a negative or non-finite rows-eligible count to zero', async () => {
+    recordRetentionRun('change_log_retention', { rowsEligible: -7 });
+    const eligible = await samplesFor(registry, 'breeze_retention_rows_eligible');
+    expect(valueFor(eligible, { job_name: 'change_log_retention' })).toBe(0);
   });
 
   it('clamps a negative or non-finite rows-deleted count to zero', async () => {

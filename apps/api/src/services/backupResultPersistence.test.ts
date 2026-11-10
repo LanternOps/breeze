@@ -55,6 +55,8 @@ vi.mock('../db', () => {
     },
     withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   };
 });
 
@@ -204,6 +206,7 @@ import {
 } from '../jobs/backupRetention';
 import { applyBackupSnapshotImmutability } from './backupSnapshotStorage';
 import { checkBackupProviderCapabilities } from './backupSnapshotStorage';
+import { setBackupMetricsRecorder } from './backupMetrics';
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -1500,6 +1503,8 @@ describe('backup result persistence', () => {
               kind: 'symlink',
               linkTarget: 'usr/bin',
             },
+            // #11235: and a directory entry, with the kind hydration records.
+            { sourcePath: '/srv/empty', backupPath: '', kind: 'dir' },
           ],
         },
       },
@@ -1510,10 +1515,17 @@ describe('backup result persistence', () => {
       expect.objectContaining({
         sourcePath: 'C:\\assure\\src\\x',
         backupPath: 'snapshots/snap-1/files/x.gz',
+        kind: null,
       }),
       expect.objectContaining({
         sourcePath: '/bin',
         backupPath: '',
+        kind: 'symlink',
+      }),
+      expect.objectContaining({
+        sourcePath: '/srv/empty',
+        backupPath: '',
+        kind: 'dir',
       }),
     ]);
   });
@@ -2887,5 +2899,89 @@ describe('snapshot key root at publish (#7081)', () => {
     expect(snapshotSet).toBeDefined();
     expect(snapshotSet).not.toHaveProperty('keyLayout');
     expect(snapshotSet).not.toHaveProperty('keyPrefix');
+  });
+});
+
+describe('recoverable index drops are not job warnings (#11026)', () => {
+  const NOTE = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+  const onSnapshotFileIndex = vi.fn();
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    resolveBackupProtectionForDeviceMock.mockReset();
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+    vi.mocked(db.delete).mockReturnValue(chainMock([]) as any);
+    setBackupMetricsRecorder({ onSnapshotFileIndex });
+  });
+  afterEach(() => setBackupMetricsRecorder(null));
+
+  function mockSuccessPath() {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+  }
+
+  const complete = (warning: string) => applyBackupCommandResultToJob({
+    jobId: 'job-1',
+    orgId: 'org-1',
+    deviceId: 'device-1',
+    resultStatus: 'completed',
+    result: { snapshotId: 'provider-snap-1', filesBackedUp: 17950, warning, snapshot: { id: 'provider-snap-1', files: [] } } as any,
+  });
+  const jobSet = () => vi.mocked(db.update).mock.results[0]?.value?.set.mock.calls[0][0] as { errorLog: unknown };
+  const snapshotValues = () => vi.mocked(db.insert).mock.results[0]?.value?.values.mock.calls[0][0] as { metadata: Record<string, unknown> };
+
+  it('a completed result carrying only the note persists no error log, records the count, and counts once', async () => {
+    mockSuccessPath();
+    await complete(`bounded: ${NOTE}`);
+    expect(jobSet().errorLog).toBeNull();
+    expect(snapshotValues().metadata.fileIndexInlineDroppedEntries).toBe(17950);
+    expect(onSnapshotFileIndex).toHaveBeenCalledTimes(1);
+    expect(onSnapshotFileIndex).toHaveBeenCalledWith('inline_dropped', 'dropped', 1);
+  });
+
+  it('a warning with other text keeps that text', async () => {
+    mockSuccessPath();
+    await complete(`vss warning || bounded: ${NOTE}`);
+    expect(jobSet().errorLog).toBe('vss warning');
+    expect(snapshotValues().metadata.fileIndexInlineDroppedEntries).toBe(17950);
+  });
+
+  it('a result without the note records no count and no metadata key', async () => {
+    mockSuccessPath();
+    await complete('vss warning');
+    expect(jobSet().errorLog).toBe('vss warning');
+    expect(snapshotValues().metadata).not.toHaveProperty('fileIndexInlineDroppedEntries');
+    expect(onSnapshotFileIndex).not.toHaveBeenCalled();
+  });
+
+  it("a failed job's error log also omits the note", async () => {
+    const updateChain = chainMock([{ id: 'job-1', orgId: 'org-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'failed',
+      result: { error: 'disk full', warning: `vss warning || bounded: ${NOTE}` } as any,
+    });
+    const errorLog = (updateChain.set.mock.calls[0][0] as { errorLog: string }).errorLog;
+    expect(errorLog).toBe('disk full; vss warning');
+    expect(errorLog).not.toContain('snapshot file index');
+  });
+
+  it("a failed job whose only warning is the note keeps the error alone", async () => {
+    const updateChain = chainMock([{ id: 'job-1', orgId: 'org-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'failed',
+      result: { error: 'disk full', warning: `bounded: ${NOTE}` } as any,
+    });
+    expect((updateChain.set.mock.calls[0][0] as { errorLog: string }).errorLog).toBe('disk full');
   });
 });

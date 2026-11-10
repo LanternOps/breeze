@@ -903,7 +903,19 @@
       },
       "charKeysOn": "Tek tuşlu kısayollar açık.",
       "charKeysOff": "Tek tuşlu kısayollar kapalı. Yalnızca Ctrl/Cmd kısayolları çalışır.",
-      "charKeysManage": "Profil ayarlarından değiştir"
+      "charKeysManage": "Profil ayarlarından değiştir",
+      "queueTitle": "Bilet kuyruğu",
+      "queueHint": "Biletler sayfasında, bir metin alanının dışında.",
+      "queue": {
+        "next": "Sonraki bilet",
+        "previous": "Önceki bilet",
+        "open": "Bileti tam sayfada aç",
+        "toggleBulk": "Toplu seçime ekle veya çıkar",
+        "assignMe": "Bana ata",
+        "reply": "Yanıt yaz",
+        "internal": "Dahili not yaz",
+        "resolve": "Notla çöz"
+      }
     }
   },
   "migrationBanner": {
@@ -2935,5 +2947,8 @@
   "featureLock": {
     "lockedLabel": "Kilitli",
     "upgrade": "Planları gör"
+  },
+  "inheritChoice": {
+    "inherit": "Devral — {{value}} ({{source}})"
   }
 }

@@ -33,8 +33,14 @@ export function refusalKey(reason: string): string {
     : 'networkIsolation.unavailable';
 }
 /** Server refusal copy for a mutation error; undefined lets runAction fall back to the generic/`errors:<CODE>` copy. */
-export function isolationRefusalCopy(code: string, t: (key: string) => string): string | undefined {
-  return Object.hasOwn(START_REFUSAL_KEYS, code) ? t(/* i18n-dynamic */ refusalKey(code)) : undefined;
+export const ALLOWLIST_REASONS = ['server_url_missing', 'server_url_invalid', 'backup_url_invalid', 'relay_config_invalid', 'policy_invalid'] as const; // 'allowlist_invalid' (internal source) deliberately falls back to the generic copy
+export function isolationRefusalCopy(code: string, t: (key: string) => string, body?: unknown): string | undefined {
+  if (!Object.hasOwn(START_REFUSAL_KEYS, code)) return undefined;
+  if (code === 'invalid_allowlist') {
+    const reason = body && typeof body === 'object' ? (body as { allowlistReason?: unknown }).allowlistReason : undefined;
+    if (typeof reason === 'string' && (ALLOWLIST_REASONS as readonly string[]).includes(reason)) return t(/* i18n-dynamic */ `networkIsolation.refusal.invalid_allowlist_${reason}`);
+  }
+  return t(/* i18n-dynamic */ refusalKey(code));
 }
 export function startEligibility(response: Pick<IsolationListResponse, 'startEligibility'> | null | undefined): { enabled: boolean; reason?: StartBlockReason } {
   if (response?.startEligibility.allowed) return { enabled: true };

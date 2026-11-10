@@ -18,6 +18,7 @@ import { AGENT_KIND_PRESETS, listAgentReachableTools } from './agentToolCatalog'
 import { classifyTerminal } from './agentCircuit';
 import { outcomeToolsForProfile } from './outcomeTools';
 import { TOOL_TIERS } from '../aiAgentSdkTools';
+import { TIER1_READ_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TIER3_SUPERVISED_ACTIONS } from '../aiGuardrails';
 import { getAllRegisteredToolNames } from '../aiTools';
 
 /** Same approach as designProfile.test.ts: names declared via `tool('<name>', …)` in aiAgentSdkTools.ts. */
@@ -85,6 +86,26 @@ describe('assessment profile (Wisp W05)', () => {
     // Multiplexed tools appear only action-scoped to their read actions.
     expect(ASSESSMENT_TOOL_ALLOWLIST).not.toContain('manage_alerts');
     expect(ASSESSMENT_TOOL_ALLOWLIST).not.toContain('remember');
+  });
+
+  // #11425: an anomaly.incident_opened wake needs to drill into the device's
+  // anomaly rows. manage_device_anomalies multiplexes list with writes
+  // (dismiss/resolve tier 2, promote supervised), so it is admitted only
+  // action-scoped to its read — the manage_alerts:list precedent.
+  it('admits manage_device_anomalies only action-scoped to list', () => {
+    expect(ASSESSMENT_TOOL_ALLOWLIST.filter((e) => baseName(e) === 'manage_device_anomalies')).toEqual(['manage_device_anomalies:list']);
+    expect(assessmentToolAllowlist([])).not.toContain('manage_device_anomalies');
+  });
+
+  it('every action-scoped entry names a declared tier-1 READ action (TIER1_READ_ACTIONS), never a write', () => {
+    const scoped = ASSESSMENT_TOOL_ALLOWLIST.filter((e) => e.includes(':'));
+    expect(scoped.length).toBeGreaterThan(0);
+    const writes = [TIER2_ACTIONS, TIER3_ACTIONS, TIER3_SUPERVISED_ACTIONS];
+    for (const entry of scoped) {
+      const [tool, action] = entry.split(':') as [string, string];
+      expect(TIER1_READ_ACTIONS[tool] ?? [], `${entry} is not a declared tier-1 read`).toContain(action);
+      for (const map of writes) expect(map[tool] ?? [], `${entry} is a write action`).not.toContain(action);
+    }
   });
 
   it('assessmentToolAllowlist is a floor: the agent allowlist neither widens nor (being a mutation list) empties it', () => {

@@ -34,4 +34,6 @@ WORKDIR /app/apps/web
 EXPOSE 4321
 
 # Sync dependencies on container start so package.json changes don't break hot-reload.
-CMD ["sh", "-lc", "pnpm install --prefer-offline --no-frozen-lockfile && pnpm dev --host 0.0.0.0"]
+# Also clear a stale .astro/dev.json: it survives restarts in the writable layer and Astro
+# on Alpine treats a reused PID as a live server, crash-looping the container (#11184).
+CMD ["sh", "-lc", "pnpm install --prefer-offline --no-frozen-lockfile && rm -f .astro/dev.json && pnpm dev --host 0.0.0.0"]

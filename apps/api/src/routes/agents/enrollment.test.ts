@@ -191,6 +191,12 @@ vi.mock('../../services/enrollmentDefaultGroup', () => ({
   applyOrgDefaultDeviceGroup: applyOrgDefaultDeviceGroupMock,
 }));
 
+// #9521 — the org's partner-export lock, taken at the top of the device transaction.
+const lockPartnerExportOrgMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('../../db/partnerExportLock', () => ({
+  lockPartnerExportOrg: lockPartnerExportOrgMock,
+}));
+
 // ---------- imports after mocks ----------
 
 import { db, withSystemDbAccessContext } from '../../db';
@@ -209,6 +215,7 @@ import { issueMtlsCertForDevice } from './helpers';
 import { rateLimiter } from '../../services/rate-limit';
 import {
   devices as devicesTable,
+  deviceHardware as deviceHardwareTable,
   enrollmentKeys as enrollmentKeysTable,
   partners as partnersTable,
   supportSessions as supportSessionsTable,
@@ -268,6 +275,10 @@ interface TxSpy {
   updatedTables: unknown[];
   /** set() payloads passed to tx.update(devices) — asserts in-place re-enrollment. */
   deviceUpdateValues: Record<string, unknown>[];
+  /** values() passed to tx.insert(deviceHardware). */
+  hardwareInsertValues: Record<string, unknown>[];
+  /** onConflictDoUpdate() `set` for tx.insert(deviceHardware). */
+  hardwareConflictSets: Record<string, unknown>[];
 }
 
 /**
@@ -286,6 +297,8 @@ function mockTransaction(
     deviceInsertValues: [],
     updatedTables: [],
     deviceUpdateValues: [],
+    hardwareInsertValues: [],
+    hardwareConflictSets: [],
   };
 
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
@@ -320,9 +333,13 @@ function mockTransaction(
         return {
           values: vi.fn((values: Record<string, unknown>) => {
             if (table === devicesTable) spy.deviceInsertValues.push(values);
+            if (table === deviceHardwareTable) spy.hardwareInsertValues.push(values);
             return {
               returning: vi.fn().mockResolvedValue([insertedDevice]),
-              onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+              onConflictDoUpdate: vi.fn((config: { set: Record<string, unknown> }) => {
+                if (table === deviceHardwareTable) spy.hardwareConflictSets.push(config.set);
+                return Promise.resolve(undefined);
+              }),
             };
           }),
         };
@@ -1075,6 +1092,31 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.deviceId).toBe('device-hw-match-fresh');
     expect(tx.updatedTables).not.toContain(devicesTable);
+  });
+
+  it('stores the product number from enrollment on insert and on conflict (#9593)', async () => {
+    mockKeyLookup({
+      id: 'key-sku',
+      orgId: 'org-sku',
+      siteId: 'site-sku',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+    mockSelectRows([{ partnerId: 'partner-sku' }]);
+    mockSelectRows([]);
+    const tx = mockTransaction({ id: 'device-sku', orgId: 'org-sku', siteId: 'site-sku', hostname: 'host-1' }, 'key-sku');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...baseEnrollBody, hardwareInfo: { serialNumber: 'S-1', productSku: '5S3F8EA#ABB' } }),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(tx.hardwareInsertValues[0]).toMatchObject({ productSku: '5S3F8EA#ABB' });
+    expect(tx.hardwareConflictSets[0]).toMatchObject({ productSku: '5S3F8EA#ABB' });
   });
 
   it('raises the identity-collision alert only when the colliding row is currently online', async () => {
@@ -3608,5 +3650,127 @@ describe('POST /agents/enroll — configurable per-IP rate limit (#7472)', () =>
     const resp = await post();
     expect(resp.status).toBe(429);
     expect(Number(resp.headers.get('Retry-After'))).toBeGreaterThan(0);
+  });
+});
+
+describe('POST /agents/enroll — lock order and lost lock races (#9521)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    admitPartnerDeviceCapacityMock.mockResolvedValue({
+      allowed: true,
+      partnerId: 'partner-9521',
+      maxDevices: null,
+      activeCount: null,
+    });
+    lockPartnerExportOrgMock.mockResolvedValue(undefined);
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  function mockFreshEnrollmentLookups() {
+    vi.mocked(manifestSigning.getActiveTrustKeyset).mockResolvedValue([]);
+    vi.mocked(manifestSigning.getActiveManifestKeyDelegations).mockResolvedValue([]);
+    mockKeyLookup({
+      id: 'key-9521',
+      orgId: 'org-9521',
+      siteId: 'site-9521',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+    mockSelectRows([{ partnerId: 'partner-9521' }]);
+    mockSelectRows([]); // no colliding device: a fresh row
+  }
+
+  const deadlock = () => Object.assign(new Error('deadlock detected'), { code: '40P01' });
+  const lostRaceWarnings = (warn: Mock, attempt: string) =>
+    warn.mock.calls.filter(([m]) => String(m).includes(`[enrollment] transient lock error 40P01 on attempt ${attempt}`));
+
+  function post(): Promise<Response> {
+    return Promise.resolve(buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    }));
+  }
+
+  it('takes the org export lock on the transaction handle, after admission and before the devices INSERT', async () => {
+    mockFreshEnrollmentLookups();
+    const spy = mockTransaction({ id: 'device-9521', orgId: 'org-9521', siteId: 'site-9521', hostname: 'host-1' }, 'key-9521');
+
+    const resp = await post();
+
+    expect(resp.status).toBe(201);
+    expect(lockPartnerExportOrgMock).toHaveBeenCalledTimes(1);
+    expect(lockPartnerExportOrgMock).toHaveBeenCalledWith(
+      expect.objectContaining({ insert: expect.any(Function), update: expect.any(Function) }),
+      'org-9521',
+    );
+    const lockOrder = lockPartnerExportOrgMock.mock.invocationCallOrder[0]!;
+    expect(admitPartnerDeviceCapacityMock.mock.invocationCallOrder[0]!).toBeLessThan(lockOrder);
+    const firstDevicesInsert = spy.insert.mock.calls.findIndex(([table]) => table === devicesTable);
+    expect(firstDevicesInsert).toBeGreaterThanOrEqual(0);
+    expect(lockOrder).toBeLessThan(spy.insert.mock.invocationCallOrder[firstDevicesInsert]!);
+  });
+
+  it('re-runs the device transaction once after a deadlock and enrolls (201)', async () => {
+    mockFreshEnrollmentLookups();
+    mockTransaction({ id: 'device-9521', orgId: 'org-9521', siteId: 'site-9521', hostname: 'host-1' }, 'key-9521');
+    const realAttempt = vi.mocked(db.transaction).getMockImplementation()!;
+    vi.mocked(db.transaction)
+      .mockImplementationOnce(async () => { throw deadlock(); })
+      .mockImplementation(realAttempt);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const resp = await post();
+
+    expect(resp.status).toBe(201);
+    expect((await resp.json()).deviceId).toBe('device-9521');
+    expect(db.transaction).toHaveBeenCalledTimes(2);
+    expect(lostRaceWarnings(warn as unknown as Mock, '1/3')).toHaveLength(1);
+    expect(captureException).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('answers 503 + Retry-After (never 500) when every attempt loses its lock race, and reports it', async () => {
+    mockFreshEnrollmentLookups();
+    vi.mocked(db.transaction).mockImplementation(async () => { throw deadlock(); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const resp = await post();
+
+    expect(resp.status).toBe(503);
+    expect(resp.headers.get('Retry-After')).toBe('2');
+    expect(await resp.json()).toMatchObject({ reason: 'enrollment_contended' });
+    expect(db.transaction).toHaveBeenCalledTimes(3);
+    expect(lostRaceWarnings(warn as unknown as Mock, '3/3')).toHaveLength(1);
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ code: '40P01' }),
+      expect.anything(),
+      expect.objectContaining({ route: 'agent_enroll', reason: 'enrollment_contended', org_id: 'org-9521' }),
+      { fingerprint: ['agent-enroll', 'enrollment_contended', '40P01'] },
+    );
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: 'org-9521',
+      action: 'agent.enroll',
+      result: 'failure',
+      details: expect.objectContaining({ reason: 'enrollment_contended', enrollmentKeyId: 'key-9521', sqlState: '40P01' }),
+    }));
+    expect(recordAgentEnrollment).toHaveBeenCalledWith('error', 'partner-9521');
+    warn.mockRestore();
+  });
+
+  it('does not retry an ordinary failure: one attempt, then the normal error path', async () => {
+    mockFreshEnrollmentLookups();
+    vi.mocked(db.transaction).mockImplementation(async () => {
+      throw Object.assign(new Error('duplicate key'), { code: '23505' });
+    });
+
+    const resp = await post();
+
+    expect(resp.status).toBe(500);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 });

@@ -129,6 +129,14 @@ import { DeviceLifecycleError } from '../services/deviceLifecycle';
 import { jobSchedule } from './scheduleRegistry';
 
 const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+/** A successful purge as the service reports it (#11153 adds the uninstall fields). */
+const PURGED = {
+  linkGroupId: null,
+  linkGroupDissolved: false,
+  detachedTopologyAlerts: 0,
+  uninstallState: 'completed',
+  forced: false,
+};
 const ORG_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 interface DeviceRow {
@@ -162,6 +170,10 @@ const deviceLimits: number[] = [];
 const lockedStatements: unknown[] = [];
 const scriptedDevices = new Map<string, DeviceRow>();
 const lockRowOverrides = new Map<string, LockedRow | null>();
+/** #11153 — what each org's unconfirmed-uninstall COUNT returns (default 0),
+ *  or an Error to make it throw. Keyed by call order. */
+const unconfirmedCounts: Array<number | Error> = [];
+const unconfirmedWheres: unknown[] = [];
 
 /** The device id bound into a `... WHERE id = $1 FOR UPDATE` statement. */
 function executedDeviceId(query: unknown): string | undefined {
@@ -191,7 +203,20 @@ function rigQueries(orgIds: string[], devicesByCall: DeviceRow[][]) {
     for (const d of batch) scriptedDevices.set(d.id, d);
   }
   let call = 0;
-  dbSelectMock.mockImplementation(() => {
+  let countCall = 0;
+  dbSelectMock.mockImplementation((fields?: Record<string, unknown>) => {
+    if (fields && 'unconfirmedCount' in fields) {
+      const scripted = unconfirmedCounts[countCall++] ?? 0;
+      const countChain: Record<string, unknown> = {};
+      countChain.from = () => countChain;
+      countChain.where = (cond: unknown) => {
+        unconfirmedWheres.push(cond);
+        return countChain;
+      };
+      countChain.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+        scripted instanceof Error ? reject(scripted) : resolve([{ unconfirmedCount: scripted }]);
+      return countChain;
+    }
     const index = call++;
     const chain: Record<string, unknown> = {};
     const self = () => chain;
@@ -232,7 +257,9 @@ beforeEach(() => {
   lockedStatements.length = 0;
   scriptedDevices.clear();
   lockRowOverrides.clear();
-  purgeRemovedDeviceMock.mockResolvedValue({ linkGroupId: null, linkGroupDissolved: false });
+  unconfirmedCounts.length = 0;
+  unconfirmedWheres.length = 0;
+  purgeRemovedDeviceMock.mockResolvedValue(PURGED);
 });
 
 describe('runRemovedDevicePurgeOnce', () => {
@@ -310,7 +337,7 @@ describe('runRemovedDevicePurgeOnce', () => {
     getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
     purgeRemovedDeviceMock
       .mockRejectedValueOnce(new DeviceLifecycleError('UNINSTALL_PENDING', 'still queued'))
-      .mockResolvedValueOnce({ linkGroupId: null, linkGroupDissolved: false });
+      .mockResolvedValueOnce(PURGED);
 
     const result = await runRemovedDevicePurgeOnce();
 
@@ -320,6 +347,78 @@ describe('runRemovedDevicePurgeOnce', () => {
     // The skipped device gets no audit row — nothing was deleted.
     expect(createAuditLogMock).toHaveBeenCalledTimes(1);
     expect(createAuditLogMock.mock.calls[0]![0]).toMatchObject({ resourceId: 'dev-2' });
+  });
+
+  // #11153 — a device whose agent never confirmed it came off is SKIPPED and
+  // COUNTED, never forced. It is also kept out of the candidate query itself:
+  // candidates are oldest-first and capped, so an unconfirmed device left in
+  // the set would be re-picked every night ahead of devices that could go.
+  it('keeps unconfirmed-uninstall devices out of the candidate query (no oldest-first stall)', async () => {
+    rigQueries([ORG_A], [[]]);
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+
+    await runRemovedDevicePurgeOnce(new Date('2026-03-01T00:00:00.000Z'));
+
+    const compiled = new PgDialect().sqlToQuery(deviceWheres[0] as never);
+    // The shared gate expression, not a local re-implementation of it.
+    expect(compiled.sql).toContain('device_reattachments');
+    expect(compiled.sql).toContain('self_uninstall');
+    expect(compiled.params).toEqual(expect.arrayContaining(['completed', 'pending']));
+    // ...and the count is the same window, negated.
+    const counted = new PgDialect().sqlToQuery(unconfirmedWheres[0] as never);
+    expect(counted.sql).toMatch(/not\s*\(/i);
+    expect(counted.sql).toContain('device_reattachments');
+    expect(`${counted.sql} ${JSON.stringify(counted.params)}`).toContain(ORG_A);
+  });
+
+  it('surfaces the unconfirmed count in the summary, without marking the run incomplete', async () => {
+    rigQueries([ORG_A, ORG_B], [[device('dev-1')], []]);
+    unconfirmedCounts.push(3, 2);
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const result = await runRemovedDevicePurgeOnce();
+
+    expect(result.skippedUninstallNotConfirmed).toBe(5);
+    expect(result.purged).toBe(1);
+    expect(recordRetentionRunMock).toHaveBeenCalledWith('removed_device_purge', { rowsDeleted: 1, incomplete: false });
+    expect(log.mock.calls.flat().join(' ')).toContain('uninstall-not-confirmed=5');
+    log.mockRestore();
+  });
+
+  it('counts an UNINSTALL_NOT_CONFIRMED refusal under the lock as that skip, and never forces', async () => {
+    rigQueries([ORG_A], [[device('dev-1'), device('dev-2')]]);
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+    purgeRemovedDeviceMock
+      .mockRejectedValueOnce(new DeviceLifecycleError('UNINSTALL_NOT_CONFIRMED', 'no ack', { uninstallState: 'failed' }))
+      .mockResolvedValueOnce({ ...PURGED, uninstallState: 'agent_reported_uninstall' });
+
+    const result = await runRemovedDevicePurgeOnce();
+
+    expect(result.skippedUninstallNotConfirmed).toBe(1);
+    expect(result.skippedRaced).toBe(0);
+    expect(result.purged).toBe(1);
+    expect(purgeRemovedDeviceMock.mock.calls).toHaveLength(2);
+    for (const call of purgeRemovedDeviceMock.mock.calls) {
+      expect((call[3] as { force?: boolean } | undefined)?.force).not.toBe(true);
+    }
+    expect(createAuditLogMock).toHaveBeenCalledTimes(1);
+    expect(createAuditLogMock.mock.calls[0]![0]).toMatchObject({
+      resourceId: 'dev-2',
+      details: expect.objectContaining({ uninstallState: 'agent_reported_uninstall', force: false }),
+    });
+  });
+
+  it('keeps purging when the unconfirmed COUNT itself fails — it only feeds the summary', async () => {
+    rigQueries([ORG_A], [[device('dev-1')]]);
+    unconfirmedCounts.push(new Error('count timed out'));
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+
+    const result = await runRemovedDevicePurgeOnce();
+
+    expect(result.purged).toBe(1);
+    expect(result.orgsFailed).toBe(0);
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('counts a NOT_REMOVED / NOT_FOUND race as a skip, not a failure', async () => {
@@ -343,7 +442,7 @@ describe('runRemovedDevicePurgeOnce', () => {
     getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
     purgeRemovedDeviceMock
       .mockRejectedValueOnce(new Error('deadlock detected'))
-      .mockResolvedValueOnce({ linkGroupId: null, linkGroupDissolved: false });
+      .mockResolvedValueOnce(PURGED);
 
     const result = await runRemovedDevicePurgeOnce();
 
@@ -546,7 +645,7 @@ describe('purgeOneRemovedDevice', () => {
       cutoff: new Date('2026-06-01T00:00:00.000Z'),
     });
 
-    expect(outcome).toBeNull();
+    expect(outcome).toEqual({ skip: null, uninstallState: 'completed' });
     expect(screenshotMocks.removeScreenshotFiles).toHaveBeenCalledWith(
       ['screenshots/o/dev-1/f.jpg'],
       expect.stringContaining('dev-1'),
@@ -561,8 +660,8 @@ describe('purgeOneRemovedDevice', () => {
     purgeRemovedDeviceMock.mockRejectedValueOnce(new DeviceLifecycleError('UNINSTALL_PENDING', 'queued'));
     const cutoff = new Date('2026-06-01T00:00:00.000Z');
 
-    expect(await purgeOneRemovedDevice({ deviceId: 'dev-1', orgId: ORG_A, cutoff })).toBe('ORG_CHANGED');
-    expect(await purgeOneRemovedDevice({ deviceId: 'dev-2', orgId: ORG_A, cutoff })).toBe('UNINSTALL_PENDING');
+    expect(await purgeOneRemovedDevice({ deviceId: 'dev-1', orgId: ORG_A, cutoff })).toEqual({ skip: 'ORG_CHANGED' });
+    expect(await purgeOneRemovedDevice({ deviceId: 'dev-2', orgId: ORG_A, cutoff })).toEqual({ skip: 'UNINSTALL_PENDING' });
     expect(screenshotMocks.removeScreenshotFiles).not.toHaveBeenCalled();
   });
 
@@ -576,7 +675,7 @@ describe('purgeOneRemovedDevice', () => {
       cutoff: new Date('2026-06-01T00:00:00.000Z'),
     });
 
-    expect(outcome).toBe('ORG_CHANGED');
+    expect(outcome).toEqual({ skip: 'ORG_CHANGED' });
     expect(purgeRemovedDeviceMock).not.toHaveBeenCalled();
   });
 
@@ -593,7 +692,7 @@ describe('purgeOneRemovedDevice', () => {
       cutoff: new Date('2026-06-01T00:00:00.000Z'),
     });
 
-    expect(outcome).toBe('NO_LONGER_ELIGIBLE');
+    expect(outcome).toEqual({ skip: 'NO_LONGER_ELIGIBLE' });
     expect(purgeRemovedDeviceMock).not.toHaveBeenCalled();
   });
 
@@ -607,7 +706,7 @@ describe('purgeOneRemovedDevice', () => {
       cutoff: new Date('2026-06-01T00:00:00.000Z'),
     });
 
-    expect(outcome).toBeNull();
+    expect(outcome).toEqual({ skip: null, uninstallState: 'completed' });
     expect(purgeRemovedDeviceMock).toHaveBeenCalledTimes(1);
   });
 });

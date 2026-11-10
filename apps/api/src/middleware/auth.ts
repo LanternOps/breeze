@@ -6,6 +6,7 @@ import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPer
 import { normalizeSiteAllowlist } from '../services/siteAllowlist';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { runPreContextChecks } from './preContextChecks';
+import { chargeUserRateBudget } from './rateLimitBudget';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
@@ -676,6 +677,11 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   if (await isUserTokenRevoked(payload.sub, payload.iat)) {
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
+
+  // #10962: after the revocation check, so a revoked token can't burn its
+  // former owner's budget; before this middleware's Postgres reads, so a runaway
+  // client is refused without the per-request auth queries.
+  await chargeUserRateBudget(c, payload.sub);
 
   // Fetch user to ensure they still exist and are active. Pre-auth lookup —
   // must run under system scope because the request's real scope isn't

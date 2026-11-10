@@ -48,3 +48,25 @@ export async function waitForAppReady(page: Page, rootTestId: string): Promise<v
   await waitForHydration(page, rootTestId);
   await waitForAuthOverlayClear(page);
 }
+
+/**
+ * Wait for the login form to be rendered AND hydrated before filling it.
+ *
+ * The first request to `/login` on a cold dev-mode stack pays the Vite/Astro
+ * compile for the page, which outlasts Playwright's 10 s default action
+ * timeout: `locator.fill` then fails with "waiting for login-email-input"
+ * before the form exists (partner-sending-domains / ai-agents in the Portal
+ * Dev E2E job). A fill that lands pre-hydration is also silently dropped, so
+ * wait for React to attach to the form, with a budget sized for a cold compile.
+ */
+export async function waitForLoginFormReady(page: Page, timeout = 60_000): Promise<void> {
+  await page.getByTestId('login-email-input').waitFor({ timeout });
+  await page.waitForFunction(
+    () => {
+      const form = document.querySelector('[data-testid="login-email-input"]')?.closest('form');
+      return !!form && Object.keys(form).some((k) => k.startsWith('__reactFiber$'));
+    },
+    undefined,
+    { timeout },
+  );
+}

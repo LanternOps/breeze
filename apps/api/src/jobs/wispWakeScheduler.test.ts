@@ -21,10 +21,13 @@ const h = vi.hoisted(() => ({
   resumeGrant: vi.fn(async (..._a: unknown[]) => undefined),
   hasEntitlement: vi.fn(async (..._a: unknown[]) => true),
   claimDueWatches: vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []),
+  recordWatchHits: vi.fn(async (..._a: unknown[]) => true),
+  evaluateWatchHits: vi.fn(async (..._a: unknown[]): Promise<unknown> => null),
   stopWatchesForInactiveGrants: vi.fn(async (..._a: unknown[]) => ({ stopped: 0, grantsNotified: 0 })),
   pollStaleTickets: vi.fn(async (..._a: unknown[]) => ({ scanned: 0, published: 0 })),
   pollTicketClusters: vi.fn(async (..._a: unknown[]) => ({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 })),
   correlateIncidents: vi.fn(async (..._a: unknown[]) => ({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 })),
+  rollupDeviceConcerns: vi.fn(async (..._a: unknown[]) => ({ opened: 0, updated: 0, resolved: 0 })),
   enqueueAssessment: vi.fn(async (..._a: unknown[]): Promise<{ runId: string } | { skipped: string }> => ({ runId: 'r1' })),
   queueAdd: vi.fn(async (..._a: unknown[]) => ({})),
   getRepeatableJobs: vi.fn(async () => [] as Array<{ name: string; key: string }>),
@@ -35,6 +38,9 @@ const h = vi.hoisted(() => ({
   notifyBudgetExhaustedOnce: vi.fn(async (..._a: unknown[]) => true),
   captureException: vi.fn(),
   reconcilePartnerDisabled: vi.fn(async (..._a: unknown[]) => ({ paused: 0, resumed: 0 })),
+  fireCheckIn: vi.fn(async (..._a: unknown[]): Promise<'fired' | 'cancelled' | 'skipped'> => 'fired'),
+  reconcileOrphanCheckIns: vi.fn(async (..._a: unknown[]) => ({ refired: 0 })),
+  reconcileCheckInTriggers: vi.fn(async (..._a: unknown[]) => ({ fired: 0, cancelled: 0 })),
 }));
 
 vi.mock('../db', async () => {
@@ -97,6 +103,12 @@ vi.mock('../services/entitlements', () => ({ hasEntitlement: h.hasEntitlement })
 vi.mock('../services/wisp/watches', () => ({
   claimDueWatches: (...a: unknown[]) => { h.order.push('claimDueWatches'); return h.claimDueWatches(...a); },
   stopWatchesForInactiveGrants: (...a: unknown[]) => { h.order.push('stopWatchesForInactiveGrants'); return h.stopWatchesForInactiveGrants(...a); },
+  recordWatchHits: (...a: unknown[]) => { h.order.push('recordWatchHits'); return h.recordWatchHits(...a); },
+}));
+// #11424: the evaluator (DB reads) is stubbed; the change decision stays real.
+vi.mock('../services/wisp/watchHits', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/watchHits')>()),
+  evaluateWatchHits: (...a: unknown[]) => { h.order.push('evaluateWatchHits'); return h.evaluateWatchHits(...a); },
 }));
 vi.mock('../services/wisp/pollers', () => ({
   pollStaleTickets: (...a: unknown[]) => { h.order.push('pollStaleTickets'); return h.pollStaleTickets(...a); },
@@ -105,7 +117,18 @@ vi.mock('../services/wisp/pollers', () => ({
 vi.mock('../services/wisp/incidentCorrelator', () => ({
   correlateIncidents: (...a: unknown[]) => { h.order.push('correlateIncidents'); return h.correlateIncidents(...a); },
 }));
+vi.mock('../services/wisp/concernRollup', () => ({
+  rollupDeviceConcerns: (...a: unknown[]) => { h.order.push('rollupDeviceConcerns'); return h.rollupDeviceConcerns(...a); },
+}));
 vi.mock('../services/wisp/assessment', () => ({ enqueueAssessment: h.enqueueAssessment }));
+// W07: the running-check-in sweep is pinned by wispCheckInRuns.integration.test.ts.
+const reconcileRunningCheckIns = vi.hoisted(() => vi.fn(async (_now: Date) => ({ posted: 0 })));
+vi.mock('../services/wisp/checkInRuns', () => ({ reconcileRunningCheckIns }));
+vi.mock('../services/wisp/checkIns', () => ({
+  fireCheckIn: (...a: unknown[]) => { h.order.push('fireCheckIn'); return h.fireCheckIn(...a); },
+  reconcileOrphanCheckIns: (...a: unknown[]) => { h.order.push('reconcileOrphanCheckIns'); return h.reconcileOrphanCheckIns(...a); },
+  reconcileCheckInTriggers: (...a: unknown[]) => { h.order.push('reconcileCheckInTriggers'); return h.reconcileCheckInTriggers(...a); },
+}));
 vi.mock('../services/wisp/budget', () => ({
   chargeableUnderGrant: h.chargeableUnderGrant,
   notifyBudgetExhaustedOnce: h.notifyBudgetExhaustedOnce,
@@ -114,6 +137,7 @@ vi.mock('../services/wisp/budget', () => ({
 import {
   initializeWispWakeScheduler,
   processAssessJob,
+  processCheckInJob,
   processWakeTick,
   shutdownWispWakeScheduler,
 } from './wispWakeScheduler';
@@ -182,15 +206,21 @@ beforeEach(() => {
   h.requestAssessment.mockImplementation(async () => 'queued');
   h.hasEntitlement.mockImplementation(async () => true);
   h.claimDueWatches.mockImplementation(async () => []);
+  h.recordWatchHits.mockImplementation(async () => true);
+  h.evaluateWatchHits.mockImplementation(async () => null);
   h.stopWatchesForInactiveGrants.mockImplementation(async () => ({ stopped: 0, grantsNotified: 0 }));
   h.pollStaleTickets.mockImplementation(async () => ({ scanned: 0, published: 0 }));
   h.pollTicketClusters.mockImplementation(async () => ({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 }));
   h.correlateIncidents.mockImplementation(async () => ({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 }));
+  h.rollupDeviceConcerns.mockImplementation(async () => ({ opened: 0, updated: 0, resolved: 0 }));
   h.enqueueAssessment.mockImplementation(async () => ({ runId: 'r1' }));
   h.getRepeatableJobs.mockImplementation(async () => []);
   h.chargeableUnderGrant.mockImplementation(async () => ({ ok: true }));
   h.notifyBudgetExhaustedOnce.mockImplementation(async () => true);
   h.reconcilePartnerDisabled.mockImplementation(async () => ({ paused: 0, resumed: 0 }));
+  h.fireCheckIn.mockImplementation(async () => 'fired');
+  h.reconcileOrphanCheckIns.mockImplementation(async () => ({ refired: 0 }));
+  h.reconcileCheckInTriggers.mockImplementation(async () => ({ fired: 0, cancelled: 0 }));
 });
 
 describe('processWakeTick', () => {
@@ -198,15 +228,16 @@ describe('processWakeTick', () => {
     h.enabled = false;
     const result = await processWakeTick(NOW);
     expect(result).toEqual({
-      grantsTicked: 0, watchesFired: 0, staleTicketsPublished: 0, watchesStopped: 0,
-      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0,
+      grantsTicked: 0, watchesFired: 0, watchesUnchanged: 0, staleTicketsPublished: 0, watchesStopped: 0,
+      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, concernRollupsOpened: 0, checkInsRefired: 0,
+      checkInTriggersFired: 0, checkInTriggersCancelled: 0, checkInRunsPosted: 0,
     });
     expect(h.executes).toHaveLength(0);
     expect(h.order).toEqual([]);
     expect(h.hasEntitlement).not.toHaveBeenCalled();
   });
 
-  it('runs the sections in order: reconcile, stop, floor, watches, stale, clusters, incidents', async () => {
+  it('runs the sections in order: reconcile, stop, floor, watches, check-in reconcile, trigger reconcile, stale, clusters, incidents, rollup', async () => {
     useFixtures({
       due: [{ id: G1, partner_id: P1, current_revision_id: REV, last_floor_tick_text: null }],
       orgs: [{ id: O1, name: 'A' }],
@@ -222,12 +253,16 @@ describe('processWakeTick', () => {
       'stopWatchesForInactiveGrants',
       'requestAssessment', // floor tick
       'claimDueWatches',
+      'evaluateWatchHits', // #11424: in-code evaluation before any watch request
       'requestAssessment', // watch
+      'reconcileOrphanCheckIns',
+      'reconcileCheckInTriggers',
       'pollStaleTickets',
       'pollTicketClusters',
       'correlateIncidents',
+      'rollupDeviceConcerns',
     ]);
-    for (const fn of [h.stopWatchesForInactiveGrants, h.pollStaleTickets, h.pollTicketClusters, h.correlateIncidents]) {
+    for (const fn of [h.stopWatchesForInactiveGrants, h.reconcileOrphanCheckIns, h.reconcileCheckInTriggers, h.pollStaleTickets, h.pollTicketClusters, h.correlateIncidents, h.rollupDeviceConcerns]) {
       expect(fn).toHaveBeenCalledWith(NOW);
     }
   });
@@ -471,10 +506,12 @@ describe('processWakeTick', () => {
     h.pollStaleTickets.mockRejectedValue(new Error('stale boom'));
     h.pollTicketClusters.mockRejectedValue(new Error('cluster boom'));
     h.correlateIncidents.mockImplementation(async () => ({ partnerIncidentsOpened: 2, updated: 0, autoClosed: 0 }));
+    h.rollupDeviceConcerns.mockImplementation(async () => ({ opened: 3, updated: 0, resolved: 0 }));
 
     const result = await processWakeTick(NOW);
     expect(h.correlateIncidents).toHaveBeenCalledWith(NOW);
     expect(result.incidentsOpened).toBe(2);
+    expect(result.concernRollupsOpened).toBe(3);
     const sections = err.mock.calls.map((c) => String(c[0]));
     for (const name of ['reconcileEntitlements', 'stopWatchesForInactiveGrants', 'floorTicks', 'dueWatches', 'pollStaleTickets', 'pollTicketClusters']) {
       expect(sections.some((s) => s.includes(name)), `console.error names ${name}`).toBe(true);
@@ -531,12 +568,328 @@ describe('processWakeTick', () => {
     err.mockRestore();
   });
 
+  it('processWakeTick reports checkInsRefired from the check-in reconcile', async () => {
+    h.reconcileOrphanCheckIns.mockImplementation(async () => ({ refired: 3 }));
+    const result = await processWakeTick(NOW);
+    expect(result.checkInsRefired).toBe(3);
+    expect(h.reconcileOrphanCheckIns).toHaveBeenCalledWith(NOW);
+  });
+
+  it('W04: processWakeTick reports the event check-ins the trigger reconcile fired and cancelled', async () => {
+    h.reconcileCheckInTriggers.mockImplementation(async () => ({ fired: 2, cancelled: 1 }));
+    const result = await processWakeTick(NOW);
+    expect(result).toMatchObject({ checkInTriggersFired: 2, checkInTriggersCancelled: 1 });
+    expect(h.reconcileCheckInTriggers).toHaveBeenCalledWith(NOW);
+  });
+
+  it('W07: processWakeTick reports the run check-ins the running reconcile posted', async () => {
+    reconcileRunningCheckIns.mockResolvedValueOnce({ posted: 3 });
+    const result = await processWakeTick(NOW);
+    expect(result.checkInRunsPosted).toBe(3);
+    expect(reconcileRunningCheckIns).toHaveBeenCalledWith(NOW);
+  });
+
+  it('W07: a running-check-in reconcile failure is reported under its own section and the later sections still run', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const boom = new Error('running reconcile boom');
+    reconcileRunningCheckIns.mockRejectedValueOnce(boom);
+    const result = await processWakeTick(NOW);
+    expect(result.checkInRunsPosted).toBe(0);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'reconcileRunningCheckIns' });
+    expect(h.pollStaleTickets).toHaveBeenCalledWith(NOW);
+    err.mockRestore();
+  });
+
+  it('W04: a trigger reconcile failure is reported under its own section and the later sections still run', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const boom = new Error('trigger reconcile boom');
+    h.reconcileCheckInTriggers.mockRejectedValue(boom);
+    const result = await processWakeTick(NOW);
+    expect(result.checkInTriggersFired).toBe(0);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'reconcileCheckInTriggers' });
+    expect(h.pollStaleTickets).toHaveBeenCalledWith(NOW);
+    expect(h.rollupDeviceConcerns).toHaveBeenCalledWith(NOW);
+    err.mockRestore();
+  });
+
+  it('a check-in reconcile failure is reported and the later sections still run', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const boom = new Error('reconcile check-ins boom');
+    h.reconcileOrphanCheckIns.mockRejectedValue(boom);
+    h.correlateIncidents.mockImplementation(async () => ({ partnerIncidentsOpened: 1, updated: 0, autoClosed: 0 }));
+    const result = await processWakeTick(NOW);
+    expect(result.checkInsRefired).toBe(0);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'reconcileCheckIns' });
+    expect(h.pollStaleTickets).toHaveBeenCalledWith(NOW);
+    expect(result.incidentsOpened).toBe(1);
+    err.mockRestore();
+  });
+
+  // #11426: the same-org rollup runs after the correlator, and a failing
+  // correlator does not stop it.
+  it('a correlator failure is reported and the concern rollup still runs', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.correlateIncidents.mockRejectedValue(new Error('correlate boom'));
+    h.rollupDeviceConcerns.mockImplementation(async () => ({ opened: 1, updated: 2, resolved: 0 }));
+    const result = await processWakeTick(NOW);
+    expect(h.rollupDeviceConcerns).toHaveBeenCalledWith(NOW);
+    expect(result.concernRollupsOpened).toBe(1);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'correlateIncidents' });
+    err.mockRestore();
+  });
+
   it('reports the pollers\' counts', async () => {
     h.pollStaleTickets.mockImplementation(async () => ({ scanned: 4, published: 3 }));
     h.pollTicketClusters.mockImplementation(async () => ({ scanned: 9, clustersOpened: 2, clustersUpdated: 1 }));
     const result = await processWakeTick(NOW);
     expect(result.staleTicketsPublished).toBe(3);
     expect(result.ticketClustersOpened).toBe(2);
+  });
+});
+
+// #11424: a watch is evaluated in code at claim time; only a changed hit-set
+// (or the first evaluation) launches a model run.
+describe('processWakeTick — stateful watches (#11424)', () => {
+  const LATER = new Date(NOW.getTime() + 60 * 60_000);
+  const ALERT_2 = '00000000-0000-4000-8000-0000000000e3';
+  // sha256-hex shaped, as the aggregate returns them (parseWatchHitRecord checks the shape).
+  const HASH_A = 'a'.repeat(64);
+  const HASH_AB = 'b'.repeat(64);
+  const HASH_EMPTY = 'e'.repeat(64);
+  const hitSet = (ids: string[], hash: string) => ({ subject: 'alert', count: ids.length, hash, ids });
+
+  /**
+   * A stateful watch row: claimDueWatches returns what recordWatchHits last
+   * stored, and a 'queued' request runs the real processAssessJob (admission =
+   * the enqueueAssessment mock), which is where the hit-set is recorded.
+   */
+  function statefulWatch(over: Record<string, unknown> = {}, stored: { hitHash: string | null; hitCount: number | null } = { hitHash: null, hitCount: null }) {
+    const row = { id: W1, grantId: G1, orgId: O1, kind: 'alert_pattern', params: { severity: 'medium' }, ...stored, ...over };
+    h.claimDueWatches.mockImplementation(async () => [{ ...row }]);
+    h.recordWatchHits.mockImplementation(async (...a: unknown[]) => {
+      const next = a[2] as { hash: string; count: number };
+      if (a[1] !== row.hitHash) return false;
+      row.hitHash = next.hash;
+      row.hitCount = next.count;
+      return true;
+    });
+    h.requestAssessment.mockImplementation(async (data: unknown) => {
+      await processAssessJob(data as Parameters<typeof processAssessJob>[0]);
+      return 'queued';
+    });
+    return row;
+  }
+
+  beforeEach(() => {
+    useFixtures({
+      watchGrants: [{ id: G1, partner_id: P1, current_revision_id: REV }],
+      orgs: [{ id: O1, name: 'A' }, { id: O2, name: 'B' }],
+      lastAssessed: [{ org_id: O1, last_assessed_at: '2026-10-24 10:00:00+00' }],
+    });
+    h.resolveGrantCeiling.mockResolvedValue(ceilingFor([O1, O2]));
+  });
+
+  it('the same active alert on two consecutive cadences launches one run, not two', async () => {
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], HASH_A));
+
+    const first = await processWakeTick(NOW);
+    const second = await processWakeTick(LATER);
+
+    expect(h.requestAssessment).toHaveBeenCalledTimes(1);
+    expect(h.enqueueAssessment).toHaveBeenCalledTimes(1);
+    expect(first.watchesFired).toBe(1);
+    expect(second.watchesFired).toBe(0);
+    expect(second.watchesUnchanged).toBe(1);
+    // Both cadences were evaluated (the claim already advanced next_due_at / last_ran_at).
+    expect(h.evaluateWatchHits).toHaveBeenCalledTimes(2);
+  });
+
+  it('the first evaluation launches a run carrying the hit summary; the hit-set is recorded once the run is admitted', async () => {
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], HASH_A));
+    await processWakeTick(NOW);
+    expect(h.evaluateWatchHits).toHaveBeenCalledWith(expect.objectContaining({ kind: 'alert_pattern', params: { severity: 'medium' } }), O1, NOW);
+    expect(h.requestAssessment).toHaveBeenCalledWith({
+      grantId: G1,
+      orgId: O1,
+      reason: {
+        kind: 'watch',
+        watchId: W1,
+        hits: { change: 'first', subject: 'alert', orgId: O1, partnerWide: false, count: 1, previousCount: null, ids: [ALERT] },
+      },
+      watchRecord: { watchId: W1, previousHash: null, hash: HASH_A, count: 1 },
+    });
+    expect(h.recordWatchHits).toHaveBeenCalledWith(W1, null, { hash: HASH_A, count: 1 });
+    expect(h.enqueueAssessment.mock.invocationCallOrder[0]!).toBeLessThan(h.recordWatchHits.mock.invocationCallOrder[0]!);
+  });
+
+  it('an alert that resolves launches one run whose reason says cleared', async () => {
+    statefulWatch({}, { hitHash: HASH_A, hitCount: 1 });
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([], HASH_EMPTY));
+    await processWakeTick(NOW);
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(1);
+    expect(h.requestAssessment).toHaveBeenCalledWith(expect.objectContaining({
+      grantId: G1,
+      orgId: O1,
+      reason: {
+        kind: 'watch',
+        watchId: W1,
+        hits: { change: 'cleared', subject: 'alert', orgId: O1, partnerWide: false, count: 0, previousCount: 1, ids: [] },
+      },
+    }));
+  });
+
+  it('a new hit after an empty evaluation is reported as new, a different hit-set as changed', async () => {
+    const row = statefulWatch({}, { hitHash: HASH_EMPTY, hitCount: 0 });
+    h.evaluateWatchHits.mockImplementationOnce(async () => hitSet([ALERT], HASH_A));
+    await processWakeTick(NOW);
+    expect(h.requestAssessment).toHaveBeenLastCalledWith(expect.objectContaining({
+      reason: expect.objectContaining({ hits: expect.objectContaining({ change: 'new', count: 1, previousCount: 0 }) }),
+    }));
+    expect(row.hitHash).toBe(HASH_A);
+    h.evaluateWatchHits.mockImplementationOnce(async () => hitSet([ALERT, ALERT_2], HASH_AB));
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenLastCalledWith(expect.objectContaining({
+      reason: expect.objectContaining({ hits: expect.objectContaining({ change: 'changed', count: 2, previousCount: 1 }) }),
+      watchRecord: { watchId: W1, previousHash: HASH_A, hash: HASH_AB, count: 2 },
+    }));
+    expect(h.requestAssessment).toHaveBeenCalledTimes(2);
+  });
+
+  it('a kind the scheduler does not evaluate (custom_query) runs every cadence, with no hit summary and nothing recorded', async () => {
+    statefulWatch({ kind: 'custom_query' });
+    await processWakeTick(NOW);
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(2);
+    expect(h.requestAssessment).toHaveBeenCalledWith({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: W1 } });
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+  });
+
+  it('a coalesced request records nothing, so the next cadence asks again', async () => {
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], HASH_A));
+    h.requestAssessment.mockImplementationOnce(async () => 'coalesced');
+    await processWakeTick(NOW);
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(2);
+    expect(h.recordWatchHits).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed request records nothing (the change is not lost) and is reported', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], HASH_A));
+    const boom = new Error('redis down');
+    h.requestAssessment.mockRejectedValueOnce(boom);
+    await processWakeTick(NOW);
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'due_watch' });
+    err.mockRestore();
+  });
+
+  it.each([['budget_exhausted'], ['no_effective_agent'], ['not_entitled']])(
+    'a queued request whose admission is skipped (%s) records nothing; the next cadence asks again',
+    async (skipped) => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      statefulWatch();
+      h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], HASH_A));
+      h.enqueueAssessment.mockResolvedValueOnce({ skipped });
+      await processWakeTick(NOW);
+      expect(h.recordWatchHits).not.toHaveBeenCalled();
+      await processWakeTick(LATER);
+      expect(h.requestAssessment).toHaveBeenCalledTimes(2);
+      expect(h.recordWatchHits).toHaveBeenCalledTimes(1);
+      info.mockRestore();
+    },
+  );
+
+  it('a record failure after admission is reported, does not throw, and the next cadence asks again', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], HASH_A));
+    const boom = new Error('db blip');
+    h.recordWatchHits.mockRejectedValueOnce(boom);
+    const first = await processWakeTick(NOW);
+    expect(first.watchesFired).toBe(1);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'watch_record' });
+    expect(h.captureException).not.toHaveBeenCalledWith(boom, undefined, expect.objectContaining({ op: 'due_watch' }));
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(2);
+    err.mockRestore();
+  });
+
+  it('an evaluation failure falls back to a plain watch run (as before) and is reported', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    statefulWatch();
+    const boom = new Error('statement timeout');
+    h.evaluateWatchHits.mockRejectedValueOnce(boom);
+    const result = await processWakeTick(NOW);
+    expect(h.requestAssessment).toHaveBeenCalledWith({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: W1 } });
+    expect(result.watchesFired).toBe(1);
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'watch_evaluate' });
+    err.mockRestore();
+  });
+
+  it('a partner-wide watch is evaluated in its grant\'s round-robin org only (no fan-out)', async () => {
+    statefulWatch({ orgId: null });
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([], HASH_EMPTY));
+    await processWakeTick(NOW);
+    expect(h.evaluateWatchHits).toHaveBeenCalledTimes(1);
+    expect(h.evaluateWatchHits).toHaveBeenCalledWith(expect.anything(), O2, NOW);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(1);
+    expect(h.requestAssessment).toHaveBeenCalledWith(expect.objectContaining({ orgId: O2 }));
+  });
+
+  it('a partner-wide watch never claims cleared / new: its previous evaluation may have covered another org', async () => {
+    statefulWatch({ orgId: null }, { hitHash: HASH_A, hitCount: 1 });
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([], HASH_EMPTY));
+    await processWakeTick(NOW);
+    expect(h.requestAssessment).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: O2,
+      reason: expect.objectContaining({ hits: expect.objectContaining({ change: 'changed', partnerWide: true, orgId: O2, count: 0, previousCount: 1 }) }),
+    }));
+  });
+
+  it('a watch whose org is outside the grant ceiling is not evaluated', async () => {
+    statefulWatch({ orgId: O3 });
+    await processWakeTick(NOW);
+    expect(h.evaluateWatchHits).not.toHaveBeenCalled();
+    expect(h.requestAssessment).not.toHaveBeenCalled();
+  });
+});
+
+describe('processAssessJob — watch hit-set record (#11424)', () => {
+  const HASH_A = 'a'.repeat(64);
+  const job = (watchRecord: unknown) => ({ grantId: G1, orgId: O1, reason: { kind: 'watch' as const, watchId: W1 }, watchRecord }) as Parameters<typeof processAssessJob>[0];
+
+  it('records the hit-set after an admitted run', async () => {
+    await processAssessJob(job({ watchId: W1, previousHash: null, hash: HASH_A, count: 2 }));
+    expect(h.recordWatchHits).toHaveBeenCalledWith(W1, null, { hash: HASH_A, count: 2 });
+  });
+
+  it('a job without a watchRecord records nothing', async () => {
+    await processAssessJob({ grantId: G1, orgId: O1, reason: { kind: 'tick' } });
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+  });
+
+  it('a malformed watchRecord is reported and not recorded', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await processAssessJob(job({ watchId: 'w-1', previousHash: null, hash: 'not-a-hash', count: -1 }));
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { component: 'wisp.wakeScheduler', op: 'watch_record_malformed' });
+    warn.mockRestore();
+  });
+
+  it('a lost compare-and-set is logged, not thrown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.recordWatchHits.mockResolvedValueOnce(false);
+    await expect(processAssessJob(job({ watchId: W1, previousHash: null, hash: HASH_A, count: 1 }))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not recorded'), { watchId: W1 });
+    warn.mockRestore();
   });
 });
 
@@ -574,6 +927,38 @@ describe('processAssessJob', () => {
   });
 });
 
+describe('processCheckInJob', () => {
+  const CI = '00000000-0000-4000-8000-0000000000f1';
+
+  it('fires the check-in named by the job', async () => {
+    await processCheckInJob({ checkInId: CI });
+    expect(h.fireCheckIn).toHaveBeenCalledWith(CI);
+  });
+
+  it('returns without firing when wispEnabled() is false (the tick reconcile fires it once Wisp is back on)', async () => {
+    h.enabled = false;
+    await processCheckInJob({ checkInId: CI });
+    expect(h.fireCheckIn).not.toHaveBeenCalled();
+  });
+
+  it('drops a payload whose checkInId is not a uuid, logs and reports it, and does not throw', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (const data of [{ checkInId: 'nope' }, {}, null] as unknown[]) {
+      await expect(processCheckInJob(data as { checkInId: string })).resolves.toBeUndefined();
+    }
+    expect(h.fireCheckIn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(h.captureException).toHaveBeenCalledTimes(3);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { component: 'wisp.wakeScheduler', op: 'check_in_malformed_payload' });
+    warn.mockRestore();
+  });
+
+  it('a fireCheckIn throw propagates so BullMQ retries', async () => {
+    h.fireCheckIn.mockRejectedValue(new Error('db blip'));
+    await expect(processCheckInJob({ checkInId: CI })).rejects.toThrow('db blip');
+  });
+});
+
 describe('worker lifecycle', () => {
   it('replaces the old tick repeatable and registers wisp-wake-tick every 5 minutes, concurrency 4', async () => {
     expect(WISP_WAKE_TICK_INTERVAL_MS).toBe(5 * 60 * 1000);
@@ -592,7 +977,7 @@ describe('worker lifecycle', () => {
     await shutdownWispWakeScheduler();
   });
 
-  it('the worker dispatches tick and assess by name and refuses unknown names', async () => {
+  it('the worker dispatches tick, assess and check-in by name and refuses unknown names', async () => {
     h.enabled = false;
     await initializeWispWakeScheduler();
     const processor = h.workers[0]!.processor;
@@ -602,6 +987,9 @@ describe('worker lifecycle', () => {
     expect(h.enqueueAssessment).toHaveBeenCalledWith({
       grantId: G1, orgId: O1, reason: { kind: 'tick' }, occurrenceKey: 'assess-job@1700000000000',
     });
+    const CI = '00000000-0000-4000-8000-0000000000f1';
+    await processor({ name: 'check-in', id: `wisp-check-in-${CI}`, timestamp: 1700000000000, data: { checkInId: CI } });
+    expect(h.fireCheckIn).toHaveBeenCalledWith(CI);
     await expect(processor({ name: 'mystery', data: {} })).rejects.toThrow(/unknown/);
     await shutdownWispWakeScheduler();
   });

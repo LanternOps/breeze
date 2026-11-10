@@ -27,7 +27,7 @@ import type { AiStreamEvent, AiApprovalMode, AiPendingCardEvent } from '@breeze/
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
-import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
+import { takeGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
@@ -57,7 +57,9 @@ import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 import type { WispSessionGrant } from './wisp/chatCeiling';
+import { appendWispAssistantText, beginWispTurn, type WispCurrentTurn } from './wisp/turnRecord';
 import { getTrustedClientIpOrUndefined } from './clientIp';
+import { exitPreStreamTiming, timePreStreamPhase } from './aiPreStreamTiming';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isUnknownToolErrorText } from '@breeze/shared';
 import { hasCoreAiToolName } from './aiToolNames';
@@ -70,11 +72,19 @@ import type { FlowToolDescriptor } from './flows/flowTools';
 import { flowsEnabled } from '../config/env';
 import { buildFlowSdkTools, chatFlowToolRunStarter, flowMcpToolNames } from './flows/sdkFlowTools';
 import { sessionMayStartFlows } from './flows/flowToolGate';
-import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
+import {
+  isSdkBuiltinToolUse,
+  newRoundTripTally,
+  noteAssistantRoundTrip,
+  resolveToolSearchPolicy,
+  sdkMaxTurns,
+  workTurns,
+  type RoundTripTally,
+} from './aiToolSearchPolicy';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
+import { finalizeWispSummaries, sessionExpiryReason } from './aiSessionExpiry';
 
-const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
+// Idle / age limits: aiAgentSessionLimits.ts, applied through sessionExpiryReason (#11430).
 const EVICTION_INTERVAL_MS = 60 * 1000; // Check every 60s
 const MAX_ACTIVE_SESSIONS = 200;
 /**
@@ -172,27 +182,6 @@ export function turnTimeoutMsFor(approvalWaitBudgetMs: number): number {
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
-
-/**
- * Wisp W04 Task 5: recompute the thread summary of each session just retired.
- * Lazy import keeps wisp code out of this hot module's eager graph (as for
- * chatCeiling). Never rejects: failures go to Sentry only.
- */
-async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
-  if (sessionIds.length === 0) return;
-  try {
-    const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
-    for (const id of sessionIds) {
-      await finalizeWispSessionSummary(id).catch((err) => {
-        console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
-        captureException(err);
-      });
-    }
-  } catch (err) {
-    console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for ${sessionIds.length} session(s) (${sessionIds.join(', ')}):`, err);
-    captureException(err);
-  }
-}
 
 // The SDK child env builders moved to aiModels/sdkChildEnv.ts (W06 Task 9);
 // re-exported so existing importers (scripts, tests) keep working.
@@ -484,6 +473,13 @@ export interface ActiveSession {
    * after the insert and before the turn is pushed. Null until then.
    */
   turnUserMessageId: string | null;
+  /**
+   * #10428 (W05): what the Wisp turn in flight said and did, for the turn-end
+   * hooks (wisp/turnEnd.ts). Set by `tryTransitionToProcessing` for a Wisp
+   * session whose caller passed the technician's text, cleared for any other
+   * turn; tool outcomes are appended by `createSessionPostToolUse`.
+   */
+  currentTurn?: WispCurrentTurn;
   state: SessionState;
   lastActivityAt: number;
   readonly createdAt: number;
@@ -542,6 +538,21 @@ export interface ActiveSession {
    * after every flush (normal `result` or the abandoned-turn fallback below).
    */
   pendingTurnToolExecutionCount: number;
+  /**
+   * #10400: this turn's model round-trips, split into work and ToolSearch-only
+   * retrieval, so settlement charges the session's turn budget for work only.
+   * Shares pendingTurnUsage's reset-at-settlement lifecycle. Optional so
+   * fixtures that build ActiveSession literals compile unchanged.
+   */
+  pendingTurnRoundTrips?: RoundTripTally;
+  /**
+   * #10400: the work turns this query may spend, set only when it can search.
+   * Its SDK `maxTurns` carries search headroom, so the SDK no longer stops real
+   * work at the session's limit and the background processor has to.
+   */
+  workTurnLimit?: number;
+  /** Set when workTurnLimit stopped the turn; cleared at settlement. */
+  workTurnLimitStopped?: boolean;
   /** Synchronously reserved focal auto-link slots; shares the tool-count reset lifecycle. */
   pendingTurnAutoLinkCount: number;
   /**
@@ -800,6 +811,13 @@ async function loadApprovalMode(orgId: string): Promise<AiApprovalMode> {
   return 'per_step';
 }
 
+/** Coded so a client can act on it: the next send would be refused too (preflight). */
+const TURN_LIMIT_ERROR = {
+  type: 'error',
+  message: 'Maximum conversation turns reached.',
+  code: 'turn_limit_reached',
+} as const;
+
 export class StreamingSessionManager {
   private sessions = new Map<string, ActiveSession>();
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
@@ -847,7 +865,13 @@ export class StreamingSessionManager {
   tryTransitionToProcessing(
     session: ActiveSession,
     budgetReservationId?: string,
-    turn?: { topologyInvestigation?: TopologyTurnRuntime; turnBinding?: TurnBinding; turnDisplay?: TurnDisplay },
+    turn?: {
+      topologyInvestigation?: TopologyTurnRuntime;
+      turnBinding?: TurnBinding;
+      turnDisplay?: TurnDisplay;
+      /** #10428: the technician's own text for this turn (Wisp sessions record it for the turn-end hooks). */
+      userMessage?: string;
+    },
   ): boolean {
     if (session.state === 'processing' || session.state === 'closing' || session.state === 'closed') {
       return false;
@@ -873,7 +897,14 @@ export class StreamingSessionManager {
     if (turn?.turnDisplay) {
       session.turnDisplay = turn.turnDisplay;
     }
+    // #10428: only the winner records its turn; a previous turn's record never
+    // carries over, and only a Wisp session keeps one.
+    session.currentTurn = session.wispGrant && typeof turn?.userMessage === 'string'
+      ? beginWispTurn(turn.userMessage)
+      : undefined;
     session.refusalObservation = newSdkTurnObservation();
+    // A note left by an earlier turn that ended with no result must not name this turn's failure.
+    takeGatewayFailureNote(session.breezeSessionId);
     // The state and its staleness clock move together: eviction reads
     // lastActivityAt to tell a live turn from a wedged one, and before this the
     // stamp was refreshed only in getOrCreate() — so a session that had been
@@ -886,6 +917,12 @@ export class StreamingSessionManager {
    * Get or create an active streaming session.
    * If the session exists in memory and is alive, reuse it.
    * If not, create a new one (potentially resuming from saved sdkSessionId).
+   *
+   * #11004: the creation path's phases (tool binding + SDK MCP server, the
+   * subprocess spawn, and the awaited lookups around them) are recorded into
+   * the caller's pre-stream timer when one is active (web chat), and are
+   * no-ops otherwise. No wrapper is added at this method's boundary: it would
+   * delay the caller's resume behind the just-started background processor.
    */
   async getOrCreate(
     breezeSessionId: string,
@@ -1020,10 +1057,10 @@ export class StreamingSessionManager {
         if (reusable.state !== 'processing') {
           // Same for the approval timeout (#6475): a settings change applies
           // from the next message, never to a turn already in flight.
-          const [refreshedApprovalMode, refreshedWaitBudgetMs] = await Promise.all([
+          const [refreshedApprovalMode, refreshedWaitBudgetMs] = await timePreStreamPhase('reuse.approvalMode', () => Promise.all([
             loadApprovalMode(dbSession.orgId),
             loadApprovalWaitBudgetMs(dbSession.orgId),
-          ]);
+          ]));
           // Re-read through the map rather than the narrowed `reusable` alias:
           // a concurrent request may have started a turn — or evicted the
           // session entirely — while this lookup was outstanding.
@@ -1047,11 +1084,16 @@ export class StreamingSessionManager {
     // Breeze MCP server, whose handlers execute under the gate's per-call auth;
     // a custom-factory surface (script builder, helper, client AI, topology)
     // is refused outright.
-    const { lookupWispGrant, unreachableWispAuth, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
-    const wispGrant = await lookupWispGrant(breezeSessionId);
+    const wispCeiling = await import('./wisp/chatCeiling');
+    const { lookupWispGrant, unreachableWispAuth, WispSessionUnavailableError } = wispCeiling;
+    const wispGrant = await timePreStreamPhase('wispGrant', () => lookupWispGrant(breezeSessionId));
     if (wispGrant && mcpServerFactory) {
       throw new WispSessionUnavailableError('surface_unsupported', breezeSessionId);
     }
+    // #10430: a Wisp session registers only the tools its grant ceiling's tool
+    // term admits, so the ToolSearch index never offers one the gate refuses.
+    // The pinned revision fixes that term for this in-memory session's life.
+    const wispAdmitTool = wispGrant ? await wispCeiling.wispSessionToolFilter(wispGrant) : undefined;
 
     // Create new session components
     const inputController = new StreamInputController();
@@ -1062,10 +1104,10 @@ export class StreamingSessionManager {
       inputController.setSdkSessionId(dbSession.sdkSessionId);
     }
 
-    const [approvalMode, approvalWaitBudgetMs] = await Promise.all([
+    const [approvalMode, approvalWaitBudgetMs] = await timePreStreamPhase('approvalMode', () => Promise.all([
       loadApprovalMode(dbSession.orgId),
       loadApprovalWaitBudgetMs(dbSession.orgId),
-    ]);
+    ]));
 
     // Catalog provenance stamp only (below). A gateway connection (W06) has no
     // catalog revision: its provenance is llm_egress_events.connection_id and
@@ -1109,7 +1151,7 @@ export class StreamingSessionManager {
         // so a partner-scoped tech's session can resolve that org's own tool
         // sources too, not just partner-wide ones (#6023). A no-op for
         // org-scoped `toolAuth`, which ignores `targetOrgId`.
-        tenantDescriptors = await resolveTenantTools(toolAuth, dbSession.orgId);
+        tenantDescriptors = await timePreStreamPhase('tenantTools', () => resolveTenantTools(toolAuth, dbSession.orgId));
       } catch (err) {
         captureException(err);
         console.error('[StreamingSessionManager] Failed to resolve tenant tools, degrading to none:', err);
@@ -1126,7 +1168,7 @@ export class StreamingSessionManager {
         // Loaded on first use: the flow resolver's import graph stays out of
         // every chat session that never reaches this branch.
         const { resolveFlowTools } = await import('./flows/flowTools');
-        flowDescriptors = await resolveFlowTools(toolAuth, dbSession.orgId);
+        flowDescriptors = await timePreStreamPhase('flowTools', () => resolveFlowTools(toolAuth, dbSession.orgId));
       } catch (err) {
         captureException(err);
         console.error('[StreamingSessionManager] Failed to resolve flow tools, degrading to none:', err);
@@ -1175,6 +1217,7 @@ export class StreamingSessionManager {
       toolUseIdQueue: [],
       pendingTurnUsage: emptyPendingTurnUsage(),
       pendingTurnToolExecutionCount: 0,
+      pendingTurnRoundTrips: newRoundTripTally(),
       pendingTurnAutoLinkCount: 0,
       toolUseNames: new Map(),
       resultedToolUseIds: new Set(),
@@ -1208,40 +1251,47 @@ export class StreamingSessionManager {
 
     // Create MCP server with pre/post tool-use callbacks
     // Use custom factory if provided (e.g., script builder), otherwise default to breeze tools
-    let mcpServer: McpSdkServerConfigWithInstance;
-    let mcpServerName = 'breeze';
-    if (mcpServerFactory) {
-      const custom = mcpServerFactory(() => session.toolAuth, preToolUse, postToolUse, () => session);
-      mcpServer = custom.server;
-      mcpServerName = custom.name;
-    } else {
-      mcpServer = createBreezeMcpServer(
-        // A Wisp session's handlers run under the gate's per-call auth
-        // (check.toolAuth); this shared fallback reaches no org at all.
-        wispGrant ? () => unreachableWispAuth(session.toolAuth) : () => session.toolAuth,
-        preToolUse,
-        postToolUse,
-        () => session,
-        // `session.orgId` is set ONCE at session creation and never refreshed
-        // on reuse (unlike `session.toolAuth`, which the reuse branch above
-        // re-narrows to the CURRENT device org every turn, #3087). Since
-        // `execute.ts` now threads this org through the dispatch-time
-        // OWNER-predicate reload (#6023), a stale `session.orgId` would let a
-        // device-bound session keep dispatching a tool under its OLD org's
-        // credentials after the device moved — read `session.toolAuth.orgId`
-        // (fresh every turn for a device-bound session) and fall back to
-        // `session.orgId` only when `toolAuth` carries none (non-device
-        // sessions, whose org doesn't drift the same way).
-        [
-          ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
-          // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
-          ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
-        ],
-      );
-    }
+    // #11004: synchronous main-thread work (tool binding + SDK server
+    // creation) — timed as its own phase.
+    const { mcpServer, mcpServerName } = timePreStreamPhase('mcpServer', (): { mcpServer: McpSdkServerConfigWithInstance; mcpServerName: string } => {
+      if (mcpServerFactory) {
+        const custom = mcpServerFactory(() => session.toolAuth, preToolUse, postToolUse, () => session);
+        return { mcpServer: custom.server, mcpServerName: custom.name };
+      }
+      return {
+        mcpServerName: 'breeze',
+        mcpServer: createBreezeMcpServer(
+          // A Wisp session's handlers run under the gate's per-call auth
+          // (check.toolAuth); this shared fallback reaches no org at all.
+          wispGrant ? () => unreachableWispAuth(session.toolAuth) : () => session.toolAuth,
+          preToolUse,
+          postToolUse,
+          () => session,
+          // `session.orgId` is set ONCE at session creation and never refreshed
+          // on reuse (unlike `session.toolAuth`, which the reuse branch above
+          // re-narrows to the CURRENT device org every turn, #3087). Since
+          // `execute.ts` now threads this org through the dispatch-time
+          // OWNER-predicate reload (#6023), a stale `session.orgId` would let a
+          // device-bound session keep dispatching a tool under its OLD org's
+          // credentials after the device moved — read `session.toolAuth.orgId`
+          // (fresh every turn for a device-bound session) and fall back to
+          // `session.orgId` only when `toolAuth` carries none (non-device
+          // sessions, whose org doesn't drift the same way).
+          [
+            ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
+            // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
+            ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
+          ],
+          wispAdmitTool ? { admitTool: wispAdmitTool } : undefined,
+        ),
+      };
+    });
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
 
+    // The session's remaining WORK turns (#10400: ToolSearch round-trips are
+    // not charged to turn_count). The SDK's own ceiling counts every
+    // round-trip, so a searching query gets headroom on top (sdkMaxTurns).
     const maxTurns = Math.max(1, dbSession.maxTurns - dbSession.turnCount);
 
     // Inject approval mode instructions into system prompt
@@ -1271,9 +1321,9 @@ export class StreamingSessionManager {
     // one SDK-child seam): the child env plus every grant it needs — an
     // audited CONNECT grant for a catalog connection, a gateway grant and a
     // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
-    const child = await prepareSdkChild(resolved, {
+    const child = await timePreStreamPhase('prepareSdkChild', () => prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
-    });
+    }));
     const revokeEgressGrant = child.revoke;
     session.revokeEgressGrant = revokeEgressGrant;
 
@@ -1297,7 +1347,7 @@ export class StreamingSessionManager {
     // claim, and the worse of the two. The row count is the only thing that
     // makes either detectable.
     try {
-      await withSystemDbAccessContext(() => dbWriteExpectingRows(
+      await timePreStreamPhase('stampProvenance', () => withSystemDbAccessContext(() => dbWriteExpectingRows(
         'streamingSessionManager.stampCatalogProvenance',
         () => db
           .update(aiSessions)
@@ -1307,7 +1357,7 @@ export class StreamingSessionManager {
           })
           .where(eq(aiSessions.id, breezeSessionId))
           .returning({ id: aiSessions.id }),
-      ));
+      )));
     } catch (err) {
       // `org_id` and `cas_label`, NOT `service`/`orgId`/`sessionId`:
       // `setCallerTags` drops every key outside ALLOWED_TAG_NAMES, so a
@@ -1334,13 +1384,17 @@ export class StreamingSessionManager {
     const stderrLog = createSdkStderrRedactor((text) => console.error('[SDK-stderr]', breezeSessionId, text));
     session.flushSdkStderr = () => stderrLog.flush();
     try {
-      runOutsideDbContextSafe(() => {
+      // #11004: query() spawns the CLI subprocess synchronously on the main
+      // thread. Detached from the request's timer so the long-lived
+      // background processor never retains it.
+      timePreStreamPhase('spawn', () => exitPreStreamTiming(() => runOutsideDbContextSafe(() => {
         const childEnv = child.env;
         const toolSearchPolicy = resolveToolSearchPolicy({
           surfaceSearch: options?.toolSearch === true,
           childEnv,
           remainingTurns: maxTurns,
         });
+        session.workTurnLimit = toolSearchPolicy.enabled ? maxTurns : undefined;
         const sdkQuery = query({
           prompt: inputController.getInputStream(),
           options: {
@@ -1349,7 +1403,7 @@ export class StreamingSessionManager {
             // fallbackModel (the refusal fallback) and thinking/effort: all
             // from the resolved model, nothing derived here.
             ...sdkModelOptions(resolved),
-            maxTurns,
+            maxTurns: sdkMaxTurns(maxTurns, toolSearchPolicy.enabled),
             maxBudgetUsd,
             tools: toolSearchPolicy.tools,
             allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
@@ -1379,7 +1433,7 @@ export class StreamingSessionManager {
           captureException(err);
           console.error('[StreamingSessionManager] Background processor error:', err);
         }).finally(() => stderrLog.flush());
-      });
+      })));
     } catch (err) {
       // The subprocess never started (a rejected child env, a query() throw).
       // Release the egress grant here — the session was never registered in
@@ -1472,7 +1526,13 @@ export class StreamingSessionManager {
     }
   }
 
-  /** Shutdown: clean up all sessions and stop eviction timer */
+  /**
+   * Shutdown: clean up all sessions and stop eviction timer. The rows stay
+   * 'active' on purpose (#11430): a live conversation resumes after a restart
+   * from its stored sdkSessionId (the LRU path keeps rows resumable for the
+   * same reason), and one that then idles out is retired by the idle sweep
+   * (jobs/aiChatSessionExpirySweep.ts), summary included.
+   */
   shutdown(): void {
     if (this.evictionTimer) {
       clearInterval(this.evictionTimer);
@@ -1534,7 +1594,7 @@ export class StreamingSessionManager {
         this.stopThinking(session);
         // #7794: a model-gateway failure behind the timeout (the CLI keeps
         // retrying it) is the actionable part; say it.
-        const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+        const gatewayNote = this.takeTurnGatewayNote(session);
         session.eventBus.publish({
           type: 'error',
           message: gatewayNote ? `AI request timed out. ${gatewayNote}` : 'AI request timed out. Please try again.',
@@ -1624,6 +1684,7 @@ export class StreamingSessionManager {
     // ("...last night.Here's a summary"). Reset at message_start, alongside
     // `messageStarted` above.
     let sawTextBlockThisMessage = false;
+    let workTurnLimitReported = false;
 
     try {
       for await (const message of session.query) {
@@ -1686,6 +1747,9 @@ export class StreamingSessionManager {
               // through tool_use blocks and emit no text delta at all, so the
               // message boundary is the only keepalive some turns ever get.
               session.lastActivityAt = Date.now();
+              // #10427: a Wisp turn keeps its reply for the promise linter;
+              // each assistant message starts on its own line.
+              if (session.currentTurn?.assistantText) appendWispAssistantText(session.currentTurn, '\n');
               session.eventBus.publish({ type: 'message_start', messageId: currentMessageId });
             } else if (event.type === 'content_block_delta') {
               if ('delta' in event && (event.delta.type === 'thinking_delta' || event.delta.type === 'signature_delta')) {
@@ -1697,7 +1761,11 @@ export class StreamingSessionManager {
                 // Topology M4: raw provider text goes to the server-only output
                 // gate at THIS publish point — never onto the bus/replay ring.
                 if (session.topologyInvestigation) session.topologyInvestigation.append(event.delta.text);
-                else session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                else {
+                  session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                  // #10427: only a Wisp turn has a record (W05), so ordinary chat buffers nothing.
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, event.delta.text);
+                }
               }
             } else if (event.type === 'content_block_start') {
               if ('content_block' in event
@@ -1727,6 +1795,7 @@ export class StreamingSessionManager {
                   session.topologyInvestigation.startBlock();
                 } else if (sawTextBlockThisMessage) {
                   session.eventBus.publish({ type: 'content_delta', delta: '\n\n' });
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, '\n\n');
                 }
                 sawTextBlockThisMessage = true;
               } else if (
@@ -1786,6 +1855,28 @@ export class StreamingSessionManager {
               cache_read_input_tokens?: number | null;
               cache_creation_input_tokens?: number | null;
             } | undefined;
+            // #10400: which round-trips did work, for the turn budget.
+            const roundTrips = session.pendingTurnRoundTrips ??= newRoundTripTally();
+            noteAssistantRoundTrip(roundTrips, message.message);
+            // Mirrors the SDK's own ceiling: the limit's last round-trip runs,
+            // and the next real call stops the turn. That call may already be
+            // dispatching (through the normal tool gates) when the interrupt
+            // lands, and its round-trip is charged, so a turn can end one over.
+            if (
+              session.workTurnLimit !== undefined
+              && !session.workTurnLimitStopped
+              && roundTrips.workCalls.size > session.workTurnLimit
+            ) {
+              session.workTurnLimitStopped = true;
+              // As in interrupt(): an approval wait would otherwise block it
+              // (#3089). Settling only acts on a wait already in flight; the
+              // over-limit call's preToolUse may be past its stop check and not
+              // yet waiting, so spend the cycle's wait budget too: its wait then
+              // returns at once (the hook refuses any later call outright).
+              settleApprovalWaits(session);
+              session.approvalWaitDeadline = Date.now();
+              void Promise.resolve().then(() => session.query.interrupt()).catch(() => undefined);
+            }
             if (apiUsage) {
               session.pendingTurnUsage.inputTokens += apiUsage.input_tokens ?? 0;
               session.pendingTurnUsage.outputTokens += apiUsage.output_tokens ?? 0;
@@ -1961,7 +2052,7 @@ export class StreamingSessionManager {
             // #7794: the model gateway's reason for this turn's failure, if it
             // had one. Always taken here, so a note from a retry that later
             // recovered never surfaces on a later turn.
-            const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+            const gatewayNote = this.takeTurnGatewayNote(session);
             // #3095: use the session's canonical org id (from the aiSessions DB
             // row — always set), NOT `auth.orgId`, which is null for partner-
             // and system-scoped users. The old guard on `auth.orgId` silently
@@ -1988,7 +2079,10 @@ export class StreamingSessionManager {
               : null;
             let isErrorSuccessMessage: string | null = null;
 
-            if (resultMsg.subtype !== 'success') {
+            if (session.workTurnLimitStopped) {
+              // Whatever the interrupted query reported, the reason is the limit.
+              session.eventBus.publish(TURN_LIMIT_ERROR);
+            } else if (resultMsg.subtype !== 'success') {
               const errors = 'errors' in resultMsg ? resultMsg.errors : [];
               const errorMsg = errors.length > 0 ? errors[0] : `AI query ended: ${resultMsg.subtype}`;
 
@@ -2001,7 +2095,7 @@ export class StreamingSessionManager {
                 // next send would be refused too (preflight). Wisp rolls to a
                 // fresh session on this code; the user re-sends by hand (work
                 // may have run partway, so never automatically).
-                session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.', code: 'turn_limit_reached' });
+                session.eventBus.publish(TURN_LIMIT_ERROR);
               } else {
                 session.eventBus.publish({
                   type: 'error',
@@ -2043,6 +2137,24 @@ export class StreamingSessionManager {
               await this.publishTurnModel(session, turnBinding, turnDisplay, turn.outcome);
             }
 
+            // #10428 (W05): the Wisp turn-end hooks (wisp/turnEnd.ts). The cheap
+            // half runs before `done` (#10427's promise correction, then the
+            // standing-instruction prefilter; a hit puts a capture id on
+            // `done`); the rest runs after it and is never
+            // awaited: the #10414 grant spend notice
+            // (budget.chatNeverBlocks.contract.test.ts) and the extraction.
+            let wispTurnEnd: typeof import('./wisp/turnEnd') | null = null;
+            let wispDone: import('./wisp/turnEnd').WispDoneExtras = {};
+            if (session.wispGrant) {
+              try {
+                wispTurnEnd = await import('./wisp/turnEnd');
+                wispDone = await wispTurnEnd.runWispTurnEndBeforeDone(session);
+              } catch (err) {
+                console.warn('[StreamingSessionManager] Wisp turn-end hooks unavailable:', safeErrorMessage(err));
+                captureException(reportableError(err));
+              }
+            }
+
             // Signal this turn is done, but DON'T close the event bus —
             // session stays alive for follow-up messages. Carries usage so
             // client surfaces can render turn cost (turn_complete).
@@ -2053,8 +2165,14 @@ export class StreamingSessionManager {
                 outputTokens: turn.outputTokens,
                 costCents: turn.costCents,
               },
+              ...wispDone,
             });
             session.state = 'idle';
+            try {
+              wispTurnEnd?.scheduleWispTurnEndAfterDone(session, wispDone);
+            } catch (err) {
+              captureException(reportableError(err));
+            }
             break;
           }
 
@@ -2071,8 +2189,9 @@ export class StreamingSessionManager {
       // this the only topology transport).
       const topologyTurn = Boolean(session.topologyInvestigation);
       await this.abortTopologyTurn(session);
-      const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
-      session.eventBus.publish({
+      const gatewayNote = this.takeTurnGatewayNote(session);
+      workTurnLimitReported = session.workTurnLimitStopped === true;
+      session.eventBus.publish(workTurnLimitReported ? TURN_LIMIT_ERROR : {
         type: 'error',
         message: topologyTurn ? 'The topology explanation could not be completed.' : gatewayNote ?? sanitizeErrorForClient(err),
       });
@@ -2081,6 +2200,11 @@ export class StreamingSessionManager {
       // W05: a turn that ended without a `result` mid-thought (teardown,
       // crash) still closes the indicator.
       this.stopThinking(session);
+      // A work-limit stop whose query ended without a `result` still says why.
+      if (session.workTurnLimitStopped && !workTurnLimitReported) {
+        session.eventBus.publish(TURN_LIMIT_ERROR);
+        session.eventBus.publish({ type: 'done' });
+      }
       // A turn that ended without a `result` (teardown, crash) discards any
       // unvalidated topology output and releases its lease.
       await this.abortTopologyTurn(session);
@@ -2146,6 +2270,10 @@ export class StreamingSessionManager {
   ): Promise<{ inputTokens: number; outputTokens: number; costCents: number; outcome: TurnOutcome }> {
     const toolExecutionCount = session.pendingTurnToolExecutionCount;
     session.pendingTurnToolExecutionCount = 0;
+    const roundTrips = session.pendingTurnRoundTrips ?? newRoundTripTally();
+    session.pendingTurnRoundTrips = newRoundTripTally();
+    const stoppedAtWorkLimit = session.workTurnLimitStopped === true;
+    session.workTurnLimitStopped = false;
     session.pendingTurnAutoLinkCount = 0;
     session.pendingTurnUsage = emptyPendingTurnUsage();
     const observation = session.refusalObservation;
@@ -2220,7 +2348,13 @@ export class StreamingSessionManager {
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
         toolExecutionCount,
-        turnCount: result ? (result.num_turns ?? 0) : 1,
+        // #10400: work round-trips only — a ToolSearch-only round-trip loads
+        // tool definitions and is not charged to the session's turn budget.
+        // A work-limit stop with no `result` still spent its real round-trips:
+        // charged as 1, the next send would pass preflight and run again.
+        turnCount: result
+          ? workTurns(result.num_turns ?? 0, roundTrips)
+          : stoppedAtWorkLimit ? roundTrips.workCalls.size : 1,
         sdkUsage: {
           sessionId: session.breezeSessionId,
           nextSnapshot: turn.nextSnapshot,
@@ -2265,6 +2399,17 @@ export class StreamingSessionManager {
    * turn end — result, error, timeout, teardown — calls this, so a client is
    * never left showing "Thinking…" over a finished turn.
    */
+  /**
+   * The gateway's reason for this turn's failure, removed as it is read. A
+   * context-window refusal also marks the turn's observation, so that
+   * settlement records it by name (#10577).
+   */
+  private takeTurnGatewayNote(session: ActiveSession): string | null {
+    const failure = takeGatewayFailure(session.breezeSessionId);
+    if (failure?.code === 'context_window_exceeded') session.refusalObservation.contextWindowExceeded = true;
+    return failure?.message ?? null;
+  }
+
   private stopThinking(session: ActiveSession): void {
     if (session.thinkingBlockIndex == null) return;
     session.thinkingBlockIndex = null;
@@ -2562,7 +2707,10 @@ export class StreamingSessionManager {
         const idle = now - session.lastActivityAt;
         const age = now - session.createdAt;
 
-        if (idle <= SESSION_IDLE_TIMEOUT_MS && age <= SESSION_MAX_AGE_MS) continue;
+        // #11430: the one expiry rule (24h cap, then 2h idle), shared with the
+        // send pre-flight, the session read and the idle sweep.
+        const reason = sessionExpiryReason(session, now);
+        if (!reason) continue;
 
         // Applies to the 24h hard cap too: a session that reaches it mid-stream
         // is evicted on the first tick after its turn ends (bounded by
@@ -2577,7 +2725,7 @@ export class StreamingSessionManager {
         // Notify connected SSE clients before removing
         session.eventBus.publish({
           type: 'error',
-          message: age > SESSION_MAX_AGE_MS
+          message: reason === 'max_age'
             ? 'Session expired (24h limit). Please start a new session.'
             : 'Session expired due to inactivity. Please start a new session.',
         });
@@ -2587,7 +2735,8 @@ export class StreamingSessionManager {
 
         // BOTH staleness paths retire the row, not just the 24h one. An
         // idle-evicted session is as dead to the client as an aged-out one, and
-        // preflight would have stamped it 'expired' on the next request anyway.
+        // preflight, the session read or the idle sweep would have stamped it
+        // 'expired' anyway.
         const forOrg = expiredByOrg.get(session.orgId);
         if (forOrg) forOrg.push(sessionId);
         else expiredByOrg.set(session.orgId, [sessionId]);
@@ -2652,8 +2801,9 @@ export class StreamingSessionManager {
     // careful not to expire. Stamping 'expired' here would turn a transient
     // server condition into a hard 410 for a conversation minutes old, since
     // runPreFlightChecks rejects on status before getOrCreate ever runs. The
-    // row stays truthful: 'active' means resumable, and preflight still expires
-    // it lazily once it genuinely goes idle or ages out.
+    // row stays truthful: 'active' means resumable, and the shared rule
+    // (aiSessionExpiry.ts: preflight, the session read, the idle sweep) still
+    // expires it once it genuinely goes idle or ages out.
   }
 }
 

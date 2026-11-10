@@ -42,7 +42,7 @@ vi.mock('jspdf', () => {
   return { jsPDF: ctor, default: ctor };
 });
 
-vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
+vi.mock('jspdf-autotable', () => ({ autoTable: vi.fn() }));
 
 import { exportReport, type PostureSummary } from './reportExport';
 import type { ReportBranding } from '@breeze/shared/reportPdf';

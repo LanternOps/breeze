@@ -9,6 +9,7 @@ import (
 	"os/exec"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // showConsentDialogOS renders the consent prompt via zenity. consentUISupported
@@ -20,7 +21,7 @@ import (
 func showConsentDialogOS(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
 	args := consentZenityArgs(req)
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "zenity", args...)
+	cmd := procspawn.CommandContext(ctx, "zenity", args...)
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		log.Warn("zenity consent dialog could not start", "error", err.Error())

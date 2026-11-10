@@ -171,6 +171,25 @@ const hardwareRow = async (deviceId: string) => (await getTestDb().select().from
 const report = (device: { id: string; orgId: string }, memory: MemoryInventoryReport | null, hardware = HARDWARE) =>
   (tx: Tx) => writeHardwareReport(tx, device, hardware, memory, new Date());
 
+describe('hardware report product number (#9593)', () => {
+  runDb('stores, replaces, and keeps the value when a later report omits it', async () => {
+    const device = await seedDevice();
+    const write = (hardware: Record<string, unknown>) =>
+      getTestDb().transaction((tx) => writeHardwareReport(tx, device, hardware, null, new Date()));
+
+    await write({ ...HARDWARE, productSku: '5S3F8EA#ABB' });
+    expect((await hardwareRow(device.id))?.productSku).toBe('5S3F8EA#ABB');
+
+    await write({ ...HARDWARE, productSku: '9X9X9XX#ABB' });
+    expect((await hardwareRow(device.id))?.productSku).toBe('9X9X9XX#ABB');
+
+    // An agent omits the field when it has no value, as it does for the serial:
+    // absent cannot be told apart from a collection gap, so it never clears.
+    await write(HARDWARE);
+    expect((await hardwareRow(device.id))?.productSku).toBe('9X9X9XX#ABB');
+  });
+});
+
 describe('inventory memory module sync (#5351)', () => {
   runDb('stores every slot in report order with the hardware memory summary', async () => {
     const device = await seedDevice();

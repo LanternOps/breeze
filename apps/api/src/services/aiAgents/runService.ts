@@ -17,6 +17,7 @@ import type {
 import { envFlag, isHosted } from '../../config/env';
 import { agentRunModelRole } from './agentModelRole';
 import { ASSESSMENT_MAX_CONCURRENT_RUNS, ASSESSMENT_MAX_RUNS_PER_HOUR } from './assessmentProfile';
+import { TROUBLESHOOT_MAX_CONCURRENT_RUNS, TROUBLESHOOT_MAX_RUNS_PER_HOUR } from './troubleshootProfile';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import {
   db,
@@ -60,6 +61,7 @@ import {
   CeilingViolationError,
   GrantInactiveError,
   resolveGrantCeiling,
+  WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS,
   type GrantCeiling,
 } from '../wisp/grantAuthority';
 import { agentRunMatchesResourceScope } from './runResourceScope';
@@ -475,6 +477,13 @@ export type AgentRunSkipReason =
   // PUBLISHED_SKIP_REASONS — the wake coordinator's alert-storm coalescing
   // leans on them, so they are volume guards, not policy events.
   | 'max_concurrent_assessment_runs' | 'assessment_rate'
+  // Wisp delegation W1 (#11084) — the device_troubleshooting volume guards
+  // (TROUBLESHOOT_MAX_CONCURRENT_RUNS / TROUBLESHOOT_MAX_RUNS_PER_HOUR,
+  // troubleshootProfile.ts). Not published, same posture as the pair above.
+  | 'max_concurrent_troubleshoot_runs' | 'troubleshoot_rate'
+  // #11084 — a device_troubleshooting admission without a grant; a caller
+  // bug surfaced as a skip (same posture as assessment_requires_grant).
+  | 'troubleshoot_requires_grant'
   // Wisp W05 — an assessment admitted without a grant (rule 2a). A caller
   // bug, surfaced as a skip rather than a throw so the wake coordinator never
   // wedges on it; not published (nothing an admin can act on).
@@ -661,13 +670,25 @@ async function deviceMatchesAnyGroup(
  */
 const LIFECYCLE_ALERT_SOURCES: ReadonlySet<string> = new Set(['warranty_evaluator']);
 
+/**
+ * #11328 — alerts an AI agent raises about its OWN work: an unattended action
+ * that failed verification (`actVerify.ts`) and a fix that did not hold
+ * (`fixWatch.ts`). They publish `alert.triggered` so channels, routing and
+ * escalation page a human, but they must never admit an agent run: a triage
+ * agent in act mode would act on its own failure, fail again and raise a new
+ * alert for the new run, a loop bounded only by cooldown, rate and budget
+ * caps. Same reasoning as the automation-output guard in automationWorker.ts.
+ * Unconditional, like the lifecycle set above.
+ */
+const AGENT_OUTPUT_ALERT_SOURCES: ReadonlySet<string> = new Set(['ai_agent_act_verify', 'ai_agent_fix_watch']);
+
 export async function evaluateAgentTriggerFilters(
   triggers: AiAgentTriggers,
   ctx: NonNullable<CreateAgentRunInput['alertContext']>,
   deviceId: string | null,
   orgId: string,
 ): Promise<boolean> {
-  if (ctx.source != null && LIFECYCLE_ALERT_SOURCES.has(ctx.source)) return false;
+  if (ctx.source != null && (LIFECYCLE_ALERT_SOURCES.has(ctx.source) || AGENT_OUTPUT_ALERT_SOURCES.has(ctx.source))) return false;
 
   const severities = triggers.alertSeverities ?? [];
   if (!severities.includes(ctx.severity)) return false;
@@ -836,7 +857,9 @@ export function intersectAllowlistWithCeiling(
   return allowlist.filter((entry) => {
     const colon = entry.indexOf(':');
     const tool = colon === -1 ? entry : entry.slice(0, colon);
-    if (ceiling.deniedTools.has(tool)) return false;
+    // #11433: an action-floored tool is callable only by a human's Wisp turn, never by a run (the run loop's
+    // ceiling check passes no action), so it stays out of the allowlist as when it was a whole-tool deny.
+    if (ceiling.deniedTools.has(tool) || WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS.has(tool)) return false;
     return ceiling.toolAllowlist === null || ceiling.toolAllowlist.has(tool);
   });
 }
@@ -1144,6 +1167,16 @@ function profileCaps(
         concurrentSkip: 'max_concurrent_assessment_runs',
         rateSkip: 'assessment_rate',
       };
+    // Wisp delegation W1 (#11084) — per-(agent, org) caps for Wisp hand-offs.
+    // The partner troubleshoot agent is every org's agentId, so this is per org.
+    case 'device_troubleshooting':
+      return {
+        maxConcurrent: TROUBLESHOOT_MAX_CONCURRENT_RUNS,
+        maxPerWindow: TROUBLESHOOT_MAX_RUNS_PER_HOUR,
+        windowMs: 3_600_000,
+        concurrentSkip: 'max_concurrent_troubleshoot_runs',
+        rateSkip: 'troubleshoot_rate',
+      };
     default: {
       const exhaustive: never = profile;
       throw new Error(`[profileCaps] Unknown run profile: ${String(exhaustive)}`);
@@ -1403,6 +1436,16 @@ export async function createAndEnqueueAgentRun(
   if ((input.profile ?? 'full') === 'assessment' && (kind !== 'triage' || !input.grant)) {
     return skip(kind !== 'triage' ? 'ownership_mismatch' : 'assessment_requires_grant');
   }
+  // Wisp delegation W1 (#11084) — both directions, like the designer/research
+  // arms: the troubleshoot agent runs its device-pinned, forced-shadow profile
+  // or it does not run (the manual route's `full` default would otherwise run
+  // it with its stored mutating allowlist and none of the profile's floor),
+  // and that profile is the troubleshoot agent's on exactly one device under a
+  // Wisp grant. A grant-less run would have no ceiling and no origin thread.
+  if (kind === 'troubleshoot' && (input.profile ?? 'full') !== 'device_troubleshooting') return skip('ownership_mismatch');
+  if ((input.profile ?? 'full') === 'device_troubleshooting' && (kind !== 'troubleshoot' || !deviceId || !input.grant)) {
+    return skip(kind !== 'troubleshoot' || !deviceId ? 'ownership_mismatch' : 'troubleshoot_requires_grant');
+  }
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
@@ -1455,11 +1498,16 @@ export async function createAndEnqueueAgentRun(
   // i.e. executable with no human. Shadow keeps every assessment proposal
   // pending a human decision; like the anomaly force it changes only
   // `modeAtStart`, never admission precedence.
+  //
+  // Wisp delegation W1 (#11084) — device_troubleshooting runs are ALSO always
+  // forced shadow, with no lift, for the same reason: the run reads device
+  // output and every change it wants must stay a pending human decision.
   const ticketAutonomy = (triggerKind === 'ticket' || input.ticketId)
     && effective.mode === 'act' && effective.triggers.ticketAutonomousWrites === true;
   const modeAtStart = ((triggerKind === 'ticket' || input.ticketId) && !ticketAutonomy)
     || triggerKind === 'anomaly' || input.anomalyIncidentId
-    || (input.profile ?? 'full') === 'assessment' ? 'shadow' : effective.mode;
+    || (input.profile ?? 'full') === 'assessment'
+    || (input.profile ?? 'full') === 'device_troubleshooting' ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is
@@ -1885,6 +1933,12 @@ export async function createAndEnqueueAgentRun(
     //     research agent, and always against exactly one device (its catalog
     //     and OS filter are per-device; spec "submit_suggestions").
     if (profile === 'remediation_research' && (agentRow.kind !== 'research' || deviceId === null)) {
+      return skip('ownership_mismatch');
+    }
+    // 8a (troubleshoot, #11084). Re-asserted against the ROW, not the input
+    //     kind: device_troubleshooting is driven only by a troubleshoot agent,
+    //     against exactly one device.
+    if (profile === 'device_troubleshooting' && (agentRow.kind !== 'troubleshoot' || deviceId === null)) {
       return skip('ownership_mismatch');
     }
 
