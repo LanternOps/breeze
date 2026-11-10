@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CATALOG_BY_ID } from '@breeze/shared';
+import { CATALOG_BY_ID, catalogForTab } from '@breeze/shared';
 import { badgedKinds } from './BadgeLegend';
 
 describe('BadgeLegend badgedKinds (#11601)', () => {
@@ -13,9 +13,14 @@ describe('BadgeLegend badgedKinds (#11601)', () => {
     expect(badgedKinds('aiBudgets')).toEqual(['locks']);
   });
 
+  it('approvalMode is served with the AI Approvals tab inheritance, not the AI budgets one', () => {
+    expect(catalogForTab('aiApprovals').map(e => e.id)).toContain('aiBudgets.approvalMode');
+    expect(catalogForTab('aiBudgets').map(e => e.id)).not.toContain('aiBudgets.approvalMode');
+  });
+
   it('every badged field on the AI Approvals tab is catalogued under that tab', () => {
     const source = readFileSync(resolve(__dirname, '../PartnerAiApprovalsTab.tsx'), 'utf8');
-    const ids = [...source.matchAll(/fieldId="([^"]+)"/g)].map(m => m[1]);
+    const ids = [...source.matchAll(/fieldId=\{?["']([^"']+)["']/g)].map(m => m[1]);
     expect(ids.length).toBeGreaterThan(0);
     for (const id of new Set(ids)) {
       expect(CATALOG_BY_ID[id]?.tab, id).toBe('aiApprovals');
