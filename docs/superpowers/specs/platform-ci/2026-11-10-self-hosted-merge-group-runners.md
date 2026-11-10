@@ -84,7 +84,7 @@ They are the largest block of runner time and they are self-contained:
 - **Scope:** the `integration-test` matrix (16 shards) on `merge_group` events in
   `LanternOps/breeze`. Nothing else moves.
 - **`push: main` does not exist.** `ci.yml` runs on `pull_request`, `merge_group` and
-  `workflow_dispatch` only (`ci.yml:3–28`, **verified**). Main is never re-tested on push. The only
+  `workflow_dispatch` only (`ci.yml:3–31`, **verified**). Main is never re-tested on push. The only
   CI run on main is the manual emergency lane, 8 runs in the window. OD-6 recommends keeping it
   hosted.
 - **Host:** the brief assumes a self-hosted macOS host (18 cores, 128 GB, Apple silicon) shared
@@ -100,11 +100,11 @@ They are the largest block of runner time and they are self-contained:
 ci.yml (candidate)                       pinned on main (candidate cannot edit)
 ──────────────────                       ──────────────────────────────────────
 integration-test:                        .github/workflows/integration-shards.yml
-  needs: [changes]                         on: workflow_call   (inputs: none that steer routing)
+  needs: [changes]                         on: workflow_call   (inputs: integration_suites only; nothing steers routing)
   if: <today's gate incl. thin_skip>       jobs:
-  uses: LanternOps/breeze/.github/           route:  ubuntu-latest, read-only token, no checkout of
-    workflows/integration-shards.yml                 candidate code → per-shard target
-    @refs/heads/main                         shard:  matrix 1..16, needs route (if: always())
+  uses: LanternOps/breeze/.github/           route:  ubuntu-latest, read-only token, API reads only,
+    workflows/integration-shards.yml                 no checkout → per-shard target
+    @refs/heads/main                         shard:  matrix 1..16, needs route (if: !cancelled())
                                                runs-on: hosted unless route succeeded AND said
                                                         self-hosted for this shard, in which case
                                                         {group: breeze-integration, labels: [...]}
@@ -125,29 +125,46 @@ how shards run still tests its own steps.
 changes the guard, but only through a merged, gated PR. The choice of a SHA pin instead is
 covered in OD-3.
 
-**A failed `route` means hosted.** The `shard` job runs with `if: always()` on `route`. Any route
-failure, skip or malformed output resolves to `ubuntu-latest`. `route` runs after `changes` (the
-caller's `needs`). That adds one short serial hosted hop, measured in shadow, accepted
+**A failed `route` means hosted.** The `shard` job runs with `if: ${{ !cancelled() }}`, not
+`always()`. `always()` would start hosted shards even for a run the watchdog or janitor just
+cancelled. The `runs-on` expression resolves to `ubuntu-latest` unless `needs.route.result` is
+`success` and the output parses. So a route failure, skip or malformed output runs hosted.
+
+The caller's skip conditions still apply: a skipped `uses:` job never enters the callee.
+
+A `uses:` caller job cannot carry `env` or `timeout-minutes`, so both move into the callee's
+`shard` job:
+- the 55-min timeout;
+- `CI_BASE_SHA`, derived from `github.event`;
+- `BREEZE_INTEGRATION_SUITES_MODE`.
+
+`BREEZE_INTEGRATION_SUITES` arrives as the one input. It is candidate-computed today as well, and
+it never affects routing.
+
+`route` runs after `changes` (the caller's `needs`). That adds one short serial hosted hop, measured in shadow, accepted
 (**inferred**: about 15 s plus a hosted queue wait).
 
 ### 2. Routing: eligibility, then capacity
 
 `route` derives everything from GitHub's context and the Actions API, never from caller inputs.
-It never executes candidate code: it reads git objects as data only, as `ci-gate.mjs` does.
+It never checks out or executes candidate code. It uses REST reads only:
+- `compare/{base}...{head}` for the group's files and commits;
+- `commits/{sha}/pulls` and `pulls/{n}` to map commits to PRs and authors;
+- the jobs and runs endpoints for capacity.
 
 **Eligible for self-hosted only if all of these hold.** Anything else routes hosted:
 
 1. `github.event_name == 'merge_group'` and `github.repository == 'LanternOps/breeze'`.
 2. The kill switch, repository variable `CI_SELF_HOSTED`, is `on`. `shadow` is a separate path
-   (§Rollout). Unset or `off` means hosted.
+   (Test & rollout notes, W2). Unset or `off` means hosted.
 3. **Every PR in the merge group** passes the author filter, not just the entry's own PR. A
    group's checkout includes the entries queued ahead of it (**verified**, GitHub merge-queue
    docs). Each commit in `merge_group.base_sha..head_sha` maps to a PR, and no PR may be from an
    outside contributor (`author_association` not MEMBER, OWNER or COLLABORATOR) or a
    dependency-update bot.
 4. No PR in the group touches **higher-risk install and launch inputs**:
-   - `pnpm-lock.yaml`, any `package.json` / `.npmrc`, `pnpm-workspace.yaml`, `.pnpmfile.cjs`,
-     `patches/**`;
+   - `pnpm-lock.yaml`, any `package.json` / `.npmrc`, `pnpm-workspace.yaml`, `patches/**`, and
+     any added `.pnpmfile.cjs`;
    - `docker-compose.test.yml`;
    - local actions (`.github/actions/**`);
    - the shard launch script.
@@ -157,6 +174,12 @@ It never executes candidate code: it reads git objects as data only, as `ci-gate
 **Capacity** comes from a heartbeat the host publishes every 60 s through a channel whose write
 credential can do nothing else. The broker writes `<unix-ts>,<free_slots>,<version>` (OD-7,
 OD-8). `route` treats a heartbeat older than 180 s as zero capacity.
+
+**How `route` reads it.** `route` holds only `GITHUB_TOKEN`, so the heartbeat must be readable
+without credentials. Example: a one-line file in a dedicated public side repository, fetched
+anonymously over HTTPS, which the broker alone can write. The heartbeat is public by design. It
+carries a timestamp, a slot count and a version, nothing sensitive. A spoofed or stale value can
+only misroute capacity, and the watchdog (§5) bounds that.
 
 The free-slot count is the heartbeat value minus the self-hosted-labelled jobs already queued or
 running repo-wide. `route` reads those with `actions: read`. It assigns at most
@@ -170,9 +193,11 @@ wait. v1 bounds it with `per_run_cap` (default 2) and the progress watchdog (§5
 allocator is OD-8.
 
 **Re-runs after a watchdog cancel go hosted.** If the entry's PR had a merge-group run cancelled
-by the watchdog in the last 6 h, `route` sends all of its shards hosted. `route` finds this
-through the Actions API, by the janitor's marker in the run's cancel annotation (builder picks
-the mechanism). This bounds retries against an unhealthy host.
+by the watchdog in the last 6 h, `route` sends all of its shards hosted. The signal comes from
+the Actions API alone, with no marker and no new permission. In the last 6 h, a `merge_group`
+run for the same PR number (from the queue ref) concluded `cancelled` while one of its
+`integration-shards.yml` shard jobs was in the self-hosted group and never got a runner. This
+bounds retries against an unhealthy host.
 
 ### 3. The host
 
@@ -234,8 +259,9 @@ time).
 - **No run gets faster directly.** A run with 2 of its 16 shards on the host still waits on its
   slowest hosted shard. The benefit is aggregate: fewer hosted jobs means a shorter hosted queue
   for every run.
-- **The shared host is a small lever.** It frees 2–3% of the cap while peak demand runs 3–5×
-  capacity.
+- **The shared host is a small lever.** It frees 2–3% of the cap. Merge-group shard demand
+  averages 20 concurrent jobs and peaks at 128, which is 3–5× its 4–6 VMs on average and over
+  20× at peak.
 - **A dedicated host is a medium lever.** It frees about 8%.
 - **The demand side is larger.** W05 (thin queue, enforced) and W07b (named suites) cut more
   shard-jobs than either host.
@@ -249,7 +275,7 @@ This is why OD-1 puts the support question about the 180 cap (H0) first.
 | Kill switch `off` / unset | `route` sends everything hosted. Already-assigned jobs are not moved, and they run or hit the watchdog. |
 | Heartbeat stale (>180 s) | Zero capacity, so everything new goes hosted. |
 | `route` fails | `shard` falls back to `ubuntu-latest` (§1). |
-| Job queued on self-hosted labels for more than 25 min, **for any reason** (host down, registration broken, labels wrong, oversubscribed) | **Progress watchdog.** The Merge Queue Janitor (hosted, from `main`, already holds `actions: write`) cancels the merge-group run with a marker. The entry is ejected loudly, the W06 shepherd re-enqueues it as `infra`, and `route` sends that PR's re-run hosted (§2). This does not depend on the heartbeat: a fresh heartbeat proves the supervisor is alive, not that jobs are progressing. |
+| An `integration-shards.yml` shard job queued in the self-hosted group for more than 25 min, **for any reason** (host down, registration broken, labels wrong, oversubscribed) | **Progress watchdog.** The Merge Queue Janitor (hosted, from `main`, already holds `actions: write`) cancels the merge-group run with a marker. The entry is ejected loudly, the W06 shepherd re-enqueues it as `infra`, and `route` sends that PR's re-run hosted (§2). This does not depend on the heartbeat: a fresh heartbeat proves the supervisor is alive, not that jobs are progressing. The watchdog is scoped to the pinned workflow's jobs. A candidate job that names the labels directly is never admitted, and it must not let a trusted entry eject itself. The gate's misuse check fails that run instead. (The `ci-gate.mjs:696` comment still says 150; it is stale.) |
 | The janitor's cron is late (gaps of hours are documented) | **Backstop: the pinned CI Gate.** `verify` gives up 140 min after it starts (`ci-gate.mjs:696`, job timeout 145) and fails the entry with a stated reason, well before the queue's 240-min check timeout. So a stuck shard ends in a **visible** gate failure at worst, never a silent drop. The watchdog only makes that faster. |
 | Host dies mid-job | GitHub fails the job once the runner stops responding. The entry is ejected and the shepherd re-enqueues it. Same as a hosted infra failure. |
 | Host full | `free = 0`, so everything new goes hosted. |
@@ -260,17 +286,22 @@ behind it. That is the same blast radius as a hosted infra flake.
 ### 6. Interaction with the CI Gate, thin queue and W07
 
 - **Pinned CI Gate (W02).** `rollup()` expands job names from the **candidate's** `ci.yml`
-  (`ci-gate.mjs:243`, **verified**). A reusable-workflow call turns them into
-  `<caller> / <callee>` names (for example `Integration Tests (shard 3/16) / shard`), so the gate
-  has to learn that shape first. The rollout follows the documented gate-change rules
-  (`docs/agents/merge-and-deploy.md`, "Changing the gate"):
-  1. Ship the gate change in its own PR. Required jobs are judged by the base revision, which is
-     the two-PR rule.
-  2. Bump the ruleset pin.
-  3. Get a green `ci-gate-replay` run.
+  (`ci-gate.mjs:243`, **verified**). The matrix lives in the callee, so one `route` serves the
+  whole run. API names therefore become `<caller name> / <callee job name with matrix>`, for
+  example `Integration Tests / Shard (3/16)`. The caller has no matrix of its own. Today
+  `jobInstances` rejects a matrix-expression name on a job without a matrix
+  (`ci-gate.mjs:217`, `head_unparseable`), so the gate must learn to expand reusable-workflow
+  calls from the callee file at its pinned ref. Ordering:
+  1. The gate change lands first, in its own PR, with an attached green `ci-gate-replay` run
+     (`docs/agents/merge-and-deploy.md:69`). The queue judges an entry with the base revision's
+     gate, so a `ci.yml` change that arrives before the gate understands it reads as `missing`.
+     `:71` says a display-name change alone needs no staging. This is a shape change, so it
+     does.
+  2. Then the `ci.yml` move. If the gate ruleset references a fixed gate commit rather than
+     `main` at the time (**not checked**), advance it first.
 - **Gate misuse check (detective).** Display names are written by the candidate, so they prove
   nothing. `verify` instead reads each job's server-reported `runner_group_id` and `runner_id`.
-  Today the API adapter drops those fields (`ci-gate.mjs:531`). It checks them against the
+  Today the API adapter drops those fields (`ci-gate.mjs:536`). It checks them against the
   broker's issuance record, which lists the runner ids it minted and for which run. The verdict
   is `fail reason=self_hosted_misuse` when:
   - a job in the self-hosted group is not one of this run's routed shards;
@@ -289,7 +320,7 @@ behind it. That is the same blast radius as a hosted infra flake.
   Otherwise faster or slower guests skew the partition for everyone.
 - **W07b named suites.** Fewer shards with work means fewer shards to route. No conflict.
 - **Merge Queue Janitor.** It keeps cancelling runs whose queue ref is gone. It gains the
-  watchdog rule from §5, and it must leave shadow runs (§Rollout) alone until they finish.
+  watchdog rule from §5.
 
 ## Security model
 
@@ -328,7 +359,7 @@ enqueued". The next section says what that is worth.
 
 | # | Control | Enforced by | Can the candidate change it? |
 |---|---|---|---|
-| 1 | **Runner group `breeze-integration`:**<br>• *selected repositories*: this repo only<br>• *allow public repositories*: on (a public repo requires it; GitHub warns)<br>• *selected workflows*: `LanternOps/breeze/.github/workflows/integration-shards.yml@refs/heads/main` only<br>GitHub matches selected workflows on the called reusable workflow's path and ref, and admits only jobs defined directly in it (**verified**, GitHub runner-group docs). This layer does **not** tell callers apart by event: a fork PR or a branch run calling the same file also matches (**verified**). | GitHub org settings | No. Only an org admin can change it. |
+| 1 | **Runner group `breeze-integration`:**<br>• *selected repositories*: this repo only<br>• *allow public repositories*: on (a public repo requires it; GitHub warns)<br>• *selected workflows*: `LanternOps/breeze/.github/workflows/integration-shards.yml@refs/heads/main` only<br>GitHub's runner-group docs (cited by the advisor; Claude did not re-read them) say selected workflows match the called reusable workflow's path and ref, and admit only jobs defined directly in it. **Inferred until P1a passes**: the design does not ship otherwise. This layer does **not** tell callers apart by event: a fork PR or a branch run calling the same file also matches (**inferred**, P1b). | GitHub org settings | No. Only an org admin can change it. |
 | 2 | **Event/repo guard, eligibility and routing in the pinned reusable workflow.** This is the layer that stops a fork `pull_request` caller or a branch caller: the guard sends them hosted. A candidate job naming the labels directly fails layer 1, never gets a runner, and is cancelled by the watchdog. Jobs set `runs-on.group` explicitly, so the target is not matched on labels alone. | `integration-shards.yml` on `main` | No. It is read from `main`. |
 | 3 | **Main's branch ruleset plus the pinned CI Gate ruleset.** Changing layer 2 takes a merged, gated PR. | GitHub rulesets | No. |
 | 4 | **Ephemeral VM per job:** single-use JIT runner, copy-on-write clone, teardown by the supervisor from outside the VM, read-only base image built by a credential-free builder | host | No. |
@@ -485,7 +516,7 @@ Enforced on the host, outside the VM. The VM's own firewall is not trusted.
 **OD-3. Where the routing guard lives, and how it is pinned.**
 - (a) A pinned reusable workflow at `@refs/heads/main` (this design). *Pro:* the candidate cannot
   edit the guard. Runner-group matching on reusable workflows is documented. *Con:* the gate must
-  learn caller/callee names (two-PR rollout plus pin bump). Reusable-workflow changes take effect
+  learn caller/callee names (the gate change lands first, §6). Reusable-workflow changes take effect
   only after they merge. `main` is mutable through gated merges.
 - (a′) The same, but pinned to a full SHA in both the caller and the runner group. *Pro:*
   immutable. *Con:* every change needs an org-admin edit of the runner group plus a caller bump.
@@ -543,6 +574,19 @@ Enforced on the host, outside the VM. The VM's own firewall is not trusted.
 - *Quorum record:* the advisor flagged (a)'s race as high. Claude agrees it is real and treats it
   as a latency risk, not a safety risk.
 
+**PR review (pr-review-toolkit, round 1)** fixed these:
+- `if: always()` became `!cancelled()`.
+- Layer 1 was downgraded to inferred until P1a.
+- Shadow moved into the pinned callee.
+- The heartbeat read channel is now named.
+- The re-run signal now comes from the API only.
+- `route` makes API reads only.
+- The watchdog is scoped to the pinned workflow's jobs.
+- The gate name shape and ordering were corrected, and three citations were fixed.
+
+Not adopted: genericising the host's core count and memory. Those figures carry the capacity
+math the brief asked for, and they identify no machine.
+
 **Quorum points not adopted:** the advisor rated smoke-artifact poisoning high. Claude classes it
 as general CI hygiene, not a self-hosting risk: every job in a merge-group run is already
 candidate-authored, on hosted runners too. It is tracked as a follow-up.
@@ -568,7 +612,7 @@ candidate-authored, on hosted runners too. It is tracked as a follow-up.
    - Extract the shard steps into a candidate script.
    - Add `integration-shards.yml`, with `route` always returning hosted.
    - Change the gate to understand caller/callee names and to read runner-group ids. Ship the gate
-     change first (two-PR rule), then bump the pin and run `ci-gate-replay`.
+     change first, with a green `ci-gate-replay` run (§6), then the `ci.yml` move.
    - Contract tests:
      - `ci-gate.test.mjs` covers name mapping and the `self_hosted_misuse` verdict, including a
        candidate-named job that pretends to be a shard.
@@ -580,11 +624,15 @@ candidate-authored, on hosted runners too. It is tracked as a follow-up.
 2. **W2 Host, broker and shadow** (on OD-2 compute).
    - Supervisor, builder, base image, network policy, broker and runner group. An org admin
      does the group setup and runs P1–P3.
-   - Set `CI_SELF_HOSTED=shadow`. For sampled eligible entries, a separate non-required
-     `merge_group` workflow, `integration-shadow.yml`, calls the same pinned reusable workflow
-     with shadow routing.
-   - Results are logged and compared offline with the entry's hosted shards. The real shards
-     stay hosted, and the janitor leaves shadow runs alone.
+   - Set `CI_SELF_HOSTED=shadow`. Shadow is decided **entirely in the pinned callee**: no
+     candidate-side workflow, no input. `route` reads the variable, samples eligible entries,
+     and emits up to `per_run_cap` shard indices for a `shadow` job, a duplicate of `shard`
+     that runs on self-hosted. Nothing `needs` the `shadow` job, so `CI Success` and the gate
+     ignore it.
+   - The real shards stay hosted. Results are compared offline with the same entry's hosted
+     shards. A shadow job that is still running when the entry merges is cancelled by the
+     janitor along with its run. That loses data, and it is acceptable, because the
+     comparison counts completed pairs only.
 3. **W3 Enforce.** `CI_SELF_HOSTED=on`. The watchdog is live, and the shepherd classifies its
    cancels as `infra`.
 
