@@ -977,7 +977,7 @@ export default function SoftwareVersionManager({
               )}{" "}
               <code className="font-mono">
                 {'{{org.name}}'}
-              </code>
+              </code>{" "}
               {i18n.t(
                 "policies:software.softwareVersionManager.resolvePerOrganizationAtDeployTime",
               )}
