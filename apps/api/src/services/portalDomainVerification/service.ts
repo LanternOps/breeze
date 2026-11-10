@@ -22,8 +22,7 @@ import { generateOwnershipToken } from '../emailDomains/dnsOwnershipProof';
 import { listActivePartnerAdmins } from '../partnerAdminRecipients';
 import { captureException } from '../sentry';
 import { dnsTxtChecker, portalDomainTxtRecord } from './checkers/dnsTxt';
-import { entraTenantChecker } from './checkers/entraTenant';
-import { googleConnectionBinding, googleDirectoryChecker } from './checkers/googleDirectory';
+import { googleConnectionBinding } from './checkers/googleBinding';
 import {
   STRUCTURAL_FAIL_REASONS,
   type CustomerDomainView,
@@ -98,7 +97,17 @@ const conflictRetry = () =>
     'The domain changed while it was being checked. Run the check again.',
   );
 
-export function defaultDomainVerificationCheckers(): DomainVerificationCheckers {
+/**
+ * The live checkers. The Entra and Google ones load on first use: they pull in
+ * the M365 control plane (and through it middleware/auth) and googleapis, which
+ * the worker boot closure and the read API must not import
+ * (workerEntrypointClosure.contract.test.ts).
+ */
+export async function defaultDomainVerificationCheckers(): Promise<DomainVerificationCheckers> {
+  const [{ entraTenantChecker }, { googleDirectoryChecker }] = await Promise.all([
+    import('./checkers/entraTenant'),
+    import('./checkers/googleDirectory'),
+  ]);
   return { dns_txt: dnsTxtChecker, entra_tenant: entraTenantChecker, google_directory: googleDirectoryChecker };
 }
 
@@ -106,7 +115,8 @@ export function defaultDomainVerificationCheckers(): DomainVerificationCheckers 
 // Row shape, view, evidence currency (D6)
 // ---------------------------------------------------------------------------
 
-const rowColumns = {
+/** Built on call, not at import: tests that partially mock the schema import this module. */
+const rowColumns = () => ({
   id: customerEmailDomains.id,
   partnerId: customerEmailDomains.partnerId,
   orgId: customerEmailDomains.orgId,
@@ -125,7 +135,7 @@ const rowColumns = {
   clearedReason: customerEmailDomains.clearedReason,
   createdAt: customerEmailDomains.createdAt,
   updatedAt: customerEmailDomains.updatedAt,
-};
+});
 
 /** The internal row: never returned by an API as-is (it carries the token and evidence). */
 export type CustomerDomainRow = {
@@ -368,14 +378,14 @@ async function lockDomain(domain: string): Promise<void> {
 }
 
 async function selectRowById(id: string, forUpdate = false): Promise<CustomerDomainRow | null> {
-  const q = db.select(rowColumns).from(customerEmailDomains).where(eq(customerEmailDomains.id, id)).limit(1);
+  const q = db.select(rowColumns()).from(customerEmailDomains).where(eq(customerEmailDomains.id, id)).limit(1);
   const [row] = forUpdate ? await q.for('update') : await q;
   return (row as CustomerDomainRow | undefined) ?? null;
 }
 
 async function selectVerifiedIncumbent(domain: string, excludeId: string, forUpdate = false): Promise<CustomerDomainRow | null> {
   const q = db
-    .select(rowColumns)
+    .select(rowColumns())
     .from(customerEmailDomains)
     .where(and(
       sql`lower(${customerEmailDomains.domain}) = ${normalizeDomain(domain)}`,
@@ -411,7 +421,7 @@ async function audit(
       ? { actorType: 'user' as const, actorId: actorUserId }
       : { actorType: 'system' as const, actorId: ANONYMOUS_ACTOR_ID }),
     action,
-    resourceType: RESOURCE_TYPE,
+    resourceType: 'customer_email_domain', // literal: auditResourceTypeLabels.test.ts reads it
     resourceId: row.id,
     resourceName: row.domain,
     details,
@@ -461,7 +471,7 @@ async function notifyVerificationLost(notice: LossNotice): Promise<void> {
 /** This org's domains with verification state. Reads under the caller's context. */
 export async function listOrgCustomerDomains(orgId: string): Promise<CustomerDomainView[]> {
   const rows = await db
-    .select(rowColumns)
+    .select(rowColumns())
     .from(customerEmailDomains)
     .where(eq(customerEmailDomains.orgId, orgId))
     .orderBy(asc(customerEmailDomains.domain));
@@ -542,7 +552,7 @@ export async function verifyCustomerDomain(
   deps: VerifyCustomerDomainDeps = {},
 ): Promise<VerifyCustomerDomainOutcome> {
   assertNoHeldContext('verifyCustomerDomain');
-  const checkers = deps.checkers ?? defaultDomainVerificationCheckers();
+  const checkers = deps.checkers ?? await defaultDomainVerificationCheckers();
 
   const row = await systemRead('verify.load', () => selectRowById(input.domainId));
   if (!row || row.orgId !== input.orgId || row.partnerId !== input.partnerId) throw notFound();
@@ -756,7 +766,7 @@ export async function recheckCustomerDomain(
   deps: VerifyCustomerDomainDeps = {},
 ): Promise<RecheckOutcome> {
   assertNoHeldContext('recheckCustomerDomain');
-  const checkers = deps.checkers ?? defaultDomainVerificationCheckers();
+  const checkers = deps.checkers ?? await defaultDomainVerificationCheckers();
   const row = await systemRead('recheck.load', () => selectRowById(rowId));
   if (!row?.verifiedAt || !row.verifiedMethod) return { status: 'skipped', cleared: null };
 
@@ -880,7 +890,7 @@ export async function findOrgByVerifiedDomain(domain: string): Promise<VerifiedD
   if (!d) return null;
   return inSystemContext('findOrgByVerifiedDomain', async () => {
     const rows = await db
-      .select(rowColumns)
+      .select(rowColumns())
       .from(customerEmailDomains)
       .where(and(
         sql`lower(${customerEmailDomains.domain}) = ${d}`,
@@ -901,7 +911,7 @@ export async function isDomainVerifiedForOrg(domain: string, orgId: string): Pro
 export async function listVerifiedDomainsForOrg(orgId: string): Promise<VerifiedDomainFact[]> {
   return inSystemContext('listVerifiedDomainsForOrg', async () => {
     const rows = await db
-      .select(rowColumns)
+      .select(rowColumns())
       .from(customerEmailDomains)
       .where(and(
         eq(customerEmailDomains.orgId, orgId),

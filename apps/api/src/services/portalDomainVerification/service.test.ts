@@ -11,13 +11,10 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('../email', () => ({ getEmailService: () => null }));
 vi.mock('./checkers/entraTenant', () => ({ entraTenantChecker: { method: 'entra_tenant', check: vi.fn() } }));
-vi.mock('./checkers/googleDirectory', async (orig) => ({
-  ...(await orig<typeof import('./checkers/googleDirectory')>()),
-  googleDirectoryChecker: { method: 'google_directory', check: vi.fn() },
-}));
+vi.mock('./checkers/googleDirectory', () => ({ googleDirectoryChecker: { method: 'google_directory', check: vi.fn() } }));
 
 import { isVerificationCurrent, toCustomerDomainView, type CustomerDomainRow } from './service';
-import { googleConnectionBinding } from './checkers/googleDirectory';
+import { googleConnectionBinding } from './checkers/googleBinding';
 
 /**
  * Unit coverage for the pure parts of the service (portal registration W5,
@@ -132,7 +129,7 @@ describe('inv. 2: claims are never evidence', () => {
     const sources = readdirSync(dir)
       .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
       .map((f) => [f, readFileSync(join(dir, f), 'utf8')] as const);
-    expect(sources.map(([f]) => f).sort()).toEqual(['dnsTxt.ts', 'entraTenant.ts', 'googleDirectory.ts']);
+    expect(sources.map(([f]) => f).sort()).toEqual(['dnsTxt.ts', 'entraTenant.ts', 'googleBinding.ts', 'googleDirectory.ts']);
     for (const [file, text] of sources) {
       // Strip comments: the files explain WHY they do not read these.
       const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');

@@ -5,9 +5,9 @@
  * domain-alias list counts; the connection's `customer_domain` is never read
  * (it is operator-typed, not proof). Never throws; never logs key or token.
  */
-import { createHash } from 'node:crypto';
 import { hasDbAccessContext, withSystemDbAccessContext } from '../../../db';
 import { getDirectoryDomainsClient } from '../../googleClient';
+import { googleConnectionBinding } from './googleBinding';
 import { decryptConnectionKey, loadGoogleConnection } from '../../googleHelpers';
 import type {
   DomainCheckResult,
@@ -18,17 +18,6 @@ import type {
 
 const GOOGLE_REQUEST_TIMEOUT_MS = 10_000;
 
-/**
- * Binds google_directory evidence to the Workspace the connection reaches, not
- * only its row id: the connection upsert (routes/google.ts) replaces the admin
- * and service account in place, keeping the id. A hash, so evidence carries no
- * address. Evidence-at-use (D6) and the worker compare it with the live row.
- */
-export function googleConnectionBinding(conn: { adminEmail: string; serviceAccountEmail: string }): string {
-  return createHash('sha256')
-    .update(`${conn.adminEmail.trim().toLowerCase()}\n${conn.serviceAccountEmail.trim().toLowerCase()}`)
-    .digest('hex');
-}
 
 interface ErrorShape {
   code?: number | string;

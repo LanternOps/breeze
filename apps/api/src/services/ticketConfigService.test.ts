@@ -189,7 +189,7 @@ vi.mock('./ticketService', async () => {
 // select and that every returned row passes through the view builder.
 const { viewSpy } = vi.hoisted(() => ({ viewSpy: vi.fn() }));
 vi.mock('./portalDomainVerification', () => ({
-  customerDomainRowColumns: { id: 'id', domain: 'domain', orgId: 'orgId' },
+  customerDomainRowColumns: () => ({ id: 'id', domain: 'domain', orgId: 'orgId' }),
   buildCustomerDomainViews: async (rows: Array<Record<string, unknown>>) => {
     viewSpy(rows);
     return rows.map((r) => ({ ...r, viewed: true }));

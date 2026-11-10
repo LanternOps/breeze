@@ -42,7 +42,7 @@ import {
   googleWorkspaceConnections,
 } from '../../db/schema';
 import { withSystemDbAccessContext } from '../../db';
-import { googleConnectionBinding } from '../../services/portalDomainVerification/checkers/googleDirectory';
+import { googleConnectionBinding } from '../../services/portalDomainVerification/checkers/googleBinding';
 import {
   DomainVerificationError,
   findOrgByVerifiedDomain,

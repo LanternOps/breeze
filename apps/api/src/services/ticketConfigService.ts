@@ -933,7 +933,7 @@ export async function listCustomerEmailDomains(
     ? and(eq(customerEmailDomains.partnerId, partnerId), eq(customerEmailDomains.orgId, opts.orgId))
     : eq(customerEmailDomains.partnerId, partnerId);
   const rows = await db
-    .select({ ...customerDomainRowColumns, orgName: organizations.name })
+    .select({ ...customerDomainRowColumns(), orgName: organizations.name })
     .from(customerEmailDomains)
     .leftJoin(organizations, eq(customerEmailDomains.orgId, organizations.id))
     .where(where)
@@ -972,7 +972,7 @@ export async function createCustomerEmailDomain(
       createdBy: actor.userId,
     })
     .onConflictDoNothing()
-    .returning(customerDomainRowColumns);
+    .returning(customerDomainRowColumns());
   const row = rows[0];
   if (!row) {
     throw new TicketConfigServiceError('That domain is already mapped', 409, 'DOMAIN_ALREADY_MAPPED');
@@ -1007,7 +1007,7 @@ export async function updateCustomerEmailDomain(
       updatedAt: new Date(),
     })
     .where(and(eq(customerEmailDomains.id, id), eq(customerEmailDomains.partnerId, partnerId)))
-    .returning(customerDomainRowColumns);
+    .returning(customerDomainRowColumns());
   if (!updated) throw new TicketConfigServiceError('Domain mapping not found', 404, 'DOMAIN_MAPPING_NOT_FOUND');
   const [view] = await buildCustomerDomainViews([updated as CustomerDomainRow]);
   return view!;
