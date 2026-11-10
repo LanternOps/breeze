@@ -145,53 +145,72 @@ func shouldRebuildGDIHandles(inited bool, haveWidth, haveHeight, wantWidth, want
 	return false
 }
 
-// errGDIHandlesUnusable marks a frame failure that left the cached GDI handle
-// set in an indeterminate state. The caller MUST release and recreate the
-// handles before the next frame rather than retrying with them.
+// dibSectionLayout returns the row stride and total byte size of the 32bpp
+// top-down DIB section the GDI capturer blits into.
 //
-// The case that matters is a failed RESELECT after the readback (below). The
-// capture bitmap is then no longer selected into the memory DC, so the next
-// frame's BitBlt would draw into the 1x1 monochrome bitmap every memory DC
-// starts life with — succeeding, and streaming a black frame forever. Failing
-// the frame loudly and rebuilding is the only safe response.
-var errGDIHandlesUnusable = errors.New("GDI handles are no longer usable")
+// At 32bpp every row is already a whole number of DWORDs, so the stride is
+// exactly width*4 with no padding; that is what lets the section's memory be
+// handed to bgraToRGBA as one contiguous BGRA buffer. The size is refused when
+// it does not fit an int32: BITMAPINFOHEADER.biSizeImage is a DWORD and GDI
+// caps a DIB well below that, and the Go slice laid over the section's memory
+// is built from this number, so a wrapped value would mean reading past the
+// end of the mapping rather than an error.
+func dibSectionLayout(width, height int) (stride, size int, err error) {
+	if width <= 0 || height <= 0 {
+		return 0, 0, fmt.Errorf("invalid capture dimensions %dx%d", width, height)
+	}
+	const maxDIBBytes = 1<<31 - 1
+	stride = width * 4
+	if height > maxDIBBytes/stride {
+		return 0, 0, fmt.Errorf("capture dimensions %dx%d exceed the largest DIB section GDI supports", width, height)
+	}
+	return stride, stride * height, nil
+}
 
 // gdiFrameOps is the set of Win32 calls one GDI frame makes. The Windows build
 // supplies a syscall-backed implementation (capture_windows_nocgo.go); tests
 // supply a fake.
-//
-// The indirection exists to make the GetDIBits selection contract assertable on
-// a Linux CI runner. It costs one interface dispatch per call against a
-// full-screen BitBlt and a 1920x1080x4 readback.
 type gdiFrameOps interface {
-	// SelectObject returns the previously selected object, or 0 on failure.
-	SelectObject(hdc, hgdiobj uintptr) (prev uintptr, errno error)
 	// BitBlt reports whether the blit succeeded.
 	BitBlt(dstDC uintptr, width, height int, srcDC uintptr, rop uint32) (ok bool, errno error)
-	// GetDIBits returns the number of scan lines copied, 0 on failure.
-	GetDIBits(hdc, hbm uintptr, lines int, bits *byte, bi *bitmapInfo) (copied int, errno error)
+	// GdiFlush flushes the calling thread's GDI batch and reports whether
+	// every batched call succeeded.
+	GdiFlush() (ok bool, errno error)
 }
 
-// gdiFrameHandles is the handle set one frame operates on.
+// gdiFrameHandles is the handle set one frame operates on. memDC has the
+// capture DIB section selected into it for the handle set's whole lifetime.
 type gdiFrameHandles struct {
-	screenDC  uintptr
-	memDC     uintptr
-	hBitmap   uintptr
-	oldBitmap uintptr
-	width     int
-	height    int
+	screenDC uintptr
+	memDC    uintptr
+	width    int
+	height   int
 }
 
-// captureGDIFrame performs exactly one GDI screen grab into dst (BGRA).
-func captureGDIFrame(ops gdiFrameOps, h gdiFrameHandles, bi *bitmapInfo, dst []byte) error {
-	// Bounds-check before handing the buffer to a syscall. GetDIBits writes
-	// width*height*4 bytes at &dst[0] with no idea how long the Go slice is, so
-	// a short buffer is heap corruption rather than an error — and an empty one
-	// panics on &dst[0]. The capturer keeps pixBuf and the BITMAPINFO in step,
-	// but this is the boundary where a mismatch would stop being recoverable.
-	if need := h.width * h.height * 4; h.width <= 0 || h.height <= 0 || len(dst) < need {
-		return fmt.Errorf("capture buffer is %d bytes, need %d for %dx%d",
-			len(dst), need, h.width, h.height)
+// captureGDIFrame performs one GDI screen grab: it blits the display into the
+// DIB section selected into h.memDC, flushes, and converts the section's
+// memory (BGRA) into dst (RGBA).
+//
+// Why a DIB section and no GetDIBits (#8434): the capturer used to blit into a
+// device-dependent bitmap from CreateCompatibleBitmap and read it back with
+// GetDIBits. On the Winlogon desktop of a logged-out console BitBlt succeeded
+// and GetDIBits then copied zero scan lines while recording no Win32 error,
+// every frame, on Windows 10, 11 and Server 2022 alike. A DIB section's pixels
+// live in memory this process maps and reads directly, so once the blit has
+// landed there is no second GDI call, and no device-format conversion, left
+// to fail.
+//
+// GdiFlush is required, not belt-and-braces: GDI batches drawing calls per
+// thread, and the documented rule for DIB sections is to flush before the
+// application touches the bits, or it may read the previous frame.
+func captureGDIFrame(ops gdiFrameOps, h gdiFrameHandles, section, dst []byte) error {
+	// Bounds-check before any Win32 call: section is a slice laid over GDI's
+	// memory and dst comes from the image pool, and bgraToRGBA indexes both
+	// by width*height*4 with no idea how long either really is.
+	need := h.width * h.height * 4
+	if h.width <= 0 || h.height <= 0 || len(section) < need || len(dst) < need {
+		return fmt.Errorf("capture buffers are %d (section) and %d (frame) bytes, need %d for %dx%d",
+			len(section), len(dst), need, h.width, h.height)
 	}
 
 	// The errno of the CAPTUREBLT attempt is deliberately dropped: a driver
@@ -199,8 +218,6 @@ func captureGDIFrame(ops gdiFrameOps, h gdiFrameHandles, bi *bitmapInfo, dst []b
 	// errno that matters is the one from the plain-SRCCOPY retry below.
 	ok, _ := ops.BitBlt(h.memDC, h.width, h.height, h.screenDC, srcCopy|captureBlt)
 	if !ok {
-		// Some secure-desktop transitions reject CAPTUREBLT. Retry with plain
-		// SRCCOPY before giving up.
 		var errno error
 		ok, errno = ops.BitBlt(h.memDC, h.width, h.height, h.screenDC, srcCopy)
 		if !ok {
@@ -208,40 +225,11 @@ func captureGDIFrame(ops gdiFrameOps, h gdiFrameHandles, bi *bitmapInfo, dst []b
 		}
 	}
 
-	// GetDIBits requires that the bitmap NOT be selected into a device context
-	// (MSDN, GetDIBits Remarks). The shipped code selected the capture bitmap
-	// into memDC once in ensureHandles and left it there for the capturer's
-	// whole lifetime, then handed BOTH that DC and that bitmap to GetDIBits —
-	// which is what failed every frame on the reporter's Winlogon console
-	// (#5284). The rule is categorical, so passing screenDC instead of memDC
-	// would not have been enough on its own: the bitmap has to come out of the
-	// memory DC first, and go back in before the next frame's BitBlt.
-	if prev, errno := ops.SelectObject(h.memDC, h.oldBitmap); prev == 0 {
-		return fmt.Errorf("%w: %w", errGDIHandlesUnusable,
-			gdiCallError("SelectObject (deselecting capture bitmap)", errno))
+	if ok, errno := ops.GdiFlush(); !ok {
+		return gdiCallError("GdiFlush", errno)
 	}
 
-	// screenDC, not memDC: the readback DC only supplies colour context here
-	// (with DIB_RGB_COLORS it resolves no palette at all), and the originating
-	// display DC is the documented choice.
-	copied, dibErrno := ops.GetDIBits(h.screenDC, h.hBitmap, h.height, &dst[0], bi)
-
-	// Reselect BEFORE acting on the readback result, so the handle set is left
-	// usable on the failure path too. dibErrno was captured above because this
-	// call overwrites the thread's last-error value.
-	if prev, errno := ops.SelectObject(h.memDC, h.hBitmap); prev == 0 {
-		return fmt.Errorf("%w: %w", errGDIHandlesUnusable,
-			gdiCallError("SelectObject (restoring capture bitmap)", errno))
-	}
-
-	if copied == 0 {
-		return gdiCallError("GetDIBits", dibErrno)
-	}
-	// GetDIBits returns the number of scan lines it copied. Anything short of
-	// the full height is a torn frame, not a frame.
-	if copied != h.height {
-		return fmt.Errorf("GetDIBits copied %d of %d scan lines", copied, h.height)
-	}
+	bgraToRGBA(section, dst, h.width*h.height)
 	return nil
 }
 

@@ -617,7 +617,11 @@
     "thinking": "Thinking"
   },
   "aiThinking": {
-    "label": "Thinking… {{seconds}}s"
+    "label": "Thinking… {{seconds}}s",
+    "waitingApproval": "Waiting for your approval",
+    "waitingApprovalPhone": "Waiting for your approval (sent to your phone)",
+    "waitingOthers": "Waiting for another approver",
+    "openApprovals": "Open approvals"
   },
   "aiTurnModel": {
     "answeredBy": "Answered by {{model}}",
@@ -694,6 +698,7 @@
     "settings": {
       "title": "Budget and check-in",
       "budget": "Daily budget",
+      "budgetHelp": "Includes chat. When it is spent, background checks pause until 00:00 UTC and chat keeps working with a warning. The org AI budget still applies to chat.",
       "tick": "Check-in every (minutes)",
       "save": "Save",
       "unattendedReads": {
@@ -760,6 +765,7 @@
     },
     "spend": {
       "meter": "{{spent}} of {{budget}} today",
+      "breakdown": "Background {{background}} · Chat {{chat}} · {{spent}} of {{budget}} today",
       "resets": "resets in {{hours}} h",
       "raise": "Raise today's budget",
       "atCeiling": "Today's budget is at your plan's limit.",
@@ -772,8 +778,8 @@
       "byYou": "You paused Wisp. It won't check in or nudge you until you resume.",
       "partnerDisabled": "Wisp is turned off for your partner. An administrator can turn it back on.",
       "system": {
-        "budgetExhausted": "Paused by Breeze: today's budget is used up. The budget resets in {{hours}} h.",
-        "budgetExhaustedNoTime": "Paused by Breeze: today's budget is used up.",
+        "budgetExhausted": "Over today's Wisp budget: background checks are paused until {{time}} UTC. Chat keeps working.",
+        "budgetExhaustedNoTime": "Over today's Wisp budget: background checks are paused until 00:00 UTC. Chat keeps working.",
         "grantorAccessLost": "Paused by Breeze: your access no longer covers this grant. Wisp resumes on its own when your access is back.",
         "grantorSuspended": "Paused by Breeze: your account is suspended. Wisp resumes on its own when the suspension is lifted.",
         "factorExpired": "Paused by Breeze: your sign-in check for this grant expired.",
@@ -896,6 +902,7 @@
     "post": {
       "brief": "Morning brief",
       "nudge": "Nudge",
+      "nudgeResolved": "Resolved",
       "digest": "Digest",
       "checkIn": "Check-in",
       "summary": "Summary",
@@ -975,6 +982,27 @@
       "newDescription": "Breeze AI with every tool you have access to. Not Wisp.",
       "wispDescription": "Wisp, under your grant",
       "label": "Breeze AI · not Wisp"
+    },
+    "instruction": {
+      "remembered": "Remembered: {{text}}",
+      "conflictBanner": "Conflicts with a remembered instruction: “{{text}}”",
+      "enforcedForm": "Wisp will not propose: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "no end date",
+      "keep": "Keep",
+      "keepForOrg": "Keep for everyone at {{org}}",
+      "forget": "Forget",
+      "unmatched": "Saved as a note: I couldn't match every device name.",
+      "kept": "Kept",
+      "keptForOrg": "Kept for everyone at {{org}}",
+      "crossOrg": "These devices are in more than one organization, so this can only be kept for you.",
+      "actionFailed": "That didn't work. Try again.",
+      "verb": {
+        "reboot": "reboot",
+        "shutdown": "shut down",
+        "run_script": "run a script",
+        "patch_install": "install patches",
+        "any_change": "make any change"
+      }
     }
   },
   "wispConcerns": {

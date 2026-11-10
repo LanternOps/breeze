@@ -208,6 +208,16 @@ describe('ci-success gating contract', () => {
       "(?: && (?:needs\\.changes\\.outputs\\.(?:api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|" +
       "\\(needs\\.changes\\.outputs\\.api == 'true' \\|\\| needs\\.changes\\.outputs\\.web == 'true' \\|\\| needs\\.changes\\.outputs\\.portal == 'true'\\)))?";
     const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // W05 (#10749): a job ci-success has a thin `case` arm for may end its `if:` with the
+    // clause naming its own id (queue-selection.test.mjs requires it there); no other job may.
+    const thinArms = new Set(
+      [...ciSuccess.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gm)].flatMap(
+        ([, job]) => (job ? [job] : []),
+      ),
+    );
+    const thinClause = (job: string) =>
+      thinArms.has(job) ? `(?:${escape(` && !contains(needs.changes.outputs.thin_skip, ',${job},')`)})?` : '';
+    expect(thinArms.size, 'the W05 normalization block lists the 27 thinnable jobs').toBe(27);
     const ungated = workflowJobs.filter((job) => {
       if (exempt.has(job)) return false;
       const body = jobBodies.get(job) ?? '';
@@ -217,7 +227,7 @@ describe('ci-success gating contract', () => {
         : job === 'check-migrations'
           ? escape("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.api == 'true'")
           : escape("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'") + areaClause;
-      return !new RegExp(`^    ${expectedIf}$`, 'm').test(body);
+      return !new RegExp(`^    ${expectedIf}${thinClause(job)}$`, 'm').test(body);
     });
     expect(
       ungated,

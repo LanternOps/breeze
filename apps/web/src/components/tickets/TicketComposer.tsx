@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { TICKET_ATTACHMENT_LIMITS, type TicketTemplateVars } from '@breeze/shared';
@@ -45,7 +45,19 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
   const [chips, setChips] = useState<AttachmentChip[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modeRefs = useRef<Record<'reply' | 'internal', HTMLButtonElement | null>>({ reply: null, internal: null });
   const isPublic = mode === 'reply';
+
+  // Radio-group keys: every arrow moves to the other mode and checks it
+  // (two options, so it always wraps). The queue's window-level ArrowUp/Down
+  // stands aside inside a radiogroup (useQueueKeyboard ARROW_OWNERS).
+  const onModeKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+    e.preventDefault();
+    const next = mode === 'reply' ? 'internal' : 'reply';
+    setMode(next);
+    modeRefs.current[next]?.focus();
+  };
   const uploading = chips.some((c) => c.status === 'uploading');
   const readyIds = chips.filter((c) => c.status === 'done' && c.id).map((c) => c.id!);
 
@@ -149,35 +161,47 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
     <div
       className={cn(
         'border-t',
-        !isPublic && 'bg-warning/10 dark:bg-warning/15' // unmistakable internal wash
+        // Unmistakable internal wash. On it, grey --muted-foreground drops to
+        // 4.2–4.4:1, so the wash re-points muted ink at the foreground (the
+        // idle mode, Attach, Canned responses, upload chips).
+        !isPublic && 'bg-warning/10 dark:bg-warning/15 [--muted-foreground:var(--foreground)_/_0.7]'
       )}
       data-testid="ticket-composer"
     >
       <div className="flex items-center gap-1 px-3 pt-2">
-        <div role="tablist" aria-label={t('ticketComposer.reply')} className="flex items-center gap-1">
+        {/* The two modes set the visibility of the one message being written —
+            a radio group, not tabs (there is no second panel). Attach stays
+            outside: it is an action, not a mode. */}
+        <div role="radiogroup" aria-label={t('ticketComposer.modeLabel')} className="flex items-center gap-1">
           <button
+            ref={(el) => { modeRefs.current.reply = el; }}
             type="button"
-            role="tab"
-            aria-selected={isPublic}
+            role="radio"
+            aria-checked={isPublic}
+            tabIndex={isPublic ? 0 : -1}
             onClick={() => setMode('reply')}
+            onKeyDown={onModeKeyDown}
             data-testid="ticket-composer-tab-reply"
             className={cn('rounded-md px-2.5 py-1 text-xs font-medium', isPublic ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground')}
           >
             {t('ticketComposer.reply')}
           </button>
           <button
+            ref={(el) => { modeRefs.current.internal = el; }}
             type="button"
-            role="tab"
-            aria-selected={!isPublic}
+            role="radio"
+            aria-checked={!isPublic}
+            tabIndex={isPublic ? -1 : 0}
             onClick={() => setMode('internal')}
+            onKeyDown={onModeKeyDown}
             data-testid="ticket-composer-tab-internal"
-            className={cn('rounded-md px-2.5 py-1 text-xs font-medium', !isPublic ? 'bg-warning/20 text-warning' : 'text-muted-foreground hover:text-foreground')}
+            className={cn('rounded-md px-2.5 py-1 text-xs font-medium', !isPublic ? 'bg-warning/20 text-warning-ink' : 'text-muted-foreground hover:text-foreground')}
           >
             {t('ticketComposer.internalNote')}
           </button>
         </div>
         {!isPublic && (
-          <span className="ml-2 text-xs font-medium text-warning" data-testid="ticket-composer-internal-banner">
+          <span className="ml-2 text-xs font-medium text-warning-ink" data-testid="ticket-composer-internal-banner">
             {t('ticketComposer.internalBanner')}
           </span>
         )}

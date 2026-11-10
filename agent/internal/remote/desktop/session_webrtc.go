@@ -456,7 +456,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		if cbErr != nil {
 			slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", cbErr.Error())
 		} else if clipboardDC != nil {
-			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard(), clipboard.Policy{
+			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, m.clipboardProviderFor(sessionID), clipboard.Policy{
 				HostToViewer: policy.ClipboardHostToViewer,
 				ViewerToHost: policy.ClipboardViewerToHost,
 			})

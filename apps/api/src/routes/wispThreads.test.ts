@@ -220,7 +220,7 @@ beforeEach(() => {
   h.hasEntitlement.mockResolvedValue(true);
   h.wideningAvailable.mockResolvedValue(false);
   h.resolveGrantCeiling.mockResolvedValue(ceiling);
-  h.spendSummary.mockResolvedValue({ spentTodayCents: 42, budgetCentsPerDay: 200, budgetResetsAt: new Date('2026-10-25T00:00:00Z') });
+  h.spendSummary.mockResolvedValue({ spentTodayCents: 42, backgroundCents: 30, chatCents: 12, budgetCentsPerDay: 200, budgetResetsAt: new Date('2026-10-25T00:00:00Z') });
 });
 
 describe('GET /wisp/thread', () => {
@@ -268,6 +268,8 @@ describe('GET /wisp/thread', () => {
     expect(h.wideningAvailable).toHaveBeenCalledWith(GRANT_ID);
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT_ID);
     const body = await res.json() as { data: Record<string, unknown> };
+    const meter = body.data.grant as { spentTodayCents: number; backgroundCents: number; chatCents: number };
+    expect(meter.spentTodayCents).toBe(meter.backgroundCents + meter.chatCents);
     expect(body.data).toEqual({
       thread: {
         id: THREAD_ID, grantId: GRANT_ID, summary: 'did things', summaryUpdatedAt: null, lastSessionId: null,
@@ -278,7 +280,7 @@ describe('GET /wisp/thread', () => {
         id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z',
         currentRevisionId: REV, budgetCentsPerDay: 200, floorTickMinutes: 30,
         // w00 A32 spend meter — field names are the cross-wave contract.
-        spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false,
+        spentTodayCents: 42, backgroundCents: 30, chatCents: 12, budgetResetsAt: '2026-10-25T00:00:00.000Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false,
       },
       wideningAvailable: widening,
       firstLookState: 'looking',
@@ -677,7 +679,7 @@ describe('GET /wisp/thread/:id (W06 Task 6)', () => {
         focusOrgName: 'Acme',
         grant: {
           id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z', currentRevisionId: REV,
-          budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z',
+          budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 42, backgroundCents: 30, chatCents: 12, budgetResetsAt: '2026-10-25T00:00:00.000Z',
           pausedReason: null,
           unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false,
         },

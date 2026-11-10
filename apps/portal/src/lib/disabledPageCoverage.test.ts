@@ -185,6 +185,8 @@ const UNAUTHENTICATED_PAGES = new Set([
   'forgot-password.astro',
   'reset-password.astro',
   'accept-invite.astro',
+  // Tenant-setup result page: the server callback lands a signed-out IT admin here.
+  'entra-setup.astro',
   'account-disabled.astro',
   'quote/[token].astro',
   'agreement/[token].astro',

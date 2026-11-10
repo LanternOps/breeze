@@ -4,6 +4,7 @@ import {
   OEM_MAX_ATTEMPTS_PER_OCCURRENCE,
   computeOccurrence,
   consumesAttempt,
+  occurrenceBoundaries,
   nightlyWindow,
   notAfterFor,
   stableOffsetMinutes,
@@ -362,5 +363,75 @@ describe('attempts', () => {
   it('retry_later from a tool that ran consumes one', () => {
     expect(consumesAttempt('retry_later', null)).toBe(true);
     expect(consumesAttempt('retry_later', 'wu_search_failed')).toBe(true);
+  });
+});
+
+describe('occurrenceBoundaries: what the policy side stores (#11242)', () => {
+  /** Every `stepMinutes` from `from` up to (not including) `until`. */
+  function* instants(from: Date, until: Date, stepMinutes: number): Generator<Date> {
+    for (let t = from.getTime(); t < until.getTime(); t += stepMinutes * MINUTE) yield new Date(t);
+  }
+
+  /** The stored boundaries answer exactly as the live rule does, at every sampled instant until the rollover. */
+  function agreesUntilRollover(sched: OemOccurrenceSchedule, zone: string, computedAt: Date, stepMinutes: number) {
+    const bounds = occurrenceBoundaries(sched, zone, computedAt);
+    expect(bounds.occurrenceKey).toBe(computeOccurrence(sched, zone, computedAt).occurrenceKey);
+    // Each stored instant, and a millisecond either side of it.
+    const probes = [bounds.lastNightStart, bounds.pastLastNightAt]
+      .flatMap((edge) => [-1, 0, 1].map((ms) => new Date(edge.getTime() + ms)))
+      .filter((t) => t >= computedAt && t < bounds.refreshAfter);
+    for (const t of [...probes, ...instants(computedAt, bounds.refreshAfter, stepMinutes)]) {
+      const live = computeOccurrence(sched, zone, t);
+      expect(live.occurrenceKey, t.toISOString()).toBe(bounds.occurrenceKey);
+      expect(live.isPastLastNight, t.toISOString()).toBe(t.getTime() >= bounds.pastLastNightAt.getTime());
+      if (live.isPastLastNight) expect(live.windowStart.getTime(), t.toISOString()).toBe(bounds.lastNightStart.getTime());
+    }
+    return bounds;
+  }
+
+  it('occurrenceBoundaries agrees with computeOccurrence every 5 minutes of a sampled month, America/New_York across DST end', () => {
+    // November 2026's first Sunday is the DST end itself (2026-11-01), with catch-up
+    // nights after it, so windows on both sides of the change are in range. Every window
+    // edge here falls on a whole 5 minutes, and the probes cover each stored instant ±1 ms.
+    const sched = schedule({ weekOfMonth: 'first', dayOfWeek: 'sun', windowStart: '01:30', windowHours: 2, catchUpNights: 3 });
+    const bounds = agreesUntilRollover(sched, NY, new Date('2026-10-31T00:00:00.000Z'), 5);
+    expect(bounds.occurrenceKey).toBe('2026-10');
+    // November's anchor window opens at 01:30 EDT, before the clocks go back.
+    expect(bounds.refreshAfter.toISOString()).toBe('2026-11-01T05:30:00.000Z');
+    const next = agreesUntilRollover(sched, NY, bounds.refreshAfter, 5);
+    expect(next.occurrenceKey).toBe('2026-11');
+    // Night 3 is 2026-11-04 01:30 EST, for 2 hours.
+    expect(next.lastNightStart.toISOString()).toBe('2026-11-04T06:30:00.000Z');
+    expect(next.pastLastNightAt.toISOString()).toBe('2026-11-04T08:30:00.000Z');
+  });
+
+  it('refreshAfter is the instant the occurrence key changes', () => {
+    const cases: Array<[string, OemOccurrenceSchedule, string]> = [
+      ['UTC', schedule(), '2027-01-01T00:00:00.000Z'],
+      [NY, schedule({ weekOfMonth: 'second', dayOfWeek: 'sun', windowStart: '02:30', windowHours: 3, catchUpNights: 2 }), '2027-03-01T00:00:00.000Z'],
+      ['Australia/Sydney', schedule({ weekOfMonth: 'last', dayOfWeek: 'fri', windowStart: '23:00', windowHours: 4, catchUpNights: 7 }), '2027-03-20T00:00:00.000Z'],
+    ];
+    for (const [zone, sched, from] of cases) {
+      let at = new Date(from);
+      for (let month = 0; month < 14; month += 1) {
+        const bounds = occurrenceBoundaries(sched, zone, at);
+        const justBefore = new Date(bounds.refreshAfter.getTime() - 1);
+        expect(computeOccurrence(sched, zone, justBefore).occurrenceKey, `${zone} ${justBefore.toISOString()}`).toBe(bounds.occurrenceKey);
+        const after = computeOccurrence(sched, zone, bounds.refreshAfter);
+        expect(after.occurrenceKey, `${zone} ${bounds.refreshAfter.toISOString()}`).not.toBe(bounds.occurrenceKey);
+        // The next occurrence starts on its anchor night, inside its first window.
+        expect(after.nightIndex).toBe(0);
+        expect(bounds.pastLastNightAt.getTime()).toBeLessThan(bounds.refreshAfter.getTime());
+        at = bounds.refreshAfter;
+      }
+    }
+  });
+
+  it('agrees hour by hour over a year in a zone with a half-hour DST shift', () => {
+    const sched = schedule({ weekOfMonth: 'first', dayOfWeek: 'sun', windowStart: '02:00', windowHours: 1, catchUpNights: 1 });
+    let at = new Date('2026-12-15T00:00:00.000Z');
+    for (let month = 0; month < 13; month += 1) {
+      at = agreesUntilRollover(sched, 'Australia/Lord_Howe', at, 60).refreshAfter;
+    }
   });
 });

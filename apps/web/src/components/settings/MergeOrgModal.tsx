@@ -36,7 +36,7 @@ export interface OrgMergePreview {
 }
 
 /** Blocker codes the UI has localized copy for. */
-const KNOWN_BLOCKER_CODES = ['pam_open_actuation', 'pam_evidence', 'payment_in_flight', 'lineage_depth'] as const;
+const KNOWN_BLOCKER_CODES = ['pam_open_actuation', 'pam_evidence', 'payment_in_flight', 'lineage_depth', 'entra_tenant_conflict'] as const;
 type KnownBlockerCode = (typeof KNOWN_BLOCKER_CODES)[number];
 
 function knownBlockerCodes(codes: unknown): KnownBlockerCode[] {

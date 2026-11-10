@@ -1286,7 +1286,7 @@
         "binaryMissing": "{{vendors}} não pode ser ativado até que o pacote integrado tenha um instalador implantável: um MSI do Windows como versão mais recente, com argumentos de instalação que incluam SITE_TOKEN={s1_site_token}. Corrija isso na aba Versões do pacote e salve novamente.",
         "binaryMissingLink": "Abrir a aba Versões",
         "platformMacosUnsupported": "macOS: não suportado.",
-        "sentinelOneMsiNote": "Adicione primeiro o MSI do SentinelOne na aba Versões do pacote integrado do SentinelOne, com argumentos de instalação que incluam SITE_TOKEN={s1_site_token}. O Breeze não fornece o instalador, e o SentinelOne não pode ser ativado até que ele esteja lá.",
+        "sentinelOneMsiNote": "Primeiro envie o MSI do SentinelOne na guia Versões do pacote SentinelOne integrado. Deixe os argumentos de instalação em branco para usar SITE_TOKEN={s1_site_token} /q /NORESTART. O Breeze não fornece o instalador, e o SentinelOne não pode ser ativado até que ele exista.",
         "catalogMissingBuiltin": "{{vendors}} ainda não está no catálogo de software deste parceiro. Adicione-o em Software → Catálogo → Pacotes integrados e salve novamente.",
         "catalogMissingBuiltinLink": "Abrir Pacotes integrados",
         "dnsBuiltinNote": "Primeiro adicione {{vendor}} ao catálogo de software deste parceiro em Software → Catálogo → Pacotes integrados; ele não pode ser ativado antes disso.",
@@ -1448,8 +1448,6 @@
       "allOrganizations": "Todas as organizações",
       "sharedAcrossAllYourOrganizations": "— compartilhado entre todas as suas organizações",
       "thisOrganizationOnly": "Apenas esta organização",
-      "partnerWideUrlOnly": "Pacotes de nível de parceiro usam uma URL de download — o upload de arquivos ainda não está disponível para eles.",
-      "selectedFileRemoved": "O arquivo selecionado foi removido — pacotes de nível de parceiro usam uma URL de download.",
       "scopeLockedAfterCreate": "O pacote já foi criado com este escopo — a propriedade não pode mudar após a criação.",
       "installScripts": "Scripts de instalação",
       "installScriptsHelp": "Obrigatórios para pacotes zip, opcionais nos demais casos. Os scripts são executados como SYSTEM no Windows ou root no macOS e no Linux, expiram após 10 minutos, exigem a permissão devices.execute e exatamente um sistema operacional de destino.",
@@ -2048,7 +2046,9 @@
       "replaceFileAddNewVersion": "Para substituir o arquivo do instalador, adicione uma nova versão.",
       "inactiveStoredScripts": "Os scripts de instalação armazenados não estão ativos; recrie a versão para ativá-los.",
       "builtinVersionsReadOnly": "Gerenciado pelo Breeze. As versões dos pacotes integrados não podem ser adicionadas nem alteradas aqui.",
-      "installScriptsReadOnlyOnEdit": "Os scripts de instalação de uma versão existente não podem ser alterados e fixam o sistema operacional de destino. Para alterá-los, adicione uma nova versão: ela começa com esses scripts."
+      "installScriptsReadOnlyOnEdit": "Os scripts de instalação de uma versão existente não podem ser alterados e fixam o sistema operacional de destino. Para alterá-los, adicione uma nova versão: ela começa com esses scripts.",
+      "partnerWideRequiresFullAccess": "Pacotes de todo o parceiro só podem ser alterados por um administrador de parceiro com acesso total.",
+      "builtinArgsDefault": "Deixe em branco para usar os argumentos padrão do pacote, incluindo a chave por organização."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Inserir uma variável de tempo de implantação",

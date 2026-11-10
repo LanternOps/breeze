@@ -139,7 +139,8 @@
       "tooLarge": "{{name}} supera i 10 MB.",
       "sentWithoutAttachment_one": "Nota pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
       "sentWithoutAttachment_other": "Nota pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili."
-    }
+    },
+    "modeLabel": "Visibilità del commento"
   },
   "ticketFeed": {
     "empty": "Ancora nessuna attività.",
@@ -416,7 +417,18 @@
     },
     "filterByType": "Filtra per tipo",
     "allTypes": "Tutti i tipi",
-    "showMerged": "Mostra uniti"
+    "showMerged": "Mostra uniti",
+    "shortcutsButton": "Scorciatoie",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, priorità {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, priorità {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA: {{relative}} rimanenti",
+        "atRisk": "SLA a rischio, {{relative}} rimanenti",
+        "paused": "SLA in pausa, {{relative}} rimanenti",
+        "breached": "SLA violato"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "Ticket non trovato. Potrebbe essere stato eliminato oppure potresti non avere accesso.",

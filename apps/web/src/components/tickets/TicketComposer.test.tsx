@@ -10,18 +10,45 @@ describe('TicketComposer', () => {
   const onSend = vi.fn().mockResolvedValue(undefined);
   beforeEach(() => onSend.mockClear());
 
-  // axe (aria-allowed-attr): aria-selected is only valid on an element with
-  // role="tab" (or an element whose role implies it); these buttons carried
-  // aria-selected with no role at all.
-  it('gives the mode buttons role="tab" inside a role="tablist" wrapper', () => {
+  // Reply / Internal note pick the visibility of the one message being
+  // written; there is no second panel, so they are a radio group, not tabs
+  // (tabs with no tabpanel announced a widget that was not there).
+  it('exposes Reply / Internal note as a labelled radio group with one tab stop', () => {
+    render(<TicketComposer requesterName="Pat" onSend={onSend} />);
+    const group = screen.getByRole('radiogroup', { name: 'Comment visibility' });
+    const reply = screen.getByTestId('ticket-composer-tab-reply');
+    const internal = screen.getByTestId('ticket-composer-tab-internal');
+    expect(reply).toHaveAttribute('role', 'radio');
+    expect(internal).toHaveAttribute('role', 'radio');
+    expect(group).toContainElement(reply);
+    expect(group).toContainElement(internal);
+    expect(reply).toHaveAttribute('aria-checked', 'true');
+    expect(internal).toHaveAttribute('aria-checked', 'false');
+    expect(reply).toHaveAttribute('tabindex', '0');
+    expect(internal).toHaveAttribute('tabindex', '-1');
+    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
+    // Attach is an action, not a third mode.
+    expect(group).not.toContainElement(screen.queryByTestId('ticket-composer-attach'));
+  });
+
+  it('arrow keys move focus and the checked mode, wrapping at both ends', () => {
     render(<TicketComposer requesterName="Pat" onSend={onSend} />);
     const reply = screen.getByTestId('ticket-composer-tab-reply');
     const internal = screen.getByTestId('ticket-composer-tab-internal');
-    expect(reply.getAttribute('role')).toBe('tab');
-    expect(internal.getAttribute('role')).toBe('tab');
-    const tablist = reply.closest('[role="tablist"]');
-    expect(tablist).not.toBeNull();
-    expect(internal.closest('[role="tablist"]')).toBe(tablist);
+    reply.focus();
+    fireEvent.keyDown(reply, { key: 'ArrowRight' });
+    expect(internal).toHaveAttribute('aria-checked', 'true');
+    expect(internal).toHaveFocus();
+    expect(screen.getByTestId('ticket-composer-internal-banner')).toBeInTheDocument();
+    fireEvent.keyDown(internal, { key: 'ArrowDown' });
+    expect(reply).toHaveAttribute('aria-checked', 'true');
+    expect(reply).toHaveFocus();
+    fireEvent.keyDown(reply, { key: 'ArrowLeft' });
+    expect(internal).toHaveFocus();
+    fireEvent.keyDown(internal, { key: 'ArrowUp' });
+    expect(reply).toHaveFocus();
+    expect(screen.queryByTestId('ticket-composer-internal-banner')).toBeNull();
   });
 
   it('defaults to public reply mode', () => {

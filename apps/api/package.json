@@ -39,6 +39,7 @@
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
     "start": "node dist/index.cjs",
     "test": "vitest",
+    "worker:closure": "tsx scripts/worker-closure-report.ts",
     "test:coverage": "vitest run --coverage",
     "test:docker": "pnpm test:docker:up && pnpm test:integration; pnpm test:docker:down",
     "test:docker:down": "docker compose -f ../../docker-compose.test.yml down -v",
@@ -117,7 +118,7 @@
     "ssh2-sftp-client": "^12.1.1",
     "stream-chain": "4.2.6",
     "stream-json": "3.7.0",
-    "stripe": "^22.6.2",
+    "stripe": "22.6.2",
     "tldts": "^7.4.19",
     "twilio": "^6.0.2",
     "zod": "^4.6.7"

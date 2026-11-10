@@ -7,6 +7,11 @@ import {
   recordMigration,
   splitSqlStatements,
 } from '../db/autoMigrate';
+import {
+  acquireMigrationAdvisoryLock,
+  releaseMigrationAdvisoryLock,
+  type MigrationLockWaitOptions,
+} from '../db/migrationAdvisoryLock';
 import type { ExtensionStateStore } from './stateStore';
 
 /**
@@ -19,15 +24,20 @@ import type { ExtensionStateStore } from './stateStore';
  *
  * Concurrency contract (the load-bearing part):
  *   - The whole locked section runs on ONE dedicated connection obtained via
- *     `sql.reserve()`. A SESSION-level `pg_advisory_lock` is taken on that
+ *     `sql.reserve()`. A SESSION-level advisory lock is taken on that
  *     reserved connection, every per-file `reserved.begin()` transaction runs on
  *     it, and the matching `pg_advisory_unlock` runs on it too. Because a
  *     session advisory lock is per-connection, pinning all three to the reserved
  *     connection is what makes the lock actually protect the migration set that
  *     spans multiple sequential transactions. (A transaction-scoped
  *     `pg_advisory_xact_lock` would release after the first file — wrong here.)
+ *   - The lock is taken with a BOUNDED wait (#4144): `pg_try_advisory_lock`
+ *     polled up to `MIGRATION_LOCK_TIMEOUT_MS`, logging the holder's pid while
+ *     it waits. A holder that never lets go fails the boot with a
+ *     `MigrationLockTimeoutError` instead of stalling it forever — see
+ *     `db/migrationAdvisoryLock.ts`.
  *   - The applied-set is loaded AFTER the lock is held, so a second caller that
- *     was blocked on the lock sees the first caller's committed rows and skips
+ *     waited on the lock sees the first caller's committed rows and skips
  *     them. Two concurrent callers for the same extension therefore apply the
  *     set exactly once.
  *
@@ -103,14 +113,16 @@ function assertExtensionMigrationSafe(file: ExtensionMigrationFile): void {
 
 type ReservedSql = Awaited<ReturnType<postgres.Sql['reserve']>>;
 
-async function acquireExtensionLock(conn: ReservedSql, name: string): Promise<void> {
-  const key = extensionLockKey(name);
-  await conn`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`;
+async function acquireExtensionLock(
+  conn: ReservedSql,
+  name: string,
+  wait: MigrationLockWaitOptions,
+): Promise<void> {
+  await acquireMigrationAdvisoryLock(conn, extensionLockKey(name), { ...wait, label: '[extensions]' });
 }
 
 async function releaseExtensionLock(conn: ReservedSql, name: string): Promise<void> {
-  const key = extensionLockKey(name);
-  await conn`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`;
+  await releaseMigrationAdvisoryLock(conn, extensionLockKey(name));
 }
 
 /** Namespaced ledger rows already applied for this extension. */
@@ -187,12 +199,16 @@ export async function checkExtensionMigrationParity(
  * @param stateStore persistence for schema floors + active version
  * @param rollout    'rolling' enforces the active-version floor gate; 'replace'
  *                   is the explicit escape hatch for a floor-raising upgrade
+ * @param lockWait   overrides for the bounded advisory-lock wait; production
+ *                   passes none, so the deadline comes from
+ *                   `MIGRATION_LOCK_TIMEOUT_MS`
  */
 export async function reconcileExtensionMigrations(
   extension: MigratableExtension,
   sql: postgres.Sql,
   stateStore: ExtensionStateStore,
   rollout: 'rolling' | 'replace',
+  lockWait: MigrationLockWaitOptions = {},
 ): Promise<void> {
   const { name, version } = extension;
   const floor = extension.schemaCompatibilityFloor;
@@ -233,7 +249,7 @@ export async function reconcileExtensionMigrations(
   //       `reserved` — see the concurrency contract at the top of this file.
   const reserved = await sql.reserve();
   try {
-    await acquireExtensionLock(reserved, name);
+    await acquireExtensionLock(reserved, name, lockWait);
     try {
       const applied = await loadAppliedExtensionMigrations(reserved, name);
       for (const file of extension.migrations) {

@@ -189,6 +189,9 @@ import { applyHelperDeviceScope } from './helperToolFilter';
 
 export type AiToolTier = 1 | 2 | 3 | 4;
 
+/** What `AiTool.validateBeforeFiling` returns: the call may be filed, or the handler's own refusal. */
+export type PreFilingVerdict = { ok: true } | { ok: false; error: string };
+
 export interface AiTool {
   definition: Anthropic.Tool;
   tier: AiToolTier;
@@ -224,6 +227,22 @@ export interface AiTool {
     auth: AuthContext,
     context?: ToolExecutionContext,
   ) => Promise<string>;
+  /**
+   * #11432: the refusal this tool's handler would return for `input` under
+   * `auth`, judged BEFORE an approval card or action intent is filed, so a
+   * person is never asked to approve a call that can only fail (an approved
+   * create that then ended "orgId is required"). The chat pre-tool gate
+   * (`createGatedSessionPreToolUse`, after RBAC and the rate limit) calls it
+   * under the auth the handler will run with: the session's tool auth, cut to
+   * the Wisp ceiling under a grant.
+   *
+   * Pure and synchronous: input and auth only, no I/O. Return `{ ok: true }`
+   * for anything it cannot judge from those alone (a row named by id, an input
+   * the schema refuses) and leave that to the handler. The handler keeps its
+   * own check as the backstop, so share one helper between them rather than
+   * restating the rule.
+   */
+  validateBeforeFiling?: (input: Record<string, unknown>, auth: AuthContext) => PreFilingVerdict;
   /**
    * Names of the tool's input properties that carry a device id (each a string
    * or string[]). When set, the central dispatch gates every supplied id

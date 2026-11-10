@@ -1350,8 +1350,7 @@
         "series": "Kuruluş başına bir rapor",
         "seriesHint": "Kapsadığı her kuruluş için ayrı bir kopyası olan, her biri o kuruluşun kişilerine gönderilen tek bir tanım.",
         "combined": "Tüm kuruluşlar birleşik",
-        "combinedHint": "Kendi ekibiniz için tüm kuruluşlarınızı kapsayan tek bir birleşik rapor.",
-        "seriesUnavailableType": "Bu rapor türü kuruluş başına bir rapor olarak gönderilemez."
+        "combinedHint": "Kendi ekibiniz için tüm kuruluşlarınızı kapsayan tek bir birleşik rapor."
       },
       "schedule": {
         "label": "Her kuruluşun kopyasının ne sıklıkla gönderileceği",

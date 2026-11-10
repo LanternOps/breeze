@@ -89,17 +89,25 @@ function windowOn(date: LocalDate, schedule: OemWindowSchedule, timezone: string
   return { windowStart, windowEnd, windowMinutes: (windowEnd.getTime() - windowStart.getTime()) / MINUTE_MS };
 }
 
-export function computeOccurrence(schedule: OemOccurrenceSchedule, timezone: string, now: Date): OemOccurrence {
+/** The anchor night of the occurrence `now` belongs to. */
+function occurrenceAnchor(schedule: OemOccurrenceSchedule, timezone: string, now: Date): LocalDate {
   const local = getLocalTimeParts(now, timezone);
   const thisMonth = anchorDateOf(local.year, local.month, schedule);
   const previous = new Date(Date.UTC(local.year, local.month - 2, 1));
   // This month's occurrence starts at its anchor night's window, and not before:
   // until then `now` still belongs to last month's, in catch-up or past its end.
-  const anchorDate = now.getTime() >= windowOn(thisMonth, schedule, timezone).windowStart.getTime()
+  return now.getTime() >= windowOn(thisMonth, schedule, timezone).windowStart.getTime()
     ? thisMonth
     : anchorDateOf(previous.getUTCFullYear(), previous.getUTCMonth() + 1, schedule);
+}
 
-  const occurrenceKey = `${String(anchorDate.year).padStart(4, '0')}-${String(anchorDate.month).padStart(2, '0')}`;
+function occurrenceKeyOf(anchorDate: LocalDate): string {
+  return `${String(anchorDate.year).padStart(4, '0')}-${String(anchorDate.month).padStart(2, '0')}`;
+}
+
+export function computeOccurrence(schedule: OemOccurrenceSchedule, timezone: string, now: Date): OemOccurrence {
+  const anchorDate = occurrenceAnchor(schedule, timezone, now);
+  const occurrenceKey = occurrenceKeyOf(anchorDate);
 
   let window = windowOn(anchorDate, schedule, timezone);
   for (let night = 0; night <= schedule.catchUpNights; night += 1) {
@@ -112,6 +120,35 @@ export function computeOccurrence(schedule: OemOccurrenceSchedule, timezone: str
     }
   }
   return { occurrenceKey, anchorDate, nightIndex: null, ...window, inWindow: false, isPastLastNight: true };
+}
+
+export type OemOccurrenceBoundaries = {
+  occurrenceKey: string;
+  /** The occurrence's last night: its window start, and its end, from which it is past its last night. */
+  lastNightStart: Date;
+  pastLastNightAt: Date;
+  /** The next occurrence's first window start: the instant `computeOccurrence` changes key. */
+  refreshAfter: Date;
+};
+
+/**
+ * The occurrence `now` is in, as the instants that decide it (#11242): for every `t` in
+ * `[now, refreshAfter)`, `computeOccurrence(schedule, timezone, t)` has this key, is past
+ * its last night exactly when `t >= pastLastNightAt`, and then has `lastNightStart` as
+ * its window start. So a stored copy answers like the live rule until `refreshAfter`.
+ */
+export function occurrenceBoundaries(schedule: OemOccurrenceSchedule, timezone: string, now: Date): OemOccurrenceBoundaries {
+  const anchorDate = occurrenceAnchor(schedule, timezone, now);
+  const lastNight = windowOn(addDays(anchorDate, schedule.catchUpNights), schedule, timezone);
+  // The anchor month's successor, by calendar: day 1 is enough to name the month.
+  const following = addDays({ year: anchorDate.year, month: anchorDate.month, day: 1 }, 31);
+  const nextAnchor = anchorDateOf(following.year, following.month, schedule);
+  return {
+    occurrenceKey: occurrenceKeyOf(anchorDate),
+    lastNightStart: lastNight.windowStart,
+    pastLastNightAt: lastNight.windowEnd,
+    refreshAfter: windowOn(nextAnchor, schedule, timezone).windowStart,
+  };
 }
 
 /**

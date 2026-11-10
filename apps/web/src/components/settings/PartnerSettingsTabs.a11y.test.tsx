@@ -37,6 +37,7 @@ import PartnerEventLogsTab from './PartnerEventLogsTab';
 import PartnerDefaultsTab from './PartnerDefaultsTab';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
+import { makePolicyView } from './portalAccess/viewFixture';
 
 /**
  * #9168: every form control on the partner settings tabs must carry an
@@ -115,6 +116,8 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
         const none = { introHtml: null, searchIndexable: null, showPercentages: null, showDeviceCount: null, showManagedBy: null, showHistory: null, hiddenControlIds: null, frameworkView: null };
         return json({ data: { template: null, revision: 0, defaults: { ...none, searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true, showHistory: false, hiddenControlIds: [], frameworkView: ['nist_csf_2'] }, frameworkOptions: [{ framework: 'nist_csf_2', available: true, suggested: false }], canManage: true } });
       }
+      if (url === '/orgs/partners/me/portal-access-policy') return json({ data: makePolicyView({ kind: 'partner' }) });
+      if (url === '/orgs/partners/me/portal-access-requests/summary') return json({ data: { pendingTotal: 0, orgs: [] } });
       return json({ data: [] });
     });
     vi.mocked(useOrgStore).mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false, adoptPartnerId: vi.fn() } as never);

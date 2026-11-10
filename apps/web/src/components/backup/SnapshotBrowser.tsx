@@ -927,7 +927,10 @@ export default function SnapshotBrowser() {
                           aria-label={`Select ${hit.name}`}
                           className="h-4 w-4"
                         />
-                        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        {/* A folder hit is a directory entry, e.g. an empty folder (#11235). */}
+                        {hit.type === 'directory'
+                          ? <Folder data-testid="snapshot-search-hit-folder" className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          : <FileText data-testid="snapshot-search-hit-file" className="h-4 w-4 shrink-0 text-muted-foreground" />}
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-medium text-foreground">{hit.name}</div>
                           <div className="break-all text-xs text-muted-foreground">{hit.path}</div>

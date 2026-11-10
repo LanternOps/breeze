@@ -110,6 +110,22 @@ describe('WispPost', () => {
     expect(screen.queryByTestId('wisp-post-open')).toBeNull();
   });
 
+  it('renders a nudge_resolved post like a nudge, with the Resolved eyebrow, a check icon and the concern link (#11427)', () => {
+    render(<WispPost post={post({ kind: 'nudge_resolved', title: 'Resolved: Disk almost full on FS-01', body: 'Disk almost full on FS-01 — the disk was cleaned; no action needed.' })} />);
+    const root = screen.getByTestId('wisp-post');
+    expect(root.getAttribute('data-kind')).toBe('nudge_resolved');
+    expect(screen.getByText('Resolved')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-resolved-icon')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('Resolved: Disk almost full on FS-01');
+    expect(screen.getByTestId('wisp-post-body').textContent).toBe('Disk almost full on FS-01 — the disk was cleaned; no action needed.');
+    expect(screen.getByTestId('wisp-post-open').getAttribute('href')).toBe('/ai/wisp/thread/th-1#concern=c-1');
+  });
+
+  it('a plain nudge carries no resolved check icon', () => {
+    render(<WispPost post={post({})} />);
+    expect(screen.queryByTestId('wisp-post-resolved-icon')).toBeNull();
+  });
+
   it('renders a specialist_result post with the Specialist report heading', () => {
     render(<WispPost post={post({ kind: 'specialist_result', title: 'FS-01 troubleshooting', body: 'Disk cleaned.', link: null, concernId: null })} />);
     expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('specialist_result');

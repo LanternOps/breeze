@@ -160,8 +160,13 @@ describe('accounting and mailbox', () => {
 
 describe('org sources', () => {
   it('dns: an org incident carrying the org and its partner', () => {
-    expect(dnsFilterObservation({ id: ID, orgId: O, partnerId: P, name: 'Filter', isActive: true, lastSyncStatus: 'error', lastSyncError: 'provider 500', createdAt: OLD }, NOW))
+    expect(dnsFilterObservation({ id: ID, orgId: O, partnerId: P, name: 'Filter', isActive: true, lastSyncStatus: 'error', lastSyncError: 'provider 500', createdAt: OLD, stale: false }, NOW))
       .toMatchObject({ state: 'broken', orgId: O, partnerId: P, displayName: 'Filter', fixHref: '/dns-security', detail: 'provider 500' });
+  });
+
+  it('dns: a stale sync is sync_stale with no stale error text', () => {
+    expect(dnsFilterObservation({ id: ID, orgId: O, partnerId: P, name: 'Filter', isActive: true, lastSyncStatus: 'success', lastSyncError: 'old failure', createdAt: OLD, stale: true }, NOW))
+      .toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null, orgId: O });
   });
 
   it('m365 connection: consent codes are permanent; no detail', () => {
@@ -173,16 +178,26 @@ describe('org sources', () => {
     const o = m365SyncObservation({
       connectionId: ID, orgId: O, partnerId: P, connectionStatus: 'active', connectionCreatedAt: OLD,
       domains: [
-        { domain: 'users', lastStatus: 'success', lastError: null },
-        { domain: 'intune_devices', lastStatus: 'error', lastError: 'graph_call_failed: 503' },
-        { domain: 'skus', lastStatus: 'needs_consent', lastError: 'graph_permission_missing: Directory.Read.All' },
+        { domain: 'users', lastStatus: 'success', lastError: null, stale: false },
+        { domain: 'intune_devices', lastStatus: 'error', lastError: 'graph_call_failed: 503', stale: false },
+        { domain: 'skus', lastStatus: 'needs_consent', lastError: 'graph_permission_missing: Directory.Read.All', stale: false },
       ],
     }, NOW);
     expect(o).toMatchObject({ sourceKind: 'm365_sync', sourceId: ID, state: 'broken', severity: 'permanent', condition: 'needs_consent', orgId: O });
     expect(o.detail).toContain('skus');
   });
 
+  it('m365 sync: a stalled domain is sync_stale and names only stalled domains, sorted', () => {
+    const row = { connectionId: ID, orgId: O, partnerId: P, connectionStatus: 'active', connectionCreatedAt: OLD, domains: [
+      { domain: 'users', lastStatus: 'success', lastError: null, stale: true },
+      { domain: 'skus', lastStatus: 'success', lastError: null, stale: true },
+      { domain: 'ca_policies', lastStatus: 'success', lastError: null, stale: false },
+    ] };
+    expect(m365SyncObservation(row, NOW)).toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: 'Stalled: skus, users' });
+    expect(m365SyncObservation(row, NOW, false).state).toBe('retired');
+  });
+
   it('m365 sync: unknown while the connection itself is degraded', () => {
-    expect(m365SyncObservation({ connectionId: ID, orgId: O, partnerId: P, connectionStatus: 'degraded', connectionCreatedAt: OLD, domains: [{ domain: 'users', lastStatus: 'error', lastError: null }] }, NOW).state).toBe('unknown');
+    expect(m365SyncObservation({ connectionId: ID, orgId: O, partnerId: P, connectionStatus: 'degraded', connectionCreatedAt: OLD, domains: [{ domain: 'users', lastStatus: 'error', lastError: null, stale: false }] }, NOW).state).toBe('unknown');
   });
 });

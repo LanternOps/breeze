@@ -617,7 +617,11 @@
     "thinking": "Razonamiento"
   },
   "aiThinking": {
-    "label": "Pensando… {{seconds}} s"
+    "label": "Pensando… {{seconds}} s",
+    "waitingApproval": "Esperando tu aprobación",
+    "waitingApprovalPhone": "Esperando tu aprobación (enviada a tu teléfono)",
+    "waitingOthers": "Esperando a otro aprobador",
+    "openApprovals": "Abrir aprobaciones"
   },
   "aiTurnModel": {
     "answeredBy": "Respondido por {{model}}",
@@ -694,6 +698,7 @@
     "settings": {
       "title": "Presupuesto y revisión periódica",
       "budget": "Presupuesto diario",
+      "budgetHelp": "Incluye el chat. Cuando se agota, las comprobaciones en segundo plano se pausan hasta las 00:00 UTC y el chat sigue funcionando con una advertencia. El presupuesto de IA de la organización sigue aplicándose al chat.",
       "tick": "Revisión cada (minutos)",
       "save": "Guardar",
       "unattendedReads": {
@@ -760,6 +765,7 @@
     },
     "spend": {
       "meter": "{{spent}} de {{budget}} hoy",
+      "breakdown": "Segundo plano {{background}} · Chat {{chat}} · {{spent}} de {{budget}} hoy",
       "resets": "se restablece en {{hours}} h",
       "raise": "Aumentar el presupuesto de hoy",
       "atCeiling": "El presupuesto de hoy está en el límite de su plan.",
@@ -772,8 +778,8 @@
       "byYou": "Pausaste Wisp. No hará revisiones ni te enviará avisos hasta que lo reanudes.",
       "partnerDisabled": "Wisp está desactivado para su partner. Un administrador puede volver a activarlo.",
       "system": {
-        "budgetExhausted": "Pausado por Breeze: se agotó el presupuesto de hoy. El presupuesto se restablece en {{hours}} h.",
-        "budgetExhaustedNoTime": "Pausado por Breeze: se agotó el presupuesto de hoy.",
+        "budgetExhausted": "Se superó el presupuesto de Wisp de hoy: las comprobaciones en segundo plano están en pausa hasta las {{time}} UTC. El chat sigue funcionando.",
+        "budgetExhaustedNoTime": "Se superó el presupuesto de Wisp de hoy: las comprobaciones en segundo plano están en pausa hasta las 00:00 UTC. El chat sigue funcionando.",
         "grantorAccessLost": "Pausado por Breeze: su acceso ya no cubre este permiso. Wisp se reanuda solo cuando recupere el acceso.",
         "grantorSuspended": "Pausado por Breeze: su cuenta está suspendida. Wisp se reanuda solo cuando se levante la suspensión.",
         "factorExpired": "Pausado por Breeze: venció su verificación de inicio de sesión para este permiso.",
@@ -896,6 +902,7 @@
     "post": {
       "brief": "Resumen matutino",
       "nudge": "Aviso",
+      "nudgeResolved": "Resuelto",
       "digest": "Compendio",
       "checkIn": "Revisión programada",
       "summary": "Resumen",
@@ -975,6 +982,27 @@
       "newDescription": "Breeze AI con todas las herramientas a las que tienes acceso. No es Wisp.",
       "wispDescription": "Wisp, con tu permiso",
       "label": "Breeze AI · no es Wisp"
+    },
+    "instruction": {
+      "remembered": "Recordado: {{text}}",
+      "conflictBanner": "Entra en conflicto con una instrucción recordada: «{{text}}»",
+      "enforcedForm": "Wisp no propondrá: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "sin fecha de fin",
+      "keep": "Conservar",
+      "keepForOrg": "Conservar para todos en {{org}}",
+      "forget": "Olvidar",
+      "unmatched": "Guardado como nota: no pude identificar todos los nombres de dispositivos.",
+      "kept": "Conservado",
+      "keptForOrg": "Conservado para todos en {{org}}",
+      "crossOrg": "Estos dispositivos están en más de una organización, así que solo se puede conservar para ti.",
+      "actionFailed": "Eso no funcionó. Inténtalo de nuevo.",
+      "verb": {
+        "reboot": "reiniciar",
+        "shutdown": "apagar",
+        "run_script": "ejecutar un script",
+        "patch_install": "instalar parches",
+        "any_change": "hacer cualquier cambio"
+      }
     }
   },
   "wispConcerns": {

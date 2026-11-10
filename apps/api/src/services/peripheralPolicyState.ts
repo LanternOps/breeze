@@ -19,13 +19,14 @@ import {
 } from '../db/schema';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 // The insert chokepoint, from its LEAF module -- never from `commandQueue.ts`,
-// which statically imports `routes/agentWs.ts`. This module sits in the import
-// closure of `jobs/peripheralJobs.ts` -> `services/groupMembership.ts` ->
+// the heavy command-queue hub (hundreds of modules). This module sits in the
+// import closure of `jobs/peripheralJobs.ts` -> `services/groupMembership.ts` ->
 // `contractQuantities` -> the quote and contract workers, so an edge to
-// `commandQueue.ts` from here drags the live agent-socket registry into two
-// `global`-placement worker processes -- which
-// `workerEntrypointClosure.contract.test.ts` (#4086) forbids, and which a lazy
-// `await import()` would NOT fix (its per-entry check follows dynamic edges).
+// `commandQueue.ts` from here drags that whole graph into two
+// `global`-placement worker processes. (Before the relay facade that graph
+// reached `routes/agentWs.ts`, which `workerEntrypointClosure.contract.test.ts`
+// (#4086) forbids; `pnpm --filter @breeze/api worker:closure` shows the
+// current state.) A lazy `await import()` would not help either.
 import { insertQueuedCommandInTransaction } from './commandQueueInsert';
 import type { CommandPayload } from './commandQueue';
 import { CommandTypes } from './commandTypes';

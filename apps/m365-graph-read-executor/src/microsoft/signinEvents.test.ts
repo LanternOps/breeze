@@ -34,7 +34,7 @@ function ev(id: string, over: Record<string, unknown> = {}): Record<string, unkn
 const action = { type: 'm365.sync.signin_events', since: SINCE, until: UNTIL } as const;
 
 describe('m365.sync.signin_events', () => {
-  it('filters on the half-open window only, oldest first', async () => {
+  it('filters on the half-open window only', async () => {
     const { client, calls } = stubClient({ [PATH]: page([ev('1')]) });
     const result = await executeGraphSyncAction(action, context(client));
     if (!('items' in result)) throw new Error('expected success');
@@ -46,9 +46,41 @@ describe('m365.sync.signin_events', () => {
     // interactive collection, so the window is the whole filter.
     expect(query.$filter).not.toContain('signInEventTypes');
     expect(query.$filter).toBe(`createdDateTime ge ${SINCE} and createdDateTime lt ${UNTIL}`);
-    // Ascending, so a continuation resumes deterministically.
-    expect(query.$orderby).toBe('createdDateTime');
     expect(result.sources).toEqual({ signinEvents: 'ok' });
+  });
+
+  it('asks for the shape that returns a first page promptly: no $orderby, a narrow $select, small pages (#9394)', async () => {
+    const { client, calls } = stubClient({ [PATH]: page([ev('1')]) });
+    await executeGraphSyncAction(action, context(client));
+    const query = calls[0]!.query!;
+    // With an explicit ascending sort the first page never came back inside
+    // 30 s on a reporting tenant; the unsorted, narrowly selected form did.
+    expect(query).not.toHaveProperty('$orderby');
+    expect(query.$select!.split(',').sort()).toEqual([...M365_READ_ACTION_FIELDS['m365.sync.signin_events']].sort());
+    expect(query.$top).toBe('100');
+    expect(Object.keys(query).sort()).toEqual(['$filter', '$select', '$top']);
+  });
+
+  it('takes its page size from M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE (#9394)', async () => {
+    const { client, calls } = stubClient({ [PATH]: page([ev('1')]) });
+    const ctx = context(client);
+    await executeGraphSyncAction(action, { ...ctx, limits: { ...ctx.limits, signinEventsPageSize: 40 } });
+    expect(calls[0]!.query!.$top).toBe('40');
+  });
+
+  it('keeps the pages it read when a later page times out, and resumes from that page (#9394)', async () => {
+    const { client, calls } = stubClient({
+      [PATH]: { items: [ev('1'), ev('2')], stopReason: 'interrupted', pages: 1, nextLink: NEXT },
+    });
+    const ctx = context(client);
+    const result = await executeGraphSyncAction(action, ctx);
+    if (!('items' in result)) throw new Error('expected success');
+    expect(calls[0]!.keepPagesOnTransientFailure).toBe(true);
+    expect(result.items.map((i) => i.id)).toEqual(['1', '2']);
+    expect(result.truncated).toBe(false);
+    expect(ctx.continuations.open({
+      tenantId: TENANT_ID, action: 'm365.sync.signin_events', continuation: result.continuation!,
+    })).toBe(NEXT);
   });
 
   it('pages until the window is exhausted and returns no continuation', async () => {
@@ -152,13 +184,13 @@ describe('m365.sync.signin_events', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('defaults an absent window to a bounded 7-day pull rather than the whole tenant', async () => {
+  it('defaults an absent window to a bounded one-day pull rather than the whole tenant (#9394)', async () => {
     const { client, calls } = stubClient({ [PATH]: page([]) });
     await executeGraphSyncAction({ type: 'm365.sync.signin_events' }, context(client));
     const filter = calls[0]!.query!.$filter!;
     // context()'s clock is 2026-09-08T12:00:00Z.
     expect(filter).toContain('createdDateTime lt 2026-09-08T12:00:00.000Z');
-    expect(filter).toContain('createdDateTime ge 2026-09-01T12:00:00.000Z');
+    expect(filter).toContain('createdDateTime ge 2026-09-07T12:00:00.000Z');
   });
 
   it('caps items at M365_SYNC_MAX_ITEMS_SIGNIN_EVENTS', async () => {

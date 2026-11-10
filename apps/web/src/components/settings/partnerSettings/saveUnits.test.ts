@@ -32,6 +32,7 @@ describe('saveUnits', () => {
     ]);
     expect(UNIT_TABS.aiFeatureDefaults).toEqual(['aiProvider']);
     expect(UNIT_TABS.aiDataPolicy).toEqual(['aiFeatures']);
+    expect(UNIT_TABS.portalAccessPolicy).toEqual(['customerPortal']);
   });
 
   it('orders units by their earliest tab in the rail', () => {

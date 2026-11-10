@@ -1503,6 +1503,8 @@ describe('backup result persistence', () => {
               kind: 'symlink',
               linkTarget: 'usr/bin',
             },
+            // #11235: and a directory entry, with the kind hydration records.
+            { sourcePath: '/srv/empty', backupPath: '', kind: 'dir' },
           ],
         },
       },
@@ -1513,10 +1515,17 @@ describe('backup result persistence', () => {
       expect.objectContaining({
         sourcePath: 'C:\\assure\\src\\x',
         backupPath: 'snapshots/snap-1/files/x.gz',
+        kind: null,
       }),
       expect.objectContaining({
         sourcePath: '/bin',
         backupPath: '',
+        kind: 'symlink',
+      }),
+      expect.objectContaining({
+        sourcePath: '/srv/empty',
+        backupPath: '',
+        kind: 'dir',
       }),
     ]);
   });

@@ -166,6 +166,10 @@ const STEP_UP_OPERATIONS = [
   'add_factor',
   'rotate_recovery_codes',
   'delete_passkey',
+  // #10650: POST /auth/mfa/totp/remove. Provable by passkey or TOTP only —
+  // /mfa/step-up refuses SMS for it, and the recovery variant below stays
+  // limited to delete_passkey.
+  'remove_totp',
   'register_approver_device',
   'agent_rollback',
   'device_maintenance',

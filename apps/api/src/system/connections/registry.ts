@@ -573,6 +573,17 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     ],
   }),
   defineEntry({
+    id: 'portal-entra',
+    group: 'identity-sso',
+    label: 'Customer portal: Sign in with Microsoft (Entra app)',
+    docsUrl: '/deploy/environment/',
+    vars: [
+      { name: 'PORTAL_ENTRA_CLIENT_ID', secret: false, required: true },
+      { name: 'PORTAL_ENTRA_CLIENT_SECRET', required: true },
+      { name: 'PORTAL_ENTRA_CALLBACK_BASE_URL' },
+    ],
+  }),
+  defineEntry({
     id: 'twilio',
     group: 'identity-sso',
     label: 'Twilio SMS',
@@ -811,6 +822,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'OAUTH_DCR_REQUIRE_IAT', secret: false },
       { name: 'OAUTH_CIMD_ENABLED', secret: false },
       { name: 'OAUTH_CIMD_ALLOWED_HOSTS', secret: false },
+      { name: 'OAUTH_REFRESH_ROTATION_GRACE_MS', secret: false },
     ],
     status: {
       kind: 'flags',

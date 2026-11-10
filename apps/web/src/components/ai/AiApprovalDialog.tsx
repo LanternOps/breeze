@@ -15,7 +15,7 @@ import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { useRunContextLabel } from "../common/RunContext";
 import ScriptProposalApprovalCard from "./ScriptProposalApprovalCard";
-import type { AiApprovalOutcome, AiApprovalScope, AiScriptRunContext } from "@breeze/shared";
+import type { AiApprovalOutcome, AiApprovalScope, AiScriptRunContext, AiStandingInstructionConflict } from "@breeze/shared";
 import { useStableT } from '@/lib/i18n/useStableT';
 
 // Fallback only: the product default (also `AI_APPROVAL_TIMEOUT_DEFAULT_MINUTES`
@@ -110,6 +110,8 @@ interface AiApprovalDialogProps {
    * choice and a machine-level run. Absent for every non-script tool.
    */
   scriptRunContext?: AiScriptRunContext | null;
+  /** W06: the call conflicts with a remembered standing instruction; shown as a red banner above the description. */
+  standingInstructionConflict?: AiStandingInstructionConflict;
   /** Called after a successful inline decide so the parent clears pendingApproval. */
   onIntentDecided?: () => void;
   /**
@@ -287,6 +289,7 @@ export default function AiApprovalDialog({
   approvalWindowMs,
   approvalExpiresAt,
   scriptRunContext,
+  standingInstructionConflict,
   onIntentDecided,
   resolution,
   testIdPrefix = "ai-approval",
@@ -583,6 +586,16 @@ export default function AiApprovalDialog({
               widthPercentClass(progressPct),
             )}
           />
+        </div>
+      )}
+
+      {standingInstructionConflict && (
+        <div
+          role="alert"
+          data-testid="approval-standing-instruction-banner"
+          className="mt-2 rounded-md border border-destructive/50 bg-destructive/10 px-2.5 py-1.5 text-xs font-medium text-destructive"
+        >
+          {t("wisp.instruction.conflictBanner", { text: standingInstructionConflict.text })}
         </div>
       )}
 

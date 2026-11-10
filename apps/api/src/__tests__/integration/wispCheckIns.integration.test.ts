@@ -236,7 +236,8 @@ describe('createCheckIn', () => {
 
   runDb('threadForGrant returns the grant\'s thread; listCheckIns returns scheduled + fired, due_at ascending', async () => {
     const fx = await seed();
-    expect(await threadForGrant(fx.grantId)).toEqual({ id: fx.thread.id, partnerId: fx.partner.id });
+    // W07: the focus org rides along (a run check-in may assess it).
+    expect(await threadForGrant(fx.grantId)).toEqual({ id: fx.thread.id, partnerId: fx.partner.id, focusOrgId: null });
     expect(await threadForGrant(randomUUID())).toBeNull();
     const now = new Date();
     const late = await create(fx, now, { dueInMs: 60 * MIN });
@@ -309,8 +310,9 @@ describe('fireCheckIn', () => {
     await withSystemDbAccessContext(() => db.update(wispCheckIns).set({ threadId: otherThread.id }).where(eq(wispCheckIns.id, rc.id)));
     expect(await fireCheckIn(rc.id)).toBe('cancelled');
 
-    for (const [fx, id] of [[a, ra.id], [b, rb.id], [c, rc.id]] as const) {
-      expect((await rowOf(id))!.status).toBe('cancelled');
+    // W04 (#11493): each cancel records why.
+    for (const [fx, id, reason] of [[a, ra.id, 'grant_inactive'], [b, rb.id, 'grantor_changed'], [c, rc.id, 'thread_mismatch']] as const) {
+      expect(await rowOf(id)).toMatchObject({ status: 'cancelled', cancelReason: reason, fireReason: null });
       expect(await postsFor(fx.thread.id)).toHaveLength(0);
     }
     expect(await postsFor(otherThread.id)).toHaveLength(0);

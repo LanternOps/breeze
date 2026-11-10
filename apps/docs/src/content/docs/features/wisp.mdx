@@ -92,6 +92,8 @@ The multi-tab chat page is **Breeze AI**, at `/ai/chat`. It has the same tabs (u
 
 Breeze AI and the docked panel use the same message list as the Wisp home, so tool activity folds into one line there too, and the composer sends on Enter and adds a line on Shift+Enter.
 
+When you send a message, Wisp's current standing state is attached to it: when the next floor tick is due, how far the first look has got, open concerns by severity with the most urgent few, active watches, scheduled check-ins, today's spend and open critical and high alerts. The state is read at most once a minute, and it is attached again only when it has changed since the last copy in that conversation (spend counts as changed when it moves by a tenth of the daily budget). Wisp uses it to answer "are you still looking?". For "what needs my attention" it is told to start from the partner picture and this state, call tools only for the item you pick, and keep "keep it short" to about three tool calls.
+
 ## Working set
 
 Wisp keeps a bounded working set of the records you are discussing. Its pills appear in three groups, in this order:
@@ -146,7 +148,7 @@ A grant can be **paused** rather than ended. You can pause and resume it yoursel
 
 | Wisp acts alone | Wisp asks first | Wisp never |
 |---|---|---|
-| Reads anything you may see. Drafts ticket replies. Nudges you. Opens a ticket from an alert that an existing rule already turns into a ticket. Re-runs a check. Schedules a sweep. Stages work in a sandbox. | Sends anything to a client contact. Closes or reassigns tickets. Applies or edits a configuration policy. Runs a script on a device. Changes alert thresholds. Anything billing. Anything that grants access. | Acts outside the authority of the person it works for. Lets a sub-agent exceed that authority. |
+| Reads anything you may see. Drafts ticket replies. Nudges you. Opens a ticket from an alert that an existing rule already turns into a ticket. Re-runs a check. Runs an enabled sweep, or an on-demand assessment you ask for in chat. Stages work in a sandbox. | Sends anything to a client contact. Closes or reassigns tickets. Applies or edits a configuration policy. Runs a script on a device. Changes alert thresholds. Anything billing. Anything that grants access. | Acts outside the authority of the person it works for. Lets a sub-agent exceed that authority. |
 
 "Asks first" means an approval card in the Approvals inbox, on web and mobile. Approving is a decision by a person; Wisp cannot approve for itself.
 
@@ -201,7 +203,7 @@ Wisp writes notes; **people confirm, correct or retract them**. Open **Settings 
 
 ## Budgets
 
-Everything Wisp does under a grant (assessments, specialist runs, tasks) is metered against that grant's daily budget, in cents of AI spend.
+Everything Wisp does under a grant is metered against that grant's daily budget, in cents of AI spend: background work (assessments, specialist runs, tasks and model-written session notes) and your chat with Wisp. The thread's spend meter shows both lines, for example "Background $0.30 · Chat $1.70 · $2.00 of $5.00 today".
 
 | Plan | Default daily budget per grant |
 |---|---|
@@ -209,13 +211,13 @@ Everything Wisp does under a grant (assessments, specialist runs, tasks) is mete
 | Enterprise | 500 ¢ |
 | Unlimited | 1000 ¢ |
 
-A partner admin can raise a grant's budget up to **5x the plan default**, never beyond the plan ceiling. The budget window is the UTC day. When a budget is exhausted, Wisp makes **no further model calls** under that grant until the window resets: assessments and specialist requests are skipped, while events are still recorded as concern updates by plain code and appear in your digest. The grant itself stays on (it is not paused), and the thread's spend meter shows the budget as used up.
+A partner admin can raise a grant's budget up to **5x the plan default**, never beyond the plan ceiling. The budget window is the UTC day. When a budget is exhausted, Wisp makes **no further background model calls** under that grant until the window resets: assessments and specialist requests (including ones you ask for in chat) are skipped, while events are still recorded as concern updates by plain code and appear in your digest. **Chat keeps working**, with a warning in the thread header; the budget is a soft limit for chat, and the organization's AI budget and credits still apply to it. The grant itself stays on (it is not paused), and the grantor is told once per UTC day.
 
 ### Session notes
 
 When a conversation closes, Wisp leaves a plain digest on the thread: what was asked, what was checked and the last answer. **Model-written session notes** is a switch on your grant, off by default, under **Budget and check-in settings** in the Wisp header. When it is on, each close also makes one model call that replaces the digest with what was concluded and what is still open. The grantor or a partner admin can change it.
 
-Each note counts against the grant's daily budget and shows on the spend meter. Once the budget is spent, Wisp skips the call and keeps the digest. A close can happen with nobody watching, because an idle session is closed for you, so these calls can spend budget while you are away.
+Each note counts against the grant's daily budget and shows on the spend meter's background line. Once the budget is spent, Wisp skips the call and keeps the digest. A close can happen with nobody watching, because an idle session is closed for you, so these calls can spend budget while you are away.
 
 ## Specialists
 
@@ -224,16 +226,17 @@ When a concern needs focused work, Wisp can ask a **specialist** to do it. A req
 | Kind | What it does | Starts |
 |---|---|---|
 | `sweep` | Collects evidence across the estate | On its own |
-| `analysis` | Runs sandboxed analysis over staged data (see [AI Analysis Runs](/features/ai-analysis-runs/)) | On its own |
+| `analysis` | Runs sandboxed analysis over staged data (see [AI Analysis Runs](/features/ai-analysis-runs/)). Available only when the server's analysis sandbox is on; otherwise Wisp says so | On its own |
 | `operator_recipe` | Runs an AI task recipe | After you approve |
 | `patch_plan` | Drafts a patch plan | After you approve |
 | `remediation_research` | Researches a fix for a problem | After you approve |
 | `bulk_ticket_reply` | Sends one message to a list of tickets (for example, everyone hit by the same outage). The approval card shows the exact tickets and the exact message; no ticket is added after approval, and the batch stops at the first failure and reports | After you approve |
 | `device_troubleshooting` | Investigates one device toward one goal in the background. It reads freely, and every change it wants becomes its own approval request | When you ask in chat, like any ordinary tool call; after you approve, when Wisp asks during an assessment |
+| `assessment` | Runs Wisp's own assessment now, for one organization or for up to 10 organizations in the grant with open alerts, worst first. Each one works through the organization's open alerts, and the results land in the thread like any assessment's | Only when you ask in chat, like any ordinary tool call. An assessment never starts another assessment |
 
 The kinds marked "after you approve" appear as an approval card; nothing starts until a person says yes. When you approve one, it runs with **your** authority at that moment, and every normal gate still applies. Anything the specialist then wants to change creates its own approval, as usual. Specialist requests count against the same daily budget.
 
-`launch_specialist` itself runs only `sweep`, `analysis` and `device_troubleshooting` on the call. `operator_recipe`, `patch_plan`, `remediation_research` and `bulk_ticket_reply` escalate to a supervised Tier-3 approval in chat.
+`launch_specialist` itself runs only `sweep`, `analysis`, `device_troubleshooting` and `assessment` on the call. A sweep needs an enabled sweep schedule for the organization. `operator_recipe`, `patch_plan`, `remediation_research` and `bulk_ticket_reply` escalate to a supervised Tier-3 approval in chat.
 
 A `device_troubleshooting` run stays on the device it was given and refuses a call that names any other device. It never makes a change itself and raises at most three approval requests. Its steps appear on the run card, and the run appears under Workers in the Wisp rail. If the grant is paused or revoked mid-run, the run stops and is marked failed.
 
