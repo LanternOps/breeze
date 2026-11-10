@@ -73,7 +73,7 @@
     "columns": {
       "approval": "Approval",
       "host": "Host",
-      "lastSeen": "Last Seen"
+      "lastSeen": "Last seen"
     },
     "description": "Review assets detected in your environment.",
     "empty": "No assets discovered yet.",
@@ -383,8 +383,8 @@
     },
     "alertsSummary": "Alerts: {{alerts}}",
     "columns": {
-      "knownDevices": "Known Devices",
-      "lastScan": "Last Scan",
+      "knownDevices": "Known devices",
+      "lastScan": "Last scan",
       "schedule": "Schedule",
       "subnet": "Subnet"
     },

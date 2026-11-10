@@ -161,7 +161,7 @@
     "dateRange": "Plage de dates",
     "detailsTitle": "Détails Titre",
     "eventCount": "Nombre d’événements",
-    "eventIdPlaceholder": "Placeholder de l’identifiant d’événement",
+    "eventIdPlaceholder": "p. ex., 7036",
     "eventLogs": "Journaux d’événements",
     "eventsTitle": "{{name}} Événements",
     "fields": {
@@ -189,9 +189,9 @@
     },
     "logTitle": "{{name}} Journal",
     "lookupEventId": "Identifiant d’événement de recherche",
-    "noEvents": "Aucun événement",
-    "noHandler": "Pas de Manipulateur",
-    "noMatches": "Pas de matchs",
+    "noEvents": "Aucun journal d'événements disponible.",
+    "noHandler": "Aucun journal d'événements disponible. Connectez un gestionnaire de requêtes pour récupérer les événements de cet appareil.",
+    "noMatches": "Aucun événement trouvé. Essayez de modifier vos filtres.",
     "page": "Page {{current}} de {{total}}",
     "ranges": {
       "allTime": "Tous les temps",
@@ -201,7 +201,7 @@
       "lastHour": "Dernière heure"
     },
     "recordId": "Enregistrement ID : {{id}}",
-    "searchPlaceholder": "Rechercher dans les événements...",
+    "searchPlaceholder": "Rechercher des événements...",
     "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
     "time": {
       "daysAgo": "{{count}}d",
@@ -241,7 +241,7 @@
       "minutesAgo": "{{count}}m"
     },
     "title": "Activité des fichiers",
-    "unverifiedHint": "Indice non vérifié"
+    "unverifiedHint": "L'appareil n'a pas répondu à temps — actualisez pour vérifier"
   },
   "fileManager": {
     "activeCount": "{{count}} actif",
@@ -325,7 +325,7 @@
     "noMatches": "Pas de matchs",
     "processMemory": "Mémoire de processus",
     "processes": "Processus",
-    "searchPlaceholder": "Rechercher un processus...",
+    "searchPlaceholder": "Rechercher par nom ou PID...",
     "showing": "Affichage de {{shown}} processus sur {{total}}",
     "status": {
       "idle": "Ralenti",
@@ -387,11 +387,11 @@
     "device": "Appareil : {{id}}",
     "editValue": "Modifier la valeur",
     "enterDecimalValue": "Entrez la valeur décimale",
-    "enterHexBytes": "Saisir les octets hexadécimaux",
+    "enterHexBytes": "Saisissez des octets hexadécimaux séparés par des espaces (p. ex., 00 01 02 03)",
     "enterHexValue": "Entrez la valeur hexadécimale",
     "enterKeyName": "Entrer le nom de clé",
     "enterStringValue": "Saisissez la valeur de la chaîne",
-    "enterStrings": "Saisir les chaînes",
+    "enterStrings": "Saisissez chaque chaîne sur une nouvelle ligne",
     "enterValueName": "Saisir le nom de la valeur",
     "errors": {
       "createKey": "Impossible de créer la clé de registre",
@@ -423,7 +423,7 @@
     "noValues": "Aucune valeur",
     "parentPath": "Chemin parent",
     "root": "Racine",
-    "searchPlaceholder": "Rechercher dans le registre",
+    "searchPlaceholder": "Rechercher des valeurs...",
     "title": "Éditeur du Registre",
     "value": "Valeur",
     "valueCount": "Nombre de valeurs",
@@ -452,11 +452,11 @@
         "title": "Démarrer la session terminale"
       }
     },
-    "noOnlineDevices": "Pas d’appareils en ligne",
-    "noSearchMatches": "Aucune correspondance de recherche",
+    "noOnlineDevices": "Aucun appareil en ligne n'est disponible.",
+    "noSearchMatches": "Aucun appareil ne correspond à votre recherche.",
     "openDeviceList": "Liste des appareils ouverts",
     "os": "SE",
-    "searchPlaceholder": "Rechercher un appareil..."
+    "searchPlaceholder": "Rechercher des appareils en ligne..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -564,7 +564,7 @@
       "start": "Démarrer",
       "stop": "Arrêter"
     },
-    "adjustSearch": "Ajuster la recherche",
+    "adjustSearch": "Essayez de modifier votre recherche",
     "arguments": "Arguments",
     "author": "Auteur",
     "deviceId": "Appareil ID : {{id}}",
@@ -586,7 +586,7 @@
     "runNow": "Exécuter maintenant",
     "searchPlaceholder": "Rechercher des tâches...",
     "startIn": "Démarrer dans",
-    "startProgram": "Démarrer le programme",
+    "startProgram": "Démarrer un programme",
     "status": {
       "disabled": "Désactivé",
       "queued": "En file d’attente",
@@ -633,7 +633,7 @@
       "stop": "Arrêter"
     },
     "actionBlocked": "Action bloquée",
-    "adjustHint": "Ajuster l’indice",
+    "adjustHint": "Essayez de modifier votre recherche ou vos filtres.",
     "agentRestartConfirm": "Redémarrage de l’agent Confirmer",
     "agentStopBlocked": "Arrêt d’agent bloqué",
     "allStatus": "Tous les statuts",
@@ -652,7 +652,7 @@
     "page": "Page {{current}} de {{total}}",
     "refreshHint": "Actualisez pour vérifier les services.",
     "restartService": "Service de redémarrage",
-    "searchPlaceholder": "Rechercher un service...",
+    "searchPlaceholder": "Rechercher des services...",
     "serviceConfirm": "Voulez-vous vraiment {{action}} le service {{service}} ?",
     "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
     "startService": "Démarrer le service",
@@ -688,7 +688,7 @@
     },
     "noSessions": "Pas de sessions",
     "page": "Page {{current}} de {{total}}",
-    "searchPlaceholder": "Rechercher dans les sessions...",
+    "searchPlaceholder": "Rechercher par appareil ou utilisateur...",
     "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
     "stats": {
       "averageDuration": "Durée moyenne",
@@ -756,7 +756,7 @@
     "deletePermanently": "Supprimer définitivement",
     "deleteSelected": "Supprimer définitivement ({{count}})",
     "empty": "Vide",
-    "emptyConfirm": "Vide Confirmer",
+    "emptyConfirm": "Vider toute la corbeille ? Tous les éléments seront supprimés définitivement. Cette action est irréversible.",
     "emptyTrash": "Videz les poubelles",
     "errors": {
       "empty": "Impossible de vider",
@@ -775,13 +775,13 @@
   "vncViewer": {
     "connect": "Se connecter",
     "credentials": {
-      "macDescription": "Description du Mac",
+      "macDescription": "Le Mac utilise l'authentification Apple Remote Desktop. Saisissez un compte utilisateur macOS ayant accès au partage d'écran (l'identifiant de connexion et le mot de passe de l'utilisateur).",
       "macLoginRequired": "Connexion Mac requise",
       "macPassword": "Mot de passe Mac",
-      "macUsername": "Nom d’utilisateur Mac",
+      "macUsername": "Nom d'utilisateur macOS",
       "password": "Mot de passe",
       "passwordRequired": "Mot de passe requis",
-      "vncDescription": "Description VNC"
+      "vncDescription": "Saisissez le mot de passe défini dans System Settings > General > Sharing > Screen Sharing > Computer Settings."
     },
     "disconnect": "Déconnecter",
     "errors": {
@@ -803,7 +803,7 @@
       "error": "Erreur",
       "passwordRequired": "Mot de passe requis"
     },
-    "syncClipboard": "Presse-papiers synchronisés",
+    "syncClipboard": "Synchroniser le presse-papiers vers l'appareil distant",
     "tunnel": "Tunnel {{id}}"
   },
   "vncViewerPage": {

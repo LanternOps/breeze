@@ -161,7 +161,7 @@
     "dateRange": "Rango de fechas",
     "detailsTitle": "Detalles Título",
     "eventCount": "Recuento de eventos",
-    "eventIdPlaceholder": "Marcador de posición de ID de evento",
+    "eventIdPlaceholder": "p. ej., 7036",
     "eventLogs": "Registros de eventos",
     "eventsTitle": "Eventos {{name}}",
     "fields": {
@@ -189,9 +189,9 @@
     },
     "logTitle": "registro {{name}}",
     "lookupEventId": "ID de evento de búsqueda",
-    "noEvents": "Sin eventos",
-    "noHandler": "Sin controlador",
-    "noMatches": "No hay coincidencias",
+    "noEvents": "No hay registros de eventos disponibles.",
+    "noHandler": "No hay registros de eventos disponibles. Conecte un controlador de consultas para obtener eventos de este dispositivo.",
+    "noMatches": "No se encontraron eventos. Intente ajustar los filtros.",
     "page": "Página {{current}} de {{total}}",
     "ranges": {
       "allTime": "Todo el tiempo",
@@ -241,7 +241,7 @@
       "minutesAgo": "hace {{count}}m"
     },
     "title": "Actividad de archivos",
-    "unverifiedHint": "Pista no verificada"
+    "unverifiedHint": "El dispositivo no respondió a tiempo — actualice para verificar"
   },
   "fileManager": {
     "activeCount": "{{count}} activo",
@@ -325,7 +325,7 @@
     "noMatches": "No hay coincidencias",
     "processMemory": "Memoria de proceso",
     "processes": "Procesos",
-    "searchPlaceholder": "Buscar procesos",
+    "searchPlaceholder": "Buscar por nombre o PID...",
     "showing": "Mostrando {{shown}} de {{total}} procesos",
     "status": {
       "idle": "Inactivo",
@@ -387,11 +387,11 @@
     "device": "Dispositivo: {{id}}",
     "editValue": "Editar valor",
     "enterDecimalValue": "Introduzca el valor decimal",
-    "enterHexBytes": "Introduzca bytes hexadecimales",
+    "enterHexBytes": "Ingrese bytes hexadecimales separados por espacios (p. ej., 00 01 02 03)",
     "enterHexValue": "Introduzca el valor hexadecimal",
     "enterKeyName": "Introduzca el nombre de la clave",
     "enterStringValue": "Introduzca el valor de la cadena",
-    "enterStrings": "Introducir cadenas",
+    "enterStrings": "Ingrese cada cadena en una línea nueva",
     "enterValueName": "Introduzca el nombre del valor",
     "errors": {
       "createKey": "No se pudo crear la clave del registro",
@@ -452,11 +452,11 @@
         "title": "Iniciar sesión de terminal"
       }
     },
-    "noOnlineDevices": "Sin dispositivos en línea",
-    "noSearchMatches": "No hay coincidencias de búsqueda",
+    "noOnlineDevices": "No hay dispositivos en línea disponibles.",
+    "noSearchMatches": "Ningún dispositivo coincide con su búsqueda.",
     "openDeviceList": "Abrir lista de dispositivos",
     "os": "os",
-    "searchPlaceholder": "Buscar dispositivos..."
+    "searchPlaceholder": "Buscar dispositivos en línea..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -564,7 +564,7 @@
       "start": "Comenzar",
       "stop": "Detener"
     },
-    "adjustSearch": "Ajustar búsqueda",
+    "adjustSearch": "Intente ajustar su búsqueda",
     "arguments": "Argumentos",
     "author": "Autor",
     "deviceId": "Dispositivo ID: {{id}}",
@@ -586,7 +586,7 @@
     "runNow": "Ejecutar ahora",
     "searchPlaceholder": "Buscar tareas...",
     "startIn": "Empezar en",
-    "startProgram": "Iniciar programa",
+    "startProgram": "Iniciar un programa",
     "status": {
       "disabled": "Desactivado",
       "queued": "En cola",
@@ -633,7 +633,7 @@
       "stop": "Detener"
     },
     "actionBlocked": "Acción bloqueada",
-    "adjustHint": "Ajustar sugerencia",
+    "adjustHint": "Intente ajustar la búsqueda o los filtros.",
     "agentRestartConfirm": "Reiniciar agente Confirmar",
     "agentStopBlocked": "Agente detenido bloqueado",
     "allStatus": "Todo el estado",
@@ -688,7 +688,7 @@
     },
     "noSessions": "Sin sesiones",
     "page": "Página {{current}} de {{total}}",
-    "searchPlaceholder": "Buscar sesiones...",
+    "searchPlaceholder": "Buscar por dispositivo o usuario...",
     "showing": "Mostrando {{start}} a {{end}} de {{total}}",
     "stats": {
       "averageDuration": "Duración promedio",
@@ -756,7 +756,7 @@
     "deletePermanently": "Eliminar permanentemente",
     "deleteSelected": "Eliminar permanentemente ({{count}})",
     "empty": "Vacío",
-    "emptyConfirm": "Vacío Confirmar",
+    "emptyConfirm": "¿Vaciar toda la papelera? Todos los elementos se eliminarán de forma permanente. Esta acción no se puede deshacer.",
     "emptyTrash": "Vaciar la papelera",
     "errors": {
       "empty": "No se pudo vaciar",
@@ -775,13 +775,13 @@
   "vncViewer": {
     "connect": "Conectar",
     "credentials": {
-      "macDescription": "Descripción de Mac",
+      "macDescription": "El Mac usa la autenticación de Apple Remote Desktop. Ingrese una cuenta de usuario de macOS con acceso a Compartir pantalla (el nombre de inicio de sesión y la contraseña del usuario).",
       "macLoginRequired": "Se requiere inicio de sesión en Mac",
       "macPassword": "Contraseña de Mac",
-      "macUsername": "Nombre de usuario de Mac",
+      "macUsername": "Nombre de usuario de macOS",
       "password": "Contraseña",
       "passwordRequired": "Se requiere contraseña",
-      "vncDescription": "Descripción de VNC"
+      "vncDescription": "Ingrese la contraseña establecida en System Settings > General > Sharing > Screen Sharing > Computer Settings."
     },
     "disconnect": "Desconectar",
     "errors": {
@@ -803,7 +803,7 @@
       "error": "Error",
       "passwordRequired": "Se requiere contraseña"
     },
-    "syncClipboard": "Sincronizar portapapeles",
+    "syncClipboard": "Sincronizar el portapapeles con el equipo remoto",
     "tunnel": "Túnel {{id}}"
   },
   "vncViewerPage": {

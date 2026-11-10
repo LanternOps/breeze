@@ -161,7 +161,7 @@
     "dateRange": "Intervallo di date",
     "detailsTitle": "Titolo dei dettagli",
     "eventCount": "Numero di eventi",
-    "eventIdPlaceholder": "Segnaposto ID evento",
+    "eventIdPlaceholder": "ad es. 7036",
     "eventLogs": "Registri eventi",
     "eventsTitle": "Eventi di {{name}}",
     "fields": {
@@ -189,9 +189,9 @@
     },
     "logTitle": "Registro {{name}}",
     "lookupEventId": "Cerca ID evento",
-    "noEvents": "Nessun evento",
-    "noHandler": "Nessun gestore",
-    "noMatches": "Nessuna corrispondenza",
+    "noEvents": "Nessun log eventi disponibile.",
+    "noHandler": "Nessun log eventi disponibile. Collega un gestore di query per recuperare gli eventi da questo dispositivo.",
+    "noMatches": "Nessun evento trovato. Prova a modificare i filtri.",
     "page": "Pagina {{current}} di {{total}}",
     "ranges": {
       "allTime": "Dall'inizio",
@@ -201,7 +201,7 @@
       "lastHour": "Ultima ora"
     },
     "recordId": "ID record: {{id}}",
-    "searchPlaceholder": "Segnaposto di ricerca",
+    "searchPlaceholder": "Cerca eventi...",
     "showing": "Visualizzazione da {{start}} a {{end}} di {{total}}",
     "time": {
       "daysAgo": "{{count}} g fa",
@@ -241,7 +241,7 @@
       "minutesAgo": "{{count}} min fa"
     },
     "title": "Attività file",
-    "unverifiedHint": "Suggerimento non verificato"
+    "unverifiedHint": "Il dispositivo non ha risposto in tempo — aggiorna per verificare"
   },
   "fileManager": {
     "activeCount": "{{count}} attivi",
@@ -325,7 +325,7 @@
     "noMatches": "Nessuna corrispondenza",
     "processMemory": "Memoria del processo",
     "processes": "Processi",
-    "searchPlaceholder": "Segnaposto di ricerca",
+    "searchPlaceholder": "Cerca per nome o PID...",
     "showing": "Visualizzazione di {{shown}} processi su {{total}}",
     "status": {
       "idle": "Inattivo",
@@ -387,11 +387,11 @@
     "device": "Dispositivo: {{id}}",
     "editValue": "Modifica valore",
     "enterDecimalValue": "Inserisci valore decimale",
-    "enterHexBytes": "Inserisci byte esadecimali",
+    "enterHexBytes": "Inserisci byte esadecimali separati da spazi (ad es. 00 01 02 03)",
     "enterHexValue": "Inserisci valore esadecimale",
     "enterKeyName": "Inserisci nome chiave",
     "enterStringValue": "Inserisci valore stringa",
-    "enterStrings": "Inserisci stringhe",
+    "enterStrings": "Inserisci ogni stringa su una nuova riga",
     "enterValueName": "Inserisci nome valore",
     "errors": {
       "createKey": "Impossibile creare la chiave di registro",
@@ -423,7 +423,7 @@
     "noValues": "Nessun valore",
     "parentPath": "Percorso padre",
     "root": "Root",
-    "searchPlaceholder": "Segnaposto di ricerca",
+    "searchPlaceholder": "Cerca valori...",
     "title": "Editor del registro",
     "value": "Valore",
     "valueCount": "Numero di valori",
@@ -452,11 +452,11 @@
         "title": "Avvia sessione terminale"
       }
     },
-    "noOnlineDevices": "Nessun dispositivo online",
-    "noSearchMatches": "Nessun risultato di ricerca",
+    "noOnlineDevices": "Nessun dispositivo online disponibile.",
+    "noSearchMatches": "Nessun dispositivo corrisponde alla ricerca.",
     "openDeviceList": "Apri elenco dispositivi",
     "os": "Sistema operativo",
-    "searchPlaceholder": "Segnaposto di ricerca"
+    "searchPlaceholder": "Cerca dispositivi online..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -564,7 +564,7 @@
       "start": "Avvia",
       "stop": "Arresta"
     },
-    "adjustSearch": "Modifica la ricerca",
+    "adjustSearch": "Prova a modificare la ricerca",
     "arguments": "Argomenti",
     "author": "Autore",
     "deviceId": "ID dispositivo: {{id}}",
@@ -586,7 +586,7 @@
     "runNow": "Esegui ora",
     "searchPlaceholder": "Cerca attività...",
     "startIn": "Avvia in",
-    "startProgram": "Avvia programma",
+    "startProgram": "Avvia un programma",
     "status": {
       "disabled": "Disabilitata",
       "queued": "In coda",
@@ -633,7 +633,7 @@
       "stop": "Arresta"
     },
     "actionBlocked": "Azione bloccata",
-    "adjustHint": "Modifica il suggerimento",
+    "adjustHint": "Prova a modificare la ricerca o i filtri.",
     "agentRestartConfirm": "Conferma il riavvio dell'agente",
     "agentStopBlocked": "Arresto dell'agente bloccato",
     "allStatus": "Tutti gli stati",
@@ -652,7 +652,7 @@
     "page": "Pagina {{current}} di {{total}}",
     "refreshHint": "Aggiorna per verificare i servizi.",
     "restartService": "Riavvia servizio",
-    "searchPlaceholder": "Segnaposto di ricerca",
+    "searchPlaceholder": "Cerca servizi...",
     "serviceConfirm": "Vuoi davvero {{action}} il servizio {{service}}?",
     "showing": "Visualizzazione da {{start}} a {{end}} di {{total}}",
     "startService": "Avvia servizio",
@@ -688,7 +688,7 @@
     },
     "noSessions": "Nessuna sessione",
     "page": "Pagina {{current}} di {{total}}",
-    "searchPlaceholder": "Segnaposto di ricerca",
+    "searchPlaceholder": "Cerca per dispositivo o utente...",
     "showing": "Visualizzazione da {{start}} a {{end}} di {{total}}",
     "stats": {
       "averageDuration": "Durata media",
@@ -756,7 +756,7 @@
     "deletePermanently": "Elimina definitivamente",
     "deleteSelected": "Elimina definitivamente ({{count}})",
     "empty": "Vuoto",
-    "emptyConfirm": "Conferma svuotamento",
+    "emptyConfirm": "Svuotare tutto il cestino? Tutti gli elementi verranno eliminati definitivamente. L'operazione non può essere annullata.",
     "emptyTrash": "Svuota cestino",
     "errors": {
       "empty": "Impossibile svuotare",
@@ -775,13 +775,13 @@
   "vncViewer": {
     "connect": "Connetti",
     "credentials": {
-      "macDescription": "Descrizione Mac",
+      "macDescription": "Il Mac usa l'autenticazione di Apple Remote Desktop. Inserisci un account utente macOS con accesso alla Condivisione schermo (nome di accesso e password dell'utente).",
       "macLoginRequired": "Accesso Mac obbligatorio",
       "macPassword": "Password Mac",
-      "macUsername": "Nome utente Mac",
+      "macUsername": "Nome utente macOS",
       "password": "Password",
       "passwordRequired": "Password obbligatoria",
-      "vncDescription": "Descrizione VNC"
+      "vncDescription": "Inserisci la password impostata in System Settings > General > Sharing > Screen Sharing > Computer Settings."
     },
     "disconnect": "Disconnetti",
     "errors": {
@@ -803,7 +803,7 @@
       "error": "Errore",
       "passwordRequired": "Password obbligatoria"
     },
-    "syncClipboard": "Sincronizza appunti",
+    "syncClipboard": "Sincronizza gli appunti con il dispositivo remoto",
     "tunnel": "Tunnel {{id}}"
   },
   "vncViewerPage": {

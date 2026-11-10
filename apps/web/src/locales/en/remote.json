@@ -161,7 +161,7 @@
     "dateRange": "Date Range",
     "detailsTitle": "Details Title",
     "eventCount": "Event Count",
-    "eventIdPlaceholder": "Event Id Placeholder",
+    "eventIdPlaceholder": "e.g., 7036",
     "eventLogs": "Event Logs",
     "eventsTitle": "{{name}} Events",
     "fields": {
@@ -189,9 +189,9 @@
     },
     "logTitle": "{{name}} Log",
     "lookupEventId": "Lookup Event Id",
-    "noEvents": "No Events",
-    "noHandler": "No Handler",
-    "noMatches": "No Matches",
+    "noEvents": "No event logs available.",
+    "noHandler": "No event logs available. Connect a query handler to fetch events from this device.",
+    "noMatches": "No events found. Try adjusting your filters.",
     "page": "Page {{current}} of {{total}}",
     "ranges": {
       "allTime": "All Time",
@@ -201,7 +201,7 @@
       "lastHour": "Last Hour"
     },
     "recordId": "Record ID: {{id}}",
-    "searchPlaceholder": "Search Placeholder",
+    "searchPlaceholder": "Search events...",
     "showing": "Showing {{start}} to {{end}} of {{total}}",
     "time": {
       "daysAgo": "{{count}}d ago",
@@ -226,14 +226,14 @@
     "clearActivity": "Clear activity",
     "clear": "Clear",
     "empty": "Empty",
-    "hideActivity": "Hide Activity",
-    "operationFailed": "Operation Failed",
+    "hideActivity": "Hide activity",
+    "operationFailed": "Operation failed",
     "results": {
       "failed": "Failed",
       "success": "Success",
       "unverified": "Unverified"
     },
-    "showActivity": "Show Activity",
+    "showActivity": "Show activity",
     "time": {
       "daysAgo": "{{count}}d ago",
       "hoursAgo": "{{count}}h ago",
@@ -241,7 +241,7 @@
       "minutesAgo": "{{count}}m ago"
     },
     "title": "File Activity",
-    "unverifiedHint": "Unverified Hint"
+    "unverifiedHint": "Device didn't respond in time — refresh to verify"
   },
   "fileManager": {
     "activeCount": "{{count}} active",
@@ -270,7 +270,7 @@
       "uploadTimeout": "Upload timed out after 2 minutes. The file may still be written on the device — refresh to verify."
     },
     "freeOf": "{{free}} free of {{total}}",
-    "goUp": "Go Up",
+    "goUp": "Go up",
     "home": "Home",
     "modified": "Modified",
     "moveTo": "Move To",
@@ -295,7 +295,7 @@
     "errors": {
       "loadDirectory": "Failed to load directory"
     },
-    "goUp": "Go Up",
+    "goUp": "Go up",
     "noSubdirectories": "No Subdirectories",
     "selectFolder": "Select Folder",
     "selectedFolder": "Selected Folder"
@@ -325,7 +325,7 @@
     "noMatches": "No Matches",
     "processMemory": "Process Memory",
     "processes": "Processes",
-    "searchPlaceholder": "Search Placeholder",
+    "searchPlaceholder": "Search by name or PID...",
     "showing": "Showing {{shown}} of {{total}} processes",
     "status": {
       "idle": "Idle",
@@ -358,7 +358,7 @@
     },
     "openInNewTab": "Open In New Tab",
     "preparingConnection": "Preparing proxy connection…",
-    "proxiedService": "Proxied Service",
+    "proxiedService": "Proxied service",
     "reconnectSelfSigned": "Reconnect allowing self-signed certificate",
     "sessionExpired": {
       "title": "Session expired",
@@ -377,7 +377,7 @@
     "tunnelId": "Tunnel Id"
   },
   "registryEditor": {
-    "copyPath": "Copy Path",
+    "copyPath": "Copy path",
     "data": "Data",
     "decimal": "Decimal",
     "deleteKey": "Delete Key",
@@ -387,12 +387,12 @@
     "device": "Device: {{id}}",
     "editValue": "Edit Value",
     "enterDecimalValue": "Enter Decimal Value",
-    "enterHexBytes": "Enter Hex Bytes",
+    "enterHexBytes": "Enter hex bytes separated by spaces (e.g., 00 01 02 03)",
     "enterHexValue": "Enter Hex Value",
-    "enterKeyName": "Enter Key Name",
-    "enterStringValue": "Enter String Value",
-    "enterStrings": "Enter Strings",
-    "enterValueName": "Enter Value Name",
+    "enterKeyName": "Enter key name",
+    "enterStringValue": "Enter string value",
+    "enterStrings": "Enter each string on a new line",
+    "enterValueName": "Enter value name",
     "errors": {
       "createKey": "Failed to create registry key",
       "createKeyDetail": "Failed to create registry key: {{message}}",
@@ -423,19 +423,19 @@
     "noValues": "No Values",
     "parentPath": "Parent Path",
     "root": "Root",
-    "searchPlaceholder": "Search Placeholder",
+    "searchPlaceholder": "Search values...",
     "title": "Registry Editor",
     "value": "Value",
     "valueCount": "Value Count",
     "valueData": "Value Data",
     "valueName": "Value Name",
-    "valueNotSet": "Value Not Set",
+    "valueNotSet": "(value not set)",
     "valueCount_one": "{{count}} value",
     "valueCount_other": "{{count}} values"
   },
   "remoteDeviceLauncherPage": {
     "action": "Action",
-    "backToRemoteAccess": "Back To Remote Access",
+    "backToRemoteAccess": "Back to Remote Access",
     "errors": {
       "loadDevices": "Failed to load devices"
     },
@@ -452,11 +452,11 @@
         "title": "Start Terminal Session"
       }
     },
-    "noOnlineDevices": "No Online Devices",
-    "noSearchMatches": "No Search Matches",
+    "noOnlineDevices": "No online devices are available.",
+    "noSearchMatches": "No devices match your search.",
     "openDeviceList": "Open Device List",
     "os": "Os",
-    "searchPlaceholder": "Search Placeholder"
+    "searchPlaceholder": "Search online devices..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -479,7 +479,7 @@
   "remoteTerminal": {
     "connectedBang": "Connected!",
     "connectingTo": "Connecting to {{hostname}}...",
-    "copySelection": "Copy Selection",
+    "copySelection": "Copy selection",
     "disconnect": "Disconnect",
     "errorMessage": "Error: {{message}}",
     "errors": {
@@ -495,7 +495,7 @@
     "exitFullscreen": "Exit Fullscreen",
     "fullscreen": "Fullscreen",
     "reconnect": "Reconnect",
-    "sessionEnded": "Session Ended",
+    "sessionEnded": "Session ended",
     "status": {
       "connected": "Connected",
       "connecting": "Connecting...",
@@ -564,7 +564,7 @@
       "start": "Start",
       "stop": "Stop"
     },
-    "adjustSearch": "Adjust Search",
+    "adjustSearch": "Try adjusting your search query",
     "arguments": "Arguments",
     "author": "Author",
     "deviceId": "Device ID: {{id}}",
@@ -583,10 +583,10 @@
     "notLoaded": "No scheduled tasks have been loaded for this device",
     "programScript": "Program/script",
     "runAs": "Run As",
-    "runNow": "Run Now",
+    "runNow": "Run now",
     "searchPlaceholder": "Search tasks...",
     "startIn": "Start In",
-    "startProgram": "Start Program",
+    "startProgram": "Start a program",
     "status": {
       "disabled": "Disabled",
       "queued": "Queued",
@@ -633,7 +633,7 @@
       "stop": "Stop"
     },
     "actionBlocked": "Action Blocked",
-    "adjustHint": "Adjust Hint",
+    "adjustHint": "Try adjusting your search or filters.",
     "agentRestartConfirm": "Agent Restart Confirm",
     "agentStopBlocked": "Agent Stop Blocked",
     "allStatus": "All Status",
@@ -646,13 +646,13 @@
     "executablePath": "Executable Path",
     "loading": "Loading",
     "noDescription": "No description available",
-    "noServicesAvailable": "No Services Available",
-    "noServicesFound": "No Services Found",
+    "noServicesAvailable": "No services available",
+    "noServicesFound": "No services found",
     "ok": "Ok",
     "page": "Page {{current}} of {{total}}",
     "refreshHint": "Try refreshing to check for services.",
     "restartService": "Restart Service",
-    "searchPlaceholder": "Search Placeholder",
+    "searchPlaceholder": "Search services...",
     "serviceConfirm": "Are you sure you want to {{action}} the service {{service}}?",
     "showing": "Showing {{start}} to {{end}} of {{total}}",
     "startService": "Start Service",
@@ -688,7 +688,7 @@
     },
     "noSessions": "No Sessions",
     "page": "Page {{current}} of {{total}}",
-    "searchPlaceholder": "Search Placeholder",
+    "searchPlaceholder": "Search by device or user...",
     "showing": "Showing {{start}} to {{end}} of {{total}}",
     "stats": {
       "averageDuration": "Average Duration",
@@ -713,7 +713,7 @@
       "fileTransfer": "File Transfer",
       "terminal": "Terminal"
     },
-    "viewDetails": "View Details",
+    "viewDetails": "View details",
     "yesterdayAt": "Yesterday {{time}}"
   },
   "sessionHistoryPage": {
@@ -756,7 +756,7 @@
     "deletePermanently": "Delete Permanently",
     "deleteSelected": "Delete Permanently ({{count}})",
     "empty": "Empty",
-    "emptyConfirm": "Empty Confirm",
+    "emptyConfirm": "Empty the entire trash? All items will be permanently deleted. This cannot be undone.",
     "emptyTrash": "Empty Trash",
     "errors": {
       "empty": "Failed to empty",
@@ -775,13 +775,13 @@
   "vncViewer": {
     "connect": "Connect",
     "credentials": {
-      "macDescription": "Mac Description",
+      "macDescription": "The Mac is using Apple Remote Desktop authentication. Enter a macOS user account with Screen Sharing access (the user's login name and password).",
       "macLoginRequired": "Mac Login Required",
       "macPassword": "Mac Password",
-      "macUsername": "Mac Username",
+      "macUsername": "macOS username",
       "password": "Password",
       "passwordRequired": "Password required",
-      "vncDescription": "Vnc Description"
+      "vncDescription": "Enter the password set in System Settings > General > Sharing > Screen Sharing > Computer Settings."
     },
     "disconnect": "Disconnect",
     "errors": {
@@ -803,7 +803,7 @@
       "error": "Error",
       "passwordRequired": "Password required"
     },
-    "syncClipboard": "Sync Clipboard",
+    "syncClipboard": "Sync clipboard to remote",
     "tunnel": "Tunnel {{id}}"
   },
   "vncViewerPage": {
