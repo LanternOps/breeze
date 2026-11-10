@@ -197,7 +197,7 @@ export default function OrgDomainsTab({ orgId }: Props) {
           orgId={orgId}
           notice={passwordFallback}
           testIdPrefix="org-domains"
-          rerun={{ href: '#portal' }}
+          rerun={{ hash: 'portal' }}
           onDismissed={() => setPasswordFallback(null)}
         />
       )}

@@ -6,13 +6,18 @@ import { navigateTo } from '@/lib/navigation';
 import { ActionError, runAction } from '@/lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { showToast } from '../../shared/Toast';
+import HashLink from '../../shared/HashLink';
 import type { PortalPasswordFallbackCause, PortalPasswordFallbackNotice } from './types';
 
 type Props = {
   orgId: string;
   notice: PortalPasswordFallbackNotice;
-  /** Where "Re-run the tenant proof" goes: a link (Domains tab → `#portal`), or an in-place action (the Sign-in card). */
-  rerun: { href: string } | { onClick: () => void };
+  /**
+   * Where "Re-run the tenant proof" goes: another tab of this page by its hash
+   * (Domains → `portal`, rendered as a HashLink so the tab actually switches
+   * under Astro's ClientRouter), or an in-place action (the Sign-in card).
+   */
+  rerun: { hash: string } | { onClick: () => void };
   /** The server recorded the dismissal; the parent hides the notice. */
   onDismissed: () => void;
   testIdPrefix: string;
@@ -77,10 +82,10 @@ export function PasswordFallbackNotice({ orgId, notice, rerun, onDismissed, test
       </p>
       <p>{t('portalAccessPolicy.passwordFallbackNotice.body')}</p>
       <div className="flex flex-wrap gap-3 pt-1">
-        {'href' in rerun ? (
-          <a href={rerun.href} data-testid={`${id}-rerun`} className={rerunClass}>
+        {'hash' in rerun ? (
+          <HashLink hash={rerun.hash} data-testid={`${id}-rerun`} className={rerunClass}>
             {t('portalAccessPolicy.passwordFallbackNotice.rerun')}
-          </a>
+          </HashLink>
         ) : (
           <button type="button" data-testid={`${id}-rerun`} onClick={rerun.onClick} className={rerunClass}>
             {t('portalAccessPolicy.passwordFallbackNotice.rerun')}

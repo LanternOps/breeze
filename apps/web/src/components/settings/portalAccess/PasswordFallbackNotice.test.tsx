@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { PasswordFallbackNotice } from './PasswordFallbackNotice';
 import type { PortalPasswordFallbackNotice } from './types';
+import { installAstroClientRouterStandIn } from '../../../__tests__/astroClientRouterStandIn';
 
 const fetchWithAuthMock = vi.fn();
 vi.mock('../../../stores/auth', () => ({
@@ -23,7 +24,7 @@ function json(body: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
 }
 
-function renderNotice(notice: PortalPasswordFallbackNotice = NOTICE, rerun = { href: '#portal' }) {
+function renderNotice(notice: PortalPasswordFallbackNotice = NOTICE, rerun: { hash: string } | { onClick: () => void } = { hash: 'portal' }) {
   const onDismissed = vi.fn();
   render(<PasswordFallbackNotice orgId={ORG} notice={notice} rerun={rerun} onDismissed={onDismissed} testIdPrefix="pf" />);
   return { onDismissed };
@@ -54,6 +55,26 @@ describe('PasswordFallbackNotice (#11582)', () => {
   ] as const)('cause %s has its own sentence', (cause, text) => {
     renderNotice({ ...NOTICE, cause });
     expect(screen.getByTestId('pf-password-fallback-cause')).toHaveTextContent(text);
+  });
+
+  it('the re-run link fires hashchange under the Astro router (a bare #anchor would not switch tabs)', async () => {
+    const router = installAstroClientRouterStandIn();
+    window.location.hash = '#domains';
+    try {
+      renderNotice();
+      const changed = new Promise<string>((resolve) => {
+        window.addEventListener('hashchange', (e) => {
+          if ((e as HashChangeEvent).newURL.endsWith('#portal')) resolve('ok');
+        });
+      });
+      fireEvent.click(screen.getByTestId('pf-password-fallback-rerun'));
+      expect(window.location.hash).toBe('#portal');
+      await expect(changed).resolves.toBe('ok');
+      expect(router.intercepted).toHaveLength(0);
+    } finally {
+      router.uninstall();
+      window.location.hash = '';
+    }
   });
 
   it('a re-run action can be a button (the Sign-in card focuses its own proof controls)', () => {
