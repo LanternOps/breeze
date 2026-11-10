@@ -1,0 +1,98 @@
+---
+title: Customer Domain Verification
+description: Add a customer's email domains to their organization, prove the customer owns them by DNS, Microsoft or Google Workspace, and understand how verification is kept up to date.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Each customer organization can have a list of email domains, managed under **Settings → Organizations → [organization] → Domains** (`/settings/organizations/<id>#domains`). A domain can be in one of two states:
+
+| State | Meaning | Used for |
+|---|---|---|
+| **Declared** | The domain was added to the organization. Shown as "declared — mail routing only". | Routing inbound email to the organization's tickets. |
+| **Verified** | Breeze has proof the customer owns the domain. | Everything a declared domain does, plus features that need proof of ownership: portal self-registration and Sign in with Google (in later releases). |
+
+Verification matters because anyone can type a domain name. Only a verified domain tells Breeze that a person with an address at that domain really belongs to the customer.
+
+<Aside>
+  Sign in with Microsoft does not use domains. It relies on the customer's proven Microsoft Entra tenant instead; see [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/).
+</Aside>
+
+## Who can manage domains
+
+Partner and system users with an admin role and access to all organizations can add, verify and remove domains. This is the same governance as ticket configuration. The **Domains** tab is not shown to organization-scoped users.
+
+**Settings → Ticketing → Email** still shows a read-only, partner-wide list of customer email domains. Each row links to its organization's Domains tab. The `/ticket-config/inbound-domains` API and the `manage_ticket_config` AI tool continue to work.
+
+## Verify a domain
+
+Add the domain to the organization (**Add a domain** under the list), then choose **Verify** on its row and pick one of three methods. A domain that is turned off must be turned back on before it can be verified.
+
+### DNS TXT record
+
+<Steps>
+1. On the domain's row, choose **Verify**, select **DNS TXT record**, then choose **Get DNS record**.
+2. At your customer's DNS provider, publish a TXT record using the values Breeze shows:
+
+   | Field | Value |
+   |---|---|
+   | Type | `TXT` |
+   | Host | `_breeze-verify.contoso.com` |
+   | Value | `breeze-verification=<token>` |
+
+3. Choose **Check now**.
+</Steps>
+
+Other TXT records at the same host can stay; Breeze looks for its own value among them. DNS changes can take a while to propagate, so if the first check misses, wait and try again.
+
+If the domain is later moved to another organization, its token rotates and a new record must be published.
+
+### Microsoft
+
+The domain must be a verified domain of the organization's **proven** Microsoft Entra tenant. Breeze reads the tenant's domains through the organization's Microsoft 365 connection for that tenant.
+
+- A tenant proven only by a proof link, with no Microsoft 365 connection, cannot use this method. Use DNS, or connect Microsoft 365.
+- The tenant's initial `*.onmicrosoft.com` domain is never verifiable.
+
+See [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/) for how a tenant becomes proven.
+
+### Google Workspace directory
+
+The domain, or a verified alias of it, must be verified in the organization's Google Workspace directory. Breeze reads it through the organization's Google Workspace connection.
+
+The connection's domain-wide delegation grant must include the scope `https://www.googleapis.com/auth/admin.directory.domain.readonly`. Existing connections keep working without it; only this method needs it. A check without the scope reports the missing scope. See [Identity integrations](/features/identity-integrations/).
+
+## Keeping verification current
+
+Verified domains are re-checked about once a day.
+
+- One failed DNS or directory lookup never clears a verification. **Two consecutive definitive misses** clear it.
+- A removed Microsoft tenant proof, or a deleted and recreated Google Workspace connection, clears it at once.
+- **Seven days** without a successful check clears it as stale.
+- Transient errors, such as DNS timeouts or a service outage, never count as a miss.
+
+Partner admins get an email when a verification is lost. The domain stays declared, so mail routing keeps working.
+
+**Check now** on a verified domain refreshes it. A failed manual check is reported but changes nothing. **Remove verification** drops the proof and keeps the domain for mail routing.
+
+Turning a domain off (inactive) suspends it for mail routing and sign-in. It keeps its verification.
+
+## A domain is verified for one organization
+
+A domain can be verified for only one organization across the whole platform.
+
+- If another organization already holds the domain, it keeps it for as long as its own evidence still checks out. Ask the previous provider to remove their DNS record or directory connection, then check again.
+- If their evidence no longer checks out, your successful check takes the domain over and the previous holder is notified.
+
+## Troubleshooting
+
+The result of each check is shown inline on the domain's row.
+
+| Result | What to do |
+|---|---|
+| The DNS record was not found | Confirm the host is exactly `_breeze-verify.contoso.com` and the value is exactly the one shown, including the `breeze-verification=` prefix. If the domain was moved between organizations, its token rotated: publish the new value. Wait for propagation and check again. |
+| The domain is not a verified domain in the directory (Microsoft) | Confirm the domain is verified in the customer's Entra tenant, and that it is not the `*.onmicrosoft.com` domain. |
+| No Microsoft 365 connection | The tenant is proven only by a proof link. Connect Microsoft 365, or use DNS. |
+| The delegation grant is missing a scope (Google) | Add `https://www.googleapis.com/auth/admin.directory.domain.readonly` to the domain-wide delegation grant in the Google Admin console. |
+| This domain is verified for another organization | Ask the previous provider to remove their DNS record or directory connection. |
+| The check could not finish (DNS, Microsoft 365 or Google unreachable, or a timeout) | Try again later. Transient errors never clear an existing verification. |
