@@ -1002,6 +1002,7 @@
       "contract_document": "Documento de contrato",
       "contract_template": "Modelo de contrato",
       "custom_field": "Campo personalizado",
+      "customer_email_domain": "Domínio de e-mail do cliente",
       "deployment": "Implantação",
       "deployment_invite": "Convite de implantação",
       "deployment_target": "Destino de implantação",

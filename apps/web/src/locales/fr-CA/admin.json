@@ -1002,6 +1002,7 @@
       "contract_document": "Document de contrat",
       "contract_template": "Modèle de contrat",
       "custom_field": "Champ personnalisé",
+      "customer_email_domain": "Domaine de courriel du client",
       "deployment": "Déploiement",
       "deployment_invite": "Invitation de déploiement",
       "deployment_target": "Cible de déploiement",

@@ -133,7 +133,7 @@ const EXPECTED_NAMES = [
   'maintenanceRebootWorker', 'oemUpdatesWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker', 'securityScanWorker', 'peripheralJobs',
   'deviceGroupJobs', 'partnerGroupEvaluationJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
-  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
+  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker', 'portalDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
   'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'networkIsolationSweeper', 'workspaceReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker', 'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep',

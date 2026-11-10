@@ -97,6 +97,10 @@ export const MAIL_PURPOSES = {
   // mail from Breeze to the partner's own staff. Send site:
   // services/portalEntraTenantProof.ts (EmailService.sendPortalEntraTenantDisplaced).
   'partner.portal_entra_tenant.displaced': { lane: 'platform' },
+  // Portal registration W5 (#11382): Breeze tells a partner's admins that a
+  // customer org's domain is no longer verified. Platform lane, like the entra
+  // notice above. Send site: EmailService.sendPortalDomainVerificationLost.
+  'partner.portal_domain_verification.lost': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 

@@ -210,6 +210,26 @@ export interface PortalEntraTenantDisplacedEmailParams {
   tenantId: string;
 }
 
+export type PortalDomainVerificationLostReason =
+  | 'record_missing'
+  | 'not_in_directory'
+  | 'tenant_not_proven'
+  | 'connection_missing'
+  | 'stale'
+  | 'displaced';
+
+/**
+ * Portal registration W5 (#11382): a customer org's domain stopped being
+ * verified. Platform mail from Breeze to the partner's active admins.
+ */
+export interface PortalDomainVerificationLostEmailParams {
+  to: string | string[];
+  partnerName: string;
+  orgName: string;
+  domain: string;
+  reason: PortalDomainVerificationLostReason;
+}
+
 export interface VerificationEmailParams {
   to: string | string[];
   name?: string;
@@ -707,6 +727,17 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'partner.portal_entra_tenant.displaced',
+    });
+  }
+
+  async sendPortalDomainVerificationLost(params: PortalDomainVerificationLostEmailParams): Promise<void> {
+    const template = buildPortalDomainVerificationLostTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'partner.portal_domain_verification.lost',
     });
   }
 }
@@ -1297,6 +1328,43 @@ export function buildPortalEntraTenantDisplacedTemplate(params: PortalEntraTenan
     footer: supportFooter(undefined, 'Need help? Contact'),
   });
   const text = [lead, impact, next, why].join('\n');
+  return { subject, html, text };
+}
+
+const PORTAL_DOMAIN_LOST_REASON_TEXT: Record<PortalDomainVerificationLostReason, string> = {
+  record_missing: 'the DNS verification record was not found on two consecutive daily checks',
+  not_in_directory: "the domain is no longer a verified domain in the customer's Microsoft 365 or Google Workspace directory",
+  tenant_not_proven: "the organization's Microsoft Entra tenant is no longer proven",
+  connection_missing: 'the Microsoft 365 or Google Workspace connection used to verify it was removed',
+  stale: 'it could not be re-checked for 7 days',
+  displaced: "another organization proved control of the domain while this organization's evidence no longer checked out",
+};
+
+/**
+ * Domain verification lost (portal registration W5 #11382): sent to the
+ * partner's active admins when a customer org's domain stops being verified.
+ * A notice with no link. Breeze-branded platform mail, same idiom as
+ * buildPortalEntraTenantDisplacedTemplate.
+ */
+export function buildPortalDomainVerificationLostTemplate(params: PortalDomainVerificationLostEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const domain = params.domain.trim();
+  const subject = `Domain verification lost: ${domain}`;
+  const lead = `${domain} is no longer verified for ${orgName}, because ${PORTAL_DOMAIN_LOST_REASON_TEXT[params.reason]}.`;
+  const impact = `Portal self-registration and Google sign-in for ${domain} stop until it is verified again under Organization › Domains.`;
+  const why = `You're receiving this because you administer ${params.partnerName} in Breeze.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: `${domain} is no longer verified for ${orgName}.`,
+    heading: 'Domain verification lost',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(impact)}</p>
+      <p style="${MUTED_PARA}">${escapeHtml(why)}</p>
+    `,
+    footer: supportFooter(undefined, 'Need help? Contact'),
+  });
+  const text = [lead, impact, why].join('\n');
   return { subject, html, text };
 }
 

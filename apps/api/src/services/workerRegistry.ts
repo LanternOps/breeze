@@ -1411,6 +1411,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'portalDomainRecheckWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../services/portalDomainRecheckWorker');
+      return { init: m.initializePortalDomainRecheckWorker, shutdown: m.shutdownPortalDomainRecheckWorker };
+    },
+  },
+  {
     name: 'incidentCorrelationWorker',
     placement: 'global',
     load: async () => {
