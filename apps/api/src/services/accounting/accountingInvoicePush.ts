@@ -47,7 +47,7 @@
  */
 
 import { and, eq, isNull, notInArray, or } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../../db';
+import { db, runOutsideDbContext, withDbTransaction } from '../../db';
 import { accountingEntityMappings, invoiceLines, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
@@ -294,7 +294,9 @@ async function persistInvoicePreflightErrorInOwnContext(
       }
 
       try {
-        await db.insert(accountingEntityMappings).values({
+        // In a savepoint, or the caught conflict is rethrown when this context's
+        // transaction ends and reported anyway (#11203).
+        await withDbTransaction(async () => db.insert(accountingEntityMappings).values({
           integrationId: conn.id,
           partnerId,
           breezeEntityType: 'invoice',
@@ -303,7 +305,7 @@ async function persistInvoicePreflightErrorInOwnContext(
           linkStatus: 'create_new',
           syncStatus: 'error',
           lastError: message,
-        }).returning();
+        }).returning());
       } catch (err) {
         // A concurrent push (or a concurrent currency-error write for the
         // same invoice) claimed the row first between our read and this

@@ -283,6 +283,7 @@ function EvidenceLinks({ evidenceIds, timeline }: { evidenceIds: string[]; timel
     <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
       <span className="text-muted-foreground">{t('correlatedAlertGroups.evidence')}</span>
       {linkedItems.map((item) => (
+        // bare-hash-anchor-exempt: scroll-to-element jump to a DOM id, not hash-driven UI state
         <a
           key={item.id}
           href={`#${evidenceDomId(item.id)}`}

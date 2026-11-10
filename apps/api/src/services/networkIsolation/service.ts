@@ -20,6 +20,7 @@ import { generateEpisodeSecret, currentBreakGlassCodes } from './breakGlass';
 import { createEpisode, findUnresolvedEpisode, findUnconfirmedTombstone, withEpisodeLock, writeEpisodeSnapshot, toEpisodeSnapshot, listEpisodes, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { ISOLATION_SECRET_COLUMN } from './reconcile';
+import { NO_ISOLATION_POLICY, auditRefusedPolicyGroups, isolationPolicyPending, readIsolationPolicy } from './policy';
 import { captureException } from '../sentry';
 import { isolationStartGate, type IsolationStartRefusal } from './gates';
 export type { IsolationStartRefusal } from './gates';
@@ -28,8 +29,20 @@ export type IsolationRefusalCode = IsolationStartRefusal
   | 'device_not_found' | 'isolation_not_found' | 'relay_unavailable' | 'invalid_allowlist'
   | 'isolation_conflict' | 'isolation_secret_unavailable' | 'approval_mismatch'
   | 'device_offline' | 'device_decommissioned' | 'device_pending_assignment' | 'backup_helper_update_required';
-class IsolationRefusal extends Error { constructor(readonly code: IsolationRefusalCode, readonly networkIsolationUnsupportedReason?: string) { super(code); } }
-function refuse(code: IsolationRefusalCode, reason?: string): never { throw new IsolationRefusal(code, reason); }
+/** Why the management-plane allowlist could not be built. Fixed vocabulary: never echoes a configured value. */
+export type AllowlistReason = 'server_url_missing' | 'server_url_invalid' | 'backup_url_invalid' | 'relay_config_invalid' | 'policy_invalid' | 'allowlist_invalid';
+export function allowlistReasonOf(error: IsolationAllowlistError, serverUrl: string): AllowlistReason {
+  if (!serverUrl.trim()) return 'server_url_missing';
+  // A merged-destination failure joins its sources ("serverUrl, TURN_HOST"); the first one an admin can fix wins.
+  const sources = error.source.split(', ');
+  if (sources.includes('serverUrl')) return 'server_url_invalid';
+  if (sources.includes('AGENT_BACKUP_SERVER_URL')) return 'backup_url_invalid';
+  if (sources.some(s => s.startsWith('TURN_'))) return 'relay_config_invalid';
+  if (sources.some(s => s.startsWith('policyExtras'))) return 'policy_invalid';
+  return 'allowlist_invalid';
+}
+class IsolationRefusal extends Error { constructor(readonly code: IsolationRefusalCode, readonly networkIsolationUnsupportedReason?: string, readonly allowlistReason?: AllowlistReason) { super(code); } }
+function refuse(code: IsolationRefusalCode, reason?: string, allowlistReason?: AllowlistReason): never { throw new IsolationRefusal(code, reason, allowlistReason); }
 function secretUnavailable(error: unknown, deviceId: string, isolationId?: string): never {
   const fault = error instanceof Error ? error : new Error('Isolation secret unavailable');
   console.error('[isolation] secret unavailable', { deviceId, isolationId });
@@ -38,7 +51,7 @@ function secretUnavailable(error: unknown, deviceId: string, isolationId?: strin
 }
 
 /** A refusal rolls back the whole savepoint, including incident/action/command inserts. */
-async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: EpisodeTx) => Promise<T>): Promise<T | { error: IsolationRefusalCode; networkIsolationUnsupportedReason?: string }> {
+async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: EpisodeTx) => Promise<T>): Promise<T | { error: IsolationRefusalCode; networkIsolationUnsupportedReason?: string; allowlistReason?: AllowlistReason }> {
   try {
     return await withDbAccessContext(dbAccessContextFromAuth(auth), () => withDbTransaction(() => work(db as unknown as EpisodeTx)));
   } catch (error) {
@@ -46,7 +59,7 @@ async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: Episod
       // Run after the failed savepoint has rolled back: a refusal audit must survive it.
       console.info('[isolation] refused', { deviceId, code: error.code });
       writeRouteAudit({ ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: auth.orgId ?? undefined, action: 'device.isolation.refused', resourceType: 'device', resourceId: deviceId, details: { code: error.code } });
-      return { error: error.code, ...(error.networkIsolationUnsupportedReason ? { networkIsolationUnsupportedReason: error.networkIsolationUnsupportedReason } : {}) };
+      return { error: error.code, ...(error.networkIsolationUnsupportedReason ? { networkIsolationUnsupportedReason: error.networkIsolationUnsupportedReason } : {}), ...(error.allowlistReason ? { allowlistReason: error.allowlistReason } : {}) };
     }
     throw error;
   }
@@ -64,7 +77,7 @@ async function partnerFor(tx: EpisodeTx, orgId: string) {
 }
 function safeEpisode(row: DeviceNetworkIsolation) {
   const { breakGlassSecretEnc: _secret, ...episode } = row;
-  return { ...episode, lastReportedGeneration: row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : null };
+  return { ...episode, policyPending: isolationPolicyPending(row), lastReportedGeneration: row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : null };
 }
 async function queue(device: { id: string; orgId: string }, type: 'execute_containment' | 'release_containment', commandId: string, payload: Record<string, unknown>, auth: AuthContext, expiresAt?: Date) {
   const result = await dispatchDeviceCommand({ deviceId: device.id, expectedOrgId: device.orgId, type, commandId,
@@ -92,9 +105,25 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     if (await findUnconfirmedTombstone(tx, device.id)) return refuse('isolation_already_active');
     const remoteRelay = input.remoteRelay ?? false;
     if (remoteRelay && !process.env.TURN_HOST?.trim() && !process.env.TURN_TLS_HOST?.trim()) return refuse('relay_unavailable');
+    // Containment must not wait on policy: without one the device isolates on the fixed permits, and
+    // the next heartbeat that can read the policy adds its permits under a new generation.
+    let policy = NO_ISOLATION_POLICY;
+    try { policy = await readIsolationPolicy(device); auditRefusedPolicyGroups(device.orgId, policy); }
+    catch (error) {
+      console.error('[isolation] policy unavailable', { deviceId: device.id });
+      captureException(error, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id });
+    }
     let allow;
-    try { allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay }); }
-    catch (error) { if (error instanceof IsolationAllowlistError) return refuse('invalid_allowlist'); throw error; }
+    const serverUrl = device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '';
+    try { allow = buildIsolationAllowlist({ serverUrl, remoteRelay, policyExtras: policy.extras }); }
+    catch (error) {
+      if (error instanceof IsolationAllowlistError) {
+        // Sources are config names, never values.
+        console.warn('[isolation] allowlist invalid', { deviceId: device.id, source: error.source });
+        return refuse('invalid_allowlist', undefined, allowlistReasonOf(error, serverUrl));
+      }
+      throw error;
+    }
     const now = new Date();
     let incidentId = input.incidentId;
     if (input.createIncident) {
@@ -117,12 +146,12 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
       result: { commandId }, approvalRef: opts.approvalRef ?? null, executedAt: now });
     const created = await createEpisode(tx, { id, orgId: device.orgId, deviceId: device.id, incidentId, incidentActionId: actionId, commandId,
       requestedByKind: opts.requestedByKind, requestedByUserId: opts.requestedByKind === 'system' ? null : auth.user.id,
-      reason: input.reason, expiresAt, deadManSeconds: 0, remoteRelay, allowSnapshot: allow,
+      reason: input.reason, expiresAt, deadManSeconds: 0, remoteRelay, allowSnapshot: allow, allowSnapshotRevision: policy.revision,
       breakGlassSecretEnc: sealedSecret,
     });
     if (!created.ok) return refuse(created.error);
     await queue(device, 'execute_containment', commandId, { incidentId, actionId, actionType: 'network_isolation', breakGlassSecret: secret,
-      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow } }, auth, expiresAt);
+      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow, ...(policy.revision ? { policyRevision: policy.revision } : {}) } }, auth, expiresAt);
     const prev = toEpisodeSnapshot(created.episode);
     const transition = applyEpisodeEvent(prev, { type: 'dispatched', generation: 1, at: now });
     if (!('next' in transition) || !await writeEpisodeSnapshot(tx, id, prev, transition.next, now)) return refuse('isolation_conflict');
@@ -197,6 +226,6 @@ export async function listDeviceIsolations(auth: AuthContext, deviceId: string) 
     const unresolved = await findUnresolvedEpisode(tx, device.id);
     if (!reason && unresolved) reason = isUnresolvedTerminalIsolationState(unresolved.state) ? 'isolation_unacknowledged' : 'isolation_already_active';
     if (!reason && await findUnconfirmedTombstone(tx, device.id)) reason = 'isolation_already_active';
-    return { episodes: episodes.map(({ breakGlassSecretEnc: _secret, ...episode }: typeof episodes[number] & { breakGlassSecretEnc?: string }) => ({ ...episode, lastReportedGeneration: episode.lastAgentReport && 'generation' in episode.lastAgentReport ? episode.lastAgentReport.generation : null })), startEligibility: { allowed: reason === null, reason, networkIsolationUnsupportedReason: device.networkIsolationUnsupportedReason ?? null } };
+    return { episodes: episodes.map(({ breakGlassSecretEnc: _secret, ...episode }: typeof episodes[number] & { breakGlassSecretEnc?: string }) => ({ ...episode, policyPending: isolationPolicyPending(episode), lastReportedGeneration: episode.lastAgentReport && 'generation' in episode.lastAgentReport ? episode.lastAgentReport.generation : null })), startEligibility: { allowed: reason === null, reason, networkIsolationUnsupportedReason: device.networkIsolationUnsupportedReason ?? null } };
   });
 }

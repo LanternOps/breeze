@@ -67,6 +67,7 @@ const mocks = vi.hoisted(() => {
     loadBuiltinExtensions: vi.fn(async () => {}),
     createExtensionStateStore: vi.fn(() => ({})),
     registerAiAgentEnqueuer: vi.fn(),
+    registerGatewayConnectionCheck: vi.fn(),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
     partnerTrustMode: vi.fn(() => 'off'),
@@ -86,11 +87,15 @@ const mocks = vi.hoisted(() => {
     shutdownEventDispatcher: vi.fn(async () => {}),
     shutdownEventDispatchQueue: vi.fn(async () => {}),
     getEventBus: vi.fn(() => ({ close: vi.fn(async () => {}) })),
+    clusterBus: { start: vi.fn(async () => 'subscribed'), stop: vi.fn(async () => {}) },
+    getClusterCacheBus: vi.fn(),
+    shutdownPhaseTasks: [] as Array<{ name: string; tasks: Array<() => unknown> }>,
     drainAuditRetryQueue: vi.fn(async () => {}),
     shutdownPhaseCalls: [] as string[][],
     runShutdownPhases: vi.fn(
       async (phases: Array<{ name: string }>): Promise<{ failures: unknown[]; timedOutPhases: string[] }> => {
         mocks.shutdownPhaseCalls.push(phases.map((p) => p.name));
+        mocks.shutdownPhaseTasks.push(...(phases as unknown as typeof mocks.shutdownPhaseTasks));
         return { failures: [], timedOutPhases: [] };
       },
     ),
@@ -155,6 +160,13 @@ vi.mock('./db', () => ({
 // AI model registry W01 (#7599): the boot path starts the platform model
 // snapshot refresher; it reads the database, which this suite mocks out.
 vi.mock('./services/aiModels/platformModels', () => ({ startPlatformModelSnapshotRefresher: vi.fn(() => () => undefined) }));
+// Mocked because the real module pulls in the model gateway and the whole
+// db/schema barrel: about 650 modules on the first import, enough to overrun
+// waitFor's budget when the runner is busy (the first test here took about 1.5s
+// of its 2s even on a passing CI run).
+vi.mock('./services/aiModels/gatewayConnectionState', () => ({
+  registerGatewayConnectionCheck: mocks.registerGatewayConnectionCheck,
+}));
 vi.mock('./services/redis', () => ({
   getRedis: mocks.getRedis,
   closeRedis: mocks.closeRedis,
@@ -188,6 +200,7 @@ vi.mock('./jobs/eventDispatchWorker', () => ({
 vi.mock('./services/eventDispatcher', () => ({ shutdownEventDispatcher: mocks.shutdownEventDispatcher }));
 vi.mock('./services/eventDispatchQueue', () => ({ shutdownEventDispatchQueue: mocks.shutdownEventDispatchQueue }));
 vi.mock('./services/eventBus', () => ({ getEventBus: mocks.getEventBus }));
+vi.mock('./services/clusterCacheBus', () => ({ getClusterCacheBus: mocks.getClusterCacheBus }));
 vi.mock('./services/auditService', () => ({ drainAuditRetryQueue: mocks.drainAuditRetryQueue }));
 // Stubbed rather than left real: real `runShutdownPhases` is already covered
 // by Part A's own tests, and stubbing it lets this suite assert exactly
@@ -302,6 +315,7 @@ beforeEach(() => {
   delete process.env.METRICS_SCRAPE_IP_ALLOWLIST;
 
   vi.clearAllMocks();
+  mocks.registerGatewayConnectionCheck.mockReset();
   mocks.shutdownPhaseCalls.length = 0;
 
   // Baseline "everything healthy" defaults; individual tests override.
@@ -338,6 +352,10 @@ beforeEach(() => {
   mocks.shutdownEventDispatcher.mockResolvedValue(undefined);
   mocks.shutdownEventDispatchQueue.mockResolvedValue(undefined);
   mocks.getEventBus.mockReturnValue({ close: vi.fn(async () => {}) });
+  mocks.shutdownPhaseTasks.length = 0;
+  mocks.clusterBus.start.mockReset().mockResolvedValue('subscribed');
+  mocks.clusterBus.stop.mockReset().mockResolvedValue(undefined);
+  mocks.getClusterCacheBus.mockReset().mockReturnValue(mocks.clusterBus);
   mocks.drainAuditRetryQueue.mockResolvedValue(undefined);
 });
 
@@ -400,6 +418,17 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'startRegisteredWorkers',
       'initializeEventDispatchWorker',
     ]);
+  });
+
+  it('registers the gateway connection check before any worker can dial', async () => {
+    const order: string[] = [];
+    mocks.registerGatewayConnectionCheck.mockImplementation(() => { order.push('registerGatewayConnectionCheck'); });
+    mocks.startRegisteredWorkers.mockImplementation(async () => { order.push('startRegisteredWorkers'); });
+
+    const worker = await importFreshWorker();
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    expect(order).toEqual(['registerGatewayConnectionCheck', 'startRegisteredWorkers']);
   });
 
   it('no AI model registry cutover sweep at worker boot (W08 #7606: partners are bootstrapped on demand by ensurePartnerCutover)', () => {
@@ -632,6 +661,37 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     expect(mocks.startRegisteredWorkers).not.toHaveBeenCalled();
   });
 
+  it('subscribes the cluster cache bus after Redis is confirmed and before extensions/workers load (#8639)', async () => {
+    await importFreshWorker();
+    await waitFor(() => mocks.startRegisteredWorkers.mock.calls.length > 0);
+
+    expect(mocks.clusterBus.start).toHaveBeenCalledTimes(1);
+    expect(mocks.clusterBus.start.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.loadBuiltinExtensions.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.clusterBus.start.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.startRegisteredWorkers.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('does not subscribe the cluster cache bus when Redis is unreachable', async () => {
+    mocks.getRedis.mockReturnValue(null);
+    await importFreshWorker();
+    await waitFor(() => exitCalls.length > 0);
+
+    expect(mocks.clusterBus.start).not.toHaveBeenCalled();
+  });
+
+  it('a degraded cluster cache subscribe (timeout) warns but does not block boot (#8639)', async () => {
+    mocks.clusterBus.start.mockResolvedValue('timeout');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const worker = await importFreshWorker();
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    expect(warn.mock.calls.some(([l]) => String(l).includes('[worker][clusterCache] subscriber timeout'))).toBe(true);
+    warn.mockRestore();
+  });
+
   it('loads built-in extensions in worker mode', async () => {
     await importFreshWorker();
     await waitFor(() => mocks.loadBuiltinExtensions.mock.calls.length > 0);
@@ -652,11 +712,15 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'drain',
       'workers',
       'queues',
+      'cluster-cache-bus',
       'eventbus',
       'redis',
       'db',
       'sentry',
     ]);
+    const busPhase = mocks.shutdownPhaseTasks.find((p) => p.name === 'cluster-cache-bus');
+    await Promise.all(busPhase!.tasks.map((t) => t()));
+    expect(mocks.clusterBus.stop).toHaveBeenCalledTimes(1);
     await waitFor(() => exitCalls.length > 0);
     expect(exitCalls).toEqual([0]);
   });

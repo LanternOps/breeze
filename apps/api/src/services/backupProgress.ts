@@ -30,6 +30,14 @@ export const backupProgressPayloadSchema = z.object({
   total: z.number().nonnegative().optional(),
   filesDone: z.number().nonnegative().optional(),
   filesTotal: z.number().nonnegative().optional(),
+  // #11014: files (and their source bytes) the run has finished CHECKING
+  // before deciding whether to upload them — the resume pass over the
+  // checkpoint journal, the dedupe pre-pass re-hash. Cumulative for the run.
+  // Separate from current/filesDone, whose meaning is unchanged (#5410).
+  // Bounded to their integer/bigint columns so a bad value cannot raise out
+  // of a fire-and-forget WS handler; see parseBackupProgressPayload.
+  verifiedFiles: z.number().int().nonnegative().max(2_147_483_647).optional(),
+  verifiedBytes: z.number().int().nonnegative().optional(),
   snapshotId: z.string().min(1).max(BACKUP_SNAPSHOT_ID_MAX_LENGTH).optional(),
 });
 
@@ -100,7 +108,9 @@ export function resetUnmatchedBackupProgressCache(): void {
  * So a bad `snapshotId` is dropped, not the payload. Same rule as
  * `reconcileManifestSchema` and the per-file `modTime` sanitizing in
  * backupSnapshotReconcile.ts: one malformed optional field must never cost the
- * whole record.
+ * whole record. The verified counters (#11014) get the same treatment: only a
+ * bad value of those is dropped, with a warning, since the bytes/files and the
+ * liveness bump beside them still have to land.
  */
 function parseBackupProgressPayload(
   progress: unknown
@@ -111,12 +121,18 @@ function parseBackupProgressPayload(
   }
 
   if (progress && typeof progress === 'object' && !Array.isArray(progress)) {
-    const retry = backupProgressPayloadSchema.safeParse({
-      ...(progress as Record<string, unknown>),
-      snapshotId: undefined,
-    });
-    if (retry.success) {
-      return { ok: true, payload: retry.data, snapshotIdDropped: true };
+    const badFields = new Set(parsed.error.issues.map((issue) => issue.path[0]));
+    const droppable = ['snapshotId', 'verifiedFiles', 'verifiedBytes'];
+    if ([...badFields].every((field) => droppable.includes(String(field)))) {
+      const retry = backupProgressPayloadSchema.safeParse(
+        Object.fromEntries(Object.entries(progress).filter(([key]) => !badFields.has(key)))
+      );
+      if (retry.success) {
+        if (badFields.has('verifiedFiles') || badFields.has('verifiedBytes')) {
+          console.warn(`[BackupProgress] Dropped unusable verified counters from a progress report: ${[...badFields].join(', ')}`);
+        }
+        return { ok: true, payload: retry.data, snapshotIdDropped: badFields.has('snapshotId') };
+      }
     }
   }
 
@@ -205,6 +221,17 @@ export async function applyBackupProgress(params: {
   if (progress.filesDone !== undefined) {
     advanced.push(sql`${progress.filesDone} > COALESCE(${backupJobs.fileCount}, 0)`);
   }
+  // #11014: a resumed multi-TB snapshot re-reads every already-uploaded file
+  // (and, continued from another job, every stored object) before its first
+  // upload — hours with current/filesDone frozen at 0, which the reaper's
+  // no-transfer rule read as a wedge. Checking is work too: its counters
+  // advance progress exactly like bytes and files do.
+  if (progress.verifiedBytes !== undefined) {
+    advanced.push(sql`${progress.verifiedBytes} > COALESCE(${backupJobs.verifiedSize}, 0)`);
+  }
+  if (progress.verifiedFiles !== undefined) {
+    advanced.push(sql`${progress.verifiedFiles} > COALESCE(${backupJobs.verifiedFiles}, 0)`);
+  }
   const updateSet: Record<string, unknown> = {
     lastKeepaliveAt: now,
     updatedAt: now,
@@ -238,6 +265,12 @@ export async function applyBackupProgress(params: {
   }
   if (progress.filesTotal !== undefined) {
     updateSet.totalFiles = progress.filesTotal;
+  }
+  if (progress.verifiedBytes !== undefined) {
+    updateSet.verifiedSize = progress.verifiedBytes;
+  }
+  if (progress.verifiedFiles !== undefined) {
+    updateSet.verifiedFiles = progress.verifiedFiles;
   }
   // #3006: record the snapshot ID the moment the agent reports it, instead of
   // waiting for the terminal result. A result lost in transit (#3001 oversized

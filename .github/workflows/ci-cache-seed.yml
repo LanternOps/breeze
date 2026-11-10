@@ -9,8 +9,10 @@ name: CI cache seed
 # .github/scripts/ci-cache-policy.test.mjs enforces it.
 #
 # Entries unused for 7 days are evicted, so the daily schedule also restores
-# each entry (which counts as a use) and only re-warms on a miss. Trigger by
-# hand with:
+# each entry (which counts as a use) and only re-warms on a miss. Past the
+# 10 GB limit GitHub evicts least-recently-used entries of any kind, so the
+# last job keeps the total under a budget (docs/agents/testing.md, #11119).
+# Trigger by hand with:
 #   gh workflow run "CI cache seed" --ref main
 on:
   push:
@@ -20,11 +22,21 @@ on:
       - agent/go.sum
       - agent/go.mod
       - .github/tauri-apt-packages.txt
+      - .github/scripts/tauri-apt.sh
+      - .github/scripts/ci-cache-prune.mjs
+      - scripts/security/install-osv-scanner.sh
       - docker/**
       - .github/actions/**
       - .github/workflows/ci-cache-seed.yml
   schedule:
+    # Daily: every seed job.
     - cron: '17 5 * * *'
+    # The Tauri closure (and the Trivy DB) only: about a minute on a hit, and
+    # it keeps the closure recently used and re-saves it if it was evicted.
+    - cron: '17 11,17,23 * * *'
+    # Mondays and Thursdays: also rebuild the image layer caches (see
+    # seed-smoke-images); twice a week stays well inside the 7-day unused window.
+    - cron: '37 5 * * 1,4'
   workflow_dispatch:
 
 permissions:
@@ -41,6 +53,8 @@ env:
 jobs:
   seed-pnpm:
     name: Seed pnpm cache (${{ matrix.os }})
+    # Not on the six-hourly Tauri-only schedule.
+    if: github.event.schedule != '17 11,17,23 * * *'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -68,14 +82,17 @@ jobs:
         shell: bash
         run: echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
+      # Exact key only. Warming a new lockfile on top of the previous store saved
+      # both lockfiles' packages, and the next one three: the store only grew. A
+      # miss now installs into an empty store (`pnpm store prune` cannot do this
+      # safely: on macOS pnpm clones files rather than hard-linking them, and
+      # prune deletes every file with one link). See #10762.
       - name: Restore pnpm cache
         id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm.outputs.store }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-${{ runner.os }}-
 
       - name: Warm pnpm store
         if: steps.cache.outputs.cache-hit != 'true'
@@ -99,8 +116,11 @@ jobs:
           path: ${{ steps.pnpm.outputs.store }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
+
   seed-go:
     name: Seed Go cache (${{ matrix.os }})
+    # Not on the six-hourly Tauri-only schedule.
+    if: github.event.schedule != '17 11,17,23 * * *'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -142,6 +162,11 @@ jobs:
         shell: bash
         working-directory: agent
         run: |
+          # The restore-keys fallback brings the previous go.sum's modules; drop
+          # them so the saved module cache is this go.sum only (it grew without
+          # bound before, #10762). GOCACHE is kept: it is what makes the warm
+          # cheap, and Go trims its own entries unused for five days.
+          go clean -modcache
           attempts=3
           for attempt in $(seq 1 "${attempts}"); do
             if go mod download; then
@@ -183,8 +208,11 @@ jobs:
             ${{ steps.go.outputs.gocache }}
           key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum', 'agent/go.mod') }}
 
+
   seed-golangci-lint:
     name: Seed golangci-lint binary cache
+    # Not on the six-hourly Tauri-only schedule.
+    if: github.event.schedule != '17 11,17,23 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -232,81 +260,240 @@ jobs:
           path: ~/go/bin/golangci-lint
           key: golangci-lint-v2.12.2-${{ runner.os }}
 
-  seed-tauri-apt:
-    name: Seed Tauri apt cache
+  # The binary ci.yml's security-audit and security.yml's npm-audit restore
+  # through the restore-osv-scanner composite. With it cached, an outage of the
+  # GitHub release download does not fail those jobs (#11367).
+  seed-osv-scanner:
+    name: Seed osv-scanner binary cache
+    # Not on the six-hourly Tauri-only schedule.
+    if: github.event.schedule != '17 11,17,23 * * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Outlasts the installer's worst case (see its header).
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      # The composite only restores. It is used here for the restore and the
-      # cache-hit/dir outputs; the explicit save below recomputes its key, so
-      # the two ids must stay identical (the policy test pins key and path).
+      - name: Restore osv-scanner binary
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/osv-scanner
+          key: osv-scanner-v2.4.0-${{ runner.os }}
+
+      # A hit installs from the cache after the SHA-256 check. A miss downloads,
+      # checks the pin, and writes the verified binary into the cache dir.
+      - name: Install osv-scanner
+        run: bash scripts/security/install-osv-scanner.sh
+
+      # Keys are immutable: never save a directory without the binary in it.
+      - name: Check the verified binary is in the cache dir
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: test -s ~/.cache/osv-scanner/osv-scanner
+
+      - name: Save osv-scanner binary
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/osv-scanner
+          key: osv-scanner-v2.4.0-${{ runner.os }}
+
+  seed-tauri-apt:
+    name: Seed Tauri apt cache
+    # Same label as rust-check in ci.yml (the policy test pins it), so a closure is
+    # never saved under an ImageOS the job does not run on.
+    runs-on: ubuntu-26.04
+    # Only a slow runner on the first seed of a package list needs this: it can
+    # download the whole closure at tens of kB/s. See `fetch`.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write # Prune superseded closures below.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Resolve runner image for apt cache key
         id: image
         shell: bash
         run: echo "id=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
 
+      # Resolves against an empty dpkg status, so the closure does not depend on
+      # what this runner's image happens to carry (#9847). The id hashes every
+      # package version: an archive update makes a new entry on the next run.
+      - name: Resolve Tauri apt closure
+        id: plan
+        shell: bash
+        run: |
+          work=$(mktemp -d)
+          closure=$(bash .github/scripts/tauri-apt.sh plan "${work}")
+          echo "work=${work}" >> "$GITHUB_OUTPUT"
+          echo "closure=${closure}" >> "$GITHUB_OUTPUT"
+
+      # The composite only restores. A hit counts as a use, which keeps the entry
+      # from being evicted; the explicit save below recomputes its key, so the two
+      # must stay identical (the policy test pins key and path).
       - name: Restore Tauri apt cache
         id: cache
         uses: ./.github/actions/tauri-apt-cache
+        with:
+          closure: ${{ steps.plan.outputs.closure }}
 
-      # Same distro release + same package list as the CI job, so `--download-only`
-      # fetches the same closure CI's install would (modulo archive drift). Not on any PR's
-      # critical path, so generous retries are fine.
       - name: Download Tauri system dependencies
         if: steps.cache.outputs.cache-hit != 'true'
         env:
+          TAURI_APT_WORK: ${{ steps.plan.outputs.work }}
           TAURI_DEBS_DIR: ${{ steps.cache.outputs.dir }}
-        run: |
-          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
-            /etc/apt/sources.list \
-            /etc/apt/sources.list.d/*.list \
-            /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-          CI_APT_DIR=$(mktemp -d)
-          TAURI_ARCHIVES=$(mktemp -d)
-          chmod 755 "$TAURI_ARCHIVES"
-          trap 'rm -rf -- "$CI_APT_DIR" "$TAURI_ARCHIVES"' EXIT
-          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
-          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
-                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
-          TAURI_PKGS=($(grep -v '^#' .github/tauri-apt-packages.txt))
-          download() {
-            sudo timeout --kill-after=30s 3m apt-get update "${APT_SOURCES[@]}" \
-              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
-            sudo timeout --kill-after=30s 8m apt-get install -y --download-only --no-install-recommends "${APT_SOURCES[@]}" \
-              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
-              -o "Dir::Cache::archives=$TAURI_ARCHIVES" "${TAURI_PKGS[@]}"
-          }
-          attempts=3
-          for attempt in $(seq 1 "${attempts}"); do
-            if download && ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1; then
-              rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
-              sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/
-              sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"
-              echo "Seeded $(ls "${TAURI_DEBS_DIR}" | wc -l) .deb files."
-              exit 0
-            fi
-            echo "::warning::apt download failed (attempt ${attempt}/${attempts}); retrying"
-            sleep $((attempt * 20))
-          done
-          echo "::error::Failed to download Tauri system dependencies after ${attempts} attempts."
-          exit 1
+        run: bash .github/scripts/tauri-apt.sh fetch "${TAURI_APT_WORK}" "${TAURI_DEBS_DIR}"
+
+      # Keys are immutable: do not save a closure this runner cannot plan from
+      # offline. `fetch` has already checked every .deb against its index hash.
+      - name: Verify the closure installs without the network
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          TAURI_DEBS_DIR: ${{ steps.cache.outputs.dir }}
+        run: bash .github/scripts/tauri-apt.sh probe "${TAURI_DEBS_DIR}"
 
       - name: Save Tauri apt cache
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/tauri-debs
-          key: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}
+          key: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-${{ steps.plan.outputs.closure }}
+
+      # A closure is a few hundred MB and archive updates make a new one, while the
+      # repo's caches sit at the 10 GB limit (where GitHub evicts the oldest entries
+      # of ANY kind). Keep the new closure and the one before it, which jobs already
+      # running may still be restoring. Losing this race or this step costs nothing
+      # but space, so it never fails the seed.
+      - name: Prune superseded Tauri apt closures
+        if: steps.cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOSURE_PREFIX: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-
+        run: |
+          gh cache list --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF}" --key "${CLOSURE_PREFIX}" \
+            --sort created_at --order desc --limit 50 --json key --jq '.[2:][].key' \
+            | while IFS= read -r key; do
+                gh cache delete "${key}" --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF}" \
+                  || echo "::warning::could not delete cache ${key}"
+              done
+
+      # A hit saves nothing. On 2026-11-05 the closure was restored at 05:39 and
+      # gone by 09:36 (#11119). This step only covers an eviction inside this
+      # job's own run; the six-hourly schedule bounds how long a lost closure
+      # stays lost, and the budget job keeps GitHub's eviction from being
+      # reached at all. Look again on the way out and put back what was
+      # restored: the exact closure this job planned, verified when first
+      # saved. A listing that fails or prints anything but a count counts as
+      # gone: saving a key that still exists is refused and changes nothing.
+      - name: Check the Tauri apt entry survived
+        id: recheck
+        if: steps.cache.outputs.cache-hit == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-${{ steps.plan.outputs.closure }}
+        run: |
+          # All refs, then this run's own or main's: either is what CI restores.
+          if ! n=$(gh cache list --repo "${GITHUB_REPOSITORY}" --key "${KEY}" --limit 100 --json key,ref \
+            --jq '[.[] | select(.key == env.KEY and (.ref == env.GITHUB_REF or .ref == "refs/heads/main"))] | length'); then
+            echo "::warning::could not list caches; saving ${KEY} again in case it is gone"
+            n=0
+          fi
+          case "${n}" in
+            '' | *[!0-9]*) echo "::warning::unexpected listing output '${n}'; saving ${KEY} again in case it is gone"; n=0 ;;
+          esac
+          if [ "${n}" -eq 0 ]; then
+            echo "::warning::${KEY} is no longer in the cache; saving it again"
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${KEY} is still cached"
+          fi
+
+      - name: Re-save Tauri apt cache
+        if: steps.recheck.outputs.missing == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tauri-debs
+          key: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-${{ steps.plan.outputs.closure }}
+
+  # security.yml runs trivy-action with its cache off (that cache saves from PR
+  # refs) and restores the DB through the restore-trivy-db composite, which takes
+  # the newest older day when today's key is not saved yet.
+  seed-trivy-db:
+    name: Seed Trivy DB cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve date for the Trivy DB key
+        id: date
+        shell: bash
+        run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      # Exact key only: a miss downloads a fresh DB rather than saving a stale one.
+      - name: Restore Trivy DB cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: cache-trivy-${{ steps.date.outputs.date }}
+
+      # Any scan downloads the DB into trivy-action's default cache-dir (the path
+      # above). A small target keeps it quick; the findings are not the point.
+      - name: Download Trivy DB
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.github/actions'
+          format: 'table'
+          exit-code: '0'
+          cache: 'false'
+
+      # Keys are immutable: never save a directory without the DB in it.
+      - name: Check the Trivy DB was downloaded
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          DB: ${{ github.workspace }}/.cache/trivy/db/trivy.db
+        run: |
+          if [ ! -s "${DB}" ]; then
+            echo "::error::${DB} is missing or empty after the Trivy scan; not saving"
+            exit 1
+          fi
+          ls -l "${DB}"
+
+      - name: Save Trivy DB cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: cache-trivy-${{ steps.date.outputs.date }}
+
 
   # Buildkit layer caches (type=gha) are scoped like every other cache, so PR
   # builds read what main exports here. Builds mirror ci.yml's, no push.
+  #
+  # Not daily: each run exports about 1 GB of new layers (`COPY . .` changes with
+  # every commit, and mode=max keeps every stage), which is what pushed the repo
+  # to its cache limit (#10762, #11119). The layers PRs actually reuse (base
+  # images, dependency installs) change with the paths that trigger this
+  # workflow on push; the twice-weekly run catches anything else.
   seed-smoke-images:
     name: Seed smoke image layers (${{ matrix.image }})
+    if: github.event_name != 'schedule' || github.event.schedule == '37 5 * * 1,4'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -346,6 +533,8 @@ jobs:
 
   seed-workspace-runtime:
     name: Seed workspace runtime layers
+    # Same schedule as seed-smoke-images.
+    if: github.event_name != 'schedule' || github.event.schedule == '37 5 * * 1,4'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -365,3 +554,53 @@ jobs:
           push: false
           cache-from: type=gha,scope=workspace-runtime
           cache-to: type=gha,mode=max,scope=workspace-runtime
+
+  # The only job with actions: write besides seed-tauri-apt (#11015), and it runs
+  # nothing but the prune script: the seed jobs run pnpm install, go builds and
+  # trivy, which should not hold a token that can delete caches or dispatch
+  # workflows. Runs after every other job, so this run's own saves and exports
+  # are counted.
+  enforce-cache-budget:
+    name: Enforce the cache budget
+    needs: [seed-pnpm, seed-go, seed-golangci-lint, seed-osv-scanner, seed-tauri-apt, seed-trivy-db, seed-smoke-images, seed-workspace-runtime]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # Delete cache entries.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Keys are immutable, so each lockfile / go.sum / day leaves an entry per OS
+      # behind (pnpm ~650 MB, go 1.2-1.4 GB, Trivy ~100 MB; #11119). Only the
+      # newest is restored by exact key and CI falls back to it by prefix, so the
+      # script keeps each family's newest-created entry. (Recomputing the key
+      # here does not work: Windows checks go.sum out with CRLF, so its
+      # hashFiles differs from this runner's.) Runs on a hit too, to clear a pair
+      # an earlier failed prune left. Every family is tried; any failure turns
+      # the step red after the others ran, and the budget step still runs.
+      - name: Prune superseded seed keys
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          failed=0
+          for prefix in pnpm-Linux- pnpm-macOS- go-Linux- go-macOS- go-Windows- cache-trivy-; do
+            node .github/scripts/ci-cache-prune.mjs superseded --prefix "${prefix}" || failed=1
+          done
+          exit "${failed}"
+
+      # Deletes the retired families, then evicts until the total is under the
+      # budget: other refs' entries first, then main's least-recently-used
+      # buildkit layers. Seed keys are never evicted here, so GitHub's own LRU
+      # eviction, which takes any kind, should not be reached. Red means a
+      # listing or delete failed, or the seed keys alone no longer fit.
+      - name: Enforce the cache budget
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/ci-cache-prune.mjs budget

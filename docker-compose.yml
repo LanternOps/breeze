@@ -51,6 +51,10 @@ x-api-env: &api-env
   # #8839 — agent request bodies are received before the org DB context opens.
   AGENT_BODY_RECEIVE_TIMEOUT_MS: ${AGENT_BODY_RECEIVE_TIMEOUT_MS:-}
   AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS: ${AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS:-}
+  # Alert worker / agent ingest tuning (optional; empty reads as unset and the code applies its own defaults).
+  ALERT_WORKER_CONCURRENCY: ${ALERT_WORKER_CONCURRENCY:-}
+  ALERT_WORKER_STAGGER_WINDOW_MS: ${ALERT_WORKER_STAGGER_WINDOW_MS:-}
+  AGENT_CONNECTIONS_MAX_PER_DEVICE: ${AGENT_CONNECTIONS_MAX_PER_DEVICE:-}
   DB_WEDGED_BACKEND_SCAN_DISABLED: ${DB_WEDGED_BACKEND_SCAN_DISABLED:-}
   DB_WEDGED_BACKEND_SCAN_INTERVAL_MS: ${DB_WEDGED_BACKEND_SCAN_INTERVAL_MS:-}
   DB_WEDGED_BACKEND_MIN_AGE_MS: ${DB_WEDGED_BACKEND_MIN_AGE_MS:-}
@@ -268,6 +272,12 @@ x-api-env: &api-env
   # for self-host/droplet deploys to enable it. Same compose-interpolation gap
   # class as IS_HOSTED / RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS.
   CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+  # Customer portal "Sign in with Microsoft" (the portal's own Entra app). Off
+  # unless both the client ID and secret are set; the callback base is optional
+  # (defaults to the origin of PUBLIC_URL). See .env.example.
+  PORTAL_ENTRA_CLIENT_ID: ${PORTAL_ENTRA_CLIENT_ID:-}
+  PORTAL_ENTRA_CLIENT_SECRET: ${PORTAL_ENTRA_CLIENT_SECRET:-}
+  PORTAL_ENTRA_CALLBACK_BASE_URL: ${PORTAL_ENTRA_CALLBACK_BASE_URL:-}
   # Optional customer Graph-read onboarding. The executor is intentionally
   # not part of this generic Compose stack: deploy it separately with a
   # workload identity, private ingress, and controlled HTTPS egress.
@@ -390,6 +400,16 @@ x-api-env: &api-env
   BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: ${BREEZE_AI_ARTIFACT_CAPTURE_ENABLED:-false}
   # Wisp (hosted only; wispEnabled() in config/env.ts). Default false.
   BREEZE_WISP_ENABLED: ${BREEZE_WISP_ENABLED:-false}
+  # Vendor updates (#11065). Dark by default; the manifest gates in code stay
+  # closed until a lab wave opens them. DISABLED_LANES stops new runs with no deploy.
+  BREEZE_OEM_UPDATES_ENABLED: ${BREEZE_OEM_UPDATES_ENABLED:-false}
+  BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ${BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST:-}
+  BREEZE_OEM_UPDATES_DISABLED_LANES: ${BREEZE_OEM_UPDATES_DISABLED_LANES:-}
+  # Scheduled runs and overnight reboots started per 10-minute tick. Empty keeps the default.
+  OEM_UPDATES_MAX_DISPATCH_PER_TICK: ${OEM_UPDATES_MAX_DISPATCH_PER_TICK:-}
+  # Lab only: opens closed gates for the listed device ids. The API refuses to
+  # boot with it set under NODE_ENV=production, so the prod template omits it.
+  BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: ${BREEZE_OEM_UPDATES_LAB_DEVICE_IDS:-}
   # EDR response actions (#8167): server-wide kill switch, default on. Each
   # EDR connection must still opt in (off by default).
   BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}
@@ -439,6 +459,7 @@ x-api-env: &api-env
   OAUTH_ISSUER: ${OAUTH_ISSUER:-}
   OAUTH_RESOURCE_URL: ${OAUTH_RESOURCE_URL:-}
   OAUTH_AUTH_EPOCH_ENFORCE_AFTER: ${OAUTH_AUTH_EPOCH_ENFORCE_AFTER:-}
+  OAUTH_REFRESH_ROTATION_GRACE_MS: ${OAUTH_REFRESH_ROTATION_GRACE_MS:-}
   EVENT_PERMISSION_EPOCH_MODE: ${EVENT_PERMISSION_EPOCH_MODE:?Set EVENT_PERMISSION_EPOCH_MODE to compat or enforce}
   OAUTH_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET:-}
   OAUTH_JWKS_PRIVATE_JWK: ${OAUTH_JWKS_PRIVATE_JWK:-}
@@ -472,6 +493,7 @@ x-api-env: &api-env
   # present only in .env is inert unless it is listed here.
   AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-}
   AUTH_REFRESH_RATE_WINDOW_SECONDS: ${AUTH_REFRESH_RATE_WINDOW_SECONDS:-}
+  USER_RATE_LIMIT_PER_MINUTE: ${USER_RATE_LIMIT_PER_MINUTE:-}
   # Per-source-IP agent enrollment limit (#7472). Empty === default 10 per 60s.
   AGENT_ENROLL_RATE_LIMIT: ${AGENT_ENROLL_RATE_LIMIT:-}
   AGENT_ENROLL_RATE_WINDOW_SECONDS: ${AGENT_ENROLL_RATE_WINDOW_SECONDS:-}
@@ -755,6 +777,7 @@ x-api-env: &api-env
   REDIS_MEMORY_CAPTURE_THROTTLE_MS: ${REDIS_MEMORY_CAPTURE_THROTTLE_MS:-}
   # Startup + agent-fleet behaviour
   AUTO_MIGRATE: ${AUTO_MIGRATE:-}
+  MIGRATION_LOCK_TIMEOUT_MS: ${MIGRATION_LOCK_TIMEOUT_MS:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: ${AGENT_EDITION_AUTO_MIGRATE_ENABLED:-}
   # Caller verification (#6354): exact true only, default ON (link tier). Workstation tier is dark (default off).
@@ -835,6 +858,9 @@ x-api-env: &api-env
   RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE: ${RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE:-}
   RESTORE_POINT_ATTEMPT_RETENTION_DAYS: ${RESTORE_POINT_ATTEMPT_RETENTION_DAYS:-}
   RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES: ${RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES:-}
+  WAKE_ATTEMPT_RETENTION_BATCH_SIZE: ${WAKE_ATTEMPT_RETENTION_BATCH_SIZE:-}
+  WAKE_ATTEMPT_RETENTION_DAYS: ${WAKE_ATTEMPT_RETENTION_DAYS:-}
+  WAKE_ATTEMPT_RETENTION_MAX_BATCHES: ${WAKE_ATTEMPT_RETENTION_MAX_BATCHES:-}
   SCREENSHOT_MAX_BYTES: ${SCREENSHOT_MAX_BYTES:-}
   SCREENSHOT_MAX_BYTES_PER_DEVICE: ${SCREENSHOT_MAX_BYTES_PER_DEVICE:-}
   SCREENSHOT_MAX_PER_DEVICE: ${SCREENSHOT_MAX_PER_DEVICE:-}
@@ -979,7 +1005,6 @@ services:
   worker:
     image: ${BREEZE_API_IMAGE_REF:?Set BREEZE_API_IMAGE_REF to a digest-pinned image ref}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
-    container_name: breeze-worker
     restart: unless-stopped
     profiles: ["worker-split"]
     command: ["node", "dist/worker.cjs"]
@@ -992,6 +1017,8 @@ services:
     environment:
       <<: *api-env
       BREEZE_ROLE: worker        # hardcoded — never variable-driven
+      # 1 GB V8 heap cap, worker only (#11237); override with WORKER_NODE_OPTIONS.
+      NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max-old-space-size=1024}
     volumes:
       - api_data:/data
     secrets:
@@ -1032,6 +1059,9 @@ services:
       PUBLIC_ABUSE_CONTACT: ${PUBLIC_ABUSE_CONTACT:-}
       PUBLIC_SECURITY_CONTACT: ${PUBLIC_SECURITY_CONTACT:-}
       PUBLIC_SECURITY_POLICY_URL: ${PUBLIC_SECURITY_POLICY_URL:-}
+      # Network Proxy host mode (#11300): the dashboard CSP frame-src must allow
+      # the tunnel origin, and the image is built without it.
+      TUNNEL_ORIGIN_TEMPLATE: ${TUNNEL_ORIGIN_TEMPLATE:-}
     depends_on:
       api:
         condition: service_healthy

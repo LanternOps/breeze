@@ -167,6 +167,7 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'tickets', action: 'write', description: 'Create and update tickets, comments, and categories' },
   { resource: 'tickets', action: 'manage', description: 'Edit or delete any comment and reassign ticket organization' },
   { resource: 'tickets', action: 'record_approval', description: 'Record a customer approval or denial of held ticket work on their behalf' },
+  { resource: 'tickets', action: 'email_review', description: 'Review the inbound email queue: list, convert to a ticket, and dismiss quarantined or failed emails' },
 
   // Time entries (#4251). Seeded because Partner Technician grants them: the
   // mobile start/stop timer (#3206 W05) calls routes gated on

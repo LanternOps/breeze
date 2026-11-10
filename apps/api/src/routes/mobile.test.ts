@@ -94,6 +94,7 @@ vi.mock('../db', () => ({
     delete: vi.fn(),
     transaction: vi.fn()
   },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
 }));
@@ -2586,7 +2587,7 @@ describe('mobile routes', () => {
         expect(executeScriptOnDevicesMock).not.toHaveBeenCalled();
       });
 
-      it('keeps wake in one context: lookup and the relay dispatch', async () => {
+      it('keeps wake preparation in one context and delivers after it commits', async () => {
         const depths: Record<string, number> = {};
         vi.mocked(db.select).mockImplementation((() => {
           depths.select = dbContextState.depth;
@@ -2594,7 +2595,7 @@ describe('mobile routes', () => {
         }) as any);
         dispatchWakeMock.mockImplementationOnce(async () => {
           depths.wake = dbContextState.depth;
-          return {
+          const prepared = {
             ok: true,
             commandId: 'cmd-wake',
             wakeAttemptId: 'attempt-1',
@@ -2603,6 +2604,13 @@ describe('mobile routes', () => {
             network: '10.0.0.0/24',
             broadcast: '10.0.0.255',
             macs: ['aa:bb:cc:dd:ee:ff'],
+          };
+          return {
+            ...prepared,
+            deliver: async () => {
+              depths.deliver = dbContextState.depth;
+              return prepared;
+            },
           };
         });
 
@@ -2614,9 +2622,27 @@ describe('mobile routes', () => {
 
         expect(res.status).toBe(202);
         expect(await res.json()).toMatchObject({ action: 'wake', commandId: 'cmd-wake', wakeAttemptId: 'attempt-1' });
-        expect(depths).toEqual({ select: 1, wake: 1 });
+        expect(depths).toEqual({ select: 1, wake: 1, deliver: 0 });
         expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
         expect(executeScriptOnDevicesMock).not.toHaveBeenCalled();
+      });
+
+      it('returns 412 when wake delivery fails after the commit', async () => {
+        vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([onlineDevice]) as any);
+        dispatchWakeMock.mockResolvedValueOnce({
+          ok: true,
+          commandId: 'cmd-wake',
+          deliver: async () => ({ ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline' }),
+        });
+
+        const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'wake' })
+        });
+
+        expect(res.status).toBe(412);
+        expect(await res.json()).toEqual({ error: 'Relay agent went offline', code: 'WS_SEND_FAILED' });
       });
 
       it('returns the device gate result from inside the context without running the action', async () => {

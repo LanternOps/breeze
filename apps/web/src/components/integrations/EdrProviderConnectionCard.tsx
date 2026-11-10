@@ -50,8 +50,16 @@ function Counter({ testId, label, value }: { testId: string; label: string; valu
   );
 }
 
-function StatusBadge({ status }: { status: EdrConnection["status"] }) {
+function StatusBadge({ status, isActive }: { status: EdrConnection["status"]; isActive: boolean }) {
   const { t } = useTranslation("integrations");
+  // A switched-off connection is not syncing, whatever its last status says.
+  if (status === "connected" && !isActive) {
+    return (
+      <span data-testid="edr-connection-badge-inactive" className="inline-flex items-center gap-1.5 rounded-full border bg-muted px-3 py-1 text-xs text-muted-foreground">
+        {t("edrProviders.status.inactive")}
+      </span>
+    );
+  }
   if (status === "connected") {
     return (
       <span data-testid="edr-connection-badge-connected" className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
@@ -359,7 +367,7 @@ export default function EdrProviderConnectionCard({
             </p>
           )}
         </div>
-        <StatusBadge status={connection.status} />
+        <StatusBadge status={connection.status} isActive={connection.isActive} />
       </div>
 
       {connection.status === "reauth_required" && (

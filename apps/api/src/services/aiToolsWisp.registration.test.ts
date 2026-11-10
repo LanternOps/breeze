@@ -93,10 +93,10 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
     expect(TOOL_RATE_LIMITS.launch_specialist).toEqual({ limit: 10, windowSeconds: 3600 });
   });
 
-  it('auto-admit kinds stay Tier 2; every asks-first kind escalates to a supervised Tier-3 approval in chat', () => {
+  it('chat Tier-2 kinds stay Tier 2; every chat Tier-3 kind escalates to a supervised Tier-3 approval in chat', () => {
     for (const kind of SPECIALIST_KINDS) {
       const check = checkGuardrails('launch_specialist', { orgId: 'o', kind, reason: 'because' });
-      if (SPECIALIST_KIND_POLICY[kind].autoAdmit) {
+      if (SPECIALIST_KIND_POLICY[kind].chatLaunchTier === 2) {
         expect(check.tier, kind).toBe(2);
       } else {
         expect(check.tier, kind).toBe(3);
@@ -116,7 +116,7 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
     for (const kind of SPECIALIST_KINDS) {
       for (const context of [undefined, { chatSession: true as const }]) {
         const check = checkGuardrails('launch_specialist', { orgId: 'o', kind, reason: 'because' }, context);
-        if (SPECIALIST_KIND_POLICY[kind].autoAdmit) {
+        if (SPECIALIST_KIND_POLICY[kind].chatLaunchTier === 2) {
           expect(check, kind).toMatchObject({ tier: 2, allowed: true, requiresApproval: false });
           expect('approvalScope' in check, kind).toBe(false);
         } else {
@@ -124,6 +124,39 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
         }
       }
     }
+  });
+
+  // #11084 Decision 3: a chat hand-off of device troubleshooting is one
+  // ordinary Tier-2 click; operator_recipe keeps its supervised Tier-3 card.
+  it('device_troubleshooting launches at Tier 2 from chat; operator_recipe stays supervised Tier 3', () => {
+    const input = (kind: string) => ({ orgId: 'o', kind, reason: 'because', params: {} });
+    expect(checkGuardrails('launch_specialist', input('device_troubleshooting'), { chatSession: true }))
+      .toMatchObject({ tier: 2, allowed: true, requiresApproval: false });
+    expect(checkGuardrails('launch_specialist', input('operator_recipe'), { chatSession: true }))
+      .toMatchObject({ tier: 3, requiresApproval: true, approvalScope: 'supervised' });
+  });
+
+  it('the device_troubleshooting card shows the goal, one line and bounded (#11084)', () => {
+    const text = describeSpecialistRequest(
+      { orgId: 'o', kind: 'device_troubleshooting', reason: 'Multi-step device work', params: { deviceId: 'd', goal: `Outlook crashes\non start ${'x'.repeat(400)}` } },
+      'Greenwood',
+    );
+    expect(text).toMatch(/^Wisp wants to run device troubleshooting at Greenwood: Multi-step device work — one device, goal: "Outlook crashes on start x/);
+    expect(text).not.toContain('\n');
+    expect(text.length).toBeLessThan(330);
+  });
+
+  // #10406: one card covers the whole batch, so it says so.
+  it('the assessment card says when it covers the orgs with open alerts, not just the anchor org', () => {
+    const input = (scope?: string) => ({ orgId: 'o', kind: 'assessment', reason: 'go through the open alerts', params: scope ? { scope } : {} });
+    expect(describeSpecialistRequest(input('orgs_with_open_alerts'), 'Greenwood'))
+      .toBe('Wisp wants to run a Wisp assessment at Greenwood: go through the open alerts — covers up to 10 orgs in this grant with open alerts, worst first');
+    expect(describeSpecialistRequest(input('org'), 'Greenwood'))
+      .toBe('Wisp wants to run a Wisp assessment at Greenwood: go through the open alerts');
+    expect(describeSpecialistRequest(input(), 'Greenwood'))
+      .toBe('Wisp wants to run a Wisp assessment at Greenwood: go through the open alerts');
+    expect(checkGuardrails('launch_specialist', input('orgs_with_open_alerts'), { chatSession: true }))
+      .toMatchObject({ tier: 2, allowed: true, requiresApproval: false });
   });
 
   it('the card names the org, not a raw id prefix, when the chat gate resolved its name', () => {
@@ -138,7 +171,7 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
       .toBe(`Wisp wants to run a health sweep at ${`Acme ${'x'.repeat(200)}`.slice(0, 80)}…: disks are filling`);
   });
 
-  it('the tool tells the model which params each kind takes (goal is analysis-only)', () => {
+  it('the tool tells the model which params each kind takes (goal: analysis and device_troubleshooting)', () => {
     const def = aiTools.get('launch_specialist')!.definition;
     const paramsField = (def.input_schema.properties as Record<string, { description?: string }>).params!.description ?? '';
     // The params field lists the short kinds; the tool description the two long ones.
@@ -146,8 +179,10 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
     for (const kind of SPECIALIST_KINDS) expect(text, kind).toMatch(new RegExp(`${kind} \\{`));
     expect(paramsField).toMatch(/sweep \{sweepKinds\?\}/);
     expect(paramsField).toMatch(/patch_plan \{\}/);
-    expect(text.match(/goal/g)).toHaveLength(1);
+    expect(text.match(/goal/g)).toHaveLength(2);
     expect(paramsField).toMatch(/analysis \{goal/);
+    expect(def.description).toMatch(/device_troubleshooting \{deviceId, goal, continueFromRunId\?\}/);
+    expect(def.description?.length ?? 0).toBeLessThanOrEqual(300);
   });
 
   it('an agent principal is denied launch_specialist whatever its allowlist says', () => {

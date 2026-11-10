@@ -119,8 +119,9 @@ deviceActiveSessionRoutes.get(
             ne(remoteSessions.type, 'file_transfer'),
             // Hide pending/connecting attempts that never came up. A row that was
             // already live (startedAt set) and is re-offering — a WebRTC
-            // reconnect, Retry, a session switch — moves back to `connecting`
-            // with its original createdAt; it must not vanish from the banner.
+            // reconnect, Retry, a session switch — must not vanish from the
+            // banner, even once a quiet re-offer reads as stale, until something
+            // ends it.
             not(and(remoteSessionStaleCondition(now)!, isNull(remoteSessions.startedAt))!)
           )
         )
@@ -203,8 +204,9 @@ deviceActiveSessionRoutes.get(
           status: s.status,
           // Server-computed so the client never compares a server timestamp
           // against a skewed browser clock (same reason as tunnels' idleSeconds).
-          // Based on createdAt, which a WebRTC re-offer never rewrites (startedAt
-          // is re-stamped on every answer).
+          // Based on createdAt, which a WebRTC re-offer never rewrites. startedAt
+          // is NULL until the session's first start (first answer, or first
+          // WebSocket-fallback start).
           elapsedSeconds: Math.max(0, Math.floor((now.getTime() - s.createdAt.getTime()) / 1000)),
           isCurrentUser,
           userKey: userKeyFor(s.userId),

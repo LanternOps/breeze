@@ -94,6 +94,10 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
 
   </Steps>
 
+  <Aside type="caution" title="Unmapped sites appear for mapping but file no inventory">
+    A controller site that is not mapped to a Breeze site still appears in the **Site mapping** card, but Breeze stores none of its devices or clients. They are not filed under the collector agent's organization, because that agent's organization may be a different customer. Rows filed there by earlier versions are removed the next time the controller reports them. Map every controller site you want inventoried. If you later unmap a site, its devices and clients are removed the next time the controller reports them, and anything the controller no longer lists is marked stale instead. Discovered assets that were already created stay in place for you to review. A collector agent too old to report site ids files nothing for this controller until it is updated.
+  </Aside>
+
   <Aside type="note">
     Sites are mapped individually rather than per controller, so **one self-hosted controller can feed many UniFi sites across several different Breeze organizations**. In this mode the collector agent isn't optional -- it is the only way Breeze reaches your controller. If the assigned agent goes offline, polling for that controller stops until it reconnects or you point the registration at a different agent.
   </Aside>

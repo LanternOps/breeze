@@ -15,7 +15,9 @@ import {
   BUSINESS_REPORT_TYPES,
   MANAGED_EVIDENCE_REPORT_TYPES,
   REPORT_TYPES,
+  REPORT_TYPE_REQUIRED_PERMISSIONS,
 } from '@breeze/shared';
+import { GENERATE_REPORT_TYPES } from './aiReportTypes';
 import { MSP_STAFF_REPORT_TYPES, REPORT_GENERATORS, reportTypeDef } from './reportRegistry';
 import { MANAGED_EVIDENCE_REGISTRY } from './managedEvidenceRegistry';
 import { PORTAL_DEFINITIONS_FOR_TEST } from './portal/reportsSelfService';
@@ -101,9 +103,21 @@ describe('REPORT_GENERATORS', () => {
     }
   });
 
+  it('ticket_sla_performance is org-only, audience any, requires tickets:read', () => {
+    const def = REPORT_GENERATORS.ticket_sla_performance;
+    expect(def.supportedScopes).toEqual(['organization']);
+    expect(def.audience).toBe('any');
+    expect(def.execution).toBe('managed_evidence');
+    expect(def.detailRowCap).toBe(Number.POSITIVE_INFINITY);
+    expect(def.requiredPermissions).toBe(REPORT_TYPE_REQUIRED_PERMISSIONS.ticket_sla_performance);
+    expect(def.requiredPermissions).toEqual([{ resource: 'tickets', action: 'read' }]);
+    expect(GENERATE_REPORT_TYPES as readonly string[]).not.toContain('ticket_sla_performance');
+    expect(Object.keys(MANAGED_EVIDENCE_REGISTRY)).toContain('ticket_sla_performance');
+  });
+
   it('no pre-#3198 type gains a permission requirement (route middleware is unchanged)', () => {
     for (const def of Object.values(REPORT_GENERATORS)) {
-      if ((BUSINESS_REPORT_TYPES as readonly string[]).includes(def.type)) {
+      if (REPORT_TYPE_REQUIRED_PERMISSIONS[def.type]) {
         expect(def.requiredPermissions.length).toBeGreaterThan(0);
       } else {
         expect(def.requiredPermissions).toEqual([]);

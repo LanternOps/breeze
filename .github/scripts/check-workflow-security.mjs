@@ -19,6 +19,7 @@ const WINDOWS_SIGNING_RELEASE_GATE_RULE = 'windows-signing-gate-must-block-relea
 const WINDOWS_SIGNING_ARTIFACT_PARITY_RULE = 'windows-signing-providers-must-cover-same-artifacts';
 const SSLCOM_SIGNING_TOOLCHAIN_RULE = 'sslcom-signing-must-pin-toolchain';
 const SIGNING_ENVIRONMENT_RULE = 'signing-secrets-must-use-signing-environment';
+export const PINNED_GATE_RULE = 'pinned-ci-gate-invariants';
 const TAURI_SIGNED_ARTIFACT_MARKER = 'breeze-viewer-windows.msi';
 const TAURI_SIGNED_ARTIFACT_RE = /breeze-[a-z0-9-]+-windows\.msi/gu;
 const PROVIDER_RESOLVER_SCRIPT = '.github/scripts/resolve-windows-signing-provider.mjs';
@@ -475,6 +476,12 @@ function containsSecretReference(value) {
     /\bsecrets\./u.test(normalized)
     || /\btojson\(\s*secrets\s*\)/iu.test(normalized)
   );
+}
+
+// Repository or organization variables (`vars.X`, `vars['X']`, `toJSON(vars)`).
+function containsVarsReference(value) {
+  const normalized = normalizePropertyAccess(value);
+  return /\bvars\./u.test(normalized) || /\btojson\(\s*vars\s*\)/iu.test(normalized);
 }
 
 function secretReferenceLines(lines) {
@@ -1458,6 +1465,233 @@ function signingEnvironmentViolations(file, lines) {
   return violations;
 }
 
+// ── The pinned CI Gate (W02, #10746) ─────────────────────────────────────
+//
+// The org ruleset requires ci-gate.yml from main, and the merge queue trusts
+// its verdict. It must never run candidate code, hold write access or
+// secrets, install anything, share a cache, or be cancelled or softened. This
+// rule pins the whole file to that shape: anything not listed is a violation.
+const PINNED_GATE_FILE = 'ci-gate.yml';
+const GATE_FILTER = '[ci-gate-ruleset-only]';
+const MERGE_GROUP_ONLY = "github.event_name == 'merge_group'";
+const PULL_REQUEST_ONLY = "github.event_name == 'pull_request'";
+const MERGE_GROUP_ENV = {
+  GH_TOKEN: '${{ github.token }}',
+  BASE_SHA: '${{ github.event.merge_group.base_sha }}',
+  HEAD_SHA: '${{ github.event.merge_group.head_sha }}',
+  HEAD_REF: '${{ github.event.merge_group.head_ref }}',
+};
+// The kill switch (W05, #10749): the only repository variable the gate may read.
+const THIN_QUEUE_ENV = ['THIN_QUEUE', '${{ vars.CI_THIN_QUEUE }}'];
+const GATE_RUN = {
+  select: { run: 'node .github/scripts/ci-gate.mjs select', if: MERGE_GROUP_ONLY,
+    env: { ...MERGE_GROUP_ENV, [THIN_QUEUE_ENV[0]]: THIN_QUEUE_ENV[1] } },
+  verify: { run: 'node .github/scripts/ci-gate.mjs verify', if: MERGE_GROUP_ONLY, env: MERGE_GROUP_ENV },
+  anchor: { run: 'node .github/scripts/ci-gate.mjs anchor', if: PULL_REQUEST_ONLY,
+    env: {
+      GH_TOKEN: '${{ github.token }}',
+      PR_HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
+      PR_NUMBER: '${{ github.event.pull_request.number }}',
+    } },
+};
+// Every `with:` key each action may take, and the values that are fixed. An action
+// with several specs picks the one whose `if:` the step has. `step` lists the
+// extra step keys that spec allows, each with its one value.
+const UPLOAD_KEYS = ['name', 'path', 'retention-days', 'if-no-files-found'];
+const GATE_ACTIONS = {
+  'actions/checkout': [{ keys: ['ref', 'fetch-depth', 'persist-credentials', 'sparse-checkout', 'sparse-checkout-cone-mode'],
+    fixed: { ref: '${{ github.workflow_sha }}', 'fetch-depth': '0', 'persist-credentials': 'false', 'sparse-checkout': '.github/scripts', 'sparse-checkout-cone-mode': 'false' } }],
+  'actions/setup-node': [{ keys: ['node-version', 'package-manager-cache'], fixed: { 'package-manager-cache': 'false' } }],
+  'actions/upload-artifact': [
+    { keys: UPLOAD_KEYS, if: PULL_REQUEST_ONLY,
+      fixed: { name: 'ci-gate-anchor-attempt-${{ github.run_attempt }}', path: 'ci-gate-anchor.json', 'retention-days': '7', 'if-no-files-found': 'ignore' } },
+    // The selection upload is the one soft step: verify reads the local file, so a
+    // failed upload only means CI finds no selection and runs everything.
+    { keys: UPLOAD_KEYS, if: MERGE_GROUP_ONLY, order: 'upload-selection', step: { 'continue-on-error': 'true', 'timeout-minutes': '2' },
+      fixed: { name: 'ci-gate-selection-attempt-${{ github.run_attempt }}', path: 'ci-gate-selection.json', 'retention-days': '7', 'if-no-files-found': 'ignore' } },
+  ],
+};
+// select publishes the list, the upload hands it to CI, and verify judges by it.
+const MERGE_GROUP_ORDER = ['select', 'upload-selection', 'verify'];
+const STEP_KEYS = ['name', 'uses', 'with', 'if', 'env', 'run'];
+const GATE_FORBIDDEN_KEYS = new Set(['continue-on-error', 'concurrency', 'cancel-in-progress', 'paths', 'paths-ignore',
+  'cache', 'cache-dependency-path', 'container', 'services']);
+
+function directChildren(lines, index) {
+  const children = [];
+  for (let child = index + 1; child < lines.length && lines[child].indent > lines[index].indent; child += 1) {
+    if (!lines[child].isBlockScalarContent && parentLineIndex(lines, child) === index) {
+      children.push(child);
+    }
+  }
+  return children;
+}
+
+// A step's first line is `- key: value`; its other keys are its children.
+function stepEntry(lines, index) {
+  const line = lines[index];
+  return isSequenceItem(line) ? mappingEntry(line.trimmed.slice(1).trim()) : mappingEntry(line.trimmed);
+}
+
+function entriesOf(lines, indexes) {
+  return indexes.map((index) => ({ index, line: lines[index], ...stepEntry(lines, index) }));
+}
+
+function scalarOf(lines, entry) {
+  return /^[>|][0-9+-]*$/u.test(entry.value) ? blockScalarValue(lines, entry.index) : unquote(entry.value);
+}
+
+function pinnedGateViolations(file, lines) {
+  if (file !== PINNED_GATE_FILE) {
+    return [];
+  }
+  const violations = [];
+  const seen = new Set();
+  const flag = (line, message) => {
+    const at = line?.line ?? 1;
+    if (!seen.has(`${at}\0${message}`)) {
+      seen.add(`${at}\0${message}`);
+      violations.push({ file, line: at, rule: PINNED_GATE_RULE, message: `pinned CI Gate: ${message}` });
+    }
+  };
+
+  const top = entriesOf(lines, lines.flatMap((line, index) => (line.indent === 0 && !line.isBlockScalarContent ? [index] : [])));
+  const topEntry = (key) => top.find((entry) => entry.key === key);
+  for (const entry of top) {
+    if (!['name', 'on', 'permissions', 'jobs'].includes(entry.key)) {
+      flag(entry.line, `top-level ${entry.key} is not allowed`);
+    }
+  }
+
+  const on = topEntry('on');
+  const events = on ? entriesOf(lines, directChildren(lines, on.index)) : [];
+  if (!on || on.value !== '' || events.map(({ key }) => key).sort().join(',') !== 'merge_group,pull_request') {
+    flag(on?.line, 'triggers must be exactly pull_request and merge_group');
+  }
+  for (const event of events) {
+    const filters = entriesOf(lines, directChildren(lines, event.index));
+    if (event.value !== '' || filters.length !== 1 || filters[0].key !== 'branches' || filters[0].value !== GATE_FILTER) {
+      flag(event.line, `${event.key} must be filtered to exactly branches: ${GATE_FILTER}`);
+    }
+  }
+
+  const permissions = topEntry('permissions');
+  const granted = permissions ? entriesOf(lines, directChildren(lines, permissions.index)) : [];
+  if (!permissions || permissions.value !== '' || granted.map(({ key, value }) => `${key}: ${value}`).sort().join(', ') !== 'actions: read, contents: read') {
+    flag(permissions?.line, 'permissions must be exactly contents: read and actions: read');
+  }
+
+  const jobs = topEntry('jobs');
+  const jobEntries = jobs ? entriesOf(lines, directChildren(lines, jobs.index)) : [];
+  if (jobEntries.length !== 1) {
+    flag(jobs?.line, 'there must be exactly one job');
+  }
+  const ran = new Set();
+  const order = [];
+  // Lines a spec allows a forbidden key on, and the one line allowed to read a variable.
+  const exempt = new Set();
+  let varsAt = null;
+  for (const job of jobEntries) {
+    const keys = entriesOf(lines, directChildren(lines, job.index));
+    const value = (key) => keys.find((entry) => entry.key === key);
+    for (const entry of keys) {
+      if (entry.key === 'if') {
+        flag(entry.line, 'job-level if: is not allowed');
+      } else if (entry.key === 'permissions') {
+        flag(entry.line, 'job-level permissions are not allowed');
+      } else if (!['name', 'runs-on', 'timeout-minutes', 'steps'].includes(entry.key)) {
+        flag(entry.line, `job key ${entry.key} is not allowed`);
+      }
+    }
+    if (unquote(value('name')?.value ?? '') !== 'CI Gate') flag(job.line, 'the job name must be exactly CI Gate');
+    if (value('runs-on')?.value !== 'ubuntu-latest') flag(job.line, 'runs-on must be ubuntu-latest');
+    if (value('timeout-minutes')?.value !== '145') flag(job.line, 'timeout-minutes must be 145');
+
+    const steps = value('steps') ? directChildren(lines, value('steps').index) : [];
+    for (const stepIndex of steps) {
+      const step = entriesOf(lines, [stepIndex, ...directChildren(lines, stepIndex)]);
+      const field = (key) => step.find((entry) => entry.key === key);
+      const condition = field('if') ? unquote(field('if').value) : null;
+      const env = field('env') ? entriesOf(lines, directChildren(lines, field('env').index)) : [];
+      const uses = field('uses') ? unquote(field('uses').value) : null;
+      const run = field('run') ? scalarOf(lines, field('run')) : null;
+      const action = uses?.split('@')[0];
+      // An action with several specs is held to the one whose if: the step has.
+      const specs = run === null ? GATE_ACTIONS[action] ?? [] : [];
+      const spec = specs.find((candidate) => (candidate.if ?? null) === condition) ?? specs[0];
+      const allowed = [...STEP_KEYS, ...Object.keys(spec?.step ?? {})];
+      for (const entry of step) {
+        if (!allowed.includes(entry.key)) {
+          flag(entry.line, `step key ${entry.key} is not allowed`);
+        }
+      }
+
+      if (run !== null) {
+        // One plain line: a block scalar could hide a second command after it.
+        const subcommand = Object.keys(GATE_RUN).find((name) => GATE_RUN[name].run === run && !/^[>|]/u.test(field('run').value));
+        if (!subcommand) {
+          flag(field('run').line, `run must be exactly one of: ${Object.values(GATE_RUN).map((candidate) => candidate.run).join(' | ')}`);
+          continue;
+        }
+        if (ran.has(subcommand)) flag(field('run').line, `the ${subcommand} step must appear once`);
+        ran.add(subcommand);
+        order.push(subcommand);
+        const expected = GATE_RUN[subcommand];
+        if (condition !== expected.if) flag(step[0].line, `the ${subcommand} step must have if: ${expected.if}`);
+        const actual = Object.fromEntries(env.map(({ key, value }) => [key, unquote(value)]));
+        if (JSON.stringify(Object.entries(actual).sort()) !== JSON.stringify(Object.entries(expected.env).sort())) {
+          flag(field('env')?.line ?? step[0].line, `the ${subcommand} step env must be exactly ${Object.keys(expected.env).join(', ')}`);
+        }
+        const thinQueue = env.find(({ key, value }) => key === THIN_QUEUE_ENV[0] && unquote(value) === THIN_QUEUE_ENV[1]);
+        if (subcommand === 'select' && thinQueue) varsAt = thinQueue.index;
+        continue;
+      }
+      if (env.length) flag(field('env').line, 'only the select, verify and anchor steps may set env');
+      if (!spec) {
+        flag(field('uses')?.line ?? step[0].line, `uses ${uses ?? '(none)'} is not allowed; only ${Object.keys(GATE_ACTIONS).join(', ')}`);
+        continue;
+      }
+      if (condition !== (spec.if ?? null)) {
+        flag(step[0].line, `${action} must have ${specs.map((candidate) => (candidate.if ? `if: ${candidate.if}` : 'no if:')).join(' or ')}`);
+      }
+      if (spec.order && order.includes(spec.order)) flag(step[0].line, `the ${spec.order} step must appear once`);
+      if (spec.order) order.push(spec.order);
+      for (const [key, fixed] of Object.entries(spec.step ?? {})) {
+        const entry = field(key);
+        if (!entry || scalarOf(lines, entry) !== fixed) flag(entry?.line ?? step[0].line, `${action} must set ${key}: ${fixed}`);
+        else exempt.add(entry.index);
+      }
+      const inputs = field('with') ? entriesOf(lines, directChildren(lines, field('with').index)) : [];
+      for (const input of inputs) {
+        if (!spec.keys.includes(input.key)) flag(input.line, `${action} input ${input.key} is not allowed`);
+      }
+      for (const [key, fixed] of Object.entries(spec.fixed)) {
+        const input = inputs.find((entry) => entry.key === key);
+        if (!input || scalarOf(lines, input) !== fixed) flag(input?.line ?? step[0].line, `${action} must set ${key}: ${fixed}`);
+      }
+    }
+  }
+  for (const subcommand of Object.keys(GATE_RUN)) {
+    if (!ran.has(subcommand)) flag(jobs?.line, `the gate must run ${GATE_RUN[subcommand].run}`);
+  }
+  const positions = MERGE_GROUP_ORDER.map((name) => order.indexOf(name));
+  if (positions.some((at, i) => at < 0 || (i > 0 && at < positions[i - 1]))) {
+    flag(jobs?.line, `the merge_group steps must run in order: ${MERGE_GROUP_ORDER.join(', ')}`);
+  }
+
+  for (const [index, line] of lines.entries()) {
+    const key = line.isBlockScalarContent ? null : stepEntry(lines, index)?.key;
+    if (GATE_FORBIDDEN_KEYS.has(key) && !exempt.has(index)) flag(line, `${key} is not allowed`);
+    if (index !== varsAt && containsVarsReference(line.content)) {
+      flag(line, `vars are allowed only as ${THIN_QUEUE_ENV[0]}: ${THIN_QUEUE_ENV[1]} in the select step`);
+    }
+  }
+  for (const line of secretReferenceLines(lines)) {
+    flag(line, 'secrets are not allowed');
+  }
+  return violations;
+}
+
 function compareViolations(left, right) {
   return codePointCompare(left.file, right.file)
     || left.line - right.line
@@ -1522,6 +1756,7 @@ export function inspectWorkflowText(file, text) {
   violations.push(...developerSigningViolations(file, lines));
   violations.push(...publicReleaseSigningViolations(file, lines));
   violations.push(...signingEnvironmentViolations(file, lines));
+  violations.push(...pinnedGateViolations(file, lines));
 
   return violations.sort(compareViolations);
 }

@@ -8,6 +8,10 @@ import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 // fails to match re-pins a pooled connection across the network call.
 describe('isSelfManagedDbContextRoute', () => {
   const MATCH: ReadonlyArray<[string, string]> = [
+    ['POST', '/api/v1/devices/bulk/commands'],
+    ['POST', '/api/v1/devices/bulk/commands/'],
+    ['POST', '/api/v1/devices/abc-123/commands'],
+    ['POST', '/api/v1/devices/abc-123/commands/'],
     ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
     // Ticket import sources and runs (#8313 W4): outbound connect / commit-then-enqueue.
     ['POST', '/api/v1/ticket-imports/sources'],
@@ -563,6 +567,18 @@ it('self-manages the Graph binding POST but not ordinary verification writes', (
 // #7103 — manual Run Script creates its rows in a short committed context and
 // sends only after that commit, so it cannot run inside the request tx. Only the
 // execute POST opts out; the script's other routes keep the ambient tx.
+// #11065 W04: Run vendor updates. The seam commits its own row and then pushes,
+// so the POST holds no request transaction; the status and history reads do.
+it('self-manages POST /devices/:id/oem-updates/run and no sibling route', () => {
+  const base = '/api/v1/devices/22222222-2222-4222-8222-222222222222/oem-updates';
+  expect(isSelfManagedDbContextRoute('POST', `${base}/run`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `${base}/run/`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `${base}/run`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `${base}/status`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `${base}/history`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/not-a-uuid/oem-updates/run')).toBe(false);
+});
+
 it('self-manages POST /scripts/:id/execute and no sibling script route', () => {
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/execute')).toBe(true);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/scripts/abc-123/execute/')).toBe(true);

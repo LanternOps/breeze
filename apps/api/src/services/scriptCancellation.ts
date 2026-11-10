@@ -9,7 +9,7 @@ import {
 import { executionStatusEnum, scriptExecutions } from '../db/schema/scripts';
 import { deviceCommands, devices } from '../db/schema/devices';
 import { users } from '../db/schema/users';
-import { sendCommandToAgent } from '../routes/agentWs';
+import { dispatchCommandToAgent, dispatchDisposition } from './agentCommandRelay';
 import { envInt } from '../utils/envInt';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
@@ -496,7 +496,8 @@ export async function cancelScriptExecution(input: {
  *
  * MUST be called only after `cancelScriptExecution`'s transaction has committed
  * (that is why it is a separate function rather than the tail of the branch
- * above). Returns whether the frame reached the socket; `false` is NOT an
+ * above). Returns whether the frame went out, or may have (an unconfirmed
+ * relay delivery keeps its claim and counts as sent); `false` is NOT an
  * error — the row stays `pending` and the heartbeat / HTTP-poll delivery path
  * picks it up, which is exactly what happens for an offline device.
  */
@@ -542,8 +543,29 @@ export async function deliverCancelCommand(
   });
   // #8318 §6.4: to the agent_id read IN the claim, not `row.agentId` read
   // before it (a reattach or re-enroll may have committed since).
-  const sent = deliverable ? sendCommandToAgent(claimed.agentId, toAgentCommandFrame(deliverable)) : false;
-  if (sent) return true;
+  // #4142: through the relay facade (it answers for an agent on another
+  // instance). delivered and uncertain both return true: an uncertain frame may
+  // already be out, so the claim is KEPT (no release, no retry) and the row
+  // stays `sent` for the agent's ack or the stale reaper to resolve. Only a
+  // provable non-delivery falls through to the release below.
+  if (deliverable) {
+    try {
+      const disposition = dispatchDisposition(
+        await dispatchCommandToAgent(claimed.agentId, toAgentCommandFrame(deliverable)),
+      );
+      if (disposition !== 'not_delivered') return true;
+    } catch (err) {
+      // Contract violation (the facade never rejects): the frame may be out,
+      // so treat it as uncertain. Keep the claim and report it.
+      console.error('[scriptCancellation] relay facade rejected; keeping the delivery claim', {
+        cancelCommandId,
+        deviceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err);
+      return true;
+    }
+  }
 
   // Release rather than strand as `sent`: otherwise the eventual reaper timeout
   // misattributes a server-side send failure to agent unreachability.

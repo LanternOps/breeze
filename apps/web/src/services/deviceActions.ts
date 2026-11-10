@@ -1,3 +1,4 @@
+import { i18n } from '../lib/i18n';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '../lib/apiError';
 import { createCancellableRequest } from '../lib/cancellableRequest';
@@ -115,13 +116,16 @@ export async function sendDeviceCommand(
 }
 
 export type WakeFailureCode =
+  | 'TARGET_ONLINE'
   | 'TARGET_NOT_FOUND'
   | 'NO_MACS'
   | 'NO_SUBNET'
   | 'IPV6_ONLY'
   | 'NO_RELAY'
   | 'RELAY_OVERRIDE_INVALID'
-  | 'WS_SEND_FAILED';
+  | 'WS_SEND_FAILED'
+  | 'COMMAND_CANCELLED'
+  | 'DEVICE_PENDING_ASSIGNMENT';
 
 export interface WakeResponse {
   id: string;
@@ -232,11 +236,15 @@ function waitOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-export async function sendWakeCommand(deviceId: string): Promise<WakeResponse> {
-  const response = await fetchWithAuth(`/devices/${deviceId}/commands`, {
+export function requestWakeCommand(deviceId: string): Promise<Response> {
+  return fetchWithAuth(`/devices/${deviceId}/commands`, {
     method: 'POST',
     body: JSON.stringify({ type: 'wake' })
   });
+}
+
+export async function sendWakeCommand(deviceId: string): Promise<WakeResponse> {
+  const response = await requestWakeCommand(deviceId);
 
   if (!response.ok) {
     let code: WakeFailureCode | undefined;
@@ -255,15 +263,10 @@ export async function sendWakeCommand(deviceId: string): Promise<WakeResponse> {
   return await response.json();
 }
 
-/** Bulk-wake result codes — same as WakeFailureCode plus two bulk-only
- *  shapes the bulk handler emits before reaching dispatchWake. */
-export type BulkWakeFailureCode =
-  | WakeFailureCode
-  | 'DECOMMISSIONED'
-  // The bulk handler also emits TARGET_NOT_FOUND for "not found OR
-  // partner-scope access denied" — same as dispatchWake's own
-  // TARGET_NOT_FOUND but raised earlier (before dispatchWake is invoked).
-  ;
+/** Bulk-wake result codes: WakeFailureCode plus DECOMMISSIONED, which the bulk
+ *  handler emits before reaching dispatchWake. It also emits TARGET_NOT_FOUND
+ *  early, for "not found OR partner-scope access denied". */
+export type BulkWakeFailureCode = WakeFailureCode | 'DECOMMISSIONED';
 
 export interface BulkWakeSucceeded {
   deviceId: string;
@@ -286,67 +289,51 @@ export interface BulkWakeSummary {
   failed: BulkWakeFailed[];
 }
 
-/**
- * Bulk Wake-on-LAN — one HTTP round-trip, server iterates per-device with
- * a relay-pick per LAN. Server response includes per-device outcome with
- * the original WakeFailureCode preserved so the UI can group failures
- * by reason in the summary toast.
- *
- * 412/422 from the server (validation, decommissioned-only selection,
- * etc.) is surfaced as a thrown Error so the caller's catch path can
- * show a single error toast instead of treating the entire batch as
- * "0 succeeded."
- */
-export async function sendBulkWakeCommand(deviceIds: string[]): Promise<BulkWakeSummary> {
-  const response = await fetchWithAuth('/devices/bulk/commands', {
+export function requestBulkWakeCommand(deviceIds: string[]): Promise<Response> {
+  return fetchWithAuth('/devices/bulk/commands', {
     method: 'POST',
     body: JSON.stringify({ deviceIds, type: 'wake' })
   });
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to send bulk wake command'));
-  }
-  return await response.json();
 }
 
 /**
  * Render a one-line failure-code summary suitable for the bulk-wake toast,
  * grouping by code. Returns an empty string when there are no failures.
  *
- * Example: "3 have no online peer at their site; 1 has no MAC on file"
+ * Example: "3 with no online peer at their site; 1 with no MAC on file"
  */
 export function summarizeBulkWakeFailures(failed: BulkWakeFailed[]): string {
-  if (failed.length === 0) return '';
-  const buckets: Record<string, number> = {};
-  for (const f of failed) {
-    const label = bulkWakeFailureLabel(f.code);
-    buckets[label] = (buckets[label] ?? 0) + 1;
+  const buckets = new Map<string, { label: string; count: number }>();
+  for (const failure of failed) {
+    const bucket = buckets.get(failure.code);
+    if (bucket) bucket.count++;
+    else buckets.set(failure.code, { label: bulkWakeFailureLabel(failure), count: 1 });
   }
-  return Object.entries(buckets)
-    .map(([label, count]) => `${count} ${label}`)
-    .join('; ');
+  return [...buckets.values()].map(({ label, count }) => `${count} ${label}`).join('; ');
 }
 
-function bulkWakeFailureLabel(code: string): string {
-  switch (code) {
+function bulkWakeFailureLabel(failure: BulkWakeFailed): string {
+  switch (failure.code) {
+    case 'TARGET_ONLINE':
+      return i18n.t('devices:devicesPage.wakeSkipReasons.online');
     case 'NO_RELAY':
-      return 'with no online peer at their site';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.relayUnavailable');
     case 'NO_MACS':
-      return 'with no MAC on file (agent has not checked in)';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.missingMac');
     case 'NO_SUBNET':
+      return i18n.t('devices:devicesPage.wakeSkipReasons.missingSubnet');
     case 'IPV6_ONLY':
-      return 'with no usable IPv4 history';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.ipv6');
     case 'WS_SEND_FAILED':
-      return 'had relay disconnect mid-dispatch — retry';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.relayDisconnected');
     case 'TARGET_NOT_FOUND':
-      return 'not found or access denied';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.missingTarget');
     case 'DECOMMISSIONED':
-      return 'removed';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.removed');
     case 'RELAY_OVERRIDE_INVALID':
-      // Bulk path never uses override; surface generically if it ever
-      // does appear so we notice in telemetry.
-      return 'with invalid relay override';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.invalidRelay');
     default:
-      return `with error ${code}`;
+      return failure.message;
   }
 }
 
@@ -484,31 +471,9 @@ export async function linkDevicesVmHost(
   return data.data ?? data;
 }
 
-/**
- * Permanently delete a REMOVED device.
- *
- * The body is `{ success: true }` and nothing else. It used to carry
- * `agentUninstallSent` / `warning` describing a best-effort WS uninstall the
- * API fired after the cascade; #2787 deleted that dispatch — permanent delete
- * now REFUSES (409 `UNINSTALL_PENDING`) while a durable agent uninstall is
- * still collectable, instead of destroying it and reporting a warning. There
- * is nothing best-effort left to report, so the fields are gone rather than
- * left declared-but-never-populated.
- */
-export async function permanentDeleteDevice(
-  deviceId: string
-): Promise<{ success: boolean }> {
-  const response = await fetchWithAuth(`/devices/${deviceId}/permanent`, {
-    method: 'DELETE'
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to permanently delete device'));
-  }
-
-  const data = await response.json();
-  return data.data ?? data;
-}
+// Single-device permanent delete lives in components/devices/ForcePermanentDeleteDialog.tsx
+// (permanentDeleteRequest): it goes through runAction and handles the #11153
+// UNINSTALL_NOT_CONFIRMED refusal, which this thin service could not express.
 
 export interface BulkDecommissionFailed {
   id: string;
@@ -657,6 +622,7 @@ export type BulkLifecycleFailureCode =
   | 'NOT_FOUND'
   | 'NOT_REMOVED'
   | 'UNINSTALL_PENDING'
+  | 'UNINSTALL_NOT_CONFIRMED'
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
   | 'DEVICE_LIMIT_REACHED'

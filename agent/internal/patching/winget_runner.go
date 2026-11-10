@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // DefaultRunner is the production cmdRunner: it runs name/args via os/exec
@@ -19,7 +21,7 @@ func DefaultRunner(name string, args []string, timeout time.Duration) (string, s
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	hideWindowCmd(cmd)
 
 	var stdout, stderr bytes.Buffer

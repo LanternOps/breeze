@@ -101,7 +101,7 @@ An S3 destination's **Path Prefix** decides where its new snapshots are written:
 Each snapshot records the location it was written to, and Breeze reads, verifies, restores and cleans it up there for its whole life. As a result:
 
 - **Existing snapshots are never moved.** Snapshots taken before you set or changed the prefix stay where they are and keep restoring normally.
-- **Changing the prefix makes the next backup a full backup.** An incremental never builds on a snapshot stored under a different prefix, so the first run scheduled after a change uploads everything again. An incremental run that was already scheduled against a base under the old prefix when you changed it fails with a message saying so; the next scheduled run takes the full backup.
+- **Changing the prefix makes the next backup a full backup.** An incremental never builds on a snapshot stored under a different prefix, so the first run scheduled after a change uploads everything again (see [When a run uploads everything again](/backup/incremental-backups/#when-a-run-uploads-everything-again)). An incremental run that was already scheduled against a base under the old prefix when you changed it fails with a message saying so; the next scheduled run takes the full backup.
 - **Several organizations can share one bucket** with a prefix each. The storage cleanup sweep lists and deletes under one prefix at a time and never touches another prefix's objects.
 - **Scope IAM policies to the prefix.** A policy that only allows `bucket/snapshots/*` stops working once a prefix is set; allow `bucket/<prefix>/*` instead. **Test connection** writes a probe object under the prefix, so it catches this before the first backup fails.
 

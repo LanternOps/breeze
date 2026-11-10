@@ -61,13 +61,27 @@ export function combinePortalCustomCss(
 // now validates). Bounded by the number of partners holding such a value.
 const warnedPartners = new Set<string>();
 
+export type PartnerPortalDefaults = {
+  /** The partner's validated Custom CSS, or null. */
+  customCss: string | null;
+  /** The raw `partners.settings`, for resolveDocumentBrand / partnerDocumentBrand
+   *  (#9673), which validate what they read. Null when the partner is unknown. */
+  settings: unknown;
+  /** True when the lookup failed, so the answer lacks the partner's defaults
+   *  and must not be cached. */
+  degraded: boolean;
+};
+
+const NO_PARTNER_DEFAULTS: PartnerPortalDefaults = { customCss: null, settings: null, degraded: false };
+
 /**
- * The Custom CSS of the partner that owns `orgId`. `partners` is a
- * partner-axis table the portal user's org context cannot read, so this runs
- * in system scope, keyed only by the org id the caller already resolved
- * (the session org, or the org behind a verified custom domain).
+ * What the partner that owns `orgId` contributes to its portal: Custom CSS and
+ * the Branding the logo and colours fall back to. `partners` is a partner-axis
+ * table the portal user's org context cannot read, so this runs in system
+ * scope, keyed only by the org id the caller already resolved (the session org,
+ * or the org behind a verified custom domain).
  */
-export async function loadPartnerPortalCustomCss(orgId: string): Promise<string | null> {
+export async function loadPartnerPortalDefaults(orgId: string): Promise<PartnerPortalDefaults> {
   let row: { partnerId: string; settings: unknown } | undefined;
   try {
     [row] = await runOutsideDbContext(() =>
@@ -81,17 +95,17 @@ export async function loadPartnerPortalCustomCss(orgId: string): Promise<string 
       ),
     );
   } catch (err) {
-    // A stylesheet must not take the branding response (logo, colours,
-    // visibility flags) down with it: degrade to the org's CSS alone.
+    // Partner defaults must not take the branding response (the org's own
+    // values, visibility flags) down with them: degrade to the org's row alone.
     captureException(err, undefined, { area: 'portal-branding-partner-css' });
-    return null;
+    return { ...NO_PARTNER_DEFAULTS, degraded: true };
   }
-  if (!row) return null;
+  if (!row) return NO_PARTNER_DEFAULTS;
   const { css, rejected } = readPartnerPortalCustomCss(row.settings);
   if (rejected && !warnedPartners.has(row.partnerId)) {
     warnedPartners.add(row.partnerId);
     // Never the CSS itself: the id is enough to find and fix the value.
     console.warn('[portal] partner Custom CSS fails the portal CSS rules; not applied', { partnerId: row.partnerId });
   }
-  return css;
+  return { customCss: css, settings: row.settings, degraded: false };
 }

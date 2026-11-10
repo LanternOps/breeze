@@ -11,11 +11,38 @@ vi.mock('@/lib/runAction', async (importOriginal) => ({
   runAction: (opts: { request: () => Promise<Response> }) => runAction(opts),
 }));
 
-import { fetchScriptProposal, requestScriptProposalChanges, promoteScriptProposal } from './scriptProposals';
+import {
+  fetchScriptProposal, requestScriptProposalChanges, promoteScriptProposal,
+  overrideRunScriptProposal, overrideSaveScriptProposal,
+} from './scriptProposals';
 
 beforeEach(() => vi.clearAllMocks());
 
 describe('scriptProposals api', () => {
+  // #10954: both overrides go through runAction and carry the sign-off.
+  it('routes override-run through runAction with the sign-off and acknowledgements', async () => {
+    fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ status: 'executed', results: [] }) });
+    await expect(overrideRunScriptProposal('p1', ['hit'])).resolves.toEqual({ status: 'executed', results: [] });
+    expect(runAction).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      '/ai/script-proposals/p1/override-run',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ confirmNoPassingReview: true, acknowledgedPatterns: ['hit'] }) }),
+    );
+  });
+
+  it('routes override-promote through runAction with the sign-off', async () => {
+    fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ scriptId: 's1', versionId: 'v1' }) });
+    await overrideSaveScriptProposal('p1', { name: 'n', ownerScope: 'partner', acknowledgedPatterns: [] });
+    expect(runAction).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      '/ai/script-proposals/p1/override-promote',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ name: 'n', ownerScope: 'partner', acknowledgedPatterns: [], confirmNoPassingReview: true }),
+      }),
+    );
+  });
+
   it('GETs the detail endpoint', async () => {
     fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ proposal: { id: 'p1' } }) });
     await fetchScriptProposal('p1');
@@ -48,5 +75,16 @@ describe('scriptProposals api', () => {
       '/ai/script-proposals/p1/promote',
       expect.objectContaining({ body: JSON.stringify({ name: 'Restart spooler', ownerScope: 'partner' }) }),
     );
+  });
+
+  // #11287: the success toast said what the button said ("Save to library").
+  it.each([
+    ['promote', () => promoteScriptProposal('p1', { name: 'n', ownerScope: 'partner' })],
+    ['override-promote', () => overrideSaveScriptProposal('p1', { name: 'n', ownerScope: 'partner', acknowledgedPatterns: [] })],
+  ])('%s success toast reports the outcome, not the button label', async (_n, call) => {
+    fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ scriptId: 's1', versionId: 'v1' }) });
+    await call();
+    const [[opts]] = runAction.mock.calls as unknown as [[{ successMessage: string }]];
+    expect(opts.successMessage).toBe('Saved to the script library');
   });
 });

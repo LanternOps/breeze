@@ -22,7 +22,7 @@ const fixture = (name) => JSON.parse(readFileSync(new URL(name, FIXTURES), 'utf8
 // two blocking findings, two suppressed by reviewed exceptions.
 const OSV = fixture('osv-findings.json');
 
-const f = (pkg, version, id, ecosystem = 'npm') => ({ id, pkg, version, ecosystem });
+const f = (pkg, version, id, ecosystem = 'npm', scope = 'production') => ({ id, pkg, version, ecosystem, scope });
 
 // A minimal --findings-json document around the given gate findings.
 const doc = (findings, problems = []) => ({
@@ -42,6 +42,7 @@ const doc = (findings, problems = []) => ({
     severity: x.severity ?? 'HIGH',
     excepted: x.excepted ?? false,
     blocking: x.blocking ?? true,
+    ...(x.scope === undefined ? {} : { scope: x.scope }),
   })),
   exceptionProblems: problems,
 });
@@ -115,8 +116,53 @@ test('newFindings: an advisory removed in head is not reported', () => {
   assert.deepEqual(newFindings([A, B], []), []);
 });
 
-test('findingKey is ecosystem|pkg|version|id', () => {
-  assert.equal(findingKey(A), 'npm|zod|3.25.76|GHSA-mrhx-c7xc-m3w5');
+test('findingKey is ecosystem|pkg|version|id|scope', () => {
+  assert.equal(findingKey(A), 'npm|zod|3.25.76|GHSA-mrhx-c7xc-m3w5|production');
+});
+
+// ── dependency scope (#11137) ────────────────────────────────────────────
+
+const dev = (x) => ({ ...x, scope: 'dev' });
+
+test('newFindings: the same advisory moving from dev-only to production is new', () => {
+  assert.deepEqual(newFindings([dev(A)], [A]), [A]);
+});
+
+test('newFindings: an unchanged dev-only advisory is not new', () => {
+  assert.deepEqual(newFindings([dev(A)], [dev(A)]), []);
+});
+
+test('newFindings: moving from production to dev-only (a demotion) is not new', () => {
+  assert.deepEqual(newFindings([A], [dev(A)]), []);
+});
+
+test('normalize: a finding with no scope, or scope "unknown", is production (fail closed)', () => {
+  assert.deepEqual(normalize('osv', doc([{ ...A, scope: undefined }])), [A]);
+  assert.deepEqual(normalize('osv', doc([{ ...A, scope: 'unknown' }])), [{ ...A, scope: 'unknown' }]);
+  assert.deepEqual(normalize('osv', doc([dev(A)])), [dev(A)]);
+});
+
+test('newFindings: a base entry of unknown scope never covers a production head finding (failed base walk)', () => {
+  const unknown = { ...A, scope: 'unknown' };
+  assert.deepEqual(newFindings([unknown], [A]), [A]);
+  assert.deepEqual(newFindings([unknown], [unknown]), []); // neither walk placed it: nothing got worse
+  assert.deepEqual(newFindings([A], [unknown]), []);
+  assert.deepEqual(newFindings([dev(A)], [unknown]), [unknown]);
+  assert.deepEqual(newFindings([unknown], [dev(A)]), []);
+});
+
+test('CLI: base walk failed (unknown), head production → error, exit 1', () => {
+  const r = cli('--base', file(doc([{ ...A, scope: 'unknown' }])), '--head', file(doc([A])));
+  assert.equal(r.status, 1, out(r));
+});
+
+test('normalize: an unrecognised scope value is a malformed document', () => {
+  assert.throws(() => normalize('osv', doc([{ ...A, scope: 'prod' }])));
+});
+
+test('normalize: the same advisory in two scopes is reported once, as production', () => {
+  assert.deepEqual(normalize('osv', doc([dev(A), A])), [A]);
+  assert.deepEqual(normalize('osv', doc([A, dev(A)])), [A]);
 });
 
 // ── exceptionProblems / findingsTable ────────────────────────────────────
@@ -164,6 +210,23 @@ test('CLI: a finding only on head is an error and exits 1', () => {
   assert.equal(r.status, 1, out(r));
   assert.match(r.stdout, /::error title=New advisory::.*qs@6\.16\.0 GHSA-6pq8-jhm2-2vcw/, out(r));
   assert.match(r.stdout, /1 new/, out(r));
+});
+
+test('CLI: base has the advisory dev-only, head moves the same version into production → error, exit 1', () => {
+  const r = cli('--base', file(doc([dev(A)])), '--head', file(doc([A])));
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, /::error title=New advisory::.*zod@3\.25\.76 GHSA-mrhx-c7xc-m3w5.*production/, out(r));
+});
+
+test('CLI: an unchanged dev-only advisory passes with a warning', () => {
+  const r = cli('--base', file(doc([dev(A)])), '--head', file(doc([dev(A)])));
+  assert.equal(r.status, 0, out(r));
+  assert.match(r.stdout, /::warning title=Advisory already on base::/, out(r));
+});
+
+test('CLI: unknown scope on head fails closed against a dev-only base', () => {
+  const r = cli('--base', file(doc([dev(A)])), '--head', file(doc([{ ...A, scope: 'unknown' }])));
+  assert.equal(r.status, 1, out(r));
 });
 
 test('CLI: an expired exception warns unless the change touched the exceptions file', () => {

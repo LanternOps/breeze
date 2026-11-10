@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { getJobMock, addMock, closeMock } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
@@ -12,7 +12,12 @@ vi.mock('bullmq', () => ({
     add = addMock;
     close = closeMock;
   },
-  Worker: class {},
+  Worker: class {
+    __processor: unknown;
+    constructor(_name: string, processor: unknown) {
+      this.__processor = processor;
+    }
+  },
   Job: class {},
 }));
 
@@ -21,6 +26,7 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
+    transaction: vi.fn(),
   },
   withSystemDbAccessContext: undefined,
 }));
@@ -60,6 +66,7 @@ import { queueCommandForExecution } from '../services/commandQueue';
 import { writeAuditEvent } from '../services/auditEvents';
 import { isCronDue } from '../services/cronDue';
 import {
+  createSensitiveDataWorker,
   enqueueSensitiveDataScan,
   processDispatchScan,
   shouldSchedulePolicy,
@@ -114,6 +121,54 @@ describe('shouldSchedulePolicy', () => {
       lastRunAt: '2026-02-26T12:00:25.000Z'
     }, now)).toBe(false);
     expect(isCronDue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('schedule-policies repeatable tick evaluates schedules on the wall clock (#10031)', () => {
+  // BullMQ hands every repeat of a repeatable job the data it was registered
+  // with, so `scanAt` is boot time forever. Due-ness must follow the clock.
+  const REGISTERED = { type: 'schedule-policies', scanAt: '2026-09-18T01:58:00.000Z' } as const;
+  const policy = {
+    id: 'policy-1',
+    orgId: 'org-1',
+    partnerId: null,
+    isActive: true,
+    schedule: { enabled: true, type: 'cron', cron: '0 2 * * *', timezone: 'UTC' },
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    const actual = await vi.importActual<typeof import('../services/cronDue')>('../services/cronDue');
+    vi.mocked(isCronDue).mockImplementation(actual.isCronDue);
+    const policyRows: any = Promise.resolve([policy]);
+    policyRows.from = () => policyRows;
+    policyRows.where = () => policyRows;
+    vi.mocked(db.select).mockReset().mockReturnValue(policyRows);
+    // The occurrence claim re-checks under its own lock; null = lost the claim.
+    vi.mocked(db.transaction).mockReset().mockResolvedValue(null as never);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(isCronDue).mockReset();
+  });
+
+  it('two ticks of the same registration across the 02:00 boundary: the second one claims the occurrence', async () => {
+    const processor = (createSensitiveDataWorker() as unknown as {
+      __processor: (job: unknown) => Promise<unknown>;
+    }).__processor;
+    const tick = () => processor({ name: 'schedule-policies', data: REGISTERED, id: 'repeat:1' });
+
+    vi.setSystemTime(new Date('2026-09-18T01:59:30.000Z'));
+    await tick();
+    expect(vi.mocked(isCronDue).mock.calls[0]![2]).toEqual(new Date('2026-09-18T01:59:30.000Z'));
+    expect(db.transaction).not.toHaveBeenCalled();
+
+    vi.setSystemTime(new Date('2026-09-18T02:00:30.000Z'));
+    await tick();
+    expect(vi.mocked(isCronDue).mock.calls[1]![2]).toEqual(new Date('2026-09-18T02:00:30.000Z'));
+    expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 });
 

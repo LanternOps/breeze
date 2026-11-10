@@ -23,6 +23,8 @@ import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import { bareToolName, normaliseDispatchResult } from './wisp/dispatchEvidence';
+import { incWispDispatchUnverified } from './wispMetrics';
 import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { callerRefusal, type CallerRefusalPayload } from './callerVerification/refusal';
@@ -42,11 +44,16 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
+import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShapeFor, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
+import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
+import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
+import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
+import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
+import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
-import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
+import { aiScriptAuthoringEnabled, aiWorkspaceEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { captureException, captureMessage } from './sentry';
@@ -106,8 +113,12 @@ export type PreToolUseResult =
    * reach. Set for every allowed call of a Wisp session; absent otherwise,
    * and the handler then reads `getAuth()` as before. A Wisp session's call
    * that arrives WITHOUT it is denied (`wispMissingToolAuthDenial`).
+   *
+   * `approvalWaitMs` (#10416): how long the call waited on its approval card.
+   * Set only for Wisp sessions; the handler adds it to the result through
+   * `withApprovalWait` so the model can tell the user the step was waiting.
    */
-  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void> }
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void>; approvalWaitMs?: number }
   /**
    * Not run by THIS session. Two different things wear this shape:
    *
@@ -156,6 +167,59 @@ function wispMissingToolAuthDenial(
   console.error(`[AI-SDK] ${err.message}`);
   captureException(err);
   return { allowed: false, error: WISP_UNGATED_CALL_MESSAGE };
+}
+
+/** #10427 (W08): normalise a Wisp dispatch result that carries no evidence, and count it. */
+function wispDispatchResult(toolName: string, args: Record<string, unknown>, result: string): string {
+  const normalised = normaliseDispatchResult(toolName, args, result);
+  if (normalised.unverified) incWispDispatchUnverified(bareToolName(toolName));
+  return normalised.output;
+}
+
+/** #10416: a wait at least this long is worth mentioning in the reply. */
+export const APPROVAL_WAIT_NOTE_MIN_MS = 30_000;
+
+/** #10416: the wait in whole seconds when it is worth mentioning, else null. */
+function approvalWaitSeconds(waitMs: number | undefined): number | null {
+  return waitMs !== undefined && waitMs >= APPROVAL_WAIT_NOTE_MIN_MS ? Math.round(waitMs / 1000) : null;
+}
+
+function isJsonObjectText(output: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #10416: put a long approval wait on the tool result the model reads, as
+ * `approvalWaitSeconds`, so its reply can say the step was waiting (a user
+ * waited 290 s and asked "stuck?"). Only a JSON object result is changed, and
+ * only when `waitMs` is at least APPROVAL_WAIT_NOTE_MIN_MS; anything else is
+ * returned unchanged, and `approvalWaitBlock` carries the wait instead. The
+ * pre-hook sets the wait for Wisp sessions only.
+ */
+export function withApprovalWait(output: string, waitMs: number | undefined): string {
+  const seconds = approvalWaitSeconds(waitMs);
+  if (seconds === null || !isJsonObjectText(output)) return output;
+  return JSON.stringify({ ...(JSON.parse(output) as Record<string, unknown>), approvalWaitSeconds: seconds });
+}
+
+/**
+ * #10416: the wait as its own text block, for a result `withApprovalWait`
+ * cannot merge into (plain text, an array, a screenshot's image blocks).
+ * Null when there is nothing to say, or when `output` is a JSON object that
+ * already carries it.
+ */
+export function approvalWaitBlock(
+  waitMs: number | undefined,
+  output?: string,
+): { type: 'text'; text: string } | null {
+  const seconds = approvalWaitSeconds(waitMs);
+  if (seconds === null || (output !== undefined && isJsonObjectText(output))) return null;
+  return { type: 'text', text: JSON.stringify({ approvalWaitSeconds: seconds }) };
 }
 
 /**
@@ -522,6 +586,13 @@ export const TOOL_TIERS = {
   // not a plain Tier-1 read (which would bypass agent allowlists).
   link_entity: 2,
   list_links: 1,
+  // Wisp check-in timers (services/wisp/checkInTools.ts, #10991 W03). Declared
+  // to chat only when wispEnabled() (wispCheckInToolDefinitions). schedule /
+  // cancel are Tier 2 like link_entity (audit row; no per_step card via
+  // WISP_SELF_STATE_TOOLS); list is a plain Tier-1 read.
+  schedule_check_in: 2,
+  list_check_ins: 1,
+  cancel_check_in: 2,
   // Wisp W07 (services/aiToolsWisp.ts). Declared to chat only when
   // wispEnabled() (wispSpecialistToolDefinitions); asks-first kinds escalate
   // to Tier 3 (TIER3_ACTIONS keyed on `kind`). wisp_specialist_request is
@@ -627,6 +698,8 @@ export const TOOL_TIERS = {
   // agent maintenance and device writes supervised; remote sessions and PAM
   // elevation requests four-eyes; collect_evidence screenshot input-aware).
   execute_containment: 3,
+  // Network-isolation W13 (#10101): four-eyes (aiGuardrails TIER3_FOUR_EYES_TOOLS).
+  release_containment: 3,
   create_incident: 2,
   collect_evidence: 2,
   request_elevation: 3,
@@ -737,6 +810,25 @@ export const TOOL_TIERS = {
   search_pax8_products: 1,
   manage_pax8_subscriptions: 1,
   manage_pax8_orders: 1,
+  // W18 PR A (#6789): org admin and identity reads, all tier 1. list_roles' four actions are TIER1_READ_ACTIONS.
+  get_org_summary: 1,
+  get_account_readiness: 1,
+  get_audit_retention: 1,
+  list_portal_users: 1,
+  list_users: 1,
+  get_user: 1,
+  list_roles: 1,
+  // W18 PR B (#6789): tier 1 at the tool level; per-action classes (supervised update / add / remove / convert,
+  // four-eyes set_sensitive_access) live in aiGuardrails.
+  manage_org_portal_settings: 1,
+  manage_report_recipients: 1,
+  // W16 PR A (#6786): the two launch tools, Tier 3 supervised as a whole (aiGuardrails TIER3_SUPERVISED_TOOLS).
+  run_patch_plan: 3,
+  create_operator_task: 3,
+  // W16 PR B (#6786): tier 1 at the tool level; per-action classes (supervised create / update / run / document,
+  // four-eyes delete / apply / rollback) live in aiGuardrails.
+  manage_ai_agent_schedules: 1,
+  manage_fleet_designs: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -768,6 +860,12 @@ export const TOOL_TIERS = {
   manage_dr_plan: 2,
   execute_dr_plan: 3,
   manage_backup_profiles: 1,
+  // Full-control W17 (#6788). The multiplexers' real per-action classes live in aiGuardrails.
+  manage_backup_verification: 1,
+  list_bmr_recoveries: 1,
+  get_backup_health: 1,
+  manage_c2c_configs: 1,
+  get_vss_status: 2,
   configure_backup_sla: 2,
   configure_vault: 2,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
@@ -778,19 +876,16 @@ export const TOOL_TIERS = {
  * env-gated tools — M365, Google Workspace, AI script authoring — drop out
  * when their flag is off), intersected with the registry (so a chat-only
  * SDK-bridge tool with no `aiTools`/tier-map entry, e.g.
- * `propose_action_plan`, stays out). Evaluated fresh on every call — this is
- * read once per `buildSystemPrompt` invocation, so it tracks env at session
- * time, not at module-load time. `getAuth` is a throwing no-op: only the
- * `tool()` declarations are built here, no handler ever runs. Lives here to
- * avoid a reverse import cycle from aiTools.ts and a CommonJS require in the
- * ESM source runtime.
+ * `propose_action_plan`, stays out). Read from the per-process tool template
+ * (#11004), which is keyed on the env exposure gates — so it still tracks env
+ * at session time, not at module-load time, without re-declaring ~340 tools
+ * per system prompt. No handler is built or run. Returns a fresh array. Lives
+ * here to avoid a reverse import cycle from aiTools.ts and a CommonJS require
+ * in the ESM source runtime.
  */
 export function listChatSurfaceToolNames(): string[] {
   const registered = new Set(getAllRegisteredToolNames());
-  const fakeAuth = (): AuthContext => {
-    throw new Error('listChatSurfaceToolNames must not invoke tool handlers');
-  };
-  const declared = buildBreezeSdkTools(fakeAuth);
+  const declared = breezeToolTemplate().declarations;
   const names = new Set(declared.map((t) => t.name).filter((name) => registered.has(name)));
   return [...names].sort();
 }
@@ -1034,6 +1129,22 @@ function notifyToolSuccess(
   }
 }
 
+/**
+ * #10973: what the tool runs on. A call a gate classified as an unattended read
+ * runs on the classified copy, never the model's arguments; a pin for any other
+ * tool is a wiring bug and refuses the call.
+ */
+function dispatchArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  context: ToolExecutionContext | undefined,
+): Record<string, unknown> {
+  const read = context?.pinnedWispUnattendedRead;
+  if (!read) return args;
+  if (read.tool !== toolName) throw new Error(`Unattended-read pin for ${read.tool} reached ${toolName}`);
+  return { ...read.pinned };
+}
+
 function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -1067,6 +1178,8 @@ function makeToolHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
+    // #10416: how long the call waited on its approval (Wisp sessions only).
+    let approvalWaitMs: number | undefined;
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
@@ -1095,6 +1208,7 @@ function makeToolHandler(
           : check.context;
         callToolAuth = check.toolAuth;
         onSuccess = check.onSuccess;
+        approvalWaitMs = check.approvalWaitMs;
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
@@ -1113,6 +1227,7 @@ function makeToolHandler(
     }
     try {
       const auth = callToolAuth ?? getAuth();
+      const callArgs = dispatchArgs(toolName, args, verifiedContext);
       // Use the user's actual auth scope instead of system context so that
       // RLS policies and DB-level tenant isolation are enforced.
       //
@@ -1162,8 +1277,8 @@ function makeToolHandler(
       };
       const runTool = () =>
         Object.keys(execOptions).length > 0
-          ? executeTool(toolName, args, auth, execOptions)
-          : executeTool(toolName, args, auth);
+          ? executeTool(toolName, callArgs, auth, execOptions)
+          : executeTool(toolName, callArgs, auth);
       // A self-managed tool (#7128) gets NO per-call transaction: it hands work
       // to another process and waits on it, which under this wrapper meant an
       // uncommitted row the other process could not see and a pooled
@@ -1191,7 +1306,13 @@ function makeToolHandler(
         toolTimeout,
         toolName,
       );
-      const compactResult = compactToolResultForChat(toolName, result);
+      // #10427 (W08): a Wisp dispatch that answers "success" with no job,
+      // command or intent id reaches the model as unverified, so it cannot be
+      // reported as done. Every other session's result is untouched.
+      const modelResult = captureSession?.wispGrant && wispEnabled()
+        ? wispDispatchResult(toolName, args, result)
+        : result;
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, modelResult), approvalWaitMs);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
       // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
@@ -1214,6 +1335,8 @@ function makeToolHandler(
               },
             ];
             contentBlocks.push(...visionMetadataTextBlocks(toolName, parsed));
+            const waitBlock = approvalWaitBlock(approvalWaitMs);
+            if (waitBlock) contentBlocks.push(waitBlock);
             notifyToolSuccess(onSuccess, toolName, args, result, false);
             return { content: contentBlocks };
           }
@@ -1238,7 +1361,11 @@ function makeToolHandler(
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs);
       notifyToolSuccess(onSuccess, toolName, args, result, isToolError);
-      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+      const waitBlock = approvalWaitBlock(approvalWaitMs, compactResult);
+      return {
+        content: [{ type: 'text' as const, text: compactResult }, ...(waitBlock ? [waitBlock] : [])],
+        ...(isToolError ? { isError: true } : {}),
+      };
     } catch (err) {
       const durationMs = Date.now() - startTime;
       // A thrown error here is an internal fault — its message is very often a
@@ -1318,6 +1445,8 @@ function makeSessionAwareHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
+    // #10416: how long the call waited on its approval (Wisp sessions only).
+    let approvalWaitMs: number | undefined;
     if (onPreToolUse) {
       let check: PreToolUseResult;
       try {
@@ -1340,6 +1469,7 @@ function makeSessionAwareHandler(
       intentId = check.intentId;
       callToolAuth = check.toolAuth;
       onSuccess = check.onSuccess;
+      approvalWaitMs = check.approvalWaitMs;
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
     if (missingWispAuth) {
@@ -1424,7 +1554,7 @@ function makeSessionAwareHandler(
         sealed = { intentId, sealedResult: split.sealedResult };
       }
 
-      const compactResult = compactToolResultForChat(toolName, result);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result), approvalWaitMs);
 
       // Detect error responses returned as JSON strings by tool handlers
       let isToolError = false;
@@ -1438,7 +1568,11 @@ function makeSessionAwareHandler(
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
       notifyToolSuccess(onSuccess, toolName, args, result, isToolError || (typeof handlerResult !== 'string' && handlerResult.kind === 'error'));
-      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+      const waitBlock = approvalWaitBlock(approvalWaitMs, compactResult);
+      return {
+        content: [{ type: 'text' as const, text: compactResult }, ...(waitBlock ? [waitBlock] : [])],
+        ...(isToolError ? { isError: true } : {}),
+      };
     } catch (err) {
       const durationMs = Date.now() - startTime;
       // A thrown error here is an internal fault — its message is very often a
@@ -1482,7 +1616,146 @@ const makeHandler = (
   onPostToolUse?: PostToolUseCallback,
 ) => makeToolHandler(toolName, getAuth, undefined, onPreToolUse, onPostToolUse);
 
-export const __test__ = { makeSessionAwareHandler, makeHandler, makeToolHandler };
+export const __test__ = { makeSessionAwareHandler, makeHandler, makeToolHandler, lateBound, bindBreezeSdkTools };
+
+// ============================================
+// Static tool template + per-session binding (#11004)
+// ============================================
+//
+// The ~340 Zod-declared Breeze tools are static per process, but they used to
+// be re-declared for every chat session (createBreezeMcpServer) and again for
+// every system prompt (listChatSurfaceToolNames). They are now declared ONCE
+// into a template whose handlers are late-bound placeholders; each session
+// gets fresh handler closures over ITS OWN auth thunk, session getter and
+// pre/post callbacks, attached onto the shared static definitions (name,
+// description, inputSchema, registry _meta).
+//
+// Tenant isolation hinges on one invariant: nothing per-session is ever
+// captured by the template. It holds by construction — the template builders
+// take no session arguments, so a handler can only reach a session value
+// through the binding `bindBreezeSdkTools` hands its late-bound factory — and
+// `bindBreezeSdkTools` refuses (throws) any template entry whose handler is
+// not late-bound, so an inline closure cannot slip into the shared template.
+
+/** The per-session values a tool handler closes over. Never cached. */
+export interface BreezeToolBinding {
+  getAuth: () => AuthContext;
+  getActiveSession: (() => ActiveSession | undefined) | undefined;
+  onPreToolUse: PreToolUseCallback | undefined;
+  onPostToolUse: PostToolUseCallback | undefined;
+}
+
+const LATE_BOUND_HANDLER = Symbol('breeze.lateBoundToolHandler');
+
+// `any[]` like the SDK's own handler parameter: each tool's args shape differs.
+type AnyToolHandler = (...args: any[]) => unknown;
+
+/**
+ * A template handler: a placeholder carrying the factory that builds the real
+ * handler from one session's binding. The placeholder itself is never
+ * registered on a server — `bindBreezeSdkTools` replaces it — and refuses
+ * loudly if it ever is invoked.
+ */
+function lateBound<H extends AnyToolHandler>(bind: (binding: BreezeToolBinding) => H): H {
+  const placeholder = (() => {
+    throw new Error('[aiAgentSdkTools] an unbound template tool handler was invoked — tools must be bound per session');
+  }) as unknown as H;
+  Object.defineProperty(placeholder, LATE_BOUND_HANDLER, { value: bind });
+  return placeholder;
+}
+
+/** Late-bound `makeToolHandler` — the declaration alias every template uses. */
+function lateBoundToolHandler(toolName: string) {
+  return lateBound(({ getAuth, getActiveSession, onPreToolUse, onPostToolUse }) =>
+    makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse));
+}
+
+/** Late-bound `makeSessionAwareHandler` (M365 / Google Workspace). */
+function lateBoundSessionAwareHandler(
+  toolName: string,
+  sessionHandler: Parameters<typeof makeSessionAwareHandler>[3],
+) {
+  return lateBound(({ getAuth, getActiveSession, onPreToolUse, onPostToolUse }) =>
+    makeSessionAwareHandler(toolName, getAuth, getActiveSession, sessionHandler, onPreToolUse, onPostToolUse));
+}
+
+/**
+ * Attach one session's handlers to template declarations. Returns NEW tool
+ * objects (the template is never mutated); the static fields are shared by
+ * reference. Throws on a template entry with no late-bound handler: binding
+ * it as-is would share one closure across every session.
+ */
+function bindBreezeSdkTools(templates: readonly SdkTool[], binding: BreezeToolBinding): SdkTool[] {
+  return templates.map((template) => {
+    const bind = (template.handler as { [LATE_BOUND_HANDLER]?: (b: BreezeToolBinding) => SdkTool['handler'] })[LATE_BOUND_HANDLER];
+    if (typeof bind !== 'function') {
+      throw new Error(`[aiAgentSdkTools] template tool "${template.name}" has no late-bound handler; it would be shared across sessions`);
+    }
+    return { ...template, handler: bind(binding) };
+  });
+}
+
+/**
+ * Every env EXPOSURE gate the template builders consult. The template is
+ * rebuilt whenever this changes, so the gates keep their read-at-call-time
+ * semantics (tests flip them per case). A new gated factory MUST add its gate
+ * here — aiAgentSdkTools.templateCache.test.ts flips each one.
+ */
+function toolSurfaceGateKey(): string {
+  return [
+    aiScriptAuthoringEnabled(),
+    flowsEnabled(),
+    wispEnabled(),
+    m365ToolsExposed(),
+    googleToolsExposed(),
+  ].map((on) => (on ? '1' : '0')).join('');
+}
+
+interface BreezeToolTemplate {
+  readonly gateKey: string;
+  /** Static declarations, late-bound handlers, no registry _meta yet. */
+  readonly declarations: readonly SdkTool[];
+  /** attachRegistryMeta results, memoized per declaration (lazily: a hint-less tool only throws when registered). */
+  readonly withRegistryMeta: WeakMap<SdkTool, SdkTool>;
+}
+
+let cachedBreezeToolTemplate: BreezeToolTemplate | undefined;
+
+function breezeToolTemplate(): BreezeToolTemplate {
+  const gateKey = toolSurfaceGateKey();
+  if (cachedBreezeToolTemplate?.gateKey === gateKey) return cachedBreezeToolTemplate;
+  // A throw here (an unregistered description) caches nothing: the next call
+  // retries, exactly as the per-session build used to fail every time.
+  const declarations = Object.freeze(declareBreezeSdkToolTemplates());
+  cachedBreezeToolTemplate = { gateKey, declarations, withRegistryMeta: new WeakMap() };
+  return cachedBreezeToolTemplate;
+}
+
+function templateWithRegistryMeta(template: BreezeToolTemplate, declaration: SdkTool): SdkTool {
+  let withMeta = template.withRegistryMeta.get(declaration);
+  if (!withMeta) {
+    withMeta = attachRegistryMeta(declaration);
+    template.withRegistryMeta.set(declaration, withMeta);
+  }
+  return withMeta;
+}
+
+/**
+ * Build the static tool surface now — the template, its registry metadata and
+ * one throwaway SDK MCP server — so the first chat session after a restart
+ * does not pay that cost on the request path (#11004). Called once at API
+ * startup; safe to call again (a warm cache is a no-op). Never invokes a
+ * handler: the throwaway server's auth thunk throws.
+ */
+export function warmBreezeToolSurface(): { tools: number; ms: number } {
+  const startedAt = performance.now();
+  const refuse = (): AuthContext => {
+    throw new Error('warmBreezeToolSurface must not invoke tool handlers');
+  };
+  createBreezeMcpServer(refuse);
+  const tools = listChatSurfaceToolNames().length;
+  return { tools, ms: Math.round(performance.now() - startedAt) };
+}
 
 // ============================================
 // SDK MCP Server Factory
@@ -1509,19 +1782,17 @@ export function scriptProposalToolDefinitions(
   getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-) {
-  // Return type is inferred (like m365ToolDefinitions): the SDK's
-  // SdkMcpToolDefinition generic is invariant in its shape, so an explicit
-  // SdkTool[] annotation does not accept the concrete tool() results.
+): SdkTool[] {
+  return bindBreezeSdkTools(scriptProposalToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+function scriptProposalToolTemplates(): SdkTool[] {
+  // The SDK's SdkMcpToolDefinition generic is invariant in its shape, so the
+  // concrete tool() results are widened with a cast rather than an annotation.
   if (!aiScriptAuthoringEnabled()) return [];
-  // One alias so the tool() declarations below keep their four-argument shape
-  // while the underlying handler also receives the session (W01 capture).
-  const makeHandler = (
-    toolName: string,
-    auth: () => AuthContext,
-    pre?: PreToolUseCallback,
-    post?: PostToolUseCallback,
-  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  // Late-bound (#11004): the session's getAuth/getActiveSession/callbacks are
+  // attached per session by bindBreezeSdkTools, never captured here.
+  const makeHandler = lateBoundToolHandler;
   const uuid = z.string().guid();
   return [
     tool(
@@ -1539,15 +1810,15 @@ export function scriptProposalToolDefinitions(
         timeoutSeconds: z.number().int().min(1).max(3600).optional(),
         supersedesProposalId: uuid.optional(),
       },
-      makeHandler('propose_script', getAuth, onPreToolUse, onPostToolUse),
+      makeHandler('propose_script'),
     ),
     tool(
       'get_script_proposal',
       registryDescription('get_script_proposal'),
       { proposalId: uuid },
-      makeHandler('get_script_proposal', getAuth, onPreToolUse, onPostToolUse),
+      makeHandler('get_script_proposal'),
     ),
-  ];
+  ] as SdkTool[];
 }
 
 /**
@@ -1564,18 +1835,17 @@ export function wispMemoryToolDefinitions(
   getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-) {
+): SdkTool[] {
+  return bindBreezeSdkTools(wispMemoryToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+function wispMemoryToolTemplates(): SdkTool[] {
   if (!wispEnabled()) return [];
-  const makeHandler = (
-    toolName: string,
-    auth: () => AuthContext,
-    pre?: PreToolUseCallback,
-    post?: PostToolUseCallback,
-  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  const makeHandler = lateBoundToolHandler;
   return [
-    tool('recall', registryDescription('recall'), recallShape, makeHandler('recall', getAuth, onPreToolUse, onPostToolUse)),
-    tool('remember', registryDescription('remember'), rememberShape, makeHandler('remember', getAuth, onPreToolUse, onPostToolUse)),
-  ];
+    tool('recall', registryDescription('recall'), recallShape, makeHandler('recall')),
+    tool('remember', registryDescription('remember'), rememberShape, makeHandler('remember')),
+  ] as SdkTool[];
 }
 
 /**
@@ -1590,17 +1860,21 @@ export function wispConcernToolDefinitions(
   getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-) {
+): SdkTool[] {
+  return bindBreezeSdkTools(wispConcernToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+function wispConcernToolTemplates(): SdkTool[] {
   if (!wispEnabled()) return [];
   // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
-  const handler = (toolName: string) => makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse);
+  const handler = lateBoundToolHandler;
   return [
     tool('list_concerns', registryDescription('list_concerns'), listConcernsShape, handler('list_concerns')),
     tool('raise_concern', registryDescription('raise_concern'), raiseConcernShape, handler('raise_concern')),
     tool('snooze_concern', registryDescription('snooze_concern'), snoozeConcernShape, handler('snooze_concern')),
     tool('resolve_concern', registryDescription('resolve_concern'), resolveConcernShape, handler('resolve_concern')),
     tool('create_watch', registryDescription('create_watch'), createWatchShape, handler('create_watch')),
-  ];
+  ] as SdkTool[];
 }
 
 /**
@@ -1614,14 +1888,44 @@ export function wispLinkToolDefinitions(
   getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-) {
+): SdkTool[] {
+  return bindBreezeSdkTools(wispLinkToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+function wispLinkToolTemplates(): SdkTool[] {
   if (!wispEnabled()) return [];
   // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
-  const handler = (toolName: string) => makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse);
+  const handler = lateBoundToolHandler;
   return [
     tool('link_entity', registryDescription('link_entity'), linkEntityShape, handler('link_entity')),
     tool('list_links', registryDescription('list_links'), listLinksShape, handler('list_links')),
-  ];
+  ] as SdkTool[];
+}
+
+/**
+ * Wisp check-in timer tools (#10991 W03) — the same `wispEnabled()` EXPOSURE
+ * gate as the W03/W05a/W08 factories. Registration in aiTools and TOOL_TIERS
+ * stays unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and
+ * every handler refuses without `auth.wispGrant`.
+ */
+export function wispCheckInToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+): SdkTool[] {
+  return bindBreezeSdkTools(wispCheckInToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+function wispCheckInToolTemplates(): SdkTool[] {
+  if (!wispEnabled()) return [];
+  // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
+  const handler = lateBoundToolHandler;
+  return [
+    tool('schedule_check_in', registryDescription('schedule_check_in'), scheduleCheckInShape, handler('schedule_check_in')),
+    tool('list_check_ins', registryDescription('list_check_ins'), listCheckInsShape, handler('list_check_ins')),
+    tool('cancel_check_in', registryDescription('cancel_check_in'), cancelCheckInShape, handler('cancel_check_in')),
+  ] as SdkTool[];
 }
 
 /**
@@ -1636,11 +1940,15 @@ export function wispSpecialistToolDefinitions(
   getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-) {
+): SdkTool[] {
+  return bindBreezeSdkTools(wispSpecialistToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+function wispSpecialistToolTemplates(): SdkTool[] {
   if (!wispEnabled()) return [];
   return [
-    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShape, makeToolHandler('launch_specialist', getAuth, getActiveSession, onPreToolUse, onPostToolUse)),
-  ];
+    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShapeFor(aiWorkspaceEnabled()), lateBoundToolHandler('launch_specialist')),
+  ] as SdkTool[];
 }
 
 /**
@@ -1656,24 +1964,31 @@ export function flowToolDefinitions(
   getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-) {
+): SdkTool[] {
+  return bindBreezeSdkTools(flowToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+function flowToolTemplates(): SdkTool[] {
   if (!flowsEnabled()) return [];
-  const makeHandler = (
-    toolName: string,
-    auth: () => AuthContext,
-    pre?: PreToolUseCallback,
-    post?: PostToolUseCallback,
-  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  const makeHandler = lateBoundToolHandler;
   return [
-    tool('draft_flow', registryDescription('draft_flow'), inputShape('draft_flow'), makeHandler('draft_flow', getAuth, onPreToolUse, onPostToolUse)),
-    tool('validate_flow', registryDescription('validate_flow'), inputShape('validate_flow'), makeHandler('validate_flow', getAuth, onPreToolUse, onPostToolUse)),
-    tool('get_flow', registryDescription('get_flow'), inputShape('get_flow'), makeHandler('get_flow', getAuth, onPreToolUse, onPostToolUse)),
-    tool('list_flows', registryDescription('list_flows'), inputShape('list_flows'), makeHandler('list_flows', getAuth, onPreToolUse, onPostToolUse)),
-    tool('run_flow', registryDescription('run_flow'), inputShape('run_flow'), makeHandler('run_flow', getAuth, onPreToolUse, onPostToolUse)),
-    tool('list_flow_runs', registryDescription('list_flow_runs'), inputShape('list_flow_runs'), makeHandler('list_flow_runs', getAuth, onPreToolUse, onPostToolUse)),
-    tool('get_flow_run', registryDescription('get_flow_run'), inputShape('get_flow_run'), makeHandler('get_flow_run', getAuth, onPreToolUse, onPostToolUse)),
-    tool('cancel_flow_run', registryDescription('cancel_flow_run'), inputShape('cancel_flow_run'), makeHandler('cancel_flow_run', getAuth, onPreToolUse, onPostToolUse)),
-  ];
+    tool('draft_flow', registryDescription('draft_flow'), inputShape('draft_flow'), makeHandler('draft_flow')),
+    tool('validate_flow', registryDescription('validate_flow'), inputShape('validate_flow'), makeHandler('validate_flow')),
+    tool('get_flow', registryDescription('get_flow'), inputShape('get_flow'), makeHandler('get_flow')),
+    tool('list_flows', registryDescription('list_flows'), inputShape('list_flows'), makeHandler('list_flows')),
+    tool('run_flow', registryDescription('run_flow'), inputShape('run_flow'), makeHandler('run_flow')),
+    tool('list_flow_runs', registryDescription('list_flow_runs'), inputShape('list_flow_runs'), makeHandler('list_flow_runs')),
+    tool('get_flow_run', registryDescription('get_flow_run'), inputShape('get_flow_run'), makeHandler('get_flow_run')),
+    tool('cancel_flow_run', registryDescription('cancel_flow_run'), inputShape('cancel_flow_run'), makeHandler('cancel_flow_run')),
+  ] as SdkTool[];
+}
+
+/** M365 exposure gate, read from process.env at call time (see m365ToolDefinitions). */
+function m365ToolsExposed(): boolean {
+  const m365Flag = (process.env.M365_ENABLED ?? '').trim().toLowerCase();
+  const m365Enabled = ['1', 'true', 'yes', 'on'].includes(m365Flag);
+  const delegantConfigured = !!(process.env.DELEGANT_BASE_URL ?? '').trim();
+  return m365Enabled || delegantConfigured;
 }
 
 export function m365ToolDefinitions(
@@ -1681,11 +1996,15 @@ export function m365ToolDefinitions(
   getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-) {
-  const m365Flag = (process.env.M365_ENABLED ?? '').trim().toLowerCase();
-  const m365Enabled = ['1', 'true', 'yes', 'on'].includes(m365Flag);
-  const delegantConfigured = !!(process.env.DELEGANT_BASE_URL ?? '').trim();
-  if (!m365Enabled && !delegantConfigured) return [];
+): SdkTool[] {
+  return bindBreezeSdkTools(m365ToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+function m365ToolTemplates(): SdkTool[] {
+  if (!m365ToolsExposed()) return [];
+  // Late-bound alias, deliberately named like the real factory: the
+  // aiDevicePathPolicy reachability contract scans for `makeSessionAwareHandler('<name>'`.
+  const makeSessionAwareHandler = lateBoundSessionAwareHandler;
   // Bounds mirror packages/shared/src/m365/writeActions.ts (the handler's
   // strict schema is the authority; these keep the advertised shape honest).
   const guidShape = z.string().guid();
@@ -1697,31 +2016,31 @@ export function m365ToolDefinitions(
       'm365_lookup_user',
       SESSION_TOOL_DESCRIPTIONS.m365_lookup_user,
       { userIdentifier: z.string() },
-      makeSessionAwareHandler('m365_lookup_user', getAuth, getActiveSession, m365LookupUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_lookup_user', m365LookupUserHandler)
     ),
     tool(
       'm365_recent_signins',
       SESSION_TOOL_DESCRIPTIONS.m365_recent_signins,
       { userIdentifier: z.string() },
-      makeSessionAwareHandler('m365_recent_signins', getAuth, getActiveSession, m365RecentSigninsHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_recent_signins', m365RecentSigninsHandler)
     ),
     tool(
       'm365_list_group_memberships',
       SESSION_TOOL_DESCRIPTIONS.m365_list_group_memberships,
       {},
-      makeSessionAwareHandler('m365_list_group_memberships', getAuth, getActiveSession, m365ListGroupMembershipsHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_list_group_memberships', m365ListGroupMembershipsHandler)
     ),
     tool(
       'm365_disable_user',
       SESSION_TOOL_DESCRIPTIONS.m365_disable_user,
       { userIdentifier: z.string(), reason: z.string() },
-      makeSessionAwareHandler('m365_disable_user', getAuth, getActiveSession, m365DisableUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_disable_user', m365DisableUserHandler)
     ),
     tool(
       'm365_reset_password',
       SESSION_TOOL_DESCRIPTIONS.m365_reset_password,
       { userIdentifier: z.string(), reason: z.string() },
-      makeSessionAwareHandler('m365_reset_password', getAuth, getActiveSession, m365ResetPasswordHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_reset_password', m365ResetPasswordHandler)
     ),
     // Control-plane identity writes (Operator Recipe Library M1). Declared
     // shapes mirror the strict shared write-action schema bounds; the handler
@@ -1730,13 +2049,13 @@ export function m365ToolDefinitions(
       'm365_revoke_sessions',
       SESSION_TOOL_DESCRIPTIONS.m365_revoke_sessions,
       { userIdentifier: userIdentifierShape, reason: reasonShape, orgId: orgIdShape },
-      makeSessionAwareHandler('m365_revoke_sessions', getAuth, getActiveSession, m365RevokeSessionsHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_revoke_sessions', m365RevokeSessionsHandler)
     ),
     tool(
       'm365_remove_license',
       SESSION_TOOL_DESCRIPTIONS.m365_remove_license,
       { userIdentifier: userIdentifierShape, skuIds: z.array(guidShape).min(1).max(20), reason: reasonShape, orgId: orgIdShape },
-      makeSessionAwareHandler('m365_remove_license', getAuth, getActiveSession, m365RemoveLicenseHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_remove_license', m365RemoveLicenseHandler)
     ),
     tool(
       'm365_assign_license',
@@ -1748,25 +2067,25 @@ export function m365ToolDefinitions(
         reason: reasonShape,
         orgId: orgIdShape,
       },
-      makeSessionAwareHandler('m365_assign_license', getAuth, getActiveSession, m365AssignLicenseHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_assign_license', m365AssignLicenseHandler)
     ),
     tool(
       'm365_remove_from_group',
       SESSION_TOOL_DESCRIPTIONS.m365_remove_from_group,
       { groupId: guidShape, userIdentifier: userIdentifierShape, reason: reasonShape, orgId: orgIdShape },
-      makeSessionAwareHandler('m365_remove_from_group', getAuth, getActiveSession, m365RemoveFromGroupHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_remove_from_group', m365RemoveFromGroupHandler)
     ),
     tool(
       'm365_add_to_group',
       SESSION_TOOL_DESCRIPTIONS.m365_add_to_group,
       { groupId: guidShape, userIdentifier: userIdentifierShape, reason: reasonShape, orgId: orgIdShape },
-      makeSessionAwareHandler('m365_add_to_group', getAuth, getActiveSession, m365AddToGroupHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_add_to_group', m365AddToGroupHandler)
     ),
     tool(
       'm365_retire_intune_device',
       SESSION_TOOL_DESCRIPTIONS.m365_retire_intune_device,
       { managedDeviceId: guidShape, reason: reasonShape, orgId: orgIdShape },
-      makeSessionAwareHandler('m365_retire_intune_device', getAuth, getActiveSession, m365RetireIntuneDeviceHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_retire_intune_device', m365RetireIntuneDeviceHandler)
     ),
     tool(
       'm365_create_user',
@@ -1779,7 +2098,7 @@ export function m365ToolDefinitions(
         reason: reasonShape,
         orgId: orgIdShape,
       },
-      makeSessionAwareHandler('m365_create_user', getAuth, getActiveSession, m365CreateUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_create_user', m365CreateUserHandler)
     ),
     tool(
       'm365_set_auto_reply',
@@ -1795,9 +2114,9 @@ export function m365ToolDefinitions(
         reason: reasonShape,
         orgId: orgIdShape,
       },
-      makeSessionAwareHandler('m365_set_auto_reply', getAuth, getActiveSession, m365SetAutoReplyHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('m365_set_auto_reply', m365SetAutoReplyHandler)
     ),
-  ];
+  ] as SdkTool[];
 }
 
 /**
@@ -1813,123 +2132,135 @@ export function googleToolDefinitions(
   getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-) {
+): SdkTool[] {
+  return bindBreezeSdkTools(googleToolTemplates(), { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+/** Google Workspace exposure gate, read from process.env at call time (see googleToolDefinitions). */
+function googleToolsExposed(): boolean {
   const flag = (process.env.GOOGLE_WORKSPACE_ENABLED ?? '').trim().toLowerCase();
-  if (!['1', 'true', 'yes', 'on'].includes(flag)) return [];
+  return ['1', 'true', 'yes', 'on'].includes(flag);
+}
+
+function googleToolTemplates(): SdkTool[] {
+  if (!googleToolsExposed()) return [];
+  // Late-bound alias, deliberately named like the real factory: the
+  // aiDevicePathPolicy reachability contract scans for `makeSessionAwareHandler('<name>'`.
+  const makeSessionAwareHandler = lateBoundSessionAwareHandler;
   return [
     tool(
       'google_lookup_user',
       SESSION_TOOL_DESCRIPTIONS.google_lookup_user,
       { userEmail: z.string() },
-      makeSessionAwareHandler('google_lookup_user', getAuth, getActiveSession, googleLookupUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_lookup_user', googleLookupUserHandler)
     ),
     tool(
       'google_reset_password',
       SESSION_TOOL_DESCRIPTIONS.google_reset_password,
       { userEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_reset_password', getAuth, getActiveSession, googleResetPasswordHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_reset_password', googleResetPasswordHandler)
     ),
     tool(
       'google_suspend_user',
       SESSION_TOOL_DESCRIPTIONS.google_suspend_user,
       { userEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_suspend_user', getAuth, getActiveSession, googleSuspendUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_suspend_user', googleSuspendUserHandler)
     ),
     tool(
       'google_restore_user',
       SESSION_TOOL_DESCRIPTIONS.google_restore_user,
       { userEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_restore_user', getAuth, getActiveSession, googleRestoreUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_restore_user', googleRestoreUserHandler)
     ),
     tool(
       'google_signout',
       SESSION_TOOL_DESCRIPTIONS.google_signout,
       { userEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_signout', getAuth, getActiveSession, googleSignOutHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_signout', googleSignOutHandler)
     ),
     tool(
       'google_list_user_groups',
       SESSION_TOOL_DESCRIPTIONS.google_list_user_groups,
       { userEmail: z.string() },
-      makeSessionAwareHandler('google_list_user_groups', getAuth, getActiveSession, googleListUserGroupsHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_list_user_groups', googleListUserGroupsHandler)
     ),
     tool(
       'google_add_to_group',
       SESSION_TOOL_DESCRIPTIONS.google_add_to_group,
       { userEmail: z.string(), groupEmail: z.string(), role: z.enum(['MEMBER', 'MANAGER', 'OWNER']).optional(), reason: z.string() },
-      makeSessionAwareHandler('google_add_to_group', getAuth, getActiveSession, googleAddToGroupHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_add_to_group', googleAddToGroupHandler)
     ),
     tool(
       'google_remove_from_group',
       SESSION_TOOL_DESCRIPTIONS.google_remove_from_group,
       { userEmail: z.string(), groupEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_remove_from_group', getAuth, getActiveSession, googleRemoveFromGroupHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_remove_from_group', googleRemoveFromGroupHandler)
     ),
     tool(
       'google_move_ou',
       SESSION_TOOL_DESCRIPTIONS.google_move_ou,
       { userEmail: z.string(), orgUnitPath: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_move_ou', getAuth, getActiveSession, googleMoveOuHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_move_ou', googleMoveOuHandler)
     ),
     tool(
       'google_rename_user',
       SESSION_TOOL_DESCRIPTIONS.google_rename_user,
       { userEmail: z.string(), newPrimaryEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_rename_user', getAuth, getActiveSession, googleRenameUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_rename_user', googleRenameUserHandler)
     ),
     tool(
       'google_list_licenses',
       SESSION_TOOL_DESCRIPTIONS.google_list_licenses,
       { productId: z.string() },
-      makeSessionAwareHandler('google_list_licenses', getAuth, getActiveSession, googleListLicensesHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_list_licenses', googleListLicensesHandler)
     ),
     tool(
       'google_assign_license',
       SESSION_TOOL_DESCRIPTIONS.google_assign_license,
       { userEmail: z.string(), productId: z.string(), skuId: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_assign_license', getAuth, getActiveSession, googleAssignLicenseHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_assign_license', googleAssignLicenseHandler)
     ),
     tool(
       'google_remove_license',
       SESSION_TOOL_DESCRIPTIONS.google_remove_license,
       { userEmail: z.string(), productId: z.string(), skuId: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_remove_license', getAuth, getActiveSession, googleRemoveLicenseHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_remove_license', googleRemoveLicenseHandler)
     ),
     tool(
       'google_reset_2sv',
       SESSION_TOOL_DESCRIPTIONS.google_reset_2sv,
       { userEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_reset_2sv', getAuth, getActiveSession, googleResetTwoSvHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_reset_2sv', googleResetTwoSvHandler)
     ),
     tool(
       'google_add_mail_delegate',
       SESSION_TOOL_DESCRIPTIONS.google_add_mail_delegate,
       { userEmail: z.string(), delegateEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_add_mail_delegate', getAuth, getActiveSession, googleAddMailDelegateHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_add_mail_delegate', googleAddMailDelegateHandler)
     ),
     tool(
       'google_remove_mail_delegate',
       SESSION_TOOL_DESCRIPTIONS.google_remove_mail_delegate,
       { userEmail: z.string(), delegateEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_remove_mail_delegate', getAuth, getActiveSession, googleRemoveMailDelegateHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_remove_mail_delegate', googleRemoveMailDelegateHandler)
     ),
     tool(
       'google_set_forwarding',
       SESSION_TOOL_DESCRIPTIONS.google_set_forwarding,
       { userEmail: z.string(), forwardTo: z.string(), keepCopy: z.boolean().optional(), reason: z.string() },
-      makeSessionAwareHandler('google_set_forwarding', getAuth, getActiveSession, googleSetForwardingHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_set_forwarding', googleSetForwardingHandler)
     ),
     tool(
       'google_disable_forwarding',
       SESSION_TOOL_DESCRIPTIONS.google_disable_forwarding,
       { userEmail: z.string(), forwardTo: z.string().optional(), removeAddress: z.boolean().optional(), reason: z.string() },
-      makeSessionAwareHandler('google_disable_forwarding', getAuth, getActiveSession, googleDisableForwardingHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_disable_forwarding', googleDisableForwardingHandler)
     ),
     tool(
       'google_set_vacation',
       SESSION_TOOL_DESCRIPTIONS.google_set_vacation,
       { userEmail: z.string(), enable: z.boolean().optional(), subject: z.string().optional(), message: z.string().optional(), reason: z.string() },
-      makeSessionAwareHandler('google_set_vacation', getAuth, getActiveSession, googleSetVacationHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_set_vacation', googleSetVacationHandler)
     ),
     tool(
       'google_update_user',
@@ -1944,7 +2275,7 @@ export function googleToolDefinitions(
         removeAlias: z.string().optional(),
         reason: z.string(),
       },
-      makeSessionAwareHandler('google_update_user', getAuth, getActiveSession, googleUpdateUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_update_user', googleUpdateUserHandler)
     ),
     tool(
       'google_share_calendar',
@@ -1956,7 +2287,7 @@ export function googleToolDefinitions(
         role: z.enum(['freeBusyReader', 'reader', 'writer', 'owner']).optional(),
         reason: z.string(),
       },
-      makeSessionAwareHandler('google_share_calendar', getAuth, getActiveSession, googleShareCalendarHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_share_calendar', googleShareCalendarHandler)
     ),
     tool(
       'google_offboard_user',
@@ -1971,33 +2302,33 @@ export function googleToolDefinitions(
         suspend: z.boolean().optional(),
         reason: z.string(),
       },
-      makeSessionAwareHandler('google_offboard_user', getAuth, getActiveSession, googleOffboardUserHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_offboard_user', googleOffboardUserHandler)
     ),
     tool(
       'google_wipe_mobile_device',
       SESSION_TOOL_DESCRIPTIONS.google_wipe_mobile_device,
       { userEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_wipe_mobile_device', getAuth, getActiveSession, googleWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_wipe_mobile_device', googleWipeMobileDeviceHandler)
     ),
     tool(
       'google_account_wipe_mobile_device',
       SESSION_TOOL_DESCRIPTIONS.google_account_wipe_mobile_device,
       { userEmail: z.string(), reason: z.string() },
-      makeSessionAwareHandler('google_account_wipe_mobile_device', getAuth, getActiveSession, googleAccountWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_account_wipe_mobile_device', googleAccountWipeMobileDeviceHandler)
     ),
     tool(
       'google_security_drift',
       SESSION_TOOL_DESCRIPTIONS.google_security_drift,
       { staleDays: z.number().int().min(1).max(3650).optional() },
-      makeSessionAwareHandler('google_security_drift', getAuth, getActiveSession, googleSecurityDriftHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_security_drift', googleSecurityDriftHandler)
     ),
     tool(
       'google_email_report',
       SESSION_TOOL_DESCRIPTIONS.google_email_report,
       { staleDays: z.number().int().min(1).max(3650).optional() },
-      makeSessionAwareHandler('google_email_report', getAuth, getActiveSession, googleEmailReportHandler, onPreToolUse, onPostToolUse)
+      makeSessionAwareHandler('google_email_report', googleEmailReportHandler)
     ),
-  ];
+  ] as SdkTool[];
 }
 
 /**
@@ -2143,24 +2474,33 @@ function nearestToolNames(name: string, candidates: readonly string[], limit = 3
     .map(({ candidate }) => candidate);
 }
 
-/** Build the unfiltered SDK declarations before attaching registry metadata. */
+/**
+ * Build the unfiltered SDK declarations (before registry metadata), bound to
+ * one session's callbacks. The static declarations come from the per-process
+ * template (#11004); only the handlers are created here.
+ */
 export function buildBreezeSdkTools(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
 ): SdkTool[] {
-  // One alias so the tool() declarations below keep their four-argument shape
-  // while the underlying handler also receives the session. W01 capture needs
-  // the session's org (auth.orgId is null for a partner-scope login) and its
-  // ai_sessions id. getActiveSession is undefined for the headless/agent
-  // server, where the ai_agent principal already carries the run and org.
-  const makeHandler = (
-    toolName: string,
-    auth: () => AuthContext,
-    pre?: PreToolUseCallback,
-    post?: PostToolUseCallback,
-  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  return bindBreezeSdkTools(breezeToolTemplate().declarations, { getAuth, getActiveSession, onPreToolUse, onPostToolUse });
+}
+
+/**
+ * The static Breeze tool declarations with LATE-BOUND handlers (#11004). This
+ * function has no access to any session value by construction — every handler
+ * below is a `lateBoundToolHandler`/`lateBound` placeholder that
+ * `bindBreezeSdkTools` swaps for a handler built from one session's binding.
+ * Called only through `breezeToolTemplate()`, which caches the result.
+ */
+function declareBreezeSdkToolTemplates(): SdkTool[] {
+  // W01 capture needs the session's org (auth.orgId is null for a
+  // partner-scope login) and its ai_sessions id, so the bound handler also
+  // receives getActiveSession — undefined for the headless/agent server,
+  // where the ai_agent principal already carries the run and org.
+  const makeHandler = lateBoundToolHandler;
 
   const uuid = z.string().guid();
 
@@ -2180,31 +2520,31 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(200).optional(),
         offset: z.number().int().min(0).optional(),
       },
-      makeHandler('list_time_entries', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_time_entries')
     ),
     tool(
       'manage_tickets',
       registryDescription('manage_tickets'),
       inputShape('manage_tickets'),
-      makeHandler('manage_tickets', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_tickets')
     ),
     tool(
       'get_running_timer',
       registryDescription('get_running_timer'),
       {},
-      makeHandler('get_running_timer', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_running_timer')
     ),
     tool(
       'get_timesheet',
       registryDescription('get_timesheet'),
       { weekStart: z.string(), userId: uuid.optional() },
-      makeHandler('get_timesheet', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_timesheet')
     ),
     tool(
       'get_ticket_approval_status',
       registryDescription('get_ticket_approval_status'),
       { ticketId: uuid },
-      makeHandler('get_ticket_approval_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_ticket_approval_status')
     ),
 
     tool(
@@ -2214,7 +2554,7 @@ export function buildBreezeSdkTools(
         query: z.string().min(1).max(500),
         section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
       },
-      makeHandler('search_documentation', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('search_documentation')
     ),
 
     tool(
@@ -2228,49 +2568,49 @@ export function buildBreezeSdkTools(
         tags: z.array(z.string().max(100)).max(20).optional(),
         ...pageZodShape(20, 100),
       },
-      makeHandler('query_devices', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_devices')
     ),
 
     tool(
       'get_device_details',
       registryDescription('get_device_details'),
       { deviceId: uuid },
-      makeHandler('get_device_details', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_details')
     ),
 
     tool(
       'get_device_time_status',
       registryDescription('get_device_time_status'),
       { deviceId: uuid },
-      makeHandler('get_device_time_status', getAuth, onPreToolUse, onPostToolUse),
+      makeHandler('get_device_time_status'),
     ),
 
     tool(
       'list_device_restore_point_attempts',
       registryDescription('list_device_restore_point_attempts'),
       inputShape('list_device_restore_point_attempts'),
-      makeHandler('list_device_restore_point_attempts', getAuth, onPreToolUse, onPostToolUse),
+      makeHandler('list_device_restore_point_attempts'),
     ),
 
     tool(
       'query_device_workloads',
       registryDescription('query_device_workloads'),
       inputShape('query_device_workloads'),
-      makeHandler('query_device_workloads', getAuth, onPreToolUse, onPostToolUse),
+      makeHandler('query_device_workloads'),
     ),
 
     tool(
       'list_time_sync_issues',
       registryDescription('list_time_sync_issues'),
       inputShape('list_time_sync_issues'),
-      makeHandler('list_time_sync_issues', getAuth, onPreToolUse, onPostToolUse),
+      makeHandler('list_time_sync_issues'),
     ),
 
     tool(
       'get_device_hardware_health',
       registryDescription('get_device_hardware_health'),
       { deviceId: uuid, includeEvents: z.boolean().optional(), includeReliability: z.boolean().optional() },
-      makeHandler('get_device_hardware_health', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_hardware_health')
     ),
 
     tool(
@@ -2283,7 +2623,7 @@ export function buildBreezeSdkTools(
         aggregation: z.enum(['raw', 'hourly', 'daily']).optional(),
         limit: z.number().int().min(1).max(500).optional(),
       },
-      makeHandler('analyze_metrics', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('analyze_metrics')
     ),
 
     tool(
@@ -2295,7 +2635,7 @@ export function buildBreezeSdkTools(
         maxSessionsPerDevice: z.number().int().min(1).max(50).optional(),
         idleThresholdMinutes: z.number().int().min(1).max(1440).optional(),
       },
-      makeHandler('get_active_users', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_active_users')
     ),
 
     tool(
@@ -2307,35 +2647,35 @@ export function buildBreezeSdkTools(
         daysBack: z.number().int().min(1).max(365).optional(),
         limit: z.number().int().min(1).max(500).optional(),
       },
-      makeHandler('get_user_experience_metrics', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_user_experience_metrics')
     ),
 
     tool(
       'manage_delivery',
       registryDescription('manage_delivery'),
       deliveryToolShape,
-      makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_delivery')
     ),
 
     tool(
       'manage_notification_channels',
       registryDescription('manage_notification_channels'),
       inputShape('manage_notification_channels'),
-      makeHandler('manage_notification_channels', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_notification_channels')
     ),
 
     tool(
       'manage_saved_filters',
       registryDescription('manage_saved_filters'),
       inputShape('manage_saved_filters'),
-      makeHandler('manage_saved_filters', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_saved_filters')
     ),
 
     tool(
       'manage_tags',
       registryDescription('manage_tags'),
       inputShape('manage_tags'),
-      makeHandler('manage_tags', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_tags')
     ),
 
     // #6930. No `done`: ticking a checklist step is a human attestation.
@@ -2361,7 +2701,7 @@ export function buildBreezeSdkTools(
         description: z.string().max(2000).nullable().optional(),
         ownerScope: z.enum(['organization', 'partner']).optional(),
       },
-      makeHandler('manage_ticket_checklist', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ticket_checklist')
     ),
 
     tool(
@@ -2376,7 +2716,7 @@ export function buildBreezeSdkTools(
         ...keysetZodShape(12, 100),
         resolutionNote: z.string().max(1000).optional(),
       },
-      makeHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_alerts')
     ),
 
     tool(
@@ -2393,7 +2733,7 @@ export function buildBreezeSdkTools(
         category: z.string().max(100).optional(),
         topN: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('get_dns_security', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_dns_security')
     ),
 
     tool(
@@ -2403,7 +2743,7 @@ export function buildBreezeSdkTools(
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
       },
-      makeHandler('get_huntress_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_huntress_status')
     ),
 
     tool(
@@ -2421,7 +2761,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(500).optional(),
         offset: z.number().int().min(0).optional(),
       },
-      makeHandler('get_huntress_incidents', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_huntress_incidents')
     ),
 
     tool(
@@ -2437,7 +2777,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(200).optional(),
         offset: z.number().int().min(0).optional(),
       },
-      makeHandler('get_huntress_agents', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_huntress_agents')
     ),
 
     tool(
@@ -2449,7 +2789,7 @@ export function buildBreezeSdkTools(
         domains: z.array(z.string().min(1).max(500)).min(1).max(500),
         reason: z.string().max(2000).optional(),
       },
-      makeHandler('manage_dns_policy', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_dns_policy')
     ),
 
     tool(
@@ -2458,7 +2798,7 @@ export function buildBreezeSdkTools(
       {
         orgId: uuid.optional(),
       },
-      makeHandler('get_s1_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_s1_status')
     ),
 
     tool(
@@ -2472,7 +2812,7 @@ export function buildBreezeSdkTools(
         search: z.string().max(200).optional(),
         limit: z.number().int().min(1).max(500).optional(),
       },
-      makeHandler('get_s1_threats', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_s1_threats')
     ),
 
     tool(
@@ -2481,7 +2821,7 @@ export function buildBreezeSdkTools(
       {
         orgId: uuid.optional(),
       },
-      makeHandler('get_edr_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_edr_status')
     ),
 
     tool(
@@ -2495,7 +2835,7 @@ export function buildBreezeSdkTools(
         provider: z.string().max(30).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('list_edr_detections', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_edr_detections')
     ),
 
     tool(
@@ -2507,7 +2847,7 @@ export function buildBreezeSdkTools(
         connectionId: uuid.optional(),
         reason: z.string().max(500).optional(),
       },
-      makeHandler('edr_endpoint_action', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('edr_endpoint_action')
     ),
 
     tool(
@@ -2517,7 +2857,7 @@ export function buildBreezeSdkTools(
         connectionId: uuid.optional(),
         orgId: uuid.optional(),
       },
-      makeHandler('sync_edr_data', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('sync_edr_data')
     ),
 
     tool(
@@ -2529,7 +2869,7 @@ export function buildBreezeSdkTools(
         deviceIds: z.array(uuid).min(1).max(200).optional(),
         isolate: z.boolean().optional(),
       },
-      makeHandler('s1_isolate_device', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('s1_isolate_device')
     ),
 
     tool(
@@ -2540,7 +2880,7 @@ export function buildBreezeSdkTools(
         action: z.enum(['kill', 'quarantine', 'rollback']),
         threatIds: z.array(z.string().min(1).max(128)).min(1).max(200),
       },
-      makeHandler('s1_threat_action', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('s1_threat_action')
     ),
 
     tool(
@@ -2550,14 +2890,14 @@ export function buildBreezeSdkTools(
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
       },
-      makeHandler('sync_huntress_data', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('sync_huntress_data')
     ),
 
     tool(
       'execute_command',
       registryDescription('execute_command'),
       executeCommandShape,
-      makeHandler('execute_command', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('execute_command')
     ),
 
     tool(
@@ -2578,7 +2918,7 @@ export function buildBreezeSdkTools(
         // for why the shape is shared rather than repeated.
         ...aiRunContextInputShape,
       },
-      makeHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('run_script')
     ),
 
     tool(
@@ -2590,7 +2930,7 @@ export function buildBreezeSdkTools(
         // MAX_GRACE_SECONDS in services/scriptCancellation.
         graceSeconds: z.number().int().min(0).max(30).optional(),
       },
-      makeHandler('cancel_script_execution', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('cancel_script_execution')
     ),
 
     tool(
@@ -2602,7 +2942,7 @@ export function buildBreezeSdkTools(
         stdoutMaxChars: z.number().int().min(1).max(5000).optional(),
         stderrMaxChars: z.number().int().min(1).max(8000).optional(),
       },
-      makeHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_script_execution')
     ),
 
     // The four script-library reads below (W01-D2, spec 2026-09-23) were
@@ -2615,35 +2955,35 @@ export function buildBreezeSdkTools(
       'list_scripts',
       registryDescription('list_scripts'),
       inputShape('list_scripts'),
-      makeHandler('list_scripts', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_scripts')
     ),
 
     tool(
       'get_script_details',
       registryDescription('get_script_details'),
       inputShape('get_script_details'),
-      makeHandler('get_script_details', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_script_details')
     ),
 
     tool(
       'list_script_templates',
       registryDescription('list_script_templates'),
       inputShape('list_script_templates'),
-      makeHandler('list_script_templates', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_script_templates')
     ),
 
     tool(
       'get_script_execution_history',
       registryDescription('get_script_execution_history'),
       inputShape('get_script_execution_history'),
-      makeHandler('get_script_execution_history', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_script_execution_history')
     ),
 
     tool(
       'search_script_library',
       registryDescription('search_script_library'),
       inputShape('search_script_library'),
-      makeHandler('search_script_library', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('search_script_library')
     ),
 
     // Spec 2026-09-23 W01 (#6755): read-only, previously registered but
@@ -2653,28 +2993,28 @@ export function buildBreezeSdkTools(
       'list_remote_sessions',
       registryDescription('list_remote_sessions'),
       inputShape('list_remote_sessions'),
-      makeHandler('list_remote_sessions', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_remote_sessions')
     ),
 
     tool(
       'query_agent_versions',
       registryDescription('query_agent_versions'),
       inputShape('query_agent_versions'),
-      makeHandler('query_agent_versions', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_agent_versions')
     ),
 
     tool(
       'query_webhooks',
       registryDescription('query_webhooks'),
       inputShape('query_webhooks'),
-      makeHandler('query_webhooks', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_webhooks')
     ),
 
     tool(
       'test_webhook',
       registryDescription('test_webhook'),
       inputShape('test_webhook'),
-      makeHandler('test_webhook', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('test_webhook')
     ),
 
     tool(
@@ -2685,7 +3025,7 @@ export function buildBreezeSdkTools(
         action: z.enum(['list', 'start', 'stop', 'restart']),
         serviceName: z.string().max(255).optional(),
       },
-      makeHandler('manage_services', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_services')
     ),
 
     tool(
@@ -2698,14 +3038,14 @@ export function buildBreezeSdkTools(
         severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('security_scan', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('security_scan')
     ),
 
     tool(
       'ioc_hunt',
       registryDescription('ioc_hunt'),
       iocHuntShape,
-      makeHandler('ioc_hunt', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('ioc_hunt')
     ),
 
     tool(
@@ -2720,7 +3060,7 @@ export function buildBreezeSdkTools(
         includeRecommendations: z.boolean().optional(),
         ...pageZodShape(5, 500),
       },
-      makeHandler('get_security_posture', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_security_posture')
     ),
 
     tool(
@@ -2736,7 +3076,7 @@ export function buildBreezeSdkTools(
         includeSummary: z.boolean().optional(),
         ...pageZodShape(12, 500),
       },
-      makeHandler('get_cis_compliance', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_cis_compliance')
     ),
 
     tool(
@@ -2747,7 +3087,7 @@ export function buildBreezeSdkTools(
         baselineId: uuid.optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('get_cis_device_report', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_cis_device_report')
     ),
 
     tool(
@@ -2761,14 +3101,14 @@ export function buildBreezeSdkTools(
         action: z.enum(['apply', 'rollback']).optional(),
         reason: z.string().max(1000).optional(),
       },
-      makeHandler('apply_cis_remediation', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('apply_cis_remediation')
     ),
 
     tool(
       'get_fleet_device_stats',
       registryDescription('get_fleet_device_stats'),
       { orgId: uuid.optional() },
-      makeHandler('get_fleet_device_stats', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_fleet_device_stats')
     ),
 
     tool(
@@ -2784,7 +3124,7 @@ export function buildBreezeSdkTools(
         ...fleetHealthActionShape,
         ...pageZodShape(15, 100),
       },
-      makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_fleet_health')
     ),
 
     // Zod shapes below mirror `toolInputSchemas.get_fleet_findings` /
@@ -2802,7 +3142,7 @@ export function buildBreezeSdkTools(
         orgId: uuid.optional(),
         limit: z.number().int().min(1).max(50).optional(),
       },
-      makeHandler('get_fleet_findings', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_fleet_findings')
     ),
 
     tool(
@@ -2814,14 +3154,14 @@ export function buildBreezeSdkTools(
         topN: z.number().int().min(1).max(50).optional(),
         orgId: uuid.optional(),
       },
-      makeHandler('analyze_fleet_metrics', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('analyze_fleet_metrics')
     ),
 
     tool(
       'get_invite_funnel',
       registryDescription('get_invite_funnel'),
       {},
-      makeHandler('get_invite_funnel', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_invite_funnel')
     ),
 
     tool(
@@ -2831,7 +3171,7 @@ export function buildBreezeSdkTools(
         tenant_id: z.string().guid(),
         confirmation_phrase: z.string().min(1).max(500),
       },
-      makeHandler('delete_tenant', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('delete_tenant')
     ),
 
     tool(
@@ -2844,7 +3184,7 @@ export function buildBreezeSdkTools(
         content: z.string().max(1_000_000).optional(),
         newPath: z.string().max(4096).optional(),
       },
-      makeHandler('file_operations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('file_operations')
     ),
 
     tool(
@@ -2862,7 +3202,7 @@ export function buildBreezeSdkTools(
         timeoutSeconds: z.number().int().min(5).max(900).optional(),
         maxCandidates: z.number().int().min(1).max(200).optional(),
       },
-      makeHandler('analyze_disk_usage', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('analyze_disk_usage')
     ),
 
     tool(
@@ -2876,7 +3216,7 @@ export function buildBreezeSdkTools(
         maxCandidates: z.number().int().min(1).max(200).optional(),
         includeReasons: z.boolean().optional(),
       },
-      makeHandler('disk_cleanup', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('disk_cleanup')
     ),
 
     tool(
@@ -2885,7 +3225,7 @@ export function buildBreezeSdkTools(
       // #10161: the validator's own shape, not a hand-written mirror — the
       // mirror's action enum lagged the registry (no `cancel`).
       inputShape('system_cleanup'),
-      makeHandler('system_cleanup', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('system_cleanup')
     ),
 
     tool(
@@ -2900,7 +3240,7 @@ export function buildBreezeSdkTools(
         ...keysetZodShape(25, 100),
         includeDetails: z.boolean().optional(),
       },
-      makeHandler('query_audit_log', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_audit_log')
     ),
 
     tool(
@@ -2915,7 +3255,7 @@ export function buildBreezeSdkTools(
         ...keysetZodShape(25, 500),
         includeValues: z.boolean().optional(),
       },
-      makeHandler('query_change_log', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_change_log')
     ),
 
     tool(
@@ -2926,7 +3266,7 @@ export function buildBreezeSdkTools(
         subnet: z.string().max(50).regex(/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/, 'Invalid CIDR notation'),
         scanType: z.enum(['ping', 'arp', 'full']).optional(),
       },
-      makeHandler('network_discovery', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('network_discovery')
     ),
 
     tool(
@@ -2936,7 +3276,7 @@ export function buildBreezeSdkTools(
         deviceId: uuid,
         monitor: z.number().int().min(0).max(10).optional(),
       },
-      makeHandler('take_screenshot', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('take_screenshot')
     ),
 
     tool(
@@ -2947,7 +3287,7 @@ export function buildBreezeSdkTools(
         context: z.string().max(500).optional(),
         monitor: z.number().int().min(0).max(10).optional(),
       },
-      makeHandler('analyze_screen', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('analyze_screen')
     ),
 
     tool(
@@ -2966,14 +3306,14 @@ export function buildBreezeSdkTools(
         captureAfter: z.boolean().optional(),
         captureDelayMs: z.number().int().min(0).max(3000).optional(),
       },
-      makeHandler('computer_control', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('computer_control')
     ),
 
     tool(
       'send_endpoint_message',
       registryDescription('send_endpoint_message'),
       sendEndpointMessageShape,
-      makeHandler('send_endpoint_message', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('send_endpoint_message')
     ),
 
     // Fleet orchestration tools
@@ -2994,7 +3334,7 @@ export function buildBreezeSdkTools(
         schedule: z.record(z.string(), z.unknown()).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_deployments', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_deployments')
     ),
 
     tool(
@@ -3031,7 +3371,7 @@ export function buildBreezeSdkTools(
         // declared here before, so the chat path stripped it.
         orgId: uuid.optional(),
       },
-      makeHandler('manage_patches', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_patches')
     ),
 
     // Vulnerability management (BE-16). These were registered in the aiTools
@@ -3048,7 +3388,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
       },
-      makeHandler('get_vulnerability_report', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_vulnerability_report')
     ),
 
     tool(
@@ -3059,7 +3399,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
         ...pageZodShape(45, 200),
       },
-      makeHandler('get_device_vulnerabilities', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_vulnerabilities')
     ),
 
     tool(
@@ -3068,7 +3408,7 @@ export function buildBreezeSdkTools(
       {
         deviceVulnerabilityIds: z.array(uuid).min(1).max(100),
       },
-      makeHandler('remediate_vulnerability', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('remediate_vulnerability')
     ),
 
     tool(
@@ -3084,7 +3424,7 @@ export function buildBreezeSdkTools(
         deviceIds: z.array(uuid).max(100).optional(),
         limit: z.number().int().min(1).max(200).optional(),
       },
-      makeHandler('manage_groups', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_groups')
     ),
 
     tool(
@@ -3109,7 +3449,7 @@ export function buildBreezeSdkTools(
         suppressAutomations: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_maintenance_windows', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_maintenance_windows')
     ),
 
     tool(
@@ -3128,7 +3468,7 @@ export function buildBreezeSdkTools(
         triggerType: z.enum(['schedule', 'event', 'webhook', 'manual']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_automations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_automations')
     ),
 
     tool(
@@ -3140,7 +3480,7 @@ export function buildBreezeSdkTools(
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_alert_rules', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_alert_rules')
     ),
 
     tool(
@@ -3150,7 +3490,7 @@ export function buildBreezeSdkTools(
         action: z.enum(['list']),
         configPolicyId: uuid.optional(),
       },
-      makeHandler('manage_service_monitors', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_service_monitors')
     ),
 
     tool(
@@ -3166,7 +3506,7 @@ export function buildBreezeSdkTools(
         format: z.enum(['csv', 'pdf', 'excel']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('generate_report', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('generate_report')
     ),
 
     // Brain device context tools
@@ -3178,14 +3518,14 @@ export function buildBreezeSdkTools(
         deviceId: uuid,
         includeResolved: z.boolean().optional().default(false),
       },
-      makeHandler('get_device_context', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_context')
     ),
 
     tool(
       'set_device_context',
       registryDescription('set_device_context'),
       setDeviceContextShape,
-      makeHandler('set_device_context', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('set_device_context')
     ),
 
     tool(
@@ -3194,7 +3534,7 @@ export function buildBreezeSdkTools(
       {
         contextId: uuid,
       },
-      makeHandler('resolve_device_context', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('resolve_device_context')
     ),
 
     // Administrator-approved read-only diagnostic access
@@ -3203,35 +3543,35 @@ export function buildBreezeSdkTools(
       'request_diagnostic_access',
       registryDescription('request_diagnostic_access'),
       diagnosticAccessShapes.request_diagnostic_access,
-      makeHandler('request_diagnostic_access', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('request_diagnostic_access')
     ),
 
     tool(
       'list_diagnostic_access_grants',
       registryDescription('list_diagnostic_access_grants'),
       diagnosticAccessShapes.list_diagnostic_access_grants,
-      makeHandler('list_diagnostic_access_grants', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_diagnostic_access_grants')
     ),
 
     tool(
       'revoke_diagnostic_access',
       registryDescription('revoke_diagnostic_access'),
       diagnosticAccessShapes.revoke_diagnostic_access,
-      makeHandler('revoke_diagnostic_access', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('revoke_diagnostic_access')
     ),
 
     tool(
       'diagnostic_list_directory',
       registryDescription('diagnostic_list_directory'),
       diagnosticAccessShapes.diagnostic_list_directory,
-      makeHandler('diagnostic_list_directory', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('diagnostic_list_directory')
     ),
 
     tool(
       'diagnostic_read_file',
       registryDescription('diagnostic_read_file'),
       diagnosticAccessShapes.diagnostic_read_file,
-      makeHandler('diagnostic_read_file', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('diagnostic_read_file')
     ),
 
     // Boot performance & startup tools
@@ -3245,7 +3585,7 @@ export function buildBreezeSdkTools(
         triggerCollection: z.boolean().optional(),
         includePaths: z.boolean().optional(),
       },
-      makeHandler('analyze_boot_performance', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('analyze_boot_performance')
     ),
 
     tool(
@@ -3260,7 +3600,7 @@ export function buildBreezeSdkTools(
         action: z.enum(['disable', 'enable']),
         reason: z.string().max(500).optional(),
       },
-      makeHandler('manage_startup_items', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_startup_items')
     ),
 
     // Agent log tools
@@ -3282,7 +3622,7 @@ export function buildBreezeSdkTools(
         ...keysetZodShape(18, 500),
         includeFields: z.boolean().optional(),
       },
-      makeHandler('search_agent_logs', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('search_agent_logs')
     ),
 
     tool(
@@ -3293,7 +3633,7 @@ export function buildBreezeSdkTools(
         level: z.enum(['debug', 'info', 'warn', 'error']),
         durationMinutes: z.number().int().min(1).max(1440).optional(),
       },
-      makeHandler('set_agent_log_level', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('set_agent_log_level')
     ),
 
     tool(
@@ -3303,7 +3643,7 @@ export function buildBreezeSdkTools(
         deviceId: uuid,
         profile: z.enum(['heap', 'goroutine', 'all']).optional(),
       },
-      makeHandler('capture_agent_pprof', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('capture_agent_pprof')
     ),
 
     // Event log tools
@@ -3330,7 +3670,7 @@ export function buildBreezeSdkTools(
         sortOrder: z.enum(['asc', 'desc']).optional(),
         includeFullMessage: z.boolean().optional(),
       },
-      makeHandler('search_logs', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('search_logs')
     ),
 
     tool(
@@ -3344,7 +3684,7 @@ export function buildBreezeSdkTools(
         siteId: z.string().optional(),
         maxRows: z.number().optional(),
       },
-      makeHandler('export_dataset', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('export_dataset')
     ),
 
     tool(
@@ -3355,35 +3695,35 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional().describe('Byte offset to start from; pass nextOffset to continue (default 0)'),
         maxChars: z.number().int().min(1).max(6000).optional().describe('Max characters to return (default 4000, max 6000)'),
       },
-      makeHandler('read_artifact', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('read_artifact')
     ),
 
     tool(
       'workspace_stage',
       registryDescription('workspace_stage'),
       WORKSPACE_MCP_SHAPES.workspace_stage,
-      makeHandler('workspace_stage', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('workspace_stage')
     ),
 
     tool(
       'workspace_run',
       registryDescription('workspace_run'),
       WORKSPACE_MCP_SHAPES.workspace_run,
-      makeHandler('workspace_run', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('workspace_run')
     ),
 
     tool(
       'workspace_collect',
       registryDescription('workspace_collect'),
       WORKSPACE_MCP_SHAPES.workspace_collect,
-      makeHandler('workspace_collect', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('workspace_collect')
     ),
 
     tool(
       'workspace_cancel',
       registryDescription('workspace_cancel'),
       WORKSPACE_MCP_SHAPES.workspace_cancel,
-      makeHandler('workspace_cancel', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('workspace_cancel')
     ),
 
     tool(
@@ -3402,7 +3742,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         includeTimeline: z.boolean().optional(),
       },
-      makeHandler('get_log_trends', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_log_trends')
     ),
 
     tool(
@@ -3416,7 +3756,7 @@ export function buildBreezeSdkTools(
         minDevices: z.number().int().min(1).max(200).optional(),
         minOccurrences: z.number().int().min(1).max(50_000).optional(),
       },
-      makeHandler('detect_log_correlations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('detect_log_correlations')
     ),
 
     // Configuration policy tools
@@ -3428,7 +3768,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['active', 'inactive', 'archived']).optional(),
         ...pageZodShape(20, 100),
       },
-      makeHandler('list_configuration_policies', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_configuration_policies')
     ),
 
     tool(
@@ -3439,7 +3779,7 @@ export function buildBreezeSdkTools(
         featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
         includeSettings: z.boolean().optional(),
       },
-      makeHandler('get_effective_configuration', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_effective_configuration')
     ),
 
     tool(
@@ -3455,7 +3795,7 @@ export function buildBreezeSdkTools(
         })).optional(),
         remove: z.array(uuid).optional(),
       },
-      makeHandler('preview_configuration_change', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('preview_configuration_change')
     ),
 
     tool(
@@ -3467,7 +3807,7 @@ export function buildBreezeSdkTools(
         targetId: uuid,
         priority: z.number().int().min(0).max(1000).optional(),
       },
-      makeHandler('apply_configuration_policy', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('apply_configuration_policy')
     ),
 
     tool(
@@ -3476,7 +3816,7 @@ export function buildBreezeSdkTools(
       {
         assignmentId: uuid,
       },
-      makeHandler('remove_configuration_policy_assignment', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('remove_configuration_policy_assignment')
     ),
 
     tool(
@@ -3485,7 +3825,7 @@ export function buildBreezeSdkTools(
       {
         policyId: uuid,
       },
-      makeHandler('get_configuration_policy', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_configuration_policy')
     ),
 
     tool(
@@ -3497,9 +3837,10 @@ export function buildBreezeSdkTools(
         name: z.string().max(255).optional(),
         description: z.string().max(2000).optional(),
         status: z.enum(['active', 'inactive', 'archived']).optional(),
-        orgId: uuid.optional(),
+        // Shared with toolInputSchemas (#11432): the SDK drops any key this shape lacks.
+        ...configPolicyOwnerShape,
       },
-      makeHandler('manage_configuration_policy', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_configuration_policy')
     ),
 
     tool(
@@ -3510,7 +3851,7 @@ export function buildBreezeSdkTools(
         policyId: uuid.optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('configuration_policy_compliance', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('configuration_policy_compliance')
     ),
 
     tool(
@@ -3525,7 +3866,7 @@ export function buildBreezeSdkTools(
         featurePolicyId: uuid.optional().nullable(),
         inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
       },
-      makeHandler('manage_policy_feature_link', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_policy_feature_link')
     ),
 
     // Policy prerequisite tools — the standalone policies a feature link points
@@ -3567,7 +3908,7 @@ export function buildBreezeSdkTools(
         enabled: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_update_rings', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_update_rings')
     ),
 
     tool(
@@ -3586,7 +3927,7 @@ export function buildBreezeSdkTools(
         isActive: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_software_policies', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_software_policies')
     ),
 
     tool(
@@ -3604,7 +3945,7 @@ export function buildBreezeSdkTools(
         isActive: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_peripheral_policies', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_peripheral_policies')
     ),
 
     // Spec 2026-09-23 W01 (#6755): read-only, previously registered but
@@ -3614,42 +3955,42 @@ export function buildBreezeSdkTools(
       'get_software_compliance',
       registryDescription('get_software_compliance'),
       inputShape('get_software_compliance'),
-      makeHandler('get_software_compliance', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_software_compliance')
     ),
 
     tool(
       'query_compliance_policies',
       registryDescription('query_compliance_policies'),
       inputShape('query_compliance_policies'),
-      makeHandler('query_compliance_policies', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_compliance_policies')
     ),
 
     tool(
       'get_elevation_history',
       registryDescription('get_elevation_history'),
       inputShape('get_elevation_history'),
-      makeHandler('get_elevation_history', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_elevation_history')
     ),
 
     tool(
       'get_peripheral_activity',
       registryDescription('get_peripheral_activity'),
       inputShape('get_peripheral_activity'),
-      makeHandler('get_peripheral_activity', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_peripheral_activity')
     ),
 
     tool(
       'get_user_risk_scores',
       registryDescription('get_user_risk_scores'),
       inputShape('get_user_risk_scores'),
-      makeHandler('get_user_risk_scores', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_user_risk_scores')
     ),
 
     tool(
       'get_user_risk_detail',
       registryDescription('get_user_risk_detail'),
       inputShape('get_user_risk_detail'),
-      makeHandler('get_user_risk_detail', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_user_risk_detail')
     ),
 
     // Spec 2026-09-23 W06 (#6776): PSA configuration + ticket operations. Classes live in
@@ -3660,49 +4001,49 @@ export function buildBreezeSdkTools(
       'manage_ticket_config',
       registryDescription('manage_ticket_config'),
       inputShape('manage_ticket_config'),
-      makeHandler('manage_ticket_config', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ticket_config')
     ),
 
     tool(
       'manage_ticket_checklist_templates',
       registryDescription('manage_ticket_checklist_templates'),
       inputShape('manage_ticket_checklist_templates'),
-      makeHandler('manage_ticket_checklist_templates', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ticket_checklist_templates')
     ),
 
     tool(
       'manage_ticket_inbox',
       registryDescription('manage_ticket_inbox'),
       inputShape('manage_ticket_inbox'),
-      makeHandler('manage_ticket_inbox', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ticket_inbox')
     ),
 
     tool(
       'manage_ticket_attachments',
       registryDescription('manage_ticket_attachments'),
       inputShape('manage_ticket_attachments'),
-      makeHandler('manage_ticket_attachments', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ticket_attachments')
     ),
 
     tool(
       'manage_ticket_forms',
       registryDescription('manage_ticket_forms'),
       inputShape('manage_ticket_forms'),
-      makeHandler('manage_ticket_forms', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ticket_forms')
     ),
 
     tool(
       'manage_ticket_response_templates',
       registryDescription('manage_ticket_response_templates'),
       inputShape('manage_ticket_response_templates'),
-      makeHandler('manage_ticket_response_templates', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ticket_response_templates')
     ),
 
     tool(
       'manage_time_suggestions',
       registryDescription('manage_time_suggestions'),
       inputShape('manage_time_suggestions'),
-      makeHandler('manage_time_suggestions', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_time_suggestions')
     ),
 
     // Spec 2026-09-23 W07 (#6777): alert correlation + signal triage. Classes live in aiGuardrails.
@@ -3710,28 +4051,28 @@ export function buildBreezeSdkTools(
       'get_alert_correlations',
       registryDescription('get_alert_correlations'),
       inputShape('get_alert_correlations'),
-      makeHandler('get_alert_correlations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_alert_correlations')
     ),
 
     tool(
       'manage_alert_correlations',
       registryDescription('manage_alert_correlations'),
       inputShape('manage_alert_correlations'),
-      makeHandler('manage_alert_correlations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_alert_correlations')
     ),
 
     tool(
       'manage_device_anomalies',
       registryDescription('manage_device_anomalies'),
       inputShape('manage_device_anomalies'),
-      makeHandler('manage_device_anomalies', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_device_anomalies')
     ),
 
     tool(
       'reliability_feedback',
       registryDescription('reliability_feedback'),
       inputShape('reliability_feedback'),
-      makeHandler('reliability_feedback', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('reliability_feedback')
     ),
 
     // Spec 2026-09-23 W08 (#6778): network topology. Classes live in aiGuardrails.
@@ -3739,42 +4080,42 @@ export function buildBreezeSdkTools(
       'get_topology_graph',
       registryDescription('get_topology_graph'),
       inputShape('get_topology_graph'),
-      makeHandler('get_topology_graph', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_topology_graph')
     ),
 
     tool(
       'run_topology_diagnostic',
       registryDescription('run_topology_diagnostic'),
       inputShape('run_topology_diagnostic'),
-      makeHandler('run_topology_diagnostic', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('run_topology_diagnostic')
     ),
 
     tool(
       'manage_topology_manual',
       registryDescription('manage_topology_manual'),
       inputShape('manage_topology_manual'),
-      makeHandler('manage_topology_manual', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_topology_manual')
     ),
 
     tool(
       'manage_topology_monitoring',
       registryDescription('manage_topology_monitoring'),
       inputShape('manage_topology_monitoring'),
-      makeHandler('manage_topology_monitoring', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_topology_monitoring')
     ),
 
     tool(
       'manage_topology_templates',
       registryDescription('manage_topology_templates'),
       inputShape('manage_topology_templates'),
-      makeHandler('manage_topology_templates', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_topology_templates')
     ),
 
     tool(
       'apply_topology_template',
       registryDescription('apply_topology_template'),
       inputShape('apply_topology_template'),
-      makeHandler('apply_topology_template', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('apply_topology_template')
     ),
 
     // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. Classes live in aiGuardrails.
@@ -3782,42 +4123,42 @@ export function buildBreezeSdkTools(
       'manage_snmp_templates',
       registryDescription('manage_snmp_templates'),
       inputShape('manage_snmp_templates'),
-      makeHandler('manage_snmp_templates', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_snmp_templates')
     ),
 
     tool(
       'get_snmp_metrics',
       registryDescription('get_snmp_metrics'),
       inputShape('get_snmp_metrics'),
-      makeHandler('get_snmp_metrics', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_snmp_metrics')
     ),
 
     tool(
       'probe_network_asset',
       registryDescription('probe_network_asset'),
       inputShape('probe_network_asset'),
-      makeHandler('probe_network_asset', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('probe_network_asset')
     ),
 
     tool(
       'manage_known_guests',
       registryDescription('manage_known_guests'),
       inputShape('manage_known_guests'),
-      makeHandler('manage_known_guests', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_known_guests')
     ),
 
     tool(
       'get_unifi_status',
       registryDescription('get_unifi_status'),
       inputShape('get_unifi_status'),
-      makeHandler('get_unifi_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_unifi_status')
     ),
 
     tool(
       'trigger_unifi_sync',
       registryDescription('trigger_unifi_sync'),
       inputShape('trigger_unifi_sync'),
-      makeHandler('trigger_unifi_sync', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('trigger_unifi_sync')
     ),
 
     // Spec 2026-09-23 W10 (#6780): AI-agent reads. All tier 1; operator-task reads are denied to headless agents.
@@ -3825,42 +4166,42 @@ export function buildBreezeSdkTools(
       'get_device_ai_activity',
       registryDescription('get_device_ai_activity'),
       inputShape('get_device_ai_activity'),
-      makeHandler('get_device_ai_activity', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_ai_activity')
     ),
 
     tool(
       'list_operator_tasks',
       registryDescription('list_operator_tasks'),
       inputShape('list_operator_tasks'),
-      makeHandler('list_operator_tasks', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_operator_tasks')
     ),
 
     tool(
       'get_operator_task',
       registryDescription('get_operator_task'),
       inputShape('get_operator_task'),
-      makeHandler('get_operator_task', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_operator_task')
     ),
 
     tool(
       'list_ai_agent_schedules',
       registryDescription('list_ai_agent_schedules'),
       inputShape('list_ai_agent_schedules'),
-      makeHandler('list_ai_agent_schedules', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_ai_agent_schedules')
     ),
 
     tool(
       'list_fleet_designs',
       registryDescription('list_fleet_designs'),
       inputShape('list_fleet_designs'),
-      makeHandler('list_fleet_designs', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_fleet_designs')
     ),
 
     tool(
       'get_fleet_design',
       registryDescription('get_fleet_design'),
       inputShape('get_fleet_design'),
-      makeHandler('get_fleet_design', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_fleet_design')
     ),
 
     // Spec 2026-09-23 W11 (#6781): security policy tools. Reads are tier 1; writes are classed in aiGuardrails; access
@@ -3869,56 +4210,56 @@ export function buildBreezeSdkTools(
       'get_security_compliance',
       registryDescription('get_security_compliance'),
       inputShape('get_security_compliance'),
-      makeHandler('get_security_compliance', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_security_compliance')
     ),
 
     tool(
       'manage_security_recommendations',
       registryDescription('manage_security_recommendations'),
       inputShape('manage_security_recommendations'),
-      makeHandler('manage_security_recommendations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_security_recommendations')
     ),
 
     tool(
       'manage_access_reviews',
       registryDescription('manage_access_reviews'),
       inputShape('manage_access_reviews'),
-      makeHandler('manage_access_reviews', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_access_reviews')
     ),
 
     tool(
       'manage_audit_baselines',
       registryDescription('manage_audit_baselines'),
       inputShape('manage_audit_baselines'),
-      makeHandler('manage_audit_baselines', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_audit_baselines')
     ),
 
     tool(
       'manage_compliance_policies',
       registryDescription('manage_compliance_policies'),
       inputShape('manage_compliance_policies'),
-      makeHandler('manage_compliance_policies', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_compliance_policies')
     ),
 
     tool(
       'manage_security_policies',
       registryDescription('manage_security_policies'),
       inputShape('manage_security_policies'),
-      makeHandler('manage_security_policies', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_security_policies')
     ),
 
     tool(
       'manage_recovery_keys',
       registryDescription('manage_recovery_keys'),
       inputShape('manage_recovery_keys'),
-      makeHandler('manage_recovery_keys', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_recovery_keys')
     ),
 
     tool(
       'manage_pam_rules',
       registryDescription('manage_pam_rules'),
       inputShape('manage_pam_rules'),
-      makeHandler('manage_pam_rules', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_pam_rules')
     ),
 
     // Spec 2026-09-23 W12 (#6782): software, fleet-finding and custom-field tools. Reads are tier 1; writes are classed
@@ -3927,63 +4268,63 @@ export function buildBreezeSdkTools(
       'manage_software_catalog',
       registryDescription('manage_software_catalog'),
       inputShape('manage_software_catalog'),
-      makeHandler('manage_software_catalog', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_software_catalog')
     ),
 
     tool(
       'search_packages',
       registryDescription('search_packages'),
       inputShape('search_packages'),
-      makeHandler('search_packages', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('search_packages')
     ),
 
     tool(
       'manage_software_deployments',
       registryDescription('manage_software_deployments'),
       inputShape('manage_software_deployments'),
-      makeHandler('manage_software_deployments', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_software_deployments')
     ),
 
     tool(
       'get_device_software',
       registryDescription('get_device_software'),
       inputShape('get_device_software'),
-      makeHandler('get_device_software', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_software')
     ),
 
     tool(
       'manage_device_software',
       registryDescription('manage_device_software'),
       inputShape('manage_device_software'),
-      makeHandler('manage_device_software', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_device_software')
     ),
 
     tool(
       'manage_software_inventory',
       registryDescription('manage_software_inventory'),
       inputShape('manage_software_inventory'),
-      makeHandler('manage_software_inventory', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_software_inventory')
     ),
 
     tool(
       'bootstrap_homebrew',
       registryDescription('bootstrap_homebrew'),
       inputShape('bootstrap_homebrew'),
-      makeHandler('bootstrap_homebrew', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('bootstrap_homebrew')
     ),
 
     tool(
       'manage_fleet_findings',
       registryDescription('manage_fleet_findings'),
       inputShape('manage_fleet_findings'),
-      makeHandler('manage_fleet_findings', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_fleet_findings')
     ),
 
     tool(
       'manage_custom_fields',
       registryDescription('manage_custom_fields'),
       inputShape('manage_custom_fields'),
-      makeHandler('manage_custom_fields', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_custom_fields')
     ),
 
     // Spec 2026-09-23 W13 (#6783, PR A): device inventory reads and per-device records. Reads are tier 1; writes
@@ -3992,56 +4333,56 @@ export function buildBreezeSdkTools(
       'get_device_events',
       registryDescription('get_device_events'),
       inputShape('get_device_events'),
-      makeHandler('get_device_events', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_events')
     ),
 
     tool(
       'get_device_health',
       registryDescription('get_device_health'),
       inputShape('get_device_health'),
-      makeHandler('get_device_health', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_health')
     ),
 
     tool(
       'get_process_samples',
       registryDescription('get_process_samples'),
       inputShape('get_process_samples'),
-      makeHandler('get_process_samples', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_process_samples')
     ),
 
     tool(
       'get_management_posture',
       registryDescription('get_management_posture'),
       inputShape('get_management_posture'),
-      makeHandler('get_management_posture', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_management_posture')
     ),
 
     tool(
       'manage_device_function',
       registryDescription('manage_device_function'),
       inputShape('manage_device_function'),
-      makeHandler('manage_device_function', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_device_function')
     ),
 
     tool(
       'manage_device_links',
       registryDescription('manage_device_links'),
       inputShape('manage_device_links'),
-      makeHandler('manage_device_links', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_device_links')
     ),
 
     tool(
       'manage_manual_assets',
       registryDescription('manage_manual_assets'),
       inputShape('manage_manual_assets'),
-      makeHandler('manage_manual_assets', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_manual_assets')
     ),
 
     tool(
       'manage_device_warranty',
       registryDescription('manage_device_warranty'),
       inputShape('manage_device_warranty'),
-      makeHandler('manage_device_warranty', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_device_warranty')
     ),
 
     // Spec 2026-09-23 W13 (#6783, PR B): event-log query / get_event, tenant-variable writes and support-session end
@@ -4050,21 +4391,21 @@ export function buildBreezeSdkTools(
       'browse_device_event_log',
       registryDescription('browse_device_event_log'),
       inputShape('browse_device_event_log'),
-      makeHandler('browse_device_event_log', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('browse_device_event_log')
     ),
 
     tool(
       'manage_tenant_variables',
       registryDescription('manage_tenant_variables'),
       inputShape('manage_tenant_variables'),
-      makeHandler('manage_tenant_variables', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_tenant_variables')
     ),
 
     tool(
       'manage_support_sessions',
       registryDescription('manage_support_sessions'),
       inputShape('manage_support_sessions'),
-      makeHandler('manage_support_sessions', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_support_sessions')
     ),
 
     // Spec 2026-09-23 W14 (#6784, PR A): billing lifecycle. Writes are supervised (org-owned template drafts tier 2);
@@ -4073,35 +4414,35 @@ export function buildBreezeSdkTools(
       'manage_billing_profiles',
       registryDescription('manage_billing_profiles'),
       inputShape('manage_billing_profiles'),
-      makeHandler('manage_billing_profiles', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_billing_profiles')
     ),
 
     tool(
       'manage_billing_settings',
       registryDescription('manage_billing_settings'),
       inputShape('manage_billing_settings'),
-      makeHandler('manage_billing_settings', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_billing_settings')
     ),
 
     tool(
       'manage_contract_templates',
       registryDescription('manage_contract_templates'),
       inputShape('manage_contract_templates'),
-      makeHandler('manage_contract_templates', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_contract_templates')
     ),
 
     tool(
       'manage_contract_documents',
       registryDescription('manage_contract_documents'),
       inputShape('manage_contract_documents'),
-      makeHandler('manage_contract_documents', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_contract_documents')
     ),
 
     tool(
       'get_device_billing',
       registryDescription('get_device_billing'),
       inputShape('get_device_billing'),
-      makeHandler('get_device_billing', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_device_billing')
     ),
 
     // Spec 2026-09-23 W14 PR B (#6784): QuickBooks / Xero sync. Pushes are four-eyes and agent-human-only.
@@ -4109,7 +4450,7 @@ export function buildBreezeSdkTools(
       'manage_accounting_sync',
       registryDescription('manage_accounting_sync'),
       inputShape('manage_accounting_sync'),
-      makeHandler('manage_accounting_sync', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_accounting_sync')
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
@@ -4120,133 +4461,142 @@ export function buildBreezeSdkTools(
       'execute_containment',
       registryDescription('execute_containment'),
       inputShape('execute_containment'),
-      makeHandler('execute_containment', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('execute_containment')
+    ),
+
+    // Network-isolation W13 (#10101): four-eyes; runs only as an approved
+    // release carrying the effect-digest binding (aiToolsIncident.ts).
+    tool(
+      'release_containment',
+      registryDescription('release_containment'),
+      inputShape('release_containment'),
+      makeHandler('release_containment')
     ),
 
     tool(
       'create_incident',
       registryDescription('create_incident'),
       inputShape('create_incident'),
-      makeHandler('create_incident', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('create_incident')
     ),
 
     tool(
       'collect_evidence',
       registryDescription('collect_evidence'),
       inputShape('collect_evidence'),
-      makeHandler('collect_evidence', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('collect_evidence')
     ),
 
     tool(
       'request_elevation',
       registryDescription('request_elevation'),
       inputShape('request_elevation'),
-      makeHandler('request_elevation', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('request_elevation')
     ),
 
     tool(
       'revoke_elevation',
       registryDescription('revoke_elevation'),
       inputShape('revoke_elevation'),
-      makeHandler('revoke_elevation', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('revoke_elevation')
     ),
 
     tool(
       'create_remote_session',
       registryDescription('create_remote_session'),
       inputShape('create_remote_session'),
-      makeHandler('create_remote_session', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('create_remote_session')
     ),
 
     tool(
       'manage_processes',
       registryDescription('manage_processes'),
       inputShape('manage_processes'),
-      makeHandler('manage_processes', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_processes')
     ),
 
     tool(
       'manage_scheduled_tasks',
       registryDescription('manage_scheduled_tasks'),
       inputShape('manage_scheduled_tasks'),
-      makeHandler('manage_scheduled_tasks', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_scheduled_tasks')
     ),
 
     tool(
       'registry_operations',
       registryDescription('registry_operations'),
       inputShape('registry_operations'),
-      makeHandler('registry_operations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('registry_operations')
     ),
 
     tool(
       'trigger_agent_restart',
       registryDescription('trigger_agent_restart'),
       inputShape('trigger_agent_restart'),
-      makeHandler('trigger_agent_restart', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('trigger_agent_restart')
     ),
 
     tool(
       'trigger_agent_upgrade',
       registryDescription('trigger_agent_upgrade'),
       inputShape('trigger_agent_upgrade'),
-      makeHandler('trigger_agent_upgrade', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('trigger_agent_upgrade')
     ),
 
     tool(
       'manage_software_policy',
       registryDescription('manage_software_policy'),
       inputShape('manage_software_policy'),
-      makeHandler('manage_software_policy', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_software_policy')
     ),
 
     tool(
       'manage_browser_policy',
       registryDescription('manage_browser_policy'),
       inputShape('manage_browser_policy'),
-      makeHandler('manage_browser_policy', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_browser_policy')
     ),
 
     tool(
       'manage_peripheral_policy',
       registryDescription('manage_peripheral_policy'),
       inputShape('manage_peripheral_policy'),
-      makeHandler('manage_peripheral_policy', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_peripheral_policy')
     ),
 
     tool(
       'remediate_sensitive_data',
       registryDescription('remediate_sensitive_data'),
       inputShape('remediate_sensitive_data'),
-      makeHandler('remediate_sensitive_data', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('remediate_sensitive_data')
     ),
 
     tool(
       'remediate_software_violation',
       registryDescription('remediate_software_violation'),
       inputShape('remediate_software_violation'),
-      makeHandler('remediate_software_violation', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('remediate_software_violation')
     ),
 
     tool(
       'assign_security_training',
       registryDescription('assign_security_training'),
       inputShape('assign_security_training'),
-      makeHandler('assign_security_training', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('assign_security_training')
     ),
 
     tool(
       'configure_network_baseline',
       registryDescription('configure_network_baseline'),
       inputShape('configure_network_baseline'),
-      makeHandler('configure_network_baseline', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('configure_network_baseline')
     ),
 
     tool(
       'acknowledge_network_device',
       registryDescription('acknowledge_network_device'),
       inputShape('acknowledge_network_device'),
-      makeHandler('acknowledge_network_device', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('acknowledge_network_device')
     ),
 
     tool(
@@ -4266,7 +4616,7 @@ export function buildBreezeSdkTools(
         isActive: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_backup_configs', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_backup_configs')
     ),
 
     // Spec 2026-09-23 W01 (#6755): read-only reads, previously registered but
@@ -4277,91 +4627,91 @@ export function buildBreezeSdkTools(
       'get_backup_status',
       registryDescription('get_backup_status'),
       inputShape('get_backup_status'),
-      makeHandler('get_backup_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_backup_status')
     ),
 
     tool(
       'browse_snapshots',
       registryDescription('browse_snapshots'),
       inputShape('browse_snapshots'),
-      makeHandler('browse_snapshots', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('browse_snapshots')
     ),
 
     tool(
       'get_vm_restore_estimate',
       registryDescription('get_vm_restore_estimate'),
       inputShape('get_vm_restore_estimate'),
-      makeHandler('get_vm_restore_estimate', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_vm_restore_estimate')
     ),
 
     tool(
       'query_mssql_instances',
       registryDescription('query_mssql_instances'),
       inputShape('query_mssql_instances'),
-      makeHandler('query_mssql_instances', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_mssql_instances')
     ),
 
     tool(
       'get_mssql_backup_status',
       registryDescription('get_mssql_backup_status'),
       inputShape('get_mssql_backup_status'),
-      makeHandler('get_mssql_backup_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_mssql_backup_status')
     ),
 
     tool(
       'query_hyperv_vms',
       registryDescription('query_hyperv_vms'),
       inputShape('query_hyperv_vms'),
-      makeHandler('query_hyperv_vms', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_hyperv_vms')
     ),
 
     tool(
       'get_hyperv_vm_details',
       registryDescription('get_hyperv_vm_details'),
       inputShape('get_hyperv_vm_details'),
-      makeHandler('get_hyperv_vm_details', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_hyperv_vm_details')
     ),
 
     tool(
       'get_vault_status',
       registryDescription('get_vault_status'),
       inputShape('get_vault_status'),
-      makeHandler('get_vault_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_vault_status')
     ),
 
     tool(
       'query_backup_sla',
       registryDescription('query_backup_sla'),
       inputShape('query_backup_sla'),
-      makeHandler('query_backup_sla', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_backup_sla')
     ),
 
     tool(
       'get_sla_breaches',
       registryDescription('get_sla_breaches'),
       inputShape('get_sla_breaches'),
-      makeHandler('get_sla_breaches', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_sla_breaches')
     ),
 
     tool(
       'get_sla_compliance_report',
       registryDescription('get_sla_compliance_report'),
       inputShape('get_sla_compliance_report'),
-      makeHandler('get_sla_compliance_report', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_sla_compliance_report')
     ),
 
     tool(
       'query_c2c_jobs',
       registryDescription('query_c2c_jobs'),
       inputShape('query_c2c_jobs'),
-      makeHandler('query_c2c_jobs', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_c2c_jobs')
     ),
 
     tool(
       'search_c2c_items',
       registryDescription('search_c2c_items'),
       inputShape('search_c2c_items'),
-      makeHandler('search_c2c_items', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('search_c2c_items')
     ),
 
     // Spec 2026-09-23 W03 (#6757): backup, DR and virtualization writes.
@@ -4372,133 +4722,168 @@ export function buildBreezeSdkTools(
       'trigger_backup',
       registryDescription('trigger_backup'),
       inputShape('trigger_backup'),
-      makeHandler('trigger_backup', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('trigger_backup')
     ),
 
     tool(
       'trigger_hyperv_backup',
       registryDescription('trigger_hyperv_backup'),
       inputShape('trigger_hyperv_backup'),
-      makeHandler('trigger_hyperv_backup', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('trigger_hyperv_backup')
     ),
 
     tool(
       'trigger_mssql_backup',
       registryDescription('trigger_mssql_backup'),
       inputShape('trigger_mssql_backup'),
-      makeHandler('trigger_mssql_backup', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('trigger_mssql_backup')
     ),
 
     tool(
       'trigger_vault_sync',
       registryDescription('trigger_vault_sync'),
       inputShape('trigger_vault_sync'),
-      makeHandler('trigger_vault_sync', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('trigger_vault_sync')
     ),
 
     tool(
       'trigger_c2c_sync',
       registryDescription('trigger_c2c_sync'),
       inputShape('trigger_c2c_sync'),
-      makeHandler('trigger_c2c_sync', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('trigger_c2c_sync')
     ),
 
     tool(
       'verify_mssql_backup',
       registryDescription('verify_mssql_backup'),
       inputShape('verify_mssql_backup'),
-      makeHandler('verify_mssql_backup', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('verify_mssql_backup')
     ),
 
     tool(
       'restore_snapshot',
       registryDescription('restore_snapshot'),
       inputShape('restore_snapshot'),
-      makeHandler('restore_snapshot', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('restore_snapshot')
     ),
 
     tool(
       'restore_as_vm',
       registryDescription('restore_as_vm'),
       inputShape('restore_as_vm'),
-      makeHandler('restore_as_vm', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('restore_as_vm')
     ),
 
     tool(
       'restore_hyperv_vm',
       registryDescription('restore_hyperv_vm'),
       inputShape('restore_hyperv_vm'),
-      makeHandler('restore_hyperv_vm', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('restore_hyperv_vm')
     ),
 
     tool(
       'restore_mssql_database',
       registryDescription('restore_mssql_database'),
       inputShape('restore_mssql_database'),
-      makeHandler('restore_mssql_database', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('restore_mssql_database')
     ),
 
     tool(
       'restore_c2c_items',
       registryDescription('restore_c2c_items'),
       inputShape('restore_c2c_items'),
-      makeHandler('restore_c2c_items', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('restore_c2c_items')
     ),
 
     tool(
       'instant_boot_vm',
       registryDescription('instant_boot_vm'),
       inputShape('instant_boot_vm'),
-      makeHandler('instant_boot_vm', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('instant_boot_vm')
     ),
 
     tool(
       'manage_hyperv_vm',
       registryDescription('manage_hyperv_vm'),
       inputShape('manage_hyperv_vm'),
-      makeHandler('manage_hyperv_vm', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_hyperv_vm')
     ),
 
     tool(
       'manage_hyperv_checkpoints',
       registryDescription('manage_hyperv_checkpoints'),
       inputShape('manage_hyperv_checkpoints'),
-      makeHandler('manage_hyperv_checkpoints', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_hyperv_checkpoints')
     ),
 
     tool(
       'manage_dr_plan',
       registryDescription('manage_dr_plan'),
       inputShape('manage_dr_plan'),
-      makeHandler('manage_dr_plan', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_dr_plan')
     ),
 
     tool(
       'execute_dr_plan',
       registryDescription('execute_dr_plan'),
       inputShape('execute_dr_plan'),
-      makeHandler('execute_dr_plan', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('execute_dr_plan')
     ),
 
     tool(
       'manage_backup_profiles',
       registryDescription('manage_backup_profiles'),
       inputShape('manage_backup_profiles'),
-      makeHandler('manage_backup_profiles', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_backup_profiles')
+    ),
+
+    tool(
+      'manage_backup_verification',
+      registryDescription('manage_backup_verification'),
+      inputShape('manage_backup_verification'),
+      makeHandler('manage_backup_verification')
+    ),
+
+    tool(
+      'get_vss_status',
+      registryDescription('get_vss_status'),
+      inputShape('get_vss_status'),
+      makeHandler('get_vss_status')
+    ),
+
+    tool(
+      'list_bmr_recoveries',
+      registryDescription('list_bmr_recoveries'),
+      inputShape('list_bmr_recoveries'),
+      makeHandler('list_bmr_recoveries')
+    ),
+
+    tool(
+      'get_backup_health',
+      registryDescription('get_backup_health'),
+      inputShape('get_backup_health'),
+      makeHandler('get_backup_health')
+    ),
+
+    tool(
+      'manage_c2c_configs',
+      registryDescription('manage_c2c_configs'),
+      inputShape('manage_c2c_configs'),
+      makeHandler('manage_c2c_configs')
     ),
 
     tool(
       'configure_backup_sla',
       registryDescription('configure_backup_sla'),
       inputShape('configure_backup_sla'),
-      makeHandler('configure_backup_sla', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('configure_backup_sla')
     ),
 
     tool(
       'configure_vault',
       registryDescription('configure_vault'),
       inputShape('configure_vault'),
-      makeHandler('configure_vault', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('configure_vault')
     ),
 
     // Playbook tools
@@ -4511,7 +4896,7 @@ export function buildBreezeSdkTools(
         includeSteps: z.boolean().optional(),
         ...pageZodShape(25, 100),
       },
-      makeHandler('list_playbooks', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_playbooks')
     ),
 
     tool(
@@ -4523,7 +4908,7 @@ export function buildBreezeSdkTools(
         variables: z.record(z.string(), z.unknown()).optional(),
         context: z.record(z.string(), z.unknown()).optional(),
       },
-      makeHandler('execute_playbook', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('execute_playbook')
     ),
 
     tool(
@@ -4535,7 +4920,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['pending', 'running', 'waiting', 'completed', 'failed', 'rolled_back', 'cancelled']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('get_playbook_history', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_playbook_history')
     ),
 
     // Monitoring tools
@@ -4550,7 +4935,7 @@ export function buildBreezeSdkTools(
         search: z.string().max(200).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_monitors')
     ),
 
     tool(
@@ -4564,14 +4949,14 @@ export function buildBreezeSdkTools(
         linkedDeviceId: z.string().guid().optional(),
         limit: z.number().int().min(1).max(200).optional(),
       },
-      makeHandler('list_network_assets', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_network_assets')
     ),
 
     tool(
       'get_network_asset',
       registryDescription('get_network_asset'),
       { assetId: z.string().guid() },
-      makeHandler('get_network_asset', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_network_asset')
     ),
 
     // W01 (spec §4.4) — the only read that answers "is this printer/switch up"
@@ -4584,7 +4969,7 @@ export function buildBreezeSdkTools(
       {
         asset_id: uuid,
       },
-      makeHandler('get_network_asset_reachability', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_network_asset_reachability')
     ),
 
     // M3 Task 6 (M3-D12) — bounded topology port history and link health.
@@ -4600,7 +4985,7 @@ export function buildBreezeSdkTools(
         resolution: z.enum(['auto', 'raw', '5m', '1h']).optional(),
         max_buckets: z.number().int().min(1).max(120).optional(),
       },
-      makeHandler('get_interface_history', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_interface_history')
     ),
     tool(
       'get_link_health',
@@ -4609,7 +4994,7 @@ export function buildBreezeSdkTools(
         site_id: uuid,
         relationship_id: uuid,
       },
-      makeHandler('get_link_health', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_link_health')
     ),
     // M3 Task 10 — cautious incident impact and bounded topology change history.
     tool(
@@ -4622,7 +5007,7 @@ export function buildBreezeSdkTools(
         window_minutes: z.number().int().min(1).max(30).optional(),
         graph_revision: z.string().regex(/^(0|[1-9]\d*)$/).optional(),
       },
-      makeHandler('get_topology_impact', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_topology_impact')
     ),
     tool(
       'get_recent_network_changes',
@@ -4634,7 +5019,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         cursor: z.string().max(2048).optional(),
       },
-      makeHandler('get_recent_network_changes', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_recent_network_changes')
     ),
     // M3-D12 (#5999): bounded, read-only recurring monitoring status for one
     // site. Arming is human-only and has no tool.
@@ -4644,7 +5029,7 @@ export function buildBreezeSdkTools(
       {
         site_id: uuid,
       },
-      makeHandler('get_topology_monitoring_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_topology_monitoring_status')
     ),
     // M4 Task 1 (#6000) — bounded topology reads under the M4-D1 site pin.
     tool(
@@ -4657,7 +5042,7 @@ export function buildBreezeSdkTools(
         graph_revision: z.string().regex(/^(0|[1-9]\d{0,19})$/).optional(),
         limit: z.number().int().min(1).max(150).optional(),
       },
-      makeHandler('get_topology', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_topology')
     ),
     tool(
       'get_link_evidence',
@@ -4668,7 +5053,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         cursor: z.string().max(2048).optional(),
       },
-      makeHandler('get_link_evidence', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_link_evidence')
     ),
     tool(
       'get_diagnostic_run',
@@ -4677,7 +5062,7 @@ export function buildBreezeSdkTools(
         site_id: uuid,
         run_id: uuid,
       },
-      makeHandler('get_diagnostic_run', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_diagnostic_run')
     ),
     // M4 Task 4 (#6000) — same strict shape as aiToolSchemasTopology.ts.
     tool(
@@ -4694,7 +5079,7 @@ export function buildBreezeSdkTools(
         family: z.enum(['ipv4', 'ipv6']).optional(),
         proposal_expires_at: z.string().datetime().optional(),
       },
-      makeHandler('diagnose_connectivity', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('diagnose_connectivity')
     ),
 
     tool(
@@ -4712,7 +5097,7 @@ export function buildBreezeSdkTools(
         isActive: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('manage_monitors', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_monitors')
     ),
 
     // Monitor definition episode activity / escalation reset (#5290 W03).
@@ -4724,7 +5109,7 @@ export function buildBreezeSdkTools(
         deviceId: uuid.optional(),
         limit: z.number().int().min(1).max(200).optional(),
       },
-      makeHandler('get_monitor_activity', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_monitor_activity')
     ),
 
     tool(
@@ -4734,7 +5119,7 @@ export function buildBreezeSdkTools(
         monitorId: uuid,
         deviceId: uuid,
       },
-      makeHandler('reset_monitor_escalation', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('reset_monitor_escalation')
     ),
 
     // Monitor definition authoring (#6669). `definition` stays an open record
@@ -4753,7 +5138,7 @@ export function buildBreezeSdkTools(
         enabled: z.boolean().optional(),
         overrides: z.record(z.string(), z.unknown()).nullable().optional(),
       },
-      makeHandler('manage_monitor_definitions', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_monitor_definitions')
     ),
 
     tool(
@@ -4769,7 +5154,7 @@ export function buildBreezeSdkTools(
         search: z.string().max(255).optional(),
         limit: z.number().int().min(1).max(500).optional(),
       },
-      makeHandler('get_service_monitoring_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_service_monitoring_status')
     ),
 
     // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
@@ -4785,7 +5170,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['all', 'suggested', 'accepted', 'edited', 'rejected', 'executed', 'failed']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('list_remediation_suggestions', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_remediation_suggestions')
     ),
 
     tool(
@@ -4798,7 +5183,7 @@ export function buildBreezeSdkTools(
         problem: fixProblemSchema.optional(),
         limit: z.number().int().min(1).max(20).optional(),
       },
-      makeHandler('find_proven_fixes', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('find_proven_fixes')
     ),
 
     tool(
@@ -4815,7 +5200,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         offset: z.number().int().min(0).optional(),
       },
-      makeHandler('list_incidents', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_incidents')
     ),
 
     // Spec 2026-09-23 W01 (#6755) follow-up: read-only, previously registered
@@ -4824,98 +5209,98 @@ export function buildBreezeSdkTools(
       'query_custom_fields',
       registryDescription('query_custom_fields'),
       inputShape('query_custom_fields'),
-      makeHandler('query_custom_fields', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_custom_fields')
     ),
 
     tool(
       'get_browser_security',
       registryDescription('get_browser_security'),
       inputShape('get_browser_security'),
-      makeHandler('get_browser_security', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_browser_security')
     ),
 
     tool(
       'get_sensitive_data_overview',
       registryDescription('get_sensitive_data_overview'),
       inputShape('get_sensitive_data_overview'),
-      makeHandler('get_sensitive_data_overview', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_sensitive_data_overview')
     ),
 
     tool(
       'query_vaults',
       registryDescription('query_vaults'),
       inputShape('query_vaults'),
-      makeHandler('query_vaults', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_vaults')
     ),
 
     tool(
       'query_backups',
       registryDescription('query_backups'),
       inputShape('query_backups'),
-      makeHandler('query_backups', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_backups')
     ),
 
     tool(
       'get_executive_summary',
       registryDescription('get_executive_summary'),
       inputShape('get_executive_summary'),
-      makeHandler('get_executive_summary', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_executive_summary')
     ),
 
     tool(
       'query_c2c_connections',
       registryDescription('query_c2c_connections'),
       inputShape('query_c2c_connections'),
-      makeHandler('query_c2c_connections', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_c2c_connections')
     ),
 
     tool(
       'query_dr_plans',
       registryDescription('query_dr_plans'),
       inputShape('query_dr_plans'),
-      makeHandler('query_dr_plans', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_dr_plans')
     ),
 
     tool(
       'get_dr_plan_details',
       registryDescription('get_dr_plan_details'),
       inputShape('get_dr_plan_details'),
-      makeHandler('get_dr_plan_details', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_dr_plan_details')
     ),
 
     tool(
       'get_dr_execution_status',
       registryDescription('get_dr_execution_status'),
       inputShape('get_dr_execution_status'),
-      makeHandler('get_dr_execution_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_dr_execution_status')
     ),
 
     tool(
       'get_incident_timeline',
       registryDescription('get_incident_timeline'),
       inputShape('get_incident_timeline'),
-      makeHandler('get_incident_timeline', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_incident_timeline')
     ),
 
     tool(
       'generate_incident_report',
       registryDescription('generate_incident_report'),
       inputShape('generate_incident_report'),
-      makeHandler('generate_incident_report', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('generate_incident_report')
     ),
 
     tool(
       'query_psa_status',
       registryDescription('query_psa_status'),
       inputShape('query_psa_status'),
-      makeHandler('query_psa_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_psa_status')
     ),
 
     tool(
       'get_compliance_status',
       registryDescription('get_compliance_status'),
       inputShape('get_compliance_status'),
-      makeHandler('get_compliance_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_compliance_status')
     ),
 
     // Spec 2026-09-23 W01 (#6755): read-only, previously registered but
@@ -4925,41 +5310,41 @@ export function buildBreezeSdkTools(
       'query_analytics',
       registryDescription('query_analytics'),
       inputShape('query_analytics'),
-      makeHandler('query_analytics', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('query_analytics')
     ),
 
     tool(
       'list_monitors',
       registryDescription('list_monitors'),
       inputShape('list_monitors'),
-      makeHandler('list_monitors', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_monitors')
     ),
 
     tool(
       'get_monitor',
       registryDescription('get_monitor'),
       inputShape('get_monitor'),
-      makeHandler('get_monitor', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_monitor')
     ),
 
     tool(
       'get_ip_history',
       registryDescription('get_ip_history'),
       inputShape('get_ip_history'),
-      makeHandler('get_ip_history', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_ip_history')
     ),
 
     tool(
       'get_network_changes',
       registryDescription('get_network_changes'),
       inputShape('get_network_changes'),
-      makeHandler('get_network_changes', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_network_changes')
     ),
 
     tool(
       'list_ai_agents', registryDescription('list_ai_agents'),
       { includeDisabled: z.boolean().optional(), ...pageZodShape(25, 100) },
-      makeHandler('list_ai_agents', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_ai_agents')
     ),
     tool(
       'list_ai_agent_runs', registryDescription('list_ai_agent_runs'),
@@ -4968,12 +5353,12 @@ export function buildBreezeSdkTools(
         status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
         limit: z.number().int().min(1).max(50).optional(),
       },
-      makeHandler('list_ai_agent_runs', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_ai_agent_runs')
     ),
     tool(
       'get_ai_agent_run', registryDescription('get_ai_agent_run'),
       { runId: z.string().guid() },
-      makeHandler('get_ai_agent_run', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_ai_agent_run')
     ),
 
     tool(
@@ -4985,13 +5370,13 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         offset: z.number().int().min(0).optional(),
       },
-      makeHandler('list_sites', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_sites')
     ),
     tool(
       'get_site',
       registryDescription('get_site'),
       { siteId: z.string().guid() },
-      makeHandler('get_site', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_site')
     ),
 
     tool(
@@ -5004,7 +5389,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         offset: z.number().int().min(0).optional(),
       },
-      makeHandler('list_org_contacts', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_org_contacts')
     ),
 
     tool(
@@ -5014,7 +5399,7 @@ export function buildBreezeSdkTools(
         search: z.string().max(255).optional(),
         ...pageZodShape(25, 100),
       },
-      makeHandler('list_organizations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_organizations')
     ),
 
     tool(
@@ -5034,7 +5419,7 @@ export function buildBreezeSdkTools(
         roles: z.array(z.enum(CONTACT_ROLES)).optional(),
         isPrimary: z.boolean().optional(),
       },
-      makeHandler('manage_organizations', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_organizations')
     ),
 
     tool(
@@ -5050,7 +5435,7 @@ export function buildBreezeSdkTools(
         // a caller can choose a target.
         orgId: uuid,
       },
-      makeHandler('manage_ai_agents', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ai_agents')
     ),
 
     // Billing, quoting, catalog and contract tools (#3156). Identical failure
@@ -5077,7 +5462,7 @@ export function buildBreezeSdkTools(
         status: z.enum(INVOICE_STATUSES).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('list_invoices', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_invoices')
     ),
 
     tool(
@@ -5085,7 +5470,7 @@ export function buildBreezeSdkTools(
       registryDescription('get_invoice'),
       // W14 (#6784): lineId / limit / cursor (billed devices) — the toolInputSchemas shape.
       inputShape('get_invoice'),
-      makeHandler('get_invoice', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_invoice')
     ),
 
     tool(
@@ -5119,7 +5504,7 @@ export function buildBreezeSdkTools(
         patch: z.record(z.string(), z.unknown()).optional(),
         payment: z.record(z.string(), z.unknown()).optional(),
       },
-      makeHandler('manage_invoices', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_invoices')
     ),
 
     tool(
@@ -5130,19 +5515,19 @@ export function buildBreezeSdkTools(
         status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('list_quotes', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_quotes')
     ),
     tool(
       'manage_quotes',
       registryDescription('manage_quotes'),
       inputShape('manage_quotes'),
-      makeHandler('manage_quotes', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_quotes')
     ),
     tool(
       'manage_billing_catalog',
       registryDescription('manage_billing_catalog'),
       inputShape('manage_billing_catalog'),
-      makeHandler('manage_billing_catalog', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_billing_catalog')
     ),
 
     tool(
@@ -5159,7 +5544,7 @@ export function buildBreezeSdkTools(
         blocksLimit: z.number().int().min(1).max(100).optional(),
         includeBlockContent: z.boolean().optional(),
       },
-      makeHandler('get_quote', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_quote')
     ),
 
     tool(
@@ -5167,7 +5552,7 @@ export function buildBreezeSdkTools(
       registryDescription('list_contracts'),
       // W14 (#6784): view / cursor (currency mismatches) — the toolInputSchemas shape.
       inputShape('list_contracts'),
-      makeHandler('list_contracts', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_contracts')
     ),
 
     tool(
@@ -5175,7 +5560,7 @@ export function buildBreezeSdkTools(
       registryDescription('get_contract'),
       // W14 (#6784): periodId (period outcome) — the toolInputSchemas shape.
       inputShape('get_contract'),
-      makeHandler('get_contract', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_contract')
     ),
 
     tool(
@@ -5186,7 +5571,7 @@ export function buildBreezeSdkTools(
         category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
         includeSuperseded: z.boolean().optional(),
       },
-      makeHandler('list_org_documents', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_org_documents')
     ),
 
     tool(
@@ -5200,17 +5585,45 @@ export function buildBreezeSdkTools(
         portalVisible: z.boolean().optional(),
         patch: z.record(z.string(), z.unknown()).optional(),
       },
-      makeHandler('manage_org_documents', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_org_documents')
     ),
 
     tool('get_pax8_status', registryDescription('get_pax8_status'), pax8ToolSchemas.get_pax8_status.shape,
-      makeHandler('get_pax8_status', getAuth, onPreToolUse, onPostToolUse)),
+      makeHandler('get_pax8_status')),
     tool('search_pax8_products', registryDescription('search_pax8_products'), pax8ToolSchemas.search_pax8_products.shape,
-      makeHandler('search_pax8_products', getAuth, onPreToolUse, onPostToolUse)),
+      makeHandler('search_pax8_products')),
     tool('manage_pax8_subscriptions', registryDescription('manage_pax8_subscriptions'), pax8ToolSchemas.manage_pax8_subscriptions.shape,
-      makeHandler('manage_pax8_subscriptions', getAuth, onPreToolUse, onPostToolUse)),
+      makeHandler('manage_pax8_subscriptions')),
     tool('manage_pax8_orders', registryDescription('manage_pax8_orders'), pax8ToolSchemas.manage_pax8_orders.shape,
-      makeHandler('manage_pax8_orders', getAuth, onPreToolUse, onPostToolUse)),
+      makeHandler('manage_pax8_orders')),
+    tool('get_org_summary', registryDescription('get_org_summary'), orgAdminToolSchemas.get_org_summary.shape,
+      makeHandler('get_org_summary')),
+    tool('get_account_readiness', registryDescription('get_account_readiness'), orgAdminToolSchemas.get_account_readiness.shape,
+      makeHandler('get_account_readiness')),
+    tool('get_audit_retention', registryDescription('get_audit_retention'), orgAdminToolSchemas.get_audit_retention.shape,
+      makeHandler('get_audit_retention')),
+    tool('list_portal_users', registryDescription('list_portal_users'), orgAdminToolSchemas.list_portal_users.shape,
+      makeHandler('list_portal_users')),
+    tool('list_users', registryDescription('list_users'), orgAdminToolSchemas.list_users.shape,
+      makeHandler('list_users')),
+    tool('get_user', registryDescription('get_user'), orgAdminToolSchemas.get_user.shape,
+      makeHandler('get_user')),
+    tool('list_roles', registryDescription('list_roles'), orgAdminToolSchemas.list_roles.shape,
+      makeHandler('list_roles')),
+    tool('manage_org_portal_settings', registryDescription('manage_org_portal_settings'),
+      orgAdminWriteToolSchemas.manage_org_portal_settings.shape,
+      makeHandler('manage_org_portal_settings')),
+    tool('manage_report_recipients', registryDescription('manage_report_recipients'),
+      orgAdminWriteToolSchemas.manage_report_recipients.shape,
+      makeHandler('manage_report_recipients')),
+    tool('run_patch_plan', registryDescription('run_patch_plan'), aiAgentLaunchToolSchemas.run_patch_plan.shape,
+      makeHandler('run_patch_plan')),
+    tool('create_operator_task', registryDescription('create_operator_task'), aiAgentLaunchToolSchemas.create_operator_task.shape,
+      makeHandler('create_operator_task')),
+    tool('manage_ai_agent_schedules', registryDescription('manage_ai_agent_schedules'), aiAgentScheduleToolSchemas.manage_ai_agent_schedules.shape,
+      makeHandler('manage_ai_agent_schedules')),
+    tool('manage_fleet_designs', registryDescription('manage_fleet_designs'), fleetDesignToolSchemas.manage_fleet_designs.shape,
+      makeHandler('manage_fleet_designs')),
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),
@@ -5241,7 +5654,7 @@ export function buildBreezeSdkTools(
         autoIssue: z.boolean().optional(),
         expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
       },
-      makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_contracts')
     ),
 
     tool(
@@ -5255,14 +5668,14 @@ export function buildBreezeSdkTools(
         includeDetails: z.boolean().optional(),
         ...pageZodShape(15, 100),
       },
-      makeHandler('list_deliverables', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_deliverables')
     ),
 
     tool(
       'list_deliverable_templates',
       registryDescription('list_deliverable_templates'),
       { orgId: uuid.optional() },
-      makeHandler('list_deliverable_templates', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_deliverable_templates')
     ),
 
     tool(
@@ -5285,7 +5698,7 @@ export function buildBreezeSdkTools(
         reportRunId: uuid.optional(),
         documentId: uuid.optional(),
       },
-      makeHandler('manage_deliverables', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_deliverables')
     ),
 
     tool(
@@ -5298,7 +5711,7 @@ export function buildBreezeSdkTools(
         input: z.record(z.string(), z.unknown()).optional(),
         patch: z.record(z.string(), z.unknown()).optional(),
       },
-      makeHandler('manage_key_dates', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_key_dates')
     ),
 
     tool(
@@ -5310,7 +5723,7 @@ export function buildBreezeSdkTools(
         isBundle: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
-      makeHandler('search_catalog', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('search_catalog')
     ),
 
     tool(
@@ -5319,7 +5732,7 @@ export function buildBreezeSdkTools(
       {
         catalogItemId: uuid,
       },
-      makeHandler('get_catalog_item', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_catalog_item')
     ),
 
     tool(
@@ -5328,7 +5741,7 @@ export function buildBreezeSdkTools(
       {
         query: z.string().min(1).max(40),
       },
-      makeHandler('lookup_distributor_product', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('lookup_distributor_product')
     ),
 
     // Microsoft 365 typed Graph read-query tools (Task 9) — registered as
@@ -5352,7 +5765,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         orgId: uuid.optional(),
       },
-      makeHandler('m365_query_users', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('m365_query_users')
     ),
 
     tool(
@@ -5364,7 +5777,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         orgId: uuid.optional(),
       },
-      makeHandler('m365_query_signins', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('m365_query_signins')
     ),
 
     tool(
@@ -5381,7 +5794,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         orgId: uuid.optional(),
       },
-      makeHandler('m365_query_intune_devices', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('m365_query_intune_devices')
     ),
 
     tool(
@@ -5394,7 +5807,7 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
         orgId: uuid.optional(),
       },
-      makeHandler('m365_query_groups', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('m365_query_groups')
     ),
 
     tool(
@@ -5404,7 +5817,7 @@ export function buildBreezeSdkTools(
         include: z.enum(['profile', 'licenses']),
         orgId: uuid.optional(),
       },
-      makeHandler('m365_query_org', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('m365_query_org')
     ),
 
     tool(
@@ -5416,7 +5829,7 @@ export function buildBreezeSdkTools(
         siteId: z.string().min(1).max(300).optional(),
         orgId: uuid.optional(),
       },
-      makeHandler('m365_query_sites', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('m365_query_sites')
     ),
 
     // Action Plan tool (for action_plan and hybrid_plan modes)
@@ -5431,7 +5844,7 @@ export function buildBreezeSdkTools(
           reasoning: z.string().max(500),
         })).min(1).max(20),
       },
-      async (args: { title: string; steps: Array<{ toolName: string; input: Record<string, unknown>; reasoning: string }> }) => {
+      lateBound(({ getActiveSession }) => async (args: { title: string; steps: Array<{ toolName: string; input: Record<string, unknown>; reasoning: string }> }) => {
         const session = getActiveSession?.();
         if (!session) {
           return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No active session' }) }], isError: true };
@@ -5543,7 +5956,7 @@ export function buildBreezeSdkTools(
             message: 'Plan approved. Execute the steps in order now.',
           }) }],
         };
-      }
+      })
     ),
 
     // Trust Center W2 (Ruling 15): read-only; never creates the draft page.
@@ -5553,7 +5966,7 @@ export function buildBreezeSdkTools(
       {
         orgId: uuid.describe('Organization UUID'),
       },
-      makeHandler('get_trust_page_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_trust_page_status')
     ),
 
     // #9763: read-only; exactly one of tab / field (validateToolInput enforces it).
@@ -5567,7 +5980,7 @@ export function buildBreezeSdkTools(
         cursor: z.string().max(2048).optional().describe('field: nextCursor from the previous page'),
         limit: z.number().int().min(1).max(PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT).optional().describe(`Max organizations per page, with field (default ${PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT}, max ${PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT})`),
       },
-      makeHandler('get_partner_settings_inheritance', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_partner_settings_inheritance')
     ),
 
     // #8973 W4 (spec §5.7): read-only business-hours calendars; writes stay human-only.
@@ -5579,7 +5992,7 @@ export function buildBreezeSdkTools(
         includeArchived: z.boolean().optional().describe('Include archived calendars (default false)'),
         limit: z.number().int().min(1).max(100).optional().describe('Max calendars (default 50, max 100)'),
       },
-      makeHandler('list_business_calendars', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_business_calendars')
     ),
 
     // #8883 W5: ticket routing rules. Writes are Tier 3 supervised and the
@@ -5591,7 +6004,7 @@ export function buildBreezeSdkTools(
         orgId: uuid.optional().describe("Only this organization's rules plus the partner-wide ones that apply to it (UUID)"),
         limit: z.number().int().min(0).max(200).optional().describe('Max rules (default 100, max 200)'),
       },
-      makeHandler('list_ticket_routing_rules', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('list_ticket_routing_rules')
     ),
 
     tool(
@@ -5605,14 +6018,14 @@ export function buildBreezeSdkTools(
         categoryId: uuid.optional().describe('Category already on the ticket (UUID, optional)'),
         priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Priority already on the ticket (optional)'),
       },
-      makeHandler('test_ticket_routing_rule', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('test_ticket_routing_rule')
     ),
 
     tool(
       'manage_ticket_routing_rules',
       registryDescription('manage_ticket_routing_rules'),
       ticketRoutingManageShape,
-      makeHandler('manage_ticket_routing_rules', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('manage_ticket_routing_rules')
     ),
 
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound
@@ -5622,23 +6035,25 @@ export function buildBreezeSdkTools(
     // tool: onPreToolUse (TOOL_TIERS gate, guardrails, RBAC, rate limits, tier-3
     // approval) and onPostToolUse (ai_tool_executions persistence +
     // delegant_tool_call_id correlation).
-    ...m365ToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    ...m365ToolTemplates(),
     // AI script authoring — behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED (see the
     // factory for why registration stays unconditional but exposure does not).
-    ...scriptProposalToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    ...scriptProposalToolTemplates(),
     // Tool Catalog W03 (#5218) — behind FLOWS_ENABLED (see the factory).
-    ...flowToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    ...flowToolTemplates(),
     // Wisp W03 memory — behind wispEnabled() (see the factory).
-    ...wispMemoryToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    ...wispMemoryToolTemplates(),
     // Wisp W05a concerns/watches — behind wispEnabled() (see the factory).
-    ...wispConcernToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    ...wispConcernToolTemplates(),
     // Wisp W08 link_entity / list_links — behind wispEnabled() (see the factory).
-    ...wispLinkToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    ...wispLinkToolTemplates(),
+    // Wisp check-in timers — behind wispEnabled() (see the factory).
+    ...wispCheckInToolTemplates(),
     // Wisp W07 launch_specialist — behind wispEnabled() (see the factory).
-    ...wispSpecialistToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    ...wispSpecialistToolTemplates(),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
-    ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    ...googleToolTemplates(),
 
     // Chat background launches are disabled pending delegated authorization design (#6086).
 
@@ -5709,9 +6124,23 @@ export function createBreezeMcpServer(
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
   extraTools: SdkTool[] = [],
-  options?: { onlyTools?: ReadonlySet<string> },
+  options?: {
+    onlyTools?: ReadonlySet<string>;
+    /**
+     * #10430: a tool this rejects is not registered at all, registry or extra.
+     * Set for a Wisp chat session from its grant ceiling's tool term
+     * (`wispSessionToolFilter`), so neither the inline tool list nor the
+     * ToolSearch index (the deferred MCP tools, see aiToolSearchPolicy.ts)
+     * offers a tool the ceiling gate refuses. It narrows what is offered;
+     * the per-call gate is unchanged.
+     */
+    admitTool?: (toolName: string) => boolean;
+  },
 ) {
-  const tools = buildBreezeSdkTools(getAuth, onPreToolUse, onPostToolUse, getActiveSession);
+  // #11004: the static declarations come from the per-process template; only
+  // the tools actually registered below get this session's handlers.
+  const template = breezeToolTemplate();
+  const tools = template.declarations;
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are
   // never in the TOOL_TIERS registry — that's what keeps them off the chat/MCP
@@ -5765,9 +6194,17 @@ export function createBreezeMcpServer(
     }
   }
 
+  const admit = options?.admitTool ?? (() => true);
+  const boundTools = bindBreezeSdkTools(
+    registeredTools
+      .filter((t) => admit(t.name))
+      .map((declaration) => templateWithRegistryMeta(template, declaration)),
+    { getAuth, getActiveSession, onPreToolUse, onPostToolUse },
+  );
+
   return createSdkMcpServer({
     name: 'breeze',
     version: '1.0.0',
-    tools: [...registeredTools.map(attachRegistryMeta), ...wrappedExtraTools],
+    tools: [...boundTools, ...wrappedExtraTools.filter((t) => admit(t.name))],
   });
 }

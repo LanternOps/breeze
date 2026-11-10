@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, utf8MaxBytes } from '@breeze/shared';
 /**
  * AI Tool Input Schemas
  *
@@ -31,14 +31,20 @@ import {
 } from '@breeze/shared';
 import { IOC_HUNT_ACTIONS } from './iocHuntActions';
 import {
+  cancelCheckInSchema,
   createWatchInputSchema,
   linkEntitySchema,
+  listCheckInsToolSchema,
   listConcernsToolSchema,
   listLinksToolSchema,
   WISP_THREAD_LINK_LIMIT,
   raiseConcernChatSchema,
   resolveConcernToolSchema,
+  scheduleCheckInSchema,
   snoozeConcernToolSchema,
+  WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES,
+  WISP_CHECK_IN_MAX_DELAY_MINUTES,
+  wispCheckInTriggerSchema,
 } from '@breeze/shared';
 import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
@@ -70,6 +76,14 @@ import { softwareToolSchemas } from './aiToolSchemasSoftware';
 import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
 import { billingToolSchemas } from './aiToolSchemasBilling';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
+import { backupVerificationToolSchemas } from './aiToolSchemasBackupVerification';
+import { backupRecoveryReadToolSchemas } from './aiToolSchemasBackupRecoveryReads';
+import { c2cConfigToolSchemas } from './aiToolSchemasC2CConfigs';
+import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
+import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
+import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
+import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
+import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -114,9 +128,27 @@ const cleanupPath = z.string().max(4096).refine(
   { message: 'Path traversal (..) not allowed' }
 );
 
+/**
+ * #11432: the owner fields of `manage_configuration_policy` create, as the
+ * model reads them. On a partner-wide grant the model must name the owner
+ * itself, and the partner id is never an orgId. Shared by the input schema
+ * below, the chat tool shape (aiAgentSdkTools.ts) and the registry definition
+ * (aiToolsConfigPolicy.ts), so the three cannot drift.
+ */
+export const CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION =
+  'Create only. organization (default): one customer org owns it. partner: a partner-wide library policy; needs full partner org access.';
+export const CONFIG_POLICY_ORG_ID_DESCRIPTION =
+  'Create only. Customer org UUID that owns the policy; needed when you reach several orgs and the chat has no org. Never the partner id.';
+export const configPolicyOwnerShape = {
+  ownerScope: z.enum(['organization', 'partner']).optional().describe(CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION),
+  orgId: uuid.optional().describe(CONFIG_POLICY_ORG_ID_DESCRIPTION),
+};
+
 export const deliveryToolShape = {
   action: z.enum(['resolve','list_routing','create_routing','update_routing','delete_routing','set_default','list_escalation','create_escalation','update_escalation','delete_escalation']),
-  orgId: uuid.optional(), ownerScope: z.enum(['organization', 'partner']).optional(), id: uuid.optional(),
+  orgId: uuid.optional().describe('Customer org UUID; needed when you reach several orgs and the chat has no org, unless ownerScope is "partner". Never the partner id.'),
+  ownerScope: z.enum(['organization', 'partner']).optional().describe('partner: partner-wide rows (all orgs), instead of orgId. Writes need full partner org access.'),
+  id: uuid.optional(),
   severity: z.enum(['critical','high','medium','low','info']).optional(), kind: monitorKindSchema.optional(),
   siteId: uuid.optional(), monitorId: uuid.optional(), data: z.record(z.string(), z.unknown()).optional(),
 };
@@ -224,7 +256,9 @@ export const executeCommandPayloadSchema = z.object({
   ]).describe('event_logs_query: severity filter — critical, error, warning, information (or "info"), verbose, or level number 1-5.').optional(),
   source: z.string().max(255).describe('event_logs_query: filter by event source/provider name.').optional(),
   eventId: z.coerce.number().int().describe('event_logs_query: filter by numeric event ID.').optional(),
-  query: z.string().max(2000).describe('event_logs_query: raw XPath filter; cannot combine with level/source/eventId.').optional(),
+  // The agent refuses an XPath query over 4096 UTF-8 bytes (Go len(),
+  // eventlogs.go maxEventLogXPathBytes); zod counts code points (#9976).
+  query: z.string().max(2000).check(utf8MaxBytes(4096, 'query exceeds 4096 bytes')).describe('event_logs_query: raw XPath filter; cannot combine with level/source/eventId.').optional(),
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 }).passthrough();
@@ -419,6 +453,45 @@ export const listLinksShape = {
   limit: listLinksInputSchema.shape.limit.describe(`Max links (default ${WISP_THREAD_LINK_LIMIT}, max ${WISP_THREAD_LINK_LIMIT})`),
 };
 
+/**
+ * Wisp check-in timers (#10991 W03; services/wisp/checkInTools.ts). The shared
+ * validators (packages/shared/src/validators/wispCheckIns.ts) are the source
+ * of truth, as for the concern and link tools; checkInTools.test.ts pins the
+ * key parity. The delayMinutes / at / trigger XOR lives in the shared
+ * schema's superRefine (toolInputSchemas uses it as-is), so the descriptions
+ * say it too. `trigger` (W04 #11493) is the shared trigger object with its
+ * fields described; `mode` (W07 #11496) is `notify` or `run`. `list_check_ins`
+ * = the shared empty strict object plus the
+ * tool-only output budget (A-W05).
+ */
+export const LIST_CHECK_INS_DEFAULT_LIMIT = 20;
+export const LIST_CHECK_INS_MAX_LIMIT = 50;
+const sci = scheduleCheckInSchema.shape;
+const scit = wispCheckInTriggerSchema.shape;
+export const scheduleCheckInShape = {
+  delayMinutes: sci.delayMinutes.describe(`Minutes from now until it is due (1 to ${WISP_CHECK_IN_MAX_DELAY_MINUTES}). Give exactly one of delayMinutes, at or trigger`),
+  at: sci.at.describe('When it is due: ISO 8601 datetime with offset, 1 minute to 7 days ahead. Give exactly one of delayMinutes, at or trigger'),
+  instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars)'),
+  subject: sci.subject.describe('Optional: the Breeze object it is about (kind + UUID); its org is read from the object'),
+  trigger: z.object({
+    // The enum names itself; no description.
+    event: scit.event,
+    subjectId: scit.subjectId.describe('UUID of the device, script execution, device command or agent run'),
+    deadlineMinutes: scit.deadlineMinutes.describe(`Fires anyway then, saying it did not happen (default ${WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES}, max ${WISP_CHECK_IN_MAX_DELAY_MINUTES})`),
+  }).optional().describe('Fire on an event instead of a time. Give exactly one of delayMinutes, at or trigger'),
+  // W07 (#11496): the description carries the use rule; the enum names itself.
+  mode: sci.mode.describe('notify (default) or run: you check on your own (read-only) and post the result; use run only for read-and-report instructions'),
+};
+export const listCheckInsInputSchema = listCheckInsToolSchema.extend({
+  limit: z.number().int().min(1).max(LIST_CHECK_INS_MAX_LIMIT).optional(),
+});
+export const listCheckInsShape = {
+  limit: listCheckInsInputSchema.shape.limit.describe(`Max check-ins (default ${LIST_CHECK_INS_DEFAULT_LIMIT}, max ${LIST_CHECK_INS_MAX_LIMIT})`),
+};
+export const cancelCheckInShape = {
+  checkInId: cancelCheckInSchema.shape.checkInId.describe('Check-in UUID (from schedule_check_in or list_check_ins)'),
+};
+
 // Wisp W07 specialists (services/aiToolsWisp.ts; plan Tasks 4 and 6). The kind
 // list is SPECIALIST_KINDS (leaf module), never a re-typed copy.
 const specialistKindSchema = z.enum(SPECIALIST_KINDS as unknown as [SpecialistKind, ...SpecialistKind[]]);
@@ -429,18 +502,31 @@ export const launchSpecialistInputSchema = z.strictObject({
   reason: z.string().trim().min(5).max(500),
 });
 const ls = launchSpecialistInputSchema.shape;
-export const launchSpecialistShape = {
-  orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
-  kind: ls.kind.describe('Which specialist. sweep and analysis start at once; every other kind needs approval first'),
-  // #10144: every kind's exact keys — the params schemas in
-  // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
-  // invalid_params. The two long kinds are listed in the tool description
-  // (aiToolsWisp.ts): a parameter description is capped at 160 chars (A-W03).
-  params: ls.params.describe(
-    'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
-  ),
-  reason: ls.reason.describe('Why, in one sentence a technician would accept'),
-};
+// #10406 item 1: the advertised text follows the server's workspace flag
+// (aiWorkspaceEnabled(), passed in so this file stays free of config/env).
+// The kind enum is unchanged; a call to an unavailable kind is still refused.
+// Capped at 160 chars by aiTools.descriptionBudget.contract.test.ts.
+export function launchSpecialistKindDescribe(workspaceEnabled: boolean): string {
+  return workspaceEnabled
+    ? 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, analysis, sweep if scheduled. Rest ask first'
+    : 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, sweep if scheduled. analysis is off here. Rest ask first';
+}
+export function launchSpecialistShapeFor(workspaceEnabled: boolean) {
+  return {
+    orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
+    kind: ls.kind.describe(launchSpecialistKindDescribe(workspaceEnabled)),
+    // #10144: every kind's exact keys — the params schemas in
+    // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
+    // invalid_params. The kinds whose keys do not fit here (device_troubleshooting,
+    // assessment, bulk_ticket_reply, operator_recipe) are listed in the tool
+    // description (aiToolsWisp.ts launchSpecialistDescription): a parameter
+    // description is capped at 160 chars (A-W03).
+    params: ls.params.describe(
+      'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+    ),
+    reason: ls.reason.describe('Why, in one sentence a technician would accept'),
+  };
+}
 // The approval carrier: never model-callable (HUMAN_ONLY_TOOLS); the schema
 // bounds what the coordinator mints.
 export const wispSpecialistRequestSchema = z.strictObject({
@@ -473,6 +559,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Wisp W08 thread links (services/wisp/linkTools.ts).
   link_entity: linkEntitySchema,
   list_links: listLinksInputSchema,
+  // Wisp check-in timers (services/wisp/checkInTools.ts).
+  schedule_check_in: scheduleCheckInSchema,
+  list_check_ins: listCheckInsInputSchema,
+  cancel_check_in: cancelCheckInSchema,
   list_time_entries: z.object({
     orgId: uuid.optional(),
     ticketId: uuid.optional(),
@@ -613,6 +703,19 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Full-control W14 (#6784): billing lifecycle tools (PR A).
   ...billingToolSchemas,
   ...pax8ToolSchemas,
+  // Full-control W17 (#6788): backup verification, VSS, recovery reads and C2C configs.
+  ...backupVerificationToolSchemas,
+  ...backupRecoveryReadToolSchemas,
+  ...c2cConfigToolSchemas,
+  // Full-control W18 PR A (#6789): org admin and identity reads.
+  ...orgAdminToolSchemas,
+  // Full-control W18 PR B (#6789): portal settings and report recipients.
+  ...orgAdminWriteToolSchemas,
+  // Full-control W16 PR A (#6786): the patch-plan and operator-task launches.
+  ...aiAgentLaunchToolSchemas,
+  // Full-control W16 PR B (#6786): schedule writes and Fleet Design actions.
+  ...aiAgentScheduleToolSchemas,
+  ...fleetDesignToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -2183,7 +2286,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     name: z.string().min(1).max(255).optional(),
     description: z.string().optional(),
     status: z.enum(['active', 'inactive', 'archived']).optional(),
-    orgId: uuid.optional(),
+    ...configPolicyOwnerShape,
   }),
 
   get_configuration_policy: z.object({
@@ -2478,6 +2581,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     reason: z.string().trim().min(1).max(2000).optional(),
     parameters: z.record(z.string(), z.unknown()).optional(),
     approvalRef: z.string().max(128).optional(),
+  }),
+
+  // Network-isolation W13 (#10101): no generation, org or allowlist field — the
+  // approval binding comes from the pinned effect digest, never from the model.
+  release_containment: z.object({
+    deviceId: uuid,
+    isolationId: uuid,
+    reason: z.string().trim().min(1).max(2000),
   }),
 
   collect_evidence: z.object({

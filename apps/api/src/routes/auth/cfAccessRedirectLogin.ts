@@ -43,6 +43,7 @@ import {
   resolveRefreshToken,
   installAuthorizedUserSessionCookies,
   validateStrictCookieCsrfRequest,
+  hasActiveTotpFactor,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import {
@@ -218,7 +219,7 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
   }
 
   const trustsMfa = cfAccessTrustsMfa();
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey') && !trustsMfa) {
+  if (ENABLE_2FA && user.mfaEnabled && (hasActiveTotpFactor(user) || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey') && !trustsMfa) {
     // POC: MFA flow over redirect is deferred. For now, surface a clear
     // error so the user falls back to password login (which CAN do MFA).
     // Pre-PR follow-up: emit ?mfa=<tempToken>&mfaMethod=... and have the

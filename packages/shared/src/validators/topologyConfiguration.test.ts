@@ -23,6 +23,14 @@ describe('topology configuration', () => {
     expect(() => assertM1PolicyActivation(true)).toThrow('capability_unavailable');
     expect(() => assertM1PolicyActivation(false)).not.toThrow();
   });
+  // The agent (networkdiagnostic/policy.go) refuses an https target path over
+  // 2048 UTF-8 bytes with invalid_http_target; zod 4.6 counts `.max(2048)` in
+  // code points (#9976).
+  it('bounds the https target path in UTF-8 bytes, as the agent does', () => {
+    expect(topologyTargetDefinitionSchema.safeParse({ ...target, path: '/' + 'a'.repeat(2047) }).success).toBe(true);
+    expect(topologyTargetDefinitionSchema.safeParse({ ...target, path: '/' + '中'.repeat(682) }).success).toBe(true); // 2047 bytes
+    expect(topologyTargetDefinitionSchema.safeParse({ ...target, path: '/' + '中'.repeat(683) }).success).toBe(false); // 2050 bytes
+  });
 });
 
 import { topologyTemplatePreviewRequestSchema, topologyTemplateOptionsSchema, topologyTemplateApplicationSchema, topologyRuntimeCapabilitiesSchema } from './topologyConfiguration';

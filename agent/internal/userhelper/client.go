@@ -26,6 +26,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/procoutput"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -84,6 +85,7 @@ type Client struct {
 	pendingMu    sync.Mutex
 	pending      map[string]chan *ipc.Envelope
 	sasReqSeq    atomic.Uint64
+	clipReadSeq  atomic.Uint64
 
 	// authenticatedAt is set when the broker accepts the helper. Zero when
 	// the client has never completed auth on this Run(). Reset on each Run().
@@ -239,6 +241,8 @@ func (c *Client) Run() error {
 			log.Warn("failed to send desktop clipboard summary via IPC", "session", sessionID, "error", err)
 		}
 	}
+
+	c.wireDesktopClipboard(runtime.GOOS)
 
 	// Start TCC permission check loop (macOS only; no-op on other platforms).
 	// It never captures the screen (#8390), so it needs no coordination with
@@ -587,6 +591,9 @@ func (c *Client) commandLoop() error {
 				log.Warn("unsolicited sas_response from daemon", "id", env.ID)
 			}
 
+		case ipc.TypeDesktopClipboardReadResult:
+			c.handleDesktopClipboardReadResult(env)
+
 		case ipc.TypePromptShow, ipc.TypePromptUpdate, ipc.TypePromptClose, ipc.TypePromptActionResult, ipc.TypePromptBrandingSync:
 			if c.prompts != nil {
 				c.prompts.handle(env)
@@ -784,7 +791,7 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 		}
 	}
 
-	cmd := osexec.Command(req.BinaryPath, req.Args...)
+	cmd := procspawn.Command(req.BinaryPath, req.Args...)
 	cmd.Dir = filepath.Dir(req.BinaryPath)
 	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
@@ -1065,7 +1072,7 @@ func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	}
 
 	timeoutSec := getIntOrDefault(payload, "timeoutSeconds", 300)
-	proc := osexec.Command(name, args...)
+	proc := procspawn.Command(name, args...)
 	proc.Env = procoutput.ApplyEnv(os.Environ())
 
 	var stdout, stderr bytes.Buffer

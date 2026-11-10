@@ -37,6 +37,7 @@ import {
 import { eq, isNull, lt, or, sql, and as drizzleAnd } from 'drizzle-orm';
 import { ERROR_IDS, logOauthError } from './log';
 import { createGrantErrorLogger, grantErrorContext } from './grantErrorLog';
+import { installRotationSuccessorIds } from './refreshRotationGrace';
 import { recordRefreshRetry } from '../services/connectionHealth/oauthRetryCounter';
 import { assertActiveTenantContext } from '../services/tenantStatus';
 
@@ -669,6 +670,10 @@ export async function getProvider(): Promise<Provider> {
   const jwks = await loadJwks();
 
   providerInstance = new Provider(OAUTH_ISSUER, buildOidcProviderConfiguration(jwks));
+  // #10301: rotated refresh tokens are minted with the successor the adapter's
+  // consume() sealed onto the parent, so a racing duplicate of the same
+  // client's refresh receives the same token (refreshRotationGrace.ts).
+  installRotationSuccessorIds(providerInstance, OAUTH_COOKIE_SECRET);
 
   providerInstance.proxy = true;
   // NOTE: oidc-provider 8.x does NOT emit `revocation.success`. We previously

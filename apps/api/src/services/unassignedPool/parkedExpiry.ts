@@ -25,7 +25,7 @@ import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { devicePoolAssignmentEvents } from '../../db/schema';
 import { decommissionDeviceInTransaction } from '../deviceDecommission';
-import { DeviceLifecycleError, purgeRemovedDevice } from '../deviceLifecycle';
+import { DeviceLifecycleError, purgeRemovedDevice, type PurgeResult } from '../deviceLifecycle';
 import { createAuditLog } from '../auditService';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { invalidateOrgDeviceCount } from '../agentOrgRateLimit';
@@ -237,6 +237,8 @@ export type ParkedPurgeSkip =
   | 'NOT_DUE'
   /** A `device_remove` uninstall is still collectable; comes back on a later run. */
   | 'UNINSTALL_PENDING'
+  /** #11153 — the agent never confirmed it was uninstalled; never forced. */
+  | 'UNINSTALL_NOT_CONFIRMED'
   /** Another purge refusal (for example a backup snapshot under hold). */
   | 'REFUSED'
   /** The source (or target) of an open reattach intent (#8318 §6.5). */
@@ -244,7 +246,14 @@ export type ParkedPurgeSkip =
   | 'isolation_unresolved';
 
 export type ParkedPurgeOutcome =
-  | { purged: true; deviceId: string; hostname: string; holdingOrgId: string }
+  | {
+      purged: true;
+      deviceId: string;
+      hostname: string;
+      holdingOrgId: string;
+      /** #11153 — the uninstall state that allowed the purge, for the audit row. */
+      uninstallState: PurgeResult['uninstallState'];
+    }
   | { purged: false; deviceId: string; reason: ParkedPurgeSkip };
 
 export async function purgeExpiredParkedDevice(input: {
@@ -278,7 +287,8 @@ export async function purgeExpiredParkedDevice(input: {
         return { purged: false, deviceId, reason: 'IN_REATTACH' };
       }
 
-      await purgeRemovedDevice(tx, device.id);
+      // No `force`: an unattended purge never orphans an unconfirmed agent (#11153).
+      const purged = await purgeRemovedDevice(tx, device.id);
       await tx.insert(devicePoolAssignmentEvents).values({
         partnerId,
         deviceId: device.id,
@@ -288,7 +298,13 @@ export async function purgeExpiredParkedDevice(input: {
         toOrgId: null,
         parkedAt: device.createdAt,
       });
-      return { purged: true, deviceId, hostname: device.hostname, holdingOrgId: device.orgId };
+      return {
+        purged: true,
+        deviceId,
+        hostname: device.hostname,
+        holdingOrgId: device.orgId,
+        uninstallState: purged.uninstallState,
+      };
     });
   } catch (err) {
     // Caught outside the transaction, so the refusal still rolled it back.
@@ -299,7 +315,10 @@ export async function purgeExpiredParkedDevice(input: {
       return { purged: false, deviceId, reason: 'isolation_unresolved' };
     }
     if (err instanceof DeviceLifecycleError) {
-      return { purged: false, deviceId, reason: err.code === 'UNINSTALL_PENDING' ? 'UNINSTALL_PENDING' : 'REFUSED' };
+      const reason: ParkedPurgeSkip = err.code === 'UNINSTALL_PENDING' || err.code === 'UNINSTALL_NOT_CONFIRMED'
+        ? err.code
+        : 'REFUSED';
+      return { purged: false, deviceId, reason };
     }
     throw err;
   }

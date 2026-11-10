@@ -363,10 +363,11 @@ without saying so:
   its retries and no later delivery has succeeded. Deliveries that were dropped
   because the webhook was edited or disabled do not count. The incident clears
   after the next successful delivery, or when the webhook is disabled.
-- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi and backup provider
-  connections open a **Sync stalled** incident when there has been no
-  successful sync for three sync intervals (at least an hour). This catches a
-  sync that is stuck or no longer scheduled.
+- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi, backup provider and
+  DNS filtering connections, and Microsoft 365 tenant sync when it is enabled,
+  open a **Sync stalled** incident when there has been no successful sync for
+  three sync intervals (at least an hour). This catches a sync that is stuck or
+  no longer scheduled.
 - **Google Workspace.** Breeze verifies each Google Workspace connection about
   every six hours, with the same Directory call it makes when the connection is
   saved. If Google rejects the service account (for example, domain-wide
@@ -517,6 +518,14 @@ An automation's `send_notification` action targets its configured channel explic
 ### AI and MCP
 
 Use `manage_delivery` to resolve delivery, list/create/update/delete ordinary routing rows, edit the default with `set_default`, remove an optional org default with `delete_routing` to inherit again (the partner default is permanent), and list/create/update/delete escalation policies using the same bounded schemas and caller-aware user validation as the web/API. Reads require `alerts:read`; mutations require `alerts:write` and the applicable ownership and MFA/agent guards. Use `manage_notification_channels` for channel CRUD and test sends.
+
+### Upgrade note: v0.127.0 sends notifications for every alert
+
+<Aside type="caution" title="Expect more notifications after upgrading to v0.127.0">
+Before v0.127.0, most monitor, rule and system alerts (patch jobs, maintenance reboots, policy and configuration compliance, backup, EDR, warranty, network monitors, script exit codes and others) appeared on the Alerts page, but their notifications were not sent on any channel: in-app, email, SMS, Slack, Teams, PagerDuty, Pushover or webhooks, and their escalation policies did not run. From v0.127.0 every alert follows the routing on this page.
+
+Before or right after you upgrade, review your routing rows, each monitor's **Notify** setting and your escalation policies. SMS costs money, and on-call staff can be paged for alerts that were quiet before. Only alerts raised after the upgrade send notifications; earlier alerts are not replayed.
+</Aside>
 
 ### Upgrade note: explicit defaults
 

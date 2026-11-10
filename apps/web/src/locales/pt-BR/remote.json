@@ -49,7 +49,8 @@
       "securityCheckToast": "Início remoto indisponível: a verificação de segurança falhou. Fale com seu administrador.",
       "securityPolicy": "Início remoto bloqueado pela política de segurança",
       "server": "Falha no início remoto: erro do servidor. Fale com seu administrador.",
-      "vncTunnelFailed": "O túnel VNC não pôde ser aberto"
+      "vncTunnelFailed": "O túnel VNC não pôde ser aberto",
+      "providerUnavailable": "Essa ferramenta remota não está mais disponível para este dispositivo. Atualize a página e tente novamente."
     },
     "fallback": {
       "linuxFirstRun": "No Linux, torne o arquivo baixado executável (chmod +x) e execute-o uma vez. Isso registra o visualizador, e as sessões passam a abrir automaticamente.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Não foi possível autenticar no servidor de exibição (autoridade X)",
       "x11ConnectFailed": "Não foi possível conectar ao servidor de exibição deste dispositivo"
     },
-    "opensNewWindow": "(abre em uma nova janela)"
+    "opensNewWindow": "(abre em uma nova janela)",
+    "split": {
+      "builtInViewer": "Visualizador integrado",
+      "connectWith": "Conectar com {{name}}",
+      "connectWithBuiltIn": "Conectar com o visualizador integrado",
+      "menuLabel": "Escolha como conectar",
+      "opensInBrowser": "Abre em uma nova aba do navegador"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Criando túnel...",
@@ -209,6 +217,7 @@
       "copy": "Copiar",
       "delete": "Excluir",
       "download": "Baixar",
+      "mkdir": "Nova pasta",
       "move": "Mover",
       "purge": "Excluir permanentemente",
       "restore": "Restaurar",
@@ -250,6 +259,7 @@
     "emptyDirectory": "Esta pasta está vazia",
     "errors": {
       "copy": "Falha ao copiar",
+      "createFolder": "Falha ao criar a pasta",
       "delete": "Falha ao excluir",
       "download": "Falha ao baixar",
       "downloadTooLarge": "Muito grande para baixar ({{size}}). O navegador de arquivos transfere arquivos de até {{max}}.",
@@ -264,6 +274,15 @@
     "home": "Início",
     "modified": "Modificado",
     "moveTo": "Mover para...",
+    "newFolder": {
+      "action": "Nova pasta",
+      "title": "Nova pasta",
+      "nameLabel": "Nome da pasta",
+      "location": "Será criada em {{path}}",
+      "created": "Pasta {{name}} criada",
+      "invalidName": "O nome da pasta não pode conter separadores de caminho nem caracteres não permitidos pelo sistema de arquivos deste dispositivo.",
+      "nameExists": "Já existe um arquivo ou uma pasta com este nome aqui."
+    },
     "selectedCount": "Quantidade selecionada",
     "size": "Tamanho",
     "title": "Gerenciador de Arquivos",
@@ -318,7 +337,8 @@
     "title": "Gerenciador de Processos",
     "totalCpu": "CPU total",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitorar isto"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -645,7 +665,8 @@
     "summary": "{{shown}} de {{total}} serviços em {{device}}",
     "title": "Gerenciador de Serviços",
     "windowsOnlyDescription": "O Gerenciador de Serviços está disponível apenas para dispositivos Windows. {{device}} executa {{os}}.",
-    "windowsOnlyTitle": "Disponível apenas no Windows"
+    "windowsOnlyTitle": "Disponível apenas no Windows",
+    "monitorThis": "Monitorar isto"
   },
   "sessionHistory": {
     "columns": {

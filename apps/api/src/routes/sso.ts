@@ -82,6 +82,7 @@ import {
   userRequiresSetup,
   userIsMfaProtected,
   installAuthorizedUserSessionCookies,
+  hasActiveTotpFactor,
   type PendingMfaRecord,
 } from './auth/helpers';
 import { recordAccountFailureAndMaybeNotify } from './auth/login';
@@ -4289,7 +4290,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
   // mfa:pending continuation so all factor types (TOTP/SMS/recovery/passkey)
   // work; the completion endpoints see ssoLinkTokenHash and finalize the
   // link instead of the password-login mint.
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
+  if (ENABLE_2FA && user.mfaEnabled && (hasActiveTotpFactor(user) || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
     const passkeyAvailable = await userHasUsablePasskey(user.id);
@@ -4306,7 +4307,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
       partnerId: record.providerPartnerId,
     });
     const allowedMethods = {
-      totp: Boolean(user.mfaSecret) && pendingPolicy.allowedMethods.totp,
+      totp: hasActiveTotpFactor(user) && pendingPolicy.allowedMethods.totp,
       sms: user.mfaMethod === 'sms' && Boolean(user.phoneNumber) && pendingPolicy.allowedMethods.sms,
       passkey: passkeyAvailable && pendingPolicy.allowedMethods.passkey,
     };

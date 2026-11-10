@@ -24,6 +24,7 @@ vi.mock('../../db/schema', async () => {
       type: 'remoteSessions.type',
       status: 'remoteSessions.status',
       startedAt: 'remoteSessions.startedAt',
+      lastStartAttemptAt: 'remoteSessions.lastStartAttemptAt',
       createdAt: 'remoteSessions.createdAt',
     },
     tunnelSessions: {
@@ -165,7 +166,7 @@ describe('GET /remote/devices/:deviceId/active-sessions', () => {
     // setups that never started, and never file transfers.
     const sqlText = JSON.stringify(condition);
     expect(sqlText).toContain("'pending', 'connecting', 'active'");
-    expect(sqlText).toContain('remoteSessions.createdAt');
+    expect(sqlText).toContain('remoteSessions.lastStartAttemptAt');
     expect(sqlText).toContain('remoteSessions.startedAt');
     expect(conditionContainsEquality(condition, 'remoteSessions.type', 'file_transfer')).toBe(true);
   });

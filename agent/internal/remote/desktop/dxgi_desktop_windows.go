@@ -60,10 +60,8 @@ func (c *dxgiCapturer) switchToInputDesktop() bool {
 	// our capture goroutine.
 	ret, _, err := procSetThreadDesktop.Call(hDesk)
 	if ret == 0 {
-		// Fails with ERROR_INVALID_PARAMETER if already on this desktop,
-		// or ACCESS_DENIED if the thread owns windows. Either way, clean up.
+		logSetThreadDesktopFailure("switchToInputDesktop", hDesk, err)
 		procCloseDesktop.Call(hDesk)
-		slog.Debug("SetThreadDesktop failed (may already be on input desktop)", "error", err.Error())
 		return false
 	}
 
@@ -101,11 +99,19 @@ func getCurrentInputDesktopName() string {
 }
 
 // desktopName returns the name of the given desktop handle using
-// GetUserObjectInformationW(UOI_NAME). Returns "" on failure.
+// GetUserObjectInformationW(UOI_NAME). Returns "" on failure; desktopNameErr
+// also says why.
 func desktopName(hDesk uintptr) string {
+	name, _ := desktopNameErr(hDesk)
+	return name
+}
+
+// desktopNameErr is desktopName keeping the GetUserObjectInformationW error,
+// with its Win32 code, when the name cannot be read.
+func desktopNameErr(hDesk uintptr) (string, error) {
 	var buf [128]uint16
 	var needed uint32
-	ret, _, _ := procGetUserObjectInformationW.Call(
+	ret, _, errno := procGetUserObjectInformationW.Call(
 		hDesk,
 		uoiName,
 		uintptr(unsafe.Pointer(&buf[0])),
@@ -113,7 +119,7 @@ func desktopName(hDesk uintptr) string {
 		uintptr(unsafe.Pointer(&needed)),
 	)
 	if ret == 0 {
-		return ""
+		return "", gdiCallError("GetUserObjectInformationW(UOI_NAME)", errno)
 	}
 	// Find null terminator
 	n := int(needed / 2)
@@ -126,7 +132,7 @@ func desktopName(hDesk uintptr) string {
 			break
 		}
 	}
-	return syscall.UTF16ToString(buf[:n])
+	return syscall.UTF16ToString(buf[:n]), nil
 }
 
 // checkDesktopSwitch detects UAC/lock screen transitions that don't trigger
@@ -204,17 +210,22 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 				c.currentDesktop = inputDesk
 				inputDesk = 0 // prevent double-close below
 			} else {
-				slog.Warn("SetThreadDesktop failed during secure-desktop startup",
-					"desktop", inputName, "error", err.Error())
+				// Not fatal for capture: the GDI fallback attaches its own
+				// thread to the input desktop (gdiThreadState).
+				stdErr := setThreadDesktopError(currentName, inputName, err)
+				attrs := []any{"desktop", inputName, "error", stdErr.Error()}
+				if code, ok := win32ErrorCode(stdErr); ok {
+					attrs = append(attrs, "win32Error", code)
+				}
+				slog.Warn("SetThreadDesktop failed during secure-desktop startup", attrs...)
 			}
-			c.gdiFallback = &gdiCapturer{config: c.config}
+			c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 			c.desktopSwitchFlag.Store(true)
 			slog.Info("Secure desktop active without transition event, using GDI capture",
 				"desktop", inputName)
 		} else if !onSecure && c.gdiFallback != nil {
 			// Recover DXGI if we're back on Default but still in fallback mode.
-			c.gdiFallback.releaseHandles()
-			c.gdiFallback = nil
+			c.closeGDIFallbackLocked()
 			if err := c.initDXGI(); err != nil {
 				slog.Warn("DXGI reinit failed while leaving fallback mode", "error", err.Error())
 				c.switchToGDI()
@@ -229,51 +240,49 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		return false
 	}
 
+	// This thread already failed to follow the input desktop to inputName,
+	// and the GDI fallback's own thread followed it instead. Nothing has
+	// changed since, so there is nothing to redo: without this check every
+	// 500ms tick re-detected the same "change", tore the fallback down and
+	// rebuilt it (#9558).
+	if gdiAlreadyFollowsInputDesktop(c.gdiFallback != nil, c.gdiFollowsDesktop, inputName, time.Since(c.gdiFollowsSince)) {
+		procCloseDesktop.Call(inputDesk)
+		return false
+	}
+
 	slog.Info("Desktop change detected",
 		"from", currentName, "to", inputName)
 
 	// Release current capture resources
 	c.releaseDXGI()
-	if c.gdiFallback != nil {
-		c.gdiFallback.releaseHandles()
-		c.gdiFallback = nil
-	}
+	c.closeGDIFallbackLocked()
 
 	// Switch thread to new desktop
-	ret, _, _ := procSetThreadDesktop.Call(inputDesk)
+	ret, _, switchErrno := procSetThreadDesktop.Call(inputDesk)
 	if ret == 0 {
 		procCloseDesktop.Call(inputDesk)
-		// Determine the desktop we're actually on after the failed switch and
-		// reconfigure capture accordingly so session-layer state stays coherent.
-		threadID, _, _ := procGetCurrentThreadId.Call()
-		threadDesk, _, _ := procGetThreadDesktop.Call(threadID)
-		actualName := desktopName(threadDesk)
-		if actualName == "" {
-			actualName = currentName
-		}
-		switched := !strings.EqualFold(actualName, currentName)
-		if switched {
-			c.desktopSwitchFlag.Store(true)
-		}
+		switchErr := setThreadDesktopError(currentName, inputName, switchErrno)
 
-		onSecure := !strings.EqualFold(actualName, "Default")
-		c.secureDesktopFlag.Store(onSecure)
+		// The desktop on screen changed whether or not this thread followed
+		// it, so the session layer is told (encoder choice, keyframe), and
+		// capture switches to GDI, whose dedicated thread attaches to the
+		// input desktop by itself. Before #8434 this branch chose the backend
+		// from THIS thread's desktop — the one it was stuck on — and kept
+		// capturing a desktop that was not being displayed: BitBlt then
+		// failed with ERROR_INVALID_HANDLE (#9558).
+		c.desktopSwitchFlag.Store(true)
+		c.secureDesktopFlag.Store(isSecureDesktop(inputName))
 		c.gdiNoFrameCount = 0
+		c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
+		c.gdiFollowsDesktop = inputName
+		c.gdiFollowsSince = time.Now()
 
-		if onSecure {
-			c.gdiFallback = &gdiCapturer{config: c.config}
-			slog.Warn("SetThreadDesktop failed during desktop switch; using GDI on current desktop",
-				"from", currentName, "to", inputName, "current", actualName)
-			return switched
+		attrs := []any{"from", currentName, "to", inputName, "error", switchErr.Error()}
+		if code, ok := win32ErrorCode(switchErr); ok {
+			attrs = append(attrs, "win32Error", code)
 		}
-
-		if err := c.initDXGI(); err != nil {
-			slog.Warn("DXGI reinit failed after SetThreadDesktop failure", "error", err.Error())
-			c.switchToGDI()
-		}
-		slog.Warn("SetThreadDesktop failed during desktop switch; capture fallback active on current desktop",
-			"from", currentName, "to", inputName, "current", actualName)
-		return switched
+		slog.Warn("SetThreadDesktop failed during desktop switch; GDI capture thread will attach to the input desktop", attrs...)
+		return true
 	}
 
 	if c.currentDesktop != 0 {
@@ -300,7 +309,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		c.secureDesktopFlag.Store(true)
 		slog.Info("Switched to Secure Desktop, using GDI capture",
 			"desktop", inputName)
-		c.gdiFallback = &gdiCapturer{config: c.config}
+		c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 		c.gdiNoFrameCount = 0
 	}
 	return true
@@ -308,7 +317,8 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 
 func (c *dxgiCapturer) switchToGDI() {
 	c.releaseDXGI()
-	c.gdiFallback = &gdiCapturer{config: c.config}
+	c.closeGDIFallbackLocked()
+	c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 	c.gdiNoFrameCount = 0
 	slog.Info("Switched to GDI screen capture fallback")
 }
@@ -333,8 +343,8 @@ func switchThreadToInputDesktop() bool {
 	}
 	ret, _, err := procSetThreadDesktop.Call(hDesk)
 	if ret == 0 {
+		logSetThreadDesktopFailure("switchThreadToInputDesktop", hDesk, err)
 		procCloseDesktop.Call(hDesk)
-		slog.Debug("switchThreadToInputDesktop: SetThreadDesktop failed (may already be on input desktop)", "error", err.Error())
 		return false
 	}
 	slog.Info("Attached thread to input desktop", "desktop", fmt.Sprintf("0x%X", hDesk))
@@ -375,10 +385,7 @@ func (c *dxgiCapturer) logDesktopCheckSkip(reason string) {
 // calling switchThreadToInputDesktop before this method).
 func (c *dxgiCapturer) ForceReattach() {
 	c.releaseDXGI()
-	if c.gdiFallback != nil {
-		c.gdiFallback.releaseHandles()
-		c.gdiFallback = nil
-	}
+	c.closeGDIFallbackLocked()
 	c.gdiNoFrameCount = 0
 	c.consecutiveFailures = 0
 
@@ -393,7 +400,7 @@ func (c *dxgiCapturer) ForceReattach() {
 	c.desktopSwitchFlag.Store(true)
 
 	if onSecure {
-		c.gdiFallback = &gdiCapturer{config: c.config}
+		c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 		slog.Warn("ForceReattach: on secure desktop, using GDI",
 			"desktop", currentName)
 		return
@@ -406,4 +413,47 @@ func (c *dxgiCapturer) ForceReattach() {
 		return
 	}
 	slog.Info("ForceReattach: re-initialized DXGI", "desktop", currentName)
+}
+
+// setGDIFallbackLocked is the one way gdiFallback is assigned: it also
+// publishes the capturer for CaptureWarning's lock-free read. Caller holds
+// c.mu (or is the constructor).
+func (c *dxgiCapturer) setGDIFallbackLocked(g *gdiCapturer) {
+	c.gdiFallback = g
+	c.gdiFallbackView.Store(g)
+}
+
+// closeGDIFallbackLocked stops and drops the GDI fallback, if any. It must be
+// Close, not just a handle release: the fallback owns a locked OS thread
+// (lockedThread), and dropping it without Close strands that thread until the
+// GC safety net notices. Caller holds c.mu (or is the capture goroutine).
+func (c *dxgiCapturer) closeGDIFallbackLocked() {
+	if c.gdiFallback != nil {
+		_ = c.gdiFallback.Close()
+		c.setGDIFallbackLocked(nil)
+	}
+	c.gdiFollowsDesktop = ""
+}
+
+// logSetThreadDesktopFailure logs a failed SetThreadDesktop with its Win32
+// code and the desktop names on both sides (#8434). Before, these failures
+// were logged at Debug with no code, which is why #9558's log could say the
+// switch failed but not why.
+//
+// A failure while the thread is already on the target desktop is the benign
+// case the old Debug line was written for, and stays at Debug.
+func logSetThreadDesktopFailure(where string, target uintptr, errno error) {
+	threadID, _, _ := procGetCurrentThreadId.Call()
+	current, _, _ := procGetThreadDesktop.Call(threadID)
+	from, to := desktopName(current), desktopName(target)
+	err := setThreadDesktopError(from, to, errno)
+	attrs := []any{"where", where, "from", from, "to", to, "error", err.Error()}
+	if code, ok := win32ErrorCode(err); ok {
+		attrs = append(attrs, "win32Error", code)
+	}
+	if from != "" && strings.EqualFold(from, to) {
+		slog.Debug("SetThreadDesktop failed (thread is already on the input desktop)", attrs...)
+		return
+	}
+	slog.Warn("SetThreadDesktop failed", attrs...)
 }

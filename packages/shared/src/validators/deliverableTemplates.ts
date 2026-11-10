@@ -29,6 +29,8 @@ export const MANAGED_EVIDENCE_REPORT_TYPES = [
   'vulnerability_management',
   // #5784 W06 — the identity and access review (interactive sign-ins).
   'identity_access_review',
+  // #11018 W2 — customer SLA performance over the org's tickets.
+  'ticket_sla_performance',
 ] as const satisfies readonly string[];
 export type ManagedEvidenceReportType = (typeof MANAGED_EVIDENCE_REPORT_TYPES)[number];
 

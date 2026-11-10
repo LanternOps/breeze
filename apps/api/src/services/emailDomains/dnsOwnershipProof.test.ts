@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   generateOwnershipToken,
+  lookupTxtValues,
   ownershipTxtRecordName,
   setDnsTxtResolverForTest,
   verifyDnsOwnershipToken,
@@ -54,5 +55,38 @@ describe('verifyDnsOwnershipToken', () => {
   it('returns false against an empty or null token rather than matching any record', async () => {
     setDnsTxtResolverForTest({ resolveTxt: async () => [['']] });
     await expect(verifyDnsOwnershipToken('mail.acme.test', '')).resolves.toBe(false);
+  });
+});
+
+describe('lookupTxtValues', () => {
+  afterEach(() => setDnsTxtResolverForTest(null));
+
+  it('lookupTxtValues joins chunks and trims', async () => {
+    setDnsTxtResolverForTest({ resolveTxt: async () => [['  a-', 'b  '], ['plain']] });
+    await expect(lookupTxtValues('_breeze-verify.acme.test')).resolves.toEqual({
+      kind: 'answer',
+      values: ['a-b', 'plain'],
+    });
+  });
+
+  it('ENOTFOUND and ENODATA are absent', async () => {
+    for (const code of ['ENOTFOUND', 'ENODATA']) {
+      setDnsTxtResolverForTest({
+        resolveTxt: async () => { throw Object.assign(new Error(code), { code }); },
+      });
+      await expect(lookupTxtValues('x.acme.test')).resolves.toEqual({ kind: 'absent' });
+    }
+  });
+
+  it('SERVFAIL is unavailable dns_error, not absent', async () => {
+    setDnsTxtResolverForTest({
+      resolveTxt: async () => { throw Object.assign(new Error('SERVFAIL'), { code: 'ESERVFAIL' }); },
+    });
+    await expect(lookupTxtValues('x.acme.test')).resolves.toEqual({ kind: 'unavailable', reason: 'dns_error' });
+  });
+
+  it('a lookup slower than the timeout is unavailable timeout', async () => {
+    setDnsTxtResolverForTest({ resolveTxt: () => new Promise(() => {}) });
+    await expect(lookupTxtValues('x.acme.test', 20)).resolves.toEqual({ kind: 'unavailable', reason: 'timeout' });
   });
 });

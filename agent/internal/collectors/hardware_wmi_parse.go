@@ -50,7 +50,18 @@ type windowsHardwareJSON struct {
 	BoardVersion      string      `json:"BoardVersion"`
 	SysManufacturer   string      `json:"SysManufacturer"`
 	SysModel          string      `json:"SysModel"`
+	SysSKU            string      `json:"SysSKU"`
+	ProductSKU        string      `json:"ProductSKU"`
 	GPUNames          gpuNameList `json:"GPUNames"`
+}
+
+// windowsProductSKU prefers Win32_ComputerSystem.SystemSKUNumber and falls back
+// to Win32_ComputerSystemProduct.SKUNumber when that is empty or a placeholder.
+func windowsProductSKU(parsed windowsHardwareJSON) string {
+	if sku := cleanProductSKU(parsed.SysSKU); sku != "" {
+		return sku
+	}
+	return cleanProductSKU(parsed.ProductSKU)
 }
 
 // parseHardwareJSON decodes the JSON output from the batched WMI query.

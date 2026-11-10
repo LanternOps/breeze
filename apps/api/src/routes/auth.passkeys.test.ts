@@ -1960,6 +1960,25 @@ describe('passkey MFA auth routes', () => {
     expect(userUpdate).not.toHaveProperty('mfaMethod');
   });
 
+  // #10650 invariant: the first-passkey branch turns MFA ON with passkey as the
+  // primary. A dormant secret left from an earlier MFA-off transition must not
+  // come back as a "backup" authenticator the user never chose.
+  it('clears any dormant TOTP secret when the first passkey turns MFA on', async () => {
+    dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+    dbState.selectQueue.push([{ mfaEnabled: false, mfaSecret: 'enc-dormant-secret', mfaMethod: null }]);
+
+    const res = await app.request('/auth/passkeys/register/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ credential: { id: 'credential-1', response: {} } }),
+    });
+
+    expect(res.status).toBe(200);
+    const userUpdate = dbState.updateSets.find((set) => 'mfaEnabled' in set);
+    expect(userUpdate).toMatchObject({ mfaEnabled: true, mfaMethod: 'passkey', mfaSecret: null });
+  });
+
   it('rejects registering a passkey on an already-protected account without a step-up grant', async () => {
     dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 0 }]);
 
@@ -2057,6 +2076,67 @@ describe('passkey MFA auth routes', () => {
       mfaMethod: null,
       mfaRecoveryCodes: null,
     }));
+  });
+
+  // #10650 invariant: a TOTP secret survives only while MFA is on with a
+  // TOTP/passkey primary. Switching MFA off here must not leave a dormant
+  // secret that a later first-passkey enrollment would resurrect as a backup.
+  it('clears a policy-disallowed TOTP secret in the same UPDATE when deleting the last passkey switches MFA off', async () => {
+    vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+    const totpDisallowed = {
+      required: false,
+      allowedMethods: { totp: false, sms: true, passkey: true },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
+    };
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue(totpDisallowed);
+    dbState.selectQueue.push(
+      [{ passwordHash: '$argon2id$hash' }],
+      [{ id: 'credential-1', userId: 'user-123' }],
+      [{ passkeyCount: 1, hasTotp: true, hasSms: false, currentMfaMethod: 'passkey' }],
+      [{ mfaEnabled: true, passkeyCount: 1 }],
+      [{ mfaEnabled: true, passkeyCount: 1 }],
+      [{ passkeyCount: 1, hasTotp: true, hasSms: false, currentMfaMethod: 'passkey' }],
+    );
+
+    const res = await app.request('/auth/passkeys/credential-1', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: '10000000-0000-4000-8000-000000000009' }),
+    });
+
+    expect(res.status).toBe(200);
+    const userUpdate = dbState.updateSets.find((set) => 'mfaEnabled' in set);
+    expect(userUpdate).toMatchObject({
+      mfaEnabled: false,
+      mfaMethod: null,
+      mfaRecoveryCodes: null,
+      mfaSecret: null,
+    });
+  });
+
+  it('keeps an allowed backup TOTP secret and promotes it when the last passkey is deleted', async () => {
+    vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+    dbState.selectQueue.push(
+      [{ passwordHash: '$argon2id$hash' }],
+      [{ id: 'credential-1', userId: 'user-123' }],
+      [{ passkeyCount: 1, hasTotp: true, hasSms: false, currentMfaMethod: 'passkey' }],
+      [{ mfaEnabled: true, passkeyCount: 1 }],
+      [{ mfaEnabled: true, passkeyCount: 1 }],
+      [{ passkeyCount: 1, hasTotp: true, hasSms: false, currentMfaMethod: 'passkey' }],
+    );
+
+    const res = await app.request('/auth/passkeys/credential-1', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: '10000000-0000-4000-8000-000000000009' }),
+    });
+
+    expect(res.status).toBe(200);
+    const userUpdate = dbState.updateSets.find((set) => 'mfaEnabled' in set);
+    expect(userUpdate).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp' });
+    expect(userUpdate).not.toHaveProperty('mfaSecret');
+    expect(userUpdate).not.toHaveProperty('mfaRecoveryCodes');
   });
 
   // #4045: DELETE /passkeys/:id was password-only on its "user at the

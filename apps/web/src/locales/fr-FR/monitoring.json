@@ -43,6 +43,43 @@
       "description": "Rattachez les moniteurs intégrés à une politique."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Activé",
+    "autoResolveOff": "Désactivé",
+    "rearmLabel": "Réarmement",
+    "rearmNewEvidence": "Nouvelle preuve",
+    "rearmAfterDelay": "Après N minutes",
+    "rearmAfterMinutes_one": "Après {{count}} minute",
+    "rearmAfterMinutes_other": "Après {{count}} minutes",
+    "rearmDelayLabel": "Réarmer après (minutes)",
+    "rearmHelp": "Nouvelle preuve : seul un événement que l’alerte fermée n’a pas encore vu la rouvre. Après N minutes : des événements plus anciens peuvent aussi la rouvrir une fois que N minutes se sont écoulées depuis sa fermeture.",
+    "inheritOption": "Hériter ({{value}}, {{source}})",
+    "inheritOptionPlain": "Hériter",
+    "sources": {
+      "org": "Valeur par défaut de l’organisation",
+      "partner": "Valeur par défaut du partenaire",
+      "builtin": "Valeur par défaut intégrée"
+    },
+    "errors": {
+      "cooldown": "Saisissez un nombre entier de 0 à 1440.",
+      "cooldownOrInherit": "Saisissez un nombre entier de 0 à 1440 ou laissez le champ vide pour hériter de la valeur.",
+      "rearmDelay": "Saisissez un nombre entier de minutes de 1 à 1440."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Valeurs par défaut du cycle de vie",
+    "descriptionPartner": "La valeur par défaut des moniteurs de toutes les organisations. Une organisation peut la remplacer, et le réglage propre à un moniteur l’emporte sur les deux.",
+    "descriptionOrg": "Remplace la valeur par défaut du partenaire pour cette organisation. Laissez un champ vide pour en hériter. Le réglage propre à un moniteur l’emporte sur cette valeur.",
+    "readOnly": "Vous n’avez pas l’autorisation de modifier la valeur par défaut du partenaire.",
+    "saved": "Valeurs par défaut du cycle de vie enregistrées",
+    "saveAction": "Enregistrer les valeurs par défaut",
+    "overrideCount_one": "{{count}} moniteur remplace cette valeur",
+    "overrideCount_other": "{{count}} moniteurs remplacent cette valeur",
+    "errors": {
+      "load": "Impossible de charger les valeurs par défaut du cycle de vie.",
+      "save": "Impossible d’enregistrer les valeurs par défaut du cycle de vie."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Moniteur créé et attaché à la politique",
     "titleNew": "Nouveau moniteur",
@@ -53,11 +90,22 @@
     },
     "sections": {
       "watch": "Quoi surveiller",
-      "noise": "Gravité et bruit",
+      "lifecycle": "Cycle de vie de l’alerte",
       "respond": "Répondre",
       "notify": "Notifier",
       "escalate": "Escalader vers une personne",
       "deployed": "Déployé sur"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Ce moniteur remplace la valeur par défaut de l’organisation ({{value}})",
+        "partner": "Ce moniteur remplace la valeur par défaut du partenaire ({{value}})",
+        "builtin": "Ce moniteur remplace la valeur par défaut intégrée ({{value}})",
+        "unknown": "Ce moniteur remplace la valeur par défaut héritée."
+      },
+      "partnerWideHint": "Une organisation qui a sa propre valeur par défaut utilise celle-ci plutôt que la valeur héritée affichée ici.",
+      "inheritedUnavailable": "Impossible de charger les valeurs héritées. Vous pouvez tout de même enregistrer.",
+      "windowWarning": "La fenêtre d’événements ({{window}} min) est plus courte que le temps de recharge ({{cooldown}} min). Un nouvel événement pendant le temps de recharge peut sortir de la fenêtre avant la réouverture de l’alerte."
     },
     "tabs": {
       "settings": "Paramètres",
@@ -175,7 +223,20 @@
     "psaBoardDefault": "Utiliser le tableau par défaut de la connexion",
     "psaBoardHelp": "Les tickets d’alerte de ce moniteur sont créés dans ce tableau plutôt que dans celui par défaut de la connexion.",
     "psaBoardReadOnly": "Les tickets d’alerte vont au tableau #{{id}} du PSA",
-    "psaBoardUnavailable": "Impossible de charger les tableaux du PSA ; le remplacement du tableau est donc indisponible pour le moment."
+    "psaBoardUnavailable": "Impossible de charger les tableaux du PSA ; le remplacement du tableau est donc indisponible pour le moment.",
+    "clearsWhen": {
+      "title": "Se résout lorsque",
+      "hint": "Se résout uniquement sur un événement journalisé après l'événement déclencheur de l'alerte.",
+      "noneHint": "Aucune condition de rétablissement n'est définie : l'alerte se résout dès que le déclencheur ne correspond plus.",
+      "add": "Ajouter une condition de rétablissement",
+      "removeCondition": "Supprimer",
+      "keepCustom": "Conserver la condition personnalisée",
+      "customTitle": "Condition de rétablissement personnalisée (API)",
+      "customHint": "Cette condition a été définie via l'API et ne peut pas être modifiée ici. L'enregistrement la conserve telle quelle.",
+      "replaceCustom": "Remplacer",
+      "invalid": "L'une des valeurs de la condition de rétablissement n'est pas valide.",
+      "customUnusable": "Cette condition ne peut pas être évaluée : les alertes de ce moniteur ne se résoudront pas automatiquement. Remplacez-la pour corriger le problème."
+    }
   },
   "kinds": {
     "composite": "Composite (toutes ou une parmi plusieurs)",

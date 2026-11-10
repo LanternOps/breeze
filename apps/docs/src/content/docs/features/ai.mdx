@@ -68,7 +68,7 @@ The assistant and background agents can author a script mid-conversation, have i
 |---|---|---|
 | **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `ioc_hunt` (list_rule_sets/preview_sweep/list_sweeps/sweep_status), `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `get_service_monitoring_status`, `query_monitors`, `manage_monitors` (get/create/update/delete), `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `manage_software_policy` (list/get), `manage_browser_policy` (list), `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `find_proven_fixes`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `ioc_hunt` (cancel_sweep), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), `analyze_disk_usage` (refresh), `analyze_boot_performance` (triggerCollection), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `revoke_elevation`, `assign_security_training`, `acknowledge_network_device`, `registry_operations` (read_key/get_value), `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run/cancel), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run/cancel), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `release_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 `manage_monitors` supports `get` only. Its retired `create`, `update`, and `delete` actions return guidance without approval or write permission. Author network checks with `manage_monitor_definitions` using kind `network_check`; retire unconverted checks through the conversion ledger to preserve history.
@@ -107,7 +107,7 @@ A small, fixed set of actions always requires a different user to approve:
 - **Identity and account control** (Microsoft 365 / Google Workspace) — password and 2FA resets, mail forwarding and delegates, mailbox permissions, disabling or offboarding users, device wipe
 - **Restores and rollbacks** — VM checkpoint delete/apply, restore-as-VM and DR plan runs, patch rollback, snapshot and database restores
 - **Computer control** and unattended remote session creation
-- **Releasing security containment** — un-isolating a device, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
+- **Releasing security containment** — lifting a Breeze network isolation (`release_containment`), un-isolating a device through an EDR, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
 - **AI agent governance** — granting an agent a pre-authorized action key, so its future runs may take that action unattended
 
 To decide a pending four-eyes request:
@@ -128,12 +128,28 @@ Approved actions execute immediately. Rejected actions are logged and the AI is 
 
 If what the request refers to changes while it waits — the script is edited, the quote or invoice is revised, the organization's state moves on — the approved action does **not** run against the drifted content. It fails with a content-changed error instead, and the AI has to raise a fresh request.
 
+**An approval goes to the organization the action changes** (v0.127.0). When a partner technician asks the assistant to change a customer organization other than the one their session is open on, the approval request is filed in that organization and goes to its approvers. A request that names an organization or record the technician cannot access is refused, not filed elsewhere.
+
+#### Approval mode
+
+The **approval mode** decides how a chat asks before running gated actions. It applies whether or not any AI spending cap is set.
+
+| Mode | Behavior |
+|---|---|
+| **Per step** (default) | Each gated action waits for its own approval. |
+| **Action plan** | The AI proposes a multi-step plan and you approve the whole plan once. |
+| **Auto approve** | Tier 2 actions run without a prompt and are audit-logged; Tier 3 still asks. The chat shows a **Pause AI** button that drops back to per-step. |
+| **Hybrid plan** | Like action plan, plus live screenshots between steps and a persistent **Stop** button. |
+
+- **Partner default:** **Settings → Partner → AI Approvals**.
+- **Organization:** **Settings → Organization → AI**, in the **AI approval mode** card. A partner-set mode overrides the organization's and locks the field.
+
 #### Approval timeout
 
 A chat turn that is waiting on an approval is held open, so the wait is bounded. The **approval timeout** is how long the chat waits for someone to approve a gated action before it gives up:
 
 - **Default:** 5 minutes. **Range:** 5 to 60 minutes.
-- **Partner default:** **Settings → Partner → AI Approval Timeout**. Applies to every organization that has not set its own value.
+- **Partner default:** **Settings → Partner → AI Approvals**. Applies to every organization that has not set its own value.
 - **Organization override:** **Settings → Organization → AI**. Choose a value to override the partner default, or **Inherit** to follow it. The organization's value always wins. The selector shows the inherited value and where it comes from.
 - A change applies from the next chat message. It does not change a wait that is already in progress.
 
@@ -195,6 +211,7 @@ Many tools have a per-tool sliding window rate limit. Requests that exceed the l
 | `trigger_backup` | 5 requests | 10 min |
 | `restore_snapshot` | 3 requests | 10 min |
 | `execute_containment` | 5 requests | 10 min |
+| `release_containment` | 5 requests | 10 min |
 | `collect_evidence` | 10 requests | 5 min |
 | `execute_playbook` | 5 requests | 10 min |
 
@@ -207,7 +224,7 @@ A self-hosted or smaller model usually retries and re-plans more than Claude doe
 Every per-tool limit becomes `ceil(limit × multiplier)`. At a multiplier of 3, for example, `run_script` allows 15 requests per 5 minutes instead of 5. The window stays the same. The multiplier applies to the built-in assistant and to the [MCP Server](/features/mcp-server/#per-tool-rate-limits).
 
 - The multiplier can only raise a limit. It never lowers or removes one. The API rejects a value outside 1–10, and a stored value that is out of range is treated as 1.
-- You set it in the same two places as the other budget fields (see [Configuring thresholds](#configuring-thresholds)): **Org settings → AI** for one organisation, or the **AI Budgets** tab of Partner Settings for every organisation under the partner. A partner value overrides the organisation value and locks the field.
+- You set it in the same two places as the other budget fields (see [Configuring thresholds](#configuring-thresholds)): **Org settings → AI** for one organisation, or the **AI Budgets & Limits** tab of Partner Settings for every organisation under the partner. A partner value overrides the organisation value and locks the field.
 - The organisation of the current call selects the multiplier: the chat session's organisation, or the MCP API key's organisation. A partner-scoped MCP caller that has no organisation uses the partner's value. Because the counter is shared across organisations, a user who works in two organisations with different multipliers is checked against the limit of the organisation they are working in now.
 - **AI Risk → Rate Limits** shows the limits that are in effect for the selected organisation, with the multiplier applied, and shows the default next to each limit that was raised.
 
@@ -375,6 +392,16 @@ When billing is not configured, AI usage is unlimited — cost tracking still re
   Cost tracking is automatic — no configuration required. It works for both the main AI assistant and the Helper AI chat. Billing credit enforcement is optional and requires the billing service environment variables. See [Environment Variables](/deploy/environment/) for details.
 </Aside>
 
+### Turning AI on or off for every organisation
+
+The AI on/off switch lives on each organisation's **Org settings → AI** tab. The **AI Budgets & Limits** tab of Partner Settings has a matching **AI for all organizations** control with three choices:
+
+- **Not set, each organization decides** (the default): each organisation keeps its own switch.
+- **On for every organization**: AI is on everywhere, and organisations can't turn it off.
+- **Off for every organization**: AI is refused for every organisation, including chat, the Helper, Office add-ins, AI agents, flow AI steps and enrichment, and organisations can't turn AI back on. Breeze asks you to confirm before it takes this choice, and the tab shows a warning while it is in force.
+
+This control is separate from the budget caps on the same tab. Caps and billing credits still apply whichever choice is set. In v0.126.0 and earlier the control was a checkbox labelled "Enable AI budget enforcement", and clearing it after ticking it saved **Off**. If AI is unexpectedly refused across your organisations, check this control and set it back to **Not set**, then check each organisation's own AI switch.
+
 ### Budget alerts
 
 Independent of hard budget enforcement, an organisation can get warned as its AI spend approaches its cap. Each period (daily and monthly) is checked against a ladder of percentage thresholds, and once spend crosses a rung, an alert fires for that rung.
@@ -393,9 +420,9 @@ Alerts are delivered to active users with the `billing:manage` permission, wheth
 The threshold ladder is configured in two places:
 
 - **Organisation**: **Org settings → AI** (v0.114.0+; previously on the AI Usage page). The **AI Usage** page itself is now usage-only, and shows a read-only **Effective budget** panel with each field's value and where it came from (Set by partner, Set by organization, or Default).
-- **Partner**: the **AI Budgets** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
+- **Partner**: the **AI Budgets & Limits** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
 
-A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets tab.
+A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets & Limits tab.
 
 Either field takes two kinds of input: leave it empty to inherit (the org inherits the partner value, or the 50/80/95 default when the partner sets nothing), or type an explicit ladder of up to five whole percentages, such as `60, 90`. Turning pre-cap warnings off entirely requires storing an empty list, which the UI cannot produce; do that through `PUT /ai/budget` with `"alertThresholdPercents": []`. The 100% cap-reached alert still fires regardless.
 
@@ -468,6 +495,13 @@ The AI assistant can query, manage, and operate backups, disaster recovery plans
 | `query_dr_plans` | 1 | List disaster recovery plans |
 | `get_dr_plan_details` | 1 | Details for one disaster recovery plan, including its groups |
 | `get_dr_execution_status` | 1 | Status of a disaster recovery plan execution |
+| `manage_backup_verification (health/list/readiness)` | 1 | See backup verification results, past checks and how recoverable each device is |
+| `manage_backup_verification (run)` | 3 | Queue a backup integrity check or test restore on a device. It needs approval |
+| `get_vss_status` | 2 | Read the Volume Shadow Copy writers on one online Windows device, live from its agent. It changes nothing on the machine and runs without an approval prompt |
+| `list_bmr_recoveries (list/get)` | 1 | See where a bare-metal recovery has got to: status, phase times, failure reason and warnings. Starting or cancelling a recovery stays in the web app |
+| `get_backup_health` | 1 | Backup health per device across your organizations, from Breeze jobs and connected backup providers together |
+| `manage_c2c_configs (list)` | 1 | List cloud-to-cloud backup configs, including which mailboxes each covers. Not available to AI agents |
+| `manage_c2c_configs (create/update/delete)` | 3 | Create, change or delete a cloud-to-cloud backup config: whose mail is copied, where and when. A config with backup history cannot be deleted. Not available to AI agents |
 | `manage_backup_profiles (list/get)` | 1 | List backup profiles and see what each one backs up |
 | `manage_backup_profiles (create)` | 2 | Create an organization backup profile. A partner-wide profile (`ownerScope: partner`, "all orgs") needs approval (Tier 3) |
 | `manage_backup_profiles (update/delete)` | 3 | Change or delete a backup profile. It may be partner-wide, and narrowing one stops protecting data in every organization, so the requester approves |
@@ -499,14 +533,22 @@ See [Backup & Recovery](/backup/overview/) for configuration details.
 
 ## Incident Response AI Tools
 
-The AI can create and manage security incidents, execute containment actions, and collect forensic evidence. These tools are available in AI chat and to AI agents.
+The AI can create and manage security incidents, execute containment actions, release a network isolation, and collect forensic evidence. These tools are available in AI chat and to AI agents, except `release_containment`, which AI agents can never call or propose.
 
-Network isolation is Windows-only until Linux and macOS support ship. `release_containment` is planned for a **later release**; use the console release control now. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+Network isolation is Windows-only until Linux and macOS support ship. See [Network isolation](/features/network-isolation/) for reachability, expiry, and the break-glass runbook.
+
+The AI can ask to lift an isolation with `release_containment`:
+
+- It is a **four-eyes** action. A second person approves it. If you are the only eligible approver, you approve it yourself with a Touch ID / Windows Hello verification.
+- The approval covers one isolation, as it stood when the AI asked. If the isolation is extended, released by someone else, or its device moves to another organization before the approval runs, the release is refused and nothing is sent to the device. Ask the AI again.
+- The console release control works as before and needs no second approver.
+- The MCP server never isolates or releases a device, even for a principal allowed to run Tier 3 tools unattended.
 
 | Tool | Tier | Description |
 |------|------|-------------|
 | `create_incident` | 2 | Create a new security incident with classification and severity (needs `alerts.write`) |
 | `execute_containment` | 3 | Isolate a supported device from the network through the isolation service (off by default behind `NETWORK_ISOLATION_ENABLED`), or kill a process. Account disable and USB block remain unimplemented. Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
+| `release_containment` | 3 | Lift a device's network isolation through the isolation service. Four-eyes, needs `devices.execute`, and names the isolation episode to release. Works with `NETWORK_ISOLATION_ENABLED` off, like the console release |
 | `collect_evidence` | 3 | Collect forensic evidence from a device (logs, processes, connections). Evidence without a screenshot runs at Tier 2; a request that includes a screenshot needs approval |
 | `get_incident_timeline` | 1 | View the full timeline of an incident |
 | `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |
@@ -881,7 +923,62 @@ These tools let you ask the assistant what the AI has done and is planning. They
 
 The operator task and Fleet Design tools describe a whole organization, so a session limited to some sites or devices cannot use them. The operator task tools are available in AI chat and over MCP only: AI agents are never offered them, because task text is written by people and by other agent runs. The device, schedule and Fleet Design tools are also available to AI agents; a device-bound agent can read only its own device.
 
+#### Starting a patch run or an AI task from chat
+
+Two tools start AI work, the same work as the **Run now** buttons. Both need one approval (supervised) and an MFA-verified session; API keys and MCP connections cannot satisfy that while two-factor authentication is enabled. AI agents and Wisp specialist sessions are never offered them.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `run_patch_plan` | 3 | Run the organization's patch agent now. It proposes installs, each its own approval; it installs nothing itself. |
+| `create_operator_task` | 3 | Start an AI task to get one stopped service running again on one device. Each change the task makes asks for its own approval. |
+
+- **Every launch costs AI credits and can notify people**, which is why neither runs without an approval. They are supervised, not two-person, because the run itself only proposes: every effect on a device has its own approval, and the organization's run caps limit the spend.
+- **A retried approval is one run or task; approving the same request twice is two.** The launch is tied to the approval, not to its arguments.
+- **`run_patch_plan` refuses a session limited to some sites or devices**, because a device-less run is hidden from such a session, so it could not read the result. `create_operator_task` reports a device outside your sites as not found.
+- **`create_operator_task` is service recovery only.** Onboarding and offboarding change people's accounts, so they stay on the Recipe Library page.
+
+#### Schedules and Fleet Designs from chat
+
+| Tool | Actions | Approval |
+|------|---------|----------|
+| `manage_ai_agent_schedules` | `create`: a partner baseline for every organization, or one organization's tighter override. `update`. `delete` | `create` and `update` are supervised; `delete` needs two approvers, and for a baseline the second must be a partner-level user with access to all organizations |
+| `manage_fleet_designs` | `run`, `preview`, `applied`, `apply`, `rollback`, `document` | `preview` and `applied` need none; `run` and `document` are supervised; `apply` and `rollback` need two approvers |
+
+- **`manage_ai_agent_schedules` cannot turn on act mode, and an armed schedule can only be narrowed.** An update may only set act mode off. While a baseline is armed, a change that widens what runs unattended or changes the cadence is refused. Arming stays on the AI Agents page. Deleting a baseline deletes every organization's override and cannot be undone, and deleting an override that narrows an armed baseline is refused.
+- **`apply` and `rollback` are bound to what the approver saw.** If what they touch changes after approval, they refuse and change nothing. `apply` bills through role corrections, reaches devices and can install automatic service restarts. `rollback` removes monitoring from devices and restores roles; items changed since the apply stay as they are. `run` uses AI credits, may notify people and applies nothing. Enabling the designer agent stays on the Fleet Design page.
+- **Neither tool is offered to AI agents, and both refuse a session limited to some sites or devices.**
+
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
+
+#### Organization, user and role reads
+
+These read-only tools answer "who is this customer, who can log in, and what can they do". User and role changes are not available to AI: creating, editing or removing a login or a role stays a human action in Settings.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_org_summary` | 1 | One organization at a glance: devices online, open alerts and tickets, active contracts, outstanding invoices, sites, primary contact, portal users and last activity. Sections you lack permission for are omitted. Needs partner scope |
+| `get_account_readiness` | 1 | Setup readiness for up to 50 organizations: contacts, billing address, policy, pending portal invites, overdue invoices, integrations and backup. Needs partner scope |
+| `get_audit_retention` | 1 | An organization's audit-log retention policy: whether one is configured, retention days and last cleanup |
+| `list_portal_users` | 1 | An organization's customer-portal logins and their status (active, pending setup, disabled). Needs partner scope |
+| `list_users` | 1 | Breeze staff logins (technicians and admins) with role, MFA status and last login. Needs full partner access |
+| `get_user` | 1 | One Breeze login with its role and organization and site access. Needs full partner access |
+| `list_roles` | 1 | Breeze roles: list them, read one role's permissions, see who holds it, or see its effective (inherited) permissions. Partner callers need full partner access |
+
+Only `get_audit_retention` is available to AI agents. The other six are chat and MCP only: logins, roles and portal users are personal data with no device to scope them to, and the summary and readiness reads need partner scope.
+
+#### Customer portal settings and report recipients
+
+Two writers change what customers see and receive. Both are chat and MCP only (never offered to AI agents), and every change needs approval.
+
+| Tool | Actions | Approval |
+|------|---------|----------|
+| `manage_org_portal_settings` | `get`: an organization's portal settings. `update`: portal sections, support contact, welcome and footer text, logo and colours. `set_sensitive_access`: per-device patch and vulnerability detail, rack and room placement, the support-hours balance, network alerts and trust-page editing | `update` is supervised; `set_sensitive_access` needs two approvers |
+| `manage_report_recipients` | `list`, `add`, `remove` and `convert` the contacts a scheduled report is emailed to | Every write is supervised |
+
+- **Sensitive portal data needs two people.** What a customer has seen in the portal cannot be recalled, so `set_sensitive_access` is four-eyes, and the approval is bound to the flags as they stood when it was approved: if any changed in the meantime, the release is refused.
+- **`update` never turns on dormant sensitive data.** Network alerts and rack placement show only while the network section is on, and the hours balance only while Support usage is on. If one of those is already on, turning its section on with `update` is refused; use `set_sensitive_access` and name it.
+- **Custom CSS stays in the web app.** It is served to customers' browsers as written, so no AI tool writes it.
+- **Adding a recipient sends report data out of Breeze.** `add` and `convert` need the `reports:export` permission and an MFA-verified session. `convert` only moves an address already in the report's email list onto a contact, so it never adds a delivery.
 
 Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
 

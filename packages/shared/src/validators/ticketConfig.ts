@@ -93,6 +93,19 @@ export const createCustomerEmailDomainSchema = z.object({
 });
 export type CreateCustomerEmailDomainInput = z.infer<typeof createCustomerEmailDomainSchema>;
 
+// Org-scoped create (`/organizations/:id/customer-domains`): the org comes from the path.
+export const createOrgCustomerDomainSchema = z.object({
+  domain: customerDomainSchema,
+  autoCreateContact: z.boolean().optional().default(true)
+}).strict();
+export type CreateOrgCustomerDomainInput = z.infer<typeof createOrgCustomerDomainSchema>;
+
+// Run a live ownership check by one method (portal registration W5).
+export const verifyCustomerDomainSchema = z.object({
+  method: z.enum(['dns_txt', 'entra_tenant', 'google_directory'])
+}).strict();
+export type VerifyCustomerDomainInput = z.infer<typeof verifyCustomerDomainSchema>;
+
 export const updateCustomerEmailDomainSchema = z
   .object({
     orgId: z.string().guid().optional(),

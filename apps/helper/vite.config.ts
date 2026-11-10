@@ -1,10 +1,11 @@
 import { defineConfig, searchForWorkspaceRoot } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 import { promptCatalogAliases, promptCatalogFsAllow } from './promptCatalogAlias';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   clearScreen: false,
   resolve: {
     alias: promptCatalogAliases,

@@ -240,6 +240,15 @@ export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'vali
  */
 export type AiApprovalOutcome = 'approved' | 'not_approved' | 'ended';
 
+/**
+ * #10416: who an `approval_required` card is waiting on. `'you'` means the
+ * requester can decide it (a Tier-2 card, or an intent that fanned an approval
+ * row out to them); `'other_approvers'` means someone else must decide: any
+ * intent where the requester holds no approval row (e.g. four-eyes in a
+ * multi-approver org), or a helper card decided by PAM policy or an admin.
+ */
+export type AiApprovalWaitingOn = 'you' | 'other_approvers';
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   /**
@@ -316,8 +325,13 @@ export type AiStreamEvent =
    * leaving the value buried in the collapsed parameter JSON. Letting an
    * assistant choose SYSTEM for a user-context script is a privilege
    * decision, and the human deciding it has to be told.
+   *
+   * #10416: `pushedToPhone` (Tier-2 only; absent means unknown, not "no push")
+   * is true when a push provider accepted at least one push for the
+   * requester's phone; `waitingOn` says who must decide.
+   * The thinking indicator shows the wait from these while the card is open.
    */
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary; standingInstructionConflict?: AiStandingInstructionConflict }
   /**
    * W03 (#5612): a proposal outcome delivered into the author's chat session —
    * request-changes findings + note, or a verification result. The durable
@@ -374,14 +388,30 @@ export type AiStreamEvent =
   | {
       type: 'run_result';
       runId: string;
-      status: 'completed' | 'failed';
+      /**
+       * `awaiting_approval` (#11084): a device-troubleshooting run settled with
+       * steps a person must approve. Not terminal for the card's status copy,
+       * but the run will not move again on its own, so polling may stop.
+       */
+      status: 'completed' | 'failed' | 'awaiting_approval';
       /** `ai_agent_runs.summary` — narrative text, never a tool payload. */
       summary: string | null;
       artifacts: AiRunResultArtifactRef[];
+      /** Set with `awaiting_approval` only: how many of the run's intents are still pending. */
+      pendingIntentCount?: number;
     }
   // `usage` is set by the streaming manager's result case so client surfaces
   // can render turn cost (turn_complete). Technician UI ignores it.
-  | { type: 'done'; usage?: { inputTokens: number; outputTokens: number; costCents: number } }
+  | {
+    type: 'done';
+    usage?: { inputTokens: number; outputTokens: number; costCents: number };
+    /**
+     * #10428 (Wisp only): the turn's message held a standing instruction, and
+     * its capture runs after `done`. The chip polls
+     * `GET /wisp/memory/captures/status/:captureId` until it is terminal.
+     */
+    wispInstructionCapture?: { captureId: string };
+  }
   /**
    * #9427: the first data frame of `GET /ai/sessions/:id/stream` (attach). A
    * snapshot of the session's CURRENT turn on this API instance — never sent
@@ -391,6 +421,14 @@ export type AiStreamEvent =
   | ({ type: 'attach_state' } & AiAttachState);
 
 /** The cards a turn can be blocked on, verbatim as they were published. */
+/**
+ * #10428 (W06): a Wisp card whose call matches a remembered standing
+ * instruction that does not refuse it (unconfirmed, conditional, or a
+ * `possible` match). The card shows a red banner; the description carries
+ * the same text so every channel shows it.
+ */
+export type AiStandingInstructionConflict = { text: string };
+
 export type AiPendingCardEvent = Extract<AiStreamEvent, { type: 'approval_required' | 'plan_approval_required' }>;
 
 /**

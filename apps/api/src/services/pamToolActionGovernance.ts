@@ -161,8 +161,9 @@ async function decideInContext(params: ToolActionParams): Promise<ToolActionDeci
     })
     .returning({ id: elevationRequests.id });
 
-  // Audit chain (best-effort — an audit hiccup must not flip a safe decision
-  // into a throw, mirroring ingest's posture).
+  // Audit chain. Deliberately no savepoint (#11225): a failed insert fails this
+  // transaction's next statement and its commit, so the gate fails closed and an
+  // auto-approval is never mirrored to the execution row with no audit trail.
   try {
     await db.insert(elevationAudit).values({
       orgId: params.orgId,

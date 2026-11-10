@@ -1,13 +1,16 @@
 import {
   Activity,
   AlertTriangle,
+  Ban,
   CheckCircle2,
+  Clock,
   Database,
   HardDrive,
   ShieldAlert,
   XCircle
 } from 'lucide-react';
 import { formatNumber } from '@/lib/i18n/format';
+import type { BackupFailureCategory } from '@breeze/shared';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -33,6 +36,7 @@ export type BackupJob = {
   totalSize?: number | null;
   errorCount?: number | null;
   errorLog?: string | null;
+  failureCategory?: BackupFailureCategory | null;
   // Legacy fields for compatibility
   device?: string;
   config?: string;
@@ -114,6 +118,18 @@ export const statusConfig = {
     icon: AlertTriangle,
     label: 'Completed with errors',
     className: 'text-warning bg-warning/10'
+  },
+  // Neutral outcomes: a queued run (pending, e.g. a catch-up waiting for its
+  // device) and a cancelled run are neither healthy nor a problem.
+  pending: {
+    icon: Clock,
+    label: 'Queued',
+    className: 'text-muted-foreground bg-muted'
+  },
+  cancelled: {
+    icon: Ban,
+    label: 'Cancelled',
+    className: 'text-muted-foreground bg-muted'
   },
   warning: {
     icon: AlertTriangle,

@@ -21,6 +21,7 @@ type BackupMetricsRecorder = {
   onConditionalWriteProbe: (outcome: string, reason: string, count?: number) => void;
   onSnapshotPublishRefused: (reason: string, count?: number) => void;
   onRestoreIntegrity: (commandType: string, status: string, reason: string, count?: number) => void;
+  onSnapshotFileIndex: (event: string, outcome: string, count?: number) => void;
 };
 
 const noop = () => {};
@@ -44,6 +45,7 @@ let recorder: BackupMetricsRecorder = {
   onConditionalWriteProbe: noop,
   onSnapshotPublishRefused: noop,
   onRestoreIntegrity: noop,
+  onSnapshotFileIndex: noop,
 };
 
 export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | null | undefined): void {
@@ -66,6 +68,7 @@ export function setBackupMetricsRecorder(next: Partial<BackupMetricsRecorder> | 
     onConditionalWriteProbe: next?.onConditionalWriteProbe ?? noop,
     onSnapshotPublishRefused: next?.onSnapshotPublishRefused ?? noop,
     onRestoreIntegrity: next?.onRestoreIntegrity ?? noop,
+    onSnapshotFileIndex: next?.onSnapshotFileIndex ?? noop,
   };
 }
 
@@ -283,6 +286,18 @@ export function recordBackupWriteJanitor(action: BackupWriteJanitorAction, outco
  * `refused` are reserved for when restores are gated on it.
  */
 export type RestoreIntegrityMetricStatus = 'attested' | 'unattested' | 'absent' | 'override' | 'refused';
+
+/**
+ * A snapshot's file index (#11026). `inline_dropped`: a result arrived without
+ * its file list because the list did not fit (outcome `dropped`). `hydration`:
+ * a run building the index from the manifest ended, by `complete`, `skipped`
+ * or a HydrationFailure code. `statistics` (#11209): a large publish refreshed
+ * the table's planner statistics, by `analyzed`, `busy` or `error`. The outcome
+ * is a closed set, never free text.
+ */
+export function recordSnapshotFileIndex(event: 'inline_dropped' | 'hydration' | 'statistics', outcome: string, count = 1): void {
+  recorder.onSnapshotFileIndex(event, outcome, count);
+}
 
 export function recordRestoreIntegrity(
   commandType: string,

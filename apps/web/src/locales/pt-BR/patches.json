@@ -356,6 +356,7 @@
     "tabs": {
       "compliance": "Conformidade",
       "patches": "Patches",
+      "vendorUpdates": "Atualizações do fabricante",
       "jobs": "Trabalhos",
       "updateRings": "Anéis de atualização"
     },
@@ -486,9 +487,11 @@
     "rebootDone": "Concluída",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Ignorado: nenhuma das atualizações pendentes neste dispositivo está aprovada.",
       "ring_deleted": "Cancelado antes do envio: o anel de atualização foi excluído.",
       "ring_disabled": "Cancelado antes do envio: o anel de atualização foi desativado.",
-      "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo."
+      "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo.",
+      "all_managed_by_vendor_updates": "Ignorado: todas as atualizações pendentes neste dispositivo são gerenciadas pelas atualizações do fabricante, então nenhuma aprovação é necessária."
     },
     "errors": {
       "load": "Falha ao carregar o trabalho de patch"
@@ -673,5 +676,38 @@
       "hold_one": "Atraso de {{count}} dia",
       "hold_other": "Atraso de {{count}} dias"
     }
+  },
+  "vendorUpdates": {
+    "description": "A ferramenta de atualização de cada fabricante, mantida em execução com um agendamento por uma política de configuração. Os dispositivos que nenhuma política desse tipo alcança aparecem como Não gerenciado.",
+    "loadError": "Não foi possível carregar as atualizações do fabricante.",
+    "retry": "Tentar novamente",
+    "pickOrganization": "Selecione uma organização para ver as atualizações do fabricante dela.",
+    "loading": "Carregando atualizações do fabricante",
+    "empty": "Nenhum dispositivo corresponde a este filtro.",
+    "vendorFilter": "Fabricante",
+    "allVendors": "Todos os fabricantes",
+    "state": {
+      "upToDate": "Em dia",
+      "overdue": "Atrasado",
+      "failing": "Com falha",
+      "notSupported": "Sem suporte",
+      "notManaged": "Não gerenciado",
+      "waitingForReboot": "Aguardando reinicialização",
+      "rebootOverdue": "Reinicialização atrasada"
+    },
+    "columns": {
+      "device": "Dispositivo",
+      "organization": "Organização",
+      "site": "Local",
+      "vendor": "Fabricante",
+      "state": "Status",
+      "lastRun": "Última execução",
+      "lastSuccess": "Último sucesso"
+    },
+    "never": "Nunca",
+    "scheduleNotHandedBack": "O Breeze não conseguiu devolver o agendamento da ferramenta do fabricante",
+    "range": "{{from}}–{{to}} de {{total}}",
+    "previous": "Anterior",
+    "next": "Avançar"
   }
 }

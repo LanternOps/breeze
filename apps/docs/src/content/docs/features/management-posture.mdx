@@ -22,7 +22,7 @@ Breeze detects tools across 11 categories:
 | **MDM** | Microsoft Intune, JAMF Pro, Mosyle, Kandji |
 | **RMM** | ConnectWise Automate, NinjaOne, Datto RMM, ScreenConnect, OpenFrame |
 | **Endpoint Security** | CrowdStrike Falcon, SentinelOne, Sophos Endpoint, Bitdefender |
-| **Remote Access** | TeamViewer, AnyDesk, Splashtop, LogMeIn, SimpleHelp, MeshCentral, TightVNC, RealVNC, UltraVNC |
+| **Remote Access** | TeamViewer, AnyDesk, Splashtop, LogMeIn, BeyondTrust, GoTo Resolve, RustDesk, SimpleHelp, MeshCentral, TightVNC, RealVNC, UltraVNC, UltraViewer, Zoho Assist, DWService, Supremo, Ammyy Admin, Chrome Remote Desktop |
 | **Policy Engine** | SCCM/MECM, Group Policy, Chef, Puppet, Salt |
 | **Backup** | Veeam Agent, Acronis Cyber Protect, Datto BCDR |
 | **Identity/MFA** | Okta Verify, Duo Desktop, JumpCloud |
@@ -109,6 +109,22 @@ Beyond the per-device tab, the **Fleet Posture** page (sidebar → Reporting →
 - **CSV export**, so the report can go to the customer as evidence of a completed migration.
 
 The fleet report is served by two aggregate endpoints (see the API reference below) — one request for the whole fleet instead of one call per device.
+
+---
+
+## New remote access tool alerts
+
+When a scan finds a remote access tool or an RMM agent that the device's previous scan did not have, Breeze raises an alert on the device: **New remote access tool on DESK-01: UltraViewer**. Remote access tools are common in tech-support scams, so an unexpected one is worth checking.
+
+- **The first scan is the baseline.** A device's first scan after enrollment raises nothing, so the tools you already run on a newly enrolled device stay quiet. Only a tool that appears later alerts.
+- **Agent upgrades can alert on tools that were already there.** When an agent release adds a tool to the list Breeze recognizes, a device that already has that tool reports it for the first time on its next scan and raises one alert for it.
+- **Severity:** Medium for a remote access tool, Info for an RMM agent.
+- **One alert per tool per device.** While the alert is open, the same tool raises nothing new on that device. The alert does not close on its own when the tool is removed; resolve it when you have checked. After that, a tool that goes away and comes back alerts again, unless it comes back within 15 minutes of the last alert.
+- **One rule per tool per organization**, listed under **Alerts → Monitors → Built-in alerts**. The rule is created the first time that tool alerts in the organization, so you cannot switch a tool off before its first alert there. Every organization starts with each rule on. If your team uses a tool on purpose, switch its rule off for that organization (for example **New remote access tool: Splashtop**). Other tools still alert.
+- **Maintenance windows that suppress alerts drop these alerts, not delay them.** A tool that appears during such a window does not alert after the window ends.
+- The alerts go through the normal alert pipeline, so they appear in the alerts list and on the device page, and reach notifications, webhooks and PSA the same way other alerts do.
+
+Only remote access and RMM tools the agent recognizes raise this alert. The Remote Access row above lists all of them; the RMM row shows examples.
 
 ---
 

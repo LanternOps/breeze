@@ -15,7 +15,12 @@ export const BACKUP_CRITICAL_AFTER_HOURS = 48;
  * Higher is worse. Order per the spec:
  *
  *   failed > over_quota > no_selection > no_backups > interrupted >
- *   completed_with_errors > not_started > unknown > in_progress > completed
+ *   completed_with_errors > not_started > paused > unknown > in_progress >
+ *   completed
+ *
+ * `paused` sits just below `not_started`: a parked device is a deliberate
+ * choice, not a run that never happened, but the bar must still not read it
+ * as fine.
  *
  * `in_progress` sits BELOW `completed` deliberately... no: it sits just above
  * it, because a day whose only observation is "a run is going" is marginally
@@ -32,6 +37,7 @@ export const EXTERNAL_BACKUP_STATUS_SEVERITY: Record<ExternalBackupStatus, numbe
   interrupted: 50,
   completed_with_errors: 40,
   not_started: 30,
+  paused: 25,
   unknown: 20,
   in_progress: 10,
   completed: 0,
@@ -104,7 +110,8 @@ export function mapBackupJobStatus(
  * mapping TOTAL over `EXTERNAL_BACKUP_STATUSES` — a status belonging to no
  * bucket would silently vanish from a chart whose percentages still summed to
  * 100%. It collects `not_started` (the vendor knows the device but no run has
- * been scheduled) and `unknown` (a vendor code we do not map), and UIs render
+ * been scheduled), `unknown` (a vendor code we do not map) and `paused` (an
+ * operator parked the device on purpose), and UIs render
  * it only when its count is non-zero, which keeps the familiar five-bar layout
  * in the normal case.
  */
@@ -126,7 +133,7 @@ export const BACKUP_STATUS_BUCKET_MEMBERS: Record<BackupStatusBucketId, readonly
   completed_with_errors: ['completed_with_errors'],
   in_progress: ['in_progress'],
   unsuccessful: ['failed', 'over_quota', 'no_selection', 'interrupted'],
-  other: ['not_started', 'unknown'],
+  other: ['not_started', 'unknown', 'paused'],
 };
 
 /** Reverse index, built once from the members table so the two can never drift. */
@@ -200,6 +207,11 @@ function recencyOf(lastSuccessAt: Date | string | null, now: Date): BackupRecenc
  * not read as healthy off yesterday's success. For every other status the
  * status itself already carries the verdict.
  *
+ * `paused` is the one exception to that independence: an operator stopped
+ * protecting the device on purpose, so it is `warning` and never `covered`,
+ * however fresh its last restore point. `recency` is still computed so the
+ * surfaces can show how old that point is.
+ *
  * The 24h/48h thresholds are constants in phase 1; per-connection overrides are
  * an explicit phase-2 item.
  */
@@ -211,10 +223,12 @@ export function deriveBackupHealth(input: {
 }): { health: BackupHealth; recency: BackupRecency; covered: boolean } {
   const now = input.now ?? new Date();
   const recency = recencyOf(input.lastSuccessAt, now);
-  const covered = recency === 'under_24h' || recency === 'under_48h';
+  const covered = input.status !== 'paused' && (recency === 'under_24h' || recency === 'under_48h');
 
   let health: BackupHealth;
-  if (CRITICAL_STATUSES.has(input.status)) {
+  if (input.status === 'paused') {
+    health = 'warning';
+  } else if (CRITICAL_STATUSES.has(input.status)) {
     health = 'critical';
   } else if (WARNING_STATUSES.has(input.status)) {
     health = 'warning';
@@ -239,6 +253,28 @@ export function deriveBackupHealth(input: {
 
 /** Re-exported so consumers can iterate the enum without a second import. */
 export { EXTERNAL_BACKUP_STATUSES };
+
+/** Providers whose devices carry verified-bootable evidence. */
+export const VERIFIED_BOOTABLE_PROVIDER_KEYS: readonly string[] = ['axcient'];
+
+export type VerifiedBootableState = 'passed' | 'failed' | 'never_run' | 'not_applicable';
+
+/**
+ * One reading of the verified-bootable fields for every surface.
+ *
+ * `undefined` is distinct from `null`: null is a device the provider has no
+ * result for ("never run"), while an absent field is a row saved in a report
+ * before the evidence existed, which says nothing about the device ("n/a").
+ */
+export function verifiedBootableState(row: {
+  providerKey: string | null;
+  verifiedBootable?: boolean | null;
+}): VerifiedBootableState {
+  if (!row.providerKey || !VERIFIED_BOOTABLE_PROVIDER_KEYS.includes(row.providerKey)) return 'not_applicable';
+  if (row.verifiedBootable === undefined) return 'not_applicable';
+  if (row.verifiedBootable === null) return 'never_run';
+  return row.verifiedBootable ? 'passed' : 'failed';
+}
 
 const SAAS_WORKLOAD_LABELS: Readonly<Record<string, string>> = {
   m365_mail: 'Microsoft 365 mail',

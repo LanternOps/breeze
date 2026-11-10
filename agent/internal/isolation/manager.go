@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,6 +102,10 @@ type Manager struct {
 	// expiryUnarmed is true after an ArmExpiry failure on a committed episode;
 	// the next Tick retries it. Guarded by opMu.
 	expiryUnarmed bool
+
+	// policyRejections are the rejections journalled since a policy was last
+	// adopted, for dedupe (bounded by maxPolicyRejections). Guarded by opMu.
+	policyRejections map[string]struct{}
 
 	// Test seams.
 	beforeEffect func(Effect) error
@@ -227,6 +232,12 @@ type attemptCtx struct {
 	digest     Digest
 	serverTime time.Time
 	drift      bool
+	// policy is adopted when the attempt commits. Nil keeps the journalled one
+	// (a re-verify or drift refresh reinstalls the same allowlist).
+	policy *policyStamp
+	// notes are event types an isolator reported about an apply that still
+	// succeeded (e.g. conntrack_unavailable); journalled with the commit.
+	notes []string
 }
 
 // op is one locked operation.
@@ -386,6 +397,28 @@ func (o *op) attemptFailed(attemptID, code, detail string) Event {
 	return Event{Kind: EvAttemptFailed, AttemptID: attemptID, Code: code, Err: detail}
 }
 
+// eventTypePattern is isolationJournalEventSchema's `type`: a report carrying
+// any other event type would be rejected by the server as a whole.
+var eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// takeApplyNotes collects an isolator's notes on its last Apply, if it keeps
+// any (an optional interface; most isolators have none).
+func takeApplyNotes(iso Isolator) []string {
+	noter, ok := iso.(interface{ TakeApplyNotes() []string })
+	if !ok {
+		return nil
+	}
+	var notes []string
+	for _, note := range noter.TakeApplyNotes() {
+		if !eventTypePattern.MatchString(note) {
+			log.Warn("isolation: dropping an apply note that is not a valid event type", "note", truncate(note, 80))
+			continue
+		}
+		notes = append(notes, note)
+	}
+	return notes
+}
+
 func (o *op) noteError(msg string) {
 	log.Warn("isolation: " + msg)
 	if o.j.Episode != nil {
@@ -438,9 +471,16 @@ func (o *op) exec(e Effect) Event {
 		}
 		d, err := iso.Apply(o.ctx, a.spec)
 		if err != nil {
-			return o.attemptFailed(e.AttemptID, FailApplyError, "apply: "+err.Error())
+			code := FailApplyError
+			// The host cannot safely host the rules (pf compatibility, OD13):
+			// nothing was installed, and the console shows why.
+			if errors.As(err, new(ErrIncompatible)) {
+				code = FailMechanismUnavailable
+			}
+			return o.attemptFailed(e.AttemptID, code, "apply: "+err.Error())
 		}
 		a.digest = d
+		a.notes = append(a.notes, takeApplyNotes(iso)...)
 	case EffRunProbes:
 		return o.runProbes(e.AttemptID)
 	case EffCommit:
@@ -756,6 +796,12 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 		if a.kind == AttemptApply {
 			ep.AppliedAt = now
 		}
+		if a.policy != nil {
+			a.policy.adopt(j, now)
+		}
+		for _, note := range a.notes {
+			j.Append(now, note, next.IsolationID, next.Generation, "")
+		}
 	}
 	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack || (next.Phase == journal.PhaseNone && next.ReleaseKind == ReleaseSystem)) {
 		j.PendingReport = &journal.TerminalReceipt{
@@ -769,6 +815,9 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 	o.j, o.state, o.missing, o.dirty = j, next, false, false
 	if commitOf {
 		o.m.lastReverify = now
+		if a.policy != nil {
+			o.m.policyRejections = nil
+		}
 	}
 	o.m.setSnapshot(j)
 	if o.m.onPersist != nil {
@@ -985,7 +1034,7 @@ func validateSpec(s *Spec, now time.Time) error {
 			return fmt.Errorf("allow[%d]: %w", i, err)
 		}
 	}
-	return nil
+	return validatePolicyRevision(s)
 }
 
 func validateEntry(e *AllowEntry) error {
@@ -1221,6 +1270,14 @@ func (o *op) isolateLocked(spec Spec) {
 		}
 	}
 
+	// A block that fails the policy rule changes no rules. Its secret, handled
+	// above, belongs to the episode and is the offline way out, so it is kept.
+	if reason := o.policyRefusal(spec); reason != "" {
+		o.rejectPolicy(spec.IsolationID, spec.Generation, reason)
+		o.report = policyRefusalEffect(reason)
+		return
+	}
+
 	// The desired episode differs from the journalled one: release it first.
 	if o.state.IsolationID != "" && o.state.IsolationID != spec.IsolationID && activePhase(o.state.Phase) {
 		o.run(Event{Kind: EvRelease, ReleaseKind: ReleaseSystem})
@@ -1247,11 +1304,24 @@ func (o *op) isolateLocked(spec Spec) {
 		if o.crashed || o.lockLost || o.report == nil || o.report.Refusal != "" {
 			return
 		}
-		if o.j.Episode != nil && !allowEqual(o.j.Episode.Allow, spec.Allow) {
+		if o.j.Episode == nil {
+			return
+		}
+		// Rules change only through a verified refresh, which keeps the episode
+		// and restores the last verified rules if it fails. The policy is adopted
+		// when that refresh commits; with no rule change, it is adopted now.
+		if !allowEqual(o.j.Episode.Allow, spec.Allow) {
 			saved := o.report
-			o.refresh(spec.Allow, false)
+			o.refreshTo(spec.Allow, false, stampOf(spec))
 			if o.report == nil || o.report.Refusal == "" {
 				o.report = saved
+			}
+		} else if ep := o.j.Episode; string(spec.PolicyRevision) != ep.PolicyRevision || spec.Generation > ep.PolicyGeneration {
+			stampOf(spec).adopt(o.j, o.now())
+			if err := o.save(); err != nil {
+				o.noteError("record the containment policy: " + err.Error())
+			} else {
+				o.m.policyRejections = nil
 			}
 		}
 		return
@@ -1276,6 +1346,7 @@ func (o *op) isolateLocked(spec Spec) {
 		return
 	}
 	a.kind = AttemptApply
+	a.policy = stampOf(spec)
 	ev.AttemptID = a.id
 	o.attempt = a
 	o.newEpisode = &journal.EpisodeRecord{
@@ -1301,6 +1372,11 @@ func (o *op) refuse(failureCode, detail string) {
 // (and, when allow is given, a new allowlist). Failure restores the last
 // verified rules.
 func (o *op) refresh(allow []AllowEntry, drift bool) {
+	o.refreshTo(allow, drift, nil)
+}
+
+// refreshTo is refresh for a desired allowlist: policy is adopted on commit.
+func (o *op) refreshTo(allow []AllowEntry, drift bool, policy *policyStamp) {
 	ep := o.j.Episode
 	if ep == nil || o.state.Phase != journal.PhaseCommitted {
 		return
@@ -1313,7 +1389,7 @@ func (o *op) refresh(allow []AllowEntry, drift bool) {
 		o.noteError("refresh: " + err.Error())
 		return
 	}
-	a.kind, a.drift = AttemptRefresh, drift
+	a.kind, a.drift, a.policy = AttemptRefresh, drift, policy
 	o.attempt = a
 	o.run(Event{Kind: EvRefresh, AttemptID: a.id})
 }
@@ -1409,11 +1485,18 @@ func (m *Manager) Reconcile(ctx context.Context, desired *DesiredBlock) {
 		}
 		if snap := m.snapshot(); snap != nil && snap.Episode != nil && snap.Episode.IsolationID == spec.IsolationID {
 			ep := snap.Episode
-			if spec.Generation < ep.Generation || snap.Phase == journal.PhaseReleased || snap.Phase == journal.PhaseRolledBack {
-				return // older generation, or ended locally: nothing to do
+			if snap.Phase == journal.PhaseReleased || snap.Phase == journal.PhaseRolledBack {
+				return // ended locally: nothing to do
+			}
+			if spec.Generation < ep.Generation {
+				if policyBearing(spec) && string(spec.PolicyRevision) != ep.PolicyRevision {
+					m.NotePolicyRejected(ctx, spec.IsolationID, spec.Generation, PolicyRejectRevisionRegressed)
+				}
+				return // older generation: nothing to do
 			}
 			if snap.Phase == journal.PhaseCommitted && spec.Generation == ep.Generation &&
-				allowEqual(ep.Allow, spec.Allow) && (len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) {
+				allowEqual(ep.Allow, spec.Allow) && string(spec.PolicyRevision) == ep.PolicyRevision &&
+				(len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) {
 				return // already applied as desired
 			}
 		}

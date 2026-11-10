@@ -251,3 +251,168 @@ it("shows Dropsuite guidance in a failed connection-test modal", async () => {
   fireEvent.click(screen.getByTestId("backup-connection-test"));
   expect(await screen.findByTestId("backup-test-modal")).not.toHaveTextContent("Cove API user");
 });
+
+function postedBody(): string {
+  const call = fetchMock.mock.calls.find(([u, i]) => u === "/backup/providers/connections" && (i as RequestInit)?.method === "POST");
+  return (call![1] as RequestInit).body as string;
+}
+
+describe("posted bodies stay byte-identical (raw JSON, including key order)", () => {
+  it("Cove", async () => {
+    render(<BackupProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("backup-providers-add"));
+    for (const [field, value] of Object.entries({ name: " Second Cove ", "partner-name": " OliveTech ", username: " breeze-ro ", password: " s3cret " })) {
+      fireEvent.change(screen.getByTestId(`backup-add-${field}`), { target: { value } });
+    }
+    fireEvent.click(screen.getByTestId("backup-add-submit"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections", expect.objectContaining({ method: "POST" })));
+    expect(postedBody()).toBe('{"provider":"cove","name":"Second Cove","showProviderNameInPortal":false,"credentials":{"partnerName":"OliveTech","username":"breeze-ro","password":" s3cret "}}');
+  });
+
+  it("Dropsuite", async () => {
+    render(<BackupProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("backup-providers-add"));
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "dropsuite" } });
+    for (const [field, value] of Object.entries({ name: " SaaS ", "reseller-token": " r ", "auth-token": " a ", "base-url": " https://dropsuite.us/api/ " })) {
+      fireEvent.change(screen.getByTestId(`backup-add-${field}`), { target: { value } });
+    }
+    fireEvent.click(screen.getByTestId("backup-add-submit"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections", expect.objectContaining({ method: "POST" })));
+    expect(postedBody()).toBe('{"provider":"dropsuite","baseUrl":"https://dropsuite.us/api/","name":"SaaS","showProviderNameInPortal":false,"credentials":{"resellerToken":"r","authToken":"a"}}');
+  });
+
+  it("requires partner name, login and token for Cove before submit, and rejects a blank token", async () => {
+    render(<BackupProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("backup-providers-add"));
+    fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Cove" } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: "p" } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-username"), { target: { value: "u" } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-partner-name"), { target: { value: "n" } });
+    expect(screen.getByTestId("backup-add-submit")).not.toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: " " } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    expect(screen.getByTestId("backup-add-password")).not.toBeRequired();
+    expect(screen.getByTestId("backup-add-username")).not.toBeRequired();
+    expect(screen.getByTestId("backup-add-partner-name")).not.toHaveAttribute("autoComplete");
+  });
+});
+
+describe("Axcient connections", () => {
+  async function openForm() {
+    render(<BackupProvidersIntegration />);
+    await screen.findByTestId("backup-connection-conn-1");
+    fireEvent.click(screen.getByTestId("backup-providers-add"));
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "axcient" } });
+  }
+
+  it("offers the three providers in descriptor order", async () => {
+    render(<BackupProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("backup-providers-add"));
+    const options = Array.from((screen.getByTestId("backup-add-provider") as HTMLSelectElement).options);
+    expect(options.map((o) => o.value)).toEqual(["cove", "dropsuite", "axcient"]);
+    expect(options[2]!.textContent).toBe("Axcient x360Recover");
+  });
+
+  it("POSTs an Axcient connection with only { apiKey } and no baseUrl", async () => {
+    await openForm();
+    fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Main Axcient" } });
+    fireEvent.change(screen.getByTestId("backup-add-api-key"), { target: { value: " test-axcient-key-0000 " } });
+    fireEvent.click(screen.getByTestId("backup-add-submit"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections", expect.objectContaining({ method: "POST" })));
+    expect(JSON.parse(postedBody())).toEqual({
+      provider: "axcient",
+      name: "Main Axcient",
+      showProviderNameInPortal: false,
+      credentials: { apiKey: "test-axcient-key-0000" },
+    });
+  });
+
+  it("shows the Axcient help text naming both product scopes", async () => {
+    await openForm();
+    const help = screen.getByTestId("backup-add-help").textContent ?? "";
+    expect(help).toContain("x360Recover");
+    expect(help).toContain("Billing");
+    expect(help).toContain("x360Portal");
+  });
+
+  it("renders one masked API key field, with no base URL and no Cove or Dropsuite fields", async () => {
+    await openForm();
+    const key = screen.getByTestId("backup-add-api-key");
+    expect(key).toHaveAttribute("type", "password");
+    expect(key).toHaveAttribute("autoComplete", "new-password");
+    expect(key).toBeRequired();
+    expect(screen.queryByTestId("backup-add-api-key-toggle")).toBeNull();
+    for (const absent of ["base-url", "partner-name", "username", "password", "password-toggle", "reseller-token", "auth-token"]) {
+      expect(screen.queryByTestId(`backup-add-${absent}`)).toBeNull();
+    }
+    expect(screen.getByTestId("backup-add-name")).toHaveAttribute("placeholder", "Main Axcient account");
+  });
+
+  it("requires a name and a non-blank API key", async () => {
+    await openForm();
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Main Axcient" } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-api-key"), { target: { value: "   " } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-api-key"), { target: { value: "test-axcient-key-0000" } });
+    expect(screen.getByTestId("backup-add-submit")).not.toBeDisabled();
+  });
+
+  it("does not carry a secret typed for one provider into another provider's body or field", async () => {
+    render(<BackupProvidersIntegration />);
+    await screen.findByTestId("backup-connection-conn-1");
+    fireEvent.click(screen.getByTestId("backup-providers-add"));
+    fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Switched" } });
+    fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: "cove-secret" } });
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "dropsuite" } });
+    fireEvent.change(screen.getByTestId("backup-add-reseller-token"), { target: { value: "reseller-secret" } });
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "axcient" } });
+    expect(screen.getByTestId("backup-add-api-key")).toHaveValue("");
+    fireEvent.change(screen.getByTestId("backup-add-api-key"), { target: { value: "test-axcient-key-0000" } });
+    fireEvent.click(screen.getByTestId("backup-add-submit"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections", expect.objectContaining({ method: "POST" })));
+    const raw = postedBody();
+    expect(raw).not.toContain("cove-secret");
+    expect(raw).not.toContain("reseller-secret");
+    expect(JSON.parse(raw).credentials).toEqual({ apiKey: "test-axcient-key-0000" });
+  });
+
+  it("does not post a Dropsuite base URL after switching to a provider without one", async () => {
+    render(<BackupProvidersIntegration />);
+    await screen.findByTestId("backup-connection-conn-1");
+    fireEvent.click(screen.getByTestId("backup-providers-add"));
+    fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Switched" } });
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "dropsuite" } });
+    fireEvent.change(screen.getByTestId("backup-add-base-url"), { target: { value: "https://dropsuite.us/api/" } });
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "axcient" } });
+    fireEvent.change(screen.getByTestId("backup-add-api-key"), { target: { value: "test-axcient-key-0000" } });
+    fireEvent.click(screen.getByTestId("backup-add-submit"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections", expect.objectContaining({ method: "POST" })));
+    expect(JSON.parse(postedBody())).not.toHaveProperty("baseUrl");
+  });
+
+  it("clears typed credentials when the provider changes, so going back shows an empty secret", async () => {
+    render(<BackupProvidersIntegration />);
+    await screen.findByTestId("backup-connection-conn-1");
+    fireEvent.click(screen.getByTestId("backup-providers-add"));
+    fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: "cove-secret" } });
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "axcient" } });
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "cove" } });
+    expect(screen.getByTestId("backup-add-password")).toHaveValue("");
+  });
+
+  it("shows Axcient guidance in a failed connection-test modal", async () => {
+    routeFetch([{ ...conn, provider: "axcient" }]);
+    render(<BackupProvidersIntegration />);
+    await screen.findByTestId("backup-connection-test");
+    fetchMock.mockResolvedValueOnce(res({ success: false, error: "Axcient rejected the API key." }));
+    fireEvent.click(screen.getByTestId("backup-connection-test"));
+    const modal = await screen.findByTestId("backup-test-modal");
+    expect(modal).toHaveTextContent("x360Portal");
+    expect(modal).not.toHaveTextContent("Cove API user");
+  });
+});

@@ -124,6 +124,11 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
   };
 });
 
+vi.mock('./commandOrgScope', async () => {
+  const { sql } = await import('drizzle-orm');
+  return { deviceCommandsInCurrentOrg: vi.fn(async () => sql`command_org_scope`) };
+});
+
 vi.mock('./helpers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./helpers')>()),
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
@@ -194,10 +199,11 @@ vi.mock('../../services/authEpochs', () => ({
 }));
 
 import { commandsRoutes } from './commands';
-import { db, runAfterDbContextCommit } from '../../db';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
+import { db, runAfterDbContextCommit, withDbAccessContext } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { dispatchWake } from '../../services/wakeOnLan';
+import { dispatchWake, type WakePrepared, type WakeSuccess } from '../../services/wakeOnLan';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
 import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
 import { propagateCancelledDeviceCommand, cancelDeviceCommands } from '../../services/commandCancelPropagation';
@@ -754,9 +760,92 @@ describe('device commands routes', () => {
       expect(body.queuedOffline).toEqual([]);
     });
 
+    describe('single wake (type=wake)', () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      const prepared = { ok: true as const, commandId: 'cmd', wakeAttemptId: 'attempt', targetDeviceId: id,
+        targetHostname: 'target', relayDeviceId: 'relay', relayHostname: 'relay', network: '192.0.2.0',
+        broadcast: '192.0.2.255', maskSource: 'agent' as const, macs: ['02:00:00:00:00:01'] };
+      const send = () => app.request(`/devices/${id}/commands`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'wake' }),
+      });
+
+      beforeEach(() => {
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValue({ id, orgId: 'org-123', status: 'offline', hostname: 'target' } as never);
+      });
+
+      it('commits the attempt and command before delivering to the relay', async () => {
+        const events: string[] = [];
+        vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => {
+          events.push('begin');
+          const value = await fn();
+          events.push('commit');
+          return value;
+        });
+        vi.mocked(dispatchWake).mockImplementationOnce(async () => {
+          events.push('prepare');
+          return { ...prepared, deliver: async () => { events.push('send'); return prepared; } };
+        });
+        try {
+          const res = await send();
+          expect(res.status).toBe(202);
+          expect(await res.json()).toMatchObject({ id: 'cmd', status: 'sent', wakeAttemptId: 'attempt' });
+          expect(events).toEqual(['begin', 'prepare', 'commit', 'send']);
+        } finally {
+          vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => fn());
+        }
+      });
+
+      it('returns 412 when delivery fails after the commit', async () => {
+        vi.mocked(dispatchWake).mockResolvedValueOnce({ ...prepared, deliver: async () => (
+          { ok: false as const, code: 'WS_SEND_FAILED' as const, message: 'Relay agent went offline' }
+        ) });
+        const res = await send();
+        expect(res.status).toBe(412);
+        expect(await res.json()).toEqual({ error: 'Relay agent went offline', code: 'WS_SEND_FAILED' });
+      });
+
+      it('returns 412 without delivering when preparation refuses', async () => {
+        vi.mocked(dispatchWake).mockResolvedValueOnce({ ok: false, code: 'TARGET_ONLINE', message: 'Device is online' });
+        const res = await send();
+        expect(res.status).toBe(412);
+        expect(await res.json()).toEqual({ error: 'Device is online', code: 'TARGET_ONLINE' });
+      });
+    });
+
     describe('bulk-wake (type=wake)', () => {
+      const prepared = (result: WakeSuccess): WakePrepared => ({ ...result, deliver: async () => result });
       const onlineDevice = (id: string) =>
         ({ id, orgId: 'org-123', status: 'online', hostname: `host-${id.slice(0, 4)}` } as never);
+
+      it('commits each wake before delivery and before preparing the next device', async () => {
+        const ids = ['11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'];
+        const events: string[] = [];
+        vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => {
+          events.push('begin');
+          const value = await fn();
+          events.push('commit');
+          return value;
+        });
+        vi.mocked(getDeviceWithOrgCheck).mockImplementation(async id => onlineDevice(id));
+        vi.mocked(dispatchWake).mockImplementation(async (id) => {
+          events.push(`prepare:${id}`);
+          const result = { ok: true as const, commandId: id, wakeAttemptId: id, targetDeviceId: id,
+            targetHostname: 'target', relayDeviceId: 'relay', relayHostname: 'relay', network: '192.0.2.0',
+            broadcast: '192.0.2.255', maskSource: 'agent' as const, macs: ['02:00:00:00:00:01'] };
+          return { ...result, deliver: async () => { events.push(`send:${id}`); return result; } };
+        });
+        try {
+          const response = await app.request('/devices/bulk/commands', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceIds: ids, type: 'wake' }),
+          });
+          expect(response.status).toBe(202);
+          expect((await response.json()).succeeded).toHaveLength(2);
+          expect(events).toEqual(ids.flatMap(id => ['begin', `prepare:${id}`, 'commit', `send:${id}`]));
+        } finally {
+          vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => fn());
+        }
+      });
 
       it('iterates dispatchWake per device and returns per-device outcomes with a shared bulkId', async () => {
         // 3 devices: 2 wake-able, 1 with no relay
@@ -766,7 +855,7 @@ describe('device commands routes', () => {
           .mockResolvedValueOnce(onlineDevice('33333333-3333-3333-3333-333333333333'));
 
         vi.mocked(dispatchWake)
-          .mockResolvedValueOnce({
+          .mockResolvedValueOnce(prepared({
             ok: true,
             commandId: 'cmd-1',
             wakeAttemptId: 'wake-1',
@@ -778,13 +867,13 @@ describe('device commands routes', () => {
             broadcast: '10.10.10.255',
             maskSource: 'agent',
             macs: ['aa:bb:cc:dd:ee:01'],
-          })
+          }))
           .mockResolvedValueOnce({
             ok: false,
             code: 'NO_RELAY',
             message: 'No online peer agent is available at the target\'s site and subnet to relay the Wake-on-LAN packet.',
           })
-          .mockResolvedValueOnce({
+          .mockResolvedValueOnce(prepared({
             ok: true,
             commandId: 'cmd-3',
             wakeAttemptId: 'wake-3',
@@ -796,7 +885,7 @@ describe('device commands routes', () => {
             broadcast: '10.10.20.255',
             maskSource: 'agent',
             macs: ['aa:bb:cc:dd:ee:03'],
-          });
+          }));
 
         const res = await app.request('/devices/bulk/commands', {
           method: 'POST',
@@ -2133,6 +2222,7 @@ describe('device commands routes', () => {
       expect(res.status).toBe(404);
       expect(txUpdate).not.toHaveBeenCalled();
       expect(cancelDeviceCommands).not.toHaveBeenCalled();
+      expect(deviceCommandsInCurrentOrg).toHaveBeenCalledWith(expect.objectContaining({ id: DEVICE_ID }));
     });
   });
 

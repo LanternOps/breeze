@@ -16,7 +16,7 @@
  *   6. wait up to 8 s, then answer 200 or 202
  */
 import { and, eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext } from '../db';
 import { discoveredAssets } from '../db/schema';
 import { loadAssetSiteId, selectNetworkExecutor } from './networkExecutorSelection';
 import { dispatchCommandToAgent } from './agentCommandRelay';
@@ -87,8 +87,13 @@ export async function runAssetProbe(
   onDispatch({ agentId: pick.agentId, commandId });
 
   const waiting = awaitProbeResult(commandId, PROBE_WAIT_MS);
-  const outcome = await dispatchCommandToAgent(
-    pick.agentId,
+  // Outside the caller's DB context: the relay refuses to run inside a held
+  // one (#4142), and the route calls this inside its request transaction
+  // (which keeps the asset row lock through the probe). The send touches no
+  // database.
+  const probeAgentId = pick.agentId;
+  const outcome = await runOutsideDbContext(() => dispatchCommandToAgent(
+    probeAgentId,
     {
       id: commandId,
       type: 'network_ping',
@@ -103,7 +108,7 @@ export async function runAssetProbe(
       },
     },
     { priority: 'probe' },
-  );
+  ));
 
   if (outcome.status !== 'sent') {
     // The agent went away between the pick and the send. Close the probe out

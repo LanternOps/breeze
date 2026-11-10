@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { wispGrantRevisions, wispGrants } from '../../db/schema';
 
 /**
@@ -91,6 +93,7 @@ import {
   wideningAvailable,
   resolveMaxGrants,
   listGrants,
+  getActiveGrantForUser,
   previewGrantCeiling,
   WispGrantError,
   GrantLimitReachedError,
@@ -383,6 +386,37 @@ describe('updateGrantSettings', () => {
     expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'wisp.grant.settings_changed' }));
   });
 
+  describe('#10390 summaryRefine: spend, not authority', () => {
+    it('is off on a grant that never set it', async () => {
+      h.results.push([grantRow()], [grantRow({ floorTickMinutes: 60 })]);
+      await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { floorTickMinutes: 60 } }))
+        .resolves.toMatchObject({ summaryRefine: false });
+    });
+
+    it.each([true, false])('the grantor sets it to %s with no step-up, and the audit records the change', async (value) => {
+      h.results.push([grantRow({ summaryRefine: !value })], [grantRow({ summaryRefine: value })]);
+      const g = await updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { summaryRefine: value } });
+      expect(g.summaryRefine).toBe(value);
+      expect(setsApplied()[0]).toEqual({ summaryRefine: value });
+      expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'wisp.grant.settings_changed',
+        details: expect.objectContaining({
+          from: expect.objectContaining({ summaryRefine: !value }),
+          to: expect.objectContaining({ summaryRefine: value }),
+        }),
+      }));
+    });
+
+    it('a partner admin may set it, like budget; another tech → forbidden', async () => {
+      h.results.push([grantRow({ grantorUserId: ADMIN })], [grantRow({ grantorUserId: ADMIN, summaryRefine: true })]);
+      await expect(updateGrantSettings({ auth: auth({ partnerOrgAccess: 'all' }), grantId: 'g1', patch: { summaryRefine: true } }))
+        .resolves.toMatchObject({ summaryRefine: true });
+      h.results.push([grantRow({ grantorUserId: ADMIN })]);
+      await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { summaryRefine: true } }))
+        .rejects.toMatchObject({ code: 'forbidden' });
+    });
+  });
+
   it('a partner admin (canManagePartnerWidePolicies) may too; another tech → forbidden', async () => {
     h.results.push([grantRow({ grantorUserId: ADMIN })], [grantRow({ grantorUserId: ADMIN, budgetCentsPerDay: 500 })]);
     await expect(updateGrantSettings({ auth: auth({ partnerOrgAccess: 'all' }), grantId: 'g1', patch: { budgetCentsPerDay: 500 } }))
@@ -624,5 +658,182 @@ describe('partner enable switch (W08 Task 6, w00 A35)', () => {
   it('partner_disabled is a system pause: userResumeGrant on it is not_user_paused even with the switch back on', async () => {
     h.results.push([grantRow({ status: 'paused', pausedReason: 'partner_disabled' })]);
     await expect(userResumeGrant({ auth: auth(), grantId: 'g1' })).rejects.toMatchObject({ code: 'not_user_paused' });
+  });
+});
+
+describe('unattended reads (#10973): default off, step-up to enable, grantor-only', () => {
+  const SNAPSHOT_FLAG = { unattendedReads: true };
+  const scope = { partnerId: PARTNER, orgId: null };
+
+  it('createGrant never turns it on: the column stays default and the snapshot is silent', async () => {
+    h.results.push([grantRow()]); // insert grant
+    h.results.push([{ id: 'r1' }]); // insert revision
+    h.results.push([grantRow()]); // link
+    const g = await createGrant({ auth: auth(), scope, stepUpGrantId: 'step-1' });
+    expect(g).toMatchObject({ unattendedReads: false, unattendedReadsPinned: false });
+    const inserted = valuesInserted();
+    expect(inserted[0]).not.toHaveProperty('unattendedReads');
+    expect(inserted[1]!.ceilingSnapshot).not.toHaveProperty('unattendedReads');
+  });
+
+  it('refresh with the flag: one transaction pins it on revision n+1 and sets the column', async () => {
+    h.results.push([grantRow()]); // load grant
+    h.results.push([{ maxRevision: 1 }]);
+    h.results.push([{ id: 'r2' }]);
+    h.results.push([grantRow({ currentRevisionId: 'r2', unattendedReads: true })]);
+    const g = await refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1', unattendedReads: true });
+    expect(valuesInserted()[0]!.ceilingSnapshot).toMatchObject(SNAPSHOT_FLAG);
+    expect(setsApplied()[0]).toMatchObject({ currentRevisionId: 'r2', unattendedReads: true });
+    expect(g).toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+    expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'wisp.grant.refreshed',
+      details: expect.objectContaining({ unattendedReads: 'enabled' }),
+    }));
+  });
+
+  it('the step-up digest binds the flag: a proof minted without it cannot enable it', async () => {
+    const noFlag = await previewGrantCeiling({ auth: auth(), scope });
+    h.results.push([grantRow()]);
+    h.consumeStepUpGrant.mockImplementationOnce(async (_id: string, expected: { resourceDigest: string }) =>
+      expected.resourceDigest === wispGrantResourceDigest({ grantorUserId: USER, partnerId: PARTNER, orgId: null, requestedCeilingHash: noFlag.ceilingHash }));
+    await expect(refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1', unattendedReads: true }))
+      .rejects.toMatchObject({ code: 'step_up_required' });
+    expect(callsOf('insert')).toHaveLength(0);
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
+  it('preview with the flag returns the hash the enabling refresh consumes', async () => {
+    const preview = await previewGrantCeiling({ auth: auth(), scope, unattendedReads: true });
+    expect(preview.ceilingSnapshot).toMatchObject(SNAPSHOT_FLAG);
+    h.results.push([grantRow()]);
+    h.results.push([{ maxRevision: 1 }]);
+    h.results.push([{ id: 'r2' }]);
+    h.results.push([grantRow({ currentRevisionId: 'r2', unattendedReads: true })]);
+    await refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1', unattendedReads: true });
+    expect(h.consumeStepUpGrant.mock.calls[0]![1]).toMatchObject({
+      resourceDigest: wispGrantResourceDigest({ grantorUserId: USER, partnerId: PARTNER, orgId: null, requestedCeilingHash: preview.ceilingHash }),
+    });
+  });
+
+  it('a plain refresh of a switched-on grant keeps the switch: the new revision stays flagged', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([{ maxRevision: 1 }]);
+    h.results.push([{ id: 'r2' }]);
+    h.results.push([grantRow({ currentRevisionId: 'r2', unattendedReads: true })]);
+    const g = await refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' });
+    expect(valuesInserted()[0]!.ceilingSnapshot).toMatchObject(SNAPSHOT_FLAG);
+    expect(setsApplied()[0]).not.toHaveProperty('unattendedReads');
+    expect(g.unattendedReads).toBe(true);
+  });
+
+  it('a refresh preview naming the grant reports the hash a plain refresh will consume', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    const preview = await previewGrantCeiling({ auth: auth(), scope, refreshGrantId: 'g1' });
+    expect(preview.ceilingSnapshot).toMatchObject(SNAPSHOT_FLAG);
+  });
+
+  it("a refresh preview refuses someone else's grant", async () => {
+    h.results.push([grantRow({ grantorUserId: ADMIN })]);
+    await expect(previewGrantCeiling({ auth: auth(), scope, refreshGrantId: 'g1' })).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('a plain refresh of a switched-off grant stays unflagged', async () => {
+    h.results.push([grantRow({ unattendedReads: false })]);
+    h.results.push([{ maxRevision: 1 }]);
+    h.results.push([{ id: 'r2' }]);
+    h.results.push([grantRow({ currentRevisionId: 'r2' })]);
+    await refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' });
+    expect(valuesInserted()[0]!.ceilingSnapshot).not.toHaveProperty('unattendedReads');
+  });
+
+  it('the refresh compares the switch: flipped since the row was read, the update misses and asks to retry', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([{ maxRevision: 1 }]);
+    h.results.push([{ id: 'r2' }]);
+    h.results.push([]); // the compare-and-set matched nothing
+    await expect(refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' })).rejects.toMatchObject({ code: 'not_active' });
+    const rendered = callsOf('where').map((c) => new PgDialect().sqlToQuery(c.args[0] as SQL).sql);
+    expect(rendered.at(-1)).toMatch(/"unattended_reads" = \$/);
+  });
+
+  it('getActiveGrantForUser carries both flags, so the main thread entry shows the real switch', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([{ id: 'r1' }]);
+    await expect(getActiveGrantForUser(USER, scope)).resolves.toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+    h.results.push([grantRow({ unattendedReads: false })]);
+    h.results.push([{ id: 'r1' }]);
+    await expect(getActiveGrantForUser(USER, scope)).resolves.toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
+  });
+
+  it('listGrants maps the pin per row: pinned, unpinned, and no revision at all', async () => {
+    h.results.push([
+      grantRow({ id: 'a', currentRevisionId: 'r-a', unattendedReads: true }),
+      grantRow({ id: 'b', currentRevisionId: 'r-b', unattendedReads: false }),
+      grantRow({ id: 'c', currentRevisionId: null, unattendedReads: false }),
+    ]);
+    h.results.push([{ id: 'r-a' }]);
+    const grants = await listGrants({ auth: auth(), view: 'mine' });
+    expect(grants.map((g) => [g.id, g.unattendedReads, g.unattendedReadsPinned])).toEqual([
+      ['a', true, true], ['b', false, false], ['c', false, false],
+    ]);
+  });
+
+  it('pause and resume report the flags too', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'user_paused', unattendedReads: true })]);
+    h.results.push([{ id: 'r1' }]);
+    await expect(userPauseGrant({ auth: auth(), grantId: 'g1' })).resolves.toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+  });
+
+  it('settings PATCH: a failed pin read writes no audit row, because the request transaction rolls back', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([grantRow({ unattendedReads: false })]);
+    h.results.push(new Error('connection lost'));
+    await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { unattendedReads: false } })).rejects.toThrow('connection lost');
+    expect(h.createAuditLogAsync).not.toHaveBeenCalled();
+  });
+
+  it('non-grantor cannot enable, even a partner admin', async () => {
+    h.results.push([grantRow({ grantorUserId: ADMIN })]);
+    await expect(refreshGrant({ auth: auth({ partnerOrgAccess: 'all' }), grantId: 'g1', stepUpGrantId: 'step-1', unattendedReads: true }))
+      .rejects.toMatchObject({ code: 'forbidden' });
+    expect(h.consumeStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('settings PATCH refuses true outright (no read, no write)', async () => {
+    await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { unattendedReads: true } }))
+      .rejects.toMatchObject({ code: 'step_up_required' });
+    expect(callsOf('select')).toHaveLength(0);
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
+  it('settings PATCH false: the grantor turns it off immediately, with an audit trail', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([grantRow({ unattendedReads: false })]);
+    h.results.push([{ id: 'r1' }]); // the current revision is still flagged
+    const g = await updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { unattendedReads: false } });
+    expect(setsApplied()[0]).toEqual({ unattendedReads: false });
+    expect(g).toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
+    expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'wisp.grant.settings_changed',
+      details: expect.objectContaining({
+        from: expect.objectContaining({ unattendedReads: true }),
+        to: expect.objectContaining({ unattendedReads: false }),
+      }),
+    }));
+  });
+
+  it('settings PATCH false: a partner admin may not, though they may change the budget', async () => {
+    h.results.push([grantRow({ grantorUserId: ADMIN, unattendedReads: true })]);
+    await expect(updateGrantSettings({ auth: auth({ partnerOrgAccess: 'all' }), grantId: 'g1', patch: { unattendedReads: false } }))
+      .rejects.toMatchObject({ code: 'forbidden' });
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
+  it('effective is pinned AND live: a live column over an unflagged current revision reads off', async () => {
+    h.results.push([grantRow({ unattendedReads: true })]);
+    h.results.push([]); // revision not flagged
+    const [g] = await listGrants({ auth: auth(), view: 'mine' });
+    expect(g).toMatchObject({ unattendedReads: false, unattendedReadsPinned: false });
   });
 });

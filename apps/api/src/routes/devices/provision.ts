@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import { devices, organizations, sites, provisionCredentialHandles } from '../../db/schema';
 import {
   authMiddleware,
@@ -382,9 +382,10 @@ provisionRoutes.get('/provision/fetch/:token', async (c) => {
   // ── 3. Expiry ───────────────────────────────────────────────────────────
   if (new Date(row.expiresAt) < new Date()) {
     // Best-effort cleanup of the expired row; ignore failures.
-    await db
+    // Savepoint so a failed delete cannot poison the request transaction (#11203).
+    await withDbTransaction(async () => db
       .delete(provisionCredentialHandles)
-      .where(eq(provisionCredentialHandles.id, row.id))
+      .where(eq(provisionCredentialHandles.id, row.id)))
       .catch(() => {});
     return c.json({ error: 'handle expired' }, 410);
   }
@@ -409,10 +410,11 @@ provisionRoutes.get('/provision/fetch/:token', async (c) => {
   }
 
   // ── 5. Hard-delete so plaintext secrets don't linger at rest ────────────
+  // Fail closed: no catch. A failed delete must fail the request so the consume
+  // above rolls back with it; the plaintext never outlives a successful consume.
   await db
     .delete(provisionCredentialHandles)
-    .where(eq(provisionCredentialHandles.id, row.id))
-    .catch(() => {});
+    .where(eq(provisionCredentialHandles.id, row.id));
 
   writeRouteAudit(c, {
     orgId: row.orgId,

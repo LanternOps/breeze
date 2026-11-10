@@ -212,6 +212,11 @@ static void cgFlagsChanged(int tap, int keycode, int flags) {
     }
 }
 
+// The modifier flags the HID system currently has, Caps Lock included.
+static long long hidSystemFlags(void) {
+    return (long long)CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState);
+}
+
 // setFlags selects how the event's modifier flags are handled:
 //
 //   1 — call CGEventSetFlags unconditionally, so `flags` is the COMPLETE
@@ -789,6 +794,25 @@ func (h *DarwinInputHandler) handleModifierKey(event InputEvent) (handled bool) 
 		C.cgFlagsChanged(h.cgTap(), C.int(keycode), flags)
 	}
 	return true
+}
+
+// ResetModifierState releases both sides of every modifier, held by the
+// running mask or not, keeping Caps Lock as it is: "Release stuck keys" for a
+// modifier macOS still has down that no record names (issue #9595).
+func (h *DarwinInputHandler) ResetModifierState() error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
+	h.mods.clear()
+	flags := C.int(macModifierResetFlags(int(C.hidSystemFlags())))
+	for _, kc := range macModifierKeycodes {
+		if h.shouldUseHID() {
+			C.hidFlagsChanged(C.int(kc), flags)
+		} else {
+			C.cgFlagsChanged(h.cgTap(), C.int(kc), flags)
+		}
+	}
+	return nil
 }
 
 func (h *DarwinInputHandler) HandleEvent(event InputEvent) error {

@@ -40,6 +40,8 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
 | **`lastScanType`** | Type of last scan: `quick`, `full`, or `custom` |
 | **`threatCount`** | Number of active threats on the device |
 | **`firewallEnabled`** | Whether the host firewall is active. `null` when the agent could not read it; shown as **Unknown** |
+| **`firewallStatus`** | `enabled`, `disabled` or `unsupported`, as the agent reports it. Omitted when the read failed. The API does not store this field yet, so an `unsupported` host shows as **Unknown** |
+| **`firewallStatusReason`** | Why a host is `unsupported`: `no_firewall_tool` (ufw, firewalld, nftables and iptables are all absent) or `permission` (the agent may not read the ruleset) |
 | **`encryptionStatus`** | Disk encryption state: `encrypted`, `partial`, or `unencrypted` |
 | **`encryptionDetails`** | Per-volume encryption breakdown (method, mount point, protection status) |
 | **`localAdminSummary`** | Local administrator account inventory with issue flags |
@@ -53,19 +55,19 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
     - **AV detection**: Windows Security Center (`root/SecurityCenter2`) via CIM, with fallback to `Get-MpComputerStatus` for Windows Server
     - **Firewall**: `Get-NetFirewallProfile` queries all three profiles (Domain, Private, Public)
     - **Encryption**: `Get-BitLockerVolume` reads BitLocker protection status and encryption percentage per volume
-    - **Local admins**: `Get-LocalGroupMember -Group 'Administrators'` enumerates the local Administrators group
+    - **Local admins**: `Get-LocalGroupMember -SID S-1-5-32-544` enumerates the local Administrators group under any display language. If the cmdlet fails, for example on a member whose SID no longer resolves, the agent reads `net localgroup` for 24 hours before it tries the cmdlet again
     - **Password policy**: `secedit /export /areas SECURITYPOLICY` reads min length, complexity, max and min age, lockout threshold, and history count from the local security policy. If the export fails, `NetUserModalsGet` (what `net accounts` uses) supplies everything except complexity, which then shows as Unknown. A max age of 0 means passwords never expire, which fails the 90-day check
   </TabItem>
   <TabItem label="macOS">
     - **AV detection**: CylancePROTECT / Aurora Endpoint Defense via its app bundle (`/Applications/Cylance/CylanceUI.app`) and launch daemon (`com.cylance.agent_service`), then Microsoft Defender for Endpoint via `mdatp health --output json`, with app bundle fallback. Cylance is attributed first; Defender takes the provider only when nothing else was found or when it is the only product with real-time protection on
     - **Gatekeeper**: `spctl --status` checks Gatekeeper enforcement state
-    - **Firewall**: `socketfilterfw --getglobalstate` or `defaults read com.apple.alf globalstate`
+    - **Firewall**: `socketfilterfw --getglobalstate`. Before macOS 15, `defaults read com.apple.alf globalstate` runs first
     - **Encryption**: `fdesetup status` detects FileVault state
     - **Local admins**: `dscl . -read /Groups/admin GroupMembership` lists admin group members
     - **Password policy**: `pwpolicy -getglobalpolicy` parses min chars, complexity, lockout, and history
   </TabItem>
   <TabItem label="Linux">
-    - **Firewall**: Checks `ufw status`, `firewall-cmd --state`, and `systemctl is-active firewalld` in order
+    - **Firewall**: Checks `ufw status`, then `firewall-cmd --state` and `systemctl is-active firewalld`, then reads the kernel ruleset with `nft list ruleset` and `iptables -S INPUT`. The full `iptables -S` is read only when INPUT jumps to other chains. A ruleset counts as enabled when it has a drop policy on input, or a drop or reject rule on input or in a chain input jumps to. Both rulesets are read, because iptables-legacy rules do not appear in `nft list ruleset`
     - **Encryption**: `lsblk -J` walks the block device tree looking for `crypt` type entries (LUKS)
     - **Local admins**: `getent group sudo` or `getent group wheel` enumerates privileged group members
     - **Password policy**: Parses `/etc/login.defs` for min length and max age, checks PAM modules for complexity, and reads `/etc/security/faillock.conf` for lockout threshold
@@ -93,12 +95,13 @@ The agent normalizes detected AV products to one of the following provider ident
 | `webroot` | Webroot SecureAnywhere | OpenText |
 | `withsecure` | WithSecure Elements | WithSecure |
 | `cylance` | Aurora Endpoint Defense (CylancePROTECT) | Arctic Wolf |
+| `trend_micro` | Trend Micro | Trend Micro |
 | `other` | Other | Other |
 
-ThreatDown (Malwarebytes' business brand) reports as `malwarebytes`. F-Secure products report as `withsecure`. Aurora Endpoint Defense still registers with Windows Security Center as CylancePROTECT and reports as `cylance`.
+ThreatDown (Malwarebytes' business brand) reports as `malwarebytes`. F-Secure products report as `withsecure`. Aurora Endpoint Defense still registers with Windows Security Center as CylancePROTECT and reports as `cylance`. A Windows Security Center product whose name contains "Trend Micro" (for example the Apex One or Worry-Free agent) reports as `trend_micro`. Huntress is not a separate provider: Huntress Managed AV works through Microsoft Defender, so those devices normally report as `windows_defender`.
 
 <Aside type="tip">
-  On Windows workstations, the agent queries `root/SecurityCenter2` which returns all registered AV products. The product with active real-time protection is selected as the primary provider. On Windows Server (where Security Center is unavailable), the agent falls back to querying Microsoft Defender directly via `Get-MpComputerStatus`. Provider name matching is order-sensitive: Elastic Defend (registered as Elastic Agent / Elastic Endpoint Security) is matched before the generic Microsoft Defender pattern, since its registered product name can otherwise be misread as Microsoft Defender.
+  On Windows workstations, the agent queries `root/SecurityCenter2` which returns all registered AV products. The product with active real-time protection is selected as the primary provider. On Windows Server (where Security Center is unavailable), the agent falls back to querying Microsoft Defender directly via `Get-MpComputerStatus`. Provider name matching is order-sensitive: Elastic Defend (registered as Elastic Agent / Elastic Endpoint Security), Bitdefender and the other named vendors, Trend Micro among them, are matched before the generic Microsoft Defender pattern, since a registered product name that contains "Defender" could otherwise be misread as Microsoft Defender.
 </Aside>
 
 ---
@@ -696,7 +699,7 @@ The agent failed to query the encryption subsystem. Check:
 ### Firewall status not detected
 
 - **Windows**: The agent queries `Get-NetFirewallProfile`. If all three profiles (Domain, Private, Public) return `False`, the firewall is reported as disabled.
-- **macOS**: The agent checks `socketfilterfw --getglobalstate` first, then falls back to reading `com.apple.alf` preferences.
+- **macOS**: On macOS 15 and later the agent checks `socketfilterfw --getglobalstate`. On earlier versions it reads `com.apple.alf` preferences first, then falls back to `socketfilterfw`.
 - **Linux**: The agent checks `ufw`, `firewall-cmd`, and `systemctl is-active firewalld` in order. If none are available, firewall status cannot be determined.
 
 ### Posture score is 0 or not available

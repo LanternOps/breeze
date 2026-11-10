@@ -87,6 +87,33 @@ export function releaseCarriesSessionEpochs(
   return action !== undefined && intent.arguments.action === action && principal.kind === 'user_session';
 }
 
+/**
+ * Full-control W16 (#6786, Decision 8; #11135): the tool/actions whose handler needs the requester's PARTNER axis at a
+ * durable release. A release otherwise rebuilds the requester on the organization axis, so these would fail closed at
+ * a worker release while the same approved intent succeeds inline, and a four-eyes approval can easily outlive the
+ * session that filed it.
+ *
+ *  - `manage_ai_agent_schedules`: a baseline is partner-wide, and `assertAgentWriteAllowed` needs
+ *    `canManagePartnerWidePolicies`.
+ *  - `manage_org_portal_settings:set_sensitive_access`: the tool is partner or system scope, as its route is.
+ *
+ * Only a `user_session` origin whose CURRENT permissions resolve on the intent's own partner takes the axis, and
+ * `partnerOrgAccess` is that live membership, so a member since narrowed to `selected` fails the partner-wide gate at
+ * release. Everyone else keeps the organization axis and fails closed. It carries no session epochs. Org reach stays
+ * `[intent.orgId]`: the axis adds partner authority, not org reach.
+ */
+export const PARTNER_AXIS_RELEASE_ACTIONS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['manage_ai_agent_schedules', ['create', 'update', 'delete']],
+  ['manage_org_portal_settings', ['set_sensitive_access']],
+]);
+
+function releaseNamesPartnerAxis(intent: Pick<ActionIntent, 'actionName' | 'arguments' | 'originPrincipalKind'>): boolean {
+  const actions = PARTNER_AXIS_RELEASE_ACTIONS.get(intent.actionName);
+  const action = intent.arguments.action;
+  return actions !== undefined && typeof action === 'string' && actions.includes(action)
+    && intent.originPrincipalKind === 'user_session';
+}
+
 export function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
   // Reads the plain `action` key, same default `aiGuardrails.resolveActionForTool`
   // (TOOL_ACTION_INPUT_KEYS) falls back to — NOT imported from that module on
@@ -399,7 +426,9 @@ async function buildUserOwnedAuthContext(
     // W08-D2 / QW5: a requester who resolves on the intent's own partner axis keeps that axis for the epoch-carrying
     // release (a partner user has no `users.orgId`, which an organization-scoped actor is revalidated against).
     const carriedPartnerAxis = carryEpochs && perms.scope === 'partner' && !!intent.partnerId && perms.partnerId === intent.partnerId;
-    const scope: 'partner' | 'organization' = partnerAxis || carriedPartnerAxis ? 'partner' : 'organization';
+    // W16 Decision 8: the named actions keep the requester's axis the same way, without the epochs.
+    const namedPartnerAxis = releaseNamesPartnerAxis(intent) && perms.scope === 'partner' && !!intent.partnerId && perms.partnerId === intent.partnerId;
+    const scope: 'partner' | 'organization' = partnerAxis || carriedPartnerAxis || namedPartnerAxis ? 'partner' : 'organization';
 
     // #4650: for an allowlisted tenant-shape-mutation tool/action (e.g.
     // manage_tickets:move_org), widen accessibleOrgIds to also cover the

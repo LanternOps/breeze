@@ -68,13 +68,20 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      # Restore-only: the seed on main saves the pnpm store, and setup-node's own
+      # cache duplicated it there as node-cache-* (#11119).
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: agent/go.mod
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -147,6 +154,16 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+      # Compose containers run as root and write into the bind-mounted checkout
+      # (apps/web/public, ...). Hand it back so the next run's checkout can clean it.
+      - name: Return workspace ownership to the runner
+        if: always()
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/w" -e U="$(id -u)" -e G="$(id -g)" \
+            alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+            sh -c 'chown -R "$U:$G" /w'
+
   # #8642: nightly storm-suite, one fault schedule per run (api-kill, rolling-deploy,
   # socket-drop, slow-loop, stall) against a 400-agent lab stack. Warn-only until
   # the repository variable PERF_GATES_ENFORCE is 'true' (owner decision: flip it on
@@ -176,13 +193,20 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      # Restore-only: the seed on main saves the pnpm store, and setup-node's own
+      # cache duplicated it there as node-cache-* (#11119).
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: agent/go.mod
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -214,6 +238,16 @@ jobs:
           path: load-tests/perf/out/**
           retention-days: 30
           if-no-files-found: warn
+
+      # Compose containers run as root and write into the bind-mounted checkout
+      # (apps/web/public, ...). Hand it back so the next run's checkout can clean it.
+      - name: Return workspace ownership to the runner
+        if: always()
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/w" -e U="$(id -u)" -e G="$(id -g)" \
+            alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+            sh -c 'chown -R "$U:$G" /w'
 
   # D13: one rolling `perf-regression` issue for nightly failures. Dispatch runs
   # never file issues. GitHub-hosted, so the self-hosted runner never holds a

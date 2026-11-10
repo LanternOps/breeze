@@ -147,7 +147,7 @@ func (d *windowsDetector) listSessionsCounted() ([]DetectedSession, int, error) 
 			continue
 		}
 
-		username, usernameKnown := d.querySessionString(info.SessionID, wtsUserName)
+		username, usernameErr := d.querySessionString(info.SessionID, wtsUserName)
 
 		sessionType := "console"
 		if info.SessionID == 0 {
@@ -158,7 +158,8 @@ func (d *windowsDetector) listSessionsCounted() ([]DetectedSession, int, error) 
 
 		session := DetectedSession{
 			Username:        username,
-			UsernameUnknown: !usernameKnown,
+			UsernameUnknown: usernameErr != nil,
+			UsernameErr:     usernameErr,
 			Session:         fmt.Sprintf("%d", info.SessionID),
 			State:           wtsStateString(info.State),
 			Display:         "windows",
@@ -266,15 +267,17 @@ func (d *windowsDetector) WatchSessions(ctx context.Context) <-chan SessionEvent
 	return ch
 }
 
-// querySessionString returns the string value and whether the query
-// succeeded. A successful query can still return "" (WTSUserName for a
-// session nobody is signed in to), so callers that need to tell "empty" from
-// "unknown" must check ok.
-func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32) (string, bool) {
+// querySessionString returns the string value, or the error when the query
+// failed. A successful query can still return "" (WTSUserName for a session
+// nobody is signed in to), so callers that need to tell "empty" from
+// "unknown" must check the error. The error carries the Win32 code
+// (unwrappable to syscall.Errno) when WTSQuerySessionInformationW recorded
+// one, so a caller acting on the unknown can say why.
+func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32) (string, error) {
 	var buf *uint16
 	var bytesReturned uint32
 
-	r1, _, _ := procWTSQuerySessionInfo.Call(
+	r1, _, errno := procWTSQuerySessionInfo.Call(
 		wtsCurrentServerHandle,
 		uintptr(sessionID),
 		uintptr(infoClass),
@@ -282,14 +285,14 @@ func (d *windowsDetector) querySessionString(sessionID uint32, infoClass uint32)
 		uintptr(unsafe.Pointer(&bytesReturned)),
 	)
 	if r1 == 0 {
-		return "", false
+		return "", wtsQueryError(infoClass, errno)
 	}
 	if buf == nil {
-		return "", true
+		return "", nil
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
 
-	return windows.UTF16PtrToString(buf), true
+	return windows.UTF16PtrToString(buf), nil
 }
 
 func (d *windowsDetector) querySessionUint32(sessionID uint32, infoClass uint32) (uint32, bool) {

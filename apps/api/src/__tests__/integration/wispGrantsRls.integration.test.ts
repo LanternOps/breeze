@@ -16,6 +16,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
+import type { Context } from 'hono';
 
 const { publishEventMock } = vi.hoisted(() => ({
   publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
@@ -37,7 +38,9 @@ import {
   users,
   wispGrantRevisions,
   wispGrants,
+  wispThreads,
 } from '../../db/schema';
+import { loadOwnThread } from '../../routes/wispThreads';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import type { AuthContext } from '../../middleware/auth';
 import { mintStepUpGrant, wispGrantResourceDigest } from '../../services/mfaStepUpGrant';
@@ -50,6 +53,7 @@ import {
   previewGrantCeiling,
   refreshGrant,
   revokeGrant,
+  updateGrantSettings,
   WispGrantError,
 } from '../../services/wisp/grants';
 import { invalidateEntitlementCache, upsertEntitlementRow } from '../../services/entitlements';
@@ -276,6 +280,17 @@ describe('wisp_grants RLS + ownership (2027-01-04-100100)', () => {
       db.update(wispGrants).set({ expiresAt: new Date(Date.now() + 365 * 86_400_000) }).where(eq(wispGrants.id, grantId))), '42501');
     await expectSqlState(() => withDbAccessContext(adminCtx, () =>
       db.update(wispGrants).set({ currentRevisionId: null }).where(eq(wispGrants.id, grantId))), '42501');
+  });
+
+  it('#10390: partner admin MAY update summary_refine, either way, like budget', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    const adminCtx = partnerContext(t.partner.id, [t.org.id], t.admin.id);
+    expect(await readGrant(grantId)).toMatchObject({ summaryRefine: false });
+    for (const summaryRefine of [true, false]) {
+      await withDbAccessContext(adminCtx, () => db.update(wispGrants).set({ summaryRefine }).where(eq(wispGrants.id, grantId)));
+      expect(await readGrant(grantId)).toMatchObject({ summaryRefine });
+    }
   });
 
   it('partner admin MAY update budget_cents_per_day and floor_tick_minutes (w00 A6); floor_tick_minutes 10 or 241 → 23514', async () => {
@@ -773,4 +788,186 @@ describe('erasure with grants present', () => {
     expect(grantsLeft).toEqual([]);
     expect(revsLeft).toEqual([]);
   });
+});
+
+describe('unattended reads switch (#10973; 2027-01-21-180000)', () => {
+  /** Appends a revision as the fixture path does, and optionally moves the pointer to it. */
+  async function addRevision(grantId: string, partnerId: string, orgIds: string[], opts: { flagged: boolean; revision?: number; link?: boolean }): Promise<string> {
+    return withDbAccessContext(SYSTEM_CTX, async () => {
+      const [revision] = await db.insert(wispGrantRevisions).values({
+        grantId, partnerId, revision: opts.revision ?? 2,
+        ceilingSnapshot: { ...snapshot(orgIds), ...(opts.flagged ? { unattendedReads: true } : {}) },
+        factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
+      }).returning({ id: wispGrantRevisions.id });
+      if (opts.link !== false) await db.update(wispGrants).set({ currentRevisionId: revision!.id }).where(eq(wispGrants.id, grantId));
+      return revision!.id;
+    });
+  }
+  /** A grant whose switch is already on, with the grantor's flagged revision current. */
+  async function seedSwitchedOn(t: Tenant): Promise<{ grantId: string; revisionId: string }> {
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    const revisionId = await addRevision(grantId, t.partner.id, [t.org.id], { flagged: true });
+    await asGrantor(t, () => db.update(wispGrants).set({ unattendedReads: true }).where(eq(wispGrants.id, grantId)));
+    return { grantId, revisionId };
+  }
+  const asAdmin = <T>(t: Tenant, fn: () => Promise<T>) =>
+    withDbAccessContext(partnerContext(t.partner.id, [t.org.id], t.admin.id), fn);
+
+  it('a new grant is off', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    expect((await readGrant(grantId)).unattendedReads).toBe(false);
+  });
+
+  it('a request-context INSERT cannot be born switched on → 42501', async () => {
+    const t = await seedTenant();
+    await expectSqlState(() => asGrantor(t, () =>
+      db.insert(wispGrants).values({ partnerId: t.partner.id, grantorUserId: t.grantor.id, expiresAt: new Date(Date.now() + 1e9), unattendedReads: true })), '42501');
+  });
+
+  it('a partner admin cannot turn it on → 42501', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    await addRevision(grantId, t.partner.id, [t.org.id], { flagged: true });
+    await expectSqlState(() => asAdmin(t, () => db.update(wispGrants).set({ unattendedReads: true }).where(eq(wispGrants.id, grantId))), '42501');
+    expect((await readGrant(grantId)).unattendedReads).toBe(false);
+  });
+
+  it('a partner admin cannot turn it off either → 42501', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedSwitchedOn(t);
+    await expectSqlState(() => asAdmin(t, () => db.update(wispGrants).set({ unattendedReads: false }).where(eq(wispGrants.id, grantId))), '42501');
+    expect((await readGrant(grantId)).unattendedReads).toBe(true);
+  });
+
+  it('a partner admin may still pause, revoke and change the budget of a switched-on grant, and the switch is untouched', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedSwitchedOn(t);
+    await asAdmin(t, () => db.update(wispGrants).set({ budgetCentsPerDay: 500 }).where(eq(wispGrants.id, grantId)));
+    await asAdmin(t, () => db.update(wispGrants).set({ status: 'paused', pausedReason: 'user_paused', pausedAt: new Date() }).where(eq(wispGrants.id, grantId)));
+    expect(await readGrant(grantId)).toMatchObject({ budgetCentsPerDay: 500, status: 'paused', unattendedReads: true });
+    await asAdmin(t, () => db.update(wispGrants).set({ status: 'revoked', revokedAt: new Date(), pausedReason: null }).where(eq(wispGrants.id, grantId)));
+    expect((await readGrant(grantId)).status).toBe('revoked');
+  });
+
+  it('the grantor cannot turn it on while the current revision lacks the snapshot flag → 42501', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    await expectSqlState(() => asGrantor(t, () => db.update(wispGrants).set({ unattendedReads: true }).where(eq(wispGrants.id, grantId))), '42501');
+    expect((await readGrant(grantId)).unattendedReads).toBe(false);
+  });
+
+  it("a flagged revision of ANOTHER grant does not satisfy the check", async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    const other = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgId: t.org.id, orgIds: [t.org.id] });
+    const foreign = await addRevision(other.grantId, t.partner.id, [t.org.id], { flagged: true, link: false });
+    // The composite FK alone would refuse this pointer with 23503; the trigger refuses first.
+    await expectSqlState(() => asGrantor(t, () =>
+      db.update(wispGrants).set({ unattendedReads: true, currentRevisionId: foreign }).where(eq(wispGrants.id, grantId))), '42501');
+  });
+
+  it('system scope is held to the same revision rule: nothing turns it on without a flagged revision', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    await expectSqlState(() => withDbAccessContext(SYSTEM_CTX, () => db.update(wispGrants).set({ unattendedReads: true }).where(eq(wispGrants.id, grantId))), '42501');
+  });
+
+  it('the grantor can turn it off, and back on while the current revision is still flagged', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedSwitchedOn(t);
+    await asGrantor(t, () => db.update(wispGrants).set({ unattendedReads: false }).where(eq(wispGrants.id, grantId)));
+    expect((await readGrant(grantId)).unattendedReads).toBe(false);
+    await asGrantor(t, () => db.update(wispGrants).set({ unattendedReads: true }).where(eq(wispGrants.id, grantId)));
+    expect((await readGrant(grantId)).unattendedReads).toBe(true);
+  });
+
+  it('moving a switched-on grant to an unflagged revision without clearing the switch → 42501', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedSwitchedOn(t);
+    const plain = await addRevision(grantId, t.partner.id, [t.org.id], { flagged: false, revision: 3, link: false });
+    await expectSqlState(() => asGrantor(t, () => db.update(wispGrants).set({ currentRevisionId: plain }).where(eq(wispGrants.id, grantId))), '42501');
+  });
+
+  it('erasing the current revision clears the switch and never blocks the erasure (FK SET NULL)', async () => {
+    const t = await seedTenant();
+    const { grantId, revisionId } = await seedSwitchedOn(t);
+    await withDbAccessContext(SYSTEM_CTX, () => db.delete(wispGrantRevisions).where(eq(wispGrantRevisions.id, revisionId)));
+    expect(await readGrant(grantId)).toMatchObject({ currentRevisionId: null, unattendedReads: false });
+  });
+
+  it('erasure of a switched-on grant: cascadeDeletePartner still completes', async () => {
+    const t = await seedTenant();
+    await seedSwitchedOn(t);
+    await expect(cascadeDeletePartner(t.partner.id, randomUUID())).resolves.toBeDefined();
+    const left = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(wispGrants).where(eq(wispGrants.partnerId, t.partner.id)));
+    expect(left).toEqual([]);
+  });
+
+  it('GET /thread/:id reads the pin through its own SQL: live AND pinned, per revision', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedSwitchedOn(t);
+    const [thread] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(wispThreads).values({ grantId, partnerId: t.partner.id }).returning({ id: wispThreads.id }));
+    const auth = grantorAuth(t, randomUUID());
+    const context = { req: { param: () => thread!.id }, get: () => auth } as unknown as Context;
+    const read = () => asGrantor(t, () => loadOwnThread(context));
+
+    expect((await read())?.grant).toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+    await asGrantor(t, () => db.update(wispGrants).set({ unattendedReads: false }).where(eq(wispGrants.id, grantId)));
+    expect((await read())?.grant).toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
+    await addRevision(grantId, t.partner.id, [t.org.id], { flagged: false, revision: 3 });
+    expect((await read())?.grant).toMatchObject({ unattendedReads: false, unattendedReadsPinned: false });
+  });
+
+  it('the existing guard rules still hold after the function was replaced', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    await expectSqlState(() => withDbAccessContext(SYSTEM_CTX, () => db.update(wispGrants).set({ grantorUserId: t.admin.id }).where(eq(wispGrants.id, grantId))), '42501');
+    await expectSqlState(() => asAdmin(t, () => db.update(wispGrants).set({ expiresAt: new Date(Date.now() + 1e10) }).where(eq(wispGrants.id, grantId))), '42501');
+    await expectSqlState(() => asGrantor(t, () => db.update(wispGrants).set({ pausedAt: new Date() }).where(eq(wispGrants.id, grantId))), '42501');
+    const before = (await readGrant(grantId)).updatedAt.getTime();
+    await new Promise((r) => setTimeout(r, 5));
+    await asGrantor(t, () => db.update(wispGrants).set({ budgetCentsPerDay: 300 }).where(eq(wispGrants.id, grantId)));
+    expect((await readGrant(grantId)).updatedAt.getTime()).toBeGreaterThan(before);
+  });
+
+  it('enable through the service: a real step-up, the flagged revision, the column, and the ceiling all line up', async () => {
+    const t = await seedTenant();
+    const sid = randomUUID();
+    const auth = grantorAuth(t, sid);
+    const scope = { partnerId: t.partner.id, orgId: t.org.id };
+    const first = await previewGrantCeiling({ auth, scope });
+    const grant = await asGrantor(t, async () => createGrant({ auth, scope, stepUpGrantId: await mintWispStepUp(t, sid, t.org.id, first.ceilingHash) }));
+    expect(grant.unattendedReads).toBe(false);
+
+    // A proof minted for the unflagged ceiling cannot enable the switch.
+    const replay = await mintWispStepUp(t, sid, t.org.id, first.ceilingHash);
+    await expect(asGrantor(t, () => refreshGrant({ auth, grantId: grant.id, stepUpGrantId: replay, unattendedReads: true })))
+      .rejects.toMatchObject({ code: 'step_up_required' });
+    expect((await readGrant(grant.id)).unattendedReads).toBe(false);
+
+    const preview = await previewGrantCeiling({ auth, scope, unattendedReads: true });
+    const on = await asGrantor(t, async () => refreshGrant({
+      auth, grantId: grant.id, unattendedReads: true, stepUpGrantId: await mintWispStepUp(t, sid, t.org.id, preview.ceilingHash),
+    }));
+    expect(on).toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+
+    // Pinned AND live: the new revision reads on, the session's old one stays off.
+    expect((await resolveGrantCeiling(grant.id, on.currentRevisionId!)).unattendedReads).toBe(true);
+    expect((await resolveGrantCeiling(grant.id, grant.currentRevisionId!)).unattendedReads).toBe(false);
+
+    // A plain refresh keeps the switch.
+    const plainPreview = await asGrantor(t, () => previewGrantCeiling({ auth, scope, refreshGrantId: grant.id }));
+    const kept = await asGrantor(t, async () => refreshGrant({
+      auth, grantId: grant.id, stepUpGrantId: await mintWispStepUp(t, sid, t.org.id, plainPreview.ceilingHash),
+    }));
+    expect(kept.unattendedReads).toBe(true);
+
+    // Off is immediate: the live read and the ceiling both follow on the next call.
+    const off = await asGrantor(t, () => updateGrantSettings({ auth, grantId: grant.id, patch: { unattendedReads: false } }));
+    expect(off).toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
+    expect((await resolveGrantCeiling(grant.id, kept.currentRevisionId!)).unattendedReads).toBe(false);
+  });
+
 });

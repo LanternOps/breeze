@@ -17,8 +17,11 @@ import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { resetEntitlementsCache } from '@/lib/entitlementsCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
+import { clearRememberedEnrollmentArtifacts } from '@/lib/rememberedEnrollmentArtifacts';
+import { totpEnrolledAfterPrimaryChange } from '@/lib/mfaFactorState';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import { isGlobalScopeRoute } from '@/lib/routeScope';
+import { throttleRetryDelayMs } from '@/lib/throttleRetry';
 import {
   parseMfaChallengeResponse,
   type MfaChallenge,
@@ -98,6 +101,13 @@ export interface User {
   // UNKNOWN, never as "has a password" — always compare with `=== false`, never
   // `!user?.hasPassword`.
   hasPassword?: boolean;
+  // #10650: whether an authenticator app (TOTP) is enrolled — as the primary
+  // (`mfaMethod: 'totp'`) or as the BACKUP beside a primary passkey
+  // (`mfaMethod: 'passkey'`). `mfaMethod` alone cannot say which, because it
+  // only names the primary. Populated by `GET /users/me`; absent on sessions
+  // persisted before the field. Compare with `=== true`: absent means unknown,
+  // and the UI must not offer an authenticator proof it cannot vouch for.
+  totpEnrolled?: boolean;
   preferences?: UserPreferences;
 }
 
@@ -236,6 +246,9 @@ export const useAuthStore = create<AuthState>()(
         // #8862: the profile page's stashed SSO re-auth grant is bound to this
         // session; never let the next sign-in on this tab restore it.
         clearSsoReauthGrant();
+        // #10923: the Add Device modal's remembered tokens and links are live
+        // enrollment credentials, and sign-out does not unload this tab.
+        clearRememberedEnrollmentArtifacts();
         // An evicted session must never come back via a stray throttle-recovery
         // reload — the redirect to /login owns navigation from here.
         cancelThrottleReload();
@@ -290,9 +303,14 @@ export const useAuthStore = create<AuthState>()(
             || !state.user
           ) return state;
           committed = true;
+          const next = { mfaEnabled: true, mfaMethod: method } as const;
           return {
             ...(tokens ? { tokens } : {}),
-            user: { ...state.user, mfaEnabled: true, mfaMethod: method },
+            user: {
+              ...state.user,
+              ...next,
+              totpEnrolled: totpEnrolledAfterPrimaryChange(next, state.user.totpEnrolled),
+            },
           };
         });
         return committed;
@@ -309,7 +327,7 @@ export const useAuthStore = create<AuthState>()(
           committed = true;
           return {
             ...(tokens ? { tokens } : {}),
-            user: { ...state.user, mfaEnabled: false, mfaMethod: null },
+            user: { ...state.user, mfaEnabled: false, mfaMethod: null, totpEnrolled: false },
           };
         });
         return committed;
@@ -326,7 +344,11 @@ export const useAuthStore = create<AuthState>()(
           committed = true;
           return {
             ...(tokens ? { tokens } : {}),
-            user: { ...state.user, ...mfa },
+            user: {
+              ...state.user,
+              ...mfa,
+              totpEnrolled: totpEnrolledAfterPrimaryChange(mfa, state.user.totpEnrolled),
+            },
           };
         });
         return committed;
@@ -1608,6 +1630,52 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
     }
   }
 
+  // 429 on a READ: the condition clears on its own, so wait out the advertised
+  // window (bounded + jittered) and retry once instead of handing the caller a
+  // failure (#11195). Safe methods only — a mutation is never replayed. A
+  // second 429, a missing/oversized wait, or an aborted signal falls through to
+  // the caller, whose error UI reads a 429 as "Please wait".
+  const method = (init.method ?? 'GET').toUpperCase();
+  if (response.status === 429 && (method === 'GET' || method === 'HEAD') && !signal.aborted) {
+    const waitMs = await throttleRetryDelayMs(response);
+    if (waitMs !== null && !signal.aborted) {
+      const stillLive = await new Promise<boolean>((resolve) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve(false);
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(true);
+        }, waitMs);
+        signal.addEventListener('abort', onAbort, { once: true });
+        // Aborted during the body read above: the event already fired.
+        if (signal.aborted) onAbort();
+      });
+      if (stillLive) {
+        // The first fetch's timeout timer is spent; give the retry its own so a
+        // stalled connection cannot hang it, and pick up any token refreshed
+        // while we waited.
+        const retryTimeout = new AbortController();
+        const retryTimer = setTimeout(
+          () => retryTimeout.abort(new DOMException(`Request timed out after ${Math.round(timeoutMs / 1000)}s`, 'TimeoutError')),
+          timeoutMs,
+        );
+        const retrySignal = externalSignal
+          ? AbortSignal.any([externalSignal, retryTimeout.signal])
+          : retryTimeout.signal;
+        const freshToken = useAuthStore.getState().tokens?.accessToken;
+        if (freshToken) headers.set('Authorization', `Bearer ${freshToken}`);
+        void response.body?.cancel().catch(() => {});
+        try {
+          response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal: retrySignal });
+        } finally {
+          clearTimeout(retryTimer);
+        }
+      }
+    }
+  }
+
   return response;
 }
 
@@ -2135,6 +2203,11 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     }
     if (typeof data.canManagePartnerWide === 'boolean') {
       useAuthStore.getState().updateUser({ canManagePartnerWide: data.canManagePartnerWide });
+    }
+    // #10650: same rationale as hasPassword — /auth/login's `user` carries no
+    // factor detail, so this refresh is what makes the field real.
+    if (typeof data.totpEnrolled === 'boolean') {
+      useAuthStore.getState().updateUser({ totpEnrolled: data.totpEnrolled });
     }
     if (data.preferences) {
       useAuthStore.getState().updateUser({ preferences: data.preferences });

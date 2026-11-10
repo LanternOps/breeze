@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import {
   boolean,
   char,
@@ -14,6 +14,7 @@ import {
   uniqueIndex,
   uuid,
   varchar,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 
@@ -49,6 +50,26 @@ export const m365SyncStatusEnum = pgEnum('m365_sync_status', [
   'throttled',
   'error',
 ]);
+
+/** Shortest stale threshold the exact test can produce, in minutes. */
+export const M365_STALE_FLOOR_MINUTES = 60;
+
+/*
+ * The stale indexes below are on plain columns for the same reason as the DNS
+ * ones (db/schema/dnsSecurity.ts): under RLS only leakproof quals reach an
+ * index, and make_interval / COALESCE are not. The source pre-filters on
+ * `last_success_at < cutoff` (or, never succeeded, `created_at < cutoff`).
+ */
+
+/**
+ * The instant after which a scheduled domain's sync counts as stalled:
+ * last-ok plus GREATEST(3 x interval_seconds, 3600) seconds, as a UTC
+ * `timestamp` (`timestamptz + interval` is not immutable; AT TIME ZONE 'UTC'
+ * first keeps the expression usable in a recheck against a `timestamp`).
+ */
+export function m365SyncStaleAt(t: { lastSuccessAt: AnyPgColumn; createdAt: AnyPgColumn; intervalSeconds: AnyPgColumn }): SQL {
+  return sql`((COALESCE(${t.lastSuccessAt}, ${t.createdAt}) AT TIME ZONE 'UTC') + make_interval(secs => GREATEST(3 * ${t.intervalSeconds}, ${sql.raw(String(M365_STALE_FLOOR_MINUTES * 60))})))`;
+}
 
 export const m365SyncState = pgTable(
   'm365_sync_state',
@@ -88,6 +109,13 @@ export const m365SyncState = pgTable(
     unhealthyIdx: index('m365_sync_state_unhealthy_idx')
       .on(table.connectionId)
       .where(sql`${table.lastStatus} IN ('needs_consent', 'error')`),
+    // Connection health stale arm (#10021, migration 2027-01-22-232700).
+    staleIdx: index('m365_sync_state_stale_idx')
+      .on(table.lastSuccessAt)
+      .where(sql`${table.nextSyncAt} IS NOT NULL`),
+    neverSucceededIdx: index('m365_sync_state_never_succeeded_idx')
+      .on(table.createdAt)
+      .where(sql`${table.nextSyncAt} IS NOT NULL AND ${table.lastSuccessAt} IS NULL`),
   }),
 );
 

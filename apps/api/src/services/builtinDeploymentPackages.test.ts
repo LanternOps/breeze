@@ -47,7 +47,7 @@ describe('builtin deployment packages', () => {
   });
 
   it('exposes both providers', () => {
-    expect(Object.keys(BUILTIN_PACKAGES).sort()).toEqual(['huntress', 'sentinelone']);
+    expect(Object.keys(BUILTIN_PACKAGES).sort()).toEqual(['bitdefender', 'huntress', 'sentinelone']);
   });
 });
 

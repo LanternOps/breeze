@@ -241,6 +241,16 @@ export const devicePatches = pgTable('device_patches', {
   // never disagree. Constrained by device_patches_reported_severity_source_chk.
   reportedSeveritySource: varchar('reported_severity_source', { length: 16 }),
   reportedCategory: text('reported_category'),
+  // What this device says the update is (#11073): driver, firmware, quality,
+  // feature, definition or other. Per device on purpose: it decides what Breeze
+  // patch jobs leave to a vendor lane, so it can never live on the shared row.
+  // NULL (older agents, other providers) is never left to a lane. Constrained by
+  // device_patches_reported_update_type_chk.
+  reportedUpdateType: varchar('reported_update_type', { length: 16 }),
+  // The vendor lane whose own update this is (#11073): dell, surface, hp or lenovo.
+  // A lane only delivers its vendor's updates, so NULL (an Intel driver on a Surface,
+  // say) is never left to one. Constrained by device_patches_reported_update_owner_chk.
+  reportedUpdateOwner: varchar('reported_update_owner', { length: 16 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({

@@ -8,6 +8,11 @@ import DeviceSettingsModal from "./DeviceSettingsModal";
 import ChangeSiteModal from "./ChangeSiteModal";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
+import ForcePermanentDeleteDialog, {
+  permanentDeleteRequest,
+  uninstallNotConfirmedState,
+  type UninstallState,
+} from "./ForcePermanentDeleteDialog";
 import ScriptPickerModal, {
   type Script,
   type ScriptRunAsSelection,
@@ -25,7 +30,6 @@ import {
   exitMaintenanceMode,
   decommissionDevice,
   clearDeviceSessions,
-  permanentDeleteDevice,
   sendWakeCommand,
   watchWakeOutcome,
   WakeCommandError,
@@ -97,6 +101,12 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   // count. Nothing is restorable afterwards, so it gets asked about first.
   const [pendingPermanentDelete, setPendingPermanentDelete] =
     useState<Device | null>(null);
+  // #11153: the API refused a permanent delete because the agent never
+  // confirmed its uninstall; confirming this dialog re-sends with force.
+  const [forceDelete, setForceDelete] = useState<{
+    device: Device;
+    state: UninstallState;
+  } | null>(null);
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [maintenanceDialogOpen, setMaintenanceDialogOpen] = useState(false);
@@ -213,6 +223,11 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
             : null,
         desktopAccess: data.desktopAccess ?? undefined,
         remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
+        // #10922 — the Connect button's tool menu. Dropped here, the menu
+        // silently never appears (this transform is an explicit whitelist).
+        remoteAccessProviders: Array.isArray(data.remoteAccessProviders) ? data.remoteAccessProviders : [],
+        remoteAccessDefaultProviderId:
+          typeof data.remoteAccessDefaultProviderId === "string" ? data.remoteAccessDefaultProviderId : null,
         // Link-group membership (#2138/#2308). Carried through so the detail
         // page can hide the Linked Profiles tab on an unlinked device (#2865)
         // without a second fetch — the detail endpoint already returns both
@@ -405,7 +420,8 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         switchingOrgRef.current = false;
       });
   };
-  // Back returns to wherever the tech came from (list filters, scroll, org);
+  // Used by the error-state Back buttons only; the Devices crumb no longer
+  // pops history (#10959). Back returns to wherever the tech came from (list filters, scroll, org);
   // a fresh tab / deep link has no history to pop, so fall to the org-aware
   // Devices crumb instead. history.length alone can't tell an in-app entry
   // from about:blank / another site (#9259), so only pop when the page was
@@ -416,6 +432,37 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
       return;
     }
     void navigateTo(devicesHref);
+  };
+
+  // `force` is only ever true when the operator chose "Delete anyway" in the
+  // force dialog after the API refused with UNINSTALL_NOT_CONFIRMED.
+  const runPermanentDelete = async (device: Device, force: boolean) => {
+    try {
+      await permanentDeleteRequest(device.id, {
+        force,
+        errorFallback: `Failed to delete ${device.hostname}`,
+      });
+      // No warning branch: the API returns `{ success: true }` and nothing
+      // else since #2787.
+      showToast({
+        type: "success",
+        message: `${device.hostname} has been permanently deleted`,
+      });
+      void navigateTo("/devices");
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      const state = uninstallNotConfirmedState(err);
+      if (state) {
+        setForceDelete({ device, state });
+        return;
+      }
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: "error",
+          message: `Failed to delete ${device.hostname}`,
+        });
+      }
+    }
   };
 
   const handleAction = async (
@@ -730,24 +777,7 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
           });
           setTimeout(async () => {
             if (pdCancelled) return;
-            try {
-              await permanentDeleteDevice(device.id);
-              // No warning branch: the API returns `{ success: true }` and
-              // nothing else since #2787 (see permanentDeleteDevice).
-              showToast({
-                type: "success",
-                message: `${device.hostname} has been permanently deleted`,
-              });
-              void navigateTo("/devices");
-            } catch (err) {
-              showToast({
-                type: "error",
-                message:
-                  err instanceof Error
-                    ? err.message
-                    : `Failed to delete ${device.hostname}`,
-              });
-            }
+            await runPermanentDelete(device, false);
           }, 5000);
           return;
         }
@@ -861,16 +891,15 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
           ...(device.orgId
             ? [{ label: device.orgName, href: `/organizations/${device.orgId}` }]
             : []),
-          // The crumb is the one Back control (#9025's separate row sat on
-          // the header card's border and duplicated it): a plain click pops
-          // history so list filters and scroll survive; the href stays for
-          // new-tab / deep-link cases.
+          // #10959: a plain click goes to the (org-aware) Devices list, like
+          // the link it shows. It must not pop history: "back" landed on the
+          // Dashboard or on another #hash tab entry of this same device.
           {
             label: t("deviceDetailPage.devices"),
             href: devicesHref,
             title: devicesCrumbHint,
             description: devicesCrumbHint,
-            onClick: handleBack,
+            onClick: () => void navigateTo(devicesHref),
           },
           // #9026: one name — the leaf matches the h1; hostname on hover.
           {
@@ -905,6 +934,19 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
             void handleAction("decommission", target, choice);
           }}
           confirmTestId="detail-remove-confirm"
+        />
+      )}
+      {forceDelete && (
+        <ForcePermanentDeleteDialog
+          hostname={forceDelete.device.hostname}
+          state={forceDelete.state}
+          onClose={() => setForceDelete(null)}
+          onConfirm={() => {
+            const target = forceDelete.device;
+            setForceDelete(null);
+            void runPermanentDelete(target, true);
+          }}
+          confirmTestId="detail-permanent-delete-force-confirm"
         />
       )}
       {/* #5023 — the purge-framed confirm, reusing the SAME

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/launchdplist"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
@@ -545,7 +545,17 @@ func (h *Heartbeat) startDesktopOnDemand(sessionID, targetSession string, req ip
 // session is disconnected, iterates all capable sessions looking for a
 // non-disconnected one (preferring the console). Falls back to a disconnected
 // session only when allowDisconnected is true.
+//
+// The sign-in-console-to-RDP preference (#8434) applies only to a start that
+// had no target from the outset. A targeted start whose session vanished
+// (#434 below) keeps the console-first choice: its banner and notice still go
+// to the session the caller named (afterDesktopStart), so landing it on another
+// user's RDP desktop would capture that user with no indicator.
 func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...bool) *sessionbroker.Session {
+	return h.findActiveHelperWithPreference(targetSession, targetSession == "", allowDisconnected...)
+}
+
+func (h *Heartbeat) findActiveHelperWithPreference(targetSession string, preferActiveRDPOverSignInConsole bool, allowDisconnected ...bool) *sessionbroker.Session {
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
 	if runtime.GOOS == "darwin" {
 		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
@@ -566,7 +576,7 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 		if !winSessionStillExists(targetSession) {
 			log.Warn("findActiveHelper: target WTS session no longer exists, falling back to any capable helper",
 				"targetSession", targetSession)
-			return h.findActiveHelper("", allowDisconnected...)
+			return h.findActiveHelperWithPreference("", false, allowDisconnected...)
 		}
 	}
 
@@ -576,6 +586,15 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 	// switch to if needed.
 	if session != nil && targetSession == "" && runtime.GOOS == "windows" {
 		consoleID := sessionbroker.GetConsoleSessionID()
+
+		// A console at the sign-in screen loses to an active, signed-in RDP
+		// session that has a capable helper (#8434), but only for a start that
+		// had no target from the outset (see findActiveHelper).
+		if preferActiveRDPOverSignInConsole {
+			if alt := h.activeRemoteHelperOverSignInConsole(consoleID); alt != nil {
+				return alt
+			}
+		}
 
 		// If the best session IS the console and it's not disconnected, use it.
 		// Hot path — fires on every start_desktop. Info-level; flip
@@ -800,7 +819,7 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 				domain := "gui/" + uid
 				label := domain + "/com.breeze.desktop-helper-user"
 				// kickstart -k kills any existing instance and restarts it.
-				if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err == nil {
+				if err := procspawn.Command("launchctl", "kickstart", "-k", label).Run(); err == nil {
 					log.Info("kickstarted desktop helper LaunchAgent", "uid", uid)
 					return nil // let the caller's poll loop wait for the connection
 				} else {
@@ -808,7 +827,7 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 						"uid", uid, "label", label, "error", err.Error())
 				}
 				// Fallback: try bootstrap in case the plist was never loaded.
-				if err := exec.Command("launchctl", "bootstrap", domain,
+				if err := procspawn.Command("launchctl", "bootstrap", domain,
 					"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist").Run(); err != nil {
 					log.Warn("launchctl bootstrap also failed",
 						"uid", uid, "domain", domain, "error", err.Error())
@@ -821,13 +840,13 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 				return nil // let the caller's poll loop wait for the connection
 			}
 		}
-		if err := exec.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err == nil {
+		if err := procspawn.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err == nil {
 			log.Info("kickstarted login-window desktop helper LaunchAgent")
 			return nil
 		}
 		// Fallback: try bootstrap in case the plist was never loaded into the loginwindow domain.
 		const loginwindowPlist = "/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
-		if err := exec.Command("launchctl", "bootstrap", "loginwindow", loginwindowPlist).Run(); err == nil {
+		if err := procspawn.Command("launchctl", "bootstrap", "loginwindow", loginwindowPlist).Run(); err == nil {
 			log.Info("bootstrapped login-window desktop helper LaunchAgent")
 			return nil
 		} else {
@@ -906,7 +925,7 @@ func findGUIUserUIDs() []string {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	out, err := exec.Command("ps", "-axo", "uid=,comm=").Output()
+	out, err := procspawn.Command("ps", "-axo", "uid=,comm=").Output()
 	if err != nil {
 		log.Warn("failed to list processes for GUI user detection", "error", err.Error())
 		return nil

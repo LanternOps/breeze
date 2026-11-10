@@ -18,7 +18,7 @@
  * Declared `PdfChrome` (not imported) to avoid a module cycle with reportPdf.ts.
  */
 import type { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { autoTable } from 'jspdf-autotable';
 import type {
   ClientProfitabilityDetailRow,
   ClientProfitabilityOrgRow,

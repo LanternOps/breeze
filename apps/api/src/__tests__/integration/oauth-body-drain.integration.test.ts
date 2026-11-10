@@ -41,6 +41,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
+import type { AddressInfo } from 'node:net';
 import { decodeJwt } from 'jose';
 import { createHash, randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
@@ -54,28 +55,51 @@ const SHOULD_RUN = Boolean(process.env.DATABASE_URL);
 
 type LiveServer = { server: ServerType; url: string };
 
-function randomPort(): number {
-  return 35000 + Math.floor(Math.random() * 2000);
-}
-
 function b64url(bytes: Buffer | Uint8Array): string {
   return Buffer.from(bytes).toString('base64url');
 }
 
-async function startApi(port: number): Promise<LiveServer> {
-  const { oauthRoutes } = await import('../../routes/oauth');
-  const { oauthInteractionRoutes } = await import('../../routes/oauthInteraction');
-  const { wellKnownRoutes } = await import('../../routes/oauthWellKnown');
-  const { mcpServerRoutes } = await import('../../routes/mcpServer');
+// Listens on port 0 BEFORE the oauth routes are imported: OAUTH_ISSUER embeds
+// the port and is read when those modules load, so the OS-assigned port must
+// be known first. A test-picked port can collide with an ephemeral port
+// already in use on the runner (EADDRINUSE, #10735/#10879).
+async function listenEphemeral(app: Hono<{ Bindings: HttpBindings }>): Promise<LiveServer> {
+  const server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' });
+  await new Promise<void>((resolve) => {
+    if ((server.address() as AddressInfo | null)?.port) return resolve();
+    server.once('listening', () => resolve());
+  });
+  return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+}
 
+function configureOauthEnv(url: string): void {
+  process.env.OAUTH_ISSUER = url;
+  process.env.OAUTH_RESOURCE_URL = `${url}/api/v1/mcp/message`;
+  process.env.OAUTH_CONSENT_URL_BASE = url;
+  vi.resetModules();
+}
+
+async function startApi(): Promise<LiveServer> {
   const app = new Hono<{ Bindings: HttpBindings }>();
-  app.route('/oauth', oauthRoutes);
-  app.route('/api/v1/oauth', oauthInteractionRoutes);
-  app.route('/.well-known', wellKnownRoutes);
-  app.route('/api/v1/mcp', mcpServerRoutes);
+  const live = await listenEphemeral(app);
+  try {
+    configureOauthEnv(live.url);
 
-  const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' });
-  return { server, url: `http://127.0.0.1:${port}` };
+    const { oauthRoutes } = await import('../../routes/oauth');
+    const { oauthInteractionRoutes } = await import('../../routes/oauthInteraction');
+    const { wellKnownRoutes } = await import('../../routes/oauthWellKnown');
+    const { mcpServerRoutes } = await import('../../routes/mcpServer');
+
+    app.route('/oauth', oauthRoutes);
+    app.route('/api/v1/oauth', oauthInteractionRoutes);
+    app.route('/.well-known', wellKnownRoutes);
+    app.route('/api/v1/mcp', mcpServerRoutes);
+
+    return live;
+  } catch (err) {
+    await stopApi(live);
+    throw err;
+  }
 }
 
 async function stopApi(s: LiveServer): Promise<void> {
@@ -86,12 +110,7 @@ describe.skipIf(!SHOULD_RUN)('OAuth pre-handler body-drain regressions', () => {
   let live: LiveServer;
 
   beforeAll(async () => {
-    const port = randomPort();
-    process.env.OAUTH_ISSUER = `http://127.0.0.1:${port}`;
-    process.env.OAUTH_RESOURCE_URL = `${process.env.OAUTH_ISSUER}/api/v1/mcp/message`;
-    process.env.OAUTH_CONSENT_URL_BASE = process.env.OAUTH_ISSUER;
-    vi.resetModules();
-    live = await startApi(port);
+    live = await startApi();
     await new Promise((r) => setTimeout(r, 100));
     const { _resetJwksCacheForTests } = await import('../../middleware/bearerTokenAuth');
     _resetJwksCacheForTests();

@@ -318,7 +318,10 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
           name: catalogItems.name,
           itemType: catalogItems.itemType,
           sku: catalogItems.sku,
-          prices: sql<Array<{ currencyCode: string; unitPrice: string }>>`COALESCE((SELECT json_agg(json_build_object('currencyCode', p.currency_code, 'unitPrice', p.unit_price::text) ORDER BY p.currency_code) FROM catalog_item_prices p WHERE p.item_id = ${catalogItems.id}), '[]'::json)`,
+          // eq(), not a bare ${column} chunk: a single-table select strips
+          // qualifiers from direct chunks, which bound `p.item_id = id` to the
+          // price row's own id and read every item as unpriced (#9692).
+          prices: sql<Array<{ currencyCode: string; unitPrice: string }>>`COALESCE((SELECT json_agg(json_build_object('currencyCode', p.currency_code, 'unitPrice', p.unit_price::text) ORDER BY p.currency_code) FROM catalog_item_prices p WHERE ${eq(sql`p.item_id`, catalogItems.id)}), '[]'::json)`,
           isBundle: catalogItems.isBundle
         })
         .from(catalogItems)

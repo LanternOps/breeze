@@ -295,6 +295,10 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 	}
 
 	log.Info("spawning backup helper", "path", path, "socket", b.socketPath)
+	// breeze-backup reaches the backup server through the scope:"breeze"
+	// permit, so it stays in the agent cgroup; it places its own children
+	// with procspawn.EnableInAgentCgroup.
+	//procspawn:exempt Breeze backup binary needs the agent's management-plane permit
 	cmd := exec.Command(path, "--socket", b.socketPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -802,10 +806,11 @@ func isCancelableBackupVerification(commandType string) bool {
 }
 
 // forwardCancelableBackupVerification keeps the original request registered
-// after a timeout so its eventual reply is consumed as a correlated response,
-// not forwarded to the server as an unsolicited second terminal result.
+// after a timeout, as a tombstone, so its eventual reply is consumed as a
+// correlated response, not forwarded to the server as an unsolicited second
+// terminal result. Nothing waits on the tombstone (#6106).
 func forwardCancelableBackupVerification(session *Session, req backupipc.BackupCommandRequest, timeout time.Duration) (*ipc.Envelope, error) {
-	env, _, err := session.sendCommandWithQuiescence(
+	env, err := session.sendCommandAbandoningLateReply(
 		req.CommandID,
 		backupipc.TypeBackupCommand,
 		req,

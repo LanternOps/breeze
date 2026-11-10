@@ -64,6 +64,8 @@ vi.mock('./aiToolOutput', () => ({
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
 vi.mock('./toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () => []) }));
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { db } from '../db';
 import { StreamingSessionManager } from './streamingSessionManager';

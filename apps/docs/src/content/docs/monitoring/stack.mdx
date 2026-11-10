@@ -247,7 +247,7 @@ publishes its state and every refusal.
 | `breeze_admission_ws_bucket_tokens` / `breeze_admission_ws_setups_in_flight` | Gauge | WebSocket pacing state |
 | `breeze_admission_bulk_in_flight` | Gauge | Inventory-type uploads being processed |
 | `breeze_admission_tick_failures_total` | Counter | Admission controller ticks that threw. Five in a row fail open: the level is forced to 0 so shedding cannot persist on a stuck controller |
-| `breeze_admission_offline_deferred_total{event}` | Counter | WebSocket disconnects whose offline flip was left to the offline detector while under load |
+| `breeze_admission_offline_deferred_total{event,reason}` | Counter | WebSocket disconnects whose offline flip was left to the offline detector: `reason` is `level` (admission at level 1+) or `in_flight` (too many offline writes already running, e.g. a mass disconnect) |
 | `breeze_nodejs_eventloop_utilization` | Gauge | Event-loop utilization over the last second |
 
 Alert on `breeze_admission_level == 3` for 5 minutes: the instance is down to
@@ -446,14 +446,14 @@ cache), never a value.
 |---|---|---|
 | `breeze_hot_path_cache_lookups_total{cache,result}` | Counter | Lookups by `result`: `hit`, `miss`, or `bypass` (a read inside a database transaction, which never uses the cache) |
 | `breeze_hot_path_cache_entries{cache}` | Gauge | Entries currently held, read at scrape time |
-| `breeze_cluster_cache_invalidations_published_total{cache,outcome}` | Counter | Invalidations this instance announced. `outcome` is `published`, `unavailable` (no Redis) or `failed` (error, or no reply within 1 s) |
+| `breeze_cluster_cache_invalidations_published_total{cache,outcome}` | Counter | Invalidations this instance announced. `outcome` is `published`, `unavailable` (no Redis), `failed` (the publish errored) or `timeout` (no reply within 1 s) |
 | `breeze_cluster_cache_invalidations_received_total{cache,result}` | Counter | Messages handled: `applied`, `self` (this instance's own echo), `unknown_cache`, `malformed`, or `error` (the cache failed to drop the entry; it keeps it until the TTL) |
 | `breeze_cluster_cache_invalidation_lag_seconds{cache}` | Histogram | Time from publish to apply for `applied` messages |
 | `breeze_cluster_cache_subscriber_up` | Gauge | `1` while this instance is subscribed |
 | `breeze_cluster_cache_resyncs_total` | Counter | Full local cache clears after the subscriber reconnected (messages sent during the gap are lost, so every cache is dropped once) |
 
 A healthy instance shows `breeze_cluster_cache_subscriber_up 1`, a lag p99 well
-under one second, and a flat `published_total{outcome="failed"}`. Without
+under one second, and flat `published_total{outcome="failed"}` and `published_total{outcome="timeout"}` series. Without
 Redis the caches still work: each entry simply lives until its TTL (60 seconds,
 or 5 minutes for collector absence), which was the behaviour before
 cross-instance invalidation existed. The subscriber waits at most one second at

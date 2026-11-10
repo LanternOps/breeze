@@ -22,14 +22,52 @@ Design docs:
   its own container.
 - Socket-owner workers (anything whose import closure or runtime reaches
   agent-socket dispatch — see the plan's Task 5 classification) **stay on the
-  `api` container** this wave. `BREEZE_ROLE=all` (the default, both
+  `api` container** in the 3.5d-b rollout. `BREEZE_ROLE=all` (the default, both
   containers' fallback) is unaffected: `api` alone still runs every worker,
-  byte-for-byte as before.
+  byte-for-byte as before. Which entries are socket-owner changes over time;
+  see "Which workers run where" below.
 - `docker-compose.yml` and `deploy/docker-compose.prod.yml` both share the
   api service's full environment block via a `x-api-env` YAML anchor, so the
   `worker` service always sees the same env the `api` container does (Redis,
   DB, encryption keys, feature flags, …), with only `BREEZE_ROLE` hardcoded
   differently per service.
+
+### Which workers run where (#4142)
+
+Placement is mechanical, never a judgement call.
+`apps/api/src/services/workerEntrypointClosure.contract.test.ts` classifies
+every `WORKER_REGISTRY` entry from its import closure. It fails when a `global`
+entry reaches agent-socket dispatch, and also when an entry whose closure is
+clean is still `socket-owner` without a `KEEP_SOCKET_OWNER` reason.
+`pnpm --filter @breeze/api worker:closure` prints how many entries are still
+pinned and which ones could move.
+
+The dispatch facade full pass
+(`docs/superpowers/plans/platform-ci/2026-11-08-dispatch-facade-full-pass.md`)
+moves command dispatch onto the role-safe relay facade
+(`services/agentCommandRelay.ts`). Its first wave makes 27 more entries `global`,
+so on a worker-split deployment they now run in the `worker` container:
+`auditBaselineJobs`, `backupVerificationJobs`, `callerVerificationPublisher`,
+`callerVerificationReconciliation`, `cisJobs`, `desktopSessionFinalization`,
+`desktopSessionOrphanRecovery`, `deviceGroupJobs`, `drExecutionWorker`,
+`endpointMessageRetention`, `fleetRemediationDispatchWorker`,
+`hardwareHealthRetention`, `m365SyncWorker`, `maintenanceRebootWorker`,
+`monitorScriptWorker`, `oemUpdatesWorker`, `partnerGroupEvaluationJobs`,
+`patchJobWorker`, `patchSchedulerWorker`, `peripheralJobs`,
+`sensitiveDataWorker`, `softwareComplianceWorker`,
+`softwareDeploymentScheduler`, `softwareRemediationWorker`,
+`staleCommandReaper`, `timeSyncRetention` and `topologyDiagnosticWorker`.
+22 entries stay on `api`: 21 still reach agent sockets (later waves of the same
+plan), and `aiTranscriptSweeper` stays by design (#9050: it sweeps transcript
+files on the `api` container's disk).
+
+A command one of these workers sends to an agent whose socket lives on an `api`
+container travels through that instance's relay queue
+(`agent-command-relay-<instance id>`), so the relay consumer on `api` must be
+running. A send the relay cannot confirm is treated as uncertain: the delivery
+claim is kept, nothing is retried, and the agent's result or the stale-command
+reaper settles the row. Inside a held DB transaction the relay refuses outright;
+a caller holding a delivery claim releases it for the agent's next heartbeat.
 
 ## Observability (#4143)
 
@@ -110,15 +148,15 @@ zero, they were ABSENT, and `up` for it did not exist at all.
    change what runs where.
 3. **Verify presence and readiness before touching `api`:**
    ```bash
-   docker ps --format '{{.Names}}' | grep -q breeze-worker && echo "worker container present"
+   docker compose ps --status running --services | grep -qx worker && echo "worker container present"
    # The image has no curl and the worker container publishes no port — exec
    # BusyBox wget (what the container's own healthcheck uses) inside it instead.
-   docker exec breeze-worker wget -qO- http://127.0.0.1:3001/health/ready
+   docker compose exec worker wget -qO- http://127.0.0.1:3001/health/ready
    ```
    The presence check matters on its own: the hand-maintained droplet
    deploy line does not start `worker` by default (see the deploy-line
    warning below), so a rollout can silently skip this step entirely and
-   `docker ps` is the only thing that would have caught it — the same
+   `docker compose ps` (run from the Compose project directory) is the only thing that would have caught it — the same
    failure shape that left `portal` unrolled for 11 days. Confirm
    `/health/ready` returns 200 with `{"ready": true, ...}` before proceeding;
    a `migrations-pending` or `redis`/`db` reason means do not proceed.
@@ -129,7 +167,7 @@ zero, they were ABSENT, and `up` for it did not exist at all.
    `unavailable`, `optionalRunning`, `optionalDisabled`). A `workers-pending`
    reason that persists past the worker's `start_period` (60 s) means a
    required consumer failed to initialize or lost Redis — check
-   `docker logs breeze-worker` for `[CRITICAL][worker] Failed to initialize
+   `docker compose logs worker` for `[CRITICAL][worker] Failed to initialize
    <name>` before proceeding. Feature-gated consumers (`EVENT_DISPATCH_MODE`,
    `BREEZE_AI_AGENTS_ENABLED`, `AUDIT_CHAIN_VERIFY_ENABLED`) are declared optional
    when their flag is off. The abuse-signals consumer is required when either
@@ -152,8 +190,8 @@ zero, they were ABSENT, and `up` for it did not exist at all.
    - A representative *global* scheduled job actually ran from the `worker`
      container, not `api` — pick one with an observable side effect (e.g. a
      retention job's log line, or `metricRollupsWorker`'s output) and check
-     `docker logs breeze-worker` for it, and confirm it does NOT appear in
-     `docker logs breeze-api` after the flip.
+     `docker compose logs worker` for it, and confirm it does NOT appear in
+     `docker compose logs api` after the flip.
    - Durable event dispatch consumers (if `EVENT_DISPATCH_MODE` is enabled)
      are being consumed from `worker`, not `api`.
 6. **Soak.** Watch both containers' logs and `/health/ready` (the worker's
@@ -193,7 +231,10 @@ ssh root@<droplet> "cd /opt/breeze && docker compose stop worker"
   exactly the failure mode that stranded `portal` on `0.94.0` for 11 days
   while `/health` reported a newer version. Always verify version parity
   after deploying with the enumerate-running-containers loop in
-  `CLAUDE.md`, which now should include a `breeze-worker` line.
+  `CLAUDE.md`, which now should include a `worker` line. The service has no fixed
+  `container_name` (so `--scale worker=N` is not blocked by a name clash, #4144);
+  Compose names the container `<project>-worker-1`, so match on the service
+  name, not `breeze-worker`.
 - **Watchtower must never manage `worker`, same as `api`.** Per the
   Watchtower policy (#603), repo-tracked compose files never include
   Watchtower at all, and on droplets where it runs as a sidecar for other

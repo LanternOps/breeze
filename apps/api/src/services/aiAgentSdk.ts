@@ -16,7 +16,6 @@ import {
   withSystemDbAccessContext,
   runOutsideDbContext,
   assertOutsideHeldDbContext,
-  runAfterDbContextCommit,
 } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
@@ -49,6 +48,7 @@ import {
 import { loadProposalApprovalSummary } from './scriptProposals/approvalSummary';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
+import { recordWispToolOutcome } from './wisp/turnRecord';
 import type { TenantToolDescriptor } from './toolSources/resolver';
 // W5 PR C (#5220): the leaf name rule only; the flow gate and resolver are
 // loaded on first use so this module's import graph does not widen.
@@ -58,8 +58,15 @@ import type { GrantCeiling } from './wisp/grantAuthority';
 import type { WispCeilingRefusal } from './wisp/chatCeiling';
 // Leaf data module (no imports): loading it never pulls in the Wisp graph.
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
+import { classifyWispUnattendedRead } from './wisp/unattendedReads';
+import {
+  STANDING_CHECK_UNAVAILABLE_MESSAGE,
+  checkStandingInstructionsForCall,
+  standingConflictDescription,
+} from './wisp/standingInstructionGate';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
+import { aiTools as registeredAiTools } from './aiToolNames';
 import { applyHelperDeviceScope } from './helperToolFilter';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
@@ -93,6 +100,7 @@ import {
   type ToolHandoffStatus,
 } from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
+import { decideIntentOrg, resolveIntentTarget, type IntentTarget } from './actionIntents/intentTargetOrg';
 import { requiresPinnedEffectDigest } from './actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -114,6 +122,7 @@ import { PRE_HOOK_THREW_REFUSAL, recordPreHookRefusal, refusalLedgerText, takeLe
 import { approvalCardKey, publishPendingCard, resolveApprovalCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
+import { expireIfStale, sessionExpiredError } from './aiSessionExpiry';
 
 export { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS };
 
@@ -170,10 +179,14 @@ export const TERMINAL_READBACK_BUDGET_MS = 3_000;
  * StreamingSessionManager.startTurnTimeout() at each message_start — the same
  * point the 6-minute turn timeout resets — preserving the invariant that a
  * cycle's approval waits always end before the turn timeout fires.
+ *
+ * `startedAt` (#10416) is when this wait began, so a caller can measure how
+ * long the step waited for its decision.
  */
 function beginApprovalWait(session: ActiveSession): {
   timeoutMs: number;
   signal: AbortSignal;
+  startedAt: number;
   end: () => void;
 } {
   const now = Date.now();
@@ -193,6 +206,7 @@ function beginApprovalWait(session: ActiveSession): {
   return {
     timeoutMs,
     signal,
+    startedAt: now,
     end: () => {
       if (ended) return;
       ended = true;
@@ -348,8 +362,17 @@ type ApprovalMethod =
   | 'plan_step' // pre-authorized step of a human-approved action plan
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
   | 'read_only_auto' // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
-  | 'wisp_self_state_auto'; // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
+  | 'wisp_self_state_auto' // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
+  | 'wisp_unattended_read'; // #10973 one of the four reads under the grant's unattended-reads switch
 const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; method: ApprovalMethod }>();
+
+/**
+ * #10973: the input objects the gate let through as unattended reads, so the
+ * post hook resolves the same tier as the gate. Keyed by the call's own input
+ * rather than `lastApprovalBySession`, because a Security query's tier depends on
+ * it and the SDK may run sibling calls in parallel.
+ */
+const unattendedReadInputs = new WeakSet<object>();
 
 // Methods that represent an explicit decision on this specific call (a human
 // approver, or the PAM policy ceremony for helper sessions). Plan steps count:
@@ -498,22 +521,6 @@ function unresolvedTurn(turn: ModelUnavailable): Extract<PreFlightResult, { ok: 
 
 
 /**
- * Wisp W04 Task 5: recompute the thread summary of a session just stamped
- * 'expired'. Deferred until the surrounding request context commits, lazily
- * imported, best effort: a failure goes to Sentry and never reaches the caller.
- */
-function scheduleWispSummaryFinalize(sessionId: string): void {
-  runAfterDbContextCommit('wisp.finalizeThreadSummary', () =>
-    import('./wisp/threadSummary')
-      .then((m) => m.finalizeWispSessionSummary(sessionId))
-      .catch((err) => {
-        console.error(`[AI-SDK] Wisp thread summary finalize failed for expired session ${sessionId}:`, err);
-        captureException(err);
-      }),
-  );
-}
-
-/**
  * Runs one DB phase of the pre-flight inside a short RLS context — the route's
  * `inRequestDb` (a fresh caller-scoped `withAuthDbAccessContext`).
  */
@@ -645,26 +652,10 @@ async function runPreFlightAdmission(
     return { ok: false, error: `Session turn limit reached (${session.maxTurns})`, status: 409, code: 'turn_limit_reached' };
   }
 
-  // Session expiration
-  const now = Date.now();
-  const sessionAge = now - new Date(session.createdAt).getTime();
-  const idleTime = now - new Date(session.lastActivityAt).getTime();
-
-  if (sessionAge > SESSION_MAX_AGE_MS) {
-    await db.update(aiSessions)
-      .set({ status: 'expired', updatedAt: new Date() })
-      .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')));
-    scheduleWispSummaryFinalize(sessionId);
-    return { ok: false, error: 'Session has expired (24h max age). Please start a new session.' };
-  }
-
-  if (idleTime > SESSION_IDLE_TIMEOUT_MS) {
-    await db.update(aiSessions)
-      .set({ status: 'expired', updatedAt: new Date() })
-      .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')));
-    scheduleWispSummaryFinalize(sessionId);
-    return { ok: false, error: 'Session has expired due to inactivity. Please start a new session.' };
-  }
+  // Session expiration (#11430: the one rule, shared with GET /sessions/:id and
+  // the idle sweep): stamps 'expired' and schedules the Wisp summary finalize.
+  const expiry = await expireIfStale(session);
+  if (expiry) return { ok: false, error: sessionExpiredError(expiry) };
 
   // Sanitize input
   const { sanitized: sanitizedContent, flags: sanitizeFlags } = sanitizeUserMessage(content);
@@ -722,7 +713,7 @@ async function runPreFlightAdmission(
       const ceiling = await resolveGrantCeiling(grant.grantId, grant.revisionId);
       systemPrompt = [
         await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling),
-        await wispSeedForSession(grant, auth, ceiling, sanitizedPageContext),
+        await wispSeedForSession(grant, auth, ceiling, sanitizedPageContext, model.logicalModel),
       ].filter(Boolean).join('\n');
     } catch (err) {
       if (err instanceof WispSessionUnavailableError) return { ok: false, error: err.message, status: 409 };
@@ -930,13 +921,37 @@ function reportLostTerminalCas(opts: {
  * governs its tier-2+ calls), or any non-user principal — passes the loaded
  * proposal context through untouched and keeps the base Tier 3. Used by BOTH
  * the gate and postToolUse so the two always resolve the same tier.
+ *
+ * #10973: `unattendedReads` adds the grant-level switch, for the same kind of
+ * principal only.
  */
 function chatGuardrailContext(
   session: ActiveSession,
   base: GuardrailContext | undefined,
+  opts: { unattendedReads?: boolean } = {},
 ): GuardrailContext | undefined {
   const interactiveChat = session.auth.principal?.kind === 'user_session' && !session.auth.helperDeviceId;
-  return interactiveChat ? { ...base, chatSession: true } : base;
+  if (!interactiveChat) return base;
+  return { ...base, chatSession: true, ...(opts.unattendedReads ? { wispUnattendedReads: true } : {}) };
+}
+
+/**
+ * #10973: can the grant's unattended-reads switch apply to this call at all?
+ * The live ceiling must say on, and the gate must be able to skip the card, under
+ * the same carve-outs as every other auto-execution (see the read-only branch in
+ * the gate). A call that fails this keeps its base tier: a paused session's
+ * Security query stays a durable Tier-3 intent instead of becoming a lighter card.
+ */
+function unattendedReadsApply(
+  session: ActiveSession,
+  wispState: WispCallState | null,
+  customTool: boolean,
+): boolean {
+  if (wispState?.ceiling.unattendedReads !== true || customTool || session.isPaused) return false;
+  if (session.auth.principal?.kind !== 'user_session' || session.auth.helperDeviceId) return false;
+  const planInFlight = Boolean(session.activePlanId)
+    && (session.approvalMode === 'action_plan' || session.approvalMode === 'hybrid_plan');
+  return !planInFlight;
 }
 
 /**
@@ -974,6 +989,12 @@ export function intentCreationRefusal(toolName: string, input: unknown, err: unk
   if (toolName === 'run_script' && typeof code === 'string' && code.startsWith('group_target_') && err instanceof Error) {
     return `${code}: ${err.message}`;
   }
+  // W16 PR B (#6786): nothing pins for a design outside the intent's org or one that
+  // is missing. One message for both, so it does not say whether the id exists.
+  if (toolName === 'manage_fleet_designs' && code === 'effect_digest_unresolvable') {
+    return 'fleet_design_not_found: Nothing was filed. No Fleet Design with this report id could be read in the '
+      + 'organization this request belongs to. Check the id with list_fleet_designs and try again.';
+  }
   return 'Failed to create approval record';
 }
 
@@ -1004,6 +1025,19 @@ function preApprovalInputRefusal(
   return validation.success ? null : validation.error;
 }
 
+/**
+ * #11432: what `AiTool.validateBeforeFiling` refuses for this call, or null.
+ * Read from the shared registry map (`aiToolNames.ts`), which `aiTools.ts`
+ * fills, so this module never imports the registry hub itself. A tool without
+ * the hook is left to its handler, and its call's reach is never built here.
+ */
+function preFilingToolRefusal(toolName: string, input: Record<string, unknown>, auth: () => AuthContext): string | null {
+  const validate = registeredAiTools.get(toolName)?.validateBeforeFiling;
+  if (!validate) return null;
+  const verdict = validate(input, auth());
+  return verdict.ok ? null : verdict.error;
+}
+
 // ============================================
 // Wisp W04 Task 4 — the delegation ceiling on every chat tool call
 // ============================================
@@ -1012,6 +1046,8 @@ function preApprovalInputRefusal(
 type WispCallState = {
   ceiling: GrantCeiling;
   permissionKeys: string[];
+  /** #11432: the thread-focus write default the gate resolved; every narrowing of this call passes it. */
+  writeDefaultOrgId: string | null;
   narrow: typeof import('./wisp/chatCeiling').narrowAuthToCeiling;
 };
 
@@ -1072,12 +1108,41 @@ async function runWispCeilingGate(
       auditWispRefusal(session, toolName, result.refusal);
       return { ok: false, denial: { allowed: false, error: result.refusal.message } };
     }
-    return { ok: true, state: { ceiling: result.ceiling, permissionKeys: result.permissionKeys, narrow: narrowAuthToCeiling } };
+    return {
+      ok: true,
+      state: {
+        ceiling: result.ceiling,
+        permissionKeys: result.permissionKeys,
+        writeDefaultOrgId: result.writeDefaultOrgId ?? null,
+        narrow: narrowAuthToCeiling,
+      },
+    };
   } catch (err) {
     console.error(`[AI-SDK] Wisp ceiling gate failed for '${toolName}' (session ${session.breezeSessionId}); denying`, err);
     captureException(err, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
     auditWispRefusal(session, toolName, { code: 'wisp_gate_unavailable', detail: 'unavailable', message: WISP_GATE_UNAVAILABLE_MESSAGE });
     return { ok: false, denial: { allowed: false, error: WISP_GATE_UNAVAILABLE_MESSAGE } };
+  }
+}
+
+/**
+ * #10428 W06: the standing-instruction check for one Wisp call, under the
+ * ceiling this call passed. Never throws: any failure refuses the call (only
+ * a Wisp Tier >= 2 call reaches it).
+ */
+async function standingInstructionCheck(
+  session: ActiveSession,
+  wispState: WispCallState,
+  toolName: string,
+  input: Record<string, unknown>,
+): Promise<{ action: 'refuse'; error: string } | { action: 'warn'; text: string } | { action: 'none' }> {
+  try {
+    // The call's own reach expands a run_script group target to its devices.
+    return await checkStandingInstructionsForCall({ ceiling: wispState.ceiling, toolName, input, auth: callReach(session, wispState) });
+  } catch (err) {
+    console.error(`[AI-SDK] Standing-instruction check failed for '${toolName}'; refusing`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return { action: 'refuse', error: STANDING_CHECK_UNAVAILABLE_MESSAGE };
   }
 }
 
@@ -1100,7 +1165,7 @@ function chatApprovalClientLabel(session: ActiveSession): string {
 function callReach(session: ActiveSession, wispState: WispCallState | null): AuthContext {
   const toolAuth = session.toolAuth ?? session.auth;
   return wispState
-    ? wispState.narrow(toolAuth, wispState.ceiling, session.breezeSessionId, wispState.permissionKeys)
+    ? wispState.narrow(toolAuth, wispState.ceiling, session.breezeSessionId, wispState.permissionKeys, wispState.writeDefaultOrgId)
     : toolAuth;
 }
 
@@ -1172,6 +1237,14 @@ async function wispSelfStateSkipsCard(
   switch (WISP_SELF_STATE_TOOLS.get(toolName)) {
     case 'adds_row':
       return true;
+    // The handler pins the row to the call's grant (cancelCheckIn is keyed on
+    // grant_id), so the only rows it can touch are this grant's own.
+    case 'own_thread':
+      return true;
+    // W07 (#11496): only a notify check-in is a pure add. A `run` one spends
+    // grant budget unattended when it fires; an unrecognised mode asks too.
+    case 'notify_check_in':
+      return input.mode === undefined || input.mode === 'notify';
     case 'own_memory':
       return input.ownerKind === 'user';
     case 'own_concern': {
@@ -1215,8 +1288,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       captureException(new Error(`Wisp session ${session.breezeSessionId} reached an allowed exit for '${toolName}' without the ceiling gate`));
       return { allowed: false, error: WISP_GATE_UNAVAILABLE_MESSAGE };
     }
-    const { ceiling, permissionKeys, narrow } = wispCall.current;
-    const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys);
+    const { ceiling, permissionKeys, writeDefaultOrgId, narrow } = wispCall.current;
+    const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys, writeDefaultOrgId);
     const autoLinkTags = {
       op: 'wisp.auto_link', toolName, threadId: session.wispGrant.threadId,
       grantId: ceiling.grantId, sessionId: session.breezeSessionId,
@@ -1294,6 +1367,9 @@ interface PreHookLedgerState {
   rowWritten: boolean;
 }
 
+/** #10400: a tool call after the stream stopped the turn at its work-turn limit. */
+export const WORK_TURN_LIMIT_REFUSAL = 'This turn reached the conversation turn limit.';
+
 function createGatedSessionPreToolUse(session: ActiveSession) {
   return async (
     wispCall: { current: WispCallState | null },
@@ -1306,6 +1382,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
     let createdIntentId: string | undefined;
+    // #10416: how long this call waited on its approval card (tier-2 or a
+    // tier-3 intent). Set whenever such a wait completes; returned only on a
+    // Wisp session's allowed exit (denials and timeouts discard it).
+    let approvalWaitMs: number | undefined;
+
+    // #10400: the stream stopped this turn at its work-turn limit; a call it
+    // emitted on the way out gets no gate, intent or approval card.
+    if (session.workTurnLimitStopped) return { allowed: false, error: WORK_TURN_LIMIT_REFUSAL };
 
     // The org a Tier-3 action intent for this call lives in. The session org,
     // except for a run_script whose reviewed proposal resolves to another org
@@ -1433,6 +1517,42 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       ? await loadProposalGuardrailContextInReach(input, (orgId) => proposalReach.canAccessOrg(orgId))
       : null;
     if (runScriptProposal?.proposalOrgId) intentOrgId = runScriptProposal.proposalOrgId;
+    // #11181 (generalising W16 PR A and PR B, #6786): a call that changes another org in
+    // reach files its intent in THAT org, as a proposal does above. The approvers, the
+    // stored reason and a durable release's rebuilt authority are all keyed on
+    // `action_intents.org_id`, so a session-org intent would have an approver of org A
+    // approving a change to org B, and a worker release would refuse. Which calls name
+    // their org, and how, is `actionIntents/intentTargetOrg.ts`: an org ARGUMENT or a ROW
+    // named by id (#11222) outside reach refuses below (Tier 3 only, so a read still reaches
+    // its handler), and so does a named row that is missing or could not be read; a design
+    // tool's row outside reach stays in the session org with nothing about it on the card,
+    // so a foreign id reveals nothing; a partner-wide effect stays in the session org. A
+    // design tool's failed row lookup is non-fatal: the intent stays in the session org and
+    // the card says it is short. A Fleet Design of another org then has no pin for that org,
+    // so no intent is filed; a schedule's handler answers not found or refuses at release.
+    let designCardDetail: string | undefined;
+    let intentOrgRefusal: string | undefined;
+    if (!flowTool && !tenant) {
+      // Only a design tool's row read can throw: an argument target is read from the input
+      // alone, and a row-identified write's failed read comes back refused, so the fail-open
+      // below never covers either, and neither does a reach failure.
+      const reach = callReach(session, wispCall.current);
+      let target: IntentTarget | null = null;
+      try {
+        target = await resolveIntentTarget(toolName, input);
+      } catch (err) {
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error('[AI-SDK] Failed to resolve a design tool\'s target org:', err);
+        designCardDetail = 'The details of this change could not be loaded, so this card may not show everything it affects.';
+      }
+      if (target) {
+        const decision = decideIntentOrg(target, reach);
+        if (decision.kind === 'target') intentOrgId = decision.orgId;
+        if (decision.kind === 'refuse') intentOrgRefusal = decision.error;
+        else designCardDetail = decision.cardDetail;
+      }
+    }
+    const unattendedReads = unattendedReadsApply(session, wispCall.current, Boolean(flowTool || tenant));
     let guardrailCheck = flowTool
       ? (await import('./flows/flowToolGate')).guardrailCheckForFlowTool(flowTool)
       : tenant
@@ -1443,8 +1563,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         chatGuardrailContext(
           session,
           runScriptProposal ? runScriptProposal.context : await loadProposalGuardrailContext(input, session.orgId),
+          { unattendedReads },
         ),
       );
+    // #10973: the classified call, for the card skip below. Tier 2 only, so a
+    // Tier-3 resolution (and anything outside the four) never takes that path.
+    const unattendedRead = unattendedReads && guardrailCheck.tier === 2
+      ? guardrailCheck.wispUnattendedRead ?? classifyWispUnattendedRead(toolName, input)
+      : null;
 
     if (!guardrailCheck.allowed) {
       return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
@@ -1472,6 +1598,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         guardrailCheck = { ...rest, tier: gate.tier, requiresApproval: gate.tier >= 2, readOnly: gate.tier === 1 };
         verifiedToolContext = { ...verifiedToolContext, runFlowGate: { flowId: gate.flowId, publicationSeq: gate.publicationSeq } };
       }
+    }
+
+    // #11181: an approval-class call naming an org it cannot reach is refused, never filed
+    // in the session org instead (see the target resolution above).
+    if (intentOrgRefusal && guardrailCheck.tier === 3) {
+      return { allowed: false, error: intentOrgRefusal };
     }
 
     // #7906: a read-only event_logs_query was classified on a strictly-parsed
@@ -1519,6 +1651,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       return { allowed: false, error: 'Unable to verify rate limits. Please try again.' };
     }
 
+    // #11432: the tool's own deterministic refusal (`validateBeforeFiling`),
+    // judged under the auth its handler will run with (this call's reach),
+    // after RBAC and the rate limit (their refusals win) and before any
+    // approval card or intent. A create with no orgId on a partner-wide
+    // session used to be filed, approved with step-up, and only then refused
+    // as ambiguous. The handler keeps the same check.
+    if (!flowTool && !tenant) {
+      const filingRefusal = preFilingToolRefusal(toolName, input, () => callReach(session, wispCall.current));
+      if (filingRefusal) return { allowed: false, error: filingRefusal };
+    }
+
     // #10144: a launch_specialist call the coordinator would refuse
     // deterministically never reaches an approval card; an admitted one gets
     // the org's name on its card. After RBAC and the rate limit (so its reads
@@ -1528,6 +1671,18 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       const gate = await specialistPreApprovalGate(session, input, wispCall.current);
       if (!gate.ok) return gate.denial;
       specialistOrgName = gate.orgName;
+    }
+
+    // #10428 W06 (spec §5.3): a Wisp device-changing call meets the user's
+    // remembered standing instructions before any card. A confirmed,
+    // enforceable deny on an exact verb refuses it here; any other match
+    // forces a card (even under auto-approve) carrying a conflict banner.
+    // Narrowing only. Re-checked after a Tier-2 card's wait below.
+    let standingConflict: { text: string } | null = null;
+    if (guardrailCheck.tier >= 2 && wispCall.current && !flowTool && !tenant) {
+      const standing = await standingInstructionCheck(session, wispCall.current, toolName, input);
+      if (standing.action === 'refuse') return { allowed: false, error: standing.error };
+      if (standing.action === 'warn') standingConflict = { text: standing.text };
     }
 
     // Tier 2+: Requires user approval (mutating and destructive tools)
@@ -1633,6 +1788,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           input,
           description: guardrailCheck.description ?? `Execute ${toolName}`,
           requiresAdminApproval: true,
+          // #10416: PAM policy or an administrator decides, never the requester.
+          waitingOn: 'other_approvers',
         });
 
         let approved: boolean;
@@ -1755,17 +1912,24 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       const wispSelfStateAutoExec = guardrailCheck.tier === 2
         && effectiveMode !== 'auto_approve'
         && !readOnlyAutoExec
+        && !unattendedRead
         && wispCall.current !== null
         && !tenant
         && !flowTool
         && !session.isPaused
         && !planInFlight
         && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
-      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec)) {
+      // #10428 W06: a standing-instruction warning always reaches a human.
+      if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || unattendedRead)) {
         const liveDenial = await refreshTier2Authority(
           'Authorization changed before execution; the action was not executed.',
         );
         if (liveDenial) return liveDenial;
+        // #10973: the refresh re-read the ceiling. The switch turned off in
+        // between refuses the call rather than running it on the old answer.
+        if (unattendedRead && wispCall.current?.ceiling.unattendedReads !== true) {
+          return { allowed: false, error: 'Authorization changed before execution; the action was not executed.' };
+        }
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -1784,10 +1948,16 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         }
         lastApprovalBySession.set(session, {
           toolName,
-          method: effectiveMode === 'auto_approve'
-            ? 'auto_approve_mode'
-            : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
+          method: unattendedRead
+            ? 'wisp_unattended_read'
+            : effectiveMode === 'auto_approve'
+              ? 'auto_approve_mode'
+              : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
         });
+        if (unattendedRead) {
+          unattendedReadInputs.add(input);
+          verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedRead };
+        }
         return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
       }
 
@@ -1952,7 +2122,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
 
       if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
-        if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName)) {
+        // #10428 W06: a step that now conflicts with a standing instruction
+        // takes the card below (the plan's approval never saw the banner).
+        if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName) && !standingConflict) {
           const liveDenial = await refreshTier2Authority(
             'Authorization changed after plan approval; the action was not executed.',
           );
@@ -2141,15 +2313,20 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         ? await loadProposalApprovalSummary(input as Record<string, unknown>, intentOrgId)
         : null;
 
-      const baseDescription = specialistOrgName
+      const namedDescription = specialistOrgName
         ? describeSpecialistRequest(input, specialistOrgName)
         : guardrailCheck.description ?? `Execute ${toolName}`;
+      const baseDescription = designCardDetail ? `${namedDescription} ${designCardDetail}` : namedDescription;
       // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
       // every surface that renders one: the chat card, the durable intent's
       // stored reason, the /approvals queue, and the mobile push.
-      const description = scriptRunContext
+      const contextDescription = scriptRunContext
         ? `${baseDescription}. ${describeScriptRunContext(scriptRunContext)}`
         : baseDescription;
+      // #10428 W06: the conflict leads the description, for the same reason.
+      const description = standingConflict
+        ? standingConflictDescription(standingConflict.text, contextDescription)
+        : contextDescription;
 
       if (guardrailCheck.tier >= 3) {
         // Hoisted above the try below (unlike `intent`, which stays
@@ -2353,7 +2530,11 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             input: pinnedCard ? pinnedCard.input : input,
             description: pinnedCard ? pinnedCard.description : description,
             deviceContext,
+            ...(standingConflict ? { standingInstructionConflict: standingConflict } : {}),
             intentBacked: true,
+            // #10416: the requester can decide only an intent that fanned a
+            // row out to them; otherwise someone else must (four-eyes).
+            waitingOn: intent.requesterApprovalRequestId ? 'you' : 'other_approvers',
           });
           }
 
@@ -2379,6 +2560,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 approvalWait.signal,
               );
               intentOutcome = intentDecisionOutcome(decisionStatus);
+              approvalWaitMs = Date.now() - approvalWait.startedAt;
             } finally {
               approvalWait.end();
             }
@@ -2584,9 +2766,11 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             );
             // Wisp W04 (Review Focus 2): a Wisp ceiling refusal at release
             // (services/wisp/releaseCeiling.ts) carries fixed user-facing copy
-            // in details.reason; only `wisp_*` codes may surface it.
+            // in details.reason; only `wisp_*` codes may surface it, and the
+            // standing-instruction refusal (#10428 W06), which uses the same seam.
             const wispReleaseReason =
-              revalidation.errorCode.startsWith('wisp_') && typeof revalidation.details?.reason === 'string'
+              (revalidation.errorCode.startsWith('wisp_') || revalidation.errorCode === 'standing_instruction_denied')
+              && typeof revalidation.details?.reason === 'string'
                 ? revalidation.details.reason
                 : undefined;
             return await failMatchedPlanStep({
@@ -2681,7 +2865,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           if (hasPinnedDigest(intentRow)) {
             const recomputed = await runOutsideDbContext(() =>
               withSystemDbAccessContext(() =>
-                computeEffectDigestForRelease(intentRow.actionName, intentRow.arguments, db),
+                computeEffectDigestForRelease(intentRow.actionName, intentRow.arguments, db, { intentOrgId: intentRow.orgId }),
               ),
             );
             if (recomputed.digest !== intentRow.effectDigest) {
@@ -2979,6 +3163,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           }
 
           // Best-effort push notification to the user's mobile device(s).
+          // #10416: the card says whether at least one push was accepted for
+          // delivery by a push provider (not proof the phone received it).
+          let pushedToPhone = false;
           if (approvalRequestId) {
             try {
               // Token read happens INSIDE the org DB context; the push network
@@ -2994,11 +3181,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 },
                 () => getUserPushTokens(session.auth.user.id),
               );
-              await dispatchApprovalPushToTokens(tokens, {
+              const push = await dispatchApprovalPushToTokens(tokens, {
                 approvalId: approvalRequestId,
                 actionLabel,
                 requestingClientLabel: chatApprovalClientLabel(session),
               });
+              pushedToPhone = (push?.dispatched ?? 0) > 0;
             } catch (err) {
               console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
             }
@@ -3022,6 +3210,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             deviceContext,
             scriptRunContext,
             ...(scriptProposal ? { scriptProposal } : {}),
+            ...(standingConflict ? { standingInstructionConflict: standingConflict } : {}),
+            pushedToPhone,
+            waitingOn: 'you',
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval
@@ -3036,6 +3227,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               approvalWait.signal,
             );
             cardOutcome = approvalWaitOutcome(approved, approvalWait.signal);
+            approvalWaitMs = Date.now() - approvalWait.startedAt;
           } finally {
             resolveApprovalCard(session, approvalExec.id, cardOutcome);
           }
@@ -3090,14 +3282,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             captureException(err instanceof Error ? err : new Error(String(err)));
             console.error('[AI-SDK] Failed to close out settled approval record:', approvalExec.id, err);
           }
-          // Not reachable with a non-null matchedPlanStepIndex today (both
-          // secret-bearing tools are statically tier 3, so the only way to
-          // land in this tier<3 legacy branch with a matched-but-declined
-          // plan step — a tier-2 secret-bearing tool — is dead code). Wrap
-          // anyway: it costs nothing (failMatchedPlanStep no-ops when
-          // matchedPlanStepIndex is null) and removes a latent trap that is
-          // currently safe only by the coincidence of two other files'
-          // static tier assignments.
+          // A matched plan step lands in this tier<3 branch when a standing
+          // instruction warned on it (#10428 W06) and declined the plan
+          // shortcut; a step nobody approved stops the plan.
+          // failMatchedPlanStep no-ops when matchedPlanStepIndex is null.
           return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected or timed out' });
         }
 
@@ -3116,6 +3304,37 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             captureException(err instanceof Error ? err : new Error(String(err)));
           }
           return liveDenial;
+        }
+
+        // #10428 W06 (quorum): this in-session card never becomes an intent,
+        // so no release re-check would see an instruction confirmed while it
+        // waited. Check again before running; a refusal now stops the call.
+        if (wispCall.current && !flowTool && !tenant) {
+          const standing = await standingInstructionCheck(session, wispCall.current, toolName, input);
+          if (standing.action === 'refuse') {
+            try {
+              await withDbAccessContext(
+                { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+                () => db.update(aiToolExecutions)
+                  .set({ status: 'rejected', errorMessage: standing.error })
+                  .where(eq(aiToolExecutions.id, approvalExec!.id)),
+              );
+            } catch (err) {
+              captureException(err instanceof Error ? err : new Error(String(err)));
+            }
+            return await failMatchedPlanStep({ allowed: false, error: standing.error }, ' The plan has been stopped.');
+          }
+        }
+
+        // A warned plan step that took this card (W06) is authorized now.
+        if (matchedPlanStepIndex !== null && session.activePlanId) {
+          session.eventBus.publish({
+            type: 'plan_step_start',
+            planId: session.activePlanId,
+            stepIndex: matchedPlanStepIndex,
+            toolName,
+          });
+          session.currentPlanStepIndex = matchedPlanStepIndex + 1;
         }
 
         // Mark as executing
@@ -3141,7 +3360,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       // or the tier-2 lightweight card (user clicked Approve).
       lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
     }
-    return { allowed: true, intentId: createdIntentId, context: verifiedToolContext };
+    // #10416: a Wisp session's handler adds the wait to the tool result
+    // (aiAgentSdkTools withApprovalWait); every other session is unchanged.
+    return {
+      allowed: true,
+      intentId: createdIntentId,
+      context: verifiedToolContext,
+      ...(session.wispGrant && approvalWaitMs !== undefined ? { approvalWaitMs } : {}),
+    };
   };
 }
 
@@ -3337,6 +3563,11 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // whether the DB writes below succeed — postToolUse only fires for a tool
     // that actually ran, which is the event the counter tracks.
     session.pendingTurnToolExecutionCount += 1;
+    // #10428 (W05): a Wisp turn keeps what its tools did for the turn-end hooks
+    // (wisp/turnEnd.ts: the `remember` calls the instruction capture skips).
+    if (session.wispGrant && session.currentTurn) {
+      recordWispToolOutcome(session.currentTurn, { toolName, input, isError, output });
+    }
     // Pair this result with its own tool_use by the id the SDK sent with the
     // call, never by queue position (#7931). Claiming also tells the
     // dropped-call fallback (#3094) this call ran, whichever of this and its
@@ -3367,6 +3598,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         toolName === 'run_script'
           ? (await loadProposalGuardrailContextInReach(input, (orgId) => session.toolAuth.canAccessOrg(orgId))).context
           : await loadProposalGuardrailContext(input, session.orgId),
+        { unattendedReads: unattendedReadInputs.has(input) },
       ));
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to

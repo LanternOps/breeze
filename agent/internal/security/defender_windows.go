@@ -5,9 +5,10 @@ package security
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // GetDefenderStatus queries Microsoft Defender status via PowerShell. It
@@ -33,7 +34,7 @@ func TriggerDefenderScan(scanType string) error {
 	defer cancel()
 
 	command := fmt.Sprintf("Start-MpScan -ScanType %s", mode)
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to trigger defender scan: %w", err)
 	}

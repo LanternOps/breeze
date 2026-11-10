@@ -188,6 +188,8 @@ export type StorageSessionRow = {
   deadline: Date;
   revokedAt: Date | null;
   callCount: number;
+  /** Stamped by every call charged to the session; null until its first. */
+  lastUsedAt?: Date | null;
   resolvedObjectCount: number;
   rateCallsAvailable: number;
   rateObjectsAvailable: number;
@@ -968,7 +970,10 @@ export async function authenticateStorageSession(
   }
   if (session.revokedAt) return { ok: false, status: 410, error: 'Storage session has been revoked' };
   const now = deps.now().getTime();
-  if (now >= session.deadline.getTime() || now >= session.expiresAt.getTime()) {
+  if (now >= session.deadline.getTime()) {
+    return { ok: false, status: 410, error: 'Storage session has expired' };
+  }
+  if (now >= session.expiresAt.getTime() && !isUnstartedWriteSession(session)) {
     return { ok: false, status: 410, error: 'Storage session has expired' };
   }
 
@@ -983,6 +988,35 @@ export async function authenticateStorageSession(
     return { ok: false, status: 410, error: 'Storage session has ended with its command' };
   }
   return { ok: true, session };
+}
+
+/**
+ * A write session that has not been used yet (#11012). Dispatch mints one for
+ * every job of a schedule batch at once and the helper runs the jobs one at a
+ * time, so a job parked behind a long one starts after its 15-minute lease
+ * has lapsed. Until the session's first call the lease is not a liveness
+ * window (nothing has run yet), so the session stays usable up to its
+ * deadline. Its first call is a renew (the helper renews any lease with under
+ * a third left before using the session), which grants a lease from now; from
+ * then on the lease lapses as for any running session.
+ *
+ * Revocation and the deadline still end it (checked before this); ending the
+ * job revokes it (trigger); and every write call re-checks
+ * (ensureWriteSessionLive, in backupStorageWriteSessions.ts) that its backup
+ * job is still pending or running and that the snapshot id reservation is
+ * still reserved for that job at the session's write generation. Read
+ * sessions are delivered to a command that is already running and are never
+ * exempt.
+ *
+ * Every charged call raises call_count and stamps last_used_at; a resume or
+ * an issued URL leaves its own mark too. Any of them counts as used.
+ */
+function isUnstartedWriteSession(session: StorageSessionRow): boolean {
+  return session.scope === 'snapshot_write'
+    && session.callCount === 0
+    && !session.lastUsedAt
+    && !session.resumedAt
+    && !session.urlHorizonAt;
 }
 
 export type ResolvedObject = {

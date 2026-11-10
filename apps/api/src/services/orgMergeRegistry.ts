@@ -549,6 +549,8 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // Singleton config rows (UNIQUE(org_id)) — survivor's config wins:
   audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
+  portal_access_policies: { kind: 'keep-survivor' }, // verified: portal_access_policies_org_uq partial UNIQUE (org_id); spec §5.3 survivor wins
+  portal_access_requests: { kind: 'repoint-dedupe', key: ['email'], keyWhere: "{status} = 'pending'" }, // verified: portal_access_requests_pending_email_uq (org_id, email) WHERE status = 'pending'
   portal_branding: { kind: 'keep-survivor' }, // verified: portal_branding.org_id UNIQUE (portal.ts)
   org_billing_profile_assignments: { kind: 'keep-survivor' }, // org_id UNIQUE
   org_ticket_settings: { kind: 'keep-survivor' }, // verified: org_ticket_settings.org_id UNIQUE (ticketConfig.ts)
@@ -1037,6 +1039,8 @@ const REPOINT_TABLES: readonly string[] = [
   // SET CONSTRAINTS ALL DEFERRED lets parents and this row repoint in separate
   // statements; breeze_network_isolation_device_moved skips a merging org.
   "device_network_isolations",
+  "device_oem_policy_side",
+  "device_oem_update_status",
   "device_patches",
   "device_process_samples",
   "device_recovery_keys",
@@ -1050,6 +1054,8 @@ const REPOINT_TABLES: readonly string[] = [
   "device_time_daily",
   "device_time_status",
   "device_vulnerabilities",
+  "device_wake_attempts",
+  "device_wake_status",
   "device_warranty",
   // device_workloads / device_workload_runtimes (#3834): plain repoint — the
   // only unique keys are (device_id, runtime, workload_id) and (device_id,
@@ -1218,6 +1224,10 @@ const REPOINT_TABLES: readonly string[] = [
   "playbook_executions",
   "plugin_instances",
   "plugins",
+  // Plain repoint, no dedupe: both unique keys ((issuer, subject) and
+  // (portal_user_id, provider)) are org-free, so a re-tenant can never collide,
+  // and the composite (portal_user_id, org_id) FK is deferred by the merge.
+  "portal_user_identities",
   "portal_users",
   "provision_credential_handles",
   "psa_connections",
@@ -1418,6 +1428,10 @@ const REPOINT_TABLES: readonly string[] = [
   // stays behind (leave-for-erasure): the survivor is outside that grant's
   // ceiling, so the wake path skips it, and erasing the loser shell deletes
   // the grant and, by ON DELETE CASCADE, those rows.
+  // Wisp check-in timers W01 (#10992). Partner-level check-ins (org_id NULL)
+  // never match the repoint, and the only unique key is the PK, so a repoint
+  // cannot collide. The thread and grant are partner-axis and stay put.
+  "wisp_check_ins",
   "wisp_concern_recipients",
   "wisp_concerns",
   // Wisp W08a (#9914). Partner-level links (org_id NULL) never match the

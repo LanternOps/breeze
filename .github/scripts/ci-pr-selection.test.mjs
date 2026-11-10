@@ -263,7 +263,8 @@ test('changes exposes reader outputs and the merge-group fallback turns readers 
 });
 test('path-read-contracts is gated only on path_readers and asserted outside the code block', () => {
   const body = job('path-read-contracts');
-  assert.match(body, /^    if: needs\.changes\.outputs\.path_readers == 'true'$/mu);
+  // W05 (#10749): plus, optionally, the thin clause naming its own id and nothing else.
+  assert.match(body, /^    if: needs\.changes\.outputs\.path_readers == 'true'(?: && !contains\(needs\.changes\.outputs\.thin_skip, ',path-read-contracts,'\))?$/mu);
   assert.match(body, /run: node \.github\/scripts\/run-reader-tests\.mjs/u);
   assert.match(body, /READER_TESTS: \$\{\{ needs\.changes\.outputs\.reader_tests \}\}/u);
   assert.match(summary, /needs: \[[^\]]*\bpath-read-contracts\b/u);
@@ -313,12 +314,14 @@ test('agent area: Node-install root manifests do not set it, and no agent-gated 
   for (const name of [...AGENT_JOBS, 'test-agent-race']) assert.doesNotMatch(job(name), /setup-node|pnpm/u, name);
 });
 test('agent area: shared and unknown inputs set it (fail open)', () => {
-  for (const path of ['packages/shared/src/testing/topology-unifi-v1.json', '.github/scripts/x.mjs', '.github/workflows/ci.yml',
+  for (const path of ['packages/office-addin-core/src/x.ts', '.github/scripts/x.mjs', '.github/workflows/ci.yml',
     'scripts/check-windows-vet.sh', 'docker/Dockerfile.api', 'ee/workspace/src/x.ts', 'some-new-dir/x', '.github/actions/restore-go-cache/action.yml']) {
     const out = classifyPr([path]);
     assert.equal(out.agent_code, 'true', path);
     for (const area of APP_AREAS) assert.equal(out[area], 'true', `${path}: ${area}`);
   }
+  // packages/shared still sets the agent area; only `rust` is narrowed to what the Rust sources read (#9847).
+  assert.equal(classifyPr(['packages/shared/src/testing/topology-unifi-v1.json']).agent_code, 'true');
 });
 test('agent area: files the Go tests read set it', () => {
   for (const path of ['apps/api/src/routes/agents/schemas.ts', 'apps/api/src/routes/agentWs.ts', 'apps/web/public/scripts/uninstall.sh',
@@ -336,8 +339,12 @@ test('agent area: the api rule for agent/** is backed by real readers (else it i
   assert.match(readFileSync(join(REPO_ROOT, 'agent/tools/agentsim/sim/budget_contract_test.go'), 'utf8'), /agentHotPathQueryBudget\.integration\.test\.ts/u);
 });
 test('the seven agent jobs are gated on agent_code; recovery-media-e2e is unchanged', () => {
+  // W05 (#10749): a job CI Success has a thin `case` arm for may end with the clause naming its own id.
+  const thinArms = new Set([...summary.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gmu)].map((m) => m[1]));
+  assert.ok(thinArms.has('test-agent') && !thinArms.has('test-agent-race'));
   for (const name of [...AGENT_JOBS, 'test-agent-race']) {
-    assert.match(job(name), /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && needs\.changes\.outputs\.agent_code == 'true'$/mu, name);
+    const thin = thinArms.has(name) ? `(?: && !contains\\(needs\\.changes\\.outputs\\.thin_skip, ',${name},'\\))?` : '';
+    assert.match(job(name), new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true' && needs\\.changes\\.outputs\\.agent_code == 'true'${thin}$`, 'mu'), name);
   }
   assert.match(job('recovery-media-e2e'), /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.agent == 'true'$/mu);
 });

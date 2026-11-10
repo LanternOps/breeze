@@ -16,8 +16,17 @@ import { CONCERN_SEVERITIES } from '../types/wispConcerns';
 
 export const WISP_QUIET_OVERRIDES = ['never', 'urgent_only'] as const;
 export const WISP_PROACTIVITY_LEVELS = ['quiet', 'normal', 'chatty'] as const;
-/** What a nudge is (w00 A28): one concern, the digest of digest-only concerns, or the morning brief. */
-export const WISP_NUDGE_KINDS = ['concern', 'digest', 'brief'] as const;
+/**
+ * What a nudge is (w00 A28): one concern, the digest of digest-only concerns,
+ * the morning brief, a check-in Wisp scheduled on its thread (#10991), a
+ * device-troubleshooting specialist's report (#11085; never pushed), or the
+ * onboarding batch's one first-look summary (#10402; never pushed), or the
+ * follow-up that a nudged concern was resolved (#11427; never pushed).
+ * Not stored in a CHECKed column: the kind is a delivery-time label only.
+ */
+export const WISP_NUDGE_KINDS = [
+  'concern', 'digest', 'brief', 'check_in', 'specialist_result', 'first_look', 'nudge_resolved',
+] as const;
 export type WispNudgeKind = (typeof WISP_NUDGE_KINDS)[number];
 
 export const WISP_DIGEST_CADENCE_MIN_MINUTES = 15;
@@ -42,13 +51,52 @@ export const wispProactivitySchema = z.enum(WISP_PROACTIVITY_LEVELS);
 export type WispProactivity = z.infer<typeof wispProactivitySchema>;
 /** 'HH:MM' local time of the morning brief; null = brief off. */
 export const wispBriefTimeLocalSchema = z.string().regex(BRIEF_TIME_RE, 'Use HH:MM (24 h)').nullable();
-/** IANA time zone; null = the user's first registered phone's zone, else UTC. */
+/** IANA time zone; null = inferred, see resolveBriefTimezone. */
 export const wispBriefTimezoneSchema = z
   .string()
   .min(1)
   .max(WISP_BRIEF_TIMEZONE_MAX)
   .refine(isIanaTimeZone, 'Unknown time zone')
   .nullable();
+
+/**
+ * PUT /api/v1/wisp/nudge-preferences/browser-timezone body (#10402): the zone
+ * the user's browser reports. Inferred, not chosen, so it lives apart from
+ * `briefTimezone` and never overrides it.
+ */
+export const updateWispBrowserTimezoneSchema = z
+  .object({ timezone: wispBriefTimezoneSchema.unwrap() })
+  .strict();
+export type UpdateWispBrowserTimezone = z.infer<typeof updateWispBrowserTimezoneSchema>;
+
+/**
+ * The zone the morning brief goes out in (#10402): the zone the user chose,
+ * else their first registered phone's, else the one their browser reports,
+ * else the partner's, else UTC. A stored value that is not a real zone is
+ * skipped, so one bad value never drops a user all the way to UTC.
+ */
+export function resolveBriefTimezone(candidates: {
+  preference?: string | null;
+  phone?: string | null;
+  browser?: string | null;
+  partner?: string | null;
+}): string {
+  const { preference, phone, browser, partner } = candidates;
+  for (const zone of [preference, phone, browser, partner]) {
+    if (zone && isIanaTimeZone(zone)) return zone;
+  }
+  return 'UTC';
+}
+
+/** When and where the morning brief goes out for one user: GET /wisp/home `briefSchedule`. */
+export type WispBriefSchedule = {
+  /** 'HH:MM' local; null = brief off. */
+  timeLocal: string | null;
+  /** The resolved zone (resolveBriefTimezone). */
+  timezone: string;
+  /** What is stored from the browser, so the web can tell whether to send it again. */
+  browserTimezone: string | null;
+};
 
 export const wispNudgePreferencesSchema = z.object({
   channels: wispNudgeChannelsSchema,

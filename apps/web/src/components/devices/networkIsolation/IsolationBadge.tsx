@@ -28,7 +28,7 @@ export default function IsolationBadge({ episode, onChange }: { episode: Isolati
         request: () => fetchWithAuth(`/devices/${episode.deviceId}/network-isolation/${episode.id}/acknowledge`, { method: 'POST' }),
         successMessage: t('networkIsolation.acknowledgeSuccess'),
         errorFallback: t('networkIsolation.acknowledgeError'),
-        friendly: code => isolationRefusalCopy(code, t),
+        friendly: (code, _message, body) => isolationRefusalCopy(code, t, body),
       });
       onChange();
     } catch (err) { handleActionError(err, t('networkIsolation.acknowledgeError')); }

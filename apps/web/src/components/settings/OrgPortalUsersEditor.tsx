@@ -7,12 +7,20 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { isValidEmail } from '@/lib/email';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { PortalAccessRequestsList } from './portalAccess/PortalAccessRequestsList';
 
 type PortalUser = {
   id: string; email: string; name: string | null; status: string;
   effectiveStatus: 'active' | 'disabled' | 'pending_setup';
   receiveNotifications?: boolean;
   lastLoginAt: string | null; invitedAt: string | null;
+  browserAccess?: 'granted' | 'none';
+  identityProviders?: Array<'entra' | 'google'>;
+};
+
+const PROVIDER_BADGE_KEYS: Record<'entra' | 'google', string> = {
+  entra: 'orgPortalUsersEditor.badges.microsoft',
+  google: 'orgPortalUsersEditor.badges.google',
 };
 
 const STATUS_BADGE_CLASS: Record<PortalUser['effectiveStatus'], string> = {
@@ -44,9 +52,15 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
   const emailValid = isValidEmail(email);
   const showEmailError = email.trim() !== '' && !emailValid;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(false);
+  // `silent` reloads (after an access-request approval) keep the section mounted
+  // so the request list does not unmount mid-action. A failed silent reload
+  // keeps the users already shown and says so in a toast, instead of swapping
+  // the section (and the request queue with its selection) for the error panel.
+  const load = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setLoadError(false);
+    }
     try {
       const res = await fetchWithAuth(base(orgId));
       if (res.status === 401) { void navigateTo('/login', { replace: true }); return; }
@@ -54,11 +68,12 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
       setUsers((await res.json()).data ?? []);
     } catch (err) {
       console.warn('[OrgPortalUsersEditor] load failed', err);
-      setLoadError(true);
+      if (silent) showToast({ type: 'error', message: t('orgPortalUsersEditor.errors.load') });
+      else setLoadError(true);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, [orgId]);
+  }, [orgId, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -166,6 +181,8 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
         </div>
       </div>
 
+      <PortalAccessRequestsList orgId={orgId} onChanged={() => void load(true)} />
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -189,10 +206,40 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                   >
                     {t(/* i18n-dynamic */ STATUS_LABEL_KEYS[u.effectiveStatus])}
                   </span>
+                  {(u.identityProviders ?? []).map((provider) => (
+                    <span
+                      key={provider}
+                      data-testid={`portal-user-badge-${provider}-${u.id}`}
+                      className="ml-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                    >
+                      {t(/* i18n-dynamic */ PROVIDER_BADGE_KEYS[provider])}
+                    </span>
+                  ))}
+                  {u.browserAccess === 'none' && (
+                    <span
+                      data-testid={`portal-user-badge-no-browser-${u.id}`}
+                      className="ml-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                    >
+                      {t('orgPortalUsersEditor.badges.noBrowserAccess')}
+                    </span>
+                  )}
                 </td>
                 <td className="py-2">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : '—'}</td>
                 <td className="py-2">
                   <div className="flex justify-end gap-2">
+                    {/* W4 (#11381): an add-in account gets browser access without
+                        losing its add-in session (the API does not bump its epoch). */}
+                    {u.browserAccess === 'none' && u.effectiveStatus === 'active' && (
+                      <button
+                        type="button"
+                        data-testid={`portal-user-grant-browser-${u.id}`}
+                        disabled={busyId === u.id}
+                        onClick={() => void mutate(u.id, `/${u.id}/browser-access`, 'POST', undefined, t('orgPortalUsersEditor.toasts.browserAccessGranted'))}
+                        className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50 disabled:opacity-50"
+                      >
+                        {t('orgPortalUsersEditor.actions.grantBrowserAccess')}
+                      </button>
+                    )}
                     {u.effectiveStatus === 'pending_setup' && (
                       <button
                         type="button"

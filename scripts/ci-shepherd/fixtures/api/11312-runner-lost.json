@@ -1,0 +1,562 @@
+{
+  "note": "Recorded 2026-11-08 from the GitHub API (run 42453222760, PR #11312 removal 2), trimmed to the fields the shepherd reads. Integration shard 11 lost its runner; the job log is gone (404).",
+  "routes": {
+    "GET /repos/LanternOps/breeze/actions/runs/42453222760": {
+      "status": 200,
+      "body": {
+        "id": 42453222760,
+        "name": "CI",
+        "path": ".github/workflows/ci.yml",
+        "event": "merge_group",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_attempt": 1,
+        "head_sha": "e3702cf316ebeade516667668ea83b0c39ded9d2",
+        "head_branch": "gh-readonly-queue/main/pr-11312-67f42db8ede4ed0b06a7def3380dbd329057730f",
+        "head_repository": {
+          "full_name": "LanternOps/breeze"
+        },
+        "pull_requests": [],
+        "created_at": "2026-11-08T06:04:16Z",
+        "updated_at": "2026-11-08T07:08:46Z",
+        "run_started_at": "2026-11-08T06:04:16Z"
+      }
+    },
+    "GET /repos/LanternOps/breeze/actions/runs/42453222760/jobs?filter=latest&per_page=100&page=1": {
+      "status": 200,
+      "body": {
+        "total_count": 3,
+        "jobs": [
+          {
+            "id": 128647075143,
+            "name": "Lint",
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-11-08T06:06:12Z",
+            "started_at": "2026-11-08T06:10:14Z",
+            "completed_at": "2026-11-08T06:21:16Z",
+            "labels": [
+              "ubuntu-latest"
+            ],
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Checkout",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Guard production compose defaults",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Guard guided setup behavior",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Guard Caddyfile internal-CA opt-in",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Network Proxy tunnel site routing (real Caddy)",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 6
+              },
+              {
+                "name": "Guard .env.example version pin is published",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 7
+              },
+              {
+                "name": "Setup pnpm",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 8
+              },
+              {
+                "name": "Setup Node.js",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 9
+              },
+              {
+                "name": "Restore pnpm cache",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 10
+              },
+              {
+                "name": "Test community README automation",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 11
+              },
+              {
+                "name": "AGENTS.md matches CLAUDE.md",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 12
+              },
+              {
+                "name": "Guard Tauri crate/npm version parity",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 13
+              },
+              {
+                "name": "Test mobile native CI contract",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 14
+              },
+              {
+                "name": "Test mobile lockfile closure gate",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 15
+              },
+              {
+                "name": "Test docs-only CI contract",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 16
+              },
+              {
+                "name": "Test CI build reuse contract",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 17
+              },
+              {
+                "name": "Test per-area job gating contract",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 18
+              },
+              {
+                "name": "Test reader-test runner",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 19
+              },
+              {
+                "name": "Test PR selection contract (W3)",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 20
+              },
+              {
+                "name": "Test queue selection contract (W4)",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 21
+              },
+              {
+                "name": "Test CI policy manifest (W02)",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 22
+              },
+              {
+                "name": "Test CI gate verdict core (W02)",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 23
+              },
+              {
+                "name": "CI cache policy contract",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 24
+              },
+              {
+                "name": "Test shard retry wrapper",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 25
+              },
+              {
+                "name": "Test flaky-test ledger",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 26
+              },
+              {
+                "name": "Test dependency audit comparison",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 27
+              },
+              {
+                "name": "Test viewer Windows updater packaging",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 28
+              },
+              {
+                "name": "Test workflow security contract",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 29
+              },
+              {
+                "name": "Verify temporary CI apt source isolation",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 30
+              },
+              {
+                "name": "Test Tauri apt closure script",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 31
+              },
+              {
+                "name": "Guard retired AI documentation automation",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 32
+              },
+              {
+                "name": "Install dependencies",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 33
+              },
+              {
+                "name": "Run ESLint",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 34
+              },
+              {
+                "name": "Test dev tooling scripts (wt-stack / test-stack)",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 35
+              },
+              {
+                "name": "Post Setup Node.js",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 68
+              },
+              {
+                "name": "Post Setup pnpm",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 69
+              },
+              {
+                "name": "Post Checkout",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 70
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 71
+              }
+            ]
+          },
+          {
+            "id": 128647076287,
+            "name": "Integration Tests (shard 11/16)",
+            "status": "completed",
+            "conclusion": "failure",
+            "created_at": "2026-11-08T06:06:13Z",
+            "started_at": "2026-11-08T06:21:00Z",
+            "completed_at": "2026-11-08T07:08:01Z",
+            "labels": [
+              "ubuntu-latest"
+            ],
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Checkout",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Fetch base commit for the flaky ledger",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Setup pnpm",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4
+              },
+              {
+                "name": "Setup Node.js",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              },
+              {
+                "name": "Restore pnpm cache",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 6
+              },
+              {
+                "name": "Install dependencies",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 7
+              },
+              {
+                "name": "Start test-stack containers",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 8
+              },
+              {
+                "name": "Run integration tests",
+                "status": "in_progress",
+                "conclusion": null,
+                "number": 9
+              },
+              {
+                "name": "Upload flake report",
+                "status": "pending",
+                "conclusion": null,
+                "number": 10
+              },
+              {
+                "name": "Boot API once to apply built-in extension migrations (ee)",
+                "status": "pending",
+                "conclusion": null,
+                "number": 11
+              },
+              {
+                "name": "Integration-test workspace (ee)",
+                "status": "pending",
+                "conclusion": null,
+                "number": 12
+              },
+              {
+                "name": "Run request database role enforcement tests",
+                "status": "pending",
+                "conclusion": null,
+                "number": 13
+              },
+              {
+                "name": "Run RLS coverage contract test",
+                "status": "pending",
+                "conclusion": null,
+                "number": 14
+              },
+              {
+                "name": "Show container logs on failure",
+                "status": "pending",
+                "conclusion": null,
+                "number": 15
+              },
+              {
+                "name": "Teardown",
+                "status": "pending",
+                "conclusion": null,
+                "number": 16
+              },
+              {
+                "name": "Post Setup Node.js",
+                "status": "pending",
+                "conclusion": null,
+                "number": 30
+              },
+              {
+                "name": "Post Setup pnpm",
+                "status": "pending",
+                "conclusion": null,
+                "number": 31
+              },
+              {
+                "name": "Post Checkout",
+                "status": "pending",
+                "conclusion": null,
+                "number": 32
+              }
+            ]
+          },
+          {
+            "id": 128659597890,
+            "name": "CI Success",
+            "status": "completed",
+            "conclusion": "failure",
+            "created_at": "2026-11-08T07:08:01Z",
+            "started_at": "2026-11-08T07:08:40Z",
+            "completed_at": "2026-11-08T07:08:45Z",
+            "labels": [
+              "ubuntu-latest"
+            ],
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1
+              },
+              {
+                "name": "Record needs oracle (W02, advisory)",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2
+              },
+              {
+                "name": "Upload needs oracle (W02, advisory)",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3
+              },
+              {
+                "name": "Check all jobs passed",
+                "status": "completed",
+                "conclusion": "failure",
+                "number": 4
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "GET /repos/LanternOps/breeze/check-runs/128647076287/annotations?per_page=100": {
+      "status": 200,
+      "body": [
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/LanternOps/breeze/blob/e3702cf316ebeade516667668ea83b0c39ded9d2/.github",
+          "start_line": 1,
+          "start_column": null,
+          "end_line": 1,
+          "end_column": null,
+          "annotation_level": "failure",
+          "title": "",
+          "message": "The hosted runner lost communication with the server. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+          "raw_details": ""
+        },
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/LanternOps/breeze/blob/e3702cf316ebeade516667668ea83b0c39ded9d2/.github",
+          "start_line": 1,
+          "start_column": null,
+          "end_line": 1,
+          "end_column": null,
+          "annotation_level": "notice",
+          "title": "",
+          "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"",
+          "raw_details": ""
+        }
+      ]
+    },
+    "GET /repos/LanternOps/breeze/actions/jobs/128647076287/logs": {
+      "status": 404,
+      "text": "{\"message\":\"Not Found\",\"status\":\"404\"}"
+    },
+    "GET /repos/LanternOps/breeze/actions/runs/42453222760/artifacts?per_page=100&page=1": {
+      "status": 200,
+      "body": {
+        "total_count": 10,
+        "artifacts": [
+          {
+            "id": 13608640230,
+            "name": "ci-needs-oracle-attempt-1",
+            "size_in_bytes": 779,
+            "expired": false
+          },
+          {
+            "id": 13607245395,
+            "name": "LanternOps~breeze~45J1DJ.dockerbuild",
+            "size_in_bytes": 52426,
+            "expired": false
+          },
+          {
+            "id": 13607196049,
+            "name": "LanternOps~breeze~SX8WSZ.dockerbuild",
+            "size_in_bytes": 60213,
+            "expired": false
+          },
+          {
+            "id": 13607042100,
+            "name": "ci-smoke-image-api",
+            "size_in_bytes": 298105626,
+            "expired": false
+          },
+          {
+            "id": 13607028486,
+            "name": "web-dist",
+            "size_in_bytes": 26760197,
+            "expired": false
+          },
+          {
+            "id": 13606941485,
+            "name": "ci-smoke-image-portal",
+            "size_in_bytes": 183070327,
+            "expired": false
+          },
+          {
+            "id": 13606847503,
+            "name": "LanternOps~breeze~TE4AU5.dockerbuild",
+            "size_in_bytes": 73808,
+            "expired": false
+          },
+          {
+            "id": 13606518393,
+            "name": "api-dist",
+            "size_in_bytes": 28190064,
+            "expired": false
+          },
+          {
+            "id": 13606507377,
+            "name": "ci-smoke-image-web",
+            "size_in_bytes": 236758004,
+            "expired": false
+          },
+          {
+            "id": 13606054601,
+            "name": "LanternOps~breeze~NAJ0BZ.dockerbuild",
+            "size_in_bytes": 49701,
+            "expired": false
+          }
+        ]
+      }
+    },
+    "GET /repos/LanternOps/breeze/actions/workflows/ci-gate.yml/runs?head_sha=e3702cf316ebeade516667668ea83b0c39ded9d2&per_page=5": {
+      "status": 200,
+      "body": {
+        "total_count": 0,
+        "workflow_runs": []
+      }
+    }
+  }
+}

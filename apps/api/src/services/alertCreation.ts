@@ -1,7 +1,7 @@
 /**
  * Tool Catalog W06 (#5221) Task A4 — the automation-style alert writer: one
  * alert row on a device under the org's synthetic "Automation Action Alerts"
- * rule, plus its `alert.triggered` event. Moved verbatim out of
+ * rule, with its `alert.triggered` event staged on the row. Moved out of
  * automationRuntime's `executeCreateAlertAction` so the legacy action and the
  * flow `create_alert` built-in write identical rows.
  *
@@ -13,12 +13,22 @@
  * DB: runs in the CALLER's ambient context (the legacy run's context; the flow
  * principal's run-org context). Alert rows take the DEVICE's org (playbook
  * rule 5); the caller has already checked the device belongs to `orgId`.
+ *
+ * #11348 — `alert.triggered` is staged on the row (the #10926 outbox envelope)
+ * and published only after that context's transaction commits, never inline:
+ * an inline publish reached `process-alert` before the row was visible on its
+ * connection, and the notification was dropped. A rolled-back run announces
+ * nothing. This writer cannot use `createAlert` / `createSourcedAlert`: it
+ * needs its synthetic rule id AND a per-alert subject key, so it stages the
+ * envelope itself (listed in alertTriggeredWriters.contract.test.ts).
  */
 import { randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { alertRules, alerts, alertTemplates } from '../db/schema';
-import { publishEvent } from './eventBus';
+import { stagedTriggerDispatch } from './alertDispatchEnvelope';
+import { resolveDeviceSiteId } from './deviceSiteResolver';
+import { scheduleStagedAlertDispatch } from './subjectAlertOutbox';
 
 export type AutomationStyleAlertProvenance =
   | { kind: 'automation'; automationId: string; runId: string }
@@ -104,7 +114,7 @@ export async function ensureAutomationAlertRule(orgId: string): Promise<string> 
 }
 
 
-/** Null when the insert returned no row (nothing was published). */
+/** Null when the insert returned no row (nothing will be published). */
 export async function createAutomationStyleAlert(input: AutomationStyleAlertInput): Promise<{ alertId: string } | null> {
   const ruleId = await ensureAutomationAlertRule(input.orgId);
 
@@ -117,6 +127,29 @@ export async function createAutomationStyleAlert(input: AutomationStyleAlertInpu
   const attribution = input.provenance.kind === 'automation'
     ? { automationId: input.provenance.automationId, automationRunId: input.provenance.runId }
     : { flowRunId: input.provenance.flowRunId };
+  // The payload is the event this writer always published. The device's site
+  // rides on the event so site-restricted users see it, as for every other
+  // device alert. A flow step's ancestry is captured on the envelope here.
+  const dispatch = stagedTriggerDispatch({
+    alertId,
+    publisher: input.provenance.kind === 'automation' ? 'automation-executor' : 'flow-executor',
+    siteId: await resolveDeviceSiteId(input.deviceId),
+    // Every action is its own subject on a shared synthetic rule: there is no
+    // cooldown or flap state to keep for it.
+    cooldownMinutes: 0,
+    noiseControls: false,
+    payload: {
+      alertId,
+      ruleId,
+      deviceId: input.deviceId,
+      severity: input.severity,
+      title: input.title,
+      message: input.message,
+      ...(input.provenance.kind === 'automation'
+        ? { automationId: input.provenance.automationId, runId: input.provenance.runId }
+        : { flowRunId: input.provenance.flowRunId }),
+    },
+  });
   const [createdAlert] = await db
     .insert(alerts)
     .values({
@@ -130,29 +163,16 @@ export async function createAutomationStyleAlert(input: AutomationStyleAlertInpu
       severity: input.severity,
       title: input.title,
       message: input.message,
-      context: { ...attribution, deviceId: input.deviceId },
+      context: { ...attribution, deviceId: input.deviceId, _subjectDispatch: dispatch },
       triggeredAt: new Date(),
     })
     .returning({ id: alerts.id });
 
   if (!createdAlert?.id) return null;
 
-  await publishEvent(
-    'alert.triggered',
-    input.orgId,
-    {
-      alertId: createdAlert.id,
-      ruleId,
-      deviceId: input.deviceId,
-      severity: input.severity,
-      title: input.title,
-      message: input.message,
-      ...(input.provenance.kind === 'automation'
-        ? { automationId: input.provenance.automationId, runId: input.provenance.runId }
-        : { flowRunId: input.provenance.flowRunId }),
-    },
-    input.provenance.kind === 'automation' ? 'automation-executor' : 'flow-executor',
-  );
+  // Announced after the outermost transaction commits; a rollback drops it
+  // with the row. `createdAlert.id` is the `alertId` staged above.
+  scheduleStagedAlertDispatch(createdAlert.id);
 
   return { alertId: createdAlert.id };
 }

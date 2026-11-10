@@ -233,3 +233,28 @@ describe('commandAudit', () => {
       .toEqual(commandAuditDetails('cmd-a', 'some_other_type', payload).payload);
   });
 });
+
+describe('software_install payloads of framework EDR providers (#8170)', () => {
+  const LINK = 'https://download.example.test/Packages/setupdownloader_%5Bsynthetic%5D.exe';
+  const NAME = 'setupdownloader_[synthetic].exe';
+  const payload = { deploymentId: 'dep-1', downloadUrl: LINK, fileName: NAME, fileType: 'exe', integrationProvider: 'bitdefender' };
+
+  it('the audit row carries neither the link nor the file name', () => {
+    const details = JSON.stringify(commandAuditDetails('cmd-1', 'software_install', payload));
+    expect(details).not.toContain('download.example.test');
+    expect(details).not.toContain('synthetic');
+    expect(details).toContain('[installer]');
+    expect(details).toContain('dep-1');
+  });
+
+  it('command history shows neither', () => {
+    const history = sanitizeCommandForHistory({ id: 'cmd-1', type: 'software_install', payload, result: null } as never);
+    expect(JSON.stringify(history)).not.toContain('synthetic');
+  });
+
+  it('a payload without the marker is unchanged (Huntress stays as before)', () => {
+    const plain = { deploymentId: 'dep-1', downloadUrl: LINK, fileName: NAME };
+    expect(JSON.stringify(commandAuditDetails('cmd-1', 'software_install', plain))).toContain('download.example.test');
+  });
+});
+

@@ -3,6 +3,7 @@ import { db } from '../db';
 import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { policyOwnershipCondition } from './configPolicyOwnership';
+import { reportInvalidStoredSettings } from './invalidStoredSettingsReport';
 import {
   candidatesWithLink,
   type ApplicabilityRule,
@@ -54,7 +55,7 @@ import type { TokenPayload } from './jwt';
 import type { DbExecutor } from './monitors/monitorCompiler';
 import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
-import { resolveExecutionSafeGroupIds } from './executionTargetGating';
+import { resolveExecutionSafeGroupIds, type RefusedExecutionGroup } from './executionTargetGating';
 import { notHoldingOrgCondition, notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // ============================================
@@ -114,7 +115,7 @@ export function createSystemAuthContext(): AuthContext {
 // Internal: Build hierarchy target conditions
 // ============================================
 
-interface DeviceHierarchy {
+export interface DeviceHierarchy {
   deviceId: string;
   orgId: string;
   siteId: string;
@@ -124,7 +125,7 @@ interface DeviceHierarchy {
   osType: string;
 }
 
-async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
+export async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
   // 1. Load device
   const [device] = await executor
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType })
@@ -221,7 +222,7 @@ export function buildRoleOsFilterConditions(device: DeviceRoleOs): SQL[] {
   ];
 }
 
-function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
+export function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
   const conditions: SQL[] = [];
 
   // Device level
@@ -275,7 +276,7 @@ function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
  * Sort rows by hierarchy level (device=5 wins first), then assignment priority ASC,
  * then createdAt ASC (earliest first as tiebreaker).
  */
-type HierarchyRanked = { assignmentLevel: string; assignmentPriority: number; assignmentCreatedAt: Date };
+export type HierarchyRanked = { assignmentLevel: string; assignmentPriority: number; assignmentCreatedAt: Date };
 
 /**
  * The comparator {@link sortByHierarchy} sorts with: negative when `a` wins
@@ -292,7 +293,7 @@ export function compareByHierarchy(a: HierarchyRanked, b: HierarchyRanked): numb
   return a.assignmentCreatedAt.getTime() - b.assignmentCreatedAt.getTime();
 }
 
-function sortByHierarchy<T extends HierarchyRanked>(rows: T[]): T[] {
+export function sortByHierarchy<T extends HierarchyRanked>(rows: T[]): T[] {
   return rows.sort(compareByHierarchy);
 }
 
@@ -429,7 +430,7 @@ export interface ResolvedPatchConfigDetails {
 // legacy `settings.timezone` JSONB key as a non-destructive fallback (the column
 // is backfilled from that key but the UI still writes the key today — see
 // issue #1318 / migration 2026-06-13-c).
-function partnerTimezoneFrom(
+export function partnerTimezoneFrom(
   column: string | null | undefined,
   settings: unknown,
 ): string | null {
@@ -3302,15 +3303,14 @@ export async function resolveSystemProtectionForDevice(
   const policyRevision = winner.linkUpdatedAt ? new Date(winner.linkUpdatedAt).toISOString() : null;
   const parsed = systemProtectionInlineSettingsSchema.safeParse(winner.inlineSettings ?? {});
   if (!parsed.success) {
-    console.warn(
-      '[featureConfigResolver] Malformed system_protection settings; using platform defaults',
-      {
-        deviceId,
-        featureLinkId: winner.featureLinkId,
-        sourcePolicyId: winner.sourcePolicyId,
-        issues: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
-      },
-    );
+    reportInvalidStoredSettings({
+      feature: 'system_protection',
+      orgId: hierarchy.orgId,
+      deviceId,
+      featureLinkId: winner.featureLinkId,
+      sourcePolicyId: winner.sourcePolicyId,
+      issues: parsed.error.issues.map((i) => i.path.join('.') || '(root)'),
+    });
     return { settings: { ...SYSTEM_PROTECTION_DEFAULTS }, policyRevision, isPlatformDefault: false, invalidStoredSettings: true };
   }
 
@@ -3335,12 +3335,15 @@ export type ContainmentPolicy = ContainmentInlineSettings & {
   invalidStoredSettings: boolean;
   sourcePolicyId: string | null;
   featureLinkId: string | null;
+  /** The device's groups whose containment policy was not applied because they are execution-unsafe. */
+  refusedGroups: RefusedExecutionGroup[];
 };
 
 /**
  * Closest assignment wins, in the caller's own RLS context. The effective-link
  * view preserves inherited settings and their source. Extra permits grant a
- * capability, so self-selected execution-unsafe groups cannot supply this policy.
+ * capability, so self-selected execution-unsafe groups cannot supply this policy;
+ * the ones that tried are named in `refusedGroups` for the caller to audit.
  * Malformed stored settings fail closed to the fixed W1 defaults.
  */
 export async function resolveContainmentPolicy(
@@ -3348,7 +3351,7 @@ export async function resolveContainmentPolicy(
 ): Promise<ContainmentPolicy & { revision: string }> {
   const loaded = await loadDeviceHierarchy(deviceId);
   if (!loaded) return containmentPlatformDefault();
-  const { allowedGroupIds } = await resolveExecutionSafeGroupIds(loaded.groupIds);
+  const { allowedGroupIds, refusedGroups: refusedMemberships } = await resolveExecutionSafeGroupIds(loaded.groupIds);
   const hierarchy: DeviceHierarchy = { ...loaded, groupIds: allowedGroupIds };
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
@@ -3385,12 +3388,17 @@ export async function resolveContainmentPolicy(
       configPolicyAssignments.createdAt,
     );
 
-  if (rows.length === 0) return containmentPlatformDefault();
+  // A separate query, not a filter on the one above: a refused group must never reach that candidate set.
+  const refusedGroups = await refusedGroupsWithContainmentPolicy(hierarchy, refusedMemberships, roleOsConditions);
+
+  if (rows.length === 0) return { ...containmentPlatformDefault(), refusedGroups };
 
   const winner = sortByHierarchy(rows)[0]!;
   const parsed = containmentInlineSettingsSchema.safeParse(winner.inlineSettings);
   if (!parsed.success) {
-    console.warn('[featureConfigResolver] Malformed containment settings; using platform defaults', {
+    reportInvalidStoredSettings({
+      feature: 'containment',
+      orgId: hierarchy.orgId,
       deviceId,
       featureLinkId: winner.featureLinkId,
       sourcePolicyId: winner.sourcePolicyId,
@@ -3406,6 +3414,7 @@ export async function resolveContainmentPolicy(
       invalidStoredSettings: true,
       sourcePolicyId: winner.sourcePolicyId,
       featureLinkId: winner.featureLinkId,
+      refusedGroups,
     };
   }
   return {
@@ -3415,7 +3424,42 @@ export async function resolveContainmentPolicy(
     invalidStoredSettings: false,
     sourcePolicyId: winner.sourcePolicyId,
     featureLinkId: winner.featureLinkId,
+    refusedGroups,
   };
+}
+
+/** Of the groups refused for this device, those a containment policy is actually assigned to. */
+async function refusedGroupsWithContainmentPolicy(
+  hierarchy: DeviceHierarchy,
+  refused: RefusedExecutionGroup[],
+  roleOsConditions: SQL[],
+): Promise<RefusedExecutionGroup[]> {
+  if (refused.length === 0) return [];
+  const assigned = await db
+    .select({ targetId: configPolicyAssignments.targetId })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy),
+      ),
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'containment'),
+      ),
+    )
+    .where(and(
+      eq(configPolicyAssignments.level, 'device_group'),
+      inArray(configPolicyAssignments.targetId, refused.map((group) => group.id)),
+      ...roleOsConditions,
+    ));
+  const targets = new Set(assigned.map((row) => row.targetId));
+  return refused.filter((group) => targets.has(group.id));
 }
 
 function containmentRevision(settings: ContainmentInlineSettings): string {
@@ -3434,5 +3478,6 @@ function containmentPlatformDefault(): ContainmentPolicy & { revision: string } 
     invalidStoredSettings: false,
     sourcePolicyId: null,
     featureLinkId: null,
+    refusedGroups: [],
   };
 }

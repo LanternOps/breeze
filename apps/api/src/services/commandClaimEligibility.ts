@@ -1,9 +1,9 @@
-import { and, eq, notInArray, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { db } from '../db';
-import { deviceCommands, deviceNetworkIsolations } from '../db/schema';
-import { isResolvedTerminalIsolationState, RESOLVED_TERMINAL_STATES } from '@breeze/shared';
-import { isolationAgentUpgradeGate } from '../routes/agents/agentUpdatePolicy';
+import { deviceCommands } from '../db/schema';
 import { isNetworkIsolationCommand } from './networkIsolation/bypass';
+import { isolationDeliveryRefusal } from './networkIsolation/deliveryBinding';
+import { isolationUpgradeFloorRefusal } from './networkIsolation/upgradeFloor';
 import {
   propagateCancelledDeviceCommands,
   type DeviceCommandCancelSubject,
@@ -63,7 +63,14 @@ export type ClaimHoldReason =
   /** A feature-gated type whose feature is currently dark; recoverable when re-enabled. */
   | 'held_feature_disabled'
   | 'power_state_barrier'
-  | 'eligibility_check_failed';
+  | 'eligibility_check_failed'
+  /**
+   * #7268: the type's revalidation needs an input resolved before the claim
+   * locked any row (`prepareCommandRevalidations`), and this row was not covered
+   * (it arrived after that read, its arm changed hands, or the type's preparer
+   * threw — logged there). The next claim prepares it.
+   */
+  | 'revalidation_unprepared';
 
 /**
  * The device facts claim-time eligibility needs. Deliberately NOT carrying a
@@ -237,21 +244,63 @@ export type CommandRevalidationRow = {
 };
 
 /**
+ * The holds a revalidation may answer with. Deliberately narrower than
+ * `ClaimHoldReason`: the barrier, suppression and feature-gate holds are the
+ * partitioner's own and carry semantics a revalidation must not borrow.
+ */
+export type RevalidationHoldReason = Extract<ClaimHoldReason, 'revalidation_unprepared'>;
+/** A revalidation's answer that leaves the row `pending` for the next claim instead of cancelling it. */
+export type CommandRevalidationHold = { readonly hold: RevalidationHoldReason };
+export type CommandRevalidationResult = ClaimCancelReason | CommandRevalidationHold | null;
+
+/**
  * Re-derive a queued command's authority from live rows. Returns `null` to
- * deliver, or the cancel reason that terminalises the row. A revalidation must
- * never write: cancellation is the caller's, inside its own claim transaction.
- * `execute` / `transaction` are there only for savepointed reads through
- * SECURITY DEFINER resolvers on the claim's own connection (the agent's
- * org-scoped context cannot see partner-level rows, and escalating to a system
- * context would borrow a second pooled connection — #1105).
+ * deliver, the cancel reason that terminalises the row, or a hold. A
+ * revalidation must never write: cancellation is the caller's, inside its own
+ * claim transaction. `execute` / `transaction` are there only for savepointed
+ * reads through SECURITY DEFINER resolvers on the claim's own connection (the
+ * agent's org-scoped context cannot see partner-level rows, and escalating to a
+ * system context would borrow a second pooled connection — #1105).
+ *
+ * This runs while the claim holds `device_commands` row locks, so it must not
+ * wait on anything outside this connection either (Redis, HTTP). An input that
+ * lives elsewhere comes from the registration's prepare half, as `prepared`.
  */
 export type CommandRevalidationReader = Pick<Tx, 'select' | 'execute' | 'transaction'>;
 export type CommandRevalidation = (
   reader: CommandRevalidationReader,
   row: CommandRevalidationRow,
-) => Promise<ClaimCancelReason | null>;
+  prepared?: unknown,
+) => Promise<CommandRevalidationResult>;
 
 export const commandRevalidations: Record<string, CommandRevalidation> = {};
+
+/**
+ * #7268 — the lock-free half of a revalidation: resolves, BEFORE the claim
+ * locks any `device_commands` row, the inputs that live outside Postgres (the
+ * topology arm actor's permission-authority version is in Redis). Waiting on
+ * Redis while holding those locks lets every writer of the rows queue behind
+ * the wait, each on its own pooled connection — the #6671 pool-wedge shape.
+ *
+ * Gets the pending rows of its type the claim may pick (read on the claim's own
+ * connection), runs in a savepoint on that connection, and returns whatever its
+ * in-lock half expects as `prepared`. The in-lock half must treat a row it
+ * cannot answer from that value as a hold (`revalidation_unprepared`), never as
+ * a reason to read live: rows can arrive between this read and the claim's
+ * lock. An input that is merely unavailable (Redis down) is the preparer's to
+ * encode in its result; the topology poll encodes it as `null`, which its
+ * in-lock half cancels on, exactly as the live read did.
+ */
+export type CommandRevalidationPrepareReader = Pick<Tx, 'select'>;
+export type CommandRevalidationPrepare<P = unknown> = (
+  reader: CommandRevalidationPrepareReader,
+  rows: ReadonlyArray<CommandRevalidationRow>,
+) => Promise<P>;
+
+const commandRevalidationPreparers: Record<string, CommandRevalidationPrepare> = {};
+
+/** What `prepareCommandRevalidations` resolved, keyed by command type. Opaque to the claim. */
+export type CommandRevalidationPreparation = ReadonlyMap<string, unknown>;
 
 /**
  * Types that must NOT be delivered unless a revalidation actually ran. Without
@@ -265,21 +314,131 @@ export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
   // collector, credential revision and actor epochs are unchanged.
   'topology_interface_poll',
   'script',
+  // Vendor updates (#11065): a queued run must not outlive its gates. Registered by
+  // services/oemUpdates/revalidation.ts: a kill switch, a closed gate or the flag going
+  // off cancels the row while it is still unclaimed. A running one is never touched.
+  'oem_update_run',
 ]);
 
+/**
+ * Register a type's delivery revalidation. With a lock-free `prepare` half, its
+ * result reaches `revalidate` as `prepared` — undefined when the claim did not
+ * prepare this row's type, which the revalidation must answer with a hold.
+ * `P` excludes undefined/null so "prepared as nothing" cannot read as "not prepared".
+ */
+export function registerCommandRevalidation(
+  type: string,
+  revalidate: (reader: CommandRevalidationReader, row: CommandRevalidationRow) => Promise<CommandRevalidationResult>,
+): void;
+export function registerCommandRevalidation<P extends {}>(
+  type: string,
+  revalidate: (
+    reader: CommandRevalidationReader,
+    row: CommandRevalidationRow,
+    prepared: P | undefined,
+  ) => Promise<CommandRevalidationResult>,
+  prepare: CommandRevalidationPrepare<P>,
+): void;
 export function registerCommandRevalidation(
   type: string,
   revalidate: CommandRevalidation,
+  prepare?: CommandRevalidationPrepare,
 ): void {
   if (commandRevalidations[type]) {
     throw new Error(`A delivery revalidation is already registered for "${type}"`);
   }
+  // `prepared` reaching `revalidate` is only ever this type's own preparer
+  // result (`revalidateCommandForDelivery` looks it up by `row.type`), which is
+  // what the overloads above tie together.
   commandRevalidations[type] = revalidate;
+  if (prepare) commandRevalidationPreparers[type] = prepare;
 }
 
 /** Test-only: drop every registered revalidation. */
 export function __resetCommandRevalidationsForTests(): void {
   for (const key of Object.keys(commandRevalidations)) delete commandRevalidations[key];
+  for (const key of Object.keys(commandRevalidationPreparers)) delete commandRevalidationPreparers[key];
+}
+
+/**
+ * Pending rows of the prepared types one read covers. Every caller claims 10
+ * rows per beat (`limit`), oldest first, so 100 leaves headroom; a row beyond it
+ * is held as unprepared until older ones drain.
+ */
+const PREPARE_ROW_LIMIT = 100;
+const NO_PREPARATION: CommandRevalidationPreparation = new Map();
+
+/** Which rows the claim may lock: the one pushed command, or a device's pending queue for one role. */
+export type CommandRevalidationPrepareScope =
+  | { commandId: string }
+  | { deviceId: string; targetRole: string; typeAllowlist?: readonly string[] };
+
+/**
+ * #7268 — runs every registered prepare half for the rows a claim is about to
+ * lock. Call it on the claim's connection BEFORE the claim's transaction takes
+ * its first `device_commands` lock (both legs in commandDispatch.ts), and pass
+ * the result to `partitionClaimable` as `prepared`.
+ *
+ * The pending-row read is uncaught and runs outside any savepoint on purpose:
+ * it reads the same table and index as the claim's own scan, with the same
+ * `pending` and deadline predicates, so a fault there would fail the claim
+ * anyway. A preparer that THROWS (a DB error in its reads) runs in a savepoint
+ * with the catch outside it, so the claim's transaction stays usable; its type
+ * is then unprepared and its rows are held (`revalidation_unprepared`) — never
+ * delivered on an unchecked authority, never cancelled over that fault.
+ */
+export async function prepareCommandRevalidations(
+  reader: Pick<typeof db, 'select' | 'transaction'>,
+  scope: CommandRevalidationPrepareScope,
+): Promise<CommandRevalidationPreparation> {
+  const allowlist = 'typeAllowlist' in scope ? scope.typeAllowlist : undefined;
+  const types = Object.keys(commandRevalidationPreparers).filter((type) => !allowlist || allowlist.includes(type));
+  if (types.length === 0) return NO_PREPARATION;
+
+  const rows: CommandRevalidationRow[] = await reader
+    .select({
+      id: deviceCommands.id,
+      type: deviceCommands.type,
+      deviceId: deviceCommands.deviceId,
+      payload: deviceCommands.payload,
+      createdBy: deviceCommands.createdBy,
+    })
+    .from(deviceCommands)
+    .where(
+      and(
+        'commandId' in scope
+          ? eq(deviceCommands.id, scope.commandId)
+          : and(eq(deviceCommands.deviceId, scope.deviceId), eq(deviceCommands.targetRole, scope.targetRole)),
+        eq(deviceCommands.status, 'pending'),
+        // The claim never takes a row past its deadline (the reaper's), so
+        // neither may such rows crowd live ones out of PREPARE_ROW_LIMIT.
+        or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, new Date())),
+        inArray(deviceCommands.type, types),
+      ),
+    )
+    .orderBy(deviceCommands.createdAt)
+    .limit(PREPARE_ROW_LIMIT);
+  if (rows.length === 0) return NO_PREPARATION;
+
+  const prepared = new Map<string, unknown>();
+  for (const type of types) {
+    const typed = rows.filter((r) => r.type === type);
+    if (typed.length === 0) continue;
+    const prepare = commandRevalidationPreparers[type]!;
+    try {
+      prepared.set(type, await reader.transaction((sp) => prepare(sp, typed)));
+    } catch (e) {
+      const deviceId = typed[0]!.deviceId;
+      console.error(
+        '[commandClaimEligibility] revalidation prepare failed; holding the type\'s rows for the next claim',
+        { type, deviceId, rows: typed.length, error: e instanceof Error ? e.message : String(e) },
+      );
+      if (shouldReportEligibilityFault(deviceId, Date.now())) {
+        captureException(e instanceof Error ? e : new Error(String(e)));
+      }
+    }
+  }
+  return prepared;
 }
 
 function updatesAgentBinary(row: CommandRevalidationRow): boolean {
@@ -291,51 +450,37 @@ function updatesAgentBinary(row: CommandRevalidationRow): boolean {
 }
 
 function needsIsolationRevalidation(row: CommandRevalidationRow): boolean {
-  return updatesAgentBinary(row) || (row.type === 'execute_containment' && isNetworkIsolationCommand(row.type, row.payload));
+  return updatesAgentBinary(row) || isNetworkIsolationCommand(row.type, row.payload);
 }
 
 /**
  * Runs the registered revalidation for one row, fail-closed for every type in
- * {@link REVALIDATION_REQUIRED_TYPES}. Shared by both delivery legs.
+ * {@link REVALIDATION_REQUIRED_TYPES}. Shared by both delivery legs. `prepared`
+ * is the claim's {@link prepareCommandRevalidations} result; the row's type
+ * entry reaches its revalidation.
  */
 export async function revalidateCommandForDelivery(
   reader: CommandRevalidationReader,
   row: CommandRevalidationRow,
-): Promise<ClaimCancelReason | null> {
+  prepared?: CommandRevalidationPreparation,
+): Promise<CommandRevalidationResult> {
   // Built in rather than side-effect registered: HTTP and WebSocket delivery must
   // always re-derive the episode authority, including for legacy queued commands.
-  if (row.type === 'execute_containment' && isNetworkIsolationCommand(row.type, row.payload)) {
-    const payload = row.payload as Record<string, unknown>;
-    const parameters = payload.parameters;
-    if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return 'isolation_episode_mismatch';
-    const { isolationId, generation } = parameters as Record<string, unknown>;
-    if (typeof isolationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(isolationId) ||
-      typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 1) return 'isolation_episode_mismatch';
-    const [episode] = await reader.select({ id: deviceNetworkIsolations.id, deviceId: deviceNetworkIsolations.deviceId,
-      generation: deviceNetworkIsolations.generation, state: deviceNetworkIsolations.state, desiredState: deviceNetworkIsolations.desiredState,
-    }).from(deviceNetworkIsolations).where(and(eq(deviceNetworkIsolations.id, isolationId), eq(deviceNetworkIsolations.deviceId, row.deviceId))).limit(1);
-    if (!episode || episode.id !== isolationId || episode.deviceId !== row.deviceId || episode.generation !== generation ||
-      isResolvedTerminalIsolationState(episode.state) || episode.desiredState !== 'isolated') return 'isolation_episode_mismatch';
+  // Both isolate and release are bound to the row the service issued (#10919).
+  if (isNetworkIsolationCommand(row.type, row.payload)) {
+    const refusal = await isolationDeliveryRefusal(reader, row);
+    if (refusal) return refusal;
   }
   if (updatesAgentBinary(row)) {
-    const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-      ? row.payload as Record<string, unknown> : {};
-    const target = row.type === 'agent_rollback_v1' ? payload.targetVersion : payload.version;
-    const version = typeof target === 'string' ? target : '';
-    // A safe target needs no episode lookup. Missing/implicit targets cannot prove
-    // the floor, so they are withheld only while isolation is unresolved.
-    if (!isolationAgentUpgradeGate(version, true).allow) {
-      const [episode] = await reader.select({ state: deviceNetworkIsolations.state })
-        .from(deviceNetworkIsolations).where(and(eq(deviceNetworkIsolations.deviceId, row.deviceId),
-          notInArray(deviceNetworkIsolations.state, [...RESOLVED_TERMINAL_STATES]))).limit(1);
-      if (episode && !isResolvedTerminalIsolationState(episode.state)) return 'network-isolation-version-floor';
-    }
+    // Judged by the binary the payload selects, not its version label (#10919).
+    const refusal = await isolationUpgradeFloorRefusal(reader, row);
+    if (refusal) return refusal;
   }
   const revalidate = commandRevalidations[row.type];
   if (!revalidate) {
     return REVALIDATION_REQUIRED_TYPES.has(row.type) ? 'authority_unavailable' : null;
   }
-  return revalidate(reader, row);
+  return revalidate(reader, row, prepared?.get(row.type));
 }
 
 /**
@@ -444,7 +589,9 @@ export async function partitionClaimable(
   tx: Tx,
   device: ClaimEligibilityDevice,
   rows: ClaimCandidate[],
-  opts: { inFlight?: number } = {},
+  // `prepared`: what `prepareCommandRevalidations` resolved before the caller
+  // locked these rows (#7268). Omitted, every prepared type's row is held.
+  opts: { inFlight?: number; prepared?: CommandRevalidationPreparation } = {},
 ): Promise<ClaimPartition> {
   const claimable: ClaimCandidate[] = [];
   const cancelled: Array<{ id: string; reason: ClaimCancelReason }> = [];
@@ -599,11 +746,11 @@ export async function partitionClaimable(
       payload: row.payload,
       createdBy: row.createdBy,
     };
-    let revalidation: ClaimCancelReason | null;
+    let revalidation: CommandRevalidationResult;
     try {
       revalidation = commandRevalidations[row.type] || needsIsolationRevalidation(revalidationFacts)
-        ? await tx.transaction((sp) => revalidateCommandForDelivery(sp, revalidationFacts))
-        : await revalidateCommandForDelivery(tx, revalidationFacts);
+        ? await tx.transaction((sp) => revalidateCommandForDelivery(sp, revalidationFacts, opts.prepared))
+        : await revalidateCommandForDelivery(tx, revalidationFacts, opts.prepared);
     } catch (e) {
       // Same fail-closed contract as the trust and requester checks above:
       // never deliver on an unresolved authority, never cancel on a fault —
@@ -622,6 +769,10 @@ export async function partitionClaimable(
         captureException(e instanceof Error ? e : new Error(String(e)));
       }
       held.push({ id: row.id, reason: 'eligibility_check_failed' });
+      continue;
+    }
+    if (typeof revalidation === 'object' && revalidation !== null) {
+      held.push({ id: row.id, reason: revalidation.hold });
       continue;
     }
     if (revalidation) {

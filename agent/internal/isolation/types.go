@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/netip"
 	"sort"
 	"strconv"
@@ -98,6 +99,59 @@ type Spec struct {
 	// carries []byte as padded standard base64, which is exactly the wire
 	// shape (`breakGlassSecret`, 43 characters plus `=`). Never logged.
 	BreakGlassSecret []byte `json:"breakGlassSecret,omitempty"`
+	// PolicyRevision names the containment policy behind this spec's
+	// scope:"any" entries. Empty means no policy applies, and then the spec
+	// carries no such entry.
+	PolicyRevision PolicyRevision `json:"policyRevision,omitempty"`
+}
+
+// PolicyRevision is the opaque identity of one containment policy's content:
+// resolveContainmentPolicy's `revision` (a content hash, such as `c1:<hex>`). A
+// hash has no order, so ordering comes from the episode's generation: a policy
+// change arrives as a new generation.
+type PolicyRevision string
+
+const (
+	// maxPolicyRevisionLen bounds a revision, which is journalled and reported.
+	maxPolicyRevisionLen = 128
+	// malformedPolicyRevision is what a present value of the wrong JSON type
+	// decodes to. It is present, so it is not "no policy", and never Valid.
+	malformedPolicyRevision PolicyRevision = " "
+)
+
+// UnmarshalJSON accepts a string or a positive integer. It never fails: the
+// block arrives inside the heartbeat response, where one decode error would
+// also drop every command in that response. Valid decides what happens instead.
+func (r *PolicyRevision) UnmarshalJSON(data []byte) error {
+	*r = ""
+	if string(data) == "null" {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*r = PolicyRevision(s)
+		return nil
+	}
+	if n, err := strconv.ParseInt(string(data), 10, 64); err == nil && n > 0 {
+		*r = PolicyRevision(strconv.FormatInt(n, 10))
+		return nil
+	}
+	*r = malformedPolicyRevision
+	return nil
+}
+
+// Valid reports whether r can authorise scope:"any" entries: 1 to 128 printable
+// ASCII characters with no spaces, safe to journal and report as they are.
+func (r PolicyRevision) Valid() bool {
+	if len(r) == 0 || len(r) > maxPolicyRevisionLen {
+		return false
+	}
+	for i := 0; i < len(r); i++ {
+		if r[i] <= 0x20 || r[i] >= 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // Desired is networkIsolationDesiredSchema: a Spec plus the server's intent.
@@ -180,6 +234,32 @@ type Capability struct {
 	Mechanism         string
 	UnsupportedReason string
 	Ready             bool
+}
+
+// securityCapabilities.networkIsolationVersion levels: the wire values of
+// NETWORK_ISOLATION_CAPABILITY in packages/shared/src/utils/networkIsolation.ts.
+const (
+	// CapabilityBase can isolate and release.
+	CapabilityBase = 1
+	// CapabilityDeadMan is reserved for the dead-man opt-in (W4d). This build
+	// does not implement it: validateSpec refuses deadManSeconds != 0.
+	CapabilityDeadMan = 2
+	// CapabilityPolicyAllow accepts scope:"any" entries under a policyRevision,
+	// on the heartbeat path as well as the command path. It does not imply
+	// CapabilityDeadMan until W4d ships, so a dead-man gate cannot read this
+	// level as support for it.
+	CapabilityPolicyAllow = 3
+)
+
+// AdvertisedVersion is the level this build reports on the heartbeat. An isolator
+// says only whether it can isolate here (Version); what the agent accepts on top
+// of that is the same on every OS. Version 0 stays 0: a build that cannot isolate
+// advertises nothing it could accept.
+func (c Capability) AdvertisedVersion() int {
+	if c.Version < CapabilityBase {
+		return 0
+	}
+	return CapabilityPolicyAllow
 }
 
 // Digest identifies an installed rule set.

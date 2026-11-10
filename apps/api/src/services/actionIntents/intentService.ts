@@ -68,6 +68,7 @@ import {
   type IntentTargetScope,
   type ResolveIntentApproversDiagnostics,
 } from './intentApprovers';
+import { mayHavePartnerWideEffect, PARTNER_LEVEL_APPROVER_NOTE } from './partnerWideEffect';
 import { isSoleOperatorSelfApprovalForbidden } from './selfApprovalPolicy';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import { DIAGNOSE_CONNECTIVITY_TOOL_NAME, requiresPinnedEffectDigest } from './pinnedEffectPolicy';
@@ -642,6 +643,17 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
       case 'void': return 'Voids the invoice. It will no longer be payable.';
       case 'record_payment': return 'Records a payment against the invoice.';
       case 'void_payment': return 'Voids a recorded payment, reopening the invoice balance.';
+      default: return null;
+    }
+  },
+  // Full-control W17 (#6788).
+  manage_backup_verification: (input) =>
+    nonEmptyString(input.action) === 'run' ? 'Queues a backup check on the machine. It uses device and storage resources while it runs.' : null,
+  manage_c2c_configs: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'create': return 'Chooses whose mail is copied, where it is stored and on what schedule.';
+      case 'update': return 'Changes whose mail is copied, where it is stored or on what schedule.';
+      case 'delete': return 'Deletes the config. Refused while backup history depends on it.';
       default: return null;
     }
   },
@@ -2243,13 +2255,21 @@ export async function createActionIntent(
     : runScriptGroupNote
       ? `${buildTargetSummary(input.toolName, input.input)} [${runScriptGroupNote}]`
       : buildTargetSummary(input.toolName, input.input);
-  const impactSummary = externalTool
+  const baseImpactSummary = externalTool
     ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
         Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
       }`
     : invokedFlow
     ? `Starts flow "${invokedFlow.flowName}" with inputs: ${flowInputKeys()}. Its own sensitive steps still wait for approval.`
     : buildImpactSummary(input.toolName, input.input, guardrail);
+  // Approver scope on a partner-wide intent. The summary is the risk line on every
+  // approval surface, so it says who can approve whichever path filed this.
+  let requirePartnerAxis = false;
+  if (mayHavePartnerWideEffect(input.toolName, input.input)) {
+    const { intentRequiresPartnerAxisApprover } = await import('./partnerAxisApprover');
+    requirePartnerAxis = await intentRequiresPartnerAxisApprover({ actionName: input.toolName, arguments: input.input, orgId });
+  }
+  const impactSummary = requirePartnerAxis ? `${baseImpactSummary} ${PARTNER_LEVEL_APPROVER_NOTE}` : baseImpactSummary;
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
@@ -2422,6 +2442,7 @@ export async function createActionIntent(
           ? FLOW_TOOL_APPROVER_PERMISSION
           : undefined,
     requireOrgWideGovernance,
+    ...(requirePartnerAxis ? { requirePartnerAxis } : {}),
     onDiagnostics: (diagnostics) => {
       governanceDiagnostics = diagnostics;
     },
@@ -2608,7 +2629,7 @@ export async function createActionIntent(
       // effect_digest NULL, which both release paths treat as "nothing to
       // check", not a failure. The `unresolved` cases are audited after
       // commit — they are intents that SHOULD have been pinned and weren't.
-      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db);
+      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db, { intentOrgId: orgId });
       // A tool whose pin is MANDATORY (effectDigest.ts's
       // requiresPinnedEffectDigest) never stores a NULL digest: refuse the
       // proposal instead of inheriting the legacy "nothing to check" fallback.

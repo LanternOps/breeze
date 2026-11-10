@@ -23,7 +23,7 @@ describe('isProtectedPath', () => {
   });
 
   it('leaves the public token documents and auth pages unprotected', () => {
-    for (const path of ['/login', '/forgot-password', '/reset-password', '/accept-invite', '/quote/abc', '/invoice/abc', '/invoice/return']) {
+    for (const path of ['/login', '/forgot-password', '/reset-password', '/accept-invite', '/entra-setup', '/quote/abc', '/invoice/abc', '/invoice/return']) {
       expect(isProtectedPath(path), path).toBe(false);
     }
   });
@@ -48,7 +48,7 @@ describe('requiresAccountStatusGuard', () => {
   });
 
   it('never guards unauthenticated surfaces (no API round trip for a signed-out visitor)', () => {
-    for (const path of ['/login', '/forgot-password', '/reset-password', '/accept-invite', '/quote/abc', '/invoice/abc']) {
+    for (const path of ['/login', '/forgot-password', '/reset-password', '/accept-invite', '/entra-setup', '/quote/abc', '/invoice/abc']) {
       expect(requiresAccountStatusGuard(path), path).toBe(false);
     }
   });

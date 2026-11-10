@@ -13,7 +13,7 @@ import type { ProviderSyncTx } from './persist';
 
 import { resolveAutoMapNameSuggestions, resolveAutoMappings } from '../externalTenantMapping';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
-import { notHiddenOrgType } from '../unassignedPool/visibility';
+import { loadMappableOrgs } from '../mappableOrgs';
 export interface RemapCustomerActor {
   userId: string | null;
   partnerId: string;
@@ -298,17 +298,7 @@ export async function autoMapCustomers(
 
   if (customers.length === 0) return 0;
 
-  const orgs = await tx
-    .select({ id: organizations.id, name: organizations.name })
-    .from(organizations)
-    .where(and(
-      eq(organizations.partnerId, partnerId),
-      isNull(organizations.deletedAt),
-      isNull(organizations.archivedAt),
-      sql`${organizations.status} NOT IN ('archived','purging','merging')`,
-      // Quick Support and the holding org are never a customer to map onto.
-      notHiddenOrgType(),
-    ));
+  const orgs = await loadMappableOrgs(tx, partnerId);
 
   const decisions = resolveCustomerAutoMappings(customers, orgs);
 
