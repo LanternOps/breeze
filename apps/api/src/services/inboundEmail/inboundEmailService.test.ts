@@ -21,6 +21,8 @@ const { state } = vi.hoisted(() => ({
     // of the rows it returns (null = serve selectRows like any other select).
     reopenRereads: [] as unknown[],
     reopenRereadRows: null as unknown[] | null,
+    // #11541: where-conditions and limits of every portal_users sender lookup.
+    portalUserLookups: [] as { where: unknown; limit: number }[],
     // Test hook: force an insert into `table` to throw (optionally with a pg `code`),
     // to exercise the durable-failed-row insert itself failing.
     failInsert: null as { table: string; code?: string; message?: string; wrapped?: boolean } | null
@@ -117,6 +119,7 @@ vi.mock('../../db', () => {
         return Promise.resolve(state.selectRows[resolvedTable + '_participants'] ?? []).then(resolve);
       },
       limit(_n: number) {
+        if (resolvedTable === 'portal_users') state.portalUserLookups.push({ where: whereCond, limit: _n });
         if (isReopenReread()) {
           state.reopenRereads.push(whereCond);
           if (state.reopenRereadRows) return Promise.resolve(state.reopenRereadRows);
@@ -365,6 +368,7 @@ beforeEach(() => {
   state.insertedCommentId = 'c-1';
   state.reopenRereads = [];
   state.reopenRereadRows = null;
+  state.portalUserLookups = [];
   state.failInsert = null;
   resolveMock.mockReset();
   createTicketMock.mockReset();
@@ -860,6 +864,48 @@ describe('processInboundEmail', () => {
     await processInboundEmail(email({ subject: 'login with contact' }));
 
     expect(inboundOf()[0]!.error ?? null).toBeNull();
+  });
+
+  // #11541: the sender -> portal-login lookup is case-insensitive, and a sender
+  // address that resolves to more than one login fails closed (no portal-user
+  // routing) instead of filing into whichever org the first row names.
+  it('matches a portal-login sender case-insensitively (#11541)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane', contactId: 'ct-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-ci', internalNumber: 'T-2026-0033' });
+
+    await processInboundEmail(email({ from: 'Jane@Customer.COM', subject: 'mixed-case sender' }));
+
+    expect(state.portalUserLookups.length).toBeGreaterThan(0);
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const q = new PgDialect().sqlToQuery(state.portalUserLookups[0]!.where as never);
+    const i = q.params.indexOf('email');
+    expect(q.sql).toContain(`lower($${i + 1}) = $${i + 2}`);
+    expect(q.params[i + 1]).toBe('jane@customer.com');
+    // Probes for a second row so ambiguity is visible.
+    expect(state.portalUserLookups[0]!.limit).toBe(2);
+    expect(inboundOf()[0]!.parseStatus).toBe('created');
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not route by portal login when the sender matches several logins (#11541)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    // Two logins whose addresses differ only by case, in two orgs of this partner.
+    state.selectRows['portal_users'] = [
+      { id: 'pu-1', orgId: 'o-1', name: 'Jane', contactId: 'ct-1' },
+      { id: 'pu-2', orgId: 'o-2', name: 'JANE', contactId: 'ct-2' },
+    ];
+
+    await processInboundEmail(email({ subject: 'ambiguous sender' }));
+
+    // Same outcome as an unknown sender with no domain mapping: quarantined.
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
   });
 
   it('quarantines an unmatched unknown sender (no ticket)', async () => {

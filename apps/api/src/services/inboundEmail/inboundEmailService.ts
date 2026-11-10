@@ -22,6 +22,7 @@ import { insertEmailAuthoredComment } from './emailComments';
 import { hasStoredAttachments, persistInboundAttachments, withInboundAttachmentNote } from './inboundAttachments';
 import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
+import { portalLoginEmailEquals, soleCaseInsensitiveMatch } from '../portalLoginEmail';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import {
   POLLED_MAILBOX_PROVIDERS,
@@ -749,14 +750,19 @@ function unlinkedRequesterNote(
 
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
 // portal_users has no partner_id; a same-email user under a DIFFERENT partner must not match.
+// The address matches case-insensitively (#11541). The match decides which org a
+// ticket is filed in, so an address that names more than one login (case
+// variants, or one address in several of this partner's orgs) is ambiguous and
+// resolves to no portal user: the message falls through to domain routing,
+// exactly as an unknown sender would, instead of filing into an arbitrary org.
 async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null; contactId: string | null } | null> {
   const rows = await db
     .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name, contactId: portalUsers.contactId })
     .from(portalUsers)
     .innerJoin(organizations, eq(portalUsers.orgId, organizations.id))
-    .where(and(eq(portalUsers.email, email.toLowerCase()), eq(organizations.partnerId, partnerId)))
-    .limit(1);
-  return rows[0] ?? null;
+    .where(and(portalLoginEmailEquals(email), eq(organizations.partnerId, partnerId)))
+    .limit(2);
+  return soleCaseInsensitiveMatch(rows);
 }
 
 // Resolve TICKETS_INBOUND_DOMAIN defensively. The inbound worker runs `getConfig()`

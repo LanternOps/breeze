@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { portalUsers } from '../../db/schema/portal';
 import { linkLoginToContact, type LoginContactOutcome } from '../contacts/loginLink';
+import { portalLoginEmailEquals, soleCaseInsensitiveMatch } from '../portalLoginEmail';
 import type { ContactActor } from '../contacts/crud';
 
 /**
@@ -73,16 +74,19 @@ export async function resolveConfirmedContact(
  * — linking an email to an existing ticket is not licensed to create or
  * modify a contact, unlike `resolveConfirmedContact` above, which is a
  * technician-confirmed action.
+ *
+ * Case-insensitive (#11541). Two logins in the org whose addresses differ only
+ * by case resolve to null: the comment is then attributed by name, never to
+ * an arbitrarily chosen login.
  */
 export async function findPortalUserByEmail(
   orgId: string,
   email: string
 ): Promise<{ id: string; name: string | null } | null> {
-  const lower = email.trim().toLowerCase();
   const rows = await db
     .select({ id: portalUsers.id, name: portalUsers.name })
     .from(portalUsers)
-    .where(and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, lower)))
-    .limit(1);
-  return rows[0] ?? null;
+    .where(and(eq(portalUsers.orgId, orgId), portalLoginEmailEquals(email)))
+    .limit(2);
+  return soleCaseInsensitiveMatch(rows);
 }
