@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Log Shipping Failing",
       "networkIsolation": {
         "active": "Isolated"
+      },
+      "helperVersion": "Helper Version",
+      "deviceFunction": "Device Function",
+      "hostsWorkloads": "Hosts Workloads",
+      "workloadRuntimes": "Workload Runtimes",
+      "warranty": {
+        "status": "Warranty Status"
       }
     }
   },

@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Log-Übertragung fehlerhaft",
       "networkIsolation": {
         "active": "Isoliert"
+      },
+      "helperVersion": "Helper-Version",
+      "deviceFunction": "Gerätefunktion",
+      "hostsWorkloads": "Hostet Workloads",
+      "workloadRuntimes": "Workload-Laufzeiten",
+      "warranty": {
+        "status": "Garantiestatus"
       }
     }
   },
