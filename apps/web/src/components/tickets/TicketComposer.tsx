@@ -200,7 +200,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
       // offer), that effect never runs again and the reply would come back as
       // an unsent draft. Only the text that was sent is forgotten.
       if (draftKey && getTicketComposerDraft(draftKey)?.content === content) deleteTicketComposerDraft(draftKey);
-      // A chip still sitting in 'error' (e.g. a rejected file type) never made
+      // A chip still sitting in 'error' (a transient failure: network, 429, 5xx) never made
       // it into attachmentIds, so the comment above just posted WITHOUT it.
       // Keep that chip — clearing it here would silently discard the user's
       // file selection and leave the earlier upload-error toast as the only

@@ -533,6 +533,42 @@ describe('TicketsPage browser history', () => {
       back.mockRestore();
     }
   });
+
+  // The hook claims only same-page steps: Back from /tickets to another page
+  // must still reach the router, or the URL changes and the page stays.
+  it('Back from /tickets to another page is left to the router', async () => {
+    history.replaceState({ index: 2, scrollX: 0, scrollY: 0 }, '', '/devices');
+    history.pushState({ index: 3, scrollX: 0, scrollY: 0 }, '', '/tickets');
+    mockApi();
+    const router = renderWithRouter();
+    try {
+      await screen.findByTestId('ticket-row-tk-1');
+      history.back();
+      await waitFor(() => expect(router.pops).toEqual([expect.objectContaining({ index: 2 })]));
+      expect(window.location.pathname).toBe('/devices');
+    } finally {
+      router.uninstall();
+    }
+  });
+});
+
+describe('TicketsPage focus when the list fails to load', () => {
+  // In focus the board (and its error pane) is hidden, and a ticket number
+  // waits for the list before it can resolve, so a failed list load has to
+  // surface in the focus slot itself, with a Retry, not as an endless skeleton.
+  it('shows the load error and a Retry in place of the ticket; Retry recovers', async () => {
+    window.location.hash = '#T-1001';
+    let failList = true;
+    mockApi(LIST, (url) => (failList && url.startsWith('/tickets?') ? json({ error: 'boom' }, false, 500) : undefined));
+    render(<TicketsPage />);
+
+    const pane = await screen.findByTestId('tickets-focus-error');
+    expect(screen.queryByTestId('tickets-focus-loading')).toBeNull();
+    failList = false;
+    fireEvent.click(within(pane).getByTestId('tickets-focus-error-retry'));
+    await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-1'));
+    expect(screen.queryByTestId('tickets-focus-error')).toBeNull();
+  });
 });
 
 describe('TicketsPage focus: keyboard focus and announcements', () => {

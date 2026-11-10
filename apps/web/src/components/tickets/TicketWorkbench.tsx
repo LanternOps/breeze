@@ -585,8 +585,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   /**
    * W08 #3902 — one file per call. The body is FormData, so fetchWithAuth
    * deliberately leaves Content-Type unset and the browser supplies the
-   * multipart boundary. runAction surfaces 413/415/429/503 as a toast; the
-   * composer turns the rejection into a retryable chip.
+   * multipart boundary. A permanent refusal (415 type, 413 size, empty file)
+   * is not toasted here: the composer drops the chip and names the file. A
+   * transient failure (network, 429, 5xx) is toasted by runAction and the
+   * composer keeps it as a retryable chip.
    */
   const uploadAttachment = useCallback(async (file: File): Promise<{ id: string }> => {
     const form = new FormData();

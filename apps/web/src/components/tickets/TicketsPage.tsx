@@ -1026,6 +1026,13 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
                 {absentNotice ? (
                   <p role="status" data-testid="tickets-deeplink-absent">{t('ticketsPage.ticketNotInView', { number: absentNotice })}</p>
+                ) : error && !loading ? (
+                  // The board's error pane is hidden in focus, and a ticket
+                  // number cannot resolve without the list: say so here.
+                  <div role="alert" className="text-center" data-testid="tickets-focus-error">
+                    <p>{error}</p>
+                    <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-focus-error-retry">{t('common:actions.retry')}</button>
+                  </div>
                 ) : (
                   <div className="w-full max-w-xl animate-pulse space-y-3 p-6" data-testid="tickets-focus-loading">
                     <div className="h-5 w-2/3 rounded bg-muted" /><div className="h-4 w-1/3 rounded bg-muted/60" />

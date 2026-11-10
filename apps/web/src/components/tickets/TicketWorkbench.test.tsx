@@ -3777,3 +3777,54 @@ describe('TicketWorkbench — Onboard a person launcher', () => {
     expect(requester).toContain('<OnboardPersonLauncher');
   });
 });
+
+// The composer's reason toast and runAction's suppressErrorToast are unit-tested
+// apart; this pins the wiring between them in the workbench upload path. Without
+// the suppression a refused file shows two toasts (runAction's and the composer's).
+describe('TicketWorkbench attachment upload refusals', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockUpload(status: number, payload: unknown) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === 'POST' && /^\/tickets\/tk-1\/attachments/.test(url)) {
+        return makeJsonResponse(payload, status < 400, status);
+      }
+      if ((!init?.method || init.method === 'GET') && /^\/tickets\/tk-1$/.test(url)) {
+        return makeJsonResponse({ data: makeTicket() });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  const pick = (name: string, type: string) =>
+    fireEvent.change(screen.getByTestId('ticket-composer-file-input'), {
+      target: { files: [new File(['x'], name, { type })] },
+    });
+
+  it('a 415 refusal drops the chip and shows exactly one toast, naming the file', async () => {
+    mockUpload(415, { error: 'Only JPEG, PNG, WebP images and PDFs can be attached', code: 'UNSUPPORTED_ATTACHMENT_TYPE' });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-composer-file-input');
+    pick('notes.txt', 'text/plain');
+
+    await waitFor(() => expect(screen.queryByTestId('ticket-composer-chip-notes.txt')).toBeNull());
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringContaining('notes.txt') }));
+    expect(screen.queryByTestId('ticket-composer-chip-retry-notes.txt')).toBeNull();
+  });
+
+  it('a 503 keeps the runAction toast and a Retry chip', async () => {
+    mockUpload(503, { error: 'Storage unavailable', code: 'STORAGE_UNAVAILABLE' });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-composer-file-input');
+    pick('a.png', 'image/png');
+
+    await screen.findByTestId('ticket-composer-chip-retry-a.png');
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+});
