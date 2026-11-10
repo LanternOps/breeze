@@ -96,6 +96,15 @@ export interface RetentionRunOutcome {
    * Omit entirely for jobs with no completeness signal at all.
    */
   incomplete?: boolean;
+  /**
+   * Rows a REPORT-ONLY run found eligible (#4342 W0, `jobs/retentionTarget.ts`):
+   * what an enforcing run would remove, capped at one run's capacity
+   * (`batchSize * maxBatches`). Sets `breeze_retention_rows_eligible{job_name}`
+   * — the evidence an operator reads before setting `<NAME>_RETENTION_ENFORCE`.
+   * A report run passes this and OMITS `rowsDeleted`/`incomplete`: it deleted
+   * nothing, and a 0 on the counter would claim it had measured a delete.
+   */
+  rowsEligible?: number;
 }
 
 interface RetentionMetricsRecorder {
@@ -175,6 +184,7 @@ export function recordMetricRollupCompactionStalled(stalledMonths: number): void
 const ROWS_DELETED_METRIC = 'breeze_retention_rows_deleted_total';
 const LAST_RUN_METRIC = 'breeze_retention_last_run_timestamp_seconds';
 const BACKLOG_METRIC = 'breeze_retention_backlog_incomplete';
+const ROWS_ELIGIBLE_METRIC = 'breeze_retention_rows_eligible';
 const ROLLUP_RUNS_METRIC = 'breeze_rollup_runs_total';
 const ROLLUP_DURATION_METRIC = 'breeze_rollup_duration_seconds';
 const COMPACTION_STALLED_METRIC = 'breeze_metric_rollup_compaction_stalled_months';
@@ -188,7 +198,7 @@ function safeSeconds(value: number): number {
 }
 
 /**
- * Registers (or reuses, if this Registry already carries them) the six series
+ * Registers (or reuses, if this Registry already carries them) the seven series
  * and binds them as the live recorder. Called once from `routes/metrics.ts`.
  *
  * NOTHING is seeded here — deliberately. The retention workers are `global` /
@@ -224,6 +234,18 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
     new Gauge({
       name: BACKLOG_METRIC,
       help: '1 when a retention job left rows behind (hit its MAX_BATCHES ceiling, or skipped items that errored), 0 when it fully cleared the backlog',
+      labelNames: ['job_name'] as const,
+      registers: [registry],
+    });
+
+  // A gauge, not a counter: each report run replaces the last run's count. It
+  // is capped at one enforce run's capacity, so a value equal to
+  // batchSize * maxBatches reads as "at least this many".
+  const rowsEligible =
+    (registry.getSingleMetric(ROWS_ELIGIBLE_METRIC) as Gauge<'job_name'> | undefined) ??
+    new Gauge({
+      name: ROWS_ELIGIBLE_METRIC,
+      help: 'Rows the last report-only run of each retention job found eligible for deletion (capped at one enforcing run\'s batch capacity)',
       labelNames: ['job_name'] as const,
       registers: [registry],
     });
@@ -269,6 +291,9 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
       }
       if (outcome.incomplete !== undefined) {
         backlogIncomplete.labels(jobName).set(outcome.incomplete ? 1 : 0);
+      }
+      if (outcome.rowsEligible !== undefined) {
+        rowsEligible.labels(jobName).set(safeCount(outcome.rowsEligible));
       }
     },
     onRollupRun: (status, durationSeconds) => {

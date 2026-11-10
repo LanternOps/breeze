@@ -131,6 +131,41 @@ describe('retention/rollup job metrics', () => {
     expect(valueFor(backlog, { job_name: 'agent_log_retention' })).toBeUndefined();
   });
 
+  // #4342 W0: report-only jobs publish what they WOULD delete. That gauge is
+  // the Gate G1 evidence an operator reads before enabling enforcement.
+  it('publishes rows-eligible from a report-only run without moving rows-deleted', async () => {
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
+
+    const text = await registry.getSingleMetricAsString('breeze_retention_rows_eligible');
+    expect(text).toContain('job_name="webhook_delivery_retention"} 12');
+
+    const deleted = await samplesFor(registry, 'breeze_retention_rows_deleted_total');
+    expect(valueFor(deleted, { job_name: 'webhook_delivery_retention' })).toBeUndefined();
+    // A report run stamps last-run like any other run.
+    const lastRun = await samplesFor(registry, 'breeze_retention_last_run_timestamp_seconds');
+    expect(valueFor(lastRun, { job_name: 'webhook_delivery_retention' })).toBeGreaterThan(0);
+  });
+
+  it('sets (does not accumulate) rows-eligible, and leaves it untouched by a run without it', async () => {
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 5 });
+    recordRetentionRun('webhook_delivery_retention', { rowsDeleted: 3, incomplete: false });
+
+    const eligible = await samplesFor(registry, 'breeze_retention_rows_eligible');
+    expect(valueFor(eligible, { job_name: 'webhook_delivery_retention' })).toBe(5);
+  });
+
+  it('publishes no rows-eligible series until a report run supplies one', async () => {
+    recordRetentionRun('audit_retention', { rowsDeleted: 5 });
+    expect(await samplesFor(registry, 'breeze_retention_rows_eligible')).toHaveLength(0);
+  });
+
+  it('clamps a negative or non-finite rows-eligible count to zero', async () => {
+    recordRetentionRun('change_log_retention', { rowsEligible: -7 });
+    const eligible = await samplesFor(registry, 'breeze_retention_rows_eligible');
+    expect(valueFor(eligible, { job_name: 'change_log_retention' })).toBe(0);
+  });
+
   it('clamps a negative or non-finite rows-deleted count to zero', async () => {
     recordRetentionRun('change_log_retention', { rowsDeleted: -7 });
     recordRetentionRun('change_log_retention', { rowsDeleted: Number.NaN });

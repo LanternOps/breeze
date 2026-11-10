@@ -370,6 +370,17 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
 
+#### Report-only retention jobs
+
+Some retention jobs ship **report-only**: each nightly run counts the rows it would delete and deletes nothing. Each of these jobs has its own `<NAME>_RETENTION_ENFORCE` variable, listed with the job's other settings.
+
+- **Default:** `false`, so the job only reports. An unset or empty value uses the default.
+- **Turning deletion on:** set the variable to `true` (or `1`) and restart the API. Only `true`/`1` and `false`/`0` are accepted, in any letter case. Any other value logs a warning and the job stays report-only.
+- **What to check before turning it on:** after a few nightly runs, read the job's `REPORT-ONLY` log line, for example `[DeviceCommandRetention] REPORT-ONLY: 1200 device_commands rows eligible (window 120 d)`, and the Prometheus gauge `breeze_retention_rows_eligible{job_name="…"}`. Both show how many rows the first enforcing run would remove. The count stops at one run's capacity (`BATCH_SIZE × MAX_BATCHES`). The log line marks a capped count with `+`, and a larger backlog drains over several nights.
+- **Once enforcing:** the job reports `breeze_retention_rows_deleted_total`. While a backlog remains, it also sets `breeze_retention_backlog_incomplete` to `1`.
+
+Deleted rows cannot be recovered. Confirm you have a current database backup before you turn on any `_ENFORCE` variable.
+
 ### Metric history retention (`metric_rollups`)
 
 Device history charts, capacity trends, AI performance tools and anomaly detection read the `metric_rollups` table. It stores each metric at three resolutions: 5-minute, hourly and daily buckets. Each resolution has its own retention window, and each month of data is stored as one partition per resolution. When a resolution's window passes a whole month, the maintenance job drops that month's partition for the resolution. Dropping a partition returns its disk space to the operating system immediately. No row-by-row `DELETE` is involved, and no `VACUUM FULL` is needed.
