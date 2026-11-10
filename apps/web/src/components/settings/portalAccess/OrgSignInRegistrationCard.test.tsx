@@ -17,6 +17,7 @@ vi.mock('../../shared/Toast', () => ({
 const ORG = '11111111-1111-4111-8111-111111111111';
 const POLICY = `/orgs/organizations/${ORG}/portal-access-policy`;
 const REQUESTS = `/orgs/organizations/${ORG}/portal-access-requests?status=pending`;
+const DOMAINS = `/orgs/organizations/${ORG}/customer-domains`;
 
 function json(body: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
@@ -30,10 +31,16 @@ function request(id: string) {
   };
 }
 
-type Routes = { view?: ReturnType<typeof makePolicyView>; patch?: () => Promise<Response>; pending?: unknown[] };
+type Routes = {
+  view?: ReturnType<typeof makePolicyView>;
+  patch?: () => Promise<Response>;
+  pending?: unknown[];
+  domains?: () => Promise<Response>;
+};
 
-function mockRoutes({ view = makePolicyView(), patch, pending = [] }: Routes = {}) {
+function mockRoutes({ view = makePolicyView(), patch, pending = [], domains }: Routes = {}) {
   fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+    if (url === DOMAINS && domains) return domains();
     if (url === POLICY && (!init?.method || init.method === 'GET')) return json({ data: view });
     if (url === POLICY && init?.method === 'PATCH') return patch ? patch() : json({ data: view });
     if (url === REQUESTS) return json({ data: pending, hasMore: false });
@@ -50,11 +57,56 @@ function renderCard() {
 
 const patchCalls = () => fetchWithAuthMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
 
+function domainRow(over: Record<string, unknown>) {
+  return {
+    id: 'd1', orgId: ORG, domain: 'contoso.com', isActive: true, autoCreateContact: true,
+    state: 'declared', method: null, verifiedAt: null, lastCheckedAt: null, lastPassedAt: null,
+    lastCheckStatus: null, clearedAt: null, clearedReason: null, dnsRecord: null, usableForSignIn: false,
+    ...over,
+  };
+}
+
 describe('OrgSignInRegistrationCard', () => {
   beforeEach(() => {
     fetchWithAuthMock.mockReset();
     navigateToMock.mockReset();
     showToastMock.mockReset();
+  });
+
+  it('the Sign-in & registration card lists verified and declared domains and links to #domains', async () => {
+    mockRoutes({
+      domains: () => json({ data: [
+        domainRow({ id: 'd1', domain: 'contoso.com', state: 'verified', method: 'dns_txt', verifiedAt: '2026-11-01T00:00:00.000Z', usableForSignIn: true }),
+        domainRow({ id: 'd2', domain: 'contoso.co.uk' }),
+      ] }),
+    });
+    renderCard();
+    const row = await screen.findByTestId('org-sign-in-domains-row');
+    expect(within(row).getByTestId('org-sign-in-domain-d1')).toHaveTextContent(/contoso\.com.*verified · DNS/i);
+    expect(within(row).getByTestId('org-sign-in-domain-d2')).toHaveTextContent(/contoso\.co\.uk.*declared — mail routing only/i);
+    expect(within(row).getByTestId('org-sign-in-domains-link').getAttribute('href')).toBe('#domains');
+  });
+
+  it('the card hides the Domains row without a toast when customer-domains returns 403', async () => {
+    mockRoutes({ domains: () => json({ error: 'forbidden', code: 'ACCESS_DENIED' }, 403) });
+    renderCard();
+    expect(await screen.findByTestId('org-sign-in-card')).toBeInTheDocument();
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([u]) => u === DOMAINS)).toBe(true));
+    // Let the 403 settle before asserting absence (the row is also absent while loading).
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId('org-sign-in-domains-row')).toBeNull();
+    expect(screen.queryByTestId('org-sign-in-domains-error')).toBeNull();
+    expect(screen.getByTestId('portal-access-policy-invites')).toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('a failed Domains load (not 403) keeps the row with a could-not-load note and the link', async () => {
+    mockRoutes({ domains: () => json({ error: 'boom' }, 500) });
+    renderCard();
+    const row = await screen.findByTestId('org-sign-in-domains-row');
+    expect(within(row).getByTestId('org-sign-in-domains-error')).toBeInTheDocument();
+    expect(within(row).getByTestId('org-sign-in-domains-link')).toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 
   it('loads and renders effective values with sources', async () => {
