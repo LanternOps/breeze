@@ -8,13 +8,13 @@ import { showToast } from '../../shared/Toast';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import HashLink from '../../shared/HashLink';
 import type { DomainMethodAvailability } from './methodAvailability';
-import { checkReasonLabel, methodLabel, methodUnavailableLabel, verifyErrorLabel } from './labels';
+import { checkReasonLabel, entraUnavailableLabel, googleUnavailableLabel, methodLabel, verifyErrorLabel } from './labels';
 import {
   DOMAIN_VERIFICATION_METHODS,
   GOOGLE_DOMAIN_SCOPE,
   customerDomainUrl,
   isDomainVerificationErrorCode,
-  isVerifyCustomerDomainOutcome,
+  normalizeVerifyOutcome,
   type CustomerDomainView,
   type DomainVerificationErrorCode,
   type DomainVerificationMethod,
@@ -35,6 +35,16 @@ type InlineResult =
   | { kind: 'refused'; code: DomainVerificationErrorCode };
 
 const toLogin = () => void navigateTo('/login', { replace: true });
+
+/**
+ * Refusals that mean the row changed under us (another admin moved, verified,
+ * turned off or deleted it): the inline message explains, and the list reloads
+ * so the table stops showing the old state.
+ */
+const STALE_ROW_CODES: ReadonlySet<DomainVerificationErrorCode> = new Set([
+  'CUSTOMER_DOMAIN_NOT_FOUND', 'DOMAIN_ALREADY_VERIFIED', 'DOMAIN_INACTIVE', 'DOMAIN_VERIFIED_ELSEWHERE',
+  'DOMAIN_VERIFICATION_CONFLICT_RETRY', 'DOMAIN_DNS_NOT_STARTED',
+]);
 
 function CopyField({ testId, label, value }: { testId: string; label: string; value: string }) {
   const { t } = useTranslation('settings');
@@ -91,11 +101,19 @@ export function DomainVerificationPanel({ orgId, domain, availability, onChanged
   const dnsRecord = domain.dnsRecord ?? startedRecord;
   const base = customerDomainUrl(orgId, domain.id);
 
-  const unavailable = (m: DomainVerificationMethod) => {
-    if (m === 'dns_txt') return null;
-    const a = availability[m];
-    return a.available ? null : a.reason;
+  /** The reason a directory method cannot run here, in words, or null. */
+  const unavailable = (m: DomainVerificationMethod): string | null => {
+    if (m === 'entra_tenant') {
+      const a = availability.entra_tenant;
+      return a.available ? null : entraUnavailableLabel(t, a.reason);
+    }
+    if (m === 'google_directory') {
+      const a = availability.google_directory;
+      return a.available ? null : googleUnavailableLabel(t, a.reason);
+    }
+    return null;
   };
+  const entraNotProven = !availability.entra_tenant.available && availability.entra_tenant.reason === 'tenant_not_proven';
   // A verified row keeps its method until the verification is removed (DOMAIN_ALREADY_VERIFIED).
   const methodDisabled = (m: DomainVerificationMethod) => (verified ? m !== domain.method : unavailable(m) !== null);
 
@@ -145,8 +163,8 @@ export function DomainVerificationPanel({ orgId, domain, availability, onChanged
         }),
         errorFallback: t('orgDomains.errors.check'),
         parseSuccess: (data) => {
-          const outcome = (data as { data?: unknown } | null)?.data;
-          if (!isVerifyCustomerDomainOutcome(outcome)) throw new Error('unexpected verification check body');
+          const outcome = normalizeVerifyOutcome((data as { data?: unknown } | null)?.data);
+          if (!outcome) throw new Error('unexpected verification check body');
           return { data: outcome };
         },
         // Only a pass is a success toast; a failed / unavailable check renders inline.
@@ -161,7 +179,10 @@ export function DomainVerificationPanel({ orgId, domain, availability, onChanged
     } catch (err) {
       if (err instanceof ActionError) {
         if (err.status === 401) return;
-        if (isDomainVerificationErrorCode(err.code)) setResult({ kind: 'refused', code: err.code });
+        if (isDomainVerificationErrorCode(err.code)) {
+          setResult({ kind: 'refused', code: err.code });
+          if (STALE_ROW_CODES.has(err.code)) onChanged();
+        }
         return;
       }
       console.error('[DomainVerificationPanel] check failed', err);
@@ -213,14 +234,19 @@ export function DomainVerificationPanel({ orgId, domain, availability, onChanged
                   checked={method === m}
                   disabled={methodDisabled(m)}
                   onChange={() => selectMethod(m)}
+                  aria-describedby={!verified && reason ? `domain-method-why-${domain.id}-${m}` : undefined}
                   data-testid={`domain-method-${m}`}
                 />
                 {methodLabel(t, m)}
               </label>
-              {!verified && reason && m !== 'dns_txt' && (
-                <p className="ml-6 text-xs text-muted-foreground" data-testid={`domain-method-unavailable-${m}`}>
-                  {methodUnavailableLabel(t, m, reason)}
-                  {m === 'entra_tenant' && reason === 'tenant_not_proven' && (
+              {!verified && reason && (
+                <p
+                  id={`domain-method-why-${domain.id}-${m}`}
+                  className="ml-6 text-xs text-muted-foreground"
+                  data-testid={`domain-method-unavailable-${m}`}
+                >
+                  {reason}
+                  {m === 'entra_tenant' && entraNotProven && (
                     <>
                       {' '}
                       <HashLink hash="portal" className="underline hover:text-foreground">{t('orgDomains.verify.openPortalTab')}</HashLink>
@@ -269,19 +295,21 @@ export function DomainVerificationPanel({ orgId, domain, availability, onChanged
         <p className="text-xs text-amber-700" data-testid="domain-verify-inactive">{t('orgDomains.verify.inactive')}</p>
       )}
 
-      {result && (
-        <div
-          role="status"
-          data-testid="domain-verify-result"
-          className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
-        >
-          {result.kind === 'refused'
-            ? verifyErrorLabel(t, result.code)
-            : result.outcome.result === 'failed'
-              ? t('orgDomains.verify.resultFailed', { reason: checkReasonLabel(t, result.outcome.reason) })
-              : t('orgDomains.verify.resultUnavailable', { reason: checkReasonLabel(t, result.outcome.reason) })}
-        </div>
-      )}
+      {/* Always mounted, so screen readers announce a result that appears in it. */}
+      <div role="status" aria-live="polite">
+        {result && (
+          <div
+            data-testid="domain-verify-result"
+            className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+          >
+            {result.kind === 'refused'
+              ? verifyErrorLabel(t, result.code)
+              : result.outcome.result === 'failed'
+                ? t('orgDomains.verify.resultFailed', { reason: checkReasonLabel(t, result.outcome.reason) })
+                : t('orgDomains.verify.resultUnavailable', { reason: checkReasonLabel(t, result.outcome.reason) })}
+          </div>
+        )}
+      </div>
 
       <div className="flex flex-wrap gap-2">
         <button

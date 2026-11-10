@@ -4,21 +4,24 @@
  *
  * These mirror the W05a API contract in the W5 plan
  * (`docs/superpowers/plans/portal/2026-11-11-portal-registration-options-w05-domain-verification.md`,
- * Tasks 5 and 7: `CustomerDomainView`, `VerifyCustomerDomainOutcome`,
- * `DomainVerificationErrorCode`). Once W05a's `packages/shared/src/types/customerDomains.ts`
- * is on main, the type declarations below become re-exports from `@breeze/shared`;
- * the shape guards and URL helpers stay here.
+ * Task 5 "Produces" and Task 7). Task 7 moves `CustomerDomainView` and the
+ * method/reason unions into `packages/shared/src/types/customerDomains.ts`; once
+ * that is on main, those declarations become re-exports from `@breeze/shared`.
+ * `VerifyCustomerDomainOutcome` and the error codes stay API-side in the plan, so
+ * they stay declared here unless W05a shares them too. The normalizers and URL
+ * helpers are web-only.
  */
 
-export type DomainVerificationMethod = 'dns_txt' | 'entra_tenant' | 'google_directory';
-export const DOMAIN_VERIFICATION_METHODS: readonly DomainVerificationMethod[] = ['dns_txt', 'entra_tenant', 'google_directory'];
+export const DOMAIN_VERIFICATION_METHODS = ['dns_txt', 'entra_tenant', 'google_directory'] as const;
+export type DomainVerificationMethod = (typeof DOMAIN_VERIFICATION_METHODS)[number];
 
 export type DomainCheckFailReason = 'record_missing' | 'not_in_directory' | 'tenant_not_proven' | 'connection_missing';
 export type DomainCheckUnavailableReason = 'dns_error' | 'timeout' | 'graph_unavailable' | 'graph_tenant_mismatch'
   | 'google_scope_missing' | 'google_access_denied' | 'google_unavailable';
 export type DomainVerificationClearedReason = DomainCheckFailReason | 'stale' | 'repointed' | 'msp_removed' | 'displaced';
 
-export type CustomerDomainState = 'declared' | 'pending_dns' | 'verified';
+export const CUSTOMER_DOMAIN_STATES = ['declared', 'pending_dns', 'verified'] as const;
+export type CustomerDomainState = (typeof CUSTOMER_DOMAIN_STATES)[number];
 
 export interface CustomerDomainView {
   id: string;
@@ -45,13 +48,11 @@ export type VerifyCustomerDomainOutcome =
   | { result: 'failed'; reason: DomainCheckFailReason }
   | { result: 'unavailable'; reason: DomainCheckUnavailableReason };
 
-export type DomainVerificationErrorCode = 'CUSTOMER_DOMAIN_NOT_FOUND' | 'DOMAIN_VERIFIED_ELSEWHERE'
-  | 'DOMAIN_VERIFICATION_CONFLICT_RETRY' | 'DOMAIN_INACTIVE' | 'DOMAIN_DNS_NOT_STARTED' | 'DOMAIN_ALREADY_VERIFIED';
-
-export const DOMAIN_VERIFICATION_ERROR_CODES: readonly DomainVerificationErrorCode[] = [
+export const DOMAIN_VERIFICATION_ERROR_CODES = [
   'CUSTOMER_DOMAIN_NOT_FOUND', 'DOMAIN_VERIFIED_ELSEWHERE', 'DOMAIN_VERIFICATION_CONFLICT_RETRY',
   'DOMAIN_INACTIVE', 'DOMAIN_DNS_NOT_STARTED', 'DOMAIN_ALREADY_VERIFIED',
-];
+] as const;
+export type DomainVerificationErrorCode = (typeof DOMAIN_VERIFICATION_ERROR_CODES)[number];
 
 export function isDomainVerificationErrorCode(code: string | undefined): code is DomainVerificationErrorCode {
   return !!code && (DOMAIN_VERIFICATION_ERROR_CODES as readonly string[]).includes(code);
@@ -66,22 +67,84 @@ export const customerDomainUrl = (orgId: string, domainId: string) => `${custome
 /** Where an org's domains are managed (Organization › Domains). */
 export const orgDomainsHref = (orgId: string) => `/settings/organizations/${orgId}#domains`;
 
-const STATES: readonly string[] = ['declared', 'pending_dns', 'verified'];
+const isString = (v: unknown): v is string => typeof v === 'string';
+const stringOrNull = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 
-/** A shape check, so a malformed 200 lands in the caller's load-error state instead of crashing the table. */
-export function isCustomerDomainView(value: unknown): value is CustomerDomainView {
-  if (!value || typeof value !== 'object') return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.id === 'string' && typeof v.orgId === 'string' && typeof v.domain === 'string'
-    && typeof v.isActive === 'boolean' && typeof v.autoCreateContact === 'boolean'
-    && typeof v.state === 'string' && STATES.includes(v.state)
-    && (v.method === null || (typeof v.method === 'string' && (DOMAIN_VERIFICATION_METHODS as readonly string[]).includes(v.method)))
-    && (v.dnsRecord === null || (!!v.dnsRecord && typeof v.dnsRecord === 'object'));
+export function isDomainVerificationMethod(v: unknown): v is DomainVerificationMethod {
+  return typeof v === 'string' && (DOMAIN_VERIFICATION_METHODS as readonly string[]).includes(v);
 }
 
-export function isVerifyCustomerDomainOutcome(value: unknown): value is VerifyCustomerDomainOutcome {
-  if (!value || typeof value !== 'object') return false;
+/**
+ * One API row → a view the UI can render, or null when the row lacks what every
+ * screen needs (id, org, domain, the two flags). Additive API values degrade
+ * instead of failing the whole list: an unknown state reads as declared, an
+ * unknown method as none, and a verified row without a known method as
+ * declared (never a badge we cannot name).
+ */
+export function normalizeCustomerDomainView(value: unknown): CustomerDomainView | null {
+  if (!value || typeof value !== 'object') return null;
   const v = value as Record<string, unknown>;
-  if (v.result === 'verified') return typeof v.method === 'string';
-  return (v.result === 'failed' || v.result === 'unavailable') && typeof v.reason === 'string';
+  if (!isString(v.id) || !isString(v.orgId) || !isString(v.domain)
+    || typeof v.isActive !== 'boolean' || typeof v.autoCreateContact !== 'boolean') return null;
+  const method = isDomainVerificationMethod(v.method) ? v.method : null;
+  let state: CustomerDomainState = (CUSTOMER_DOMAIN_STATES as readonly string[]).includes(v.state as string)
+    ? (v.state as CustomerDomainState) : 'declared';
+  if (state === 'verified' && !method) state = 'declared';
+  const rec = v.dnsRecord as Record<string, unknown> | null | undefined;
+  const dnsRecord = rec && typeof rec === 'object' && isString(rec.recordName) && isString(rec.recordValue)
+    ? { recordName: rec.recordName, recordValue: rec.recordValue } : null;
+  const lastCheckStatus = v.lastCheckStatus === 'pass' || v.lastCheckStatus === 'fail' || v.lastCheckStatus === 'unavailable'
+    ? v.lastCheckStatus : null;
+  return {
+    id: v.id,
+    orgId: v.orgId,
+    domain: v.domain,
+    isActive: v.isActive,
+    autoCreateContact: v.autoCreateContact,
+    state,
+    method: state === 'verified' ? method : null,
+    verifiedAt: stringOrNull(v.verifiedAt),
+    lastCheckedAt: stringOrNull(v.lastCheckedAt),
+    lastPassedAt: stringOrNull(v.lastPassedAt),
+    lastCheckStatus,
+    clearedAt: stringOrNull(v.clearedAt),
+    clearedReason: stringOrNull(v.clearedReason) as DomainVerificationClearedReason | null,
+    dnsRecord,
+    usableForSignIn: v.usableForSignIn === true,
+  };
+}
+
+/**
+ * Normalizes a list body. Throws when `data` is not an array (the caller's
+ * load-error state); drops and logs individual rows it cannot render.
+ */
+export function normalizeCustomerDomainList(data: unknown, source: string): CustomerDomainView[] {
+  if (!Array.isArray(data)) throw new Error(`${source}: customer domains body is not a list`);
+  const rows: CustomerDomainView[] = [];
+  for (const item of data) {
+    const row = normalizeCustomerDomainView(item);
+    if (row) rows.push(row);
+    else console.error(`[${source}] dropped a customer domain row with an unexpected shape`, item);
+  }
+  return rows;
+}
+
+/**
+ * A 200 check body → an outcome. The check has already run by then, so an
+ * unknown `result` is shown as an unfinished check rather than thrown away.
+ * Returns null only when the body is not an object with a `result` at all.
+ */
+export function normalizeVerifyOutcome(value: unknown): VerifyCustomerDomainOutcome | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (v.result === 'verified' && isDomainVerificationMethod(v.method)) {
+    return { result: 'verified', method: v.method, displacedOrgId: stringOrNull(v.displacedOrgId) };
+  }
+  if (v.result === 'failed' && isString(v.reason)) return { result: 'failed', reason: v.reason as DomainCheckFailReason };
+  if (v.result === 'unavailable' && isString(v.reason)) {
+    return { result: 'unavailable', reason: v.reason as DomainCheckUnavailableReason };
+  }
+  if (!isString(v.result)) return null;
+  // Labels fall back to a generic "did not pass" for a reason this build does not know.
+  return { result: 'unavailable', reason: (isString(v.reason) ? v.reason : 'unknown') as DomainCheckUnavailableReason };
 }

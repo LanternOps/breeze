@@ -72,4 +72,10 @@ describe('CustomerDomainsCard (read-only summary)', () => {
     fireEvent.click(await screen.findByTestId('customer-domains-retry'));
     await waitFor(() => expect(screen.getByTestId('customer-domain-row-1')).toBeInTheDocument());
   });
+
+  it('a malformed body lands in the error state, not an empty list', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: { not: 'an array' } }));
+    render(<CustomerDomainsCard />);
+    expect(await screen.findByTestId('customer-domains-error')).toBeInTheDocument();
+  });
 });

@@ -678,7 +678,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         if (domainsAccess === 'denied') {
           return <p className="text-sm text-muted-foreground" data-testid="org-domains-partner-only">{t('orgDomains.partnerOnly')}</p>;
         }
-        return effectiveOrgId ? <OrgDomainsTab orgId={effectiveOrgId} /> : null;
+        return effectiveOrgId ? <OrgDomainsTab key={effectiveOrgId} orgId={effectiveOrgId} /> : null;
       case 'portal':
         return effectiveOrgId ? (
           <>

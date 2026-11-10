@@ -7092,6 +7092,7 @@
     "neverChecked": "Nie",
     "notCurrent": "Der Nachweis hinter dieser Verifizierung ist nicht mehr gültig. Die tägliche Neuprüfung hebt sie auf, sofern er nicht wieder besteht.",
     "inactiveSuspended": "Inaktiv: wird weder für die E-Mail-Weiterleitung noch für die Anmeldung verwendet, bis sie wieder aktiviert wird.",
+    "stale": "Die Liste ist möglicherweise nicht aktuell: Sie konnte nach Ihrer Änderung nicht neu geladen werden.",
     "columns": {
       "domain": "Domäne",
       "status": "Status",
@@ -7100,7 +7101,10 @@
     },
     "aria": {
       "active": "{{domain}} ist aktiv",
-      "autoCreateContact": "Kontakte für {{domain}} automatisch anlegen"
+      "autoCreateContact": "Kontakte für {{domain}} automatisch anlegen",
+      "verify": "Verifizierung für {{domain}}",
+      "move": "{{domain}} verschieben",
+      "delete": "{{domain}} löschen"
     },
     "states": {
       "declared": "Deklariert — nur E-Mail-Weiterleitung",
@@ -8589,7 +8593,8 @@
     "domains": {
       "label": "Domänen",
       "none": "Noch keine Domänen",
-      "manage": "Verwalten unter Organisation › Domänen"
+      "manage": "Verwalten unter Organisation › Domänen",
+      "loadFailed": "Die Domänen konnten nicht geladen werden."
     }
   },
   "portalAccessRequests": {

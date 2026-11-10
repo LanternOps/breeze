@@ -92,9 +92,20 @@ describe('OrgSignInRegistrationCard', () => {
     renderCard();
     expect(await screen.findByTestId('org-sign-in-card')).toBeInTheDocument();
     await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([u]) => u === DOMAINS)).toBe(true));
-    // Let the 403 settle before asserting absence.
-    await new Promise((r) => setTimeout(r, 0));
+    // Let the 403 settle before asserting absence (the row is also absent while loading).
+    await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByTestId('org-sign-in-domains-row')).toBeNull();
+    expect(screen.queryByTestId('org-sign-in-domains-error')).toBeNull();
+    expect(screen.getByTestId('portal-access-policy-invites')).toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('a failed Domains load (not 403) keeps the row with a could-not-load note and the link', async () => {
+    mockRoutes({ domains: () => json({ error: 'boom' }, 500) });
+    renderCard();
+    const row = await screen.findByTestId('org-sign-in-domains-row');
+    expect(within(row).getByTestId('org-sign-in-domains-error')).toBeInTheDocument();
+    expect(within(row).getByTestId('org-sign-in-domains-link')).toBeInTheDocument();
     expect(showToastMock).not.toHaveBeenCalled();
   });
 

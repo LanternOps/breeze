@@ -191,4 +191,76 @@ describe('OrgDomainsTab', () => {
     expect(await screen.findByTestId('org-domains-empty')).toBeInTheDocument();
     expect(callsTo(fetchWithAuthMock, 'DELETE', `${DOMAINS}/d1`)).toHaveLength(1);
   });
+
+  it('a failed move keeps the dialog open and shows no success toast', async () => {
+    baseRoutes([verifiedDns()], {
+      [`PATCH ${DOMAINS}/d1`]: () => json({ error: 'conflict', code: 'SOMETHING' }, 409),
+    });
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-move-d1'));
+    const select = await screen.findByTestId('org-domains-move-target');
+    await within(select).findByText('Fabrikam');
+    fireEvent.change(select, { target: { value: OTHER_ORG } });
+    fireEvent.click(screen.getByTestId('org-domains-move-confirm'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(screen.getByTestId('org-domains-move-dialog')).toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.getByTestId('org-domains-row-d1')).toBeInTheDocument();
+  });
+
+  it('a failed delete keeps the row and the dialog and toasts the error', async () => {
+    baseRoutes([domainView()], { [`DELETE ${DOMAINS}/d1`]: () => json({ error: 'boom' }, 500) });
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-delete-d1'));
+    fireEvent.click(await screen.findByTestId('org-domains-delete-confirm'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(screen.getByTestId('org-domains-delete-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('org-domains-row-d1')).toBeInTheDocument();
+  });
+
+  it('a 401 on the list goes to login', async () => {
+    routeFetch(fetchWithAuthMock, {
+      [`GET ${DOMAINS}`]: () => json({ error: 'unauthorized' }, 401),
+      [`GET ${ENTRA}`]: entraNone,
+      [`GET ${GOOGLE}`]: () => json({ connected: false }),
+    });
+    render(<OrgDomainsTab orgId={ORG} />);
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true }));
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('a refresh that fails after a successful mutation keeps the table and says it may be out of date', async () => {
+    let listCalls = 0;
+    routeFetch(fetchWithAuthMock, {
+      [`GET ${DOMAINS}`]: () => (++listCalls === 1 ? json({ data: [domainView()] }) : json({ error: 'boom' }, 500)),
+      [`GET ${ENTRA}`]: entraNone,
+      [`GET ${GOOGLE}`]: () => json({ connected: false }),
+      [`PATCH ${DOMAINS}/d1`]: () => json({ data: domainView({ isActive: false }) }),
+    });
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-active-d1'));
+    expect(await screen.findByTestId('org-domains-stale')).toBeInTheDocument();
+    expect(screen.getByTestId('org-domains-row-d1')).toBeInTheDocument();
+  });
+
+  it('a row with an unknown state or method still renders (as declared); a malformed row is dropped, not the list', async () => {
+    baseRoutes([
+      domainView({ id: 'd1', domain: 'contoso.com' }),
+      { ...domainView({ id: 'd2', domain: 'contoso.org' }), state: 'quarantined', method: 'carrier_pigeon' },
+      { id: 'd3' },
+    ]);
+    render(<OrgDomainsTab orgId={ORG} />);
+    expect(await screen.findByTestId('org-domains-state-d2')).toHaveTextContent(/declared — mail routing only/i);
+    expect(screen.getByTestId('org-domains-row-d1')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-domains-row-d3')).toBeNull();
+  });
+
+  it('a Google connection body without an explicit connected:false leaves Google enabled', async () => {
+    baseRoutes([domainView()], { [`GET ${GOOGLE}`]: () => json({ status: 'active' }) });
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-verify-d1'));
+    await waitFor(() => expect(callsTo(fetchWithAuthMock, 'GET', GOOGLE)).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByTestId('domain-method-google_directory')).toBeEnabled();
+  });
 });

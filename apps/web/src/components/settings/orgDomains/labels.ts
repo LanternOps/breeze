@@ -8,7 +8,7 @@ import type {
   DomainVerificationMethod,
 } from './types';
 import { GOOGLE_DOMAIN_SCOPE } from './types';
-import type { MethodUnavailableReason } from './methodAvailability';
+import type { EntraUnavailableReason, GoogleUnavailableReason } from './methodAvailability';
 
 /**
  * Static key maps for the `settings:orgDomains.*` labels: every value the API
@@ -60,42 +60,42 @@ const ERROR_KEYS: Record<DomainVerificationErrorCode, string> = {
   DOMAIN_ALREADY_VERIFIED: 'settings:orgDomains.verifyErrors.DOMAIN_ALREADY_VERIFIED',
 };
 
-const UNAVAILABLE_METHOD_KEYS: Record<Exclude<DomainVerificationMethod, 'dns_txt'>, Record<MethodUnavailableReason, string>> = {
-  entra_tenant: {
-    tenant_not_proven: 'settings:orgDomains.methodUnavailable.entra_tenant.tenant_not_proven',
-    connection_missing: 'settings:orgDomains.methodUnavailable.entra_tenant.connection_missing',
-    not_enabled: 'settings:orgDomains.methodUnavailable.entra_tenant.not_enabled',
-  },
-  google_directory: {
-    tenant_not_proven: 'settings:orgDomains.methodUnavailable.google_directory.connection_missing',
-    connection_missing: 'settings:orgDomains.methodUnavailable.google_directory.connection_missing',
-    not_enabled: 'settings:orgDomains.methodUnavailable.google_directory.not_enabled',
-  },
+const ENTRA_UNAVAILABLE_KEYS: Record<EntraUnavailableReason, string> = {
+  tenant_not_proven: 'settings:orgDomains.methodUnavailable.entra_tenant.tenant_not_proven',
+  connection_missing: 'settings:orgDomains.methodUnavailable.entra_tenant.connection_missing',
+  not_enabled: 'settings:orgDomains.methodUnavailable.entra_tenant.not_enabled',
 };
+
+const GOOGLE_UNAVAILABLE_KEYS: Record<GoogleUnavailableReason, string> = {
+  connection_missing: 'settings:orgDomains.methodUnavailable.google_directory.connection_missing',
+  not_enabled: 'settings:orgDomains.methodUnavailable.google_directory.not_enabled',
+};
+
+/** Own-key lookup: an API value like "constructor" must never reach the prototype. */
+function keyFor<K extends string>(map: Record<K, string>, value: string): string | undefined {
+  return Object.hasOwn(map, value) ? map[value as K] : undefined;
+}
 
 export const methodLabel = (t: TFunction, method: DomainVerificationMethod) => t(/* i18n-dynamic */ METHOD_KEYS[method]);
 export const methodShortLabel = (t: TFunction, method: DomainVerificationMethod) => t(/* i18n-dynamic */ METHOD_SHORT_KEYS[method]);
 
 /** "Verification lost: …", or null when the key is unknown (an API newer than this build). */
 export function clearedLabel(t: TFunction, reason: string): string | null {
-  const key = CLEARED_KEYS[reason as DomainVerificationClearedReason];
+  const key = keyFor(CLEARED_KEYS, reason);
   return key ? t(/* i18n-dynamic */ key) : null;
 }
 
 export function checkReasonLabel(t: TFunction, reason: string): string {
-  const key = CHECK_REASON_KEYS[reason as DomainCheckFailReason];
+  const key = keyFor(CHECK_REASON_KEYS, reason);
   return key ? t(/* i18n-dynamic */ key, { scope: GOOGLE_DOMAIN_SCOPE }) : t('settings:orgDomains.checkReasons.unknown');
 }
 
 export const verifyErrorLabel = (t: TFunction, code: DomainVerificationErrorCode) => t(/* i18n-dynamic */ ERROR_KEYS[code]);
 
-export function methodUnavailableLabel(
-  t: TFunction,
-  method: Exclude<DomainVerificationMethod, 'dns_txt'>,
-  reason: MethodUnavailableReason,
-): string {
-  return t(/* i18n-dynamic */ UNAVAILABLE_METHOD_KEYS[method][reason]);
-}
+export const entraUnavailableLabel = (t: TFunction, reason: EntraUnavailableReason) =>
+  t(/* i18n-dynamic */ ENTRA_UNAVAILABLE_KEYS[reason]);
+export const googleUnavailableLabel = (t: TFunction, reason: GoogleUnavailableReason) =>
+  t(/* i18n-dynamic */ GOOGLE_UNAVAILABLE_KEYS[reason]);
 
 /** The table's state badge text. */
 export function stateLabel(t: TFunction, domain: Pick<CustomerDomainView, 'state' | 'method'>): string {

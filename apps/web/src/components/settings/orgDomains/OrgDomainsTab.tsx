@@ -12,7 +12,7 @@ import { AddDomainForm } from './AddDomainForm';
 import { DomainVerificationPanel } from './DomainVerificationPanel';
 import { UNKNOWN_AVAILABILITY, loadDomainMethodAvailability, type DomainMethodAvailability } from './methodAvailability';
 import { clearedLabel, stateBadgeClass, stateLabel } from './labels';
-import { customerDomainUrl, customerDomainsUrl, isCustomerDomainView, type CustomerDomainView } from './types';
+import { customerDomainUrl, customerDomainsUrl, normalizeCustomerDomainList, type CustomerDomainView } from './types';
 
 type Props = { orgId: string };
 
@@ -40,6 +40,8 @@ export default function OrgDomainsTab({ orgId }: Props) {
   const [moveTarget, setMoveTarget] = useState('');
   const [moveOrgs, setMoveOrgs] = useState<OrgOption[] | null>(null);
   const [moveOrgsFailed, setMoveOrgsFailed] = useState(false);
+  /** A refresh after a successful change failed: the table may not show it yet. */
+  const [stale, setStale] = useState(false);
   const seq = useRef(0);
 
   const loadRows = useCallback(async (opts: { silent?: boolean } = {}) => {
@@ -53,16 +55,15 @@ export default function OrgDomainsTab({ orgId }: Props) {
       if (!res.ok) throw new Error(`customer domains load failed: ${res.status}`);
       const body = (await res.json()) as { data?: unknown };
       if (mine !== seq.current) return;
-      if (!Array.isArray(body.data) || !body.data.every(isCustomerDomainView)) {
-        throw new Error('customer domains load returned an unexpected body');
-      }
-      setRows(body.data);
+      setRows(normalizeCustomerDomainList(body.data, 'OrgDomainsTab'));
       setLoad({ status: 'ready' });
+      setStale(false);
     } catch (err) {
       if (mine !== seq.current) return;
-      console.warn('[OrgDomainsTab] load failed', err);
-      // A silent refresh after a mutation keeps the table on screen.
-      if (!opts.silent) setLoad({ status: 'error' });
+      console.error('[OrgDomainsTab] load failed', err);
+      // A silent refresh after a mutation keeps the table on screen and says it may be out of date.
+      if (opts.silent) setStale(true);
+      else setLoad({ status: 'error' });
     }
   }, [orgId]);
 
@@ -135,7 +136,7 @@ export default function OrgDomainsTab({ orgId }: Props) {
     if (moveOrgs !== null) return;
     setMoveOrgsFailed(false);
     fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations')
-      .then((orgs) => setMoveOrgs(orgs.filter((o) => o.id !== orgId)))
+      .then((orgs) => setMoveOrgs(orgs))
       .catch((err) => {
         console.warn('[OrgDomainsTab] organizations failed to load', err);
         setMoveOrgsFailed(true);
@@ -183,6 +184,15 @@ export default function OrgDomainsTab({ orgId }: Props) {
         <h2 className="text-lg font-semibold">{t('orgDomains.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t('orgDomains.description')}</p>
       </div>
+
+      {stale && (
+        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" data-testid="org-domains-stale">
+          {t('orgDomains.stale')}{' '}
+          <button type="button" onClick={() => void loadRows({ silent: true })} className="underline" data-testid="org-domains-stale-retry">
+            {t('common:actions.retry')}
+          </button>
+        </p>
+      )}
 
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y text-sm">
@@ -248,6 +258,8 @@ export default function OrgDomainsTab({ orgId }: Props) {
                         <button
                           type="button"
                           aria-expanded={openPanel === row.id}
+                          aria-controls={`org-domains-panel-${row.id}`}
+                          aria-label={t('orgDomains.aria.verify', { domain: row.domain })}
                           onClick={() => setOpenPanel((cur) => (cur === row.id ? null : row.id))}
                           className="text-primary hover:underline"
                           data-testid={`org-domains-verify-${row.id}`}
@@ -258,6 +270,7 @@ export default function OrgDomainsTab({ orgId }: Props) {
                           type="button"
                           onClick={() => openMove(row)}
                           disabled={busy}
+                          aria-label={t('orgDomains.aria.move', { domain: row.domain })}
                           className="text-muted-foreground hover:text-foreground disabled:opacity-50"
                           data-testid={`org-domains-move-${row.id}`}
                         >
@@ -267,6 +280,7 @@ export default function OrgDomainsTab({ orgId }: Props) {
                           type="button"
                           onClick={() => setDeleting(row)}
                           disabled={busy}
+                          aria-label={t('orgDomains.aria.delete', { domain: row.domain })}
                           className="text-muted-foreground hover:text-foreground disabled:opacity-50"
                           data-testid={`org-domains-delete-${row.id}`}
                         >
@@ -276,7 +290,7 @@ export default function OrgDomainsTab({ orgId }: Props) {
                     </td>
                   </tr>
                   {openPanel === row.id && (
-                    <tr data-testid={`org-domains-panel-row-${row.id}`}>
+                    <tr id={`org-domains-panel-${row.id}`} data-testid={`org-domains-panel-row-${row.id}`}>
                       <td colSpan={6} className="px-2 pb-4">
                         <DomainVerificationPanel key={row.id} orgId={orgId} domain={row} availability={availability} onChanged={refresh} />
                       </td>
@@ -335,7 +349,7 @@ export default function OrgDomainsTab({ orgId }: Props) {
               data-testid="org-domains-move-target"
             >
               <option value="">{moveOrgs === null ? t('common:states.loading') : t('orgDomains.move.targetPlaceholder')}</option>
-              {(moveOrgs ?? []).map((o) => (
+              {(moveOrgs ?? []).filter((o) => o.id !== orgId).map((o) => (
                 <option key={o.id} value={o.id}>{o.name}</option>
               ))}
             </select>

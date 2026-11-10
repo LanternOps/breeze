@@ -50,9 +50,10 @@ export function CustomerDomainsCard() {
       }
       if (!res.ok) throw new Error(`inbound domains load failed: ${res.status}`);
       const body = (await res.json()) as { data?: DomainRow[] };
-      setRows(Array.isArray(body.data) ? body.data : []);
+      if (!Array.isArray(body.data)) throw new Error('inbound domains load returned an unexpected body');
+      setRows(body.data);
     } catch (err) {
-      console.warn('[CustomerDomainsCard] load failed', err);
+      console.error('[CustomerDomainsCard] load failed', err);
       setError(true);
     } finally {
       setLoading(false);

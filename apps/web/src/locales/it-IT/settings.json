@@ -7138,6 +7138,7 @@
     "neverChecked": "Mai",
     "notCurrent": "Le prove alla base di questa verifica non sono più valide. Il controllo giornaliero la rimuoverà, a meno che non venga superato di nuovo.",
     "inactiveSuspended": "Inattivo: non viene usato per l’instradamento della posta né per l’accesso finché non viene riattivato.",
+    "stale": "L’elenco potrebbe non essere aggiornato: non è stato possibile ricaricarlo dopo la modifica.",
     "columns": {
       "domain": "Dominio",
       "status": "Stato",
@@ -7146,7 +7147,10 @@
     },
     "aria": {
       "active": "{{domain}} è attivo",
-      "autoCreateContact": "Crea automaticamente i contatti per {{domain}}"
+      "autoCreateContact": "Crea automaticamente i contatti per {{domain}}",
+      "verify": "Verifica di {{domain}}",
+      "move": "Sposta {{domain}}",
+      "delete": "Elimina {{domain}}"
     },
     "states": {
       "declared": "Dichiarato — solo instradamento della posta",
@@ -8589,7 +8593,8 @@
     "domains": {
       "label": "Domini",
       "none": "Nessun dominio per ora",
-      "manage": "Gestisci in Organizzazione › Domini"
+      "manage": "Gestisci in Organizzazione › Domini",
+      "loadFailed": "Impossibile caricare i domini."
     }
   },
   "portalAccessRequests": {

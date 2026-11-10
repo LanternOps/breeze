@@ -7140,6 +7140,7 @@
     "neverChecked": "Never",
     "notCurrent": "The evidence behind this verification no longer checks out. The daily re-check will clear it unless it passes again.",
     "inactiveSuspended": "Inactive: not used for mail routing or sign-in until it is turned back on.",
+    "stale": "The list may be out of date: it could not be reloaded after your change.",
     "columns": {
       "domain": "Domain",
       "status": "Status",
@@ -7148,7 +7149,10 @@
     },
     "aria": {
       "active": "{{domain}} is active",
-      "autoCreateContact": "Auto-create contacts for {{domain}}"
+      "autoCreateContact": "Auto-create contacts for {{domain}}",
+      "verify": "Verification for {{domain}}",
+      "move": "Move {{domain}}",
+      "delete": "Delete {{domain}}"
     },
     "states": {
       "declared": "Declared — mail routing only",
@@ -8589,7 +8593,8 @@
     "domains": {
       "label": "Domains",
       "none": "No domains yet",
-      "manage": "Manage in Organization › Domains"
+      "manage": "Manage in Organization › Domains",
+      "loadFailed": "Domains could not be loaded."
     }
   },
   "portalAccessRequests": {

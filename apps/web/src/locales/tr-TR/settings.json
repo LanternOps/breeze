@@ -7145,6 +7145,7 @@
     "neverChecked": "Hiçbir zaman",
     "notCurrent": "Bu doğrulamanın dayandığı kanıt artık geçerli değil. Yeniden geçmediği sürece günlük yeniden denetim onu kaldıracak.",
     "inactiveSuspended": "Pasif: yeniden açılana kadar e-posta yönlendirme veya oturum açma için kullanılmaz.",
+    "stale": "Liste güncel olmayabilir: değişikliğinizden sonra yeniden yüklenemedi.",
     "columns": {
       "domain": "Alan adı",
       "status": "Durum",
@@ -7153,7 +7154,10 @@
     },
     "aria": {
       "active": "{{domain}} etkin",
-      "autoCreateContact": "{{domain}} için kişileri otomatik oluştur"
+      "autoCreateContact": "{{domain}} için kişileri otomatik oluştur",
+      "verify": "{{domain}} doğrulaması",
+      "move": "{{domain}} taşı",
+      "delete": "{{domain}} sil"
     },
     "states": {
       "declared": "Bildirilmiş — yalnızca e-posta yönlendirme",
@@ -8589,7 +8593,8 @@
     "domains": {
       "label": "Alan adları",
       "none": "Henüz alan adı yok",
-      "manage": "Kuruluş › Alan adları altında yönetin"
+      "manage": "Kuruluş › Alan adları altında yönetin",
+      "loadFailed": "Alan adları yüklenemedi."
     }
   },
   "portalAccessRequests": {
