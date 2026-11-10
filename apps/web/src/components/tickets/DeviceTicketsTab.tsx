@@ -6,7 +6,7 @@ import SlaChip from './SlaChip';
 import { statusConfig, priorityConfig, type TicketSummary } from './ticketConfig';
 import { cn } from '@/lib/utils';
 
-export default function DeviceTicketsTab({ deviceId }: { deviceId: string }) {
+export default function DeviceTicketsTab({ deviceId, orgId }: { deviceId: string; orgId?: string }) {
   const { t } = useTranslation('tickets');
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -16,7 +16,12 @@ export default function DeviceTicketsTab({ deviceId }: { deviceId: string }) {
     setLoading(true);
     setError(false);
     try {
-      const res = await fetchWithAuth(`/tickets?deviceId=${deviceId}&limit=50&sort=newest`);
+      const res = await fetchWithAuth(
+        `/tickets?deviceId=${deviceId}&limit=50&sort=newest`,
+        // Pin to the device's own org: the ambient switcher org would AND to
+        // zero rows for a device in another org (#11644).
+        orgId ? { orgIdOverride: orgId } : undefined,
+      );
       if (res.ok) {
         const body = await res.json();
         setTickets((body.data ?? []) as TicketSummary[]);
@@ -28,7 +33,7 @@ export default function DeviceTicketsTab({ deviceId }: { deviceId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [deviceId]);
+  }, [deviceId, orgId]);
 
   useEffect(() => { void load(); }, [load]);
 

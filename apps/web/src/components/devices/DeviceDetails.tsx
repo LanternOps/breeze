@@ -1276,7 +1276,7 @@ export default function DeviceDetails({
         />
       )}
 
-      {activeTab === "tickets" && <DeviceTicketsTab deviceId={device.id} />}
+      {activeTab === "tickets" && <DeviceTicketsTab deviceId={device.id} orgId={device.orgId || undefined} />}
 
       {activeTab === "chat" && (
         <DeviceChatPanel
