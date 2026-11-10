@@ -63,10 +63,24 @@ async function hasAccountInOrg(orgId: string, email: string): Promise<boolean> {
  */
 async function createSelfRegisteredAccount(
   payload: PortalSelfRegistrationPayload,
+  domain: string,
   now: Date,
-): Promise<{ kind: 'created'; portalUserId: string; authEpoch: number } | { kind: 'account_exists' }> {
+): Promise<
+  | { kind: 'created'; portalUserId: string; authEpoch: number }
+  | { kind: 'account_exists' }
+  | { kind: 'refused'; reason: SelfRegistrationRefusal }
+> {
   return withSystemDbAccessContext(async () => {
     await lockPortalInviteAddresses(db, payload.orgId, [payload.email]);
+    // Re-check the domain and the policy INSIDE the admission transaction,
+    // after the lock wait (quorum finding): the pre-checks above ran before
+    // it, and an unauthenticated instant admission has no later MSP decision
+    // to catch a domain removed or displaced in between. W5's read joins a
+    // held system context.
+    if (!(await isDomainVerifiedForOrg(domain, payload.orgId))) return { kind: 'refused' as const, reason: 'domain_not_verified' as const };
+    const policy = await resolvePortalAccessPolicy(payload.orgId);
+    if (policy.fingerprint !== payload.policyFingerprint) return { kind: 'refused' as const, reason: 'policy_changed' as const };
+
     const [existing] = await db
       .select({ id: portalUsers.id })
       .from(portalUsers)
@@ -136,16 +150,27 @@ export async function completePortalSelfRegistration(
     return { outcome: 'request_sent', orgId, requestId: request.requestId, created: request.kind === 'created' };
   }
 
-  const account = await createSelfRegisteredAccount(payload, now);
+  const account = await createSelfRegisteredAccount(payload, domain, now);
   if (account.kind === 'account_exists') return { outcome: 'existing_account', orgId };
+  if (account.kind === 'refused') return refused(account.reason);
 
   // After commit: the account is durable whether or not the token is minted.
-  const inviteToken = await issuePortalCapabilityToken({
-    purpose: 'invite',
-    portalUserId: account.portalUserId,
-    orgId,
-    email: payload.email,
-    authEpoch: account.authEpoch,
-  });
+  // A store error (not just a missing client) maps to the documented null
+  // residual, so the route still audits the account and answers 503.
+  let inviteToken: string | null;
+  try {
+    inviteToken = await issuePortalCapabilityToken({
+      purpose: 'invite',
+      portalUserId: account.portalUserId,
+      orgId,
+      email: payload.email,
+      authEpoch: account.authEpoch,
+    });
+  } catch (err) {
+    console.error('[portal-self-registration] invite token issue failed after account creation', {
+      orgId, error: err instanceof Error ? err.name : 'unknown',
+    });
+    inviteToken = null;
+  }
   return { outcome: 'account_created', orgId, portalUserId: account.portalUserId, inviteToken };
 }

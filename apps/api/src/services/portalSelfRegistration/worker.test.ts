@@ -30,7 +30,7 @@ vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../jobs/workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../../db', () => ({ db: {}, withSystemDbAccessContext: (fn: () => unknown) => fn() }));
 
-import { buildSelfRegistrationVerifyUrl, processPortalSelfRegistration } from './worker';
+import { buildSelfRegistrationVerifyUrl, processPortalSelfRegistration, sanitizedJobError } from './worker';
 
 const ORG = '7c0a1f7e-1111-4222-8333-444455556666';
 const PARTNER = '9d0a1f7e-1111-4222-8333-444455556666';
@@ -149,6 +149,17 @@ describe('processPortalSelfRegistration (W6 D7)', () => {
     mocks.resolveTarget.mockResolvedValue({ kind: 'eligible', ...base, policyFingerprint: 'f'.repeat(64) });
     expect(await processPortalSelfRegistration(job())).toBe('not_sent');
     expect(mocks.issueToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('sanitizedJobError', () => {
+  it('keeps the error class and drops the message and cause (a failed query embeds the address)', () => {
+    const original = new TypeError(`Failed query: select ... params: ${ADDRESS}`, { cause: new Error(ADDRESS) });
+    const clean = sanitizedJobError(original);
+    expect(clean.message).toContain('TypeError');
+    expect(clean.message).not.toContain(ADDRESS);
+    expect(clean.cause).toBeUndefined();
+    expect(JSON.stringify({ m: clean.message, s: clean.stack })).not.toContain(ADDRESS);
   });
 });
 

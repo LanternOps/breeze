@@ -22,15 +22,17 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../tenantStatus', () => ({ getActiveOrgTenant: (...a: unknown[]) => { mocks.order.push('org'); return mocks.getActiveOrgTenant(...a); } }));
 vi.mock('../portalDomainVerification', () => ({
   isDomainVerifiedForOrg: (...a: unknown[]) => {
-    mocks.order.push('domain');
-    // The W5 read API throws inside a request transaction.
-    if (mocks.systemContexts.open > 0) throw new Error('must not run inside a request transaction');
+    // W5 joins a held SYSTEM context (the only kind this module opens).
+    mocks.order.push(mocks.systemContexts.open > 0 ? 'domain-in-tx' : 'domain');
     return mocks.isDomainVerifiedForOrg(...a);
   },
 }));
 vi.mock('../portalAccessPolicy', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../portalAccessPolicy')>()),
-  resolvePortalAccessPolicy: (...a: unknown[]) => { mocks.order.push('policy'); return mocks.resolvePortalAccessPolicy(...a); },
+  resolvePortalAccessPolicy: (...a: unknown[]) => {
+    mocks.order.push(mocks.systemContexts.open > 0 ? 'policy-in-tx' : 'policy');
+    return mocks.resolvePortalAccessPolicy(...a);
+  },
 }));
 vi.mock('../portalAccessRequests', () => ({ createPortalAccessRequest: mocks.createPortalAccessRequest }));
 vi.mock('../contacts/portalInvite', async (importOriginal) => ({
@@ -220,9 +222,33 @@ describe('completePortalSelfRegistration — existing accounts and re-validation
     expect(mocks.order).toEqual(['org', 'domain', 'policy', 'existing']);
   });
 
-  it('the W5 read runs with no DB context held', async () => {
+  it('instant mode re-checks the domain and the policy inside the admission transaction, after the address lock', async () => {
     mocks.resolvePortalAccessPolicy.mockResolvedValue(policy('instant'));
-    // The isDomainVerifiedForOrg mock throws if called inside a context.
-    await expect(completePortalSelfRegistration(payload(), NOW)).resolves.toMatchObject({ outcome: 'account_created' });
+    await completePortalSelfRegistration(payload(), NOW);
+    expect(mocks.order).toEqual(['org', 'domain', 'policy', 'existing', 'domain-in-tx', 'policy-in-tx', 'existing']);
+  });
+
+  it('a domain removed or displaced while admission waits on the lock refuses, writing nothing', async () => {
+    mocks.resolvePortalAccessPolicy.mockResolvedValue(policy('instant'));
+    mocks.isDomainVerifiedForOrg.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    expect(await completePortalSelfRegistration(payload(), NOW)).toEqual({ outcome: 'refused', reason: 'domain_not_verified' });
+    expect(mocks.inserted).toHaveLength(0);
+    expect(mocks.linkLoginToContact).not.toHaveBeenCalled();
+  });
+
+  it('a policy change while admission waits on the lock refuses, writing nothing', async () => {
+    mocks.resolvePortalAccessPolicy
+      .mockResolvedValueOnce(policy('instant'))
+      .mockResolvedValueOnce(policy('instant', 'c'.repeat(64)));
+    expect(await completePortalSelfRegistration(payload(), NOW)).toEqual({ outcome: 'refused', reason: 'policy_changed' });
+    expect(mocks.inserted).toHaveLength(0);
+  });
+
+  it('a token-store error after commit maps to a null invite token (the account stays)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.resolvePortalAccessPolicy.mockResolvedValue(policy('instant'));
+    mocks.issuePortalCapabilityToken.mockImplementation(() => { throw new Error('Connection is closed.'); });
+    expect(await completePortalSelfRegistration(payload(), NOW)).toEqual({ outcome: 'account_created', orgId: ORG, portalUserId: 'new-user', inviteToken: null });
+    expect(mocks.inserted).toHaveLength(1);
   });
 });

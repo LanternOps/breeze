@@ -111,13 +111,29 @@ export async function processPortalSelfRegistration(data: PortalSelfRegistration
   return 'link_sent';
 }
 
+/** The error BullMQ, the shared failure listener and Sentry see: class name only, no message, no cause. */
+export function sanitizedJobError(err: unknown): Error {
+  const name = err instanceof Error ? err.name : 'unknown';
+  return new Error(`${LOG} job failed: ${name}`);
+}
+
 let worker: Worker<PortalSelfRegistrationJobData> | null = null;
 
 export async function initializePortalSelfRegistrationWorker(): Promise<void> {
   worker = new Worker<PortalSelfRegistrationJobData>(
     PORTAL_SELF_REGISTRATION_QUEUE,
-    async (job: Job<PortalSelfRegistrationJobData>) => processPortalSelfRegistration(job.data),
-    { connection: getBullMQConnection(), concurrency: WORKER_CONCURRENCY },
+    async (job: Job<PortalSelfRegistrationJobData>) => {
+      try {
+        return await processPortalSelfRegistration(job.data);
+      } catch (err) {
+        // Sanitize BEFORE BullMQ and the shared observability listener see
+        // it: a failed query's message embeds its parameters (the address).
+        throw sanitizedJobError(err);
+      }
+    },
+    // A stalled job (worker crash mid-send) is failed, never re-run: a re-run
+    // could send a second email.
+    { connection: getBullMQConnection(), concurrency: WORKER_CONCURRENCY, maxStalledCount: 0 },
   );
   attachWorkerObservability(worker, 'portalSelfRegistrationWorker');
   worker.on('error', (error) => {
@@ -125,13 +141,8 @@ export async function initializePortalSelfRegistrationWorker(): Promise<void> {
     console.error(`${LOG} worker error:`, error);
     captureException(error);
   });
-  worker.on('failed', (job, error) => {
-    // job.data holds an address, and a failed query's message embeds its
-    // parameters: report the job id and the error's class only.
-    const name = error instanceof Error ? error.name : 'unknown';
-    console.error(`${LOG} job ${job?.id} failed`, { error: name });
-    captureException(new Error(`${LOG} job failed: ${name}`));
-  });
+  // Failures are logged and reported by attachWorkerObservability, which only
+  // ever sees the sanitized error thrown above.
   console.log(`${LOG} worker initialized`);
 }
 
