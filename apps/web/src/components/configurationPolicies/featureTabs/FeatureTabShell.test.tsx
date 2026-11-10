@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import FeatureTabShell from './FeatureTabShell';
@@ -72,5 +72,54 @@ describe('FeatureTabShell footer controls', () => {
     expect(overrideButton()).toBeEnabled();
     fireEvent.click(overrideButton());
     expect(onOverride).toHaveBeenCalledTimes(1);
+  });
+
+  describe('blocked save feedback (#11554)', () => {
+    let scrollSpy: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      scrollSpy = vi.fn();
+      Element.prototype.scrollIntoView = scrollSpy as unknown as typeof Element.prototype.scrollIntoView;
+    });
+
+    it('focuses the first invalid field, scrolls to it, and says why next to Save', async () => {
+      render(
+        <FeatureTabShell {...baseProps} saving={false} onSave={vi.fn()}>
+          <div>
+            <input data-testid="bad-input" />
+            <p data-field-error="">Add at least one backup path</p>
+          </div>
+        </FeatureTabShell>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+      await waitFor(() => expect(screen.getByTestId('bad-input')).toHaveFocus());
+      expect(scrollSpy).toHaveBeenCalled();
+      expect(screen.getByTestId('save-blocked-hint')).toBeInTheDocument();
+    });
+
+    it('falls back to the error banner and shows the message next to Save', async () => {
+      render(
+        <FeatureTabShell
+          {...baseProps}
+          saving={false}
+          error="Please select a backup configuration"
+          onSave={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+      const hint = await screen.findByTestId('save-blocked-hint');
+      expect(hint).toHaveTextContent('Please select a backup configuration');
+      await waitFor(() => expect(screen.getByTestId('feature-tab-error')).toHaveFocus());
+    });
+
+    it('shows no hint when the save left nothing wrong', async () => {
+      render(<FeatureTabShell {...baseProps} saving={false} onSave={vi.fn()} />);
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByTestId('save-blocked-hint')).toBeNull();
+    });
   });
 });

@@ -692,6 +692,8 @@
         "override": "Outremise",
         "revertToParent": "Retour au nom de parent",
         "saving": "Enregistrement...",
+        "notSaved": "Non enregistré : {{reason}}",
+        "saveBlocked": "Non enregistré. Corrigez le problème signalé et réessayez.",
         "revertConfirmTitle": "Revenir à la stratégie parente ?",
         "revertConfirmMessage": "Cette action supprime la substitution {{feature}} de cette stratégie. Ses paramètres sont perdus et ceux de la stratégie parente s'appliquent à tous les appareils utilisant cette stratégie. Action irréversible.",
         "removeConfirmTitle": "Supprimer cette configuration ?",

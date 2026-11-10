@@ -692,6 +692,8 @@
         "override": "Anular",
         "revertToParent": "Volver a padre",
         "saving": "Guardando...",
+        "notSaved": "No se guardó: {{reason}}",
+        "saveBlocked": "No se guardó. Corrige el problema resaltado e inténtalo de nuevo.",
         "revertConfirmTitle": "¿Volver a la política principal?",
         "revertConfirmMessage": "Esto elimina la anulación de {{feature}} en esta política. Su configuración se pierde y se aplica la configuración de la política principal a todos los dispositivos que usan esta política. No se puede deshacer.",
         "removeConfirmTitle": "¿Quitar esta configuración?",

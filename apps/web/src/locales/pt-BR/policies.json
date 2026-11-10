@@ -692,6 +692,8 @@
         "override": "Substituir",
         "revertToParent": "Reverter para o pai",
         "saving": "Salvando...",
+        "notSaved": "Não salvo: {{reason}}",
+        "saveBlocked": "Não salvo. Corrija o problema destacado e tente novamente.",
         "revertConfirmTitle": "Reverter para a política pai?",
         "revertConfirmMessage": "Isso exclui a substituição de {{feature}} nesta política. As configurações são perdidas e as configurações da política pai passam a valer para todos os dispositivos que usam esta política. Não é possível desfazer.",
         "removeConfirmTitle": "Remover esta configuração?",

@@ -40,7 +40,13 @@ export function ToggleRow({
 
 export function FieldError({ message }: { message?: string }) {
   if (!message) return null;
-  return <p className="mt-1 text-xs text-destructive">{message}</p>;
+  // data-field-error lets FeatureTabShell find the first invalid field after a
+  // blocked Save and move focus there (#11554).
+  return (
+    <p role="alert" data-field-error="" className="mt-1 text-xs text-destructive">
+      {message}
+    </p>
+  );
 }
 
 export function PathList({

@@ -692,6 +692,8 @@
         "override": "Überschreiben",
         "revertToParent": "Zurück zum übergeordneten Element",
         "saving": "Speichern...",
+        "notSaved": "Nicht gespeichert: {{reason}}",
+        "saveBlocked": "Nicht gespeichert. Beheben Sie das markierte Problem und versuchen Sie es erneut.",
         "revertConfirmTitle": "Auf übergeordnete Richtlinie zurücksetzen?",
         "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
         "removeConfirmTitle": "Diese Konfiguration entfernen?",
