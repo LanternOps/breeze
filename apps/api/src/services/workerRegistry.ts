@@ -2162,6 +2162,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeImageCurrencyWorker, shutdown: m.shutdownImageCurrencyWorker };
     },
   },
+  // Portal registration W6 (#11383): customer-portal self-registration
+  // submits (one event-driven job each; no schedule). `socket-owner`
+  // (mechanical): it issues the link token through
+  // routes/portal/capabilityTokens.ts and resolves the custom portal host
+  // through routes/portal/branding.ts, whose shared ./helpers import reaches
+  // socket-local dispatch via routes/auth/helpers.ts → services/index.ts.
+  {
+    name: 'portalSelfRegistrationWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('./portalSelfRegistration/worker');
+      return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

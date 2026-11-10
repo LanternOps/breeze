@@ -176,6 +176,8 @@ const EXPECTED_NAMES = [
   'imageCurrencyWorker',
   // Trust Center W1 (#8768).
   'trustPageSnapshotWorker',
+  // Portal registration W6 (#11383).
+  'portalSelfRegistrationWorker',
 ];
 
 // ---------------------------------------------------------------------------
