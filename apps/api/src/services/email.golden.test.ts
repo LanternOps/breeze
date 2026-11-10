@@ -74,6 +74,9 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'staff.trust_access_request', params: { ...MESSAGE, purpose: 'staff.trust_access_request' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.connection_health_digest', params: { ...MESSAGE, purpose: 'staff.connection_health_digest' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.sending_domain_status', params: { ...MESSAGE, purpose: 'staff.sending_domain_status' }, expectedFrom: DEFAULT_FROM },
+  // Portal registration W4 (#11381): Breeze tells the displaced partner's admins
+  // that another org proved their customer's Microsoft tenant. Platform lane.
+  { name: 'partner.portal_entra_tenant.displaced', params: { ...MESSAGE, purpose: 'partner.portal_entra_tenant.displaced' }, expectedFrom: DEFAULT_FROM },
   { name: 'deployment.invite', params: { ...MESSAGE, purpose: 'deployment.invite' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.staff_notification', params: { ...MESSAGE, purpose: 'ticket.staff_notification' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.customer_notification (with partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
@@ -267,6 +270,7 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     const spy = vi.spyOn(svc, 'sendEmail');
     await svc.sendPortalInvite({
       to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+      passwordAllowed: true,
     });
     expect(spy.mock.calls[0]![0]).toMatchObject({
       purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
@@ -289,6 +293,17 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
       { purpose: 'portal.access_request.declined', partnerId: PARTNER_ID, partnerName: 'Acme MSP', to: 'buyer@customer.test' },
     ]);
     expect(resendSendMock.mock.calls.map((c) => c[0].from)).toEqual([BRANDED_FROM, BRANDED_FROM]);
+  });
+
+  it('sendPortalEntraTenantDisplaced is a platform send to the partner admins, never partner-branded', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendPortalEntraTenantDisplaced({
+      to: ['admin@msp.test'], partnerName: 'Acme MSP', orgName: 'Contoso', tenantId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    });
+    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'partner.portal_entra_tenant.displaced', to: ['admin@msp.test'] });
+    expect(spy.mock.calls[0]![0]).not.toHaveProperty('partnerId');
+    expect(resendSendMock.mock.calls[0]![0].from).toBe(DEFAULT_FROM);
   });
 
   it('the single-audience helpers hard-code their purpose', async () => {

@@ -982,6 +982,27 @@
       "newDescription": "Erişiminiz olan tüm araçlarla Breeze AI. Wisp değil.",
       "wispDescription": "Wisp, yetkiniz kapsamında",
       "label": "Breeze AI · Wisp değil"
+    },
+    "instruction": {
+      "remembered": "Hatırlandı: {{text}}",
+      "conflictBanner": "Hatırlanan bir talimatla çelişiyor: “{{text}}”",
+      "enforcedForm": "Wisp şunu önermeyecek: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "bitiş tarihi yok",
+      "keep": "Sakla",
+      "keepForOrg": "{{org}} içindeki herkes için sakla",
+      "forget": "Unut",
+      "unmatched": "Not olarak kaydedildi: Tüm cihaz adlarını eşleştiremedim.",
+      "kept": "Saklandı",
+      "keptForOrg": "{{org}} içindeki herkes için saklandı",
+      "crossOrg": "Bu cihazlar birden fazla kuruluşta olduğundan bu yalnızca sizin için saklanabilir.",
+      "actionFailed": "Bu işe yaramadı. Tekrar deneyin.",
+      "verb": {
+        "reboot": "yeniden başlatma",
+        "shutdown": "kapatma",
+        "run_script": "betik çalıştırma",
+        "patch_install": "yama yükleme",
+        "any_change": "herhangi bir değişiklik yapma"
+      }
     }
   },
   "wispConcerns": {

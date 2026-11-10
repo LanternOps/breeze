@@ -32,6 +32,7 @@ export function makePolicyView(opts: {
   inheritedSource?: Exclude<PortalPolicySource, 'org'>;
   capabilities?: Partial<PortalSignInCapabilities>;
   passwordModeFallback?: boolean;
+  entraTenantProven?: boolean | null;
   canEdit?: boolean;
 } = {}): PortalAccessPolicyView {
   const kind = opts.kind ?? 'org';
@@ -54,6 +55,7 @@ export function makePolicyView(opts: {
     effective,
     passwordModeFallback: opts.passwordModeFallback ?? false,
     capabilities: { entra: false, google: false, selfRegistration: false, ...opts.capabilities },
+    entraTenantProven: opts.entraTenantProven !== undefined ? opts.entraTenantProven : (kind === 'partner' ? null : false),
     canEdit: opts.canEdit ?? true,
   };
 }

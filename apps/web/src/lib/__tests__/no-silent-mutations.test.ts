@@ -617,6 +617,11 @@ const TARGET_GLOBS = [
   'src/components/settings/portalAccess/PortalAccessRequestsList.tsx',
   'src/components/settings/OrgPortalUsersEditor.tsx',
   'src/components/settings/contactPortalAccess.ts',
+  // Portal registration W4 (#11381): the tenant proof actions (prove, proof link, remove) and the
+  // sso_only flow's Microsoft sign-in invites.
+  'src/components/settings/portalAccess/EntraTenantPanel.tsx',
+  'src/components/settings/portalAccess/ssoOnlyActions.ts',
+  'src/components/settings/portalAccess/StrandedAccountsList.tsx',
 ];
 
 // Ratchet floor, not a total: adding an entry above never touches this line.

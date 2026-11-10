@@ -982,6 +982,27 @@
       "newDescription": "Breeze AI avec tous les outils auxquels vous avez accès. Pas Wisp.",
       "wispDescription": "Wisp, selon votre autorisation",
       "label": "Breeze AI · pas Wisp"
+    },
+    "instruction": {
+      "remembered": "Mémorisé : {{text}}",
+      "conflictBanner": "Entre en conflit avec une consigne mémorisée : « {{text}} »",
+      "enforcedForm": "Wisp ne proposera pas : {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "aucune date de fin",
+      "keep": "Conserver",
+      "keepForOrg": "Conserver pour tous chez {{org}}",
+      "forget": "Oublier",
+      "unmatched": "Enregistré comme note : je n'ai pas pu associer tous les noms d'appareils.",
+      "kept": "Conservé",
+      "keptForOrg": "Conservé pour tous chez {{org}}",
+      "crossOrg": "Ces appareils appartiennent à plus d'une organisation; l'instruction ne peut donc être conservée que pour vous.",
+      "actionFailed": "Ça n'a pas fonctionné. Réessayez.",
+      "verb": {
+        "reboot": "redémarrer",
+        "shutdown": "éteindre",
+        "run_script": "exécuter un script",
+        "patch_install": "installer des correctifs",
+        "any_change": "effectuer un changement"
+      }
     }
   },
   "wispConcerns": {

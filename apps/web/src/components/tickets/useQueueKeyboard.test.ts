@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useQueueKeyboard } from './useQueueKeyboard';
+import { QUEUE_SHORTCUTS } from './queueShortcuts';
 import { resetTypingCadence } from '@/lib/keyboard/bareKeyGuard';
 import { useUiStore } from '@/stores/uiStore';
 
@@ -16,6 +17,7 @@ describe('useQueueKeyboard', () => {
     onFocusReply: vi.fn(),
     onFocusInternal: vi.fn(),
     onResolve: vi.fn(),
+    onToggleBulk: vi.fn(),
     onEscape: vi.fn()
   };
 
@@ -91,6 +93,71 @@ describe('useQueueKeyboard', () => {
     el.focus();
     press('a', el);
     expect(handlers.onAssignMe).not.toHaveBeenCalled();
+  });
+
+  it('x toggles the active ticket into the bulk selection', () => {
+    renderHook(() => useQueueKeyboard(handlers));
+    press('x');
+    expect(handlers.onToggleBulk).toHaveBeenCalledTimes(1);
+  });
+
+  // The `?` cheat sheet is generated from QUEUE_SHORTCUTS; every key it
+  // advertises must reach a handler, so the card can never list a dead key.
+  it.each(QUEUE_SHORTCUTS.flatMap((s) => s.keys.map((key) => [s.action, key] as const)))(
+    'the advertised %s key "%s" dispatches',
+    (_action, key) => {
+      renderHook(() => useQueueKeyboard(handlers));
+      press(key);
+      const fired = Object.entries(handlers).filter(([name, h]) => name !== 'onEscape' && h.mock.calls.length > 0);
+      expect(fired).toHaveLength(1);
+    }
+  );
+
+  // Enter is a button's (and link's) own activation key. The page-level
+  // "open full page" binding used to swallow it everywhere (preventDefault on
+  // keydown cancels the click), so no button on the tickets page could be
+  // pressed with Enter.
+  it('leaves Enter to a focused button, link or radio', () => {
+    renderHook(() => useQueueKeyboard(handlers));
+    for (const make of [
+      () => document.createElement('button'),
+      () => Object.assign(document.createElement('a'), { href: '/x' }),
+      () => { const el = document.createElement('div'); el.setAttribute('role', 'radio'); el.tabIndex = 0; return el; },
+    ]) {
+      const el = make();
+      document.body.appendChild(el);
+      el.focus();
+      const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+      el.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+  });
+
+  it('still opens on Enter from a queue row', () => {
+    renderHook(() => useQueueKeyboard(handlers));
+    const row = document.createElement('div');
+    row.setAttribute('role', 'option');
+    row.tabIndex = 0;
+    document.body.appendChild(row);
+    row.focus();
+    press('Enter', row);
+    expect(handlers.onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves arrow keys to a radio group or tab list that owns them', () => {
+    renderHook(() => useQueueKeyboard(handlers));
+    for (const role of ['radiogroup', 'tablist', 'menu']) {
+      const group = document.createElement('div');
+      group.setAttribute('role', role);
+      const item = document.createElement('button');
+      group.appendChild(item);
+      document.body.appendChild(group);
+      item.focus();
+      press('ArrowDown', item);
+      press('ArrowUp', item);
+    }
+    expect(handlers.onMove).not.toHaveBeenCalled();
   });
 
   it('is suspended while a dirty form is registered', () => {

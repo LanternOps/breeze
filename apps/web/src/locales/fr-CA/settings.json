@@ -2328,7 +2328,8 @@
     "actions": {
       "resend": "Réenvoyer",
       "reactivate": "Réactivation",
-      "sendInvite": "Envoyer une invitation"
+      "sendInvite": "Envoyer une invitation",
+      "grantBrowserAccess": "Donner l’accès par navigateur"
     },
     "fields": {
       "nameOptional": "Nom (optionnel)",
@@ -2350,7 +2351,8 @@
       "inviteResent": "Invitation résignée",
       "reactivated": "Utilisateur réactivé",
       "disabled": "Utilisateur désactivé",
-      "removed": "Utilisateur supprimé"
+      "removed": "Utilisateur supprimé",
+      "browserAccessGranted": "Accès par navigateur accordé"
     },
     "errors": {
       "load": "Impossible de charger les utilisateurs du portail.",
@@ -6935,7 +6937,8 @@
         "pam_open_actuation": "L'organisation absorbée par la fusion a des sessions d'accès privilégié (PAM) dont le nettoyage n'est pas terminé. Attendez leur fermeture, puis relancez la fusion.",
         "pam_evidence": "L'organisation absorbée par la fusion a un historique d'accès privilégié (PAM), et le déplacement de l'historique PAM entre organisations n'est pas activé sur ce déploiement. Fusionnez dans l'autre sens, ou ne fusionnez pas ces organisations.",
         "payment_in_flight": "Un paiement de l'organisation absorbée par la fusion est encore en cours. Attendez qu'il soit réglé, puis relancez la fusion.",
-        "lineage_depth": "Ces organisations ont déjà été fusionnées trop de fois; cette fusion dépasserait la profondeur maximale de l'historique de fusions."
+        "lineage_depth": "Ces organisations ont déjà été fusionnées trop de fois; cette fusion dépasserait la profondeur maximale de l'historique de fusions.",
+        "entra_tenant_conflict": "L'organisation absorbée par la fusion possède un locataire Microsoft prouvé, et l'organisation conservée est elle aussi liée à un locataire Microsoft. Supprimez l'un des liens de locataire, puis relancez la fusion."
       }
     },
     "archive": {
@@ -8355,10 +8358,98 @@
       "load": "Impossible de charger les paramètres de connexion.",
       "save": "Impossible d’enregistrer les paramètres de connexion.",
       "methodUnavailable": "Cette méthode de connexion n’est pas encore disponible sur ce déploiement de Breeze.",
-      "ssoOnlyNeedsSso": "Activez la connexion Microsoft ou Google avant de désactiver la connexion par mot de passe."
+      "ssoOnlyNeedsSso": "Activez la connexion Microsoft ou Google avant de désactiver la connexion par mot de passe.",
+      "tenantNotProven": "Prouvez le locataire Microsoft de cette organisation avant d’activer la connexion Microsoft.",
+      "sessionHours": "Saisissez un nombre entier d’heures compris entre 1 et 168."
     },
     "toasts": {
       "saved": "Paramètres de connexion enregistrés."
+    },
+    "sessionHours": {
+      "label": "Durée de session Microsoft / Google (heures)",
+      "help": "Les connexions Microsoft et Google prennent fin après ce nombre d’heures, quelle que soit l’activité de la personne. De 1 à 168."
+    },
+    "entraTenant": {
+      "title": "Locataire Microsoft",
+      "loading": "Chargement du locataire Microsoft…",
+      "loadError": "Impossible de charger le locataire Microsoft.",
+      "status": {
+        "none": "Aucun locataire Microsoft n’est encore lié. La connexion Microsoft reste désactivée pour cette organisation tant que son locataire n’est pas prouvé.",
+        "unproven": "Le locataire {{tenantId}} est lié mais pas prouvé. La connexion Microsoft reste désactivée pour cette organisation tant qu’il ne l’est pas.",
+        "proven": "Locataire {{tenantId}} prouvé le {{date}} via {{method}}."
+      },
+      "via": {
+        "m365_connection": "la connexion Microsoft 365",
+        "proof_run": "une connexion d’administrateur"
+      },
+      "proveConnection": "Utiliser la connexion Microsoft 365 (locataire {{tenantId}})",
+      "tenantLabel": "ID ou domaine du locataire",
+      "tenantHelp": "Créez un lien et envoyez-le à un Administrateur général ou à un Administrateur de rôle privilégié du locataire du client. Le lien est valable 72 heures.",
+      "createLink": "Créer un lien de preuve",
+      "linkLabel": "Lien de preuve",
+      "linkExpires": "Expire le {{date}}. Ne fonctionne que pour le locataire {{tenantId}}.",
+      "consentLabel": "Lien de consentement administrateur",
+      "consentHelp": "L’administrateur du locataire l’ouvre une seule fois pour que tout le monde dans l’organisation puisse se connecter.",
+      "copy": "Copier",
+      "copied": "Copié",
+      "remove": "Supprimer le lien du locataire",
+      "removeConfirm": {
+        "title": "Supprimer le lien du locataire Microsoft?",
+        "message": "La connexion Microsoft s’arrête pour cette organisation et ses sessions Microsoft prennent fin. Cela supprime aussi l’association de locataire AI for Office de l’organisation: AI for Office cesse de fonctionner ici tant qu’un locataire n’est pas de nouveau lié."
+      },
+      "toasts": {
+        "proven": "Locataire Microsoft prouvé.",
+        "linkCreated": "Lien de preuve créé.",
+        "removed": "Lien du locataire Microsoft supprimé.",
+        "copyFailed": "Impossible de copier le lien. Sélectionnez-le et copiez-le vous-même."
+      },
+      "errors": {
+        "prove": "Impossible de prouver le locataire à partir de la connexion Microsoft 365.",
+        "createLink": "Impossible de créer le lien de preuve.",
+        "remove": "Impossible de supprimer le lien du locataire.",
+        "provenElsewhere": "Ce locataire Microsoft est déjà prouvé pour une autre organisation. Seul un lien de preuve finalisé par l’administrateur du locataire peut le déplacer.",
+        "orgHasOtherTenant": "Cette organisation est liée à un autre locataire Microsoft. Supprimez d’abord ce lien.",
+        "noVerifiedConnection": "Cette organisation n’a aucune connexion Microsoft 365 dont le locataire a été vérifié par une connexion d’administrateur.",
+        "hintRequired": "Saisissez l’ID de locataire Microsoft du client ou l’un de ses domaines vérifiés.",
+        "hintInvalid": "Ce n’est ni un ID de locataire Microsoft ni un domaine vérifié par un locataire Microsoft.",
+        "hintLookupFailed": "Impossible de joindre Microsoft pour rechercher ce domaine. Réessayez ou saisissez l’ID du locataire.",
+        "protectedOrg": "Cette organisation ne peut pas être liée à un locataire Microsoft."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Désactiver la connexion par mot de passe?",
+      "intro": "L’enregistrement désactive la connexion par mot de passe pour les organisations ci-dessous.",
+      "partnerIntro": "L’enregistrement de cette valeur par défaut du partenaire désactive la connexion par mot de passe pour ces organisations. La page de chaque organisation liste les comptes qui ne peuvent pas encore se connecter.",
+      "explain": "Les personnes déjà connectées à Microsoft perdent leur mot de passe et sont déconnectées. Les personnes sans connexion Microsoft ne peuvent pas se connecter tant qu’elles n’ont pas accepté une invitation de connexion Microsoft.",
+      "columns": {
+        "org": "Organisation",
+        "passwordsToClear": "Mots de passe supprimés",
+        "strandedTotal": "Ne peuvent pas encore se connecter"
+      },
+      "openOrg": "Ouvrir",
+      "strandedTitle": "Ne peuvent pas encore se connecter",
+      "strandedMore": "et {{count}} de plus",
+      "strandedLoadError": "Impossible de charger les noms de ces comptes.",
+      "sendInvites": "Envoyer des invitations de connexion Microsoft à ces comptes après l’enregistrement",
+      "confirm": "Désactiver la connexion par mot de passe",
+      "changed": "L’impact a changé depuis l’ouverture. Vérifiez les nouveaux chiffres."
+    },
+    "stranded": {
+      "title": "Ne peuvent pas encore se connecter ({{count}})",
+      "description": "Ces comptes n’ont aucune connexion Microsoft, ils ne peuvent donc pas se connecter tant que la connexion par mot de passe est désactivée. Envoyez à chacun une invitation de connexion Microsoft.",
+      "loadError": "Impossible de charger les comptes qui ne peuvent pas se connecter.",
+      "invite": "Envoyer une invitation de connexion Microsoft",
+      "inviteAll": "Inviter tout le monde",
+      "more": "{{shown}} affichés sur {{count}}.",
+      "toasts": {
+        "invited": "Invitations de connexion Microsoft envoyées: {{count}}.",
+        "partial": "Invitations de connexion Microsoft envoyées: {{invited}} sur {{total}}. Les autres étaient déjà connectés ou n’ont pas pu être invités.",
+        "emailFailed": "{{count}} compte(s) sont passés à « invité », mais le courriel d'invitation n'a pas pu être envoyé. Utilisez Renvoyer dans la liste des utilisateurs du portail."
+      },
+      "errors": {
+        "invite": "Impossible d’envoyer les invitations de connexion Microsoft.",
+        "unavailable": "La connexion Microsoft n’est pas disponible pour cette organisation, il n’y a donc rien avec quoi inviter."
+      }
     }
   },
   "portalAccessRequests": {
@@ -8389,7 +8480,8 @@
       "notPending": "N’est plus en attente",
       "notFound": "Demande introuvable",
       "identityLinked": "Connexion déjà liée à un autre compte",
-      "failed": "Impossible de traiter cette demande"
+      "failed": "Impossible de traiter cette demande",
+      "entraTenantNotProven": "Le locataire Microsoft de cette organisation n’est plus prouvé"
     },
     "denyDialog": {
       "title": "Refuser la demande d’accès",

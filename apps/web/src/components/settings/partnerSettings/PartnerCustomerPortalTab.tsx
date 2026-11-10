@@ -112,6 +112,7 @@ export default function PartnerCustomerPortalTab() {
             view={value.view}
             draft={value.draft}
             onChange={(next) => setDraft((prev) => ({ ...prev, draft: next }))}
+            onInvalidChange={(hoursInvalid) => setDraft((prev) => (prev.hoursInvalid === hoursInvalid ? prev : { ...prev, hoursInvalid }))}
           />
         )}
       </section>

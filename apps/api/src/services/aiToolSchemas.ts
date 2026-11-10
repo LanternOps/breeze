@@ -460,7 +460,8 @@ export const listLinksShape = {
  * key parity. The delayMinutes / at / trigger XOR lives in the shared
  * schema's superRefine (toolInputSchemas uses it as-is), so the descriptions
  * say it too. `trigger` (W04 #11493) is the shared trigger object with its
- * fields described. `list_check_ins` = the shared empty strict object plus the
+ * fields described; `mode` (W07 #11496) is `notify` or `run`. `list_check_ins`
+ * = the shared empty strict object plus the
  * tool-only output budget (A-W05).
  */
 export const LIST_CHECK_INS_DEFAULT_LIMIT = 20;
@@ -478,6 +479,8 @@ export const scheduleCheckInShape = {
     subjectId: scit.subjectId.describe('UUID of the device, script execution, device command or agent run'),
     deadlineMinutes: scit.deadlineMinutes.describe(`Fires anyway then, saying it did not happen (default ${WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES}, max ${WISP_CHECK_IN_MAX_DELAY_MINUTES})`),
   }).optional().describe('Fire on an event instead of a time. Give exactly one of delayMinutes, at or trigger'),
+  // W07 (#11496): the description carries the use rule; the enum names itself.
+  mode: sci.mode.describe('notify (default) or run: you check on your own (read-only) and post the result; use run only for read-and-report instructions'),
 };
 export const listCheckInsInputSchema = listCheckInsToolSchema.extend({
   limit: z.number().int().min(1).max(LIST_CHECK_INS_MAX_LIMIT).optional(),

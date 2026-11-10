@@ -42,13 +42,16 @@ describe('portalAccessPolicyPatchSchema', () => {
     expect(portalAccessPolicyPatchSchema.safeParse({ entraEnabled: 'true' }).success).toBe(false);
   });
 
-  it('names the six policy fields and the two error codes', () => {
+  it('names the six policy fields and the four error codes', () => {
     expect([...PORTAL_ACCESS_POLICY_FIELDS]).toEqual([
       'entraEnabled', 'googleEnabled', 'passwordMode', 'selfRegistrationMode', 'ssoNewPersonMode', 'ssoSessionMaxHours',
     ]);
     expect(PORTAL_ACCESS_POLICY_ERROR_CODES).toEqual({
       METHOD_UNAVAILABLE: 'PORTAL_ACCESS_POLICY_METHOD_UNAVAILABLE',
       SSO_ONLY_NEEDS_SSO: 'PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO',
+      // W4 (#11381): Microsoft needs a proven tenant (D2); the sso_only save needs an acknowledged impact (D12).
+      TENANT_NOT_PROVEN: 'PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN',
+      SSO_ONLY_CONFIRM_REQUIRED: 'PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED',
     });
   });
 });

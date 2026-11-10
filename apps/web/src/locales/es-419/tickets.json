@@ -139,7 +139,8 @@
       "tooLarge": "{{name}} supera los 10 MB.",
       "sentWithoutAttachment_one": "Nota publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
       "sentWithoutAttachment_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos."
-    }
+    },
+    "modeLabel": "Visibilidad del comentario"
   },
   "ticketFeed": {
     "empty": "Aún no hay actividad.",
@@ -416,7 +417,18 @@
     },
     "filterByType": "Filtrar por tipo",
     "allTypes": "Todos los tipos",
-    "showMerged": "Mostrar fusionados"
+    "showMerged": "Mostrar fusionados",
+    "shortcutsButton": "Atajos",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, prioridad {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, prioridad {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA: quedan {{relative}}",
+        "atRisk": "SLA en riesgo, quedan {{relative}}",
+        "paused": "SLA en pausa, quedan {{relative}}",
+        "breached": "SLA violado"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "No se encontró el ticket. Es posible que se haya eliminado o que usted no tenga acceso.",

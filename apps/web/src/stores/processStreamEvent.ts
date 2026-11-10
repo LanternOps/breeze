@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome, AiApprovalWaitingOn } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome, AiApprovalWaitingOn, AiStandingInstructionConflict } from '@breeze/shared';
 // Subpath, not the barrel: this module loads on the topology island, whose CSP
 // forbids the barrel's JIT-compiled schemas (see topologyImports.test.ts).
 import { topologyAiExplanationSchema } from '@breeze/shared/validators/topologyAi';
@@ -66,6 +66,8 @@ export interface PendingApproval {
   pushedToPhone?: boolean;
   /** #10416: who must decide the card; drives the thinking indicator's wait copy. */
   waitingOn?: AiApprovalWaitingOn;
+  /** W06: the tool call conflicts with a remembered standing instruction — the card shows a red banner. */
+  standingInstructionConflict?: AiStandingInstructionConflict;
   /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
   selfApprovalRequestId?: string;
   /**
@@ -225,6 +227,7 @@ function pendingApprovalFromCard(card: Extract<AiPendingCardEvent, { type: 'appr
     approvalWindowMs: card.approvalWindowMs,
     approvalExpiresAt: card.approvalExpiresAt,
     scriptRunContext: card.scriptRunContext ?? null,
+    standingInstructionConflict: card.standingInstructionConflict,
   };
 }
 
@@ -513,6 +516,18 @@ export function processStreamEvent(
         isStreaming: false, thinking: false, joinedMidResponse: false,
         ...(s.pendingApproval?.resolution ? { pendingApproval: null } : {}),
       }));
+      // #10428: the API extracts a standing instruction after `done`; follow it
+      // so the chip can show under the reply. Loaded lazily: only a Wisp turn
+      // carries a capture, and this module also loads on the topology island.
+      if (event.wispInstructionCapture) {
+        const sid = get().sessionId;
+        const { captureId } = event.wispInstructionCapture;
+        if (typeof sid === 'string') {
+          void import('./wispInstructionCaptureStore')
+            .then(({ useWispInstructionCaptureStore }) => useWispInstructionCaptureStore.getState().trackCapture(sid, captureId))
+            .catch((err: unknown) => console.warn('[processStreamEvent] instruction capture not tracked', err));
+        }
+      }
       return null;
 
     // #9427: the first frame of an attach. Applies the snapshot of the

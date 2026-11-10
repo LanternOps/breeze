@@ -26,6 +26,15 @@ const h = vi.hoisted(() => {
       retractBlock: vi.fn(),
     },
     writeRouteAudit: vi.fn(),
+    // #10428: the captured-instruction chip's service (instructionCaptures.ts).
+    captures: {
+      listCapturedInstructions: vi.fn(),
+      captureStatus: vi.fn(),
+      confirmInstructionGroup: vi.fn(),
+      retractInstructionGroup: vi.fn(),
+      promoteInstructionGroupToOrg: vi.fn(),
+    },
+    inTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     hasEntitlement: vi.fn(async () => true),
     /** organizations.partner_id rows handed to the org-scope entitlement lookup. */
     orgRows: [{ partnerId: '44444444-4444-4444-8444-444444444444' }] as Array<{ partnerId: string }>,
@@ -50,6 +59,7 @@ vi.mock('../../config/env', async (importOriginal) => ({
 }));
 vi.mock('../../services/wisp/memoryService', () => ({ ...h.svc, MemoryServiceError: h.MemoryServiceError }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
+vi.mock('../../services/wisp/instructionCaptures', () => h.captures);
 vi.mock('../../services/entitlements', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   hasEntitlement: h.hasEntitlement,
@@ -64,6 +74,7 @@ vi.mock('../../db', () => ({
       return p;
     }),
   },
+  withDbTransactionIfHeld: h.inTransaction,
 }));
 
 import { wispMemoryRoutes } from './memory';
@@ -113,6 +124,7 @@ describe('wisp memory routes', () => {
     h.orgRows = [{ partnerId: PARTNER_ID }];
     h.orgWhere.length = 0;
     for (const fn of Object.values(h.svc)) fn.mockReset();
+    for (const fn of Object.values(h.captures)) fn.mockReset();
   });
 
   describe('entitlement gate (W04: requireEntitlement(\'wisp\'))', () => {
@@ -121,6 +133,11 @@ describe('wisp memory routes', () => {
       [`/wisp/memory/users/${USER_ID}`],
       [`/wisp/memory/${BLOCK_ID}/confirm`, { method: 'POST' }],
       [`/wisp/memory/${BLOCK_ID}/retract`, { method: 'POST' }],
+      [`/wisp/memory/captures?sessionId=${SESSION_ID}`],
+      [`/wisp/memory/captures/status/${BLOCK_ID}`],
+      [`/wisp/memory/captures/${BLOCK_ID}/keep`, { method: 'POST' }],
+      [`/wisp/memory/captures/${BLOCK_ID}/forget`, { method: 'POST' }],
+      [`/wisp/memory/captures/${BLOCK_ID}/keep-for-org`, { method: 'POST' }],
     ];
 
     it('every route is 403 entitlement_required when the partner lacks wisp, without a service call', async () => {
@@ -406,5 +423,100 @@ describe('wisp memory routes', () => {
       reversed.route('/wisp/memory', wispMemoryRoutes);
       expect((await reversed.request('/wisp/memory?scope=mine')).status).toBe(403);
     });
+  });
+});
+
+describe('captured standing instructions (#10428)', () => {
+  const INSTRUCTION_ID = '88888888-8888-4888-8888-888888888888';
+  const CAPTURE_ID = '99999999-9999-4999-8999-999999999999';
+  const dto = (over: Record<string, unknown> = {}) => ({
+    instructionId: INSTRUCTION_ID, captureId: null, capturedAt: '2027-02-01T10:00:00.000Z',
+    text: "don't reboot PC-01", status: 'unconfirmed', enforceable: true, verb: 'reboot',
+    targetLabels: ['PC-01'], until: null, orgId: ORG_ID, orgName: 'Acme', unmatched: false, keptForOrg: false, ...over,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.auth = partnerAuth;
+    h.wispEnabled.mockReturnValue(true);
+    h.hasPerm.mockReturnValue(true);
+    h.hasEntitlement.mockResolvedValue(true);
+    for (const fn of Object.values(h.svc)) fn.mockReset();
+    for (const fn of Object.values(h.captures)) fn.mockReset();
+    h.inTransaction.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+  });
+
+  it("GET /captures?sessionId= lists the session's chips", async () => {
+    h.captures.listCapturedInstructions.mockResolvedValue([dto()]);
+    const res = await app.request(`/wisp/memory/captures?sessionId=${SESSION_ID}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ instructions: [dto()] });
+    expect(h.captures.listCapturedInstructions).toHaveBeenCalledWith(partnerAuth, SESSION_ID);
+  });
+
+  it('GET /captures without a uuid sessionId is 400 without a service call', async () => {
+    expect((await app.request('/wisp/memory/captures')).status).toBe(400);
+    expect((await app.request('/wisp/memory/captures?sessionId=nope')).status).toBe(400);
+    expect(h.captures.listCapturedInstructions).not.toHaveBeenCalled();
+  });
+
+  it('GET /captures/status/:captureId returns the status and instructions', async () => {
+    h.captures.captureStatus.mockResolvedValue({ status: 'saved', instructions: [dto()] });
+    const res = await app.request(`/wisp/memory/captures/status/${CAPTURE_ID}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'saved', instructions: [dto()] });
+    expect(h.captures.captureStatus).toHaveBeenCalledWith(partnerAuth, CAPTURE_ID);
+  });
+
+  it('status for an unknown captureId is 404', async () => {
+    h.captures.captureStatus.mockRejectedValue(new h.MemoryServiceError('not_found'));
+    const res = await app.request(`/wisp/memory/captures/status/${CAPTURE_ID}`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not_found' });
+  });
+
+  it.each([
+    ['keep', 'confirmInstructionGroup', 'wisp.memory.capture_keep'],
+    ['forget', 'retractInstructionGroup', 'wisp.memory.capture_forget'],
+    ['keep-for-org', 'promoteInstructionGroupToOrg', 'wisp.memory.capture_keep_for_org'],
+  ] as const)('POST /captures/:id/%s runs %s in one transaction and audits %s', async (path, fn, action) => {
+    h.captures[fn].mockResolvedValue([dto({ status: 'confirmed' })]);
+    const res = await app.request(`/wisp/memory/captures/${INSTRUCTION_ID}/${path}`, post);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ instructions: [dto({ status: 'confirmed' })] });
+    expect(h.captures[fn]).toHaveBeenCalledWith(partnerAuth, INSTRUCTION_ID);
+    expect(h.inTransaction).toHaveBeenCalledTimes(1);
+    expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action, resourceType: 'ai_memory_blocks', resourceId: INSTRUCTION_ID, orgId: ORG_ID, partnerId: PARTNER_ID,
+    }));
+  });
+
+  it.each(['keep', 'forget', 'keep-for-org'])("another user's instructionId on POST /captures/:id/%s is 404 and not audited", async (path) => {
+    for (const fn of ['confirmInstructionGroup', 'retractInstructionGroup', 'promoteInstructionGroupToOrg'] as const) {
+      h.captures[fn].mockRejectedValue(new h.MemoryServiceError('not_found'));
+    }
+    const res = await app.request(`/wisp/memory/captures/${INSTRUCTION_ID}/${path}`, post);
+    expect(res.status).toBe(404);
+    expect(h.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('keep-for-org across two orgs is 409 cross_org', async () => {
+    h.captures.promoteInstructionGroupToOrg.mockRejectedValue(new h.MemoryServiceError('cross_org'));
+    const res = await app.request(`/wisp/memory/captures/${INSTRUCTION_ID}/keep-for-org`, post);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'cross_org' });
+  });
+
+  it('a non-uuid instructionId is 400 without a service call', async () => {
+    expect((await app.request('/wisp/memory/captures/nope/keep', post)).status).toBe(400);
+    expect(h.captures.confirmInstructionGroup).not.toHaveBeenCalled();
+  });
+
+  it('the capture routes are registered ahead of the /:id routes', () => {
+    const src = readFileSync(resolve(import.meta.dirname, 'memory.ts'), 'utf8');
+    const firstCapture = src.indexOf("wispMemoryRoutes.get('/captures'");
+    const firstById = src.indexOf("wispMemoryRoutes.post('/:id/");
+    expect(firstCapture).toBeGreaterThan(0);
+    expect(firstCapture).toBeLessThan(firstById);
   });
 });

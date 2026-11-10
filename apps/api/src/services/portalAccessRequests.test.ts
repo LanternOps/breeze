@@ -64,7 +64,7 @@ vi.mock('./contacts/loginLink', () => ({
   linkLoginToContact: vi.fn(async () => ({ contactId: 'contact-1', outcome: 'linked' })),
 }));
 
-import { portalAccessRequests, portalUserIdentities, portalUsers } from '../db/schema';
+import { clientAiTenantMappings, portalAccessRequests, portalUserIdentities, portalUsers } from '../db/schema';
 import { withDbTransaction, withSystemDbAccessContextIsolated } from '../db';
 import { lockPortalInviteAddresses } from './contacts/portalInvite';
 import { linkLoginToContact } from './contacts/loginLink';
@@ -260,7 +260,7 @@ describe('approvePortalAccessRequest', () => {
   it('entra: identity-only active account (auth_method entra) with entra_* dual-write and a jit identity', async () => {
     h.results.push(
       [pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID })],
-      [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
+      [{ tenantId: TID }], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
     );
     const result = await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW });
     expect(result.outcome).toBe('account_created');
@@ -295,7 +295,7 @@ describe('approvePortalAccessRequest', () => {
 
   it('IDENTITY_LINKED (409) when the identity insert conflicts, and when the legacy entra_* key conflicts', async () => {
     const entra = pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID });
-    h.results.push([entra], [], [{ id: 'pu-new', authEpoch: 1 }], []);
+    h.results.push([entra], [{ tenantId: TID }], [], [{ id: 'pu-new', authEpoch: 1 }], []);
     expect(await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW })))
       .toMatchObject({
         code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED',
@@ -304,10 +304,68 @@ describe('approvePortalAccessRequest', () => {
       });
 
     h.calls.length = 0;
-    h.results.push([entra], [], []);
+    h.results.push([entra], [{ tenantId: TID }], [], []);
     expect(await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW })))
       .toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
     expect(updates()).toHaveLength(0);
+  });
+
+  it("entra: reads the org's PROVEN mapping FOR SHARE, inside the transaction, before any write", async () => {
+    h.results.push(
+      [pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID })],
+      [{ tenantId: TID }], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
+    );
+    await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW });
+
+    const mapping = h.calls[1]!;
+    expect(mapping.op).toBe('select');
+    expect(mapping.depth).toBe(1);
+    expect(stepsOf(mapping, 'from')).toEqual([[clientAiTenantMappings]]);
+    expect(stepsOf(mapping, 'for')).toEqual([['share']]);
+    const where = new PgDialect().sqlToQuery(stepsOf(mapping, 'where')[0]![0] as SQL);
+    expect(where.sql).toMatch(/"org_id" = \$1 and "client_ai_tenant_mappings"\."proven_at" is not null/);
+    expect(where.params).toEqual([ORG]);
+    // Nothing was locked or written before it.
+    expect(h.calls.slice(0, 2).map((c) => c.op)).toEqual(['select', 'select']);
+  });
+
+  it.each([
+    ['no proven mapping (none, unproven, or displaced to another org)', []],
+    ['a proven mapping for a different tenant', [{ tenantId: '99999999-8888-4777-8666-555555555555' }]],
+  ])('entra: ENTRA_TENANT_NOT_PROVEN (409) with %s; nothing locked or written', async (_name, mappingRows) => {
+    h.results.push(
+      [pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID })],
+      mappingRows,
+    );
+    const err = await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW }));
+    expect(err).toBeInstanceOf(PortalAccessRequestError);
+    expect(err).toMatchObject({
+      code: 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN',
+      httpStatus: 409,
+      message: "This organization's Microsoft tenant has changed since this request was made. Ask the person to sign in again.",
+    });
+    expect(lockPortalInviteAddresses).not.toHaveBeenCalled();
+    expect(linkLoginToContact).not.toHaveBeenCalled();
+    expect(inserts()).toHaveLength(0);
+    expect(updates()).toHaveLength(0);
+  });
+
+  it('entra: the tenant comparison ignores GUID case (both sides are stored lowercased, but never trust it)', async () => {
+    h.results.push(
+      [pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID })],
+      [{ tenantId: TID.toUpperCase() }], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
+    );
+    expect((await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW })).outcome)
+      .toBe('account_created');
+  });
+
+  it('google: no tenant read (only entra requests carry a tenant)', async () => {
+    h.results.push(
+      [pendingRow({ source: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1' })],
+      [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
+    );
+    await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW });
+    expect(h.calls.some((c) => stepsOf(c, 'from').some(([t]) => t === clientAiTenantMappings))).toBe(false);
   });
 
   it('addin_user: plans access_request_approve and writes it guarded by the read epoch, no bump', async () => {

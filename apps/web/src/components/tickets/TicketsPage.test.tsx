@@ -9,6 +9,8 @@ import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi'
 import type { TicketSummary } from './ticketConfig';
 import { claimSamePageHashClick } from '../../lib/samePageHashClick';
 import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
+import { resetTypingCadence } from '@/lib/keyboard/bareKeyGuard';
+import { useUiStore } from '../../stores/uiStore';
 
 // Mutable grant set the mocked auth store reads from. usePermissions() reads
 // `user.permissions` via the selector form; assignMe reads `getState().user.id`.
@@ -648,6 +650,79 @@ describe('TicketsPage', () => {
       } finally {
         router.uninstall();
       }
+    });
+  });
+
+  describe('queue keyboard and screen-reader feedback', () => {
+    const settleOnFirstRow = async () => {
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true'));
+    };
+
+    it('j/k move DOM focus with the selection and announce the ticket politely', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await settleOnFirstRow();
+      const announcer = screen.getByTestId('tickets-queue-announcer');
+      expect(announcer).toHaveAttribute('role', 'status');
+      // Auto-selecting the first row on load is not a user move: no announcement, no focus theft.
+      expect(announcer).toBeEmptyDOMElement();
+      expect(document.body).toHaveFocus();
+
+      fireEvent.keyDown(document.body, { key: 'j' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'true'));
+      expect(screen.getByTestId('ticket-row-tk-risk')).toHaveFocus();
+      expect(announcer).toHaveTextContent('T-2026-0002 At-risk ticket, Normal priority');
+
+      fireEvent.keyDown(document.activeElement!, { key: 'j' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-breach')).toHaveFocus());
+      expect(announcer).toHaveTextContent('T-2026-0003 Breached ticket, Normal priority, SLA breached');
+
+      fireEvent.keyDown(document.activeElement!, { key: 'k' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-risk')).toHaveFocus());
+      // Roving tab stop follows the selection.
+      expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('tabindex', '0');
+      expect(screen.getByTestId('ticket-row-tk-breach')).toHaveAttribute('tabindex', '-1');
+    });
+
+    it('x adds and removes the active ticket from the bulk selection and says so', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await settleOnFirstRow();
+
+      resetTypingCadence();
+      fireEvent.keyDown(document.body, { key: 'x' });
+      await waitFor(() => expect(screen.getByTestId('tickets-bulk-bar')).toHaveTextContent('1 selected'));
+      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByTestId('tickets-queue-announcer')).toHaveTextContent('1 selected');
+
+      resetTypingCadence();
+      fireEvent.keyDown(document.body, { key: 'x' });
+      await waitFor(() => expect(screen.queryByTestId('tickets-bulk-bar')).toBeNull());
+      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('Enter on a focused button belongs to the button, not to "open full page"', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await settleOnFirstRow();
+      const selectAll = screen.getByTestId('tickets-select-all-header');
+      selectAll.focus();
+      // fireEvent returns false when a handler called preventDefault — which
+      // cancels the button's own Enter activation.
+      expect(fireEvent.keyDown(selectAll, { key: 'Enter' })).toBe(true);
+      expect(navigateTo).not.toHaveBeenCalled();
+    });
+
+    it('offers the keyboard shortcuts card from the queue header', async () => {
+      useUiStore.setState({ isShortcutsHelpOpen: false });
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+      const button = await screen.findByTestId('tickets-shortcuts-hint');
+      expect(button).toHaveAccessibleName('Keyboard shortcuts');
+      expect(button).toHaveAttribute('aria-keyshortcuts', '?');
+      fireEvent.click(button);
+      expect(useUiStore.getState().isShortcutsHelpOpen).toBe(true);
+      useUiStore.setState({ isShortcutsHelpOpen: false });
     });
   });
 
