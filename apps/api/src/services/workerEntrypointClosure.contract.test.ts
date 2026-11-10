@@ -176,6 +176,8 @@ const EXPECTED_NAMES = [
   'imageCurrencyWorker',
   // Trust Center W1 (#8768).
   'trustPageSnapshotWorker',
+  // #4342 W3 — closed-alert retention (global, system-scope sweep).
+  'alertRetention',
 ];
 
 // ---------------------------------------------------------------------------

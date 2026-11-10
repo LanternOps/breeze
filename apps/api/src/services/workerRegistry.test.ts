@@ -147,6 +147,8 @@ const EXPECTED_WORKER_NAMES = [
   'aiModelDiscoveryWorker',
   // Workload image currency W05 (#8194).
   'imageCurrencyWorker',
+  // #4342 W3 — closed-alert retention.
+  'alertRetention',
 ];
 
 describe('workerRegistry: losslessness', () => {

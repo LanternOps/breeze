@@ -387,6 +387,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // AI Suggested Fixes W1 — attachWorkerObservability name == registry name.
   consumers('fixOutcomeWorker'),
   consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
+  // #4342 W3. Plain Redis-required consumer, no feature flag.
+  consumers('alertRetention'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {
