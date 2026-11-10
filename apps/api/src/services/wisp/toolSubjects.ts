@@ -290,7 +290,9 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'manage_dns_policy',
   'manage_dr_plan',
   'manage_fleet_findings',
-  'manage_fleet_designs', // W16 PR B (#6786): a report run id is no working-set subject; never delegable
+  // W16 PR B (#6786): a report run id is no working-set subject. #11433: run / preview / applied / document are
+  // delegable under a grant (the ceiling checks the org they act in); apply / rollback are not (grantAuthority.ts).
+  'manage_fleet_designs',
   'manage_groups',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',

@@ -1,5 +1,5 @@
 import { autopayReasonKey, chargeBlockedKey, chargeNowAttempted, chargeNowFailureKey, chargeNowResultUnknown, chargeNowSuccessKey, STEP_UP_UNAVAILABLE } from './autopayReason';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
@@ -168,6 +168,8 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const [payMethod, setPayMethod] = useState<PaymentMethod>('bank_transfer');
   const [payRef, setPayRef] = useState('');
   const [payDate, setPayDate] = useState(() => localDateInputValue());
+  // The idempotency key of the payment being recorded, tied to its form values (#3803).
+  const paymentAttemptRef = useRef<{ fingerprint: string; key: string } | null>(null);
 
   // Payment confirm dialog
   const [payConfirmOpen, setPayConfirmOpen] = useState(false);
@@ -317,21 +319,33 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const recordPayment = useCallback(async () => {
     if (busy || !payAmount || payOverBalance) return;
     setBusy(true);
+    const payment = {
+      amount: Number(payAmount),
+      method: payMethod,
+      reference: payRef || undefined,
+      receivedAt: payDate,
+    };
+    // #3803: one idempotency key per intended payment. A re-click after a
+    // failure whose outcome is unknown (a timeout that actually landed) resends
+    // the same key, so the server answers with the payment it already has. A
+    // changed form is a different payment and gets a new key; so does the next
+    // payment after a success.
+    const fingerprint = JSON.stringify([invoice.id, payment.amount, payment.method, payment.reference ?? null, payment.receivedAt]);
+    if (paymentAttemptRef.current?.fingerprint !== fingerprint) {
+      paymentAttemptRef.current = { fingerprint, key: crypto.randomUUID() };
+    }
+    const idempotencyKey = paymentAttemptRef.current.key;
     try {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/payments`, {
           method: 'POST',
-          body: JSON.stringify({
-            amount: Number(payAmount),
-            method: payMethod,
-            reference: payRef || undefined,
-            receivedAt: payDate,
-          }),
+          body: JSON.stringify({ ...payment, idempotencyKey }),
         }),
         errorFallback: t('invoiceDetail.payments.recordError'),
         successMessage: t('invoiceDetail.payments.recordSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
+      paymentAttemptRef.current = null;
       setPayAmount(''); setPayRef('');
       refresh();
     } catch (err) {

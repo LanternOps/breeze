@@ -1,11 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { currentFlowExecutionFrame, withFlowExecutionContext } from './flowExecutionContext';
+import { currentFlowExecutionFrame, outsideFlowExecutionContext, withFlowExecutionContext } from './flowExecutionContext';
 
 const RUN_ID = '0b5b3f0e-6a55-4a59-9d8e-3c2b1a000001';
 
 describe('flowExecutionContext (Decision 14)', () => {
   it('outside a frame there is no frame', () => {
     expect(currentFlowExecutionFrame()).toBeUndefined();
+  });
+
+  // #11348 — the alert outbox publishes events other work staged; a drain
+  // started inside a flow step must not lend that step's frame to them.
+  it('outsideFlowExecutionContext hides the frame from sync and awaited work, then restores it', async () => {
+    await withFlowExecutionContext({ runId: RUN_ID, chainDepth: 2 }, async () => {
+      expect(outsideFlowExecutionContext(() => currentFlowExecutionFrame())).toBeUndefined();
+      const seen = await outsideFlowExecutionContext(async () => {
+        await new Promise((r) => setTimeout(r, 1));
+        return currentFlowExecutionFrame();
+      });
+      expect(seen).toBeUndefined();
+      expect(currentFlowExecutionFrame()).toEqual({ runId: RUN_ID, chainDepth: 2 });
+    });
+    expect(outsideFlowExecutionContext(() => 'no frame either way')).toBe('no frame either way');
   });
 
   it('exposes the frame to everything awaited inside it, and only there', async () => {

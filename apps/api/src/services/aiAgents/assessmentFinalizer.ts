@@ -9,16 +9,18 @@
  * Order (plan-fixed), each step and each item independently try/caught so a
  * failure never loses another step's work (a failed nudge must not lose a
  * raised concern):
- *   1. record_concern  → upsertConcern (≤ ASSESSMENT_MAX_RAISES_PER_RUN, else `raise_cap`)
+ *   1. record_concern  → upsertConcern (≤ ASSESSMENT_MAX_RAISES_PER_RUN, else `raise_cap`),
+ *                        carrying the normalised `pattern` the same-org
+ *                        rollup groups by (#11426)
  *   2. update_concern  → updateConcern / resolveConcern
  *   3. nudge           → notifyUser to the grantor (W06: in-app via deliverInApp,
  *                        push, quiet hours, prefs; it counts the nudge itself),
  *                        unless the recipient state says not to
  *   4. propose_action  → createActionIntent (Tier 2/3 only, capped)
  *   5. request_specialist — left in the outcome untouched (W07)
- *   then the onboarding readiness concern (Task 15), the
- *   `last_assessed_run_id` touch of every concern the run read, and the
- *   best-effort partner rollup.
+ *   then the readiness note (Task 15; re-evaluated every run, #11429), the
+ *   `last_assessed_run_id` touch of every non-readiness concern the run
+ *   read, and the best-effort partner rollup.
  *
  * Authority: every concern id in the outcome is MODEL-SUPPLIED. Steps 2–4
  * re-read the concern under the grant's live ceiling (`getConcernForCeiling`,
@@ -35,7 +37,9 @@
 import { and, eq } from 'drizzle-orm';
 import {
   AI_AGENT_LIMIT_DEFAULTS,
+  CONCERN_PATTERN_EVIDENCE_KEY,
   CONCERN_SUMMARY_MAX,
+  normalizeConcernPattern,
   type AssessmentOutcome,
   type Concern,
   type NudgeInput,
@@ -55,6 +59,7 @@ import {
   ConcernSubjectHeldError,
   getConcernForCeiling,
   resolveConcern,
+  setConcernPattern,
   updateConcern,
   upsertConcern,
 } from '../wisp/concerns';
@@ -67,7 +72,8 @@ import {
 } from '../wisp/grantAuthority';
 import { mobileDeepLink } from '../wisp/nudgeLinks';
 import { notifyUser } from '../wisp/notifyUser';
-import { renderReadinessSummary } from '../wisp/readiness';
+import { renderReadinessSummary, type ReadinessCheck } from '../wisp/readiness';
+import { evaluateStandingInstructions, standingConflictDescription } from '../wisp/standingInstructionGate';
 import { isAssessmentProfile } from './assessmentProfile';
 import type { AssessmentRunContext, LoopResult, RunContext } from './runLoopTypes';
 
@@ -97,9 +103,14 @@ async function isRunStillRunning(runId: string, orgId: string): Promise<boolean>
   });
 }
 
+/**
+ * Model evidence minus the server-owned keys: the approval card
+ * `propose_action` mints, and the rollup pattern (#11426), which only the
+ * `pattern` field sets, normalised.
+ */
 function withoutApprovalKey(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!evidence) return {};
-  const { [APPROVAL_INTENT_KEY]: _dropped, ...rest } = evidence;
+  const { [APPROVAL_INTENT_KEY]: _dropped, [CONCERN_PATTERN_EVIDENCE_KEY]: _pattern, ...rest } = evidence;
   return rest;
 }
 
@@ -141,8 +152,9 @@ async function applyRaises(ap: Applier, raises: RaiseConcernInput[]): Promise<vo
       ap.skipped.push('raise_subject_not_in_org');
       continue;
     }
+    const pattern = normalizeConcernPattern(raise.pattern);
     await ap.item('record_concern', async () => {
-      await upsertConcern({
+      const { id, created } = await upsertConcern({
         partnerId: ap.ctx.orgPartnerId,
         orgId: run.orgId,
         subject: raise.subject,
@@ -151,7 +163,12 @@ async function applyRaises(ap: Applier, raises: RaiseConcernInput[]): Promise<vo
         evidence: withoutApprovalKey(raise.evidence),
         raisedByGrantId: ap.grantId,
         lastAssessedRunId: run.id,
+        ...(pattern ? { pattern } : {}),
       });
+      // A re-raise hands back the live concern untouched; the pattern is the
+      // one thing it may gain, so a concern raised before #11426 (or before
+      // the model named the pattern) joins its siblings' rollup.
+      if (!created && pattern) await setConcernPattern(id, pattern);
     });
   }
 }
@@ -169,9 +186,12 @@ async function applyUpdates(ap: Applier, updates: UpdateConcernInput[]): Promise
       if (update.severity !== undefined) patch.severity = update.severity;
       if (update.evidence !== undefined) {
         // updateConcern REPLACES evidence: keep the approval card the concern
-        // already points at, and never let the model forge one.
+        // already points at and its rollup pattern (#11426), and never let the
+        // model forge either.
+        const pattern = c.evidence?.[CONCERN_PATTERN_EVIDENCE_KEY];
         patch.evidence = {
           ...withoutApprovalKey(update.evidence),
+          ...(typeof pattern === 'string' ? { [CONCERN_PATTERN_EVIDENCE_KEY]: pattern } : {}),
           ...(c.approvalIntentId ? { [APPROVAL_INTENT_KEY]: c.approvalIntentId } : {}),
         };
       }
@@ -283,13 +303,36 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
         }
         throw error;
       }
+      // #10428 W06: the grantor's standing instructions. A confirmed exact
+      // deny drops the proposal; any other match rides on the card's reason.
+      // A check that cannot run drops it too (fails closed).
+      let standingText: string | null = null;
+      try {
+        const standing = await evaluateStandingInstructions({
+          ceiling: ap.ceiling,
+          toolName: proposal.toolName,
+          input: proposal.input,
+          auth: ap.result.agentAuth,
+        });
+        if (standing.action === 'refuse') {
+          ap.skipped.push('propose_standing_instruction');
+          return;
+        }
+        if (standing.action === 'warn') standingText = standing.text;
+      } catch (error) {
+        console.error('[assessmentFinalizer] standing-instruction check failed; proposal dropped', { runId: run.id, toolName: proposal.toolName, error });
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        ap.skipped.push('propose_standing_instruction_unverified');
+        return;
+      }
       attempted += 1;
+      const reason = `Proposed by Wisp assessment ${run.id}: ${proposal.reason}`;
       const intent = await createActionIntent(ap.result.agentAuth, {
         toolName: proposal.toolName,
         input: proposal.input,
         source: 'ai_agent',
         orgId: run.orgId,
-        reason: `Proposed by Wisp assessment ${run.id}: ${proposal.reason}`,
+        reason: standingText ? standingConflictDescription(standingText, reason) : reason,
       });
       if (intent.status === 'pending_approval') {
         ap.result.intentIds.push(intent.id);
@@ -312,17 +355,76 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
   }
 }
 
+/** The outcome on a readiness note closed because every check became serviceable (#11429). */
+const READINESS_SERVICEABLE_OUTCOME = 'all_checks_serviceable';
+
+type ReadinessEvidence = { checks: ReadinessCheck[]; missingIntegrations: string[] };
+
 /**
- * Task 15 — the onboarding run's "what I can / cannot watch here" concern, one
- * per org (signature-keyed). Its subject is `readiness`, never `org` (#10386):
- * the org slot belongs to real org-level concerns.
+ * Whether the live note already says what this run would write. Compared by
+ * value, never as raw JSON: jsonb does not keep the key order it was written
+ * in. A stored shape this code did not write reads as changed.
+ */
+function readinessNoteUnchanged(live: Concern, summary: string, next: ReadinessEvidence): boolean {
+  if (live.summary !== summary.trim()) return false;
+  const stored = live.evidence.readiness as Partial<ReadinessEvidence> | undefined;
+  if (!stored || !Array.isArray(stored.checks) || !Array.isArray(stored.missingIntegrations)) return false;
+  const key = (r: ReadinessEvidence) => JSON.stringify([
+    r.checks.map((c) => [c?.watchKind ?? null, c?.serviceable ?? null, c?.reason ?? null]),
+    r.missingIntegrations,
+  ]);
+  return key(stored as ReadinessEvidence) === key(next);
+}
+
+/**
+ * Task 15 — the "what I can / cannot watch here" concern, one per org
+ * (signature-keyed). Its subject is `readiness`, never `org` (#10386): the org
+ * slot belongs to real org-level concerns.
+ *
+ * #11429: re-evaluated on every run, not only onboarding. Every check
+ * serviceable closes the live note; otherwise a later run refreshes it only
+ * when its gaps changed (a write bumps `updated_at`, which the brief and the
+ * no-changes probe read) and never re-creates one: only a first look (an
+ * onboarding run, or an on-demand run with no earlier assessment) creates
+ * it, so a note the user dismissed stays dismissed. No inventory for
+ * the org this run (`readiness: null`) leaves the note as it is. A later run
+ * acts on the live note it read (`openConcerns`), the same snapshot the touch
+ * loop uses.
  */
 async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId: string, skipped: string[]): Promise<void> {
   const readiness = a.readiness;
-  if (a.reason.kind !== 'onboarding' || !readiness || !readiness.checks.some((c) => !c.serviceable)) return;
+  if (!readiness) return;
   const { run } = ctx;
+  const signature = `readiness:${run.orgId}`;
+  const live = a.openConcerns.find((c) =>
+    c.signature === signature && c.orgId === run.orgId && c.partnerId === ctx.orgPartnerId);
+
+  if (readiness.checks.every((c) => c.serviceable)) {
+    if (!live) return;
+    // Stamp first: the close then reads as this run's own write, which the
+    // next tick's no-changes probe does not count as news. A resolve that
+    // fails after the stamp marks the run partially applied, which the probe
+    // does not anchor on, so the next run retries it.
+    await updateConcern(live.id, { lastAssessedRunId: run.id });
+    // No grant: system bookkeeping, no concern_outcome memory block.
+    await resolveConcern(live.id, {}, READINESS_SERVICEABLE_OUTCOME);
+    return;
+  }
+
   const summary = renderReadinessSummary(readiness).slice(0, CONCERN_SUMMARY_MAX);
-  const evidence = { readiness: { checks: readiness.checks, missingIntegrations: readiness.missingIntegrations } };
+  const next: ReadinessEvidence = { checks: readiness.checks, missingIntegrations: readiness.missingIntegrations };
+  // Only a first look creates the note: an onboarding run, or an on-demand run
+  // (#10406) for an org this grant has never assessed — one asked for before
+  // any assessment, or one that took over a queued onboarding job (wake.ts).
+  const createsNote = a.reason.kind === 'onboarding' || (a.reason.kind === 'on_demand' && a.noEarlierAssessment);
+  if (!createsNote) {
+    if (!live || readinessNoteUnchanged(live, summary, next)) return;
+    // updateConcern replaces evidence: keep what else the note carries (its approval card).
+    await updateConcern(live.id, { summary, evidence: { ...live.evidence, readiness: next }, lastAssessedRunId: run.id });
+    return;
+  }
+
+  const evidence = { readiness: next };
   let upserted: { id: string; created: boolean };
   try {
     upserted = await upsertConcern({
@@ -435,7 +537,10 @@ export async function finalizeAssessment(ctx: RunContext, result: LoopResult): P
     await item('readiness', () => applyReadiness(ctx, a, grantId, skipped));
 
     for (const c of a.openConcerns) {
-      if (c.orgId !== run.orgId || touched.has(c.id)) continue;
+      // #11429: readiness-subject notes are written by their owners only (the
+      // onboarding note by applyReadiness, the no-agent note by admission); a
+      // touch here would bump updated_at every run with nothing new to say.
+      if (c.orgId !== run.orgId || touched.has(c.id) || c.subject.kind === 'readiness') continue;
       await item('touch', () => updateConcern(c.id, { lastAssessedRunId: run.id }));
     }
   }

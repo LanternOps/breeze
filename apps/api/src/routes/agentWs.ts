@@ -136,8 +136,14 @@ import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
-import { shouldDeferOfflineTransition } from '../services/admission/admissionRuntime';
-import { recordOfflineDeferred } from '../services/admission/admissionMetrics';
+import {
+  ORPHANED_RESULT_EXPECTATION_TTL_MS,
+  consumeOrphanedResultExpectation,
+  peekOrphanedResultExpectation,
+  recordOrphanedResultExpectation as storeOrphanedResultExpectation,
+  type OrphanedResultExpectation,
+} from '../services/orphanedResultExpectations';
+import { beginOfflineTransition } from '../services/admission/admissionRuntime';
 import type { WsSetupSlot } from '../services/admission/wsUpgradeGate';
 import { breezeRole } from '../config/env';
 import { partnerTrustMode } from '../config/partnerTrustMode';
@@ -645,7 +651,6 @@ interface AgentPingState {
 const agentPingStates = new Map<string, AgentPingState>();
 const AGENT_PING_INTERVAL_MS = 30_000;
 const AGENT_PONG_TIMEOUT_MS = 10_000;
-const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
 
 // F5: a `vault-auto-sync-<snapshotID>` result is only honored if a real,
 // recently-COMPLETED backup snapshot exists for the authenticated device with
@@ -655,37 +660,21 @@ const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
 const VAULT_AUTO_SYNC_SNAPSHOT_FRESHNESS_MS = 24 * 60 * 60 * 1000; // 24h
 const MONITOR_COMMAND_TYPES = new Set(['network_ping', 'network_tcp_check', 'network_http_check', 'network_dns_check']);
 
-type OrphanedResultExpectation =
-  | { agentId: string; kind: 'snmp'; targetId: string; expiresAt: number }
-  | { agentId: string; kind: 'monitor'; targetId: string; expiresAt: number }
-  // Spec §5 — a manual probe. The expected ip/site are captured at DISPATCH so
-  // the result handler can refuse a result for an asset that has since moved or
-  // been re-addressed; they are not derivable from the agent's reply.
-  | { agentId: string; kind: 'probe'; targetId: string; ipAddress: string; siteId: string; expiresAt: number };
-
-const orphanedResultExpectations = new Map<string, OrphanedResultExpectation>();
-
-function pruneOrphanedResultExpectations(now = Date.now()): void {
-  for (const [commandId, expectation] of orphanedResultExpectations.entries()) {
-    if (expectation.expiresAt <= now) {
-      orphanedResultExpectations.delete(commandId);
-    }
-  }
-}
-
+// #4135: the dispatch records behind orphaned results live in Redis (see
+// services/orphanedResultExpectations.ts), so a result that reaches a replica
+// other than the one that sent the command is still honored.
 function recordOrphanedResultExpectation(agentId: string, command: AgentCommand): void {
   const payload = command.payload ?? {};
   const expiresAt = Date.now() + ORPHANED_RESULT_EXPECTATION_TTL_MS;
+  // The send path is synchronous. The store never rejects, and a later read on
+  // this process waits for the write, so the promise can be dropped here.
+  const record = (expectation: OrphanedResultExpectation) =>
+    void storeOrphanedResultExpectation(command.id, expectation);
 
   if (command.type === 'snmp_poll') {
     const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : null;
     if (!deviceId) return;
-    orphanedResultExpectations.set(command.id, {
-      agentId,
-      kind: 'snmp',
-      targetId: deviceId,
-      expiresAt,
-    });
+    record({ agentId, kind: 'snmp', targetId: deviceId, expiresAt });
     return;
   }
 
@@ -697,37 +686,15 @@ function recordOrphanedResultExpectation(agentId: string, command: AgentCommand)
     const probeSiteId = typeof payload.probeSiteId === 'string' ? payload.probeSiteId : null;
     const target = typeof payload.target === 'string' ? payload.target : null;
     if (!probeSiteId || !target) return;
-    orphanedResultExpectations.set(command.id, {
-      agentId,
-      kind: 'probe',
-      targetId: probeAssetId,
-      ipAddress: target,
-      siteId: probeSiteId,
-      expiresAt,
-    });
+    record({ agentId, kind: 'probe', targetId: probeAssetId, ipAddress: target, siteId: probeSiteId, expiresAt });
     return;
   }
 
   if (MONITOR_COMMAND_TYPES.has(command.type)) {
     const monitorId = typeof payload.monitorId === 'string' ? payload.monitorId : null;
     if (!monitorId) return;
-    orphanedResultExpectations.set(command.id, {
-      agentId,
-      kind: 'monitor',
-      targetId: monitorId,
-      expiresAt,
-    });
+    record({ agentId, kind: 'monitor', targetId: monitorId, expiresAt });
   }
-}
-
-function consumeOrphanedResultExpectation(agentId: string, commandId: string): OrphanedResultExpectation | null {
-  pruneOrphanedResultExpectations();
-  const expectation = orphanedResultExpectations.get(commandId);
-  if (!expectation || expectation.agentId !== agentId) {
-    return null;
-  }
-  orphanedResultExpectations.delete(commandId);
-  return expectation;
 }
 
 // Message types from agent
@@ -1533,13 +1500,27 @@ export async function processOrphanedCommandResult(
     success?: boolean;
   } | undefined;
 
+  const snmpByPayload = Boolean(snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0);
+  // Spec §5 — a manual "Check now" result is matched on its command id.
+  const probeAssetId = parseProbeCommandId(result.commandId);
+  // A network monitor result is matched on its payload.
+  const monitorData = result.result as {
+    monitorId?: string;
+    status?: string;
+    responseMs?: number;
+    statusCode?: number;
+    error?: string;
+  } | undefined;
+  const monitorByPayload = Boolean(monitorData?.monitorId && monitorData.status);
+
   // Failed polls carry no result payload. Recover their target from dispatch
   // evidence, without consuming expectations belonging to other command kinds.
-  pruneOrphanedResultExpectations();
-  const dispatched = orphanedResultExpectations.get(result.commandId);
-  const isSnmpDispatch = dispatched?.agentId === agentId && dispatched.kind === 'snmp';
-  if (isSnmpDispatch || (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0)) {
-    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+  // That lookup is a Redis read inside the org-scoped transaction (#4135), so a
+  // result its own payload or command id already places skips it.
+  const isSnmpDispatch = !snmpByPayload && !probeAssetId && !monitorByPayload
+    && (await peekOrphanedResultExpectation(agentId, result.commandId))?.kind === 'snmp';
+  if (snmpByPayload || isSnmpDispatch) {
+    const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'snmp' || (snmpData?.deviceId && expectation.targetId !== snmpData.deviceId)) {
       console.warn(
         `[AgentWs] Rejecting unexpected SNMP result ${result.commandId} from agent ${agentId}: ` +
@@ -1593,9 +1574,8 @@ export async function processOrphanedCommandResult(
   // Spec §5 — a manual "Check now" result. Matched on the command id (the agent
   // echoes an empty monitorId for a probe, so the monitor branch below would
   // fall through anyway; matching here first keeps the intent explicit).
-  const probeAssetId = parseProbeCommandId(result.commandId);
   if (probeAssetId) {
-    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'probe' || expectation.targetId !== probeAssetId) {
       console.warn(
         `[AgentWs] Rejecting unexpected probe result ${result.commandId} from agent ${agentId}: ` +
@@ -1638,16 +1618,8 @@ export async function processOrphanedCommandResult(
   }
 
   // Check if this is a network monitor result
-  const monitorData = result.result as {
-    monitorId?: string;
-    status?: string;
-    responseMs?: number;
-    statusCode?: number;
-    error?: string;
-  } | undefined;
-
   if (monitorData?.monitorId && monitorData.status) {
-    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'monitor' || expectation.targetId !== monitorData.monitorId) {
       console.warn(
         `[AgentWs] Rejecting unexpected monitor result ${result.commandId} from agent ${agentId}: ` +
@@ -4681,14 +4653,14 @@ onClose: async (_event: unknown, ws: WSContext) => {
         // Update device status to offline (but preserve 'updating' — let
         // the offline detector handle the timeout for stale updating devices)
         //
-        // W08: while admission is shedding (enforce, level 1+), leave the
-        // offline flip to the offline detector — lastSeenAt still ages out
-        // within 5 min — instead of one transaction per socket at the moment
-        // thousands drop at once. Presence was cleared above, so command
-        // routing already treats the agent as gone.
-        if (agentDb && shouldDeferOfflineTransition()) {
-          recordOfflineDeferred('close');
-        } else if (agentDb) {
+        // W08: in enforce mode, admission may leave the offline flip to the
+        // offline detector — lastSeenAt still ages out within 5 min — instead
+        // of two pool permits per socket at the moment hundreds drop at once:
+        // always at level 1+, and past a small in-flight cap at level 0, so a
+        // planned drain's own writes cannot escalate the level (#9520). Presence was
+        // cleared above, so command routing already treats the agent as gone.
+        const releaseOfflineWrite = agentDb ? beginOfflineTransition('close') : null;
+        if (releaseOfflineWrite) {
           // #6836: the inner try/catch below only covers the query/transition
           // body. When the context PROLOGUE itself fails (observed: a
           // `DbAccessContextPrologueTimeoutError` during a Postgres stall),
@@ -4734,6 +4706,8 @@ onClose: async (_event: unknown, ws: WSContext) => {
           } catch (err) {
             console.error(`[AgentWs] agentWs.onClose.markOffline failed for agent ${agentId}; offline detector will correct status:`, err);
             captureException(err instanceof Error ? err : new Error(String(err)));
+          } finally {
+            releaseOfflineWrite();
           }
         }
       } else {
@@ -4757,9 +4731,9 @@ if (activeConnections.get(agentId)?.ws === ws) {
         }
         void clearAgentPresence(agentId, connectionToken);
       }
-      if (agentDb && shouldDeferOfflineTransition()) {
-        recordOfflineDeferred('error');
-      } else if (agentDb) {
+      // W08 / #9520: same admission gate as onClose.
+      const releaseOfflineWrite = agentDb ? beginOfflineTransition('error') : null;
+      if (releaseOfflineWrite) {
         void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
           try {
             const [current] = await withDbTransaction(() => db
@@ -4782,7 +4756,7 @@ if (activeConnections.get(agentId)?.ws === ws) {
         }).catch((err) => {
           console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);
           captureException(err instanceof Error ? err : new Error(String(err)));
-        });
+        }).finally(releaseOfflineWrite);
       }
     }
   };

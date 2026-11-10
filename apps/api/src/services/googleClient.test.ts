@@ -5,11 +5,13 @@ import {
   GoogleApiError,
   ALL_DWD_SCOPES_CSV,
   DIRECTORY_SCOPES,
+  DIRECTORY_DOMAIN_SCOPES,
   GMAIL_USER_SCOPES,
   GMAIL_INBOUND_SCOPES,
   CALENDAR_SCOPES,
   LICENSING_SCOPES,
   getDirectoryClient,
+  getDirectoryDomainsClient,
   getGmailClient,
 } from './googleClient';
 
@@ -55,7 +57,7 @@ describe('normalizeGoogleError', () => {
 describe('scopes', () => {
   it('CSV is the union of directory + gmail (user + inbound) + calendar + licensing scopes', () => {
     expect(ALL_DWD_SCOPES_CSV).toBe(
-      [...DIRECTORY_SCOPES, ...GMAIL_USER_SCOPES, ...GMAIL_INBOUND_SCOPES, ...CALENDAR_SCOPES, ...LICENSING_SCOPES].join(','),
+      [...DIRECTORY_SCOPES, ...GMAIL_USER_SCOPES, ...GMAIL_INBOUND_SCOPES, ...CALENDAR_SCOPES, ...LICENSING_SCOPES, ...DIRECTORY_DOMAIN_SCOPES].join(','),
     );
     expect(ALL_DWD_SCOPES_CSV).toContain('admin.directory.user');
     expect(ALL_DWD_SCOPES_CSV).toContain('gmail.settings.sharing');
@@ -149,4 +151,14 @@ describe('inbound mailbox scopes (mark-handled opt-in)', () => {
       metadata.mockRestore();
     }
   }, 5_000);
+});
+
+describe('domains client', () => {
+  it('the domains client requests only the domain scope and impersonates adminEmail', () => {
+    const client = getDirectoryDomainsClient(VALID_KEY, 'admin@example.com');
+    const auth = (client as unknown as { context: { _options: { auth: { scopes: string[]; subject: string } } } }).context._options.auth;
+    expect(auth.scopes).toEqual(['https://www.googleapis.com/auth/admin.directory.domain.readonly']);
+    expect(auth.subject).toBe('admin@example.com');
+    expect(typeof client.domains.list).toBe('function');
+  });
 });

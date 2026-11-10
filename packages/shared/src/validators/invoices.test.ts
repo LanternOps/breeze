@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   assembleFromOrgSchema, assembleFromTicketQuerySchema, manualLineSchema, recordPaymentSchema,
   partnerBillingSettingsSchema, orgBillingSettingsSchema,
-  orgCurrencyImpactQuerySchema, createManualInvoiceSchema, updateInvoiceSchema, listInvoicesQuerySchema
+  orgCurrencyImpactQuerySchema, createManualInvoiceSchema, updateInvoiceSchema, listInvoicesQuerySchema,
+  idempotencyKeySchema
 } from './invoices';
 import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 
@@ -52,6 +53,33 @@ describe('recordPaymentSchema', () => {
     expect(recordPaymentSchema.safeParse({ amount: 50, method: 'check', receivedAt: '2026-06-14' }).success).toBe(true);
     expect(recordPaymentSchema.safeParse({ amount: 0, method: 'check', receivedAt: '2026-06-14' }).success).toBe(false);
     expect(recordPaymentSchema.safeParse({ amount: 50, method: 'crypto', receivedAt: '2026-06-14' }).success).toBe(false);
+  });
+
+  // #3803: a caller-supplied key makes a retried manual payment land once.
+  describe('idempotencyKey', () => {
+    const base = { amount: 50, method: 'check', receivedAt: '2026-06-14' } as const;
+
+    it('is optional and kept verbatim when present', () => {
+      expect(recordPaymentSchema.safeParse(base).success).toBe(true);
+      const r = recordPaymentSchema.safeParse({ ...base, idempotencyKey: 'pay-7f1c:2026/06/14' });
+      expect(r.success && r.data.idempotencyKey).toBe('pay-7f1c:2026/06/14');
+    });
+
+    it('accepts exactly 255 visible ASCII characters and refuses 256', () => {
+      expect(recordPaymentSchema.safeParse({ ...base, idempotencyKey: 'k'.repeat(255) }).success).toBe(true);
+      expect(recordPaymentSchema.safeParse({ ...base, idempotencyKey: 'k'.repeat(256) }).success).toBe(false);
+    });
+
+    it.each([
+      ['empty', ''],
+      ['whitespace inside', 'abc def'],
+      ['leading space', ' abc'],
+      ['control character', 'abc\n'],
+      ['non-ASCII', 'clé'],
+    ])('refuses a %s key', (_label, key) => {
+      expect(recordPaymentSchema.safeParse({ ...base, idempotencyKey: key }).success).toBe(false);
+      expect(idempotencyKeySchema.safeParse(key).success).toBe(false);
+    });
   });
 });
 

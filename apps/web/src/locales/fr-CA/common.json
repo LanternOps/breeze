@@ -903,7 +903,19 @@
       },
       "charKeysOn": "Les raccourcis à touche unique sont activés.",
       "charKeysOff": "Les raccourcis à touche unique sont désactivés. Seuls les raccourcis Ctrl/Cmd fonctionnent.",
-      "charKeysManage": "Modifier dans les paramètres du profil"
+      "charKeysManage": "Modifier dans les paramètres du profil",
+      "queueTitle": "File d’attente des billets",
+      "queueHint": "Sur la page des billets, hors d’un champ de texte.",
+      "queue": {
+        "next": "Billet suivant",
+        "previous": "Billet précédent",
+        "open": "Ouvrir le billet en pleine page",
+        "toggleBulk": "Ajouter à la sélection groupée ou l’en retirer",
+        "assignMe": "M’assigner",
+        "reply": "Rédiger une réponse",
+        "internal": "Rédiger une note interne",
+        "resolve": "Résoudre avec une note"
+      }
     }
   },
   "migrationBanner": {
@@ -2935,5 +2947,8 @@
   "featureLock": {
     "lockedLabel": "Verrouillé",
     "upgrade": "Voir les forfaits"
+  },
+  "inheritChoice": {
+    "inherit": "Hériter — {{value}} ({{source}})"
   }
 }

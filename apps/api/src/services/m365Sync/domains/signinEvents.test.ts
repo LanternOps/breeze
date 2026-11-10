@@ -202,19 +202,44 @@ describe('persistSigninEvents (#5784 W05)', () => {
   });
 });
 
-describe('signinEventsWindow (#5784 W05)', () => {
-  it('cold start: an org with no events pulls a bounded 7-day window', async () => {
-    executeMock.mockResolvedValueOnce([{ watermark: null }]);
-    const window = await signinEventsWindow(ORG, NOW);
+describe('signinEventsWindow (#5784 W05, #9394)', () => {
+  // The last walk that COMPLETED, i.e. m365_sync_state.last_complete_snapshot_at.
+  const LAST_COMPLETE = new Date('2026-09-08T10:30:00.000Z');
+
+  it('cold start: an org whose walk never completed pulls a bounded one-day window', async () => {
+    const window = await signinEventsWindow(ORG, NOW, null);
     expect(window.until).toBe(NOW.toISOString());
-    expect(window.since).toBe(new Date(NOW.getTime() - 7 * 24 * 3600_000).toISOString());
+    expect(window.since).toBe(new Date(NOW.getTime() - 24 * 3600_000).toISOString());
+    // Rows from a walk that never finished prove nothing: they are not read.
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
-  it('steady state: since is MAX(signed_in_at) MINUS the overlap, not the bare watermark', async () => {
+  it('no watermark after a COMPLETED walk walks on from that completion, not a fresh cold start (#9394)', async () => {
+    // The common case, not an edge: a small tenant's first walk finishes in one
+    // run, so every row it stored landed after its own completion time and none
+    // qualifies. So does an unlicensed or quiet tenant. A fresh one-day cold
+    // start here would leave a hole whenever the next run came more than a day
+    // later (24 h cadence plus jitter, or any failed run in between).
+    executeMock.mockResolvedValueOnce([{ watermark: null }]);
+    const window = await signinEventsWindow(ORG, NOW, LAST_COMPLETE);
+    expect(window.since)
+      .toBe(new Date(LAST_COMPLETE.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+    expect(window.until).toBe(NOW.toISOString());
+  });
+
+  it('...and still reaches back over a long gap since that completion', async () => {
+    const longAgo = new Date(NOW.getTime() - 10 * 24 * 3600_000);
+    executeMock.mockResolvedValueOnce([{ watermark: null }]);
+    const window = await signinEventsWindow(ORG, NOW, longAgo);
+    expect(window.since)
+      .toBe(new Date(longAgo.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+  });
+
+  it('steady state: since is the completed watermark MINUS the overlap, not the bare watermark', async () => {
     // A bare watermark would permanently skip anything Graph surfaced late.
     const watermark = new Date('2026-09-08T10:00:00.000Z');
     executeMock.mockResolvedValueOnce([{ watermark: watermark.toISOString() }]);
-    const window = await signinEventsWindow(ORG, NOW);
+    const window = await signinEventsWindow(ORG, NOW, LAST_COMPLETE);
     expect(window.since)
       .toBe(new Date(watermark.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
     expect(window.until).toBe(NOW.toISOString());
@@ -230,7 +255,7 @@ describe('signinEventsWindow (#5784 W05)', () => {
     // those events would be gone, silently, with no error and no truncation.
     const watermark = new Date(NOW.getTime() - 21 * 24 * 3600_000);
     executeMock.mockResolvedValueOnce([{ watermark: watermark.toISOString() }]);
-    const window = await signinEventsWindow(ORG, NOW);
+    const window = await signinEventsWindow(ORG, NOW, LAST_COMPLETE);
     expect(window.since)
       .toBe(new Date(watermark.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
     // The window covers the whole gap; the per-run item cap and the executor's
@@ -239,12 +264,19 @@ describe('signinEventsWindow (#5784 W05)', () => {
       .toBeGreaterThan(20 * 24 * 3600_000);
   });
 
-  it('scopes the watermark read to the org', async () => {
+  it('reads the watermark only from rows ingested by the time the last walk COMPLETED (#9394)', async () => {
+    // The executor walks newest-first. A walk that is cut off (a lost cursor, a
+    // re-seed) has already stored the NEWEST rows of its window and none of the
+    // oldest, so MAX(signed_in_at) over every row would jump the next window
+    // past the part it never read. Rows ingested at or before the last
+    // completion are exactly the rows completed walks proved.
     executeMock.mockResolvedValueOnce([{ watermark: null }]);
-    await signinEventsWindow(ORG, NOW);
+    await signinEventsWindow(ORG, NOW, LAST_COMPLETE);
     const { sql, params } = compiled(0);
     expect(sql).toContain('max(signed_in_at)');
     expect(sql).toContain('m365_signin_events');
+    expect(sql).toMatch(/ingested_at <= \$\d+::timestamptz/);
     expect(params).toContain(ORG);
+    expect(params).toContain(LAST_COMPLETE.toISOString());
   });
 });

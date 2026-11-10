@@ -205,3 +205,61 @@ describe('createManifestScanner', () => {
     expect(seen).toEqual([{ a: 1 }]);
   });
 });
+
+describe('scanManifest top-level fields (#11233)', () => {
+  const scanFields = async (json: string, fields: readonly string[], chunkSize = 5) => {
+    const bytes = Buffer.from(json);
+    const chunks: Buffer[] = [];
+    for (let i = 0; i < bytes.length; i += chunkSize) chunks.push(bytes.subarray(i, i + chunkSize));
+    return scanManifest(Readable.from(chunks), { onEntry: () => {} }, { fields });
+  };
+
+  it('keeps the scalar value of each requested top-level key, as JSON.parse reads it', async () => {
+    const result = await scanFields(
+      '{"timestamp":"2026-11-01T00:00:00Z","size":1234.5,"formatVersion":2,"files":[{"a":1}],"baseSnapshotId":"s0","id":"s1","sealed":true,"note":null}',
+      ['timestamp', 'size', 'formatVersion', 'baseSnapshotId', 'sealed', 'note'],
+    );
+    expect(result).toEqual({
+      id: 's1',
+      entries: 1,
+      hasFilesKey: true,
+      fields: { timestamp: '2026-11-01T00:00:00Z', size: 1234.5, formatVersion: 2, baseSnapshotId: 's0', sealed: true, note: null },
+    });
+  });
+
+  it('leaves out a requested key the manifest does not have, and keeps nothing it was not asked for', async () => {
+    const result = await scanFields('{"id":"s1","size":10,"files":[]}', ['timestamp']);
+    expect(result.fields).toEqual({});
+  });
+
+  it('reports no fields when none were requested, so existing callers see the same result', async () => {
+    expect(await scanFields('{"id":"s1","size":10,"files":[]}', [])).toEqual({ id: 's1', entries: 0, hasFilesKey: true, fields: {} });
+    const plain = await scanManifest(Readable.from([Buffer.from('{"id":"s1","size":10,"files":[]}')]), { onEntry: () => {} });
+    expect(plain).toEqual({ id: 's1', entries: 0, hasFilesKey: true });
+  });
+
+  it('refuses a requested key whose value is an object or an array as malformed', async () => {
+    for (const json of ['{"id":"s","size":{"n":1},"files":[]}', '{"id":"s","size":[1],"files":[]}']) {
+      const failure = await scanFields(json, ['size']).catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ManifestScanError);
+      expect((failure as ManifestScanError).kind).toBe('malformed');
+    }
+  });
+
+  it('refuses a requested key that appears twice as malformed', async () => {
+    const failure = await scanFields('{"id":"s","size":1,"size":2,"files":[]}', ['size']).catch((err: unknown) => err);
+    expect((failure as ManifestScanError).kind).toBe('malformed');
+  });
+
+  it('refuses an oversized requested value as a limit', async () => {
+    const failure = await scanFields(`{"id":"s","timestamp":"${'x'.repeat(5000)}","files":[]}`, ['timestamp'], 65536).catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(ManifestScanError);
+    expect((failure as ManifestScanError).kind).toBe('limit');
+  });
+
+  it('refuses a request for a key it cannot match or already owns', () => {
+    expect(() => createManifestScanner({ onEntry: () => {} }, { fields: ['aKeyLongerThanSixteen'] })).toThrow();
+    expect(() => createManifestScanner({ onEntry: () => {} }, { fields: ['files'] })).toThrow();
+    expect(() => createManifestScanner({ onEntry: () => {} }, { fields: ['id'] })).toThrow();
+  });
+});

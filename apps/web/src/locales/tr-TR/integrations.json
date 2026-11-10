@@ -958,6 +958,8 @@
     "integrationUpdated": "Pax8 entegrasyonu güncellendi",
     "integrationConnected": "Pax8 entegrasyonu bağlandı",
     "companyMapped": "Pax8 şirketinin haritası çıkarıldı",
+    "companiesRefreshFailed": "Şirket listesi yenilenemedi ve güncel olmayabilir. En son hâlini görmek için sayfayı yeniden yükleyin.",
+    "syncStillRunning": "Eşitleme hâlâ sürüyor veya durumu alınamıyor. Birkaç dakika sonra tekrar kontrol edin.",
     "companyUnmapped": "Pax8 şirketinin haritası kaldırıldı",
     "observationsPaused": "Pax8 miktar gözlemleri duraklatıldı",
     "observationsResumed": "Pax8 miktar gözlemlerine devam edildi",
@@ -1115,7 +1117,8 @@
     "controllers": "Kontrolörler",
     "registerEachSelfHostedUniFiNetworkControllerA": "Şirket içinde barındırılan her UniFi Ağ denetleyicisini kaydedin. Denetleyicinin ağındaki bir Breeze aracısı, yerel Entegrasyonunu API (ürün yazılımı ≥ 9.3) doğrudan yoklar, dolayısıyla UniFi bulut hesabına gerek yoktur. Breeze yerel API anahtarını şifrelenmiş olarak saklar ve bunu seçtiğiniz aracıya iletir.",
     "controllerURL": "Denetleyici URL'si",
-    "siteThisControllerServes": "Bu denetleyicinin hizmet verdiği site",
+    "collectorAgentLocation": "Toplayıcı aracının konumu",
+    "collectorAgentLocationHelp": "Bu denetleyiciyi sorgulayan aracının bulunduğu yer; çoğunlukla kendi iç kuruluşunuz. Denetleyiciyi kaydettikten sonra sitelerini müşterilerle eşleştirirsiniz.",
     "selectSite": "— Siteyi seçin —",
     "collectorAgent": "Koleksiyoncu temsilcisi",
     "localAPIKey": "Yerel API anahtarı",
@@ -1154,6 +1157,7 @@
     "started": "Başlatıldı",
     "trigger": "Tetikleyici",
     "hostsSeen": "Toplantı sahipleri görüldü",
+    "sitesUnmapped": "Eşlenmemiş siteler",
     "hosts": "Toplantı Sahipleri",
     "devicesCreated": "Cihazlar bu senkronizasyonu ekledi",
     "new": "Eklendi",
@@ -1478,7 +1482,8 @@
     "status": {
       "connected": "Bağlı",
       "error": "Hata",
-      "reauth_required": "Yeniden kimlik doğrulama gerekli"
+      "reauth_required": "Yeniden kimlik doğrulama gerekli",
+      "inactive": "Etkin değil"
     },
     "syncStatus": {
       "running": "Çalışıyor",
@@ -1580,5 +1585,28 @@
     "pushTestNote": "Test olayının ulaşması birkaç dakika sürebilir.",
     "pushLast": "Son push olayı: {{relative}}",
     "pushNone": "Henüz push olayı alınmadı"
+  },
+  "externalMatch": {
+    "suggested": "Önerilen: {{target}}",
+    "matchedOn": "“{{key}}” üzerinden eşleşti",
+    "accept": "Kabul et",
+    "possibleMatches_one": "{{count}} olası eşleşme",
+    "possibleMatches_other": "{{count}} olası eşleşme",
+    "alsoMatches": "Ayrıca {{names}} ile eşleşiyor",
+    "pickSite": "{{org}} içinde bir site seçin",
+    "reviewButton_one": "{{count}} önerilen eşleşmeyi gözden geçir",
+    "reviewButton_other": "{{count}} önerilen eşleşmeyi gözden geçir",
+    "reviewTitle": "Önerilen eşleşmeleri gözden geçir",
+    "confirm_one": "Seçilen {{count}} öğeyi eşle",
+    "confirm_other": "Seçilen {{count}} öğeyi eşle",
+    "resolveInTable": "Bunları tabloda çözün",
+    "tierExact": "Aynı ad",
+    "tierNormalized": "Aynı ad, ekler yok sayılarak",
+    "summary": "{{unmapped}} eşlenmemiş · {{suggested}} önerilen",
+    "staleReview": "Bu incelemeyi açtığınızdan beri bazı satırlar değişti. Liste yeniden yüklendi.",
+    "newSinceSync_one": "Son eşitlemeden bu yana {{count}} yeni",
+    "newSinceSync_other": "Son eşitlemeden bu yana {{count}} yeni",
+    "bulkMapped_one": "{{count}} şirket eşlendi",
+    "bulkMapped_other": "{{count}} şirket eşlendi"
   }
 }

@@ -958,6 +958,8 @@
     "integrationUpdated": "Integración Pax8 actualizada",
     "integrationConnected": "Integración Pax8 conectada",
     "companyMapped": "Empresa Pax8 mapeada",
+    "companiesRefreshFailed": "No se pudo actualizar la lista de empresas y puede estar desactualizada. Vuelve a cargar para ver lo más reciente.",
+    "syncStillRunning": "La sincronización sigue en curso o su estado no está disponible. Vuelve a revisar en unos minutos.",
     "companyUnmapped": "Compañía Pax8 no asignada",
     "observationsPaused": "Observaciones de cantidad de Pax8 en pausa",
     "observationsResumed": "Observaciones de cantidad de Pax8 reanudadas",
@@ -1115,7 +1117,8 @@
     "controllers": "Controladores",
     "registerEachSelfHostedUniFiNetworkControllerA": "Registre cada controlador de red UniFi autohospedado. Un agente Breeze en la red del controlador sondea su integración local API (firmware ≥ 9.3) directamente, por lo que no se necesita una cuenta en la nube de UniFi. Breeze almacena la clave API local cifrada y la envía al agente que elija.",
     "controllerURL": "URL del controlador",
-    "siteThisControllerServes": "Sitio al que sirve este controlador",
+    "collectorAgentLocation": "Ubicación del agente recolector",
+    "collectorAgentLocationHelp": "Dónde reside el agente que consulta este controlador, a menudo su propia organización interna. Usted asocia los sitios del controlador con los clientes después de registrarlo.",
     "selectSite": "— Seleccionar sitio —",
     "collectorAgent": "Agente coleccionista",
     "localAPIKey": "Clave local API",
@@ -1154,6 +1157,7 @@
     "started": "Iniciado",
     "trigger": "Desencadenador",
     "hostsSeen": "Anfitriones vistos",
+    "sitesUnmapped": "Sitios sin asignar",
     "hosts": "Hosts",
     "devicesCreated": "Los dispositivos agregaron esta sincronización",
     "new": "Agregado",
@@ -1478,7 +1482,8 @@
     "status": {
       "connected": "Conectado",
       "error": "Error",
-      "reauth_required": "Se requiere volver a autenticarse"
+      "reauth_required": "Se requiere volver a autenticarse",
+      "inactive": "Inactiva"
     },
     "syncStatus": {
       "running": "En ejecución",
@@ -1580,5 +1585,28 @@
     "pushTestNote": "El evento de prueba puede tardar unos minutos en llegar.",
     "pushLast": "Último evento push: {{relative}}",
     "pushNone": "Aún no se han recibido eventos push"
+  },
+  "externalMatch": {
+    "suggested": "Sugerencia: {{target}}",
+    "matchedOn": "coincide en “{{key}}”",
+    "accept": "Aceptar",
+    "possibleMatches_one": "{{count}} posible coincidencia",
+    "possibleMatches_other": "{{count}} posibles coincidencias",
+    "alsoMatches": "También coincide con {{names}}",
+    "pickSite": "Elige un sitio en {{org}}",
+    "reviewButton_one": "Revisar {{count}} coincidencia sugerida",
+    "reviewButton_other": "Revisar {{count}} coincidencias sugeridas",
+    "reviewTitle": "Revisar coincidencias sugeridas",
+    "confirm_one": "Asignar {{count}} seleccionada",
+    "confirm_other": "Asignar {{count}} seleccionadas",
+    "resolveInTable": "Resuélvelas en la tabla",
+    "tierExact": "Mismo nombre",
+    "tierNormalized": "Mismo nombre, sin considerar sufijos",
+    "summary": "{{unmapped}} sin asignar · {{suggested}} sugeridas",
+    "staleReview": "Algunas filas cambiaron desde que abriste esta revisión. Se recargó la lista.",
+    "newSinceSync_one": "{{count}} nuevo desde la última sincronización",
+    "newSinceSync_other": "{{count}} nuevos desde la última sincronización",
+    "bulkMapped_one": "{{count}} empresa mapeada",
+    "bulkMapped_other": "{{count}} empresas mapeadas"
   }
 }

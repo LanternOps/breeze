@@ -33,13 +33,18 @@ const { dbMockState, ctxState, commandQueueMock } = vi.hoisted(() => ({
 
 vi.mock('../../db', () => ({
   db: {
-    insert: vi.fn(() => ({
-      values: vi.fn(async (row: unknown) => {
-        ctxState.events.push(`alertInsert@depth${ctxState.depth}`);
-        dbMockState.insertedRows.push(row);
-      }),
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => {
+            ctxState.events.push(`alertDedupe@depth${ctxState.depth}`);
+            return [];
+          }),
+        })),
+      })),
     })),
   },
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
   // Depth-preserving on purpose — see the file header.
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -59,6 +64,14 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../commandQueue', () => commandQueueMock);
+// #11328 — the alert goes through createSourcedAlert; record the depth it runs at.
+vi.mock('../alertService', () => ({
+  createSourcedAlert: vi.fn(async (row: unknown) => {
+    ctxState.events.push(`alertInsert@depth${ctxState.depth}`);
+    dbMockState.insertedRows.push(row);
+    return 'alert-1';
+  }),
+}));
 // The policy check has its own suite; here it only has to allow.
 vi.mock('../aiRemoteToolsPolicy', () => ({
   checkAiRemoteToolsPolicy: vi.fn().mockResolvedValue({ allowed: true }),
@@ -162,7 +175,7 @@ describe('recordActVerifyFailureAlert DB-context scoping (#4150/#1105)', () => {
     });
 
     // A short context around a pure DB write is correct and must stay.
-    expect(ctxState.events).toEqual(['ctx:enter', 'alertInsert@depth1', 'ctx:exit']);
+    expect(ctxState.events).toEqual(['ctx:enter', 'alertDedupe@depth1', 'alertInsert@depth1', 'ctx:exit']);
     expect(dbMockState.insertedRows).toHaveLength(1);
   });
 });

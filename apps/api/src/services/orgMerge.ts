@@ -80,6 +80,7 @@ import {
 } from './agentOrgSettingsCache';
 import { agentCollectorAbsenceCache } from './unifi/unifiCollectorService';
 import { prepareTopologyOrgMerge, finalizeTopologyOrgMerge } from './topology/tenantLifecycle';
+import { lockPortalEntraOrgMappings } from './portalEntraTenantProof';
 // Self-import so `executeOrgMerge` calls the exported bindings through the
 // module namespace, letting tests spy on `runPolicy` / `fenceLoser` — the same
 // pattern `tenantCascade.ts` uses for `topologicalCascadeOrder`.
@@ -177,8 +178,27 @@ export interface MergeBlocker {
  *  - `pam_evidence`: PAM transfer is off and the loser has PAM history.
  *  - `payment_in_flight`: an autopay collection is still in flight.
  *  - `lineage_depth`: the held evidence lineage would get too deep.
+ *  - `isolation_unresolved`: a loser device's network isolation is not released.
+ *  - `entra_tenant_conflict`: the loser's Microsoft tenant mapping is proven and
+ *    the survivor holds a mapping too (portal registration W4, plan D8 / OD7) —
+ *    `keep-survivor` would drop the proven one.
  */
-export type MergeBlockerCode = 'pam_open_actuation' | 'pam_evidence' | 'payment_in_flight' | 'lineage_depth' | 'isolation_unresolved';
+export type MergeBlockerCode =
+  | 'pam_open_actuation'
+  | 'pam_evidence'
+  | 'payment_in_flight'
+  | 'lineage_depth'
+  | 'isolation_unresolved'
+  | 'entra_tenant_conflict';
+
+/**
+ * The `MergeBlocker.table` that carries the `entra_tenant_conflict` refusal. It
+ * is not a `blocks-merge` registry table (the mapping is `keep-survivor`); the
+ * pair check in {@link collectMergeBlockers} reports it under this name.
+ */
+const ENTRA_TENANT_CONFLICT_TABLE = 'client_ai_tenant_mappings';
+const ENTRA_TENANT_CONFLICT_MESSAGE =
+  'Both organizations are linked to a Microsoft tenant and the merged-away one is proven. Remove one tenant link first.';
 
 /** PAM-chain tables whose loser rows a merge leaves at their epoch (registry kind `epoch-frozen`). */
 function isPamEpochFrozenTable(table: string): boolean {
@@ -193,6 +213,7 @@ export function mergeBlockerCodes(
   const codes = new Set<MergeBlockerCode>();
   for (const b of blockers) {
     if (b.table === 'device_network_isolations') codes.add('isolation_unresolved');
+    else if (b.table === ENTRA_TENANT_CONFLICT_TABLE) codes.add('entra_tenant_conflict');
     else if (b.table === 'invoice_collection_attempts') codes.add('payment_in_flight');
     else if (isPamEpochFrozenTable(b.table)) codes.add(pamTransfer ? 'pam_open_actuation' : 'pam_evidence');
   }
@@ -207,6 +228,12 @@ export function buildMergeBlockedMessage(blockers: MergeBlocker[], pamTransfer =
     return others.length > 0
       ? `Release network isolation first. ${buildMergeBlockedMessage(others, pamTransfer)}`
       : 'Release network isolation first';
+  }
+  if (blockers.some(b => b.table === ENTRA_TENANT_CONFLICT_TABLE)) {
+    const others = blockers.filter(b => b.table !== ENTRA_TENANT_CONFLICT_TABLE);
+    return others.length > 0
+      ? `${ENTRA_TENANT_CONFLICT_MESSAGE} ${buildMergeBlockedMessage(others, pamTransfer)}`
+      : ENTRA_TENANT_CONFLICT_MESSAGE;
   }
   const paymentBlockers = blockers.filter((b) => b.table === 'invoice_collection_attempts');
   if (paymentBlockers.length > 0) {
@@ -355,14 +382,54 @@ export async function resolveMergePamTransfer(): Promise<boolean> {
   return resolvePamEpochTransfer(dbModule.db);
 }
 
+/**
+ * The `entra_tenant_conflict` pair check (portal registration W4, plan D8 /
+ * OD7, spec §5.4): 1 when the loser's tenant mapping is PROVEN and the survivor
+ * holds any mapping, else 0. `client_ai_tenant_mappings` is `keep-survivor`, so
+ * without this refusal the walk would drop the loser's proven mapping in favour
+ * of the survivor's (perhaps unproven) one and strand the repointed identities.
+ * A proven loser mapping with no survivor mapping is adopted, proof intact.
+ *
+ * `lock` takes both orgs' rows FOR UPDATE (pre-fence and the Phase-B recheck).
+ * A tenant proof (services/portalEntraTenantProof.ts) locks the same rows, so
+ * it cannot change an EXISTING row between this check and the registry walk.
+ * FOR UPDATE cannot lock a row that is absent, so it does not stop a proof or
+ * the AI for Office PUT from CREATING the survivor's (or loser's) mapping. In
+ * Phase B that is covered by the per-org lock (`lockPortalEntraOrgMappings`),
+ * which `executeOrgMerge` takes for both orgs before this recheck runs. The
+ * pre-fence read and the preview are advisory. The preview reads without
+ * locking.
+ */
+async function entraTenantConflictRows(loserOrgId: string, survivorOrgId: string, lock: boolean): Promise<number> {
+  const rows = (await dbModule.db.execute(sql`
+    SELECT org_id::text AS org_id, proven_at IS NOT NULL AS proven
+      FROM client_ai_tenant_mappings
+     WHERE org_id IN (${uuid(loserOrgId)}, ${uuid(survivorOrgId)})
+     ORDER BY id
+     ${lock ? sql`FOR UPDATE` : sql``}`)) as unknown as Array<{ org_id: string; proven: boolean }>;
+  const loserProven = rows.some((r) => r.org_id === loserOrgId && r.proven);
+  const survivorHasMapping = rows.some((r) => r.org_id === survivorOrgId);
+  return loserProven && survivorHasMapping ? 1 : 0;
+}
+
+/**
+ * `survivorOrgId` enables the pair checks (today: `entra_tenant_conflict`).
+ * Without it only the loser's own rows are checked, which is what the
+ * defense-in-depth callers that know no survivor get.
+ */
 export async function collectMergeBlockers(
   loserOrgId: string,
   pamTransfer?: boolean,
+  survivorOrgId?: string,
 ): Promise<MergeBlocker[]> {
   const transfer = pamTransfer ?? await self.resolveMergePamTransfer();
   const blockers: MergeBlocker[] = [];
   const isolations = await findUnresolvedIsolations(dbModule.db, { orgId: loserOrgId });
   if (isolations.length > 0) blockers.push({ table: 'device_network_isolations', loserRows: isolations.length });
+  if (survivorOrgId) {
+    const conflict = await entraTenantConflictRows(loserOrgId, survivorOrgId, true);
+    if (conflict > 0) blockers.push({ table: ENTRA_TENANT_CONFLICT_TABLE, loserRows: conflict });
+  }
   for (const [table, policy] of getOrgMergePolicies()) {
     if (!isRefusingPolicy(policy)) continue;
     const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId, transfer));
@@ -417,6 +484,8 @@ const DROP_LOSER_OVERRIDE_SETTINGS_TABLES: ReadonlySet<string> = new Set([
   'billing_payment_settings',
   // #4617 customer work approval policy.
   'ticket_approval_settings',
+  // W3 #11380 portal sign-in policy: survivor keeps its own override or inherits the partner default.
+  'portal_access_policies',
 ]);
 
 /** Policy kinds that issue DML. Everything else is a documented no-op. */
@@ -1122,7 +1191,7 @@ export async function runPostPassFixups(
   // What this DOES need to guard is a mapping row that has gone orphaned —
   // its invoice or payment deleted through some other path (not by this
   // merge; nothing in the merge engine deletes invoices — see voidPayment in
-  // invoiceService.ts and the full-refund branch in stripeReconcile.ts for
+  // invoiceService.ts and the full-refund arm in stripeReversalState.ts for
   // where a payment mapping COULD orphan once Phase D writes 'payment' rows).
   // A stale orphan would sit invisible in the UI forever, so sweep both
   // entity types the same defensive way.
@@ -1257,14 +1326,18 @@ async function getOrgMergeWalkOrder(): Promise<string[]> {
 // Execute
 // ---------------------------------------------------------------------------
 
-/** Must run in Phase B after the export locks and assertPairStillMergeable. */
-export async function assertMergeIsolationSafe(orgId: string, pamTransfer: boolean): Promise<void> {
+/**
+ * Must run in Phase B after the export locks and assertPairStillMergeable.
+ * `survivorOrgId` keys the pair checks (`entra_tenant_conflict`); the engine
+ * always passes it, after it has taken both orgs' per-org portal Entra locks.
+ */
+export async function assertMergeIsolationSafe(orgId: string, pamTransfer: boolean, survivorOrgId?: string): Promise<void> {
   // Existing org NO KEY UPDATE is compatible with start's FK KEY SHARE. Never
   // upgrade it: wait on devices (id order), then read committed episodes. The
   // already-held export org lock blocks the devices INSERT trigger from committing,
   // so no new device can become visible to a start after this scan.
   await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${uuid(orgId)} ORDER BY id FOR NO KEY UPDATE`);
-  const blockers = await self.collectMergeBlockers(orgId, pamTransfer);
+  const blockers = await self.collectMergeBlockers(orgId, pamTransfer, survivorOrgId);
   if (blockers.length > 0) throw new OrgMergeBlockedError(blockers, 'blocks_merge', pamTransfer);
 }
 
@@ -1303,7 +1376,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
     dbModule.withSystemDbAccessContext(async () => {
       const transfer = await self.resolveMergePamTransfer();
       return {
-        preFenceBlockers: await self.collectMergeBlockers(loser.id, transfer),
+        preFenceBlockers: await self.collectMergeBlockers(loser.id, transfer, survivor.id),
         preFencePamTransfer: transfer,
       };
     }),
@@ -1343,6 +1416,16 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
     result = await dbModule.runOutsideDbContext(() =>
       dbModule.withSystemDbAccessContext(async () => {
         // Phase B lock order (#10692):
+        // 0. Both orgs' per-org portal Entra locks, id-ascending
+        //    (lockPortalEntraOrgMappings, portal registration W4 D8 / OD7).
+        //    The entra_tenant_conflict recheck below locks the EXISTING
+        //    mapping rows. This lock covers the absent ones: a tenant proof or
+        //    the AI for Office PUT takes it before it creates either org's
+        //    mapping, so neither can add a survivor mapping between the recheck
+        //    and the keep-survivor walk. It is taken first, while this
+        //    transaction holds no other lock. Those writers take only their
+        //    per-tenant lock before it, which the merge never takes. So none of
+        //    them can wait on this lock while holding something the merge needs.
         // 1. All of the partner's partner-owned group rows FOR KEY SHARE,
         //    id-ascending via acquirePartnerGroupRowLocks. The deferred
         //    membership owner check takes KEY SHARE on the group at COMMIT,
@@ -1380,6 +1463,14 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // Postgres aborts one side. If it is the merge, it rolls back and
         // unfences as for any Phase B failure; if it is the delete, the caller
         // sees 40P01.
+        // Portal registration W5 (#11382, plan D3): exempt this transaction's
+        // customer_email_domains repoint from the clear-on-repoint trigger, so
+        // a verified domain keeps its verification across the merge (same
+        // partner, same customer). Transaction-local; ends with Phase B. If
+        // Phase B ever splits into two transactions, set it in each.
+        // orgMergeGucContract.test.ts pins that only this file sets it.
+        await dbModule.db.execute(sql`SELECT set_config('breeze.org_merge', 'on', true)`);
+        await lockPortalEntraOrgMappings([loser.id, survivor.id]);
         await self.lockMergePartnerGroupRows(input.partnerId);
         const locked = [loser.id, survivor.id].sort();
         await dbModule.db.execute(
@@ -1417,7 +1508,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // refusing any PAM history, which the recheck below already enforces.
         const pamTransfer = await self.resolveMergePamTransfer();
         await armOwnershipChange(dbModule.db, 'org_merge', pamTransfer);
-        await self.assertMergeIsolationSafe(loser.id, pamTransfer);
+        await self.assertMergeIsolationSafe(loser.id, pamTransfer, survivor.id);
         await self.assertMergeLineageDepth(loser.id, survivor.id);
 
         const topologyMerge = await prepareTopologyOrgMerge(loser.id, survivor.id);
@@ -1731,6 +1822,10 @@ export async function previewOrgMerge(
       const mergeBlockers: MergeBlocker[] = [];
       const isolations = await findUnresolvedIsolations(dbModule.db, { orgId: loserOrgId });
       if (isolations.length > 0) mergeBlockers.push({ table: 'device_network_isolations', loserRows: isolations.length });
+      // Same pair check as collectMergeBlockers, read without row locks, so a
+      // preview never shows a mergeable pair the merge then refuses.
+      const entraConflict = await entraTenantConflictRows(loserOrgId, survivorOrgId, false);
+      if (entraConflict > 0) mergeBlockers.push({ table: ENTRA_TENANT_CONFLICT_TABLE, loserRows: entraConflict });
       const pamTransfer = await self.resolveMergePamTransfer();
       let heldPamRows = 0;
 

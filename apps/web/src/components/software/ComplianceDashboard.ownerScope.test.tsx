@@ -66,7 +66,7 @@ function fillRequiredFields() {
   fireEvent.change(screen.getByPlaceholderText('e.g. Block Unauthorized Software'), {
     target: { value: 'Fleet-wide Policy' },
   });
-  fireEvent.change(screen.getByPlaceholderText('Name *'), { target: { value: 'Chrome' } });
+  fireEvent.change(screen.getByPlaceholderText('Software name *'), { target: { value: 'Chrome' } });
 }
 
 describe('ComplianceDashboard — owner scope (#2126)', () => {

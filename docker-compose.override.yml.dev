@@ -122,6 +122,44 @@ services:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
       start_period: 60s
 
+  # Worker-role process for `--profile worker-split` in dev (#4144): the same
+  # source-mounted image and mounts as `api`, but running the worker entrypoint
+  # under tsx watch. Without this the profile would pull the base file's
+  # registry image ref instead of the code being developed. Publishes no port.
+  # It reuses the `breeze-api:dev` tag that `api` builds, so build/start `api`
+  # first (`up --build api`). Unlike `api` it does not re-run `pnpm install` on
+  # start; after a lockfile change rebuild the image.
+  # BREEZE_ROLE is hardcoded in the base service; the api's ROLE is untouched.
+  worker:
+    image: breeze-api:dev
+    command: ["sh", "-lc", "pnpm exec tsx watch src/worker.ts"]
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    volumes:
+      - ./apps/api/src:/app/apps/api/src:cached
+      - ./apps/api/assets:/app/apps/api/assets:ro
+      - ./apps/api/migrations:/app/apps/api/migrations:ro
+      - ./packages/shared/src:/app/packages/shared/src:cached
+      - ./ee/workspace/src:/app/ee/workspace/src:cached
+      - ./packages/extension-sdk/src:/app/packages/extension-sdk/src:cached
+      - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
+      - ./ee/workspace/manifest.json:/app/ee/workspace/manifest.json:ro
+      - ./apps/api/package.json:/app/apps/api/package.json:ro
+      - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
+      - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
+      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
+      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
+      - /app/node_modules
+      - /app/apps/api/node_modules
+      - /app/packages/shared/node_modules
+    environment:
+      NODE_ENV: development
+      APP_VERSION: dev
+      LOG_LEVEL: debug
+      BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-true}
+      # Dev runs source under tsx, so the production 1 GB heap cap does not apply.
+      NODE_OPTIONS: ""
+
   web:
     image: breeze-web:dev
     build:

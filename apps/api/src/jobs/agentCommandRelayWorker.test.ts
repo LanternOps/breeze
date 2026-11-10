@@ -13,10 +13,11 @@ vi.mock('../services/agentPresence', () => ({
 }));
 
 vi.mock('../services/agentCommandRelay', () => ({
-  AGENT_COMMAND_RELAY_QUEUE: 'agent-command-relay',
+  agentCommandRelayQueueName: (id: string) => `agent-command-relay-${id}`,
   claimRelaySend: vi.fn(),
   markRelaySendComplete: vi.fn(),
   openRelayCommand: vi.fn(),
+  releaseRelaySendClaim: vi.fn(),
   writeRelayAck: vi.fn(),
 }));
 
@@ -30,6 +31,7 @@ import {
   claimRelaySend,
   markRelaySendComplete,
   openRelayCommand,
+  releaseRelaySendClaim,
   writeRelayAck,
 } from '../services/agentCommandRelay';
 import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
@@ -138,8 +140,14 @@ describe('processAgentCommandRelayJob', () => {
     vi.mocked(openRelayCommand).mockImplementation(() => {
       throw new Error('tamper');
     });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await processAgentCommandRelayJob(fakeJob());
+
+    // #4142: nothing was sent, so the claim it took goes back.
+    expect(releaseRelaySendClaim).toHaveBeenCalledWith('agent-1', 'cmd-1');
+    expect(error).toHaveBeenCalledWith('[AgentCommandRelayWorker] relay envelope failed to open', expect.objectContaining({ error: 'tamper' }));
+    error.mockRestore();
 
     expect(writeRelayAck).toHaveBeenCalledWith('relay-1', {
       status: 'infrastructure_error',
@@ -169,5 +177,39 @@ describe('processAgentCommandRelayJob', () => {
 
     expect(markRelaySendComplete).not.toHaveBeenCalled();
     expect(writeRelayAck).toHaveBeenCalledWith('relay-1', { status: 'offline' });
+  });
+
+  // #4142 W1.T2: the claim was taken for a send that did not happen. Holding it
+  // until its TTL lapses would answer a retry of the same command `indeterminate`.
+  it('clears its send claim when the local send returns false, so a retry can claim', async () => {
+    vi.mocked(sendCommandToAgent).mockReturnValue(false);
+
+    await processAgentCommandRelayJob(fakeJob());
+
+    expect(releaseRelaySendClaim).toHaveBeenCalledWith('agent-1', 'cmd-1');
+    expect(writeRelayAck).toHaveBeenCalledWith('relay-1', { status: 'offline' });
+  });
+
+  // #4142 W1.T2: the claim await is a Redis round trip; a job that expires
+  // during it must not be sent, because the producer may already have answered.
+  it('re-checks expiry immediately before sendCommandToAgent', async () => {
+    const realNow = Date.now.bind(Date);
+    const expiresAt = realNow() + 50;
+    let claimed = false;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => (claimed ? expiresAt + 1 : realNow()));
+    vi.mocked(claimRelaySend).mockImplementation(async () => {
+      claimed = true; // the clock passes expiresAt while the claim round trip is in flight
+      return 'claimed';
+    });
+    try {
+      await processAgentCommandRelayJob(fakeJob({ expiresAt }));
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(markRelaySendComplete).not.toHaveBeenCalled();
+    expect(releaseRelaySendClaim).toHaveBeenCalledWith('agent-1', 'cmd-1');
+    expect(writeRelayAck).toHaveBeenCalledWith('relay-1', { status: 'expired' });
   });
 });

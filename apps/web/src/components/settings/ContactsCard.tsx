@@ -10,6 +10,12 @@ import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled
 import { ContactVerificationDrawer } from '../callerVerification/ContactVerificationDrawer';
 import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
 import OnboardPersonLauncher from '../aiOperator/OnboardPersonLauncher';
+import {
+  useContactPortalAccess,
+  giveContactPortalAccess,
+  giveContactsPortalAccess,
+  type ContactPortalStatus,
+} from './contactPortalAccess';
 import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownContactRole as isKnownRole, type ContactRole } from '@/lib/contactRoles';
 
 /**
@@ -24,6 +30,15 @@ import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownConta
  */
 
 const PAGE_SIZE = 25;
+
+// Static map (no template keys) so keyUsage.test.ts can see every key.
+const PORTAL_STATUS_LABEL_KEYS: Record<ContactPortalStatus, string> = {
+  none: 'contactsCard.portal.status.none',
+  invited: 'contactsCard.portal.status.invited',
+  active: 'contactsCard.portal.status.active',
+  disabled: 'contactsCard.portal.status.disabled',
+  requested: 'contactsCard.portal.status.requested',
+};
 
 type Contact = {
   id: string;
@@ -159,6 +174,13 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
   const [formOpen, setFormOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
+  // Portal access (#11378). Everything portal-related renders only when the
+  // portal-users list is reachable (partner/system scope).
+  const portal = useContactPortalAccess(orgId);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [portalBusyId, setPortalBusyId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [grantPortal, setGrantPortal] = useState(false);
   /**
    * Monotonic request id. `loadContacts` is fired from an effect AND from every
    * mutation, so two loads can be in flight at once (change a filter mid-delete);
@@ -221,6 +243,13 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
       }
       setContacts(rows);
       setTotal(count);
+      // A reload (e.g. after a row delete) can drop rows the operator had
+      // ticked; posting a vanished id would 404 the whole bulk batch.
+      setSelected((prev) => {
+        const ids = new Set(rows.map((r) => r.id));
+        const next = new Set([...prev].filter((id) => ids.has(id)));
+        return next.size === prev.size ? prev : next;
+      });
     } catch (err) {
       if (superseded()) return;
       console.warn('[ContactsCard] contacts load failed', err);
@@ -231,6 +260,9 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
   }, [orgId, page, siteFilter, roleFilter, unauthorized]);
 
   useEffect(() => { void loadContacts(); }, [loadContacts]);
+
+  // A selection belongs to the page/filter/org it was made on.
+  useEffect(() => { setSelected(new Set()); }, [orgId, page, siteFilter, roleFilter]);
 
   // Sites come from THIS organization, not from useOrgStore().sites: the store
   // holds the globally selected org's sites, which is a different org whenever
@@ -270,6 +302,7 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
   function openCreate() {
     setEditing(null);
     setDraft(EMPTY_DRAFT);
+    setGrantPortal(false);
     setFormOpen(true);
   }
 
@@ -285,7 +318,7 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
     if (saving || !draftHasIdentifier) return;
     setSaving(true);
     try {
-      await runAction({
+      const saved = await runAction<{ data?: Contact }>({
         request: () => (editing
           ? fetchWithAuth(`/orgs/contacts/${editing.id}`, {
               method: 'PATCH',
@@ -303,10 +336,26 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
           : t('contactsCard.toasts.created'),
         onUnauthorized: unauthorized,
       });
+      const wantsPortal = !editing && portal.available && grantPortal;
       setFormOpen(false);
       setEditing(null);
       setDraft(EMPTY_DRAFT);
+      setGrantPortal(false);
       notifyContactsChanged();
+      if (wantsPortal && saved?.data?.id && saved.data.email) {
+        // The contact exists either way; an invite failure toasts on its own
+        // and must not reopen or block the form.
+        try {
+          await giveContactPortalAccess(
+            orgId,
+            { id: saved.data.id, email: saved.data.email, name: saved.data.name },
+            t,
+          );
+        } catch (err) {
+          handleActionError(err, t('contactsCard.portal.errors.invite'));
+        }
+        await portal.reload();
+      }
       // Refetch rather than patch: promoting a primary DEMOTES the previous one
       // in the same scope server-side, and no client-side guess reproduces that
       // without re-implementing the scope rule.
@@ -343,6 +392,43 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
       setDeletingId(null);
     }
   }
+
+  async function givePortalAccess(c: Contact) {
+    if (portalBusyId || !c.email) return;
+    setPortalBusyId(c.id);
+    try {
+      await giveContactPortalAccess(orgId, { id: c.id, email: c.email, name: c.name }, t);
+    } catch (err) {
+      handleActionError(err, t('contactsCard.portal.errors.invite'));
+    } finally {
+      setPortalBusyId(null);
+      await portal.reload();
+    }
+  }
+
+  async function giveBulkPortalAccess() {
+    if (bulkBusy || selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      await giveContactsPortalAccess(orgId, [...selected], t);
+      setSelected(new Set());
+    } catch (err) {
+      handleActionError(err, t('contactsCard.portal.errors.bulkInvite'));
+    } finally {
+      setBulkBusy(false);
+      await portal.reload();
+    }
+  }
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  const allSelected = contacts.length > 0 && contacts.every((c) => selected.has(c.id));
 
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const rangeFrom = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -563,6 +649,22 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
             <span>{t('contactsCard.form.fields.isPrimary')}</span>
           </label>
 
+          {portal.available && !editing && (
+            <label className="mt-4 flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                data-testid="contact-form-portal-access-input"
+                checked={grantPortal && draft.email.trim() !== ''}
+                disabled={draft.email.trim() === ''}
+                onChange={(e) => setGrantPortal(e.target.checked)}
+              />
+              <span>{t('contactsCard.portal.form.giveAccess')}</span>
+              {draft.email.trim() === '' && (
+                <span className="text-muted-foreground">{t('contactsCard.portal.form.needsEmail')}</span>
+              )}
+            </label>
+          )}
+
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <button
               type="button"
@@ -611,15 +713,41 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
         </div>
       )}
 
+      {portal.available && selected.size > 0 && (
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            data-testid="org-contacts-portal-bulk-give"
+            onClick={() => void giveBulkPortalAccess()}
+            disabled={bulkBusy}
+            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            {t('contactsCard.portal.actions.bulkGive', { count: selected.size })}
+          </button>
+        </div>
+      )}
+
       {!loadError && contacts.length > 0 && (
         <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">
           <table className="w-full text-sm" data-testid="org-contacts-table">
             <thead>
               <tr className="border-b bg-muted/50 text-left text-xs text-muted-foreground">
+                {portal.available && (
+                  <th className="w-8 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      data-testid="org-contacts-select-all"
+                      aria-label={t('contactsCard.portal.actions.selectAll')}
+                      checked={allSelected}
+                      onChange={() => setSelected(allSelected ? new Set() : new Set(contacts.map((c) => c.id)))}
+                    />
+                  </th>
+                )}
                 <th className="px-3 py-2">{t('contactsCard.columns.name')}</th>
                 <th className="px-3 py-2">{t('contactsCard.columns.reach')}</th>
                 <th className="px-3 py-2">{t('contactsCard.columns.jobTitle')}</th>
                 <th className="px-3 py-2">{t('contactsCard.columns.roles')}</th>
+                {portal.available && <th className="px-3 py-2">{t('contactsCard.portal.column')}</th>}
                 <th className="px-3 py-2">{t('contactsCard.columns.site')}</th>
                 <th className="px-3 py-2 text-right">{t('contactsCard.columns.actions')}</th>
               </tr>
@@ -627,12 +755,24 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
             <tbody>
               {contacts.map((c) => {
                 const pinned = siteName(c.siteId);
+                const portalState = portal.available ? portal.statusFor(c) : null;
                 return (
                   <tr
                     key={c.id}
                     data-testid={`org-contacts-row-${c.id}`}
                     className="border-b border-border/50 last:border-0"
                   >
+                    {portal.available && (
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          data-testid={`org-contacts-select-${c.id}`}
+                          aria-label={t('contactsCard.portal.actions.selectRow', { name: c.name ?? c.email ?? '' })}
+                          checked={selected.has(c.id)}
+                          onChange={() => toggleSelected(c.id)}
+                        />
+                      </td>
+                    )}
                     <td className="px-3 py-2">
                       <span className="font-medium">{c.name ?? '—'}</span>
                       {c.isPrimary && (
@@ -669,12 +809,30 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
                         </span>
                       )}
                     </td>
+                    {portalState && (
+                      <td className="px-3 py-2" data-testid={`org-contacts-portal-status-${c.id}`}>
+                        {t(/* i18n-dynamic */ PORTAL_STATUS_LABEL_KEYS[portalState.status])}
+                      </td>
+                    )}
                     <td className="px-3 py-2 text-muted-foreground" data-testid={`org-contacts-site-${c.id}`}>
                       {c.siteId === null
                         ? t('contactsCard.organizationLevel')
                         : (pinned ?? t('contactsCard.unknownSite'))}
                     </td>
                     <td className="px-3 py-2 text-right">
+                      {portalState && c.email && (portalState.status === 'none' || portalState.status === 'invited') && (
+                        <button
+                          type="button"
+                          data-testid={`org-contacts-portal-${portalState.status === 'none' ? 'give' : 'resend'}-${c.id}`}
+                          onClick={() => void givePortalAccess(c)}
+                          disabled={portalBusyId !== null}
+                          className="rounded-md px-2 py-1 text-xs underline hover:bg-muted disabled:opacity-50"
+                        >
+                          {portalState.status === 'none'
+                            ? t('contactsCard.portal.actions.give')
+                            : t('contactsCard.portal.actions.resend')}
+                        </button>
+                      )}
                       {callerVerificationEnabled && (
                         <button
                           type="button"

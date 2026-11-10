@@ -220,6 +220,13 @@ describe('human network-isolation routes', () => {
     expect((await request(endpoints[0])).status).toBe(status);
   });
 
+  it('passes the allowlistReason through in the invalid_allowlist body', async () => {
+    h.start.mockResolvedValue({ error: 'invalid_allowlist', allowlistReason: 'server_url_missing' });
+    const res = await request(endpoints[0]);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_allowlist', code: 'invalid_allowlist', allowlistReason: 'server_url_missing' });
+  });
+
   it.each([
     ['site_forbidden', { 'x-deny-site': 'true' }, 403],
     ['device_not_found', {}, 404],

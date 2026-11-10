@@ -132,8 +132,8 @@ export default function AddPackageModal({
   // /config → softwarePackages.uploadsEnabled).
   const { enabled: s3UploadsEnabled } = usePackageUploadsGate(open);
   // Ownership axis (#2135): partner admins can create the package once for all
-  // their orgs. Chunked upload sessions are org-tenanted, so partner-wide
-  // packages are URL-only for now — the file source is disabled in that mode.
+  // their orgs. Partner-owned upload sessions (#11412) make the file source
+  // available to both scopes.
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const [ownerScope, setOwnerScopeState] = useState<OwnerScope>("organization");
   // Ownership is create-only server-side. Once step 1 created the catalog row
@@ -141,31 +141,13 @@ export default function AddPackageModal({
   // selector could no longer change anything — lock it so the UI never claims
   // a scope the package doesn't have.
   const [scopeLocked, setScopeLocked] = useState(false);
-  // Set when switching to partner-wide discarded an already-picked file, so
-  // the user is told rather than left wondering where their file went.
-  const [droppedFileName, setDroppedFileName] = useState("");
-  const uploadsEnabled = s3UploadsEnabled && ownerScope !== "partner";
+  const uploadsEnabled = s3UploadsEnabled;
   const uploadDisabledReason = !s3UploadsEnabled
     ? i18n.t("policies:software.addPackageModal.uploadsRequireS3Storage")
-    : ownerScope === "partner"
-      ? i18n.t("policies:software.addPackageModal.partnerWideUrlOnly")
-      : null;
+    : null;
   const setOwnerScope = (next: OwnerScope) => {
     if (scopeLocked) return;
     setOwnerScopeState(next);
-    // Partner-wide packages are URL-only (see above): drop a picked file and
-    // fall back to the URL source rather than submitting a doomed upload —
-    // and say so, via droppedFileName, rather than doing it silently.
-    if (next === "partner") {
-      setForm((prev) => {
-        if (prev.source !== "file" && !prev.file) return prev;
-        if (prev.fileName) setDroppedFileName(prev.fileName);
-        return { ...prev, source: "url", file: null, fileName: "" };
-      });
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    } else {
-      setDroppedFileName("");
-    }
   };
   const fileInputRef = useRef<HTMLInputElement>(null);
   // If the catalog item was created but the version write failed, keep its id so
@@ -195,7 +177,6 @@ export default function AddPackageModal({
     setForm(blankForm);
     setOwnerScopeState(defaultOwnerScope);
     setScopeLocked(false);
-    setDroppedFileName("");
     setAdvancedOpen(false);
     createdCatalogId.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -916,17 +897,6 @@ export default function AddPackageModal({
               {uploadDisabledReason && (
                 <p className="mt-1 text-xs text-muted-foreground">
                   {uploadDisabledReason}
-                </p>
-              )}
-              {droppedFileName && ownerScope === "partner" && (
-                <p
-                  className="mt-1 text-xs text-amber-600 dark:text-amber-500"
-                  data-testid="pkg-file-dropped-notice"
-                >
-                  {i18n.t(
-                    "policies:software.addPackageModal.selectedFileRemoved",
-                  )}{" "}
-                  ({droppedFileName})
                 </p>
               )}
 

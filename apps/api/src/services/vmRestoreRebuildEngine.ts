@@ -88,7 +88,7 @@ async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: 
       status: 'failed',
       completedAt: now,
       updatedAt: now,
-      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error})`,
+      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error}::text)`,
     })
     .where(and(eq(restoreJobs.id, restoreJobId), eq(restoreJobs.orgId, orgId)));
 }

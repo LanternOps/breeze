@@ -170,6 +170,7 @@ export const INSTALL_BOUNDARY_CLASSIFICATION: Readonly<Record<string, InstallBou
   device_mtls_certificates: handled('rebind_confirm', 'the confirm activates the new certificate and demotes the old (§6.4, wave 1b)'),
   device_network: history('inventory'),
   device_network_isolations: history('containment episodes; a reinstall while isolated is refused by the W1c lifecycle gate, rows stay as evidence (#4618)'),
+  device_oem_policy_side: history('derived vendor update policy side, recomputed by the worker'),
   device_oem_update_status: handled('install_state', 'the new install inherits no vendor tool, owed reboot or armed not-returned monitor'),
   device_ownership_epoch_closures: history('PAM ownership lineage, immutable'),
   device_ownership_epochs: history('PAM ownership lineage, immutable'),

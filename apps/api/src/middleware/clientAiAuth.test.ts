@@ -65,6 +65,7 @@ import {
   clientAiDbAccessContext,
   requireClientAiEnabledMiddleware,
 } from './clientAiAuth';
+import { CLIENT_AI_SESSION_MAX_AGE_SECONDS } from '../routes/clientAi/schemas';
 
 const ORG_ID = '0c0c0c0c-1111-4222-8333-444455556666';
 const PORTAL_USER_ID = 'beefbeef-1111-4222-8333-444455556666';
@@ -144,6 +145,57 @@ describe('clientAiAuthMiddleware', () => {
     getRedisMock.mockReturnValue(null as never);
     const res = await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
     expect(res.status).toBe(503);
+  });
+
+  // Portal registration W4 (plan D9, OD1): an absolute lifetime from the stored
+  // createdAt, on top of the sliding 24 h. The add-in re-exchanges on a 401.
+  describe('absolute session cap', () => {
+    const HOUR_MS = 3_600_000;
+    const sessionCreated = (createdAt: unknown) =>
+      redisMock.get.mockResolvedValue(JSON.stringify({ portalUserId: PORTAL_USER_ID, orgId: ORG_ID, authEpoch: 1, createdAt }));
+    const expectPurged401 = async () => {
+      const res = await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid or expired session' });
+      expect(redisMock.del).toHaveBeenCalledWith(`clientai:session:${TOKEN}`);
+      expect(redisMock.srem).toHaveBeenCalledWith(`clientai:user-sessions:${PORTAL_USER_ID}`, TOKEN);
+      expect(redisMock.expire).not.toHaveBeenCalled();
+      expect(withDbAccessContextMock).not.toHaveBeenCalled();
+    };
+
+    it('the cap is 12 h (OD1)', () => {
+      expect(CLIENT_AI_SESSION_MAX_AGE_SECONDS).toBe(12 * 3600);
+    });
+
+    it('add-in session older than 12 h → 401 and purge; younger → passes', async () => {
+      sessionCreated(new Date(Date.now() - 11 * HOUR_MS - 59 * 60_000).toISOString());
+      const young = await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
+      expect(young.status).toBe(200);
+      expect(redisMock.expire).toHaveBeenCalledWith(`clientai:session:${TOKEN}`, 86400);
+      expect(redisMock.del).not.toHaveBeenCalled();
+
+      vi.clearAllMocks();
+      sessionCreated(new Date(Date.now() - 12 * HOUR_MS - 1000).toISOString());
+      await expectPurged401();
+
+      vi.clearAllMocks();
+      sessionCreated(new Date(Date.now() - 30 * HOUR_MS).toISOString());
+      await expectPurged401();
+    });
+
+    it('add-in session with an unparseable createdAt → 401', async () => {
+      for (const createdAt of ['not a date', '', 1_700_000_000_000, null, undefined, { at: 'now' }]) {
+        vi.clearAllMocks();
+        sessionCreated(createdAt);
+        await expectPurged401();
+      }
+    });
+
+    it('checks the cap after the epoch: a stale-epoch session is refused as before', async () => {
+      setupUserSelect({ ...USER_ROW, authEpoch: 2 });
+      sessionCreated(new Date().toISOString());
+      await expectPurged401();
+    });
   });
 
   it('attaches clientAiAuth, slides the TTL, and runs the handler inside an org-scoped DB context', async () => {

@@ -22,6 +22,11 @@ import {
 } from '../services/ticketMailbox/connectionService';
 import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
 import {
+  MAILBOX_PLATFORM_NOT_CONFIGURED_REASON,
+  MAILBOX_VERIFICATION_FAILED,
+  MailboxPlatformNotConfiguredError,
+} from '../services/ticketMailbox/mailboxErrors';
+import {
   classifyGraphPollError,
   GraphSweepBudgetError,
   isDeltaCursorExpired,
@@ -215,10 +220,14 @@ async function sweepOne(
     // 'Mailbox verification failed' — connectionService.ts's listMailboxConnections
     // only exposes lastError to the client when it has that exact prefix, to
     // keep this poller's error text server-side-only; #6192).
+    // The one failure an admin can fix from the UI gets our own sanitized
+    // reason, which is the only lastError text the list route exposes.
     await setConnectedMailboxStatus(
       c,
       next,
-      err instanceof Error ? err.message : 'poll failed',
+      err instanceof MailboxPlatformNotConfiguredError
+        ? `${MAILBOX_VERIFICATION_FAILED}: ${MAILBOX_PLATFORM_NOT_CONFIGURED_REASON}`
+        : err instanceof Error ? err.message : 'poll failed',
     );
     return;
   }

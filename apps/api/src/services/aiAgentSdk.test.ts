@@ -3380,11 +3380,12 @@ describe('createSessionPreToolUse', () => {
         subjectUsername: 'HOST-01',
       });
 
-      // SSE event marks the approval as admin-side.
+      // SSE event marks the approval as admin-side, decided by someone else (#10416).
       expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
         type: 'approval_required',
         executionId: 'exec-h1',
         requiresAdminApproval: true,
+        waitingOn: 'other_approvers',
       }));
 
       expect(waitForApproval).toHaveBeenCalledWith('exec-h1', 300_000, expect.any(AbortSignal));

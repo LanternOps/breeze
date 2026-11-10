@@ -40,6 +40,7 @@ import {
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
 import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { classifyWispUnattendedRead, type WispUnattendedRead } from './wisp/unattendedReads';
+import { ONBOARDING_ORG_LIMIT } from './wisp/assessableOrgs';
 // Env-only operator knob; the module imports nothing but @breeze/shared.
 import { iocHuntFourEyesDeviceThreshold } from './securityScanSweepConfig';
 import { IOC_HUNT_RUN_ACTION } from './iocHuntActions';
@@ -1691,6 +1692,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   manage_tickets: {
     list: { resource: 'tickets', action: 'read' },
     get: { resource: 'tickets', action: 'read' },
+    // #11431: read-only (id + name of active partner work types, Tier-1 read);
+    // implemented and in the schema enum but unmapped, so it was refused as an
+    // unknown action. Gated like GET /work-types and the sibling
+    // manage_billing_profiles.list_work_types: billing_profiles:read.
+    list_work_types: { resource: 'billing_profiles', action: 'read' },
     create: { resource: 'tickets', action: 'write' },
     comment: { resource: 'tickets', action: 'write' },
     assign: { resource: 'tickets', action: 'write' },
@@ -2273,6 +2279,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_monitor_activity: { resource: 'alerts', action: 'read' },
   reset_monitor_escalation: { resource: 'alerts', action: 'write' },
   manage_monitor_definitions: {
+    // #11431: `describe` is read-only (valid kinds + condition shapes) and the
+    // tool tells the model to call it FIRST; unmapped, it was refused as unknown.
+    describe: { resource: 'alerts', action: 'read' },
     create: { resource: 'alerts', action: 'write' },
     update: { resource: 'alerts', action: 'write' },
     delete: { resource: 'alerts', action: 'write' },
@@ -4551,6 +4560,10 @@ export function describeSpecialistRequest(input: Record<string, unknown>, orgNam
     const message = nonEmptyText(params.message);
     text += ` — sends this message to ${ids} ticket(s)${params.holdTickets === true ? ' and sets them to pending' : ''}`;
     if (message) text += `: "${message.length > 300 ? `${message.slice(0, 300)}…` : message}"`;
+  }
+  // #10406: one card covers the whole batch, so it says how far it reaches.
+  if (kind === 'assessment' && params.scope === 'orgs_with_open_alerts') {
+    text += ` — covers up to ${ONBOARDING_ORG_LIMIT} orgs in this grant with open alerts, worst first`;
   }
   if (kind === 'device_troubleshooting') {
     // Model-written restatement of the ask: one line, bounded, like the org name.

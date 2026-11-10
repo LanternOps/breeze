@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { WispTimelinePost } from '@breeze/shared';
 import WispPost from './WispPost';
 
@@ -110,6 +110,22 @@ describe('WispPost', () => {
     expect(screen.queryByTestId('wisp-post-open')).toBeNull();
   });
 
+  it('renders a nudge_resolved post like a nudge, with the Resolved eyebrow, a check icon and the concern link (#11427)', () => {
+    render(<WispPost post={post({ kind: 'nudge_resolved', title: 'Resolved: Disk almost full on FS-01', body: 'Disk almost full on FS-01 — the disk was cleaned; no action needed.' })} />);
+    const root = screen.getByTestId('wisp-post');
+    expect(root.getAttribute('data-kind')).toBe('nudge_resolved');
+    expect(screen.getByText('Resolved')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-resolved-icon')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('Resolved: Disk almost full on FS-01');
+    expect(screen.getByTestId('wisp-post-body').textContent).toBe('Disk almost full on FS-01 — the disk was cleaned; no action needed.');
+    expect(screen.getByTestId('wisp-post-open').getAttribute('href')).toBe('/ai/wisp/thread/th-1#concern=c-1');
+  });
+
+  it('a plain nudge carries no resolved check icon', () => {
+    render(<WispPost post={post({})} />);
+    expect(screen.queryByTestId('wisp-post-resolved-icon')).toBeNull();
+  });
+
   it('renders a specialist_result post with the Specialist report heading', () => {
     render(<WispPost post={post({ kind: 'specialist_result', title: 'FS-01 troubleshooting', body: 'Disk cleaned.', link: null, concernId: null })} />);
     expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('specialist_result');
@@ -160,5 +176,43 @@ describe('WispPost', () => {
   it.each([null, ''])('renders no body element for body %j', (body) => {
     render(<WispPost post={post({ body })} />);
     expect(screen.queryByTestId('wisp-post-body')).toBeNull();
+  });
+
+  describe('check_in Run now', () => {
+    const checkIn = post({ kind: 'check_in', title: 'Check-in due: x', body: null, link: '/ai/wisp/thread/th-1#checkin=ci-1', concernId: null });
+
+    it('tags the post with the check-in id from its link and shows the clock icon', () => {
+      render(<WispPost post={checkIn} />);
+      const root = screen.getByTestId('wisp-post');
+      expect(root.getAttribute('data-check-in-id')).toBe('ci-1');
+      expect(screen.getByTestId('wisp-post-check-in-icon')).toBeTruthy();
+    });
+
+    it('a check_in post shows Run now only when onRunNow is given, and clicking calls it', () => {
+      const { unmount } = render(<WispPost post={checkIn} />);
+      expect(screen.queryByTestId('wisp-post-run-now')).toBeNull();
+      unmount();
+      const onRunNow = vi.fn();
+      render(<WispPost post={checkIn} onRunNow={onRunNow} />);
+      const button = screen.getByTestId('wisp-post-run-now');
+      expect(button.textContent).toBe('Run now');
+      fireEvent.click(button);
+      expect(onRunNow).toHaveBeenCalledTimes(1);
+    });
+
+    it('Run now is disabled while runNowDisabled', () => {
+      const onRunNow = vi.fn();
+      render(<WispPost post={checkIn} onRunNow={onRunNow} runNowDisabled />);
+      const button = screen.getByTestId('wisp-post-run-now') as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      fireEvent.click(button);
+      expect(onRunNow).not.toHaveBeenCalled();
+    });
+
+    it('other post kinds never show Run now or a check-in id', () => {
+      render(<WispPost post={post({ kind: 'nudge' })} onRunNow={vi.fn()} />);
+      expect(screen.queryByTestId('wisp-post-run-now')).toBeNull();
+      expect(screen.getByTestId('wisp-post').hasAttribute('data-check-in-id')).toBe(false);
+    });
   });
 });

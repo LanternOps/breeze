@@ -152,6 +152,51 @@ describe("BackupProviderConnectionCard", () => {
     });
   });
 
+  it("lets a healthy connection open the credential form proactively", () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    expect(screen.queryByTestId("backup-connection-password")).toBeNull();
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    expect(screen.getByTestId("backup-connection-password")).toBeInTheDocument();
+    expect(screen.queryByTestId("backup-connection-rotate")).toBeNull();
+  });
+
+  it("lets a healthy connection cancel a half-typed rotation, clearing the fields", () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    fireEvent.change(screen.getByTestId("backup-connection-username"), { target: { value: "x" } });
+    fireEvent.click(screen.getByTestId("backup-connection-rotate-cancel"));
+    expect(screen.queryByTestId("backup-connection-username")).toBeNull();
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    expect(screen.getByTestId("backup-connection-username")).toHaveValue("");
+  });
+
+  it("does not render the proactive rotate button on a reauth_required connection", () => {
+    render(<BackupProviderConnectionCard connection={connection({ status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />);
+    expect(screen.queryByTestId("backup-connection-rotate")).toBeNull();
+  });
+
+  it("blocks a Cove rotation that has a new username but a blank password, and never PATCHes it", () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    fireEvent.change(screen.getByTestId("backup-connection-username"), { target: { value: "new-user" } });
+    expect(screen.getByTestId("backup-connection-save")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("PATCHes the full Cove credential set once partner, username and token are all entered", async () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    fireEvent.change(screen.getByTestId("backup-connection-partner-name"), { target: { value: "Acme" } });
+    fireEvent.change(screen.getByTestId("backup-connection-username"), { target: { value: "new-user" } });
+    fireEvent.change(screen.getByTestId("backup-connection-password"), { target: { value: "tok" } });
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(JSON.parse((fetchMock.mock.calls.at(-1)![1] as RequestInit).body as string).credentials).toEqual({
+      partnerName: "Acme", username: "new-user", password: "tok",
+    });
+  });
+
   it("never sends an empty credentials object when the password field was left blank", async () => {
     render(
       <BackupProviderConnectionCard connection={connection({ status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />,
@@ -294,12 +339,12 @@ describe("Cove rotate semantics", () => {
     expect(lastBody()).toBe('{"name":"OliveTech Cove","isActive":true,"showProviderNameInPortal":false,"credentials":{"partnerName":"OliveTech","username":"breeze-ro","password":" s3cret "}}');
   });
 
-  it("keeps the stored credential when the username is filled and the password blank", async () => {
+  it("refuses to save when the username is filled and the password blank, rather than dropping the username", () => {
     renderCard();
     type("username", "someone-else");
+    expect(screen.getByTestId("backup-connection-save")).toBeDisabled();
     fireEvent.click(screen.getByTestId("backup-connection-save"));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(JSON.parse(lastBody())).not.toHaveProperty("credentials");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("keeps the stored credential on a whitespace-only password", async () => {
@@ -310,9 +355,8 @@ describe("Cove rotate semantics", () => {
     expect(JSON.parse(lastBody())).not.toHaveProperty("credentials");
   });
 
-  it("never disables Save for a partial Cove entry", () => {
+  it("keeps Save enabled while every credential field is blank (keeps the stored set)", () => {
     renderCard();
-    type("username", "someone-else");
     expect(screen.getByTestId("backup-connection-save")).not.toBeDisabled();
   });
 

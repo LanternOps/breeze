@@ -1350,8 +1350,7 @@
         "series": "Un informe por organización",
         "seriesHint": "Una definición, con una copia independiente para cada organización que abarca, enviada a los contactos de esa organización.",
         "combined": "Todas las organizaciones combinadas",
-        "combinedHint": "Un informe combinado de todas sus organizaciones, para su propio equipo.",
-        "seriesUnavailableType": "Este tipo de informe no se puede enviar como un informe por organización."
+        "combinedHint": "Un informe combinado de todas sus organizaciones, para su propio equipo."
       },
       "schedule": {
         "label": "Con qué frecuencia se envía la copia de cada organización",

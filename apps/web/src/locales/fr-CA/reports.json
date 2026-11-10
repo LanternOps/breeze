@@ -1350,8 +1350,7 @@
         "series": "Un rapport par organisation",
         "seriesHint": "Une définition, avec une copie distincte pour chaque organisation couverte, envoyée aux contacts de cette organisation.",
         "combined": "Toutes les organisations combinées",
-        "combinedHint": "Un rapport combiné sur l’ensemble de vos organisations, pour votre propre équipe.",
-        "seriesUnavailableType": "Ce type de rapport ne peut pas être envoyé sous forme d’un rapport par organisation."
+        "combinedHint": "Un rapport combiné sur l’ensemble de vos organisations, pour votre propre équipe."
       },
       "schedule": {
         "label": "Fréquence d’envoi de la copie de chaque organisation",

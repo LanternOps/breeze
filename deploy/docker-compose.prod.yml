@@ -222,6 +222,12 @@ x-api-env: &api-env
   # stays dark (env.ts defaults to ''). Threaded through compose so the feature
   # can be enabled from .env. Same gap class as IS_HOSTED above.
   CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+  # Customer portal "Sign in with Microsoft" (the portal's own Entra app). Off
+  # unless both the client ID and secret are set; the callback base is optional
+  # (defaults to the origin of PUBLIC_URL).
+  PORTAL_ENTRA_CLIENT_ID: ${PORTAL_ENTRA_CLIENT_ID:-}
+  PORTAL_ENTRA_CLIENT_SECRET: ${PORTAL_ENTRA_CLIENT_SECRET:-}
+  PORTAL_ENTRA_CALLBACK_BASE_URL: ${PORTAL_ENTRA_CALLBACK_BASE_URL:-}
   # QuickBooks Online accounting integration. All optional: unset leaves the
   # integration dark. Mapped explicitly because Compose only interpolates vars
   # listed in this block — a value in .env alone is never seen by the API
@@ -660,6 +666,7 @@ x-api-env: &api-env
   OAUTH_ISSUER: ${OAUTH_ISSUER:-}
   OAUTH_JWKS_PRIVATE_JWK: ${OAUTH_JWKS_PRIVATE_JWK:-}
   OAUTH_JWKS_PUBLIC_JWK: ${OAUTH_JWKS_PUBLIC_JWK:-}
+  OAUTH_REFRESH_ROTATION_GRACE_MS: ${OAUTH_REFRESH_ROTATION_GRACE_MS:-}
   OAUTH_RESOURCE_URL: ${OAUTH_RESOURCE_URL:-}
   PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES: ${PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES:-}
   PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT:-}
@@ -681,6 +688,8 @@ x-api-env: &api-env
   TICKET_IMPORT_MAX_CLOCK_SKEW_MS: ${TICKET_IMPORT_MAX_CLOCK_SKEW_MS:-}
   TICKET_IMPORT_MAX_ISSUES_PER_RUN: ${TICKET_IMPORT_MAX_ISSUES_PER_RUN:-}
   TICKET_IMPORT_MAX_TICKET_BYTES: ${TICKET_IMPORT_MAX_TICKET_BYTES:-}
+  # Boot migration lock wait (#4144): empty keeps the 5-minute default.
+  MIGRATION_LOCK_TIMEOUT_MS: ${MIGRATION_LOCK_TIMEOUT_MS:-}
   PENDING_ACCOUNT_MEETING_LABEL: ${PENDING_ACCOUNT_MEETING_LABEL:-}
   PENDING_ACCOUNT_MEETING_URL: ${PENDING_ACCOUNT_MEETING_URL:-}
   PORTAL_STATE_BACKEND: ${PORTAL_STATE_BACKEND:-}
@@ -916,7 +925,6 @@ services:
   worker:
     image: ghcr.io/lanternops/breeze/api@${BREEZE_API_IMAGE_DIGEST:?Set BREEZE_API_IMAGE_DIGEST to the release image digest}
     platform: linux/amd64
-    container_name: breeze-worker
     restart: unless-stopped
     profiles: ["worker-split"]
     command: ["node", "dist/worker.cjs"]
@@ -971,6 +979,9 @@ services:
       PUBLIC_ABUSE_CONTACT: ${PUBLIC_ABUSE_CONTACT:-}
       PUBLIC_SECURITY_CONTACT: ${PUBLIC_SECURITY_CONTACT:-}
       PUBLIC_SECURITY_POLICY_URL: ${PUBLIC_SECURITY_POLICY_URL:-}
+      # Network Proxy host mode (#11300): the dashboard CSP frame-src must allow
+      # the tunnel origin, and the image is built without it.
+      TUNNEL_ORIGIN_TEMPLATE: ${TUNNEL_ORIGIN_TEMPLATE:-}
     depends_on:
       api:
         condition: service_healthy

@@ -23,6 +23,75 @@ You can configure a per-organization custom domain in branding (`customDomain`, 
 
 Inviting a customer from **Settings → Organizations → [organization] → Customer Portal** sends a laid-out email with a **Set your password** button. Partners edit that mail under **Settings → Partner → Email templates** (Portal invite) -- subject, heading, button label, and HTML body. Merge variables: `{{requester_name}}` (the inviter), `{{partner_name}}`, `{{org_name}}`, and `{{invite_url}}`. The button always uses the server invite link; partners cannot point it somewhere else. The invite expires in 7 days. This does not change the email card's accent bar or pull colors from the Branding tab.
 
+### Give contacts portal access
+
+You can give a contact a portal login straight from the organization's **Contacts** tab (**Settings → Organizations → [organization] → Contacts**), instead of typing the address again on the Customer Portal tab. This is available to partner users only. The **Portal** column shows each contact as **No access**, **Requested**, **Invited**, **Active**, or **Disabled**. **Requested** means the contact has no login with browser access and their email has a pending access request (see [Access requests](#access-requests)); approve or deny it on the Customer Portal tab.
+
+- **One contact:** use **Give portal access** in the row actions. For a contact who was invited but has not set a password yet, the action is **Resend invite**.
+- **Several contacts:** tick the row checkboxes and choose **Give portal access (N)**. A single request covers up to 100 contacts.
+- **When creating a contact:** tick **Give portal access** on the create form. The invite goes to the email address you entered, so the box needs an email.
+
+The invite is the same email as above, and the login is tied to that contact. A contact's ticket history comes with the login, so Breeze only creates it for the address the contact already has. If you invite with a different email, the request is refused with `PORTAL_INVITE_EMAIL_MISMATCH`; update the contact's email first.
+
+A login that is already tied to a different contact is never moved. The request fails with `PORTAL_INVITE_CONTACT_CONFLICT`; unlink the login from its current contact first, then invite again.
+
+<Aside type="note" title="AI for Office sign-ins">
+Only logins with browser access to the portal count. A person who only signs in through AI for Office (Microsoft Entra) shows as **No access** here, because that is not browser access to the portal.
+</Aside>
+
+#### Bulk results
+
+The bulk action reports one result per contact. If any selected contact is not in the organization, the whole request is refused with a 404 and no invites are sent.
+
+| Outcome | Meaning |
+|---------|---------|
+| `invited` | A portal login was created (or a pending one re-invited) and bound to the contact. `emailSent` says whether the invite email went out |
+| `already_has_access` | The contact already has a login. The reason is `active`, `disabled`, `external_identity` (an AI for Office or other external sign-in), or `login_email_differs` (the contact's email was changed after the login was linked). Nothing was changed |
+| `no_email` | The contact has no email address. Add one and try again |
+| `email_bound_to_other_contact` | A login with this email is already tied to another contact. Unlink it first |
+| `duplicate_email_in_batch` | Two or more selected contacts share one email. None of them is invited; invite one at a time |
+
+If the login was created but the invite email did not go out (`emailSent: false`, shown as a warning toast: "Portal login created, but the invite email could not be sent"), use **Resend invite** on that contact.
+
+## Sign-in & registration
+
+Each organization has a sign-in policy. It decides how the organization's people sign in to the portal, and how new people get browser access. You set it at two levels:
+
+- **Partner default:** **Settings → Partner → Customer portal**. It applies to every customer organization. Changing it needs full partner access; partner users limited to selected organizations see the tab read-only.
+- **Organization override:** **Settings → Organizations → [organization] → Customer Portal → Sign-in & registration**. A field left on **Inherit** follows the partner default. The field always shows the value it inherits and where that value comes from (**Partner default** or **Breeze default**).
+
+A saved change applies from the next portal request. Nothing is cached.
+
+### How people sign in
+
+| Setting | Values | Breeze default |
+|---------|--------|----------------|
+| Password sign-in | **Allowed**, **Off — Microsoft/Google only** | Allowed |
+
+**Off — Microsoft/Google only** can be chosen only while Microsoft or Google sign-in is on for the organization. Sign in with Microsoft is available once the organization's Microsoft tenant is proven and your deployment has the portal Microsoft app configured; see [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/). Google sign-in to the browser portal is not available yet, so the Google row does not appear on the card. Features that rely on a customer's email domains need those domains verified; see [Customer domain verification](/features/portal-domain-verification/).
+
+If the policy says **Off** but no Microsoft or Google sign-in is in effect any more (for example, the partner default that enabled it was changed), password sign-in stays on. The card shows: "Password sign-in is on because no Microsoft or Google sign-in is enabled."
+
+The **Password reset** toggle on the Customer Portal tab is a separate setting. It controls self-service reset for people who sign in with a password; this policy decides whether password sign-in exists at all.
+
+### How new people get browser access
+
+- **Invites from the MSP** are always on: you can invite people from the Customer Portal tab or the Contacts tab whatever the other settings say. Password sign-in **Off** also stops an invited person from setting a password.
+- **First sign-in with Microsoft** follows the organization's first-sign-in mode: invited only, approval, or instant. See [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/).
+- Self-registration and first sign-in with Google appear on the card once the portal supports them.
+
+### Access requests
+
+When someone asks for portal access through a route that needs your approval, the request waits in **Access requests**, above the organization's portal users list. The list only appears while requests are waiting, and the **Requests (N)** button on the Sign-in & registration card jumps to it. It shows the first 100 requests; decide those to see the rest.
+
+- **Approve:** for a self-registration request, Breeze creates the login and sends the normal invite email. For a Microsoft or Google request, it creates the account and emails the person that they can now sign in. For an AI for Office user, it turns on browser access for their existing login and sends the same "you can now sign in" email.
+- **Deny:** asks you to confirm, then emails the person that the request was not approved.
+- **Several at once:** tick the rows and choose **Approve selected** or **Deny selected**. Each row reports its own result, and rows that could not be decided are marked in the list.
+- A request whose email already has a portal login shows **Already has an account — Deny to dismiss**. Approve is disabled for it.
+- A request expires after 14 days. An organization holds at most 200 pending requests.
+
+The partner **Customer portal** tab lists every organization with pending requests, with a link to each organization's Customer Portal tab.
+
 ## Key Concepts
 
 ### Portal Feature Toggles
@@ -581,9 +650,9 @@ All mutating portal actions are recorded in the audit log with an `actorType` of
 
 ## Troubleshooting
 
-### Portal login returns "Multiple portal accounts found"
+### Portal login with an email that exists in several organizations
 
-This error occurs when the same email address exists in multiple organizations and no `orgId` was provided in the login request. The portal frontend should prompt the user to select their organization or include the `orgId` field in the login payload.
+Portal login with an email that exists in several organizations succeeds only when exactly one of those accounts has the entered password; otherwise it returns the ordinary invalid-credentials error. The response never reveals that the address has more than one account. If the same person uses the same password in two organizations, they can sign in by including that organization's `orgId` in the login request, or by setting different passwords.
 
 ### Custom domain branding returns 404
 

@@ -198,6 +198,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('recoveryMediaWorker'),
   consumers('warrantyWorker'),
   consumers('ssoDomainRecheckWorker'),
+  consumers('portalDomainRecheckWorker'),
   { kind: 'non_consumer', initializer: 'incidentCorrelationWorker' },
   { kind: 'non_consumer', initializer: 'incidentTimelineEnricher' },
   { kind: 'non_consumer', initializer: 'incidentSlaMonitor' },
@@ -221,6 +222,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('stripeSessionRevocationSweep'),
   consumers('quoteExpiryReaper'),
   consumers('agreementRequestExpiryReaper'),
+  // Portal registration W3: daily portal identity drift report (report only).
+  consumers('portalIdentityReconcile'),
   // #9075 W4a: automatic agreement-request reminders.
   consumers('agreementRequestAutoReminder'),
   consumers('suppressionExpiryReaper'),
@@ -313,6 +316,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Wisp W05b (#9917): daily concern retention — same shape (one Worker, no
   // flag gate before construction, attached under its registry-key name).
   consumers('wispConcernRetention'),
+  // #11430: 15-minute chat session expiry sweep — one Worker, no flag gate,
+  // constructed and attached unconditionally under its registry-key name.
+  consumers('aiChatSessionExpirySweep'),
   // Wisp W06a (#9912): 15-minute nudge digest + morning brief — same shape
   // (one Worker constructed and attached unconditionally; flag read per run).
   consumers('wispNudgeDigest'),
@@ -326,8 +332,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // #4248 W03 — one Worker, unconditional, attached under its registry name.
   consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),
-  // Merge-forward (origin/main 2026-09-06): three more `socket-owner` registry
-  // entries, each read rather than inferred. None is feature-flag gated and
+  // Merge-forward (origin/main 2026-09-06): three more registry entries
+  // (`socket-owner` when added; deviceGroupJobs is `global` now), each read
+  // rather than inferred. None is feature-flag gated and
   // each constructs exactly one Worker unconditionally, so all three are
   // plain-required (`redis`). removedDevicePurge already attached under its
   // registry key on main; deviceGroupJobs attaches as

@@ -63,10 +63,10 @@ async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: 
         completedAt: now,
         updatedAt: now,
         targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
-          'error', ${error},
+          'error', ${error}::text,
           'result', jsonb_build_object(
             'status', 'failed',
-            'error', ${error}
+            'error', ${error}::text
           )
         )`,
       })
@@ -430,7 +430,8 @@ restoreRoutes.post(
         responseRow = updatedRestoreJob;
       }
     } catch (err) {
-      const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
+      // A fixed message: target_config is tenant-readable, the raw error goes to the log.
+      const error = 'Failed to dispatch restore command to agent';
       console.error('[BackupRestore] Failed to dispatch restore:', err);
       recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
       await markRestoreJobFailed(orgId, row.id, error);
@@ -536,10 +537,10 @@ restoreRoutes.post(
           completedAt: now,
           updatedAt: now,
           targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
-            'error', ${reason},
+            'error', ${reason}::text,
             'result', jsonb_build_object(
               'status', 'cancelled',
-              'error', ${reason}
+              'error', ${reason}::text
             )
           )`,
         })

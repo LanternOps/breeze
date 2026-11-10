@@ -146,6 +146,10 @@ export function OrgApprovalSecurityTab() {
         </div>
       </div>
 
+      <p className="text-sm text-muted-foreground" data-testid="approval-security-scope-note">
+        {t('orgApprovalSecurityTab.scopeNote')}
+      </p>
+
       <div className="space-y-3" data-testid="floor-overrides">
         {TIERS.map((tier) => {
           const floor = DEFAULT_ASSURANCE_FLOOR[tier];

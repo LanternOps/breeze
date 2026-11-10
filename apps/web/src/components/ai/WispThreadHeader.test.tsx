@@ -278,6 +278,48 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
     expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Budget reached');
   });
 
+  it('over budget shows the chat-keeps-working warning, never "Paused by Breeze" (#10414)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 201, budgetResetsAt: '2099-01-01T05:30:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    const warning = screen.getByTestId('wisp-budget-warning');
+    expect(warning).toHaveTextContent('background checks are paused until 05:30 UTC');
+    expect(warning).toHaveTextContent('Chat keeps working');
+    expect(screen.getByTestId('wisp-thread-header').textContent).not.toContain('Paused by Breeze');
+    expect(screen.getByTestId('wisp-spend-raise')).toBeTruthy();
+  });
+
+  it('over budget with no parseable reset falls back to 00:00 UTC (#10414)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 201, budgetResetsAt: 'garbage' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.getByTestId('wisp-budget-warning')).toHaveTextContent('until 00:00 UTC');
+  });
+
+  it('no budget warning under budget (#10414)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.queryByTestId('wisp-budget-warning')).toBeNull();
+  });
+
+  it('the settings panel explains that the budget includes chat (#10414)', () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    expect(screen.getByTestId('wisp-settings-budget-help')).toHaveTextContent('Includes chat.');
+  });
+
+  it('passes the breakdown to the meter (#10414)', () => {
+    render(
+      <WispThreadHeader
+        wisp={wisp({ spentTodayCents: 100, backgroundCents: 40, chatCents: 60, budgetResetsAt: '2099-01-01T00:00:00.000Z' })}
+        orgName={null}
+        wideningAvailable={false}
+      />,
+    );
+    expect(screen.getByTestId('wisp-spend-meter').textContent).toContain('Background $0.40 · Chat $0.60');
+  });
+
   it('under budget the badge stays Active (#10145)', () => {
     render(
       <WispThreadHeader wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
@@ -294,7 +336,7 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
         wideningAvailable={false}
       />,
     );
-    expect(screen.getByTestId('wisp-paused-system')).toHaveTextContent('20 h');
+    expect(screen.getByTestId('wisp-paused-system')).toHaveTextContent('until');
     expect((screen.getByTestId('wisp-resume') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
     expect(screen.getByTestId('wisp-spend-at-ceiling')).toBeTruthy();

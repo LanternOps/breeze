@@ -299,6 +299,35 @@ async function appliedItems(auth: AuthContext, reportRunId: string): Promise<str
   });
 }
 
+/** Why a caller who holds contracts:write still links no evidence (#11433); absent when the role alone decided. */
+type EvidenceSkip = 'wisp_ceiling' | 'wisp_grant_inactive';
+
+/**
+ * Whether `document` may attach the design as deliverable evidence: a contracts:write effect, decided on the caller's
+ * live role as on REST. #11433: under a Wisp grant (`document` is delegable) the chat ceiling checked documents:write
+ * only, so the link must also sit inside the grant's ceiling for the report's org. A ceiling without it, or a grant
+ * that no longer resolves, links nothing and says why (the document is still filed: documents:write passed the
+ * gate). A corrupt pin is captured and, like a DB error, propagates, so nothing is filed.
+ */
+async function deliverableEvidenceDecision(auth: AuthContext, orgId: string): Promise<{ link: boolean; skipped?: EvidenceSkip }> {
+  if (!(await can(auth, PERMISSIONS.CONTRACTS_WRITE))) return { link: false };
+  const grant = auth.wispGrant;
+  if (!grant) return { link: true };
+  // Lazy, as the chat gate loads it: an ordinary session never loads the Wisp graph.
+  const { CeilingViolationError, GrantInactiveError, assertWithinCeiling, resolveGrantCeiling } = await import('./wisp/grantAuthority');
+  try {
+    const ceiling = await resolveGrantCeiling(grant.grantId, grant.grantRevisionId);
+    assertWithinCeiling(ceiling, { orgId, permission: `${PERMISSIONS.CONTRACTS_WRITE.resource}:${PERMISSIONS.CONTRACTS_WRITE.action}` });
+    return { link: true };
+  } catch (err) {
+    // A paused grant surfaces as CeilingViolationError('inactive') from assertWithinCeiling or as GrantInactiveError.
+    if (err instanceof CeilingViolationError) return { link: false, skipped: err.code === 'inactive' ? 'wisp_grant_inactive' : 'wisp_ceiling' };
+    if (err instanceof GrantInactiveError && err.kind !== 'corrupt') return { link: false, skipped: 'wisp_grant_inactive' };
+    if (err instanceof GrantInactiveError) captureException(err, undefined, { grantId: grant.grantId, op: 'fleet_design.document' });
+    throw err;
+  }
+}
+
 async function fileDocument(auth: AuthContext, reportRunId: string): Promise<string> {
   const [{ loadFleetDesignReport }, { fileFleetDesignDocument }] = await Promise.all([
     import('./aiAgents/fleetDesignReport'),
@@ -307,22 +336,25 @@ async function fileDocument(auth: AuthContext, reportRunId: string): Promise<str
   const report = await loadFleetDesignReport(reportRunId, (col) => auth.orgCondition(col));
   if (!report) return REPORT_NOT_FOUND();
   try {
+    const evidence = await deliverableEvidenceDecision(auth, report.orgId);
     const result = await fileFleetDesignDocument({
       orgId: report.orgId,
       reportRunId,
       actor: { userId: auth.user?.id ?? null, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds },
       // Explicit: omitting it links. Attaching can mark a contract deliverable delivered.
-      linkDeliverableEvidence: await can(auth, PERMISSIONS.CONTRACTS_WRITE),
+      linkDeliverableEvidence: evidence.link,
     });
+    // `evidence: null` alone also means "no deliverable to attach to"; a grant-caused skip is said apart.
+    const skipped = evidence.skipped ? { evidenceSkipped: evidence.skipped } : {};
     auditToolWrite(auth, {
       orgId: report.orgId,
       action: 'fleet_design.document.file',
       resourceType: 'org_document',
       resourceId: result.documentId,
-      details: { via: 'ai_tool', reportRunId, alreadyFiled: result.alreadyFiled, evidence: result.evidence },
+      details: { via: 'ai_tool', reportRunId, alreadyFiled: result.alreadyFiled, evidence: result.evidence, ...skipped },
       result: 'success',
     });
-    return json(result);
+    return json({ ...result, ...skipped });
   } catch (error) {
     // The document services carry their own structural status and code, as the route maps them.
     const known = error && typeof error === 'object' && 'status' in error && 'code' in error

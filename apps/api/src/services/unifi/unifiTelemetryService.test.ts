@@ -1,18 +1,30 @@
 import { describe, it, expect } from 'vitest';
-import { reconcileTelemetry } from './unifiTelemetryService';
+import { reconcileTelemetry, requiresMappedSite, resolveTelemetrySite } from './unifiTelemetryService';
 import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import type { DbExecutor } from './unifiConnectionService';
 
-type WriteRecord = { table: any; values: any; conflict?: any };
+type WriteRecord = { table: any; values: any; conflict?: any; where?: SQL };
+type DeleteRecord = { table: any; where: SQL; returning: boolean };
 
-// Build a DbExecutor that returns canned select rows per table and records inserts/updates.
+// A cloud-console collector (real unifi_host_id): unmapped or missing site ids
+// still fall back to the collector's own org/site. Tests that exercise the
+// fallback path (MAC normalisation, asset linking) use it.
+const CLOUD_COLLECTOR = { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1', unifiHostId: 'host-1' };
+
+const renderWhere = (where: SQL) => new PgDialect().sqlToQuery(where);
+
+// Build a DbExecutor that returns canned select rows per table and records inserts/updates/deletes.
 function scriptedDb(opts: {
   collector: any; mappings: any[]; existingDevices?: any[]; existingClients?: any[];
   assetByMac?: Record<string, any>;
   assetInsertReturn?: { id: string }; // canned return for discoveredAssets insert().returning()
+  // canned delete().returning() rows, per table
+  deletedDeviceRows?: Array<{ discoveredAssetId: string | null }>;
+  deletedClientRows?: Array<{ id: string }>;
 }) {
-  const writes = { inserts: [] as WriteRecord[], updates: [] as WriteRecord[] };
+  const writes = { inserts: [] as WriteRecord[], updates: [] as WriteRecord[], deletes: [] as DeleteRecord[], selects: [] as any[] };
 
   const collectStrings = (value: any, seen = new WeakSet<object>()): string[] => {
     if (typeof value === 'string') return [value];
@@ -49,7 +61,7 @@ function scriptedDb(opts: {
   };
 
   function makeChain(ctx: {
-    op: 'select' | 'insert' | 'update';
+    op: 'select' | 'insert' | 'update' | 'delete';
     table?: any;
     whereArgs?: any[];
     insertValues?: any;
@@ -97,10 +109,19 @@ function scriptedDb(opts: {
             return;
           }
           if (ctx.op === 'update' && ctx.setValues !== undefined) {
-            writes.updates.push({ table: ctx.table, values: ctx.setValues });
+            writes.updates.push({ table: ctx.table, values: ctx.setValues, where: ctx.whereArgs?.[0] });
             resolve([]);
             return;
           }
+          if (ctx.op === 'delete') {
+            writes.deletes.push({ table: ctx.table, where: ctx.whereArgs?.[0], returning: !!ctx.returning });
+            if (!ctx.returning) resolve([]);
+            else if (ctx.table === unifiDeviceTelemetry) resolve(opts.deletedDeviceRows ?? []);
+            else if (ctx.table === unifiClients) resolve(opts.deletedClientRows ?? []);
+            else resolve([]);
+            return;
+          }
+          writes.selects.push(ctx.table);
           resolve(selForTable(ctx.table, ctx.whereArgs));
         } catch (err) {
           reject(err);
@@ -114,7 +135,8 @@ function scriptedDb(opts: {
     select: (_cols?: any) => makeChain({ op: 'select' }),
     insert: (table: any) => makeChain({ op: 'insert', table }),
     update: (table: any) => makeChain({ op: 'update', table }),
-    delete: () => makeChain({ op: 'update' }),
+    delete: (table: any) => makeChain({ op: 'delete', table }),
+    transaction: (fn) => fn(db),
   };
 
   return { db, writes };
@@ -162,7 +184,7 @@ describe('reconcileTelemetry', () => {
   it('marks devices/clients not seen this poll as stale', async () => {
     const { db, writes } = scriptedDb({
       collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
-      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a' }],
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a', unifiHostId: 'c1' }],
       existingDevices: [{ id: 'old-dev', unifiDeviceId: 'gone', isStale: false }],
       existingClients: [{ id: 'old-cli', mac: 'ff:ff', isStale: false }],
     });
@@ -188,7 +210,7 @@ describe('reconcileTelemetry', () => {
   it('does not stale existing rows when markStale=false (partial poll)', async () => {
     const { db, writes } = scriptedDb({
       collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
-      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a' }],
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a', unifiHostId: 'c1' }],
       existingDevices: [{ id: 'old-dev', unifiDeviceId: 'gone', isStale: false }],
       existingClients: [{ id: 'old-cli', mac: 'ff:ff', isStale: false }],
     });
@@ -205,7 +227,7 @@ describe('reconcileTelemetry', () => {
   it('coalesces a null raw to {} so the NOT NULL jsonb column never sees null', async () => {
     const { db, writes } = scriptedDb({
       collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
-      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a' }],
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a', unifiHostId: 'c1' }],
     });
 
     // The agent's rawOf returns JSON null on a decode failure/overflow; the wire
@@ -227,7 +249,7 @@ describe('reconcileTelemetry', () => {
   it('normalizes client MAC (uppercase/hyphen) for asset linking and storage', async () => {
     const { db, writes } = scriptedDb({
       collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
-      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a' }],
+      mappings: [{ unifiSiteId: 's1', siteId: 'site-a', orgId: 'org-a', unifiHostId: 'c1' }],
       assetByMac: { 'aa:bb:cc:dd:ee:ff': { id: 'asset-9' } },
     });
 
@@ -252,7 +274,7 @@ describe('reconcileTelemetry', () => {
   // fail to link (and would write a non-canonical mac into discovered_assets).
   it('normalizes device MAC (uppercase/hyphen) for asset linking and storage', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      collector: CLOUD_COLLECTOR,
       mappings: [],
       assetByMac: { 'aa:bb:cc:dd:ee:ff': { id: 'asset-9' } },
     });
@@ -286,7 +308,7 @@ describe('reconcileTelemetry', () => {
   // the query itself normalises the column.
   it('links a device when the STORED discovered_assets mac is non-canonical', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      collector: CLOUD_COLLECTOR,
       mappings: [],
       assetByMac: { 'AA-BB-CC-DD-EE-FF': { id: 'asset-legacy' } },
     });
@@ -307,7 +329,7 @@ describe('reconcileTelemetry', () => {
   // would match a blank-mac row) and must not break the ip fallback.
   it('handles a device with no mac without writing an empty-string mac', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      collector: CLOUD_COLLECTOR,
       mappings: [],
       assetInsertReturn: { id: 'asset-new-2' },
     });
@@ -330,7 +352,7 @@ describe('reconcileTelemetry', () => {
   // unique index.
   it('stamps source=unifi on the insert side and repeats the partial-index predicate', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      collector: CLOUD_COLLECTOR,
       mappings: [],
       assetInsertReturn: { id: 'asset-new-3' },
     });
@@ -361,7 +383,7 @@ describe('reconcileTelemetry', () => {
   // by an older agent that still sent zeros.
   it('persists uncollected device metrics as null on both insert and update', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      collector: CLOUD_COLLECTOR,
       mappings: [],
     });
 
@@ -380,7 +402,7 @@ describe('reconcileTelemetry', () => {
 
   it('reconciles device ip+mac into discovered_assets and stamps discoveredAssetId on the telemetry row', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      collector: CLOUD_COLLECTOR,
       mappings: [],
       assetInsertReturn: { id: 'asset-new-1' },
     });
@@ -433,7 +455,7 @@ describe('reconcileTelemetry', () => {
 
   it('skips asset creation and leaves discoveredAssetId null when device raw has no ip', async () => {
     const { db, writes } = scriptedDb({
-      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      collector: CLOUD_COLLECTOR,
       mappings: [],
     });
 
@@ -449,5 +471,233 @@ describe('reconcileTelemetry', () => {
     const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
     expect(deviceInserts).toHaveLength(1);
     expect(deviceInserts[0]!.values.discoveredAssetId).toBeNull();
+  });
+});
+
+// W04 (#11504, refs #10358): a self-hosted controller's unmapped sites are
+// discovery-only. Their records file no inventory in any org, and rows the
+// controller reports under an unmapped site are removed.
+describe('site resolution: self-hosted collectors are mapped-only', () => {
+  const siteByUnifi = new Map([['s1', { orgId: 'org-b', siteId: 'site-b' }]]);
+  const collector = { orgId: 'org-collector', siteId: 'site-collector' };
+
+  it('requiresMappedSite is true only for a self-hosted collector (no unifi_host_id)', () => {
+    expect(requiresMappedSite({ unifiHostId: null })).toBe(true);
+    // Same `??` semantics as the mapping host key: a missing host id is self-hosted.
+    expect(requiresMappedSite({ unifiHostId: undefined as unknown as null })).toBe(true);
+    expect(requiresMappedSite({ unifiHostId: 'host-1' })).toBe(false);
+  });
+
+  it.each([
+    // [unifiSiteId, mappedOnly, expected]
+    ['s1', true, { kind: 'mapped', orgId: 'org-b', siteId: 'site-b' }],
+    ['s1', false, { kind: 'mapped', orgId: 'org-b', siteId: 'site-b' }],
+    ['s2', true, { kind: 'skip', reason: 'unmapped_site', unifiSiteId: 's2' }],
+    [null, true, { kind: 'skip', reason: 'no_site_id', unifiSiteId: null }],
+    [undefined, true, { kind: 'skip', reason: 'no_site_id', unifiSiteId: null }],
+    ['', true, { kind: 'skip', reason: 'no_site_id', unifiSiteId: null }],
+    ['s2', false, { kind: 'fallback', orgId: 'org-collector', siteId: 'site-collector' }],
+    [null, false, { kind: 'fallback', orgId: 'org-collector', siteId: 'site-collector' }],
+  ] as const)('resolveTelemetrySite(%j, mappedOnly=%j)', (unifiSiteId, mappedOnly, expected) => {
+    expect(resolveTelemetrySite(unifiSiteId, siteByUnifi, collector, mappedOnly)).toEqual(expected);
+  });
+});
+
+describe('reconcileTelemetry: discovery-only unmapped self-hosted sites', () => {
+  // Self-hosted: unifi_host_id NULL, mapping rows carry the sentinel unifi_host_id = collector.id.
+  const SELF_HOSTED = { id: 'c1', orgId: 'org-collector', siteId: 'site-collector', integrationId: 'int-1', unifiHostId: null };
+  const MAPPINGS = [
+    { unifiHostId: 'c1', unifiSiteId: 's1', orgId: 'org-b', siteId: 'site-b' },
+    { unifiHostId: 'c1', unifiSiteId: 's3', orgId: 'org-c', siteId: 'site-c' },
+  ];
+  const polled = { collectorId: 'c1', polledAt: '2026-11-08T00:00:00Z', firmwareOk: true };
+
+  it('self-hosted: unmapped site → skip, no asset link', async () => {
+    const { db, writes } = scriptedDb({ collector: SELF_HOSTED, mappings: MAPPINGS, assetInsertReturn: { id: 'asset-x' } });
+
+    const res = await reconcileTelemetry(db, {
+      ...polled,
+      devices: [{ unifiDeviceId: 'd2', unifiSiteId: 's2', mac: 'aa:aa:aa:aa:aa:02', name: 'ap', raw: { ipAddress: '10.0.0.2' } }],
+      clients: [{ mac: 'BB-BB-BB-BB-BB-02', unifiSiteId: 's2', hostname: 'laptop', raw: {} }],
+    });
+
+    expect(writes.inserts.filter((w) => w.table === unifiDeviceTelemetry)).toHaveLength(0);
+    expect(writes.inserts.filter((w) => w.table === unifiClients)).toHaveLength(0);
+    // No linkTelemetryDeviceToAsset and no client enrich lookup: discovered_assets is never touched.
+    expect(writes.inserts.filter((w) => w.table === discoveredAssets)).toHaveLength(0);
+    expect(writes.updates.filter((w) => w.table === discoveredAssets)).toHaveLength(0);
+    expect(writes.selects.filter((t) => t === discoveredAssets)).toHaveLength(0);
+    expect(res).toMatchObject({
+      devicesUpserted: 0, clientsUpserted: 0, devicesSkippedUnmapped: 1, clientsSkippedUnmapped: 1,
+      devicesSkippedNoSiteId: 0, clientsSkippedNoSiteId: 0, unmappedSiteIds: ['s2'],
+    });
+  });
+
+  it('self-hosted: no site id → skip, no delete, counted', async () => {
+    const { db, writes } = scriptedDb({
+      collector: SELF_HOSTED, mappings: MAPPINGS,
+      existingDevices: [{ id: 'row-d9', unifiDeviceId: 'd9' }],
+      existingClients: [{ id: 'row-c9', mac: 'cc:cc:cc:cc:cc:09', localSiteId: '' }],
+    });
+
+    // An older agent that sends no unifiSiteId must never erase inventory.
+    const res = await reconcileTelemetry(db, {
+      ...polled,
+      devices: [{ unifiDeviceId: 'd9', name: 'sw', raw: { ipAddress: '10.0.0.9' } }],
+      clients: [{ mac: 'cc:cc:cc:cc:cc:09', unifiSiteId: null, raw: {} }],
+    });
+
+    expect(writes.deletes).toHaveLength(0);
+    expect(writes.inserts.filter((w) => w.table === unifiDeviceTelemetry || w.table === unifiClients)).toHaveLength(0);
+    // Counted under its own reason ("upgrade the agent"), not as an unmapped site ("map it").
+    expect(res).toMatchObject({
+      devicesSkippedNoSiteId: 1, clientsSkippedNoSiteId: 1, devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0,
+      devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0, unmappedSiteIds: [],
+    });
+    // Not refreshed, so a full poll stales (never deletes) the existing rows.
+    expect(res).toMatchObject({ devicesStaled: 1, clientsStaled: 1 });
+    expect(writes.updates.filter((u) => u.table === unifiDeviceTelemetry || u.table === unifiClients)
+      .every((u) => u.values.isStale === true)).toBe(true);
+  });
+
+  it('a device id reported under both a mapped and an unmapped site keeps its row', async () => {
+    const { db, writes } = scriptedDb({ collector: SELF_HOSTED, mappings: MAPPINGS });
+
+    const res = await reconcileTelemetry(db, {
+      ...polled,
+      devices: [{ unifiDeviceId: 'd1', unifiSiteId: 's1', raw: {} }, { unifiDeviceId: 'd1', unifiSiteId: 's2', raw: {} }],
+      clients: [],
+    });
+
+    expect(writes.inserts.filter((w) => w.table === unifiDeviceTelemetry)).toHaveLength(1);
+    expect(writes.deletes.filter((d) => d.table === unifiDeviceTelemetry)).toHaveLength(0);
+    expect(res).toMatchObject({ devicesUpserted: 1, devicesSkippedUnmapped: 1, devicesRemovedUnmapped: 0 });
+  });
+
+  it('cloud: unmapped site → collector fallback (unchanged)', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { ...SELF_HOSTED, unifiHostId: 'host-1' },
+      mappings: [{ unifiHostId: 'host-1', unifiSiteId: 's1', orgId: 'org-b', siteId: 'site-b' }],
+    });
+
+    const res = await reconcileTelemetry(db, {
+      ...polled,
+      devices: [{ unifiDeviceId: 'd2', unifiSiteId: 's2', name: 'ap', raw: {} }],
+      clients: [{ mac: 'bb:bb:bb:bb:bb:02', unifiSiteId: 's2', raw: {} }],
+    });
+
+    const device = writes.inserts.find((w) => w.table === unifiDeviceTelemetry)!;
+    expect(device.values).toMatchObject({ orgId: 'org-collector', siteId: 'site-collector' });
+    const client = writes.inserts.find((w) => w.table === unifiClients)!;
+    expect(client.values).toMatchObject({ orgId: 'org-collector', siteId: 'site-collector', localSiteId: 's2' });
+    expect(writes.deletes.filter((d) => d.table === unifiDeviceTelemetry)).toHaveLength(0);
+    expect(res).toMatchObject({
+      devicesUpserted: 1, clientsUpserted: 1, devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0,
+      devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0,
+    });
+  });
+
+  it('cloud: a client with no site id falls back with local_site_id \'\', and keeps its \'\' row when also seen under a site', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { ...SELF_HOSTED, unifiHostId: 'host-1' },
+      mappings: [{ unifiHostId: 'host-1', unifiSiteId: 's1', orgId: 'org-b', siteId: 'site-b' }],
+    });
+
+    await reconcileTelemetry(db, {
+      ...polled, devices: [],
+      clients: [
+        { mac: 'ff:ff:ff:ff:ff:01', unifiSiteId: 's1', raw: {} },
+        { mac: 'ff:ff:ff:ff:ff:01', unifiSiteId: null, raw: {} }, // same MAC, no site id
+        { mac: 'ff:ff:ff:ff:ff:02', unifiSiteId: 's1', raw: {} },
+      ],
+    });
+
+    const noSite = writes.inserts.filter((w) => w.table === unifiClients && w.values.localSiteId === '');
+    expect(noSite).toHaveLength(1);
+    expect(noSite[0]!.values).toMatchObject({ mac: 'ff:ff:ff:ff:ff:01', orgId: 'org-collector', siteId: 'site-collector' });
+    // The legacy cleanup covers only ...:02; ...:01's '' row was upserted this poll.
+    const legacy = writes.deletes.filter((d) => d.table === unifiClients);
+    expect(legacy).toHaveLength(1);
+    const q = renderWhere(legacy[0]!.where);
+    expect(q.params).toEqual(expect.arrayContaining([['ff:ff:ff:ff:ff:02']]));
+    expect(q.params).not.toEqual(expect.arrayContaining([expect.arrayContaining(['ff:ff:ff:ff:ff:01'])]));
+  });
+
+  it('partial poll still removes rows reported under an unmapped site', async () => {
+    const { db, writes } = scriptedDb({
+      collector: SELF_HOSTED, mappings: MAPPINGS,
+      deletedDeviceRows: [{ discoveredAssetId: 'asset-in-collector-org' }],
+      deletedClientRows: [{ id: 'cli-row-1' }],
+    });
+
+    const res = await reconcileTelemetry(db, {
+      ...polled,
+      devices: [{ unifiDeviceId: 'd2', unifiSiteId: 's2', raw: {} }],
+      clients: [{ mac: 'BB:BB:BB:BB:BB:02', unifiSiteId: 's2', raw: {} }],
+    }, { markStale: false });
+
+    const deviceDelete = writes.deletes.find((d) => d.table === unifiDeviceTelemetry)!;
+    expect(deviceDelete.returning).toBe(true);
+    const dq = renderWhere(deviceDelete.where);
+    expect(dq.sql).toMatch(/"collector_id" = \$\d/);
+    expect(dq.sql).toMatch(/"unifi_device_id" = ANY\(\$\d::text\[\]\)/);
+    expect(dq.params).toEqual(expect.arrayContaining(['c1', ['d2']]));
+
+    const clientDeletes = writes.deletes.filter((d) => d.table === unifiClients);
+    expect(clientDeletes).toHaveLength(1);
+    const cq = renderWhere(clientDeletes[0]!.where);
+    expect(cq.sql).toMatch(/"mac" = ANY\(\$\d::text\[\]\)/);
+    expect(cq.sql).toMatch(/"local_site_id" = ANY\(\$\d::text\[\]\)/);
+    // The unmapped site id AND '' (a legacy row for that mac is equally wrongly attributed).
+    expect(cq.params).toEqual(expect.arrayContaining(['c1', ['bb:bb:bb:bb:bb:02'], ['s2', '']]));
+
+    expect(writes.updates).toHaveLength(0); // still no stale pass on a partial poll
+    expect(res).toMatchObject({
+      devicesRemovedUnmapped: 1, clientsRemovedUnmapped: 1, removedDiscoveredAssetIds: ['asset-in-collector-org'],
+    });
+  });
+
+  it('client conflict target is collector+local site+mac', async () => {
+    const { db, writes } = scriptedDb({ collector: SELF_HOSTED, mappings: MAPPINGS });
+
+    await reconcileTelemetry(db, {
+      ...polled, devices: [],
+      clients: [{ mac: 'dd:dd:dd:dd:dd:01', unifiSiteId: 's1', hostname: 'pc', raw: {} }],
+    });
+
+    const insert = writes.inserts.find((w) => w.table === unifiClients)!;
+    expect(insert.values).toMatchObject({ collectorId: 'c1', localSiteId: 's1', mac: 'dd:dd:dd:dd:dd:01', orgId: 'org-b', siteId: 'site-b' });
+    expect(insert.conflict.target).toEqual([unifiClients.collectorId, unifiClients.localSiteId, unifiClients.mac]);
+    // A site re-mapped to another org moves the row: org/site stay in the SET.
+    expect(insert.conflict.set).toMatchObject({ orgId: 'org-b', siteId: 'site-b' });
+
+    // The legacy (collector, '', mac) row for a MAC now upserted under a real site is removed.
+    const legacy = writes.deletes.filter((d) => d.table === unifiClients);
+    expect(legacy).toHaveLength(1);
+    const q = renderWhere(legacy[0]!.where);
+    expect(q.sql).toMatch(/"local_site_id" = \$\d/);
+    expect(q.params).toEqual(expect.arrayContaining(['c1', '', ['dd:dd:dd:dd:dd:01']]));
+  });
+
+  it('the same MAC at two mapped sites is two rows in two orgs, and the stale pass keys on site+mac', async () => {
+    const { db, writes } = scriptedDb({
+      collector: SELF_HOSTED, mappings: MAPPINGS,
+      existingClients: [
+        { id: 'row-s1', mac: 'ee:ee:ee:ee:ee:01', localSiteId: 's1' },
+        { id: 'row-s3', mac: 'ee:ee:ee:ee:ee:01', localSiteId: 's3' },
+      ],
+    });
+
+    // Only s1 reports the MAC this poll, so only the s3 row is stale.
+    const res = await reconcileTelemetry(db, {
+      ...polled, devices: [],
+      clients: [{ mac: 'ee:ee:ee:ee:ee:01', unifiSiteId: 's1', raw: {} }],
+    });
+
+    expect(res.clientsStaled).toBe(1);
+    const staled = writes.updates.filter((u) => u.table === unifiClients);
+    expect(staled).toHaveLength(1);
+    expect(staled[0]!.values.isStale).toBe(true);
+    expect(renderWhere(staled[0]!.where!).params).toEqual(['row-s3']);
   });
 });

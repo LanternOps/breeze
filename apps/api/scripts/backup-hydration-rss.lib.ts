@@ -12,10 +12,64 @@ export function largestFolderEntries(totalEntries: number): number {
   return Math.floor((totalEntries * 3) / 11);
 }
 
+/**
+ * One in this many entries outside the largest folder is a directory entry, and
+ * as many again a symlink: about 5.6% of the manifest is content-less, near the
+ * 7.6% a stock Ubuntu host's carried (8,220 of 107,636: D-W09-1, recorded at
+ * hydrationEntrySchema in services/backupSnapshotFileIndex.ts). They upload
+ * nothing and are index rows all the same (#11235).
+ */
+const CONTENTLESS_EVERY = 26;
+
+export type ManifestEntryKind = 'file' | 'dir' | 'symlink';
+
+/**
+ * What entry `i` is. Entry 0 is the largest folder's own directory entry, as
+ * the Windows agent records a folder whose security descriptor it captured or
+ * whose Hidden/System attributes it preserves: selecting that folder must still
+ * resolve to one prefix (#11235).
+ */
+export function manifestEntryKind(i: number, largestFolder: number): ManifestEntryKind {
+  if (i === 0) return 'dir';
+  if (i < largestFolder) return 'file';
+  if (i % CONTENTLESS_EVERY === 0) return 'dir';
+  if (i % CONTENTLESS_EVERY === CONTENTLESS_EVERY / 2) return 'symlink';
+  return 'file';
+}
+
+/** How many entries of each kind a manifest of `totalEntries` carries. */
+export function manifestEntryKindCounts(totalEntries: number): Record<ManifestEntryKind, number> {
+  const largestFolder = largestFolderEntries(totalEntries);
+  const counts: Record<ManifestEntryKind, number> = { file: 0, dir: 0, symlink: 0 };
+  for (let i = 0; i < totalEntries; i += 1) counts[manifestEntryKind(i, largestFolder)] += 1;
+  return counts;
+}
+
 function entryFor(snapshotId: string, i: number, largestFolder: number): Record<string, unknown> {
+  const projectDir = `C:\\Users\\user-${i % 200}\\Documents\\Projects\\project-${i % 2000}`;
+  switch (manifestEntryKind(i, largestFolder)) {
+    case 'dir':
+      return {
+        sourcePath: i === 0 ? LARGEST_FOLDER : `${projectDir}\\empty-${i}`,
+        backupPath: '',
+        kind: 'dir',
+        modTime: '2026-11-01T10:11:12.123456789Z',
+        mode: 493,
+      };
+    case 'symlink':
+      return {
+        sourcePath: `${projectDir}\\shortcut-${i}`,
+        backupPath: '',
+        kind: 'symlink',
+        linkTarget: `workstream-${i % 50}`,
+        modTime: '2026-11-01T10:11:12.123456789Z',
+      };
+    case 'file':
+      break;
+  }
   const sourcePath = i < largestFolder
     ? `${LARGEST_FOLDER}\\export-record-${String(i).padStart(7, '0')}.dat`
-    : `C:\\Users\\user-${i % 200}\\Documents\\Projects\\project-${i % 2000}\\workstream-${i % 50}\\document-with-a-long-enough-name-${i}.docx`;
+    : `${projectDir}\\workstream-${i % 50}\\document-with-a-long-enough-name-${i}.docx`;
   return {
     sourcePath,
     backupPath: `snapshots/${snapshotId}/files/${sourcePath.replaceAll('\\', '/').replace('C:/', 'C/')}`,
@@ -52,7 +106,14 @@ const HEAP_LIMITED_MAX_REPORTED_MB = 1100;
 const POST_GC_HEAP_DELTA_BOUND_MB = 25;
 const HEAP_LIMITED_PEAK_RSS_BOUND_MB = 300;
 const EVENT_LOOP_P99_BOUND_MS = 200;
-const SETTLED_BROWSE_ROOT_BOUND_MS = 5000;
+/**
+ * Both bounds apply right after the publish (#11209): the hydrator analyzes the
+ * table itself, so there is no slow period to wait out. The selection bound is
+ * loose (about 3 s measured, see the acceptance test's header) and exists to
+ * catch the stale-statistics plan, which took 39–44 s.
+ */
+const BROWSE_ROOT_BOUND_MS = 5000;
+const SELECT_LARGEST_FOLDER_BOUND_MS = 10_000;
 
 export type HydrationRunFigures = {
   peakRssDeltaMb: number;
@@ -83,15 +144,20 @@ export function hydrationRunBreaches(run: HydrationRunFigures, { heapLimited }: 
 export function acceptanceBreaches(figures: {
   defaultLimit: HydrationRunFigures;
   heapLimited: HydrationRunFigures;
-  analyzed: boolean;
-  settledBrowseRootMs: number;
+  /** The publish ANALYZEd backup_snapshot_files itself (#11209). */
+  statisticsRefreshed: boolean;
+  browseRootMs: number;
+  selectLargestFolderMs: number;
 }): string[] {
   return [
     ...hydrationRunBreaches(figures.defaultLimit, { heapLimited: false }).map((b) => `default heap limit: ${b}`),
     ...hydrationRunBreaches(figures.heapLimited, { heapLimited: true }).map((b) => `1 GB heap limit: ${b}`),
-    ...(figures.analyzed ? [] : ['autoanalyze never ran after the publish, so the browse reading is not settled']),
-    ...(figures.settledBrowseRootMs >= SETTLED_BROWSE_ROOT_BOUND_MS
-      ? [`settled browse root ${figures.settledBrowseRootMs} ms (bound < ${SETTLED_BROWSE_ROOT_BOUND_MS})`]
+    ...(figures.statisticsRefreshed ? [] : ['the publish did not ANALYZE backup_snapshot_files, so the readings ran on stale statistics']),
+    ...(figures.browseRootMs >= BROWSE_ROOT_BOUND_MS
+      ? [`browse root right after the publish ${figures.browseRootMs} ms (bound < ${BROWSE_ROOT_BOUND_MS})`]
+      : []),
+    ...(figures.selectLargestFolderMs >= SELECT_LARGEST_FOLDER_BOUND_MS
+      ? [`largest-folder selection right after the publish ${figures.selectLargestFolderMs} ms (bound < ${SELECT_LARGEST_FOLDER_BOUND_MS})`]
       : []),
   ];
 }

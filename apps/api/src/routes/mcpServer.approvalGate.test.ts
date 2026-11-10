@@ -16,6 +16,8 @@ const testState = vi.hoisted(() => ({
   scopes: ['ai:read', 'ai:write', 'ai:execute'] as string[],
   redis: null as unknown,
   apiKeyExtra: {} as Record<string, unknown>,
+  // A partner-scoped key, for a tool whose handler refuses every org-scoped caller (#11287).
+  partnerKey: false,
   // null = the real hasSatisfiedMfa (ENABLE_2FA defaults on, and MCP callers
   // carry token:{}, so it refuses). true simulates an MFA-satisfied caller
   // (equivalently, an ENABLE_2FA=false deployment).
@@ -97,7 +99,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
   apiKeyAuthMiddleware: async (c: any, next: any) => {
     c.set('apiKey', {
       id: '11111111-1111-4111-8111-111111111111',
-      orgId: 'org-1',
+      orgId: testState.partnerKey ? null : 'org-1',
       partnerId: 'partner-1',
       name: 'test',
       keyPrefix: 'brz_test',
@@ -107,7 +109,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
       createdBy: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       ...testState.apiKeyExtra,
     });
-    c.set('apiKeyOrgId', 'org-1');
+    c.set('apiKeyOrgId', testState.partnerKey ? null : 'org-1');
     await next();
   },
   requireApiKeyScope: () => async (_c: any, next: any) => next(),
@@ -201,10 +203,10 @@ vi.mock('../services/permissions', async (importOriginal) => {
     ...actual,
     getUserPermissions: vi.fn(async () => ({
       permissions: FULL_PERMISSIONS_BASELINE,
-      partnerId: null,
-      orgId: 'org-1',
+      ...(testState.partnerKey
+        ? { partnerId: 'partner-1', orgId: null, scope: 'partner' as const, orgAccess: 'all' as const }
+        : { partnerId: null, orgId: 'org-1', scope: 'organization' as const }),
       roleId: 'role-1',
-      scope: 'organization' as const,
       allowedSiteIds: undefined,
     })),
   };
@@ -274,6 +276,7 @@ beforeEach(() => {
   testState.scopes = ['ai:read', 'ai:write', 'ai:execute'];
   testState.apiKeyExtra = {};
   testState.mfaSatisfied = null;
+  testState.partnerKey = false;
   mocks.executeTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
   mocks.getToolDefinitions.mockReset().mockReturnValue([]);
   mocks.getToolTier.mockReset().mockReturnValue(undefined);
@@ -422,6 +425,8 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven) — MCP_T
   // (c) manage_invoices — mixed multiplexer: issue/void/payment Tier 3, drafting is not.
   describe('manage_invoices — mixed multiplexer (draft actions stay usable)', () => {
     beforeEach(() => {
+      // Invoices are partner-scope only: an org-scoped key is refused before the gate (#11287).
+      testState.partnerKey = true;
       mocks.getToolDefinitions.mockReturnValue([
         { name: 'manage_invoices', description: 'Create and manage invoices.', input_schema: MANAGE_INVOICES_SCHEMA },
       ]);
@@ -841,6 +846,8 @@ describe('B-W04: Tier-3 tools/call files an approval intent (MCP_TIER3_INTENTS_E
   });
 
   it('manage_invoices issue → pending; create_draft executes; manage_tickets comment isPublic → pending', async () => {
+    // Invoices are partner-scope only (#11287).
+    testState.partnerKey = true;
     useTools([
       { name: 'manage_invoices', tier: 2, schema: MANAGE_INVOICES_SCHEMA },
       { name: 'manage_tickets', tier: 2, schema: MANAGE_TICKETS_COMMENT_SCHEMA },

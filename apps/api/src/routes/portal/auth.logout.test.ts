@@ -21,6 +21,8 @@ const state = vi.hoisted(() => ({
   cache: new Map<string, string>(),
   failCleanup: false,
   dropRedisAfterAuth: false,
+  srems: [] as Array<[string, string]>,
+  dels: [] as string[],
 }));
 
 const revokePortalSessionDurably = vi.hoisted(() => vi.fn(async (_token: string, _userId: string) => undefined));
@@ -78,8 +80,8 @@ function fakeRedis() {
   const chain = () => {
     const ops: Array<() => Promise<unknown>> = [];
     const api = {
-      del: (key: string) => { ops.push(() => cleanup(state.cache.delete(key))); return api; },
-      srem: () => { ops.push(() => cleanup(1)); return api; },
+      del: (key: string) => { ops.push(() => { state.dels.push(key); return cleanup(state.cache.delete(key)); }); return api; },
+      srem: (key: string, member: string) => { ops.push(() => { state.srems.push([key, member]); return cleanup(1); }); return api; },
       expire: () => {
         // The middleware's sliding-expiry write is its last Redis call; losing
         // Redis here means the handler runs with no cache at all.
@@ -107,10 +109,29 @@ function fakeRedis() {
 }
 const redis = vi.hoisted(() => ({ current: null as ReturnType<typeof fakeRedis> | null }));
 vi.mock('../../services/redis', () => ({ getRedis: () => redis.current }));
+// W3: the access-policy resolver is mocked at its boundary (the pick stays real).
+const resolvePolicy = vi.hoisted(() => vi.fn());
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/portalAccessPolicy')>()),
+  resolvePortalAccessPolicy: resolvePolicy,
+}));
 
 import { Hono } from 'hono';
 import { authRoutes, portalAuthMiddleware } from './auth';
 import { PORTAL_REDIS_KEYS, PORTAL_SESSION_COOKIE_NAME } from './schemas';
+import { pickEffectivePortalAccessPolicy } from '../../services/portalAccessPolicy';
+
+const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
+function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
+  const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
+  // W4: Microsoft is effective only for an org with a proven tenant (plan D2), which entra sessions pin (D9).
+  const proven = mode === 'sso_only';
+  return {
+    orgId, partnerId: 'partner-1', entraTenant: proven ? { tenantId: PROVEN_TENANT_ID, provenAt: '2026-11-01T00:00:00.000Z' } : null,
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven }),
+  };
+}
+const PROVEN_TENANT_ID = '72f988bf-86f1-41af-91ab-2d7cd011db47';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const USER_ID = '11111111-2222-4333-8444-555566667777';
@@ -158,7 +179,10 @@ beforeEach(() => {
   state.selectedColumns = [];
   state.failCleanup = false;
   state.dropRedisAfterAuth = false;
+  state.srems = [];
+  state.dels = [];
   redis.current = fakeRedis();
+  resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
   state.row = {
     id: USER_ID,
     orgId: ORG_ID,
@@ -168,6 +192,7 @@ beforeEach(() => {
     receiveNotifications: true,
     status: 'active',
     authMethod: 'password',
+    browserAccess: 'granted',
     authEpoch: 1,
     sessionRevoked: false,
   };
@@ -227,5 +252,56 @@ describe('POST /auth/logout ends the presented portal session durably', () => {
     expect(res.status).toBe(200);
     expect(redis.current).toBeNull();
     expect(revokePortalSessionDurably).toHaveBeenCalledWith(TOKEN, USER_ID);
+  });
+});
+
+// Portal registration W3 (#11380): the policy gate on the Redis session path.
+describe('portal middleware access-policy gate on Redis sessions (W3)', () => {
+  it('a pre-W3 cached payload without method is a password session and is admitted while password is allowed', async () => {
+    expect(JSON.parse(state.cache.get(PORTAL_REDIS_KEYS.session(TOKEN))!)).not.toHaveProperty('method');
+    const res = await protectedApp().request('/protected', { headers: { Authorization: `Bearer ${TOKEN}` } });
+    expect(res.status).toBe(200);
+  });
+
+  it('under sso_only: 401 and the session is purged from the cache and the user index; other sessions are left to their own next request', async () => {
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    const res = await protectedApp().request('/protected', { headers: { Authorization: `Bearer ${TOKEN}` } });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid or expired session' });
+    expect(state.cache.has(PORTAL_REDIS_KEYS.session(TOKEN))).toBe(false);
+    // Exact keys, via the multi() purge: del on the session key, srem on the user's index.
+    expect(state.dels).toEqual([PORTAL_REDIS_KEYS.session(TOKEN)]);
+    expect(state.srems).toEqual([[PORTAL_REDIS_KEYS.userSessions(USER_ID), TOKEN]]);
+    expect(state.cache.has(PORTAL_REDIS_KEYS.session(OTHER_TOKEN))).toBe(true);
+  });
+
+  it('still answers the 401 when the purge itself fails (the gate re-applies on every request)', async () => {
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    state.failCleanup = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await protectedApp().request('/protected', { headers: { Authorization: `Bearer ${TOKEN}` } });
+      expect(res.status).toBe(401);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('refuses a cached payload with an unknown method without reading the account', async () => {
+    state.cache.set(PORTAL_REDIS_KEYS.session(TOKEN), JSON.stringify({ portalUserId: USER_ID, orgId: ORG_ID, authEpoch: 1, method: 'saml' }));
+    const res = await protectedApp().request('/protected', { headers: { Authorization: `Bearer ${TOKEN}` } });
+    expect(res.status).toBe(401);
+    expect(state.selectedColumns).toHaveLength(0);
+    expect(resolvePolicy).not.toHaveBeenCalled();
+  });
+
+  it('logout still works for a session refused by policy', async () => {
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    const res = await logout();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(revokePortalSessionDurably).toHaveBeenCalledWith(TOKEN, USER_ID);
+    expect(state.cache.has(PORTAL_REDIS_KEYS.session(TOKEN))).toBe(false);
+    expect(resolvePolicy).not.toHaveBeenCalled();
   });
 });

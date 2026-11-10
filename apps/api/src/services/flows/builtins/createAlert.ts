@@ -8,9 +8,12 @@
  * The device must be a device of the run org; anything else is refused before
  * any write (`reference_not_owned`). The write runs under the flow principal's
  * run-org DB context. A failed write is `alert_create_failed` (onFailure
- * applies); nothing was raised: a throw anywhere in the writer (the insert or
- * the event publish) propagates out of the transaction and rolls the alert
- * row back, so a retry never leaves a duplicate behind a failed step.
+ * applies); nothing was raised: a throw anywhere in the writer propagates out
+ * of the transaction and rolls the alert row back, so a retry never leaves a
+ * duplicate behind a failed step. `alert.triggered` is staged on the row and
+ * published by the alert outbox only after this context commits (#11348),
+ * with this step's flow ancestry; a failed publish is retried by the outbox,
+ * not by the step.
  */
 import { and, eq } from 'drizzle-orm';
 import type { FlowValue } from '@breeze/shared';

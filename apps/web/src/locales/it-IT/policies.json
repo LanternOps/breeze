@@ -1286,7 +1286,7 @@
         "binaryMissing": "{{vendors}} non può essere attivato finché il pacchetto integrato non ha un programma di installazione distribuibile: un MSI Windows come versione più recente, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Correggilo nella scheda Versioni del pacchetto, quindi salva di nuovo.",
         "binaryMissingLink": "Apri la scheda Versioni",
         "platformMacosUnsupported": "macOS: non supportato.",
-        "sentinelOneMsiNote": "Aggiungi prima l’MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non è presente.",
+        "sentinelOneMsiNote": "Carica prima l'MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato. Lascia vuoti gli argomenti di installazione per usare SITE_TOKEN={s1_site_token} /q /NORESTART. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non è presente.",
         "catalogMissingBuiltin": "{{vendors}} non è ancora nel catalogo software di questo partner. Aggiungilo da Software → Catalogo → Pacchetti integrati, poi salva di nuovo.",
         "catalogMissingBuiltinLink": "Apri Pacchetti integrati",
         "dnsBuiltinNote": "Aggiungi prima {{vendor}} al catalogo software di questo partner da Software → Catalogo → Pacchetti integrati; finché non è presente non può essere attivato.",
@@ -1448,8 +1448,6 @@
       "allOrganizations": "Tutte le organizzazioni",
       "sharedAcrossAllYourOrganizations": "— condiviso tra tutte le tue organizzazioni",
       "thisOrganizationOnly": "Solo questa organizzazione",
-      "partnerWideUrlOnly": "I pacchetti a livello di partner usano un URL di download — il caricamento di file non è ancora disponibile per loro.",
-      "selectedFileRemoved": "Il file selezionato è stato rimosso — i pacchetti a livello di partner usano un URL di download.",
       "scopeLockedAfterCreate": "Il pacchetto è già stato creato con questo ambito — la proprietà non può cambiare dopo la creazione.",
       "installScripts": "Script di installazione",
       "installScriptsHelp": "Obbligatori per i pacchetti zip, facoltativi negli altri casi. Gli script vengono eseguiti come SYSTEM su Windows o root su macOS e Linux, scadono dopo 10 minuti, richiedono il permesso devices.execute ed esattamente un sistema operativo di destinazione.",
@@ -1809,7 +1807,7 @@
       "auditOnly": "Solo audit",
       "describeThePurposeOfThisPolicy": "Descrivi lo scopo di questo criterio...",
       "softwareRules": "Regole software",
-      "name": "Nome *",
+      "name": "Nome del software *",
       "vendor": "Vendor",
       "minVer": "Versione min",
       "maxVer": "Versione max",
@@ -2048,7 +2046,9 @@
       "replaceFileAddNewVersion": "Per sostituire il file di installazione, aggiungi invece una nuova versione.",
       "inactiveStoredScripts": "Gli script di installazione memorizzati non sono attivi; ricrea la versione per attivarli.",
       "builtinVersionsReadOnly": "Gestito da Breeze. Le versioni dei pacchetti integrati non possono essere aggiunte o modificate qui.",
-      "installScriptsReadOnlyOnEdit": "Gli script di installazione di una versione esistente non possono essere modificati e ne fissano il sistema operativo di destinazione. Per cambiarli, aggiungi una nuova versione: parte da questi script."
+      "installScriptsReadOnlyOnEdit": "Gli script di installazione di una versione esistente non possono essere modificati e ne fissano il sistema operativo di destinazione. Per cambiarli, aggiungi una nuova versione: parte da questi script.",
+      "partnerWideRequiresFullAccess": "I pacchetti validi per tutto il partner possono essere modificati solo da un amministratore partner con accesso completo.",
+      "builtinArgsDefault": "Lascia vuoto per usare gli argomenti predefiniti del pacchetto, inclusa la chiave per organizzazione."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Inserisci una variabile di distribuzione",

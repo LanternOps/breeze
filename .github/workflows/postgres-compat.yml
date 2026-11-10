@@ -1,0 +1,429 @@
+# Scheduled PostgreSQL compatibility run (#11416 W1, #11417).
+#
+# Breeze ships Postgres 16 and claims 17 and 18. This workflow is the evidence:
+# the full integration suite (16 shards, plus shard 1's ee-workspace boot,
+# request-db-role and RLS coverage contracts) and both migration checks, on
+# each scheduled major in .github/scripts/postgres-versions.json:
+#   18 daily (53 3 * * *), 17 weekly on Sunday (53 4 * * 0).
+# The blocking per-PR check on the newest major is the "(Postgres 18)" smoke
+# inside ci.yml's check-migrations jobs; this run is not part of `CI Success`.
+#
+# A red scheduled run opens (or comments on) one issue per major labelled
+# `postgres-compat`; the next green run of that major closes it. How to triage
+# a red, and the local recipe (`BREEZE_TEST_PG_IMAGE=pgvector/pgvector:pg18
+# pnpm test-stack up`): docs/agents/testing.md, "Postgres compatibility".
+#
+# The integration job is a COPY of ci.yml's integration-test (a reusable
+# workflow would rename the check the CI Gate judges). Comments live in
+# ci.yml; .github/scripts/postgres-compat.test.mjs fails if a step here
+# drifts from it. Edit ci.yml first, then mirror the change here.
+name: Postgres Compatibility
+
+on:
+  schedule:
+    # Each cron must equal a `cron` in postgres-versions.json (the plan job
+    # maps it back to its major). Off the hour and clear of every other cron.
+    - cron: '53 3 * * *'
+    - cron: '53 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: Postgres majors to test
+        type: choice
+        options:
+          - '17,18'
+          - '18'
+          - '17'
+        default: '17,18'
+  # A PR that edits this workflow, its script or its version list proves them
+  # on the whole 17 + 18 matrix (and is how the first run happens before the
+  # file is on main). Fork PRs get a read-only token; no secret is referenced.
+  pull_request:
+    paths:
+      - .github/workflows/postgres-compat.yml
+      - .github/scripts/postgres-compat.mjs
+      - .github/scripts/postgres-versions.json
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PNPM_VERSION: '10.34.5'
+
+jobs:
+  plan:
+    name: Plan Postgres versions
+    runs-on: ubuntu-latest
+    # Forks with Actions enabled must not run the schedule.
+    if: github.event_name == 'pull_request' || github.repository == 'LanternOps/breeze'
+    timeout-minutes: 5
+    outputs:
+      versions: ${{ steps.plan.outputs.versions }}
+    steps:
+      - name: Checkout (scripts only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Select Postgres majors
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_VERSIONS: ${{ inputs.versions }}
+        run: node .github/scripts/postgres-compat.mjs plan
+
+  # ci.yml check-migrations on the matrix major: the full replay with its
+  # multi-tenant fixture, then ledger drift. Job env equals ci.yml's.
+  migrations:
+    name: Migrations (Postgres ${{ matrix.pg }})
+    needs: [plan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ${{ fromJSON(needs.plan.outputs.versions) }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg${{ matrix.pg }}
+        env:
+          POSTGRES_USER: breeze
+          POSTGRES_PASSWORD: breeze
+          POSTGRES_DB: breeze
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U breeze"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://breeze:breeze@localhost:5432/breeze
+      POSTGRES_PASSWORD: breeze
+      JWT_SECRET: ci-check-migrations-jwt-secret-not-used-in-prod
+      APP_ENCRYPTION_KEY: ci-check-migrations-app-key-32bytes-padding
+      MFA_ENCRYPTION_KEY: ci-check-migrations-mfa-key-32bytes-padding
+      AGENT_ENROLLMENT_SECRET: ci-check-migrations-agent-enrollment-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Assert the server major
+        env:
+          PG_MAJOR: ${{ matrix.pg }}
+        run: pnpm --filter @breeze/api exec tsx scripts/assert-postgres-major.ts "$PG_MAJOR"
+
+      - name: Apply migrations against empty Postgres
+        run: pnpm --filter @breeze/api run check:migrations
+
+      - name: Check for schema drift
+        run: pnpm --filter @breeze/api run db:check-drift
+
+  # ci.yml check-migrations-nonsuperuser on the matrix major. Job env equals
+  # ci.yml's.
+  migrations-nonsuperuser:
+    name: Migrations, non-superuser (Postgres ${{ matrix.pg }})
+    needs: [plan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ${{ fromJSON(needs.plan.outputs.versions) }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg${{ matrix.pg }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      SUPERUSER_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      MIGRATOR_PASSWORD: migrator
+      DATABASE_URL: postgresql://breeze_migrator:migrator@localhost:5432/breeze
+      DATABASE_URL_APP: postgresql://breeze_app:breeze_app_ci@localhost:5432/breeze
+      BREEZE_APP_DB_PASSWORD: breeze_app_ci
+      JWT_SECRET: ci-nonsuperuser-migrations-jwt-secret-not-used-in-prod
+      APP_ENCRYPTION_KEY: ci-nonsuperuser-migrations-app-key-32bytes-pad
+      MFA_ENCRYPTION_KEY: ci-nonsuperuser-migrations-mfa-key-32bytes-pad
+      AGENT_ENROLLMENT_SECRET: ci-nonsuperuser-migrations-agent-enrollment
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # As the superuser: the migrator role does not exist until the next step.
+      - name: Assert the server major
+        env:
+          PG_MAJOR: ${{ matrix.pg }}
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: pnpm --filter @breeze/api exec tsx scripts/assert-postgres-major.ts "$PG_MAJOR"
+
+      - name: Apply migrations as a non-superuser role
+        run: pnpm --filter @breeze/api run check:migrations:nonsuperuser
+
+  # ci.yml integration-test on the matrix major. Differences, all asserted by
+  # postgres-compat.test.mjs: no flaky-ledger base fetch (no base commit, so
+  # nothing is quarantined: the nightly reports everything); the image comes
+  # from the matrix; the server major is asserted once the stack is up; labels
+  # and artifact names carry the major so the 17 and 18 legs never collide.
+  integration:
+    name: Integration (Postgres ${{ matrix.pg }}, shard ${{ matrix.shard }}/16)
+    needs: [plan]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Never hold more than 8 runners: contention with PR CI, not raw
+      # minutes, is the budget that matters (#10744).
+      max-parallel: 8
+      matrix:
+        pg: ${{ fromJSON(needs.plan.outputs.versions) }}
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    timeout-minutes: 55
+    env:
+      BREEZE_TEST_PG_IMAGE: pgvector/pgvector:pg${{ matrix.pg }}
+      # The major reaches `run:` blocks through the environment, never as an
+      # inline expression: the matrix comes from a job output (zizmor
+      # template-injection, enforced by security.yml).
+      PG_MAJOR: ${{ matrix.pg }}
+      # Mirrors ci.yml integration-test (postgres-compat.test.mjs). No `changes`
+      # job here, so every suite runs in shadow mode (W07b2, #10751).
+      BREEZE_INTEGRATION_SUITES: all
+      BREEZE_INTEGRATION_SUITES_MODE: shadow
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start test-stack containers
+        run: |
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if docker compose -f docker-compose.test.yml pull; then
+              echo "Test-stack images pulled (attempt ${attempt})."
+              break
+            fi
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              echo "::error::Failed to pull test-stack images after ${attempts} attempts — see the last attempt's output above. A repeated Docker Hub ECONNRESET/connection-reset is the known transient case this retry targets; any other error (e.g. a bad image tag or registry auth failure) means retrying will never help."
+              exit 1
+            fi
+            echo "::warning::docker compose pull failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
+          docker compose -f docker-compose.test.yml up -d
+          timeout 60 bash -c 'until docker exec breeze-postgres-test pg_isready -U breeze_test -d breeze_test; do sleep 1; done'
+          timeout 60 bash -c 'until docker exec breeze-redis-test redis-cli ping | grep -q PONG; do sleep 1; done'
+
+      - name: Assert the server major
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+        run: pnpm --filter @breeze/api exec tsx scripts/assert-postgres-major.ts "$PG_MAJOR"
+
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          REDIS_URL: redis://localhost:6380
+          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          NODE_ENV: test
+          DB_CONTEXTLESS_WRITE_STRICT: 'true'
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label integration-pg${PG_MAJOR}-${{ matrix.shard }} --budget-minutes 50 -- pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
+
+      - name: Upload flake report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flake-report-integration-pg${{ matrix.pg }}-${{ matrix.shard }}
+          path: flake-report-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
+
+      # The timing sequencer's plan for this shard (W07a, #10751) — parity with
+      # ci.yml's integration-test. Absent when vitest's own sharding ran.
+      - name: Upload shard plan
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: shard-plan-integration-pg${{ matrix.pg }}-${{ matrix.shard }}
+          path: apps/api/shard-plan-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
+
+      - name: Boot API once to apply built-in extension migrations (ee)
+        if: matrix.shard == 1
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          REDIS_URL: redis://localhost:6380
+          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          AGENT_ENROLLMENT_SECRET: ci-smoke-agent-enrollment-secret-value
+          NODE_ENV: test
+          AUTO_MIGRATE: 'true'
+          API_PORT: '3199'
+          BREEZE_WORKSPACE_ENABLED: 'true'
+        run: |
+          FATAL='\[CRITICAL\] API startup failed'
+          setsid bash -c 'echo $$ > /tmp/ee-boot.pgid; exec pnpm --filter=@breeze/api exec tsx src/index.ts' > /tmp/ee-workspace-boot.log 2>&1 &
+          BOOT_PID=$!
+          if ! timeout 180 bash -c "until grep -qE 'loaded built-in \"workspace\"|$FATAL' /tmp/ee-workspace-boot.log 2>/dev/null; do sleep 1; done"; then
+            echo "Timed out waiting for the built-in extension boot line:"
+            cat /tmp/ee-workspace-boot.log
+            kill -- "-$(cat /tmp/ee-boot.pgid 2>/dev/null || echo "$BOOT_PID")" 2>/dev/null || true
+            exit 1
+          fi
+          if grep -q "$FATAL" /tmp/ee-workspace-boot.log; then
+            echo "API boot failed before loading built-in extensions:"
+            cat /tmp/ee-workspace-boot.log
+            kill -- "-$(cat /tmp/ee-boot.pgid 2>/dev/null || echo "$BOOT_PID")" 2>/dev/null || true
+            exit 1
+          fi
+          PGID="$(cat /tmp/ee-boot.pgid 2>/dev/null || echo "$BOOT_PID")"
+          bash scripts/ci/stop-ee-boot-group.sh "$PGID" /tmp/ee-workspace-boot.log "$FATAL"
+          wait "$BOOT_PID" 2>/dev/null || true
+
+      - name: Integration-test workspace (ee)
+        if: matrix.shard == 1
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_WORKSPACE_ENABLED: 'true'
+        run: pnpm --filter @breeze/ext-workspace test:integration
+
+      - name: Run request database role enforcement tests
+        if: matrix.shard == 1
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          NODE_ENV: test
+        run: pnpm --filter=@breeze/api test:request-db-role
+
+      - name: Run RLS coverage contract test
+        if: matrix.shard == 1
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          NODE_ENV: test
+          DB_CONTEXTLESS_WRITE_STRICT: 'true'
+        run: pnpm --filter=@breeze/api test:rls-coverage
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs --tail=200 || true
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v || true
+
+  # One rolling issue per major (postgres-compat.mjs notify). Scheduled runs
+  # only: a dispatch or PR run never files or closes anything. Re-running a
+  # failed scheduled run keeps event_name 'schedule', so it reconciles too.
+  notify:
+    name: File or close the postgres-compat issues
+    needs: [plan, migrations, migrations-nonsuperuser, integration]
+    if: always() && github.event_name == 'schedule' && github.repository == 'LanternOps/breeze'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Checkout (scripts only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Reconcile one issue per Postgres major
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERSIONS: ${{ needs.plan.outputs.versions }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+        run: node .github/scripts/postgres-compat.mjs notify

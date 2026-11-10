@@ -86,6 +86,13 @@ describe('fetchWispTimeline', () => {
     expect(page.items).toEqual([fl]);
   });
 
+  it('keeps nudge_resolved post rows (#11427)', async () => {
+    const nr = post('p-nr', '2026-10-26T09:00:00.000Z', { kind: 'nudge_resolved' });
+    fetchMock.mockResolvedValue(ok({ data: { items: [nr], nextCursor: null } }));
+    const page = await fetchWispTimeline('th-1', {});
+    expect(page.items).toEqual([nr]);
+  });
+
   it("keeps a couldn't-look post's variant, and drops one it does not know (#11145)", async () => {
     const couldntLook = post('p-cl', '2026-10-26T09:00:00.000Z', { kind: 'first_look', variant: 'couldnt_look' });
     const unknown = post('p-x', '2026-10-26T08:00:00.000Z', { kind: 'first_look', variant: 'something_new' as never });

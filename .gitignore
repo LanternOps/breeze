@@ -143,3 +143,6 @@ test-results/
 # Research eval outputs (model output + cost figures belong in the PR, not the tree)
 research-eval-report.json
 research-eval-summary.md
+
+# Integration TimingSequencer plans, written under CI (W07a, #10751)
+apps/api/shard-plan-*.json

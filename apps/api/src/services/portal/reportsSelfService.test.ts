@@ -61,6 +61,8 @@ vi.mock('../../db', () => ({
     })),
     execute: state.execute,
   },
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
 }));
 
 vi.mock('../reportGenerationService', () => ({
@@ -85,7 +87,7 @@ vi.mock('@breeze/shared/reportPdf', () => ({
 
 vi.mock('@breeze/shared', async (importOriginal) => ({
   ...await importOriginal<typeof import('@breeze/shared')>(),
-  rowsToCsv: state.rowsToCsv,
+  reportRunRowsToCsv: state.rowsToCsv,
 }));
 
 import {
@@ -108,7 +110,7 @@ import {
 import { MSP_STAFF_REPORT_TYPES } from '../reportRegistry';
 import { managedEvidenceEntry, MANAGED_EVIDENCE_REGISTRY } from '../managedEvidenceRegistry';
 import {
-  BUSINESS_REPORT_TYPES, POSTURE_DEVICE_ROW_CSV_LABELS, TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS,
+  BUSINESS_REPORT_TYPES,
 } from '@breeze/shared';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -1320,10 +1322,8 @@ describe('portal run rendering', () => {
       completedAt: new Date('2026-09-02T12:00:00.000Z'),
     }]);
     await renderRunCsv(RUN_ID, ORG_ID);
-    expect(state.rowsToCsv).toHaveBeenCalledWith(
-      [{ priority: 'high' }],
-      { headerLabels: TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS },
-    );
+    // Label maps live in the shared serializer (reportRunCsv.test.ts).
+    expect(state.rowsToCsv).toHaveBeenCalledWith('ticket_sla_performance', [{ priority: 'high' }]);
   });
 
   it('renders a stored run as PDF with the requested timezone', async () => {
@@ -1366,10 +1366,7 @@ describe('portal run rendering', () => {
     await expect(renderRunCsv(RUN_ID, ORG_ID)).resolves.toBe(
       'hostname\ndevice-1',
     );
-    // #9964: the customer-facing posture CSV labels its columns.
-    expect(state.rowsToCsv).toHaveBeenCalledWith(rows, {
-      headerLabels: POSTURE_DEVICE_ROW_CSV_LABELS,
-    });
+    expect(state.rowsToCsv).toHaveBeenCalledWith('security_compliance_posture', rows);
   });
 
   it('keeps raw keys for a report type with no CSV labels', async () => {
@@ -1383,7 +1380,7 @@ describe('portal run rendering', () => {
     state.rowsToCsv.mockReturnValue('hostname\ndevice-1');
 
     await renderRunCsv(RUN_ID, ORG_ID);
-    expect(state.rowsToCsv).toHaveBeenCalledWith(rows, { headerLabels: undefined });
+    expect(state.rowsToCsv).toHaveBeenCalledWith('hardware_lifecycle', rows);
   });
 
   it('uses a typed conflict error when a run has no tabular result', async () => {

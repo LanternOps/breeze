@@ -1286,7 +1286,7 @@
         "binaryMissing": "{{vendors}} kann erst aktiviert werden, wenn das integrierte Paket ein bereitstellbares Installationsprogramm hat: ein Windows-MSI als neueste Version, dessen Installationsargumente SITE_TOKEN={s1_site_token} enthalten. Korrigieren Sie das auf der Registerkarte „Versionen“ des Pakets und speichern Sie dann erneut.",
         "binaryMissingLink": "Registerkarte „Versionen“ öffnen",
         "platformMacosUnsupported": "macOS: nicht unterstützt.",
-        "sentinelOneMsiNote": "Fügen Sie zuerst das SentinelOne-MSI auf der Registerkarte „Versionen“ des integrierten SentinelOne-Pakets hinzu, mit Installationsargumenten, die SITE_TOKEN={s1_site_token} enthalten. Breeze stellt das Installationsprogramm nicht bereit, und SentinelOne kann erst danach aktiviert werden.",
+        "sentinelOneMsiNote": "Laden Sie zuerst das SentinelOne-MSI auf dem Tab „Versionen“ des integrierten SentinelOne-Pakets hoch. Lassen Sie die Installationsargumente leer, um SITE_TOKEN={s1_site_token} /q /NORESTART zu verwenden. Breeze stellt das Installationsprogramm nicht bereit, und SentinelOne kann erst aktiviert werden, wenn es vorhanden ist.",
         "catalogMissingBuiltin": "{{vendors}} ist noch nicht im Softwarekatalog dieses Partners. Fügen Sie es unter Software → Katalog → Integrierte Pakete hinzu und speichern Sie dann erneut.",
         "catalogMissingBuiltinLink": "Integrierte Pakete öffnen",
         "dnsBuiltinNote": "Fügen Sie {{vendor}} zuerst unter Software → Katalog → Integrierte Pakete zum Softwarekatalog dieses Partners hinzu; vorher lässt es sich nicht aktivieren.",
@@ -1448,8 +1448,6 @@
       "allOrganizations": "Alle Organisationen",
       "sharedAcrossAllYourOrganizations": "— für alle Ihre Organisationen freigegeben",
       "thisOrganizationOnly": "Nur diese Organisation",
-      "partnerWideUrlOnly": "Partnerweite Pakete verwenden eine Download-URL — Datei-Upload ist für sie noch nicht verfügbar.",
-      "selectedFileRemoved": "Die ausgewählte Datei wurde entfernt — partnerweite Pakete verwenden eine Download-URL.",
       "scopeLockedAfterCreate": "Das Paket wurde bereits mit diesem Geltungsbereich erstellt — die Zuordnung kann danach nicht mehr geändert werden.",
       "installScripts": "Installationsskripte",
       "installScriptsHelp": "Für zip-Pakete erforderlich, sonst optional. Skripte laufen unter Windows als SYSTEM bzw. unter macOS und Linux als root, werden nach 10 Minuten abgebrochen, benötigen die Berechtigung devices.execute und genau ein Zielbetriebssystem.",
@@ -1809,7 +1807,7 @@
       "auditOnly": "Nur Audit",
       "describeThePurposeOfThisPolicy": "Beschreiben Sie den Zweck dieser Richtlinie ...",
       "softwareRules": "Softwareregeln",
-      "name": "Name *",
+      "name": "Softwarename *",
       "vendor": "Anbieter",
       "minVer": "Min. Ver",
       "maxVer": "Max ver",
@@ -2048,7 +2046,9 @@
       "replaceFileAddNewVersion": "Um die Installationsdatei zu ersetzen, fügen Sie stattdessen eine neue Version hinzu.",
       "inactiveStoredScripts": "Gespeicherte Installationsskripte sind nicht aktiv; erstellen Sie die Version neu, um sie zu aktivieren.",
       "builtinVersionsReadOnly": "Wird von Breeze verwaltet. Versionen integrierter Pakete können hier nicht hinzugefügt oder geändert werden.",
-      "installScriptsReadOnlyOnEdit": "Installationsskripte einer bestehenden Version lassen sich nicht ändern und legen ihr Zielbetriebssystem fest. Um sie zu ändern, fügen Sie eine neue Version hinzu: Sie übernimmt diese Skripte."
+      "installScriptsReadOnlyOnEdit": "Installationsskripte einer bestehenden Version lassen sich nicht ändern und legen ihr Zielbetriebssystem fest. Um sie zu ändern, fügen Sie eine neue Version hinzu: Sie übernimmt diese Skripte.",
+      "partnerWideRequiresFullAccess": "Partnerweite Pakete können nur von Partner-Administratoren mit vollem Zugriff geändert werden.",
+      "builtinArgsDefault": "Leer lassen, um die Standardargumente des Pakets zu verwenden, einschließlich des Schlüssels pro Organisation."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Fügen Sie eine Bereitstellungszeitvariable ein",

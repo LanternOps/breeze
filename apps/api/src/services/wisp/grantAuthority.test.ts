@@ -38,10 +38,14 @@ import {
   assertReadWithinCeiling,
   assertToolCallWithinCeiling,
   assertWithinCeiling,
+  ceilingAdmitsTool,
   ceilingSnapshotHash,
+  ceilingToolTermOf,
   computeLiveHumanTerm,
   intersectSnapshotWithLive,
+  isNeverDelegableToolAction,
   resolveGrantCeiling,
+  WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS,
   CeilingViolationError,
   GrantInactiveError,
   type GrantCeiling,
@@ -110,6 +114,44 @@ describe('assertWithinCeiling', () => {
   it('an org-scoped ceiling refuses any other org even if its org set were wider', () => {
     expect(() => assertWithinCeiling(ceiling({ scopeOrgId: 'org-a', partnerWide: false, orgIds: new Set(['org-a', 'org-b']) }), { orgId: 'org-b' }))
       .toThrow(expect.objectContaining({ code: 'org' }));
+  });
+});
+
+describe('ceilingAdmitsTool / ceilingToolTermOf (#10430: a Wisp session\'s tool index)', () => {
+  it('admits exactly the tools for which some call passes assertWithinCeiling\'s tool term', () => {
+    const term = ceiling({ deniedTools: new Set(['list_alerts']), toolAllowlist: null });
+    const names = ['list_alerts', 'query_devices', 'launch_specialist', ...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()];
+    for (const name of names) {
+      // #11433: a tool with an action-level floor is offered when one of its
+      // callable actions passes; the call itself is checked with its action.
+      const actions: Array<string | undefined> = [undefined, ...(WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS.get(name) ?? [])];
+      const passes = actions.some((toolAction) => {
+        try { assertWithinCeiling(term, { toolName: name, toolAction }); return true; } catch { return false; }
+      });
+      expect(ceilingAdmitsTool(term, name), name).toBe(passes);
+    }
+  });
+  it('refuses a tool in deniedTools', () => {
+    expect(ceilingAdmitsTool(ceiling(), 'list_operator_tasks')).toBe(false);
+    expect(ceilingAdmitsTool(ceiling({ deniedTools: new Set(['query_devices']) }), 'query_devices')).toBe(false);
+  });
+  it('refuses the agent deny floor even when deniedTools leaves it out', () => {
+    expect(ceilingAdmitsTool(ceiling({ deniedTools: new Set() }), 'list_operator_tasks')).toBe(false);
+  });
+  it('admits a tool a human may call under a grant, unless the snapshot denies it', () => {
+    expect(ceilingAdmitsTool(ceiling({ deniedTools: new Set() }), 'launch_specialist')).toBe(true);
+    expect(ceilingAdmitsTool(ceiling({ deniedTools: new Set(['launch_specialist']) }), 'launch_specialist')).toBe(false);
+  });
+  it('applies the allowlist', () => {
+    const term = ceiling({ toolAllowlist: new Set(['query_devices']) });
+    expect(ceilingAdmitsTool(term, 'query_devices')).toBe(true);
+    expect(ceilingAdmitsTool(term, 'list_alerts')).toBe(false);
+  });
+  it('builds the term resolveGrantCeiling uses: the snapshot denies plus the agent deny floor', () => {
+    const term = ceilingToolTermOf({ deniedTools: ['query_devices'], toolAllowlist: null });
+    expect(term.toolAllowlist).toBeNull();
+    expect(term.deniedTools).toEqual(new Set(['query_devices', ...agentDeniedToolNames()]));
+    expect(ceilingToolTermOf({ deniedTools: [], toolAllowlist: ['a', 'b'] }).toolAllowlist).toEqual(new Set(['a', 'b']));
   });
 });
 
@@ -339,7 +381,10 @@ describe('resolveGrantCeiling', () => {
     expect(c.siteIds).toBeNull();
     expect([...c.toolAllowlist!]).toEqual(['get_device']);
     expect(c.deniedTools.has('snapshot_denied_tool')).toBe(true);
-    for (const t of AGENT_HUMAN_ONLY_TOOLS) expect(c.deniedTools.has(t)).toBe(t !== 'launch_specialist');
+    // launch_specialist and the action-floored tools (#11433) are not whole-tool denies.
+    for (const t of AGENT_HUMAN_ONLY_TOOLS) {
+      expect(c.deniedTools.has(t), t).toBe(t !== 'launch_specialist' && !WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS.has(t));
+    }
     for (const t of AGENT_DENIED_READ_TOOLS.keys()) expect(c.deniedTools.has(t)).toBe(true);
   });
 
@@ -362,8 +407,58 @@ describe('resolveGrantCeiling', () => {
     const floor = new Set(agentDeniedToolNames());
     expect(floor.has('launch_specialist')).toBe(false);
     expect(AGENT_HUMAN_ONLY_TOOLS.has('launch_specialist')).toBe(true); // agents stay denied by the registry itself
-    for (const t of AGENT_HUMAN_ONLY_TOOLS) if (t !== 'launch_specialist') expect(floor.has(t)).toBe(true);
+    for (const t of AGENT_HUMAN_ONLY_TOOLS) {
+      if (t !== 'launch_specialist' && !WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS.has(t)) expect(floor.has(t)).toBe(true);
+    }
     for (const t of AGENT_DENIED_READ_TOOLS.keys()) expect(floor.has(t)).toBe(true);
+  });
+
+  // #11433: manage_fleet_designs sits in AGENT_HUMAN_ONLY_TOOLS (no agent may
+  // call it) and the floor folded the WHOLE tool into every grant, so a Wisp
+  // turn could not start the Fleet Design run it offered ("Wisp can't use this
+  // tool under your current grant." for a *:* grantor). Its read and run
+  // actions are the human's to delegate; apply and rollback (four-eyes, pinned
+  // effect digest) stay on the floor, per call.
+  describe('action-level floor (#11433: manage_fleet_designs)', () => {
+    const open = () => ceiling({ deniedTools: new Set(), orgIds: new Set(['o1']), permissionKeys: new Set(['*:*']) });
+
+    it('admits run, preview, applied and document under a grant whose snapshot does not deny the tool', () => {
+      for (const toolAction of ['run', 'preview', 'applied', 'document']) {
+        expect(() => assertWithinCeiling(open(), { toolName: 'manage_fleet_designs', toolAction, orgId: 'o1' }), toolAction).not.toThrow();
+      }
+    });
+
+    it('refuses apply and rollback, and fails closed on a missing, null or unknown action', () => {
+      for (const toolAction of ['apply', 'rollback', 'APPLY', 'Run', '', null, undefined]) {
+        expect(() => assertWithinCeiling(open(), { toolName: 'manage_fleet_designs', toolAction }), String(toolAction))
+          .toThrow(expect.objectContaining({ code: 'tool' }));
+      }
+    });
+
+    it('the run loop (no action on the check) stays refused, so an agent run under a grant cannot reach it', () => {
+      expect(() => assertToolCallWithinCeiling(open(), { toolName: 'manage_fleet_designs', orgId: 'o1', siteId: null }, [{ resource: 'ai_agents', action: 'write' }]))
+        .toThrow(expect.objectContaining({ code: 'tool' }));
+    });
+
+    it('a revision whose pinned snapshot lists the tool keeps refusing every action until refreshed', () => {
+      const pinned = ceiling({ deniedTools: new Set(['manage_fleet_designs']), orgIds: new Set(['o1']), permissionKeys: new Set(['*:*']) });
+      expect(() => assertWithinCeiling(pinned, { toolName: 'manage_fleet_designs', toolAction: 'run' })).toThrow(expect.objectContaining({ code: 'tool' }));
+      expect(ceilingAdmitsTool(pinned, 'manage_fleet_designs')).toBe(false);
+    });
+
+    it('the tool is OFFERED (some action passes) and new snapshots stop pinning it; agents stay denied by the registry', () => {
+      expect(ceilingAdmitsTool(open(), 'manage_fleet_designs')).toBe(true);
+      expect(new Set(agentDeniedToolNames()).has('manage_fleet_designs')).toBe(false);
+      expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_fleet_designs')).toBe(true);
+    });
+
+    it('isNeverDelegableToolAction names exactly the refused actions', () => {
+      expect(isNeverDelegableToolAction('manage_fleet_designs', 'run')).toBe(false);
+      expect(isNeverDelegableToolAction('manage_fleet_designs', 'apply')).toBe(true);
+      expect(isNeverDelegableToolAction('manage_fleet_designs', undefined)).toBe(true);
+      // A tool with no action-level floor never refuses on its action here.
+      expect(isNeverDelegableToolAction('query_devices', 'anything')).toBe(false);
+    });
   });
 
   it('clamps an org-scoped grant to its scope org even when the snapshot lists another', async () => {

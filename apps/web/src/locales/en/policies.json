@@ -1286,7 +1286,7 @@
         "binaryMissing": "{{vendors}} cannot be turned on until the built-in package has a deployable installer: a Windows MSI as its latest version, with install arguments that include SITE_TOKEN={s1_site_token}. Fix it in the package's Versions tab, then save again.",
         "binaryMissingLink": "Open the Versions tab",
         "platformMacosUnsupported": "macOS: not supported.",
-        "sentinelOneMsiNote": "Add the SentinelOne MSI to the built-in SentinelOne package's Versions tab first, with install arguments that include SITE_TOKEN={s1_site_token}. Breeze does not provide the installer, and SentinelOne cannot be turned on until it is there.",
+        "sentinelOneMsiNote": "Upload the SentinelOne MSI on the built-in SentinelOne package's Versions tab first. Leave install arguments blank to use SITE_TOKEN={s1_site_token} /q /NORESTART. Breeze does not provide the installer, and SentinelOne cannot be turned on until it is there.",
         "catalogMissingBuiltin": "{{vendors}} is not in this partner's software catalog yet. Add it from Software → Catalog → Built-in packages, then save again.",
         "catalogMissingBuiltinLink": "Open Built-in packages",
         "dnsBuiltinNote": "Add {{vendor}} to this partner's software catalog from Software → Catalog → Built-in packages first; it cannot be turned on until it is there.",
@@ -1448,8 +1448,6 @@
       "allOrganizations": "All organizations",
       "sharedAcrossAllYourOrganizations": "— shared across all your organizations",
       "thisOrganizationOnly": "This organization only",
-      "partnerWideUrlOnly": "Partner-wide packages use a download URL — file upload is not available for them yet.",
-      "selectedFileRemoved": "The selected file was removed — partner-wide packages use a download URL.",
       "scopeLockedAfterCreate": "The package was already created with this scope — ownership cannot change after creation.",
       "installScripts": "Install scripts",
       "installScriptsHelp": "Required for zip packages, optional otherwise. Scripts run as SYSTEM on Windows or root on macOS and Linux, time out after 10 minutes, need the devices.execute permission and exactly one target OS.",
@@ -1809,7 +1807,7 @@
       "auditOnly": "Audit Only",
       "describeThePurposeOfThisPolicy": "Describe the purpose of this policy...",
       "softwareRules": "Software Rules",
-      "name": "Name *",
+      "name": "Software name *",
       "vendor": "Vendor",
       "minVer": "Min ver",
       "maxVer": "Max ver",
@@ -2048,7 +2046,9 @@
       "replaceFileAddNewVersion": "To replace the installer file, add a new version instead.",
       "inactiveStoredScripts": "Stored install scripts are not active; re-create the version to activate them.",
       "builtinVersionsReadOnly": "Managed by Breeze. Versions of built-in packages cannot be added or changed here.",
-      "installScriptsReadOnlyOnEdit": "Install scripts can't be changed on an existing version, and they fix its target OS. To change them, add a new version: it starts with these scripts."
+      "installScriptsReadOnlyOnEdit": "Install scripts can't be changed on an existing version, and they fix its target OS. To change them, add a new version: it starts with these scripts.",
+      "partnerWideRequiresFullAccess": "Partner-wide packages can only be changed by a full-access partner admin.",
+      "builtinArgsDefault": "Leave blank to use the package's default arguments, including its per-organization key."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insert a deploy-time variable",

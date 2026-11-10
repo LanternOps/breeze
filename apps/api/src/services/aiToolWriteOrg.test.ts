@@ -4,8 +4,14 @@ import {
   resolveReadableToolOrgScope,
   resolveWritableToolOrgId,
   WRITE_ORG_AMBIGUOUS_ERROR,
+  WRITE_OWNER_AMBIGUOUS_ERROR,
+  withOwnerScopeOption,
 } from './aiToolWriteOrg';
 import { resolveWritableToolOrgId as hubExport } from './aiTools';
+import { aiTools as sharedRegistry } from './aiToolNames';
+import { narrowAuthToCeiling } from './wisp/chatCeiling';
+import type { GrantCeiling } from './wisp/grantAuthority';
+import { buildOrgAccessClosures, type AuthContext } from '../middleware/auth';
 
 const ORG_A = '11111111-1111-1111-1111-111111111111';
 const ORG_B = '22222222-2222-2222-2222-222222222222';
@@ -189,5 +195,56 @@ describe('resolveReadableToolOrgScope (#10396)', () => {
       ok: false,
       error: 'No organization context available',
     });
+  });
+});
+
+describe('withOwnerScopeOption (#11432)', () => {
+  it('turns the ambiguous-org refusal into one naming both owners and warning off the partner id', () => {
+    expect(withOwnerScopeOption(WRITE_ORG_AMBIGUOUS_ERROR)).toBe(WRITE_OWNER_AMBIGUOUS_ERROR);
+    expect(WRITE_OWNER_AMBIGUOUS_ERROR).toContain('orgId');
+    expect(WRITE_OWNER_AMBIGUOUS_ERROR).toContain('ownerScope: "partner"');
+    expect(WRITE_OWNER_AMBIGUOUS_ERROR).toMatch(/never put the partner id in orgId/i);
+  });
+
+  it('leaves every other refusal as it is', () => {
+    for (const error of ['Access denied to this organization', 'Cannot access another organization', 'Organization context required']) {
+      expect(withOwnerScopeOption(error)).toBe(error);
+    }
+  });
+});
+
+// #11432: the chat gate reads each tool's pre-filing check from the shared
+// registry map and runs it under the Wisp-narrowed auth. This drives the REAL
+// registry, the REAL narrowing and the REAL checks together.
+describe('pre-filing checks on the shared registry, under a Wisp-narrowed auth (#11432)', () => {
+  const ceiling: GrantCeiling = {
+    grantId: 'g-1', revisionId: 'r-1', partnerId: 'p-1', grantorUserId: 'u-1', scopeOrgId: null, partnerWide: true,
+    status: 'active', orgIds: new Set([ORG_A, ORG_B]), siteIds: null, permissionKeys: new Set(['devices:write', 'alerts:write']),
+    toolAllowlist: null, deniedTools: new Set(), orgTerms: new Map(),
+  };
+  const login = {
+    user: { id: 'u-1', email: 'u@example.com', name: 'U', isPlatformAdmin: false }, token: { mfa: true },
+    scope: 'partner', orgId: null, partnerId: 'p-1', partnerOrgAccess: 'all',
+    accessibleOrgIds: [ORG_A, ORG_B], ...buildOrgAccessClosures([ORG_A, ORG_B]),
+  } as unknown as AuthContext;
+  const narrowed = (keys: string[], writeDefaultOrgId: string | null = null) =>
+    narrowAuthToCeiling(login, ceiling, 's-1', keys, writeDefaultOrgId);
+
+  it('manage_configuration_policy: no owner is refused, a focus default or ownerScope "partner" passes', () => {
+    const check = sharedRegistry.get('manage_configuration_policy')?.validateBeforeFiling;
+    expect(check).toBeTypeOf('function');
+    const create = { action: 'create', name: 'Baseline Monitoring' };
+    expect(check!(create, narrowed(['devices:write']))).toEqual({ ok: false, error: WRITE_OWNER_AMBIGUOUS_ERROR });
+    expect(check!(create, narrowed(['devices:write'], ORG_A))).toEqual({ ok: true });
+    expect(check!({ ...create, ownerScope: 'partner' }, narrowed(['devices:write']))).toEqual({ ok: true });
+  });
+
+  it('manage_delivery: the same for an input-owned write', () => {
+    const check = sharedRegistry.get('manage_delivery')?.validateBeforeFiling;
+    expect(check).toBeTypeOf('function');
+    const create = { action: 'create_routing', data: { name: 'High', priority: 1, conditions: {}, channelIds: [ORG_A] } };
+    expect(check!(create, narrowed(['alerts:write']))).toEqual({ ok: false, error: WRITE_OWNER_AMBIGUOUS_ERROR });
+    expect(check!(create, narrowed(['alerts:write'], ORG_B))).toEqual({ ok: true });
+    expect(check!({ ...create, ownerScope: 'partner' }, narrowed(['alerts:write']))).toEqual({ ok: true });
   });
 });
