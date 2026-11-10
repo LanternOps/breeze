@@ -5,6 +5,7 @@ const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 
 import TicketComposer from './TicketComposer';
+import { ActionError } from '../../lib/runAction';
 
 describe('TicketComposer', () => {
   const onSend = vi.fn().mockResolvedValue(undefined);
@@ -273,6 +274,53 @@ describe('TicketComposer', () => {
       );
       expect(screen.getByTestId('ticket-composer-chip-retry-notes.txt')).toBeInTheDocument();
       expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
+    });
+
+    it('says "Reply posted" for a public reply and "Note posted" for an internal note', async () => {
+      const onUpload = vi.fn(async () => { throw new Error('network'); });
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={onUpload} />);
+      upload([png('a.png')]);
+      await screen.findByTestId('ticket-composer-chip-retry-a.png');
+      fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'hi' } });
+      fireEvent.click(screen.getByTestId('ticket-composer-send'));
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: expect.stringContaining('Reply posted') }))
+      );
+
+      showToastMock.mockClear();
+      fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+      fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'hm' } });
+      fireEvent.click(screen.getByTestId('ticket-composer-send'));
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: expect.stringContaining('Note posted') }))
+      );
+    });
+
+    describe('permanent rejections', () => {
+      it.each([
+        ['unsupported type', new ActionError('Only JPEG', 415, 'UNSUPPORTED_ATTACHMENT_TYPE'), 'notes.txt'],
+        ['too large', new ActionError('too big', 413, 'ATTACHMENT_TOO_LARGE'), 'huge.png'],
+      ])('drops a file refused as %s: no chip, no Retry, a reason toast', async (_label, err, name) => {
+        const onUpload = vi.fn(async () => { throw err; });
+        render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={onUpload} />);
+        upload([png(name)]);
+        await waitFor(() => expect(screen.queryByTestId(`ticket-composer-chip-${name}`)).toBeNull());
+        expect(screen.queryByTestId(`ticket-composer-chip-retry-${name}`)).toBeNull();
+        expect(showToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringContaining(name) })
+        );
+      });
+
+      it.each([
+        ['5xx', new ActionError('storage down', 503, 'STORAGE_UNAVAILABLE')],
+        ['network', new ActionError('offline', 0)],
+        ['rate limit', new ActionError('slow down', 429, 'TOO_MANY_PENDING')],
+      ])('keeps Retry for a transient %s failure', async (_label, err) => {
+        const onUpload = vi.fn(async () => { throw err; });
+        render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={onUpload} />);
+        upload([png('a.png')]);
+        await screen.findByTestId('ticket-composer-chip-retry-a.png');
+      });
     });
   });
 });

@@ -137,8 +137,12 @@
       "remove": "Dosyayı kaldır",
       "tooMany": "Bir yoruma en fazla {{max}} dosya ekleyebilirsiniz.",
       "tooLarge": "{{name}} 10 MB sınırını aşıyor.",
-      "sentWithoutAttachment_one": "Not gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
-      "sentWithoutAttachment_other": "Not gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın."
+      "rejectedType": "{{name}} eklenmedi: yalnızca JPEG, PNG, WebP görselleri ve PDF dosyaları desteklenir.",
+      "rejectedEmpty": "{{name}} eklenmedi: dosya boş.",
+      "sentWithoutAttachmentReply_one": "Yanıt gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
+      "sentWithoutAttachmentNote_one": "Not gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
+      "sentWithoutAttachmentReply_other": "Yanıt gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın.",
+      "sentWithoutAttachmentNote_other": "Not gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın."
     },
     "modeLabel": "Yorum görünürlüğü"
   },
