@@ -331,6 +331,10 @@ describe('password fallback audit on displacement', () => {
       resourceId: victimOrg.id,
       details: { tenantId: tenant, cause: 'tenant_displaced', ssoOnlyLifted: false },
     });
+    // The displacement row is written in the same statement and must not be lost to the fallback row.
+    const displacedRows = await audits(victimOrg.id, 'organization.portal_identity_proof.displaced');
+    expect(displacedRows).toHaveLength(1);
+    expect(displacedRows[0]).toMatchObject({ actorId: tech.id, details: { tenantId: tenant, displacedByOrgId: winnerOrg.id, wasProven: true } });
     expect(await audits(winnerOrg.id, FALLBACK)).toHaveLength(0);
   });
 

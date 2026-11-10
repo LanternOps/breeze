@@ -60,18 +60,21 @@ describe('PasswordFallbackNotice (#11582)', () => {
   it('the re-run link fires hashchange under the Astro router (a bare #anchor would not switch tabs)', async () => {
     const router = installAstroClientRouterStandIn();
     window.location.hash = '#domains';
+    let onHashChange: ((e: Event) => void) | undefined;
     try {
       renderNotice();
       const changed = new Promise<string>((resolve) => {
-        window.addEventListener('hashchange', (e) => {
+        onHashChange = (e) => {
           if ((e as HashChangeEvent).newURL.endsWith('#portal')) resolve('ok');
-        });
+        };
+        window.addEventListener('hashchange', onHashChange);
       });
       fireEvent.click(screen.getByTestId('pf-password-fallback-rerun'));
       expect(window.location.hash).toBe('#portal');
       await expect(changed).resolves.toBe('ok');
       expect(router.intercepted).toHaveLength(0);
     } finally {
+      if (onHashChange) window.removeEventListener('hashchange', onHashChange);
       router.uninstall();
       window.location.hash = '';
     }
