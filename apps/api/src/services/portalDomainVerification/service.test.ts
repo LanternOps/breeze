@@ -86,7 +86,7 @@ describe('isVerificationCurrent (D6)', () => {
     expect(isVerificationCurrent(r, { ...facts, googleConnection: null }, NOW)).toBe(false);
     expect(isVerificationCurrent(r, { ...facts, googleConnection: { id: '44444444-4444-4444-8444-444444444444', binding: BINDING } }, NOW)).toBe(false);
     // The connection upsert replaced the admin / service account in place (same id, other Workspace).
-    const otherWorkspace = googleConnectionBinding({ adminEmail: 'admin@fabrikam.com', serviceAccountEmail: 'sa@other.iam.gserviceaccount.com' });
+    const otherWorkspace = googleConnectionBinding({ adminEmail: 'admin@example.com', serviceAccountEmail: 'sa@other.iam.gserviceaccount.com' });
     expect(isVerificationCurrent(r, { ...facts, googleConnection: { id: CONN, binding: otherWorkspace } }, NOW)).toBe(false);
   });
 
