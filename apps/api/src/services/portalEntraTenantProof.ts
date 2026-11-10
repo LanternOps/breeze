@@ -21,6 +21,7 @@ import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { getEmailService } from './email';
 import { listActivePartnerAdmins } from './partnerAdminRecipients';
+import { getPortalPasswordFallbackImpact, portalPasswordFallbackAuditEvent } from './portalPasswordFallback';
 import { captureException } from './sentry';
 import { PROTECTED_ORG_ERROR } from './unassignedPool/orgType';
 import { isHoldingOrg } from './unassignedPool/protectedOrg';
@@ -386,6 +387,17 @@ async function recordInTransaction(
       details: { tenantId, displacedByOrgId: input.orgId, wasProven },
       result: 'success',
     });
+    // #11582: a PROVEN tenant was Microsoft sign-in for that org; if it was on
+    // there, its portal now falls back to password (D2). Same transaction, so a
+    // refused proof below rolls this row back with the displacement.
+    const fallback = wasProven ? await getPortalPasswordFallbackImpact(other.orgId) : null;
+    if (fallback) {
+      await db.insert(auditLogs).values({
+        ...portalPasswordFallbackAuditEvent(other.orgId, tenantId, 'tenant_displaced', fallback),
+        ...actor,
+        result: 'success',
+      });
+    }
     displaced = {
       orgId: other.orgId,
       partnerId: other.partnerId,
@@ -422,7 +434,9 @@ async function recordInTransaction(
   if (!mapping) {
     throw new PortalEntraProofError('PORTAL_ENTRA_ORG_HAS_OTHER_TENANT', 409, ORG_HAS_OTHER_TENANT_MESSAGE);
   }
-  // Only past the last throw: a rolled-back displacement row must not suppress the fallback audit.
+  // Only past the last throw: a rolled-back displacement row must not suppress the
+  // request's generic fallback audit (auditRequestTracking), which is unrelated to
+  // the portal password fallback row above.
   if (displaced) markRequestAuditWritten();
 
   await db.insert(auditLogs).values({
@@ -498,15 +512,20 @@ export async function proveEntraTenantFromM365Connection(
 
 /**
  * Removes the org's tenant mapping, proof and all (OD3: this also removes the
- * AI for Office mapping, which shares the row). The route audits `.removed`.
+ * AI for Office mapping, which shares the row). The route audits `.removed`,
+ * and the password fallback when `wasProven` (#11582).
  * Reads/writes under the held context when there is one, else system.
  */
-export async function removePortalEntraTenant(orgId: string): Promise<{ removed: boolean; tenantId: string | null }> {
-  if (!UUID_RE.test(orgId)) return { removed: false, tenantId: null };
+export async function removePortalEntraTenant(
+  orgId: string,
+): Promise<{ removed: boolean; tenantId: string | null; wasProven: boolean }> {
+  if (!UUID_RE.test(orgId)) return { removed: false, tenantId: null, wasProven: false };
   const [row] = await inHeldOrSystemContext('portalEntraTenantProof.remove', () =>
     db
       .delete(clientAiTenantMappings)
       .where(eq(clientAiTenantMappings.orgId, orgId))
-      .returning({ tenantId: clientAiTenantMappings.entraTenantId }));
-  return row ? { removed: true, tenantId: row.tenantId } : { removed: false, tenantId: null };
+      .returning({ tenantId: clientAiTenantMappings.entraTenantId, provenAt: clientAiTenantMappings.provenAt }));
+  return row
+    ? { removed: true, tenantId: row.tenantId, wasProven: row.provenAt !== null }
+    : { removed: false, tenantId: null, wasProven: false };
 }

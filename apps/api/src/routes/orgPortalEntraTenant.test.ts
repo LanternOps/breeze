@@ -36,6 +36,8 @@ const h = vi.hoisted(() => {
   const getStatusImpl = { current: async (..._args: any[]): Promise<unknown> => undefined };
   const proveImpl = { current: async (..._args: any[]): Promise<unknown> => undefined };
   const removeImpl = { current: async (..._args: any[]): Promise<unknown> => undefined };
+  const noticeImpl = { current: async (..._args: any[]): Promise<unknown> => null };
+  const fallbackAuditImpl = { current: async (..._args: any[]): Promise<unknown> => undefined };
   return {
     organizations,
     store,
@@ -45,9 +47,14 @@ const h = vi.hoisted(() => {
     getStatus: record('getPortalEntraTenantStatus', getStatusImpl),
     prove: record('proveEntraTenantFromM365Connection', proveImpl),
     remove: record('removePortalEntraTenant', removeImpl),
+    getNotice: record('getPortalPasswordFallbackNotice', noticeImpl),
+    auditFallback: record('auditPortalPasswordFallback', fallbackAuditImpl),
     getStatusImpl,
     proveImpl,
     removeImpl,
+    noticeImpl,
+    fallbackAuditImpl,
+    strictAuditSpy: vi.fn(async (..._args: unknown[]) => undefined),
     resolveDomain: vi.fn(async (_domain: string): Promise<{ kind: 'tenant'; tid: string } | { kind: 'unknown_domain' } | { kind: 'lookup_failed' }> => ({ kind: 'unknown_domain' })),
     authRef: { current: null as any },
     auditSpy: vi.fn(),
@@ -93,6 +100,13 @@ vi.mock('../db', () => ({
 vi.mock('../services/auditEvents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/auditEvents')>()),
   writeRouteAudit: (...args: unknown[]) => h.auditSpy(...args),
+  writeAuditEventStrict: (...args: unknown[]) => h.strictAuditSpy(...args),
+}));
+
+vi.mock('../services/portalPasswordFallback', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/portalPasswordFallback')>()),
+  getPortalPasswordFallbackNotice: h.getNotice,
+  auditPortalPasswordFallback: h.auditFallback,
 }));
 
 vi.mock('../services/unassignedPool/protectedOrg', () => ({
@@ -136,6 +150,8 @@ const CLIENT_ID = 'd4d4d4d4-e5e5-4f6f-8a7a-b8b8b8b8b8b8';
 const BASE = `/organizations/${ORG_ID}/portal-entra-tenant`;
 const PROOF_LINKS = `${BASE}/proof-links`;
 const PROVE = `${BASE}/prove-from-connection`;
+const DISMISS = `${BASE}/password-fallback/dismiss`;
+const NOTICE = { since: '2027-02-03T04:05:06.000Z', tenantId: TID, cause: 'tenant_removed' as const };
 
 const FULL_ADMIN = {
   scope: 'partner',
@@ -206,7 +222,9 @@ beforeEach(() => {
   h.ctx.outsideDepth = 0;
   status(NONE);
   h.proveImpl.current = async () => ({ displaced: null, tenantId: TID });
-  h.removeImpl.current = async () => ({ removed: false, tenantId: null });
+  h.removeImpl.current = async () => ({ removed: false, tenantId: null, wasProven: false });
+  h.noticeImpl.current = async () => null;
+  h.fallbackAuditImpl.current = async () => undefined;
   h.resolveDomain.mockImplementation(async () => ({ kind: 'unknown_domain' }));
   portalEntraProofRuns.clear();
 });
@@ -229,6 +247,7 @@ describe('every route', () => {
       await app.request(PROVE, post()),
       await app.request(PROOF_LINKS, post({ tenant: TID })),
       await app.request(BASE, { method: 'DELETE' }),
+      await app.request(DISMISS, post()),
     ];
     for (const res of responses) {
       expect(res.status).toBe(404);
@@ -247,6 +266,7 @@ describe('every route', () => {
       await app.request(PROVE, post()),
       await app.request(PROOF_LINKS, post({ tenant: TID })),
       await app.request(BASE, { method: 'DELETE' }),
+      await app.request(DISMISS, post()),
     ]) {
       expect(res.status).toBe(403);
     }
@@ -261,6 +281,8 @@ describe('every route', () => {
     expect((await app.request(PROOF_LINKS, post())).status).toBe(403);
     expect((await app.request(PROVE, post())).status).toBe(403);
     expect((await app.request(BASE, { method: 'DELETE' })).status).toBe(403);
+    expect((await app.request(DISMISS, post())).status).toBe(403);
+    expect(h.strictAuditSpy).not.toHaveBeenCalled();
 
     h.authRef.current = { ...FULL_ADMIN, perms: [] };
     expect((await app.request(BASE)).status).toBe(403);
@@ -297,10 +319,10 @@ describe('GET /organizations/:id/portal-entra-tenant', () => {
 
     status({ ...UNPROVEN, connectionTenantId: CONNECTION_TID });
     const unproven = await (await makeApp().request(BASE)).json();
-    expect(unproven.data).toEqual({ ...UNPROVEN, connectionTenantId: CONNECTION_TID, consentUrl: null });
+    expect(unproven.data).toEqual({ ...UNPROVEN, connectionTenantId: CONNECTION_TID, consentUrl: null, passwordFallback: null });
 
     status(NONE);
-    expect((await (await makeApp().request(BASE)).json()).data).toEqual({ ...NONE, consentUrl: null });
+    expect((await (await makeApp().request(BASE)).json()).data).toEqual({ ...NONE, consentUrl: null, passwordFallback: null });
     expect(h.auditSpy).not.toHaveBeenCalled();
   });
 });
@@ -532,7 +554,7 @@ describe('POST /organizations/:id/portal-entra-tenant/prove-from-connection', ()
 
 describe('DELETE /organizations/:id/portal-entra-tenant', () => {
   it('DELETE removes the mapping and audits removed', async () => {
-    h.removeImpl.current = async () => ({ removed: true, tenantId: TID });
+    h.removeImpl.current = async () => ({ removed: true, tenantId: TID, wasProven: false });
     const res = await makeApp().request(BASE, { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { removed: true, tenantId: TID } });
@@ -553,15 +575,85 @@ describe('DELETE /organizations/:id/portal-entra-tenant', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { removed: false, tenantId: null } });
     expect(h.auditSpy).not.toHaveBeenCalled();
+    expect(serviceCalls('auditPortalPasswordFallback')).toEqual([]);
+  });
+
+  it('#11582: DELETE of a PROVEN tenant hands the password-fallback audit the lost tenant, outside the request context', async () => {
+    h.removeImpl.current = async () => ({ removed: true, tenantId: TID, wasProven: true });
+    const res = await makeApp().request(BASE, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    // `wasProven` stays internal.
+    expect(await res.json()).toEqual({ data: { removed: true, tenantId: TID } });
+    const [call] = serviceCalls('auditPortalPasswordFallback');
+    expect(call).toMatchObject({ args: [expect.anything(), { orgId: ORG_ID, tenantId: TID, cause: 'tenant_removed' }], outside: true });
+  });
+
+  it('#11582: DELETE of an unproven tenant writes no password-fallback audit (it was never a sign-in path)', async () => {
+    h.removeImpl.current = async () => ({ removed: true, tenantId: TID, wasProven: false });
+    await makeApp().request(BASE, { method: 'DELETE' });
+    expect(serviceCalls('auditPortalPasswordFallback')).toEqual([]);
   });
 
   it('DELETE without MFA or for an inaccessible org removes nothing', async () => {
-    h.removeImpl.current = async () => ({ removed: true, tenantId: TID });
+    h.removeImpl.current = async () => ({ removed: true, tenantId: TID, wasProven: true });
     h.authRef.current = NO_MFA;
     expect((await makeApp().request(BASE, { method: 'DELETE' })).status).toBe(403);
     h.authRef.current = SELECTED;
     expect((await makeApp().request(BASE, { method: 'DELETE' })).status).toBe(404);
     expect(h.calls).toEqual([]);
     expect(h.auditSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('#11582 password-fallback notice', () => {
+  it('GET carries the notice the service derives, asked with whether the tenant is proven', async () => {
+    status(UNPROVEN);
+    h.noticeImpl.current = async () => ({ ...NOTICE });
+    const { data } = await (await makeApp().request(BASE)).json();
+    expect(data.passwordFallback).toEqual(NOTICE);
+    expect(serviceCalls('getPortalPasswordFallbackNotice')).toEqual([
+      { fn: 'getPortalPasswordFallbackNotice', args: [ORG_ID, false], outside: true },
+    ]);
+
+    h.calls.length = 0;
+    status(PROVEN);
+    h.noticeImpl.current = async () => null;
+    expect((await (await makeApp().request(BASE)).json()).data.passwordFallback).toBeNull();
+    expect(serviceCalls('getPortalPasswordFallbackNotice')[0]?.args).toEqual([ORG_ID, true]);
+  });
+
+  it('dismiss writes one awaited dismissal row while a notice shows (no MFA needed: sign-in is unaffected)', async () => {
+    h.authRef.current = NO_MFA;
+    status(UNPROVEN);
+    h.noticeImpl.current = async () => ({ ...NOTICE });
+    const res = await makeApp().request(DISMISS, post());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { dismissed: true } });
+    expect(h.strictAuditSpy).toHaveBeenCalledTimes(1);
+    expect(h.strictAuditSpy).toHaveBeenCalledWith(expect.anything(), {
+      orgId: ORG_ID,
+      action: 'organization.portal_sign_in.password_fallback_dismissed',
+      resourceType: 'organization',
+      resourceId: ORG_ID,
+      resourceName: TID,
+      details: { since: NOTICE.since, tenantId: TID, cause: 'tenant_removed' },
+      actorId: USER_ID,
+      actorEmail: 'tess@msp.example',
+    });
+  });
+
+  it('dismiss with no notice showing writes nothing → dismissed false', async () => {
+    const res = await makeApp().request(DISMISS, post());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { dismissed: false } });
+    expect(h.strictAuditSpy).not.toHaveBeenCalled();
+  });
+
+  it('dismiss for an org the partner cannot access → 404, nothing read or written', async () => {
+    h.authRef.current = SELECTED;
+    h.noticeImpl.current = async () => ({ ...NOTICE });
+    expect((await makeApp().request(DISMISS, post())).status).toBe(404);
+    expect(h.calls).toEqual([]);
+    expect(h.strictAuditSpy).not.toHaveBeenCalled();
   });
 });
