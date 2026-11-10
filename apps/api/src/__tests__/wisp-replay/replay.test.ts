@@ -38,8 +38,22 @@ vi.mock('../../db', async () => {
           .map((r) => ({ id: r.id, status: r.status, content: r.content }));
       case 'devices':
         return replayWorld.deviceRows;
-      default:
+      // The session's org and partner settings (approval mode, approval timeout): defaults, no overrides.
+      case 'organizations':
+        return [{ partnerId: replayWorld.ceiling?.partnerId, settings: {} }];
+      case 'partners':
+        return [{ settings: {} }];
+      case 'ai_budgets':
         return [];
+      case 'ai_messages':
+        // The previous assistant reply for the extractor: none in a fresh session.
+        return [];
+      default: {
+        // A read the world does not model would quietly see "no rows" and could
+        // send production down a fallback branch: recorded, and the suite fails.
+        replayWorld.unexpectedReads.push(getTableName(table as Parameters<typeof getTableName>[0]));
+        return [];
+      }
     }
   };
   const select = () => {
@@ -53,8 +67,9 @@ vi.mock('../../db', async () => {
     chain.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject);
     return chain;
   };
+  // A write the world does not model lands on one row (callers that require a row see it).
   const settled = () => Object.assign(Promise.resolve([]), {
-    returning: async () => [],
+    returning: async () => [{ id: 'replay-row' }],
     onConflictDoNothing: () => settled(),
     onConflictDoUpdate: () => settled(),
   });
@@ -82,7 +97,18 @@ vi.mock('../../services/redis', async () => {
   return { getRedis: () => replayWorld.redis };
 });
 
-vi.mock('../../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+// Production code that swallows a failure reports it here; the suite asserts nothing was reported.
+vi.mock('../../services/sentry', async () => {
+  const { replayWorld } = await import('./world');
+  return {
+    captureException: (err: unknown) => {
+      replayWorld.reported.push(err);
+    },
+    captureMessage: (msg: unknown) => {
+      replayWorld.reported.push(msg);
+    },
+  };
+});
 
 // The grant: the session row resolves to it; the ceiling and the standing facts come from the fixture.
 vi.mock('../../services/wisp/chatCeiling', async () => {
@@ -191,8 +217,9 @@ vi.mock('../../services/toolSources/sdkBridge', () => ({ buildTenantSdkTools: ()
 vi.mock('../../services/toolSources/resolver', () => ({ resolveTenantTools: async () => [] }));
 vi.mock('../../services/flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
+import { STANDING_CHECK_UNAVAILABLE_MESSAGE } from '../../services/wisp/standingInstructionGate';
 import { replaySession, type ReplayFixture, type ReplayTurnExpectation } from './harness';
-import { scoreTrace, type ReplayScore, type ReplayTurnTrace } from './score';
+import { scoreTrace, type ReplayScore, type ReplayTrace, type ReplayTurnTrace } from './score';
 import { replayWorld } from './world';
 import { checkBackFixture } from './fixtures/checkBack';
 import { dontRebootFixture } from './fixtures/dontReboot';
@@ -225,7 +252,9 @@ function expectTurn(turn: ReplayTurnTrace | undefined, want: ReplayTurnExpectati
 }
 
 function expectScore(score: ReplayScore, f: ReplayFixture): void {
-  for (const [key, bound] of Object.entries(f.expect.max ?? {}) as Array<[keyof ReplayScore, number]>) {
+  // A refusal is never free: a fail-closed gate error refuses too, so a fixture that expects none says so by default.
+  const max: Partial<ReplayScore> = { ...(f.expect.min?.refusals === undefined ? { refusals: 0 } : {}), ...f.expect.max };
+  for (const [key, bound] of Object.entries(max) as Array<[keyof ReplayScore, number]>) {
     expect(score[key], `${f.name}: ${key} ≤ ${bound} (${f.guards})`).toBeLessThanOrEqual(bound);
   }
   for (const [key, bound] of Object.entries(f.expect.min ?? {}) as Array<[keyof ReplayScore, number]>) {
@@ -233,9 +262,25 @@ function expectScore(score: ReplayScore, f: ReplayFixture): void {
   }
 }
 
+/** Replay with the console watched: a swallowed failure (reported, logged, or an unmodelled read) fails the fixture. */
+async function replayClean(fixture: ReplayFixture): Promise<ReplayTrace> {
+  const warn = vi.spyOn(console, 'warn');
+  const error = vi.spyOn(console, 'error');
+  try {
+    const trace = await replaySession(fixture);
+    expect(replayWorld.reported, `${fixture.name}: errors reported to Sentry`).toEqual([]);
+    expect(replayWorld.unexpectedReads, `${fixture.name}: tables read that the world does not model`).toEqual([]);
+    expect([...warn.mock.calls, ...error.mock.calls].map((args) => String(args[0])), `${fixture.name}: warnings or errors logged`).toEqual([]);
+    return trace;
+  } finally {
+    warn.mockRestore();
+    error.mockRestore();
+  }
+}
+
 describe('Wisp replay regression suite (#10432)', () => {
   it.each(FIXTURES.map((f) => [f.name, f] as const))('%s', async (_name, fixture) => {
-    const trace = await replaySession(fixture);
+    const trace = await replayClean(fixture);
     const score = scoreTrace(trace);
     expect(trace.turns).toHaveLength(fixture.turns.length);
     for (const [i, want] of (fixture.expect.turns ?? []).entries()) {
@@ -248,12 +293,14 @@ describe('Wisp replay regression suite (#10432)', () => {
   }, 30_000);
 
   it('the kept instruction is one confirmed block per named device, and the refusal quotes it', async () => {
-    const trace = await replaySession(dontRebootFixture);
+    const trace = await replayClean(dontRebootFixture);
     const kept = replayWorld.memoryRows.filter((r) => r.blockType === 'standing_instruction');
     expect(kept.map((r) => r.content.deviceId).sort()).toEqual([...dontRebootFixture.inventory.devices]
       .filter((d) => d.name === 'PC-01' || d.name === 'PC-02').map((d) => d.id).sort());
     expect(kept.every((r) => r.status === 'confirmed')).toBe(true);
     // The refusal names the instruction, so the reply can say why.
     expect(trace.turns[1]!.toolCalls[0]!.output).toMatch(/standing instruction \('don't reboot PC-01 and PC-02'\)/);
+    // A refusal, not the check failing closed (which refuses too).
+    for (const call of trace.turns.flatMap((t) => t.toolCalls)) expect(call.output).not.toContain(STANDING_CHECK_UNAVAILABLE_MESSAGE);
   }, 30_000);
 });

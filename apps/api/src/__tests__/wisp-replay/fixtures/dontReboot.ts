@@ -13,16 +13,22 @@
 import type { ModelView, ReplayFixture, ScriptedModelStep } from '../harness';
 import { DEV, INVENTORY, JOB_ID, replayCeiling, standingFacts } from './common';
 
-const reportInstall = (v: ModelView): ScriptedModelStep => {
+const reportInstall = (targets: string) => (v: ModelView): ScriptedModelStep => {
   const result = v.toolResults[0];
   if (result?.isError && /standing instruction/i.test(result.output)) {
     return {
-      say: 'Nothing was installed. PC-01 has a standing instruction not to reboot it, and a patch install can reboot. '
-        + 'Lift that instruction first, or ask me to install on PC-03 alone.',
+      say: `Nothing was installed on ${targets}: a standing instruction says not to reboot it, and a patch install can reboot. `
+        + 'Lift that instruction first, or pick devices it does not cover.',
     };
   }
-  return { say: 'The patch install is scheduled on PC-01 and PC-03.' };
+  return { say: `The patch install is scheduled on ${targets}.` };
 };
+
+const install = (deviceIds: string[], targets: string): ScriptedModelStep[] => [
+  { call: 'manage_patches', input: { action: 'install', deviceIds } },
+  reportInstall(targets),
+];
+const INSTALL_SCHEDULED = { manage_patches: { success: true, jobId: JOB_ID } };
 
 export const dontRebootFixture: ReplayFixture = {
   name: "don't reboot PC-01 and PC-02",
@@ -45,18 +51,29 @@ export const dontRebootFixture: ReplayFixture = {
     {
       before: ['keep_captured_instructions'],
       user: 'Install the pending patches on PC-01 and PC-03 tonight.',
-      modelScript: [
-        { call: 'manage_patches', input: { action: 'install', deviceIds: [DEV.PC01, DEV.PC03] } },
-        reportInstall,
-      ],
-      toolOutputs: { manage_patches: { success: true, jobId: JOB_ID } },
+      modelScript: install([DEV.PC01, DEV.PC03], 'PC-01 and PC-03'),
+      toolOutputs: INSTALL_SCHEDULED,
+    },
+    {
+      // Not over-refused: PC-03 carries no instruction.
+      user: 'Then just PC-03.',
+      modelScript: install([DEV.PC03], 'PC-03'),
+      toolOutputs: INSTALL_SCHEDULED,
+    },
+    {
+      // Every device the instruction names is covered, not only the first.
+      user: 'What about PC-02 on its own?',
+      modelScript: install([DEV.PC02], 'PC-02'),
+      toolOutputs: INSTALL_SCHEDULED,
     },
   ],
   expect: {
-    max: { promisesWithoutMechanism: 0, toolErrors: 0, unansweredTurns: 0 },
-    min: { refusals: 1 },
+    max: { promisesWithoutMechanism: 0, toolErrors: 0, unansweredTurns: 0, refusals: 2 },
+    min: { refusals: 2 },
     turns: [
       { captureStatus: 'saved', corrections: [] },
+      { refused: ['manage_patches'], corrections: [] },
+      { refused: [], corrections: [] },
       { refused: ['manage_patches'], corrections: [] },
     ],
   },

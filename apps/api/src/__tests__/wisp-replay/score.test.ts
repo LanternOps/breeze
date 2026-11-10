@@ -123,6 +123,18 @@ describe('crossOrgMistakes', () => {
     expect(crossOrgMistakes('PC-07 is offline. Harbor Dental has no open alerts.', INVENTORY)).toBe(0);
   });
 
+  it('a hostname reused in two orgs is right beside either of them', () => {
+    const reused: ReplayTrace['inventory'] = {
+      orgs: INVENTORY.orgs,
+      devices: [
+        { id: 'dev-pc01-harbor', name: 'PC-01', orgId: ORG_HARBOR },
+        { id: 'dev-pc01-juniper', name: 'PC-01', orgId: ORG_JUNIPER },
+      ],
+    };
+    expect(crossOrgMistakes('PC-01 at Harbor Dental is offline.', reused)).toBe(0);
+    expect(crossOrgMistakes('PC-01 at Juniper Legal is offline.', reused)).toBe(0);
+  });
+
   it('matches names whole and case-insensitively', () => {
     expect(crossOrgMistakes('fs-01 at juniper legal is full.', INVENTORY)).toBe(1);
     expect(crossOrgMistakes('FS-010 at Juniper Legal is full.', INVENTORY)).toBe(0);

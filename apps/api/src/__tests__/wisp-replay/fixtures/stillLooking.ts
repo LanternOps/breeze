@@ -46,6 +46,15 @@ export const stillLookingFixture: ReplayFixture = {
       modelScript: [answerFromThePicture],
       toolOutputs: LOOKUP_OUTPUTS,
     },
+    {
+      // The first look moved on: the new facts ride on the turn, and the answer uses them.
+      standingFacts: standingFacts({ firstLook: { assessedOrgs: 3, settledOrgs: 3, inFlight: 0, totalOrgs: 3 } }),
+      user: 'And now?',
+      modelScript: [
+        (v) => (/First look: 3 of 3 orgs assessed/.test(v.turnContent) ? answerFromThePicture(v) : LOOK_IT_UP),
+      ],
+      toolOutputs: LOOKUP_OUTPUTS,
+    },
   ],
   expect: {
     max: { toolCallsPerAnswer: 0, unansweredTurns: 0, promisesWithoutMechanism: 0, toolErrors: 0 },
@@ -53,6 +62,8 @@ export const stillLookingFixture: ReplayFixture = {
       { standingStateSent: true, maxToolCalls: 0, corrections: [] },
       // Unchanged facts: the snapshot from the first turn is still current.
       { standingStateSent: false, maxToolCalls: 0, corrections: [] },
+      // Changed facts are sent again; a gate that sent only once would leave the model on the stale count.
+      { standingStateSent: true, maxToolCalls: 0, corrections: [] },
     ],
   },
 };

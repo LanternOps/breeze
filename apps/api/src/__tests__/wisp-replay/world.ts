@@ -71,6 +71,10 @@ export type ReplayWorld = {
   extractorReplies: unknown[];
   /** Rows written through `db.insert(...).values(...)` (assistant corrections among them). */
   inserted: Array<Record<string, unknown>>;
+  /** Tables read through the fake `db` that the world holds no rows for (the suite asserts none). */
+  unexpectedReads: string[];
+  /** Errors production code reported through `captureException` (the suite asserts none). */
+  reported: unknown[];
   /** Set by the harness for the session it is driving: the fake Agent SDK `query()`. */
   sdkQuery: ((args: { prompt: AsyncIterable<unknown>; options?: unknown }) => unknown) | null;
 };
@@ -83,6 +87,8 @@ export const replayWorld: ReplayWorld = {
   deviceRows: [],
   extractorReplies: [],
   inserted: [],
+  unexpectedReads: [],
+  reported: [],
   sdkQuery: null,
 };
 
@@ -94,5 +100,7 @@ export function resetReplayWorld(): void {
   replayWorld.deviceRows = [];
   replayWorld.extractorReplies = [];
   replayWorld.inserted = [];
+  replayWorld.unexpectedReads = [];
+  replayWorld.reported = [];
   replayWorld.sdkQuery = null;
 }

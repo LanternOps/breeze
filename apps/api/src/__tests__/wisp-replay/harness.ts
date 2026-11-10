@@ -7,8 +7,10 @@
  *  - Real: the session manager's turn loop (the Wisp turn record, the reply
  *    text buffer, the turn-end hooks and `done`); the standing-state block
  *    (`standingStateForTurn`: facts → render → the per-session send gate),
- *    put on the turn the way `POST /ai/sessions/:id/messages` does; the
- *    promise linter and the correction message; the instruction prefilter,
+ *    put ahead of the user's text the way `POST /ai/sessions/:id/messages`
+ *    does (the route's content sanitising and fired check-in block are not
+ *    replayed); the promise linter and the correction message; the
+ *    instruction prefilter,
  *    the capture status and the extractor (parse, name resolution, blocks);
  *    the standing-instruction check (verb map, registry device args, matcher,
  *    decision); the dispatch-evidence normaliser.
@@ -69,8 +71,16 @@ export type ReplayAction =
 export type ReplayTurn = {
   user: string;
   before?: ReplayAction[];
+  /**
+   * The standing facts from this turn on, read as if the 60 s fact cache had
+   * expired (time passing is not replayed). Omitted: unchanged.
+   */
+  standingFacts?: StandingStateFacts;
   modelScript: ScriptedModelStep[];
-  /** The recorded handler output per tool name: a string as is, anything else as JSON. An object with `error` is an error result. */
+  /**
+   * The recorded handler output per tool name: a string as is, anything else
+   * as JSON. An object with `error` and no `success` is an error result.
+   */
   toolOutputs?: Record<string, unknown>;
 };
 
@@ -206,8 +216,8 @@ async function runTool(
       call.unverified = normalised.unverified;
     }
   }
-  // The Wisp post-tool's turn record.
-  if (session.currentTurn) {
+  // The Wisp post-tool's turn record. A call refused before it ran never reaches the post-tool, so it is not recorded.
+  if (session.currentTurn && !call.refused) {
     recordWispToolOutcome(session.currentTurn, { toolName: `mcp__breeze__${tool}`, input: step.input, isError: call.isError, output: call.output });
   }
   return call;
@@ -322,6 +332,10 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
 
     for (const [index, turn] of fixture.turns.entries()) {
       for (const action of turn.before ?? []) applyAction(action);
+      if (turn.standingFacts) {
+        replayWorld.standingFacts = turn.standingFacts;
+        clearStandingStateCache();
+      }
       // As POST /ai/sessions/:id/messages builds the turn: the standing state, then the user's text.
       const standing = await standingStateForTurn({
         grantId: fixture.ceiling.grantId, revisionId: fixture.ceiling.revisionId, sessionId: SESSION_ID, auth,

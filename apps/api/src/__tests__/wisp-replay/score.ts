@@ -96,18 +96,27 @@ const SENTENCE_SPLIT = /(?<=[.!?])\s+|\n+/;
 
 /**
  * Device-org pairs that disagree. Each device mention is paired with the
- * nearest org mention in the same sentence; a sentence that names no org
- * never counts (the device simply was not placed).
+ * nearest org mention in the same sentence (a heuristic: "Harbor Dental has
+ * FS-01 and PC-07" pairs PC-07 with Harbor Dental); a sentence that names no
+ * org never counts (the device simply was not placed). A hostname reused in
+ * several orgs is right beside any of them.
  */
 export function crossOrgMistakes(text: string, inventory: ReplayInventory): number {
+  const orgsByName = new Map<string, { name: string; orgIds: Set<string> }>();
+  for (const device of inventory.devices) {
+    const key = device.name.toLowerCase();
+    const entry = orgsByName.get(key) ?? { name: device.name, orgIds: new Set<string>() };
+    entry.orgIds.add(device.orgId);
+    orgsByName.set(key, entry);
+  }
   let mistakes = 0;
   for (const sentence of text.split(SENTENCE_SPLIT)) {
     const orgMentions = inventory.orgs.flatMap((org) => positions(sentence, org.name).map((at) => ({ orgId: org.id, at })));
     if (orgMentions.length === 0) continue;
-    for (const device of inventory.devices) {
-      for (const at of positions(sentence, device.name)) {
+    for (const { name, orgIds } of orgsByName.values()) {
+      for (const at of positions(sentence, name)) {
         const nearest = orgMentions.reduce((best, m) => (Math.abs(m.at - at) < Math.abs(best.at - at) ? m : best));
-        if (nearest.orgId !== device.orgId) mistakes += 1;
+        if (!orgIds.has(nearest.orgId)) mistakes += 1;
       }
     }
   }
