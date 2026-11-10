@@ -248,6 +248,11 @@ export const JOB_SCHEDULES = {
   // rows are never deleted. Hour 23 was free in the daily tier; :03 keeps the
   // daily = 3 (mod 5) lane.
   'flow-run-retention': '3 23 * * *',
+  // #4342 W3 — daily closed-alert retention (alerts past ALERT_RETENTION_DAYS,
+  // default 365, then orphaned correlation groups). Report-only until
+  // ALERT_RETENTION_ENFORCE=true. Pre-allocated slot; :08 keeps the daily = 3
+  // (mod 5) lane in hour 13.
+  'alert-retention': '8 13 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
