@@ -4,7 +4,7 @@ import { zValidator } from '../lib/validation';
 import { z } from "zod";
 import { and, eq, sql, desc, inArray, lt, gt, isNull, isNotNull, or, asc, getTableColumns } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
-import { db, withSystemDbAccessContext } from "../db";
+import { db, withSystemDbAccessContext, withDbTransaction } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
 import { sites } from "../db/schema/orgs";
 import {
@@ -593,9 +593,10 @@ export async function redeemShortCode(
       .returning({ id: enrollmentKeys.id });
 
     if (claimed.length === 0) {
-      await db
+      // Savepoint so a failed delete cannot poison the surrounding transaction (#11203).
+      await withDbTransaction(async () => db
         .delete(enrollmentKeys)
-        .where(eq(enrollmentKeys.id, child.id))
+        .where(eq(enrollmentKeys.id, child.id)))
         .catch(() => {});
       return null;
     }
@@ -3380,8 +3381,9 @@ publicShortLinkRoutes.get("/:code", async (c) => {
  * Undo a /s/:code redemption that produced no installer (#7217): delete the
  * transport download key it minted (cascading any bootstrap token issued from
  * it) and give the claimed use back to the link. Runs inside the route's
- * system DB context. Failures are logged and reported, never thrown — the
- * visitor still gets the original error response.
+ * system DB context. Failures are logged and reported, never thrown. Deliberately
+ * no savepoint (#11225): a failed statement fails the route's commit, which rolls
+ * back the mint and the claim, so no live download key outlives a failed redemption.
  */
 async function releaseFailedShortLinkClaim(
   c: Context,

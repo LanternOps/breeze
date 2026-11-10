@@ -33,8 +33,15 @@ vi.mock('../db/schema', () => ({
     hostname: 'hostname',
     status: 'status',
     lastSeenAt: 'lastSeenAt'
-  }
+  },
+  alerts: { orgId: 'alerts.orgId', deviceId: 'alerts.deviceId', status: 'alerts.status' }
 }));
+
+// Compliance comes from the persisted security-posture scores (#11039).
+const postureMock = vi.hoisted(() => ({ listLatestPostureScoresByOrgs: vi.fn(async () => [] as any[]) }));
+vi.mock('../services/securityPosture', () => postureMock);
+
+const currentPermissions: { value: Array<{ resource: string; action: string }> } = { value: [{ resource: '*', action: '*' }] };
 
 // Mutable so a test can swap in an ORGANIZATION-scoped caller — the population
 // GET /partner/me was silently 404ing for (#2822).
@@ -49,14 +56,20 @@ const currentAuth: { value: Record<string, unknown> } = {
   },
 };
 
-vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', currentAuth.value);
-    return next();
-  }),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
-}));
+// requireScope stays REAL: GET /partner/dashboard's site-scope exemption rests on
+// its scope gate, so a no-op mock here would let that gate disappear unnoticed.
+vi.mock('../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../middleware/auth')>();
+  return {
+    authMiddleware: vi.fn((c: any, next: any) => {
+      c.set('auth', currentAuth.value);
+      c.set('permissions', { permissions: currentPermissions.value });
+      return next();
+    }),
+    requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+    requireScope: actual.requireScope,
+  };
+});
 
 // Multi-currency wave 7 (#3779): the dashboard's per-currency MRR comes from
 // contractMrr (#9828). This file mocks `../db` wholesale, so mock the service
@@ -248,6 +261,11 @@ describe('partner routes', () => {
             }
           ])
         })
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+        })
       } as never);
 
     const res = await app.request('/partner/dashboard', {
@@ -285,6 +303,11 @@ describe('partner routes', () => {
       } as never)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+        })
       } as never);
 
     const res = await app.request('/partner/dashboard', {
@@ -404,5 +427,131 @@ describe('GET /partner/me/entitlements', () => {
     expect(res.status).toBe(503);
     expect(res.headers.get('Retry-After')).toBe('30');
     expect(await res.json()).toEqual({ code: 'entitlement_check_failed', error: 'Entitlement check temporarily unavailable' });
+  });
+
+  describe('GET /partner/dashboard per-org alertCount / compliance (#11039)', () => {
+    const queueDashboardReads = (alertRows: unknown[]) => {
+      const alertWhere = vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue(alertRows) });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([
+                { id: 'org-123', name: 'Acme Co', status: 'active' },
+                { id: 'org-456', name: 'Beta Co', status: 'active' },
+              ])
+            })
+          })
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'device-1', orgId: 'org-123', hostname: 'h1', status: 'online', lastSeenAt: null },
+              { id: 'device-2', orgId: 'org-456', hostname: 'h2', status: 'online', lastSeenAt: null },
+            ])
+          })
+        } as never)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: alertWhere }) } as never);
+      return alertWhere;
+    };
+
+    beforeEach(() => {
+      currentAuth.value = { ...currentAuth.value, accessibleOrgIds: ['org-123', 'org-456'] };
+    });
+
+    // The handler has no site narrowing because no site-restricted caller can
+    // reach it: allowedSiteIds is an organization-scope axis, and this route is
+    // partner/system only (SITE_SCOPE_INPUT_EXEMPT in site-scope-coverage). If
+    // organization scope is ever admitted, the rollups must narrow by site first.
+    it('refuses a site-restricted organization-scope caller before reading anything', async () => {
+      currentAuth.value = {
+        ...currentAuth.value,
+        scope: 'organization',
+        orgId: 'org-123',
+        accessibleOrgIds: ['org-123'],
+        allowedSiteIds: ['site-allowed'],
+        canAccessSite: (siteId: string | null | undefined) => siteId === 'site-allowed',
+      };
+
+      const res = await app.request('/partner/dashboard');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(postureMock.listLatestPostureScoresByOrgs).not.toHaveBeenCalled();
+    });
+
+    it('does not read or expose alert counts without alerts:read', async () => {
+      currentPermissions.value = [{ resource: 'orgs', action: 'read' }, { resource: 'devices', action: 'read' }];
+      try {
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([{ id: 'org-123', name: 'Acme Co', status: 'active' }])
+              })
+            })
+          } as never)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                { id: 'device-1', orgId: 'org-123', hostname: 'h1', status: 'online', lastSeenAt: null },
+              ])
+            })
+          } as never);
+        const res = await app.request('/partner/dashboard', { headers: { Authorization: 'Bearer token' } });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data[0].alertCount).toBe(0);
+        expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2); // orgs + devices only, no alerts read
+      } finally {
+        currentPermissions.value = [{ resource: '*', action: '*' }];
+      }
+    });
+
+    it('fills real open-alert counts and posture scores per org and device', async () => {
+      const alertWhere = queueDashboardReads([
+        { orgId: 'org-123', deviceId: 'device-1', n: 1 },
+        { orgId: 'org-123', deviceId: null, n: 1 },
+        // Open alert on a device the card does not list (decommissioned/hidden).
+        { orgId: 'org-123', deviceId: 'hidden-device', n: 5 },
+      ]);
+      postureMock.listLatestPostureScoresByOrgs.mockResolvedValueOnce([
+        { orgId: 'org-123', deviceId: 'device-1', overallScore: 70 },
+        { orgId: 'org-123', deviceId: 'device-x', overallScore: 80 },
+      ]);
+
+      const res = await app.request('/partner/dashboard', { headers: { Authorization: 'Bearer token' } });
+      const body = await res.json();
+      const [acme, beta] = body.data;
+
+      expect(acme.alertCount).toBe(2);
+      expect(acme.devices[0].alertCount).toBe(1);
+      expect(acme.compliance).toBe(75);
+      expect(acme.devices[0].compliance).toBe(70);
+      // No alerts / no posture snapshot: 0 and null, never the old literal 100.
+      expect(beta.alertCount).toBe(0);
+      expect(beta.compliance).toBeNull();
+      expect(beta.devices[0].compliance).toBeNull();
+
+      // One batched read, scoped to the partner's orgs only.
+      expect(postureMock.listLatestPostureScoresByOrgs).toHaveBeenCalledTimes(1);
+      expect(postureMock.listLatestPostureScoresByOrgs).toHaveBeenCalledWith(['org-123', 'org-456'], ['device-1', 'device-2']);
+
+      // The alert filter counts only active/acknowledged — not resolved/suppressed/dismissed.
+      const params: unknown[] = [];
+      const walk = (n: any) => {
+        if (Array.isArray(n)) return n.forEach(walk);
+        if (n && typeof n === 'object') {
+          if ('value' in n && !('queryChunks' in n)) params.push(n.value);
+          Object.values(n).forEach(walk);
+        } else if (typeof n === 'string') params.push(n);
+      };
+      walk(alertWhere.mock.calls[0]?.[0]);
+      const flat = params.flat();
+      expect(flat).toEqual(expect.arrayContaining(['active', 'acknowledged', 'org-123', 'org-456']));
+      for (const closed of ['resolved', 'suppressed', 'dismissed']) {
+        expect(flat).not.toContain(closed);
+      }
+    });
   });
 });

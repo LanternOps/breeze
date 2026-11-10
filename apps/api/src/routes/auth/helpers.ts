@@ -50,6 +50,16 @@ import {
   ANONYMOUS_ACTOR_ID,
   ENABLE_2FA
 } from './schemas';
+import { hasActiveTotpFactor, type TotpFactorRow } from './mfaFactorPredicates';
+
+// #10650: the authenticator-app factor predicate lives in its own module; it
+// is re-exported here so route code keeps one import site for auth helpers.
+export {
+  activeTotpFactorSql,
+  canAddBackupTotp,
+  hasActiveTotpFactor,
+  type TotpFactorRow,
+} from './mfaFactorPredicates';
 
 const { db } = dbModule;
 
@@ -412,9 +422,11 @@ export async function requireFreshMfaStepUp(
     .limit(1);
 
   // Only TOTP step-up is supported here; SMS/passkey L4 re-auth is out of scope.
-  // Allowlist on the method (not a denylist) so any non-TOTP/unset method is
-  // rejected even if a stale secret lingers — defense-in-depth for the auth path.
-  if (!user?.mfaEnabled || user.mfaMethod !== 'totp' || !user.mfaSecret) {
+  // The shared predicate is an allowlist on the method (not a denylist): a
+  // TOTP primary, a backup beside a passkey primary (#10650), or a legacy
+  // enabled row whose mfa_method was never written qualifies, and
+  // a stale secret beside an SMS primary or on an MFA-off row never does.
+  if (!user || !hasActiveTotpFactor(user) || !user.mfaSecret) {
     return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
@@ -507,7 +519,7 @@ export async function enforceExistingFactorStepUp(
   grantId: string | undefined,
   opts: {
     consume: boolean;
-    operation?: 'add_factor' | 'rotate_recovery_codes' | 'delete_passkey';
+    operation?: 'add_factor' | 'rotate_recovery_codes' | 'delete_passkey' | 'remove_totp';
     resourceDigest?: string;
   },
 ): Promise<Response | null> {
@@ -1618,7 +1630,7 @@ export type PendingMfaMethodVerdict =
 export function evaluatePendingMfaMethod(
   pending: PendingMfaRecord,
   method: PendingMfaVerificationMethod,
-  liveUser: { mfaSecret: string | null; mfaMethod: string | null; phoneNumber: string | null },
+  liveUser: TotpFactorRow & { phoneNumber: string | null },
   liveAllowedMethods: PendingMfaRecord['allowedMethods'],
 ): PendingMfaMethodVerdict {
   if (method === 'recovery') {
@@ -1632,7 +1644,7 @@ export function evaluatePendingMfaMethod(
   }
 
   const enrolled = method === 'totp'
-    ? Boolean(liveUser.mfaSecret)
+    ? hasActiveTotpFactor(liveUser)
     : liveUser.mfaMethod === 'sms' && Boolean(liveUser.phoneNumber);
   if (!enrolled) {
     return { ok: false, reason: 'factor_not_enrolled', terminal: false };
@@ -1831,11 +1843,13 @@ export async function resolveUserAuditOrgId(userId: string): Promise<string | nu
         return null;
       }
 
-      const [orgAssoc] = await db
+      // Savepoint: the catch is inside the context, so without one the failure
+      // rethrows when the context's transaction ends (#11225).
+      const [orgAssoc] = await dbModule.withDbTransaction(() => db
         .select({ orgId: organizationUsers.orgId })
         .from(organizationUsers)
         .where(eq(organizationUsers.userId, userId))
-        .limit(1);
+        .limit(1));
 
       return orgAssoc?.orgId ?? null;
     } catch (err) {

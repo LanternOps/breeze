@@ -287,6 +287,23 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   search_pax8_products: { limit: 30, windowSeconds: 300 },
   manage_pax8_orders: { limit: 30, windowSeconds: 300 },
   manage_pax8_subscriptions: { limit: 10, windowSeconds: 300 },
+  // Full-control W18 PR A (#6789): readiness fans out over up to 50 orgs per call, so it gets half the budget.
+  get_org_summary: { limit: 30, windowSeconds: 300 },
+  get_account_readiness: { limit: 15, windowSeconds: 300 },
+  get_audit_retention: { limit: 30, windowSeconds: 300 },
+  list_portal_users: { limit: 30, windowSeconds: 300 },
+  list_users: { limit: 30, windowSeconds: 300 },
+  get_user: { limit: 30, windowSeconds: 300 },
+  list_roles: { limit: 30, windowSeconds: 300 },
+  // Full-control W18 PR B (#6789): writers that reach customers (the portal) or send report data out (recipients).
+  manage_org_portal_settings: { limit: 15, windowSeconds: 300 },
+  manage_report_recipients: { limit: 20, windowSeconds: 300 },
+  // Full-control W16 PR A (#6786): each call admits a credit-debiting run or an operator task.
+  run_patch_plan: { limit: 5, windowSeconds: 300 },
+  create_operator_task: { limit: 10, windowSeconds: 300 },
+  // Full-control W16 PR B (#6786): a schedule starts recurring credit-debiting runs; a Fleet Design runs or applies.
+  manage_ai_agent_schedules: { limit: 15, windowSeconds: 300 },
+  manage_fleet_designs: { limit: 10, windowSeconds: 300 },
 };
 
 /**

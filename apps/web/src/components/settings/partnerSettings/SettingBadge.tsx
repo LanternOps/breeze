@@ -33,8 +33,9 @@ const K = 'partnerSettingsPage.inheritance';
 
 /**
  * A small pill next to a field's label stating what the partner value can do
- * to the organizations (spec §5.3): it states capability, set or not. Whether
- * a lock is in force right now is the inline line's job.
+ * to the organizations (spec §5.3). A `locks` field only locks once the partner
+ * has saved a value (the server's `locked` list says the same), so an unset one
+ * reads "Locks orgs when set" (#11411). Other kinds state capability, set or not.
  */
 export default function SettingBadge({ fieldId }: { fieldId: string }) {
   const { t, i18n } = useTranslation('settings');
@@ -50,7 +51,11 @@ export default function SettingBadge({ fieldId }: { fieldId: string }) {
     limit = (cap && (formatInheritanceValue(cap, saved, t, i18n.language) ?? formatInheritanceValue(cap, cap.platformDefault, t, i18n.language))) ?? '';
   }
 
-  const label = t(/* i18n-dynamic */ `${K}.badge.${variant}`, { limit });
+  // Without the inheritance context there is no saved value to consult: keep the plain label.
+  const saved = variant === 'locks' && ui ? ui.savedSetting(entry.paths[0]!) : undefined;
+  const key = variant === 'locks' && ui && (saved === undefined || saved === null) ? 'locksWhenSet' : variant;
+
+  const label = t(/* i18n-dynamic */ `${K}.badge.${key}`, { limit });
   const style = BADGE_STYLE[entry.kind as keyof typeof BADGE_STYLE];
   const Icon = style.icon;
 
@@ -61,7 +66,7 @@ export default function SettingBadge({ fieldId }: { fieldId: string }) {
         {label}
       </span>
       <HelpTooltip
-        text={t(/* i18n-dynamic */ `${K}.badgeHelp.${variant}`, { limit })}
+        text={t(/* i18n-dynamic */ `${K}.badgeHelp.${key}`, { limit })}
         ariaLabel={t(/* i18n-dynamic */ `${K}.badgeHelpLabel`, {
           badge: label,
           field: FIELD_LABEL_KEYS[fieldId] ? t(/* i18n-dynamic */ FIELD_LABEL_KEYS[fieldId]!) : fieldId,

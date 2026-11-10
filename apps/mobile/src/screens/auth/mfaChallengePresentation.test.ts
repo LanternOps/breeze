@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
-import { shouldAutoSubmitMfa } from './mfaChallengePresentation';
+import type { MfaChallenge } from '../../services/api';
+import { getInitialNativeMfaMethod, shouldAutoSubmitMfa } from './mfaChallengePresentation';
 
 describe('shouldAutoSubmitMfa', () => {
   it('submits once the authenticator code reaches 6 digits', () => {
@@ -21,5 +22,19 @@ describe('shouldAutoSubmitMfa', () => {
 
   it('never auto-submits recovery codes', () => {
     expect(shouldAutoSubmitMfa({ method: 'recovery', codeLength: 6, alreadyAutoSubmitted: false })).toBe(false);
+  });
+});
+
+describe('getInitialNativeMfaMethod', () => {
+  it('falls back to totp for a passkey-primary account with a TOTP backup', () => {
+    const challenge: MfaChallenge = {
+      tempToken: 't',
+      mfaMethod: 'passkey',
+      methods: ['totp', 'passkey'],
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      recoveryAvailable: false,
+      phoneLast4: null,
+    };
+    expect(getInitialNativeMfaMethod(challenge)).toBe('totp');
   });
 });

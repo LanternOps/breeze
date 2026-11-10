@@ -40,7 +40,7 @@ import { useTranslation } from 'react-i18next';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { isBusinessReportType } from './businessReportAccess';
 import { hasTemplateOptionsForm } from './templateReportTypes';
-import { BUSINESS_REFUSED_CONFIG_KEYS, omitConfigKeys } from './businessReportConfig';
+import { BUSINESS_REFUSED_CONFIG_KEYS, isSelectorlessOrgReportType, omitConfigKeys } from './businessReportConfig';
 import { CoversControl } from './series/CoversControl';
 import { SeriesRecipientsSection } from './series/SeriesRecipientsSection';
 import { ORG_SPECIFIC_CONDITION_FIELDS, availableCoversModes, coversFromSeries, firstCoveredOrgId, isSeriesEligibleReportType, sameTargets, stripSeriesConfig } from './series/seriesConfig';
@@ -265,6 +265,9 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   quote_win_rate: 'activity',
   // client_profitability: curated, own options form (period, group-by, labor rate).
   client_profitability: 'activity',
+  // ticket_sla_performance: curated, own options form (period, subjects). No
+  // builder data source is tickets; mapped only to keep this Record exhaustive.
+  ticket_sla_performance: 'activity',
   // Backup Status Report (#6013 W05) — same reasoning as Hardware Lifecycle:
   // delivered only via its own curated template and options form
   // (BackupStatusOptionsForm.tsx). Mapping to the devices source keeps this
@@ -1672,7 +1675,12 @@ export default function ReportBuilder({
             // device-builder state (builderType/dataSource/columns/aggregation…).
             // Stale builder keys already persisted in baseConfig are dropped so
             // previously polluted configs heal on the next save.
-            ...omitConfigKeys(baseConfig, TEMPLATE_BUILDER_STATE_KEYS),
+            ...omitConfigKeys(
+              baseConfig,
+              isSelectorlessOrgReportType(defaultValues?.type)
+                ? [...TEMPLATE_BUILDER_STATE_KEYS, ...BUSINESS_REFUSED_CONFIG_KEYS]
+                : TEMPLATE_BUILDER_STATE_KEYS,
+            ),
             schedule: scheduleDetail,
             exportFormats,
             emailRecipients

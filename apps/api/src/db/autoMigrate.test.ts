@@ -15,7 +15,11 @@ const { postgresFactory, clientMock, callLog, lockState } = vi.hoisted(() => {
 
   const clientMock = Object.assign(
     vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      callLog.push(`${strings.join('?')} | values=${JSON.stringify(values)}`);
+      const text = strings.join('?');
+      callLog.push(`${text} | values=${JSON.stringify(values)}`);
+      // The bounded acquire (#4144) reads `locked` off the try result; an
+      // uncontended lock answers true on the first attempt.
+      if (text.includes('pg_try_advisory_lock(')) return [{ locked: true }];
       return [];
     }),
     {
@@ -558,7 +562,7 @@ describe('core migration advisory lock (#4086)', () => {
   });
 
   function acquireIndex(): number {
-    return callLog.findIndex((c) => c.includes('pg_advisory_lock(') && c.includes(CORE_MIGRATION_LOCK_KEY));
+    return callLog.findIndex((c) => c.includes('pg_try_advisory_lock(') && c.includes(CORE_MIGRATION_LOCK_KEY));
   }
   function releaseIndex(): number {
     return callLog.findIndex((c) => c.includes('pg_advisory_unlock(') && c.includes(CORE_MIGRATION_LOCK_KEY));
@@ -576,6 +580,12 @@ describe('core migration advisory lock (#4086)', () => {
     // after it except closing the connection.
     expect(releaseIndex()).toBe(callLog.length - 1);
     expect(clientMock.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('never issues the blocking pg_advisory_lock — a wedged holder must not stall boot forever (#4144)', async () => {
+    await autoMigrate();
+
+    expect(callLog.some((c) => /\bpg_advisory_lock\(/.test(c))).toBe(false);
   });
 
   it('still releases the lock (and closes the connection) when a migration step throws', async () => {

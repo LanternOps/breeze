@@ -2572,14 +2572,15 @@ describe("verifyEd25519ManifestSignature — empty-keyset opt-in (#643)", () => 
 // binarySync.ts's scanBinaryDir/parseBinaryFilename (agent/watchdog/backup)
 // and USER_HELPER_TARGETS (user-helper) produce — every case below is
 // cross-checked against those sources, not invented independently.
-// component="helper" is deliberately always null: its real registration is
-// HELPER_TARGETS (binarySync.ts ~line 59), a per-OS (not per-arch) asset
+// component="helper" resolves through HELPER_TARGETS
+// (services/helperInstallerAssets.ts), a per-OS (not per-arch) installer
 // name (windows -> breeze-helper-windows.msi, darwin (both arches, same
-// file) -> breeze-helper-macos.dmg, linux -> breeze-helper-linux.AppImage) —
-// see the controller-review regression test below for why an earlier
-// version of this function (returning "breeze-desktop-helper-darwin-<arch>"
-// for helper/macos) was WRONG and would have 409'd real
-// BINARY_SOURCE=github helper rows.
+// file) -> breeze-helper-macos.dmg, linux -> breeze-helper-linux.AppImage).
+// It used to be always null, which left a BINARY_SOURCE=local helper row
+// (server-route downloadUrl ending in the arch) looking up "amd64" in the
+// manifest (#11298). It must never be "breeze-desktop-helper-darwin-<arch>"
+// — that is the raw Mach-O inside the agent .pkg, a different artifact (see
+// the GitHub-mode helper roundtrip in agentVersionsLocalModeRoundtrip.test.ts).
 describe("canonicalReleaseAssetName (D1, #3836)", () => {
   const cases: Array<[string, string, string, string | null]> = [
     // agent — windows/linux/darwin, both arches. Also proves "macos" (the DB
@@ -2613,14 +2614,15 @@ describe("canonicalReleaseAssetName (D1, #3836)", () => {
     ["user-helper", "macos", "amd64", null],
     ["user-helper", "linux", "amd64", null],
 
-    // helper — always null (see the describe-block comment above): the real
-    // asset name (breeze-helper-macos.dmg / -windows.msi / -linux.AppImage)
-    // is per-OS, not per-arch, so it must resolve via the URL-basename
-    // fallback instead.
-    ["helper", "macos", "amd64", null],
-    ["helper", "macos", "arm64", null],
-    ["helper", "windows", "amd64", null],
-    ["helper", "linux", "amd64", null],
+    // helper — HELPER_TARGETS installer names (#11298); the one macOS dmg
+    // covers both arches, and targets HELPER_TARGETS does not ship stay null.
+    ["helper", "macos", "amd64", "breeze-helper-macos.dmg"],
+    ["helper", "macos", "arm64", "breeze-helper-macos.dmg"],
+    ["helper", "darwin", "arm64", "breeze-helper-macos.dmg"],
+    ["helper", "windows", "amd64", "breeze-helper-windows.msi"],
+    ["helper", "linux", "amd64", "breeze-helper-linux.AppImage"],
+    ["helper", "windows", "arm64", null],
+    ["helper", "linux", "arm64", null],
 
     // Unknown component/platform/arch — every unrecognized shape falls back
     // to the caller's assetNameFromDownloadUrl, never fabricates a name.
@@ -2864,6 +2866,49 @@ describe("validateReleaseManifest — key-ID-aware dispatch (Task 2, #3836)", ()
       manifest,
       signature,
       signingKeyId: "release-artifact-manifest-ed25519",
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #11298: a local-mode helper installer the official manifest does NOT
+  // cover (the public manifest may not list helper installers at all) is
+  // re-signed with the per-deployment key in the legacy single-asset shape,
+  // with the same server-route downloadUrl ending in the arch. That shape
+  // never consults the asset name, so the canonical-name change for helper
+  // must leave it validating exactly as before.
+  it("ACCEPTS a deployment-key-signed helper row with a server-route downloadUrl (#11298 fallback path)", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const downloadUrl = "http://localhost:3001/api/v1/agents/download/helper/windows/amd64";
+    const manifest = JSON.stringify({
+      version: "1.0.0",
+      component: "helper",
+      platform: "windows",
+      arch: "amd64",
+      url: downloadUrl,
+      checksum: "c".repeat(64),
+      size: 4096,
+    });
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(deployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      version: "1.0.0",
+      platform: "windows",
+      arch: "amd64",
+      component: "helper",
+      downloadUrl,
+      checksum: "c".repeat(64),
+      fileSize: 4096,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
     });
 
     expect(result).toEqual({ ok: true });

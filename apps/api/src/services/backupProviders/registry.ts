@@ -1,3 +1,4 @@
+import { axcientAdapter } from './axcient/adapter';
 import { coveAdapter } from './cove/adapter';
 import { dropsuiteAdapter } from './dropsuite/adapter';
 import type { BackupProviderAdapter } from './types';
@@ -7,13 +8,14 @@ import type { BackupProviderAdapter } from './types';
  * is a plain varchar rather than a pg enum precisely so this list — not a
  * migration — is the single place a vendor is added.
  */
-export const BACKUP_PROVIDER_KEYS = ['cove', 'dropsuite'] as const;
+export const BACKUP_PROVIDER_KEYS = ['cove', 'dropsuite', 'axcient'] as const;
 
 export type BackupProviderKey = (typeof BACKUP_PROVIDER_KEYS)[number];
 
 const ADAPTERS: Record<BackupProviderKey, BackupProviderAdapter> = {
   cove: coveAdapter,
   dropsuite: dropsuiteAdapter,
+  axcient: axcientAdapter,
 };
 
 export function isBackupProviderKey(key: string): key is BackupProviderKey {

@@ -4,6 +4,7 @@ import {
   Bell,
   Blocks,
   Building2,
+  DoorOpen,
   Globe,
   Hourglass,
   KeyRound,
@@ -28,7 +29,7 @@ export type TabKey =
   | 'security' | 'callerVerification'
   | 'notifications' | 'emailTemplates' | 'sendingDomains' | 'ticketing'
   | 'aiProvider' | 'aiFeatures' | 'aiBudgets' | 'aiApprovals'
-  | 'branding' | 'loginBranding' | 'trustCenter';
+  | 'branding' | 'loginBranding' | 'trustCenter' | 'customerPortal';
 
 export type TabDef = {
   key: TabKey;
@@ -110,6 +111,8 @@ export const TAB_GROUPS: readonly TabGroup[] = [
       { key: 'loginBranding', hash: 'login-branding', ...copy('loginBranding'), icon: LogIn, kind: 'panel' },
       // Trust Center W2 (#8770 W02g): partner-wide default for customer trust pages (own load/save, MFA).
       { key: 'trustCenter', hash: 'trust-center', ...copy('trustCenter'), icon: ShieldCheck, kind: 'panel' },
+      // Portal registration W3 (#11380): partner-wide default sign-in & registration policy (own load/save).
+      { key: 'customerPortal', hash: 'customer-portal', ...copy('customerPortal'), icon: DoorOpen, kind: 'panel' },
     ],
   },
 ];

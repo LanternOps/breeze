@@ -92,7 +92,7 @@ import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureMessage } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
-import { parsePositiveIntEnv, warnOnRetentionBacklog, type BatchedPruneResult } from './retentionBatch';
+import { parsePositiveIntEnv, utcWallTime, warnOnRetentionBacklog, type BatchedPruneResult } from './retentionBatch';
 
 const LOG = '[AiToolOutputRetention]';
 const QUEUE_NAME = 'ai-tool-output-retention';
@@ -134,14 +134,10 @@ export interface OrgScrubResult {
 const inFreshSystemContext = <T>(label: string, fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 
-/**
- * `created_at` on both tool tables is `timestamp WITHOUT time zone` holding
- * UTC wall time. Compare against the cutoff converted to UTC wall time, so the
- * comparison does not depend on the connection's `TimeZone`. (Rows written by
- * `defaultNow()` are stored in the session `TimeZone`, which is UTC on every
- * Breeze deployment — the same assumption as jobs/scheduleRegistry.ts.)
- */
-const utcWallTime = (iso: string) => sql`(${iso}::timestamptz AT TIME ZONE 'UTC')`;
+// `created_at` on both tool tables (`ai_messages`, `ai_tool_executions`) is
+// `timestamp WITHOUT time zone` holding UTC wall time, so their cutoffs go
+// through `utcWallTime` (`retentionBatch.ts`) and do not depend on the
+// connection's `TimeZone`.
 
 type ToolTable = 'ai_messages' | 'ai_tool_executions';
 

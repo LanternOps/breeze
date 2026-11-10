@@ -3,6 +3,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const getCurrentDbAccessContextMock = vi.hoisted(() => vi.fn(() => undefined as { scope: string } | undefined));
 
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: { select: vi.fn(), update: vi.fn() },
   getCurrentDbAccessContext: getCurrentDbAccessContextMock,
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),

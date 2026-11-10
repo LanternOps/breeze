@@ -148,6 +148,10 @@ export const JOB_SCHEDULES = {
   // lane, so :33 keeps the daily = 3 (mod 5) lane.
   'patch-report-retention': '33 10 * * *',
   'vulnerability-kev-epss-sync': '3 11 * * *',
+  // Portal registration W3 (identities release B) — daily drift REPORT between
+  // portal_user_identities and portal_users.entra_* (never repairs, plan D10).
+  // Hour 11 held only :03 in this lane; :23 keeps the daily = 3 (mod 5) lane.
+  'portal-identity-reconcile': '23 11 * * *',
   'vulnerability-sofa-sync': '3 12 * * *',
   'vulnerability-correlate': '3 13 * * *',
   'reliability-history-retention': '3 14 * * *',
@@ -305,6 +309,10 @@ export const JOB_SCHEDULES = {
   // each enqueued group head adds up to 15 min of its own jitter. :24 on
   // hours 5,11,17,23 is unused in this lane and outside the ≡0 (mod 5) ticks.
   'partner-group-evaluation-sweep': '24 5,11,17,23 * * *',
+  // Portal registration W5 (#11382) — hourly re-check of verified customer
+  // domains; each row is only re-checked once ~23 h old, so the tick bounds how
+  // late a daily re-check runs. :39 is free in every hour.
+  'portal-domain-recheck': '39 * * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

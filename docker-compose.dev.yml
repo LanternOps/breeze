@@ -42,7 +42,7 @@ services:
 
   # Redis for BullMQ job queue
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: breeze-redis-dev
     restart: unless-stopped
     # #9382: the base stack refuses to start without a real Redis password, but

@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, withSystemDbAccessContext, withSystemDbAccessContextIsolated } from '../db';
 import { devices } from '../db/schema';
-import { sendCommandToAgent } from '../routes/agentWs';
+import { dispatchCommandToAgent, dispatchDisposition, type DispatchDisposition } from './agentCommandRelay';
 import { refreshPayloadForDelivery } from './commandDelivery';
 import { POWER_STATE_BARRIER_TYPES } from './commandClaimEligibility';
 import {
@@ -60,14 +60,19 @@ export type DispatchDeviceCommandResult =
       ok: true;
       command: QueuedCommand;
       /**
-       * `delivered` = pushed over the live socket now. `queued_live` = device is
-       * online but the push did not happen (no socket, push failed, or
-       * preferHeartbeat); the next heartbeat claims it. `queued_offline` = the
-       * device was not online at enqueue. `cancelled` = the push's claim-time
-       * eligibility check (the same one the heartbeat claim runs) refused and
-       * terminalised the row; it will never be delivered — see `cancelReason`.
+       * `delivered` = pushed over the live socket now (on this instance or,
+       * through the relay, on the one that owns it). `indeterminate` = the push
+       * may have reached the agent (a relay whose enqueue or ack could not be
+       * confirmed): the row stays claimed (`sent`) and the result or the
+       * reaper settles it; treat it like `queued_live`, never as offline.
+       * `queued_live` = device is online but the push did not happen (no
+       * socket, push failed, or preferHeartbeat); the next heartbeat claims it.
+       * `queued_offline` = the device was not online at enqueue. `cancelled` =
+       * the push's claim-time eligibility check (the same one the heartbeat
+       * claim runs) refused and terminalised the row; it will never be
+       * delivered — see `cancelReason`.
        */
-      delivery: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled';
+      delivery: 'delivered' | 'indeterminate' | 'queued_offline' | 'queued_live' | 'cancelled';
       /** Present only when `delivery` is `cancelled`: `device_commands.result.reason`. */
       cancelReason?: string;
       /** NULL for a `reject` policy: those rows stay on the legacy execution clock. */
@@ -312,12 +317,27 @@ async function deliverPreparedDeviceCommand(
   // #8318 §6.4: push to the agent_id read IN the claim, not to the one read
   // by prepareDeviceCommand before it — a reattach confirm between the two
   // changes who owns the row.
-  const sent = prepared ? sendCommandToAgent(claimed.agentId, toAgentCommandFrame(prepared)) : false;
-  if (sent) {
+  //
+  // #4142: through the relay facade, so an agent whose socket lives on another
+  // instance is reached instead of reported unpushed. Inside a held DB context
+  // the facade refuses the relay (not delivered, released below), exactly what
+  // the socket-local send answered for a remote agent before.
+  let disposition: DispatchDisposition = 'not_delivered';
+  if (prepared) {
+    try {
+      disposition = dispatchDisposition(await dispatchCommandToAgent(claimed.agentId, toAgentCommandFrame(prepared)));
+    } catch (err) {
+      // The facade never rejects; if it does, the frame may have gone out, so
+      // the claim is kept (a release could deliver the command twice).
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      disposition = 'uncertain';
+    }
+  }
+  if (disposition !== 'not_delivered') {
     return {
       ok: true,
       command: { ...command, status: 'sent', executedAt: claimed.executedAt } as QueuedCommand,
-      delivery: 'delivered',
+      delivery: disposition === 'delivered' ? 'delivered' : 'indeterminate',
       deliverBy,
     };
   }
@@ -330,7 +350,9 @@ async function deliverPreparedDeviceCommand(
   // recoverable; throwing here would 500 a request whose write already
   // committed.
   try {
-    await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+    // A savepoint when a context is held: the caller's transaction also holds
+    // the queued command, so a failed release must not fail its commit (#11225).
+    await withSystemDbAccessContextIsolated(() => releaseClaimedCommandDelivery(command.id, claimed.executedAt));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(

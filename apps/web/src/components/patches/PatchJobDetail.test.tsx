@@ -110,6 +110,7 @@ describe('PatchJobDetail', () => {
           skipped('b', 'ring_disabled'),
           skipped('c', 'ring_unavailable'),
           skipped('d', 'no_approved_patches'),
+          skipped('e', 'all_managed_by_vendor_updates'),
         ],
       },
     }));
@@ -125,8 +126,13 @@ describe('PatchJobDetail', () => {
     expect(screen.getByTestId('patch-job-result-skip-reason-c')).toHaveTextContent(
       'Skipped: the update ring was deleted or disabled before this device was dispatched.',
     );
-    // Other skip codes keep their existing (silent) rendering.
-    expect(screen.queryByTestId('patch-job-result-skip-reason-d')).not.toBeInTheDocument();
+    expect(screen.getByTestId('patch-job-result-skip-reason-e')).toHaveTextContent(
+      'every pending update on this device is managed by Vendor updates',
+    );
+    // #11281: no_approved_patches gets a sentence too, not a bare "skipped".
+    expect(screen.getByTestId('patch-job-result-skip-reason-d')).toHaveTextContent(
+      'Skipped: none of the pending updates on this device are approved.',
+    );
   });
 
   it('shows an empty-results message when the job has no per-device results', async () => {

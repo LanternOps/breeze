@@ -37,6 +37,38 @@ A `system_image` snapshot taken by a v0.112.0 or later agent on Linux or Windows
   Always browse a snapshot before restoring to confirm the files you need are present. This is especially useful when deciding between a full restore and a selective one.
 </Aside>
 
+### The snapshot file list
+
+The browser and the selective-restore tree read a per-snapshot **file list** that Breeze keeps in its database. A small snapshot's list arrives with the backup result. For a larger snapshot the agent sends no list inline, and Breeze builds it on demand from the snapshot's `manifest.json` in your storage.
+
+- **When it is prepared.** The first time you browse the snapshot, or start a selective restore, Breeze queues the build in the background. Snapshots that are very large (over 250,000 entries) are always built this way, on first use. Nothing is built for snapshots nobody opens.
+- **What you see while it builds.** The browser shows *Preparing this snapshot's file list. This can take a few minutes for large backups.* and checks again by itself, slowing from every 5 seconds to every 30 seconds and giving up after 10 minutes, with the message left in place. Reopen the snapshot to check again.
+- **If it can't be built.** The browser shows *This snapshot's file list isn't available right now. You can still restore the whole snapshot.* with a **Try again** button, which starts a fresh build from the manifest (it needs the `backup:write` permission, is limited to sites you can manage, and is recorded in the audit log). A snapshot that failed its [integrity check](#integrity-checks-on-restore) shows *This snapshot failed its integrity check, so its files can't be listed.* with no retry. A snapshot stored on the device itself shows *This snapshot is stored on the device, and Breeze can't read its file list from there yet.*
+- **A whole-snapshot restore never depends on the file list.** A full restore, and recovery from recovery media, work whatever state the list is in. Only browsing, search and selective restore need it.
+- **Integrity.** Breeze checks the manifest against its recorded hash before writing any row, so a manifest that doesn't match produces *unavailable*, never a wrong listing.
+- **Empty folders and symlinks.** The list includes the empty folders and symlinks the snapshot recorded, whichever way it was built. An empty folder appears as a folder you can check, and restoring it recreates it empty. A symlink appears as a file without a size, and restoring it recreates the link. A list built from a manifest by an earlier Breeze version leaves them out, and one sent with an earlier backup result shows them as files; restoring the folder above them still recreates them either way.
+
+**Search.** The search box above the tree finds files anywhere in the snapshot by name or path fragment. Type at least two characters; results come back in pages. Typing a Windows path with `/` finds the same files as with `\`.
+
+**Folder restore.** Checking a folder in a selective restore sends the folder's path, and the agent restores everything beneath it, so a folder is no longer limited to 10,000 files. Empty folders and symlinks beneath it are restored too. A folder whose files were stored with mixed path separators can't be named by one prefix; that folder is expanded to its files instead and is still limited to 10,000.
+
+<Aside type="caution" title="Memory when a very large manifest is prepared">
+  Building the list from a very large manifest reads it as a stream and writes rows in one transaction, so the API or worker process holds almost nothing afterwards (post-GC heap change of 0–1 MB in the test below). The process's resident memory still rises while it runs. On a synthetic snapshot of 1.1 million entries (a 464 MB manifest) the measured peak rise in resident memory was:
+
+  | Node heap limit | Peak RSS rise |
+  |---|---|
+  | `--max-old-space-size=1024` | about 107–115 MB |
+  | Node's default limit | about 408–418 MB |
+
+  The heap limits above are the two settings that were measured, not a recommendation. In the same test the browse root settled in 2.8–3.7 s and event-loop delay stayed near 13 ms. The shipped compose files set `NODE_OPTIONS=--max-old-space-size=1024` on the opt-in `worker` service (the `worker-split` profile) only; override it with `WORKER_NODE_OPTIONS` in your `.env`. The API process is unaffected, and so is a deployment that runs without the worker split, where the default-limit figure applies. The manifest is also spooled to a temporary file next to the directory named by `PATCH_REPORT_STORAGE_PATH` (in a `manifest-spool` folder), so that volume needs room for one manifest at a time. These figures are a single lab host, not a sizing guide, and large snapshots are still bounded elsewhere: see the measured bound below.
+</Aside>
+
+<Aside type="note" title="Large snapshots: current bound">
+  Browsing, search and folder restore are tested to the 1.1-million-entry shape above. That is not a claim that Breeze fully supports snapshots of that size yet: the agent still parses a whole manifest in memory on restore, which is tracked as a follow-up.
+
+  Storage cleanup and the reconcile job read a manifest as a stream, up to the same 2 GiB limit as browsing. Storage cleanup keeps every object key that a retained snapshot still references in memory while it runs. In a lab measurement with 132-character keys, that was 170 to 180 bytes per key, or about 165 MiB for one million keys on one destination. When reconcile adopts a snapshot whose file list is larger than an agent's own result can carry (about 5 MB), it leaves the list out and the file index is built from the manifest, the same as for an agent result.
+</Aside>
+
 ---
 
 ## Restore Types
@@ -75,7 +107,7 @@ A `system_image` snapshot taken by a v0.112.0 or later agent on Linux or Windows
 </Steps>
 
 <Aside>
-  A selected folder is expanded to the files the snapshot indexed beneath it, matched on whole folder names: selecting `/home/alice` never includes a sibling such as `/home/alice2`. One restore can expand to at most 10,000 files; a larger selection is refused with the count, so split it into several restores. The same rules apply when you restore a folder through the API or the AI assistant.
+  A selected folder is matched on whole folder names: selecting `/home/alice` never includes a sibling such as `/home/alice2`. A folder is restored by its path prefix and has no file-count limit; individually selected files and folders that must be expanded (mixed path separators) are limited to 10,000 files per restore, and a larger selection is refused with the count, so split it into several restores. The same rules apply when you restore a folder through the API or the AI assistant.
 </Aside>
 
 ---

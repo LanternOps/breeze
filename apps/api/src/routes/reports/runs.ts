@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { reportRunOwnerColumns } from '../../services/reportRunOwner';
 import { zValidator } from '../../lib/validation';
 import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { organizations, reports, reportRuns, reportSeries } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -27,7 +27,16 @@ import {
   REPORT_TYPE_PERMISSION_DENIED,
 } from '../../services/reportTypePermissions';
 import type { UserPermissions } from '../../services/permissions';
-import { rowsToCsv, rowsToXlsx, XLSX_MIME_TYPE, XlsxLimitError } from '@breeze/shared';
+import {
+  isTicketSlaPerformanceSummary,
+  reportRunRowsToCsv,
+  rowsToXlsx,
+  sheetsToXlsx,
+  ticketSlaPerformanceSheets,
+  XLSX_MIME_TYPE,
+  XlsxLimitError,
+  type XlsxSheet,
+} from '@breeze/shared';
 import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
   isSystemManagedReportDefinition, PARTNER_OWNED_REPORT, partnerOwnedReportVisibility,
@@ -245,29 +254,34 @@ runsRoutes.post(
       // context (runInReportScope, ruling P6). A mismatch between the owner
       // axis and the authority throws ReportScopeMismatchError — recorded on
       // the run below like any other failure.
-      const scope = await reportScopeFromAuthority(owner, executionAuthority);
-      const result = await generateReport(
-        report.type,
-        scope,
-        config,
-        executionAuthority,
-      );
-      const previous = await previousBaselineFor(
-        report.id,
-        executionAuthority.fingerprint,
-      );
-      if (previous) result.previous = previous;
-      const rowCount = result.rowCount ?? (Array.isArray(result.rows) ? result.rows.length : 0);
-      await db
-        .update(reportRuns)
-        .set({
-          status: 'completed',
-          completedAt: new Date(),
-          outputUrl: `/api/reports/runs/${run.id}/download`,
-          result,
-          rowCount
-        })
-        .where(eq(reportRuns.id, run.id));
+      // One savepoint around generation and the completed update: if report SQL
+      // fails, it rolls back so the mark-failed update in the catch can still run
+      // in a live transaction (#11203).
+      await withDbTransaction(async () => {
+        const scope = await reportScopeFromAuthority(owner, executionAuthority);
+        const result = await generateReport(
+          report.type,
+          scope,
+          config,
+          executionAuthority,
+        );
+        const previous = await previousBaselineFor(
+          report.id,
+          executionAuthority.fingerprint,
+        );
+        if (previous) result.previous = previous;
+        const rowCount = result.rowCount ?? (Array.isArray(result.rows) ? result.rows.length : 0);
+        await db
+          .update(reportRuns)
+          .set({
+            status: 'completed',
+            completedAt: new Date(),
+            outputUrl: `/api/reports/runs/${run.id}/download`,
+            result,
+            rowCount
+          })
+          .where(eq(reportRuns.id, run.id));
+      });
       return c.json({ message: 'Report generated', runId: run.id, status: 'completed' });
     } catch (err) {
       await db
@@ -555,9 +569,26 @@ runsRoutes.get(
     if (format === 'excel') {
       // #9956: a real .xlsx workbook (was TSV text saved as .xls, which Excel
       // opened only after a format-mismatch warning).
+      // #11277: the SLA performance workbook carries the breaches and notes
+      // sheets too; a priorities-only sheet would read as complete while every
+      // breach is missing, so refuse rather than fall back to it.
+      let sheets: XlsxSheet[] | null = null;
+      if (row.reportType === 'ticket_sla_performance') {
+        const summary = result?.summary;
+        if (!isTicketSlaPerformanceSummary(summary)) {
+          // A completed run whose stored summary fails the shape guard is a
+          // data anomaly (shape drift or a corrupt row); leave a trace of it.
+          console.warn('[reports] SLA performance run has an unreadable summary; Excel download refused', {
+            runId,
+            reportId: row.reportId,
+          });
+          return c.json({ error: 'This SLA performance run has no readable summary, so its breaches cannot be exported' }, 409);
+        }
+        sheets = ticketSlaPerformanceSheets(rows, summary);
+      }
       let body: Uint8Array<ArrayBuffer>;
       try {
-        body = rowsToXlsx(rows);
+        body = sheets ? sheetsToXlsx(sheets) : rowsToXlsx(rows);
       } catch (err) {
         // Only the worksheet row/column limits are expected; anything else is a bug.
         if (!(err instanceof XlsxLimitError)) throw err;
@@ -578,7 +609,7 @@ runsRoutes.get(
       return c.body(body);
     }
 
-    const body = rowsToCsv(rows);
+    const body = reportRunRowsToCsv(row.reportType, rows);
     c.header('Content-Type', 'text/csv;charset=utf-8;');
     c.header('Content-Disposition', `attachment; filename="${baseName}.csv"`);
     auditSensitiveRead(c, {

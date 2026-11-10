@@ -61,6 +61,7 @@ const ACTION_LABELS: Record<string, string> = {
   premium: 'Use Premium Models',
   cross_site_restore: 'Cross-Site Restore',
   record_approval: 'Record Customer Approval',
+  email_review: 'Review Inbound Email',
   set_location: 'Set Location',
   recover_agent: 'Recover Agent (watchdog restart)',
   delete: 'Delete',

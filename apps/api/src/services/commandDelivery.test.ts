@@ -39,9 +39,11 @@ vi.mock('./scriptSecretDelivery', () => ({
 
 // #6958: the software_install refresher reads the device's agent version for
 // a script/zip install. Only `db.select` is replaced; the context helpers stay real.
-const { deviceAgentRowsMock, deviceWhereArgs } = vi.hoisted(() => ({
+const { deviceAgentRowsMock, deviceWhereArgs, executionUpdateMock } = vi.hoisted(() => ({
   deviceAgentRowsMock: vi.fn(),
   deviceWhereArgs: [] as unknown[],
+  // #7279: the started_at stamp on delivered script executions.
+  executionUpdateMock: vi.fn(async (_set: unknown, _where: unknown) => undefined),
 }));
 vi.mock('../db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../db')>()),
@@ -53,6 +55,9 @@ vi.mock('../db', async (importOriginal) => ({
           return { limit: () => deviceAgentRowsMock() };
         },
       }),
+    }),
+    update: () => ({
+      set: (set: unknown) => ({ where: (where: unknown) => executionUpdateMock(set, where) }),
     }),
   },
 }));
@@ -153,6 +158,43 @@ describe('prepareClaimedCommandsForDelivery (#2414)', () => {
         message: expect.stringContaining('cannot release'),
       }),
     );
+  });
+
+  it('marks only the delivered script executions running, at their claim timestamp (#7279)', async () => {
+    const execA = '11111111-1111-4111-8111-111111111111';
+    const execB = '22222222-2222-4222-8222-222222222222';
+    const claimed = [
+      { id: 'cmd-a', type: 'script', deviceId: CLAIM_DEVICE, payload: { executionId: execA }, executedAt: claimedAt },
+      // Withheld by the secret gate: never handed to the agent, never started.
+      { id: 'cmd-b', type: 'script', deviceId: CLAIM_DEVICE, payload: { executionId: execB }, executedAt: claimedAt },
+      // Not a script, and a script without an execution: nothing to stamp.
+      { id: 'cmd-c', type: 'run_script', deviceId: CLAIM_DEVICE, payload: { executionId: execB }, executedAt: claimedAt },
+      { id: 'cmd-d', type: 'script', deviceId: CLAIM_DEVICE, payload: { scriptId: 's-1' }, executedAt: claimedAt },
+      { id: 'cmd-e', type: 'script', deviceId: CLAIM_DEVICE, payload: { executionId: 'legacy-non-uuid' }, executedAt: claimedAt },
+    ];
+    failClaimedSecretCommandsMock.mockImplementation(async (rows: unknown[]) =>
+      (rows as Array<{ id: string }>).filter((row) => row.id !== 'cmd-b'));
+
+    const delivered = await prepareClaimedCommandsForDelivery(claimed);
+
+    expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-a', 'cmd-c', 'cmd-d', 'cmd-e']);
+    expect(executionUpdateMock).toHaveBeenCalledTimes(1);
+    expect(executionUpdateMock.mock.calls[0]![0]).toEqual({ status: 'running', startedAt: claimedAt });
+  });
+
+  it('still delivers when marking the execution running fails, and reports it (#7279)', async () => {
+    executionUpdateMock.mockRejectedValueOnce(new Error('statement timeout'));
+    const delivered = await prepareClaimedCommandsForDelivery([
+      { id: 'cmd-a', type: 'script', deviceId: CLAIM_DEVICE, payload: { executionId: '11111111-1111-4111-8111-111111111111' }, executedAt: claimedAt },
+    ]);
+
+    expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-a']);
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'statement timeout' }),
+      undefined,
+      expect.objectContaining({ commandId: 'cmd-a', executionId: '11111111-1111-4111-8111-111111111111' }),
+    );
+    expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
   });
 
   it('returns an empty array for an empty batch', async () => {

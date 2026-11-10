@@ -33,7 +33,7 @@ export type Slice<T = unknown> = {
 export type LoadResult<T> = { value: T; revision?: number };
 export type Loader<T> = () => Promise<LoadResult<T>>;
 
-const DRAFT_UNIT_IDS: readonly DraftUnitId[] = ['callerVerification', 'loginBranding', 'trustCenter', 'aiFeatureDefaults', 'aiDataPolicy'];
+const DRAFT_UNIT_IDS: readonly DraftUnitId[] = ['callerVerification', 'loginBranding', 'trustCenter', 'aiFeatureDefaults', 'aiDataPolicy', 'portalAccessPolicy'];
 
 const VALID: TabValidity = { isValid: true, invalidCount: 0, firstInvalidFieldId: null };
 
@@ -206,7 +206,12 @@ export type SendResult<T> = { revision?: number; value?: T } | void;
 export async function saveSlice<T>(
   id: DraftUnitId,
   send: (draft: T, revision: number | undefined) => Promise<SendResult<T>>,
-  opts: { classifyError?: (err: unknown) => 'failed' | 'conflict'; errorFallback?: string } = {}
+  /**
+   * `classifyError` may answer 'cancelled' for an error that means the user
+   * declined a confirmation: no toast, the draft stays, and the header Save
+   * treats it like the allowlist lockout decline.
+   */
+  opts: { classifyError?: (err: unknown) => 'failed' | 'conflict' | 'cancelled'; errorFallback?: string } = {}
 ): Promise<SaveOutcome> {
   const store = usePartnerSettingsDraftStore.getState();
   const slice = store.slices[id] as Slice<T>;
@@ -229,11 +234,12 @@ export async function saveSlice<T>(
     return current().slices[id].lastOutcome ?? { status: 'saved', savedAt: Date.now() };
   } catch (err) {
     if (current().epoch !== epoch) return { status: 'cancelled' };
-    if (!(err instanceof ActionError)) {
+    const status = opts.classifyError?.(err) ?? 'failed';
+    if (status !== 'cancelled' && !(err instanceof ActionError)) {
       console.error(`[partnerSettings] saving ${id} failed`, err);
       if (opts.errorFallback) showToast({ type: 'error', message: opts.errorFallback });
     }
-    const outcome: SaveOutcome = { status: opts.classifyError?.(err) ?? 'failed' };
+    const outcome: SaveOutcome = { status };
     current().markOutcome(id, outcome);
     return outcome;
   }

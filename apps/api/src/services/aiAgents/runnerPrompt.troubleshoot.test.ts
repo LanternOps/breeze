@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildAgentRunSystemPrompt, buildAgentRunTaskPrompt, type AgentRunPromptContext } from './runnerPrompt';
-import { TROUBLESHOOT_MODE_PROMPT } from './troubleshootProfile';
+import { CONTINUATION_NO_REPEAT_LINE, TROUBLESHOOT_MODE_PROMPT, renderContinuationSeed } from './troubleshootProfile';
 
 const DEVICE_ID = '00000000-0000-4000-8000-0000000000d1';
 
@@ -58,5 +58,24 @@ describe('device_troubleshooting prompts (#11084)', () => {
     const p = buildAgentRunTaskPrompt(ctx(null));
     expect(p).toContain(`id ${DEVICE_ID}`);
     expect(p).toMatch(/no goal/i);
+  });
+
+  it('W2 #11085: a continuation renders its seed after the goal fence, with the no-repeat line, and keeps the goal fenced', () => {
+    const seed = renderContinuationSeed({
+      fromRunId: 'run-0', summary: 'Spooler crashed 3 times.',
+      steps: [{ label: 'Restart the Print Spooler', status: 'completed', outcome: 'Service restarted' }],
+    });
+    const base = ctx();
+    const p = buildAgentRunTaskPrompt({ ...base, troubleshoot: { goal: base.troubleshoot!.goal, continuation: { fromRunId: 'run-0', chain: 1, seed } } });
+    const goalClose = p.indexOf('</untrusted_data>');
+    expect(p.indexOf('## Continuation')).toBeGreaterThan(goalClose);
+    expect(p).toContain(CONTINUATION_NO_REPEAT_LINE);
+    expect(p).toContain('Service restarted');
+    // The goal fence plus the seed's own fence.
+    expect(p.match(/<\/untrusted_data>/g)).toHaveLength(2);
+  });
+
+  it('W2 #11085: no continuation, no continuation section', () => {
+    expect(buildAgentRunTaskPrompt(ctx())).not.toContain('## Continuation');
   });
 });

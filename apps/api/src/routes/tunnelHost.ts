@@ -29,7 +29,7 @@ import {
   dispatchTunnelHttpRequest, loadOwnedTunnelSession, runTunnelRequestGates, signTunnelCookie, verifyTunnelCookie,
   type TunnelDispatchOutcome,
 } from './tunnelHttpCore';
-import { TUNNEL_ENTER_PATH, admitTunnelHostRequest } from './tunnelHostAdmission';
+import { TUNNEL_ENTER_PATH, admitTunnelHostRequest, isReservedTunnelPath } from './tunnelHostAdmission';
 import {
   TUNNEL_FRAME_COOKIE, TUNNEL_TAB_COOKIE, buildHostModeResponseHeaders, buildHostModeUpstreamHeaders, hostModeCsp,
 } from './tunnelHostHeaders';
@@ -86,34 +86,6 @@ async function authenticate(c: Context, tunnelId: string): Promise<{ userId: str
     if (userId) return { userId, context };
   }
   return null;
-}
-
-/**
- * `/__bz` and everything under it, however it is spelled: case, ASCII
- * percent-escapes (decoded repeatedly — `_`, `b`, `z` and `/` are all ASCII),
- * backslashes, repeated slashes and dot segments. Non-ASCII or stray `%`
- * sequences are left alone so a device path like `/100%` still works. A path
- * that keeps changing after a few rounds is treated as reserved.
- */
-const ASCII_ESCAPE = /%([0-7][0-9a-f])/gi;
-function isReservedPath(rawPathname: string): boolean {
-  let current = rawPathname;
-  for (let round = 0; round < 4; round += 1) {
-    // Collapse `\` and `//` first: `new URL('//__bz/x', base)` would read
-    // `__bz` as a HOST, not a path segment.
-    const flattened = current.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
-    let normalized: string;
-    try {
-      normalized = new URL(`http://tunnel.invalid${flattened.startsWith('/') ? '' : '/'}${flattened}`).pathname.toLowerCase();
-    } catch {
-      return true;
-    }
-    if (normalized === '/__bz' || normalized.startsWith('/__bz/')) return true;
-    const decoded = current.replace(ASCII_ESCAPE, (_m, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
-    if (decoded === current) return false;
-    current = decoded;
-  }
-  return true;
 }
 
 /**
@@ -222,7 +194,7 @@ tunnelHostRoutes.all('*', async (c) => {
   if (url.pathname === TUNNEL_ENTER_PATH) return handleEnter(c, tunnelId, config.frameAncestor);
   const auth = await authenticate(c, tunnelId);
   if (url.pathname === PING_PATH) return auth ? c.body(null, 204) : authFailed(c);
-  if (isReservedPath(url.pathname)) return c.text('Not found', 404);
+  if (isReservedTunnelPath(url.pathname)) return c.text('Not found', 404);
   if (!auth) return authFailed(c);
 
   const gate = await runTunnelRequestGates(tunnelId, auth.userId);

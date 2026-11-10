@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { backupSnapshotFiles, backupSnapshots, restoreJobs, devices, deviceCommands } from '../../db/schema';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
+import { backupSnapshots, restoreJobs, devices, deviceCommands } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
@@ -13,7 +13,10 @@ import { backupReadCredentialPayload } from '../../services/backupCommandCredent
 import { resolveScopedOrgId } from './helpers';
 import { attachDeviceNames, restoreModeFromTargetConfig } from './deviceNames';
 import { restoreListSchema, restoreSchema } from './schemas';
-import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from '../../services/backupSelectedPaths';
+import { selectedSnapshotPathError } from '../../services/backupSelectedPaths';
+import { resolveSelectedSnapshotPathsInDb } from '../../services/backupSnapshotBrowse';
+import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
+import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -60,10 +63,10 @@ async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: 
         completedAt: now,
         updatedAt: now,
         targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
-          'error', ${error},
+          'error', ${error}::text,
           'result', jsonb_build_object(
             'status', 'failed',
-            'error', ${error}
+            'error', ${error}::text
           )
         )`,
       })
@@ -242,21 +245,20 @@ restoreRoutes.post(
 
     let selectedPaths: string[] = [];
     if (payload.restoreType === 'selective') {
-      const snapshotFiles = await db
-        .select({ id: backupSnapshotFiles.id, sourcePath: backupSnapshotFiles.sourcePath })
-        .from(backupSnapshotFiles)
-        .where(eq(backupSnapshotFiles.snapshotDbId, snapshot.id));
-
-      if (snapshotFiles.length === 0) {
-        return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files' }, 409);
-      }
-
       // The browse tree shows forward-slash paths; map each selection back to
-      // the stored original the agent indexed (and matches against).
-      const resolution = resolveSelectedSnapshotPaths(
-        payload.selectedPaths ?? [],
-        snapshotFiles.map((row) => row.sourcePath)
-      );
+      // the stored original the agent indexed (and matches against), and each
+      // folder to its stored-form prefix. The index is read in pages (#11026).
+      const resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, payload.selectedPaths ?? []);
+
+      if (!resolution.ok && resolution.reason === 'no_readable_index') {
+        // #11026: a snapshot that has files but no index yet builds one, so
+        // the selection can be made once its list is ready.
+        const index = await readSnapshotIndexView(snapshot.id, orgId);
+        if (index?.shouldRequestHydration) {
+          requestFileIndexHydrationAfterContext(snapshot.id, 'browse');
+        }
+        return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files', code: 'index_unavailable' }, 409);
+      }
       if (!resolution.ok) {
         return c.json({ error: selectedSnapshotPathError(resolution) }, 400);
       }
@@ -428,7 +430,8 @@ restoreRoutes.post(
         responseRow = updatedRestoreJob;
       }
     } catch (err) {
-      const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
+      // A fixed message: target_config is tenant-readable, the raw error goes to the log.
+      const error = 'Failed to dispatch restore command to agent';
       console.error('[BackupRestore] Failed to dispatch restore:', err);
       recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
       await markRestoreJobFailed(orgId, row.id, error);
@@ -534,10 +537,10 @@ restoreRoutes.post(
           completedAt: now,
           updatedAt: now,
           targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
-            'error', ${reason},
+            'error', ${reason}::text,
             'result', jsonb_build_object(
               'status', 'cancelled',
-              'error', ${reason}
+              'error', ${reason}::text
             )
           )`,
         })
@@ -556,12 +559,14 @@ restoreRoutes.post(
     if (rebuildRecoveryId) {
       // Free the device's recovery slot so the next rebuild isn't refused.
       try {
-        await cancelBareMetalRecovery({
+        // Savepoint so a failed statement rolls back and the request transaction
+        // survives this catch (#11203).
+        await withDbTransaction(async () => cancelBareMetalRecovery({
           recoveryId: rebuildRecoveryId,
           orgId,
           userId: auth?.user?.id ?? null,
           reason,
-        });
+        }));
       } catch (err) {
         // invalid_state = recovery already terminal, which is the goal state.
         if (!(err instanceof BareMetalRecoveryError && err.code === 'invalid_state')) {

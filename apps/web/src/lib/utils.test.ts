@@ -46,6 +46,7 @@ describe('formatToolName (#10197)', () => {
     expect(formatToolName('operator_plan')).toBe('AI Task Plan');
     expect(formatToolName('list_operator_tasks')).toBe('List AI Tasks');
     expect(formatToolName('get_operator_task')).toBe('Get AI Task');
+    expect(formatToolName('create_operator_task')).toBe('Create AI Task');
     expect(formatToolName('launch_specialist (operator_recipe/patch_plan)')).toBe(
       'Launch Specialist (AI Task/Patch Plan)',
     );

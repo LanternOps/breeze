@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
 import { quotes } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
 import { contracts } from '../db/schema/contracts';
@@ -83,11 +83,11 @@ export async function notifyQuoteOutcome(input: {
       let draftContractCount = 0;
       if (input.outcome === 'accepted') {
         try {
-          const drafts = await db.select({ id: contracts.id }).from(contracts).where(and(
+          const drafts = await withDbTransaction(() => db.select({ id: contracts.id }).from(contracts).where(and(
             eq(contracts.sourceQuoteId, input.quoteId),
             eq(contracts.orgId, q.orgId),
             eq(contracts.status, 'draft'),
-          ));
+          )));
           draftContractCount = drafts.length;
         } catch (err) {
           console.error('[quoteOutcomeNotify] draft-contract count failed', { quoteId: input.quoteId }, err instanceof Error ? err.message : err);

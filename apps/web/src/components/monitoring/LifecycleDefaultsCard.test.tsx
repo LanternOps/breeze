@@ -82,6 +82,13 @@ describe('LifecycleDefaultsCard', () => {
     expect(screen.queryByTestId('lifecycle-rearm-delay')).toBeNull();
   });
 
+  it('labels the save button for defaults, not for a monitor', async () => {
+    install();
+    render(<LifecycleDefaultsCard />);
+
+    expect(await screen.findByTestId('lifecycle-save')).toHaveTextContent('Save defaults');
+  });
+
   it('loads the org override and says what it overrides', async () => {
     install({
       get: () => json(defaults({

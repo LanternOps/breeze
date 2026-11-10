@@ -264,10 +264,17 @@ export const invoicePayments = pgTable('invoice_payments', {
   receivedAt: date('received_at').notNull(),
   recordedBy: uuid('recorded_by').references(() => users.id),
   note: text('note'),
+  // #3803: caller-supplied key for a manual payment; a retry carrying the same
+  // key answers with this row instead of recording again (recordPayment).
+  // NULL for every payment recorded without one (Stripe, accounting pull, older rows).
+  idempotencyKey: varchar('idempotency_key', { length: 255 }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   index('invoice_payments_invoice_idx').on(t.invoiceId),
-  index('invoice_payments_org_idx').on(t.orgId)
+  index('invoice_payments_org_idx').on(t.orgId),
+  uniqueIndex('invoice_payments_invoice_idempotency_key_uq')
+    .on(t.invoiceId, t.idempotencyKey)
+    .where(sql`${t.idempotencyKey} IS NOT NULL`)
 ]);
 
 export const partnerInvoiceSequences = pgTable('partner_invoice_sequences', {

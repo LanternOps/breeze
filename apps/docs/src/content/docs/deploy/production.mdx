@@ -22,7 +22,7 @@ The core stack (`docker-compose.yml`) includes:
 | **Web** | `ghcr.io/lanternops/breeze/web` | Astro SSR dashboard |
 | **Portal** | `ghcr.io/lanternops/breeze/portal` | Astro SSR customer portal, served under `/portal` (see [Customer Portal](/features/portal/)) |
 | **PostgreSQL** | `pgvector/pgvector:pg16` | Primary database |
-| **Redis** | `redis:7-alpine` | Job queue, caching, rate limiting |
+| **Redis** | `redis` (digest-pinned via `REDIS_IMAGE_REF`; Redis 8.x) | Job queue, caching, rate limiting |
 | **Coturn** | `coturn/coturn:4-alpine` | TURN relay server for WebRTC remote desktop (opt-in via `--profile turn`) |
 
 The `pgvector` extension is required **only if you enable the Workspace built-in** (`BREEZE_WORKSPACE_ENABLED=true`), which uses it for content embeddings. Workspace ships inside the API image but is off by default: with the flag unset, no Workspace migrations run and any Postgres 16 image works. The bundled `POSTGRES_IMAGE_REF` default is pgvector-capable regardless, so enabling Workspace later needs no database swap — supply your own Postgres image and you must provide `pgvector` yourself before setting the flag, or the API will fail to start with `extension "vector" is not available`.
@@ -37,6 +37,10 @@ If you are already running on a stock image and want Workspace, either:
 
 If you do not need Workspace, keep the Postgres image you are already running.
 </Aside>
+
+**Supported versions:** Breeze is tested against PostgreSQL 16 and Redis 8.x. Redis 7 is no longer tested. Set `REDIS_IMAGE_REF` to a reviewed digest of a Redis 8.x image.
+
+**Upgrading Redis from 7 to 8:** see [Redis 7 to 8](/deploy/upgrades/#redis-7-to-8) in the Upgrade Guide.
 
 An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail, exporters) is available as a separate overlay — see [Monitoring](#adding-monitoring).
 

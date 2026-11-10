@@ -72,6 +72,7 @@
     "descriptionOrg": "Bu kuruluş için iş ortağı varsayılanını geçersiz kılar. Devralmak için bir alanı boş bırakın. Bir monitörün kendi ayarı bundan önceliklidir.",
     "readOnly": "İş ortağı varsayılanını değiştirme izniniz yok.",
     "saved": "Yaşam döngüsü varsayılanları kaydedildi",
+    "saveAction": "Varsayılanları kaydet",
     "overrideCount_one": "{{count}} monitör bunu geçersiz kılıyor",
     "overrideCount_other": "{{count}} monitör bunu geçersiz kılıyor",
     "errors": {
@@ -222,7 +223,20 @@
     "psaBoardDefault": "Bağlantının varsayılan panosunu kullan",
     "psaBoardHelp": "Bu monitörün uyarı ticket’ları, bağlantının varsayılan panosu yerine bu panoda oluşturulur.",
     "psaBoardReadOnly": "Uyarı ticket’ları PSA panosu #{{id}} içine gider",
-    "psaBoardUnavailable": "PSA panoları yüklenemedi, bu nedenle pano geçersiz kılma şu anda kullanılamıyor."
+    "psaBoardUnavailable": "PSA panoları yüklenemedi, bu nedenle pano geçersiz kılma şu anda kullanılamıyor.",
+    "clearsWhen": {
+      "title": "Şu durumda temizlenir",
+      "hint": "Yalnızca uyarıyı tetikleyen olaydan sonra kaydedilen bir olayla temizlenir.",
+      "noneHint": "Kurtarma koşulu ayarlanmadı; tetikleyici eşleşmeyi bıraktığında uyarı temizlenir.",
+      "add": "Kurtarma koşulu ekle",
+      "removeCondition": "Kaldır",
+      "keepCustom": "Özel koşulu koru",
+      "customTitle": "Özel kurtarma koşulu (API)",
+      "customHint": "Bu koşul API üzerinden ayarlandı ve burada düzenlenemez. Kaydetmek onu olduğu gibi korur.",
+      "replaceCustom": "Değiştir",
+      "invalid": "Kurtarma koşulunun değerlerinden biri geçerli değil.",
+      "customUnusable": "Bu koşul değerlendirilemiyor, bu nedenle bu monitörün uyarıları otomatik olarak çözülmeyecek. Düzeltmek için koşulu değiştirin."
+    }
   },
   "kinds": {
     "composite": "Bileşik (birkaç koşulun tümü veya herhangi biri)",

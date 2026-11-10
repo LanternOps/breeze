@@ -149,7 +149,7 @@ describe('SecurityAgentsTab', () => {
     expect(screen.getByTestId('security-agents-catalog-missing-link')).toHaveAttribute('href', '/integrations#sentinelone');
   });
 
-  it.each(['controld', 'nextdns'])('does not allow %s to be enabled', async (vendor) => {
+  it.each(['controld', 'nextdns', 'bitdefender'])('does not allow %s to be enabled', async (vendor) => {
     render(<SecurityAgentsTab {...props} />);
     const toggle = screen.getByTestId(`security-agents-${vendor}-toggle`) as HTMLInputElement;
     expect(toggle.disabled).toBe(true);
@@ -159,7 +159,7 @@ describe('SecurityAgentsTab', () => {
     await waitFor(() => expect(m.save).toHaveBeenCalled());
     const payload = m.save.mock.calls[0][1] as { inlineSettings: { agents: Array<{ vendor: string; enabled: boolean }> } };
     expect(payload.inlineSettings.agents.some((a) => a.vendor === vendor && a.enabled)).toBe(false);
-    expect(screen.getAllByText(/coming soon/i)).toHaveLength(2);
+    expect(screen.getAllByText(/coming soon/i)).toHaveLength(3);
   });
 
   it('preserves stored platforms and PATCHes the existing link on re-save', async () => {
@@ -211,7 +211,7 @@ describe('SecurityAgentsTab', () => {
 
   it('renders the platform notes, the install notice and the closer-link warning', () => {
     render(<SecurityAgentsTab {...props} />);
-    expect(screen.getByText(/requires MDM approval/i)).toBeInTheDocument();
+    expect(screen.getByTestId('security-agents-platform-macos')).toHaveTextContent(/requires MDM approval/i);
     expect(screen.getByTestId('security-agents-platform-windows')).toBeInTheDocument();
     expect(screen.getByTestId('security-agents-platform-linux')).toBeInTheDocument();
     expect(screen.getByTestId('security-agents-keys-notice')).toHaveTextContent(/never uninstalls/i);
@@ -316,6 +316,43 @@ describe('SecurityAgentsTab — DNS-filtering vendors (#6960 W05)', () => {
     fireEvent.click(saveButton());
     await waitFor(() => expect(m.save).toHaveBeenCalled());
     expect(m.save.mock.calls[0][1].inlineSettings.agents).toEqual([{ vendor: 'nextdns', enabled: false, platforms: ['windows'] }]);
+  });
+
+  it('renders a dormant Bitdefender GravityZone row', () => {
+    render(<SecurityAgentsTab {...props} />);
+    const row = screen.getByTestId('security-agent-vendor-bitdefender');
+    expect(row).toHaveTextContent('Bitdefender GravityZone');
+    expect(row).toHaveTextContent(/coming soon/i);
+    const toggle = screen.getByTestId('security-agents-bitdefender-toggle') as HTMLInputElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.checked).toBe(false);
+    for (const p of ['windows', 'macos', 'linux']) {
+      expect(screen.getByTestId(`security-agents-bitdefender-platform-${p}`)).toBeInTheDocument();
+    }
+  });
+
+  it('a stored enabled Bitdefender entry reads off and re-saves off with platforms kept', async () => {
+    render(
+      <SecurityAgentsTab
+        {...props}
+        existingLink={{
+          id: 'link',
+          featureType: 'security_agents',
+          featurePolicyId: null,
+          inlineSettings: { version: 1, agents: [{ vendor: 'bitdefender', enabled: true, platforms: ['windows'] }] },
+        } as FeatureLink}
+      />,
+    );
+    expect((screen.getByTestId('security-agents-bitdefender-toggle') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(m.save).toHaveBeenCalled());
+    expect(m.save.mock.calls[0][1].inlineSettings.agents).toEqual([{ vendor: 'bitdefender', enabled: false, platforms: ['windows'] }]);
+  });
+
+  it('the Bitdefender catalog-missing fallback link targets the EDR integrations tab', () => {
+    m.hook.errorDetail = { status: 400, code: 'security_agents_catalog_missing', body: { vendors: ['bitdefender'] } };
+    render(<SecurityAgentsTab {...props} />);
+    expect(screen.getByTestId('security-agents-catalog-missing-link')).toHaveAttribute('href', '/integrations#edr');
   });
 
   it('renders translated DNS notes in a non-English locale (no raw keys)', async () => {

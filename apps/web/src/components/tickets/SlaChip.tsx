@@ -1,6 +1,7 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { slaState, formatRelative, type TicketSummary } from './ticketConfig';
+import { slaState, formatRelative, NEUTRAL_CHIP_TEXT, type TicketSummary } from './ticketConfig';
+import { cn } from '@/lib/utils';
 
 export default function SlaChip({ ticket }: { ticket: TicketSummary }) {
   const { t } = useTranslation('tickets');
@@ -12,7 +13,7 @@ export default function SlaChip({ ticket }: { ticket: TicketSummary }) {
   if (s.kind === 'paused') {
     return (
       <span
-        className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-muted text-muted-foreground border-border"
+        className={cn('inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-muted border-border', NEUTRAL_CHIP_TEXT)}
         data-testid={`ticket-sla-${ticket.id}`}
       >
         {t('slaChip.pausedLeft', { relative: formatRelative(s.minutesLeft) })}
@@ -22,7 +23,7 @@ export default function SlaChip({ ticket }: { ticket: TicketSummary }) {
   if (s.kind === 'at-risk') {
     return (
       <span
-        className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-warning/15 text-warning border-warning/30"
+        className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-warning/15 text-warning-ink border-warning/30"
         data-testid={`ticket-sla-${ticket.id}`}
       >
         {t('slaChip.left', { relative: formatRelative(s.minutesLeft) })}
@@ -31,7 +32,7 @@ export default function SlaChip({ ticket }: { ticket: TicketSummary }) {
   }
   return (
     <span
-      className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-destructive/15 text-destructive border-destructive/30"
+      className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-destructive/15 text-destructive-ink border-destructive/30"
       data-testid={`ticket-sla-${ticket.id}`}
     >
       {t('slaChip.breached')}

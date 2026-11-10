@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { Readable } from 'node:stream';
 import { and, eq } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { attestSnapshotForTest } from './restoreIntegrityFixture';
@@ -19,7 +20,7 @@ import {
 } from '../../db/schema';
 import { runInRecoveryOrgContext } from '../../routes/backup/bmr';
 import { hydrateSnapshotFileIndex } from '../../services/backupSnapshotFileIndex';
-import { fetchBackupObjectBytes } from '../../services/backupSnapshotStorage';
+import { MANIFEST_STREAM_MAX_BYTES, openBackupObjectStream } from '../../services/backupSnapshotStorage';
 import { normalizeStorageIdentity } from '../../services/backupStorageIdentity';
 import { generateRecoveryToken, hashRecoveryToken } from '../../services/recoveryBootstrap';
 import { getAuthenticatedRecoveryDownloadTarget } from '../../services/recoveryDownloadService';
@@ -113,11 +114,11 @@ async function seedIncrementalOverRecordedRootOrigin(destination: Destination, o
 
   const outcome = await hydrateSnapshotFileIndex(currentDbId, {
     deps: {
-      fetchManifestBytes: destination.provider === 'local'
-        ? (args) => fetchBackupObjectBytes(args)
+      openManifest: destination.provider === 'local'
+        ? (args) => openBackupObjectStream({ ...args, maxBytes: MANIFEST_STREAM_MAX_BYTES })
         : async ({ key }) => {
           if (key !== `snapshots/${currentId}/manifest.json`) throw new Error(`unexpected manifest key ${key}`);
-          return Buffer.from(manifestBytes, 'utf8');
+          return Readable.from([Buffer.from(manifestBytes, 'utf8')]);
         },
     },
   });

@@ -75,6 +75,8 @@
  *      unconditional check index.ts performs, so a worker-role process can
  *      never serve tenant-scoped queries through a SUPERUSER/BYPASSRLS pool.
  *   5. Redis mandatory — exit non-zero if unreachable (no limp mode).
+ *   5b. Cluster cache bus subscriber (#8639) — so the hot-path caches the job
+ *      graph loads are invalidated by writes on other instances.
  *   6. Extension runtime in `mode: 'worker'` (parity-check-never-apply,
  *      publish tenancy, stage, validate, seed state, activate registry; no
  *      web-asset registration — there is no HTTP server to serve it from).
@@ -449,6 +451,7 @@ export async function bootWorker(): Promise<void> {
   const { shutdownEventDispatcher } = await import('./services/eventDispatcher');
   const { shutdownEventDispatchQueue } = await import('./services/eventDispatchQueue');
   const { getEventBus } = await import('./services/eventBus');
+  const { getClusterCacheBus } = await import('./services/clusterCacheBus');
   const { drainAuditRetryQueue } = await import('./services/auditService');
   const {
     getDbPoolHealthMinTimeouts,
@@ -591,6 +594,17 @@ export async function bootWorker(): Promise<void> {
     process.exit(1);
     return;
   }
+
+  // Step 5b (W05 follow-up, #8639): subscribe to cluster cache invalidations.
+  // The worker's job graph loads cluster-invalidated hot-path caches (UniFi
+  // telemetry reads topology flags + the collector-absence cache, queued
+  // commands read the manifest keyset, the WISP wake scheduler reads
+  // entitlements — pinned by workerClusterCacheAudit.contract.test.ts); without
+  // a subscriber those entries only expire by TTL. Before step 8 so no job
+  // reads a cache before it can be invalidated. Bounded at 1 s, never throws.
+  const clusterCacheOutcome = await getClusterCacheBus().start();
+  if (clusterCacheOutcome === 'subscribed') console.log('[worker][clusterCache] subscriber subscribed');
+  else console.warn(`[worker][clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this worker are TTL-only until it subscribes`);
 
   // Step 6: extension runtime, worker-safe mode (no web-asset registration —
   // there is no HTTP server here to serve it from).
@@ -745,6 +759,8 @@ export async function bootWorker(): Promise<void> {
         name: 'queues',
         tasks: [shutdownEventDispatcher, shutdownEventDispatchWorker, shutdownEventDispatchQueue],
       },
+      // 3b. The cluster cache subscriber owns its own duplicate connection.
+      { name: 'cluster-cache-bus', tasks: [() => getClusterCacheBus().stop()] },
       // 4. Event bus releases its borrowed connection reference.
       { name: 'eventbus', tasks: [async () => getEventBus().close()] },
       // 5. The ONLY owner of the Redis quits.

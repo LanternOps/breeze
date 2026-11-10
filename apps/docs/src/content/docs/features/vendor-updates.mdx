@@ -1,0 +1,127 @@
+---
+title: Vendor Updates
+description: Keep each hardware maker's own update tool (Dell, Surface, HP, Lenovo) running on a monthly schedule with an overnight reboot, run it on demand, and see the fleet on the Patches page.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Vendor updates keep the update tool each hardware maker ships (Dell, Microsoft Surface, HP, Lenovo) running on a monthly schedule. BIOS, firmware, drivers and vendor applications are handled by the maker's own tool, not by Windows Update, and Breeze controls when it runs and when the machine restarts.
+
+- **Policy.** The **Vendor updates** tab of a [configuration policy](/features/configuration-policies/) sets the schedule (by default the third Wednesday of the month from 01:00 for 4 hours, with 7 catch-up nights), which makers and categories to run, and whether Breeze restarts the device overnight.
+- **Run now.** On a device, **Run vendor updates** starts a run immediately, outside the schedule.
+- **Fleet view.** The **Vendor updates** tab on the Patches page (`#vendor-updates`) shows every device's state, filterable by maker.
+
+Scope:
+
+- Windows only. macOS and Linux devices are not covered.
+- Servers, virtual machines and devices from a maker with no lane are not covered, and read **Not managed**. Quick Support devices are left out of the view.
+- There is no per-update approval. You choose categories per maker. You can block individual update IDs by listing them in the policy.
+
+<Aside type="caution">
+**Availability.** A maker's lane opens only after Breeze has validated that vendor's tool in a lab. Today every lane is closed, so real devices read **Not managed** or **Not supported**. This page describes how the feature behaves once lanes open.
+</Aside>
+
+---
+
+## What has to be open before a device is touched
+
+Four independent locks protect devices. All start closed, and all four must be open for a run to reach a device.
+
+| Lock | Where it lives | Notes |
+|---|---|---|
+| Feature flag | `BREEZE_OEM_UPDATES_ENABLED` on the API. Optionally `BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST`, a comma-separated list of partner IDs | With the allowlist set, only listed partners get the feature. |
+| Manifest gates | In Breeze code, per maker (lane) and per category (BIOS, firmware, driver, application) | Changed only by a Breeze release, after lab validation. A lane gate and the category gate must both be open. A code-level block can also close a category and overrides an open gate. |
+| Kill switches | `BREEZE_OEM_UPDATES_DISABLED_LANES` (comma-separated makers, for example `dell`), and the code-level block above | Stops new runs for that maker and cancels commands not yet picked up. A run already in progress is never interrupted. |
+| Minimum agent version | Agent 0.127.0 or later | Older agents cannot run the command. |
+
+Turning a lock closed never aborts work already under way on a device. It only stops new work.
+
+## BIOS and firmware requirements
+
+BIOS and firmware are the categories that can make a machine unbootable if interrupted, so they have stricter requirements than drivers and applications. A BIOS or firmware install starts only when all of these hold:
+
+- **Breeze controls the reboot.** The policy's reboot setting is `overnight`. With `never`, BIOS and firmware are skipped, and drivers and applications still run.
+- **AC power.** The device must be on AC. An unknown power state refuses.
+- **Battery at or above 25%.** Desktops with no battery pass this check.
+- **A current escrowed recovery key when BitLocker is on.** Breeze has to hold the device's current BitLocker recovery key before it suspends protection for the flash. Without it the run reports `blocked_no_recovery_key`.
+- **The flash guard.** While a BIOS or firmware install is in progress the agent refuses every reboot, shutdown and agent replacement, so nothing can interrupt the write. The guard ends by itself after a maximum time, so a crash cannot block restarts forever.
+
+When a run starts without reboot control, or a check fails, the skipped categories are reported on the run. The on-demand dialog notes when BIOS and firmware were skipped.
+
+## Fleet states
+
+The tab shows one state per device.
+
+| State | Meaning |
+|---|---|
+| **Up to date** | The device finished a run (including "nothing to install") for this month's schedule, or it has run successfully before and this month's nights are not yet over. |
+| **Overdue** | Under a managed schedule, the last catch-up night for this month's occurrence has passed with no finished run, or 3 attempts were used up. |
+| **Failing** | The last run failed, was partial, was interrupted, could not get its tool, or had no recovery key. A technician needs to look. Battery blocks and "retry later" are not failing, because they retry by themselves. |
+| **Not supported** | The maker's tool reported that it does not support this model. Breeze asks again when the tool version or the model changes. |
+| **Not managed** | Nothing is expected of this device. See below. |
+| **Waiting for restart** | An update finished and the device owes a restart. |
+| **Restart overdue** | A restart has been held for 3 nights or more. |
+
+### Overdue
+
+A scheduled run never starts outside its window, and Breeze sets no wake timers. A laptop that is off or asleep every night of the month therefore has no chance to run, and it shows **Overdue**. Use **Run vendor updates** on the device when it is online.
+
+A device that came under a schedule after that month's last night had already opened is not Overdue for that month. This covers a policy created or changed late in the month, a new assignment, and a newly enrolled device. A policy armed on the 28th does not turn the fleet Overdue for nights that passed before it existed.
+
+The month's nights are counted in the device's time zone: site, then organization, then partner. A user scoped to one organization cannot read a partner-level zone, so around the edge of a window their view can differ by a few hours from a partner user's and from the alert.
+
+An agent that is too old to run vendor updates is not hidden as Not managed. It can read **Overdue**, because the device really has stopped updating and updating the agent is the fix.
+
+### Not managed
+
+A device reads Not managed when nothing is expected of it:
+
+- No policy reaches it.
+- The feature is off for its partner.
+- The maker's lane is closed, or every category the policy asks for is closed.
+- The maker's lane is on its kill switch.
+- It is not a device this feature covers: not Windows, a server, a virtual machine, or a maker with no lane.
+- It has a policy but has never run and still has nights left this month, so there is no evidence either way.
+
+### Restart overdue
+
+After a vendor update that needs a restart, Breeze schedules it inside the overnight window. If the device cannot restart that night (a user is signed in, the window closes first), the restart is held and retried the next night. Breeze never forces it. After 3 nights the device reads **Restart overdue**. A policy with reboot `never` just reads **Waiting for restart** until someone else restarts the device, however long that takes.
+
+## Alerts
+
+Vendor updates use the normal [alerts](/features/alerts/) machinery. An organization can switch any of these rules off.
+
+| Rule | Fires when | Resolves when |
+|---|---|---|
+| `Vendor update: device overdue` | A device reads Overdue. Raised once per monthly occurrence, even if a technician closes the alert. An alert still open from an earlier month stands in for a new one. | A run finishes after the alert, or the device leaves management. A kill switch or a closed gate leaves it open. |
+| `Vendor update: run failing` | A device reads Failing, the last catch-up night for this month's occurrence has passed, and its last run was that occurrence's scheduled run. Raised once per monthly occurrence, even if a technician closes the alert. It never fires while a retry is possible, or when the last run was **Run vendor updates**. A device with all 3 attempts used reads Overdue and raises the overdue rule instead. | A run finishes after the alert, the next month's occurrence starts, or the device leaves management. A kill switch or a closed gate leaves it open. |
+| `Vendor update: restart overdue` | A device reads Restart overdue. Raised once per owed restart. | The device is no longer Restart overdue. |
+| `Vendor update: schedule not handed back` | No policy runs vendor updates on the device any more, and giving the vendor tool's own schedule back failed 3 times. | The handback goes through. |
+| `Vendor update: device did not come back` | A device has not checked in after a BIOS or firmware update started, past its return deadline. It may be at a BitLocker recovery prompt or a failed flash. | The device checks in again. |
+| `Vendor update: BitLocker still suspended` | BitLocker protection did not come back after a vendor update and its restart. | BitLocker protection is back on. |
+
+All of these are suppressed while a [maintenance window](/features/maintenance-windows/) that suppresses alerts is active. The device stays eligible, so the alert is raised on a later pass once the window ends.
+
+## Trust boundary
+
+- **Breeze never bundles, mirrors or hosts vendor binaries.** The agent runs a tool that is already installed, or downloads the vendor's own installer from the vendor's own host.
+- **The agent decides what it may fetch or run.** It carries a compiled allowlist of publishers and hosts. The API supplies the expected version and checksum, but a wrong or malicious entry cannot make the agent fetch or run anything outside that list.
+- **Signatures are checked immediately before every execution**, not just when a file is downloaded.
+- **Vendor tool output is untrusted.** Text taken from it is length-capped and validated before it is stored or shown. Raw tool logs are not uploaded.
+
+## Agent commands
+
+The API sends two commands to the agent for this feature; see [Commands & Config](/agents/commands/#vendor-updates).
+
+## Self-hosting
+
+Set these on the API:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `BREEZE_OEM_UPDATES_ENABLED` | off | Master switch. |
+| `BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST` | empty (all partners) | Comma-separated partner IDs. When set, only those partners get the feature. |
+| `BREEZE_OEM_UPDATES_DISABLED_LANES` | empty | Comma-separated makers (`dell`, `surface`, `hp`, `lenovo`) to pause. Takes effect once the API restarts with the new value. Lenovo's agent support has not shipped yet, so its lane stays closed regardless. |
+| `OEM_UPDATES_MAX_DISPATCH_PER_TICK` | 200 | Most vendor update runs sent in one scheduler pass. It also caps the alerts attempted per rule in one pass, so a fleet going overdue together is paced rather than sent at once. The next pass carries on where this one stopped. Must be a whole number above zero. |
+
+With `BREEZE_OEM_UPDATES_ENABLED` off, no policy is read and nothing is dispatched. Every device reads **Not managed**, except a device that already has a recorded state such as **Not supported** or an owed restart.

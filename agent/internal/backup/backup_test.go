@@ -511,6 +511,26 @@ func TestRunBackup_SystemStateDoesNotMutateConfiguredPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 	file1 := createTempFile(t, tmpDir, "single.txt", "single file backup")
 
+	// A real staging dir, as the collector hands back: the property under test
+	// is that it stays out of the configured paths (published on its own, Option
+	// A of the D15 contract). The real collector would add nothing to that and
+	// copies the host's whole /etc (#11201).
+	stagingDir := t.TempDir()
+	content := []byte("svc")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(content)),
+				Checksum:  "348c658682ae8701d3e9d21f191872491cf15e6acbb1681770b1cb787c1cf7ff", // sha256("svc")
+			}},
+		}, stagingDir, nil
+	})
+
 	provider := newMockProvider()
 	mgr := NewBackupManager(BackupConfig{
 		Provider:           provider,
@@ -518,9 +538,12 @@ func TestRunBackup_SystemStateDoesNotMutateConfiguredPaths(t *testing.T) {
 		SystemStateEnabled: true,
 	})
 
-	_, err := mgr.RunBackup()
+	job, err := mgr.RunBackup()
 	if err != nil {
 		t.Fatalf("RunBackup failed: %v", err)
+	}
+	if job.SystemStateManifest == nil {
+		t.Fatal("system state was not collected, so this run proved nothing about it")
 	}
 
 	if got := len(mgr.config.Paths); got != 1 {
@@ -537,7 +560,9 @@ func stubCollectSystemState(t *testing.T, fn func() (*systemstate.SystemStateMan
 	t.Helper()
 	orig := collectSystemState
 	t.Cleanup(func() { collectSystemState = orig })
-	collectSystemState = func(systemstate.CollectOptions) (*systemstate.SystemStateManifest, string, error) { return fn() }
+	collectSystemState = func(context.Context, systemstate.CollectOptions) (*systemstate.SystemStateManifest, string, error) {
+		return fn()
+	}
 }
 
 func TestRunBackup_SystemImage_NoPathsAllowed(t *testing.T) {
@@ -1453,10 +1478,10 @@ func TestStartRunKeepalive_EmitsThenStopsCleanly(t *testing.T) {
 	var mu sync.Mutex
 	var calls int
 	var sawSnapshotID bool
-	onProgress := func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
+	onProgress := func(p RunProgress) {
 		mu.Lock()
 		calls++
-		if snapshotID != "" {
+		if p.SnapshotID != "" {
 			sawSnapshotID = true
 		}
 		mu.Unlock()

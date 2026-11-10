@@ -32,8 +32,10 @@ vi.mock('../db/schema', async (importOriginal) => {
   };
 });
 
-vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: vi.fn(() => false),
+vi.mock('./agentCommandRelay', () => ({
+  dispatchCommandToAgent: vi.fn(async () => ({ status: 'offline' })),
+  agentReachability: vi.fn(async () => 'absent'),
+  dispatchDisposition: vi.fn(() => 'not_delivered'),
 }));
 
 vi.mock('./sentry', () => ({

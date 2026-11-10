@@ -34,6 +34,7 @@ function row(partial: Partial<BackupHealthRow> & { key: string; name: string }):
     status: 'completed', health: 'healthy', recency: 'under_24h', covered: true, stale: false,
     lastSuccessAt: null, lastSessionAt: null, selectedBytes: null, usedBytes: null, errorsCount: 0,
     dataSources: [], history28d: [], agentOnline: null,
+    verifiedBootableAt: null, verifiedBootable: null, verifiedBootableFailedChecks: null,
     ...partial,
   } as BackupHealthRow;
 }
@@ -200,5 +201,57 @@ describe('backup status report PDF', () => {
       summary: { org: { name: 'Acme' } } as unknown as BackupStatusReportData,
     });
     expect(pdfText(doc)).not.toContain('Backup Status Report');
+  });
+
+  describe('Verified bootable column', () => {
+    const withRows = (rows: BackupHealthRow[]) => pdfText(buildReportPdf([], { ...opts, summary: { ...data, rows } }));
+    const axcient = (partial: Partial<BackupHealthRow>) =>
+      row({ key: 'provider:a', name: 'AX-SRV', source: 'provider', providerKey: 'axcient', providerLabel: 'Axcient x360Recover', ...partial });
+
+    it('prints a Verified bootable column with Passed and n/a', () => {
+      const text = withRows([
+        axcient({ verifiedBootable: true }),
+        row({ key: 'breeze:d1', name: 'WKS-1' }),
+      ]);
+      expect(text).toContain('Verified');
+      expect(text).toContain('bootable');
+      expect(text).toContain('Passed');
+      expect(text).toContain('n/a');
+    });
+
+    it('prints Failed and Never run for Axcient rows', () => {
+      const text = withRows([
+        axcient({ key: 'provider:a1', verifiedBootable: false }),
+        axcient({ key: 'provider:a2', verifiedBootable: null }),
+      ]);
+      expect(text).toContain('Failed');
+      expect(text).toContain('Never run');
+    });
+
+    it('dates a passed or failed result, in the report timezone', () => {
+      const text = pdfText(buildReportPdf([], {
+        ...opts,
+        timezone: 'America/Los_Angeles',
+        summary: { ...data, rows: [axcient({ verifiedBootable: true, verifiedBootableAt: '2026-11-05T03:12:00.000Z' })] },
+      }));
+      expect(text).toContain('Passed');
+      // 03:12 UTC on the 5th is still the 4th in Los Angeles.
+      expect(text).toMatch(/Nov 4,/);
+    });
+
+    it('renders n/a for rows persisted before verified-bootable existed', () => {
+      const legacy = (r: BackupHealthRow) => {
+        const { verifiedBootable: _v, verifiedBootableAt: _a, verifiedBootableFailedChecks: _f, ...rest } = r;
+        return rest as unknown as BackupHealthRow;
+      };
+      const text = withRows([
+        legacy(row({ key: 'breeze:d1', name: 'OLD-WKS' })),
+        // W01 shipped the adapter first, so a saved report can hold an Axcient row.
+        legacy(axcient({ key: 'provider:a', name: 'OLD-AX' })),
+      ]);
+      expect(text).toContain('OLD-AX');
+      expect(text).toContain('n/a');
+      expect(text).not.toContain('Never run');
+    });
   });
 });

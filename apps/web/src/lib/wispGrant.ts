@@ -1,6 +1,7 @@
 // Wisp W04 (web): grant handshake + thread read shared by the step-up modal
 // (create / refresh) and the thread header. Server contracts: W02
 // `routes/wisp.ts` (grants) and W04a `routes/wispThreads.ts` (thread).
+import type { WispFirstLookState } from '@breeze/shared';
 import { fetchWithAuth } from '../stores/auth';
 import type { WispGrantStatus, WispState } from '../stores/aiStore';
 import { extractApiError } from './apiError';
@@ -32,13 +33,23 @@ export class WispPreviewError extends Error {
  * hash, so every create/refresh is `GET /wisp/grants/preview` → mint. The
  * hash is re-read on every attempt: a reach change between two attempts must
  * produce a new proof, never a replay of the old one.
+ *
+ * #10973: a refresh names its grant (`refreshGrantId`), so the server's hash
+ * covers the unattended-reads switch the grant already has; `unattendedReads`
+ * asks for the ceiling that turns it on.
  */
 export async function mintWispGrantStepUp(input: {
   partnerId: string;
   orgId: string | null;
   reauth: StepUpReauth;
+  refreshGrantId?: string;
+  unattendedReads?: boolean;
 }): Promise<string> {
-  const query = input.orgId ? `?orgId=${encodeURIComponent(input.orgId)}` : '';
+  const params = new URLSearchParams();
+  if (input.orgId) params.set('orgId', input.orgId);
+  if (input.refreshGrantId) params.set('grantId', input.refreshGrantId);
+  if (input.unattendedReads) params.set('unattendedReads', 'true');
+  const query = params.size > 0 ? `?${params.toString()}` : '';
   // The URL owns the scope: a partner-wide preview (no orgId) must not pick up
   // the switcher's ambient `?orgId=`, or the step-up is minted against an
   // org-scoped ceiling hash that the partner-wide POST /wisp/grants refuses.
@@ -59,6 +70,16 @@ export async function mintWispGrantStepUp(input: {
   });
 }
 
+/** The IANA zone this browser reports (#10402, the morning brief's default); null when it names none. */
+export function detectBrowserTimezone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch (err) {
+    console.warn('[wispGrant] the browser reported no time zone', err);
+    return null;
+  }
+}
+
 const STATUSES: ReadonlySet<string> = new Set<WispGrantStatus>(['active', 'paused', 'revoked', 'expired']);
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const int = (v: unknown, fallback: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
@@ -68,6 +89,8 @@ const int = (v: unknown, fallback: number): number => (typeof v === 'number' && 
  * know (W05 adds `spentTodayCents`/`budgetResetsAt`, A32); null when the
  * required ids or the status are missing.
  */
+const FIRST_LOOK_STATES: ReadonlySet<unknown> = new Set<WispFirstLookState>(['looking', 'done', 'couldnt_look']);
+
 export function wispStateFromThread(body: unknown): NonNullable<WispState> | null {
   const data = (body as { data?: Record<string, unknown> } | null)?.data;
   const thread = data?.thread as Record<string, unknown> | undefined;
@@ -83,11 +106,19 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
   if (typeof grant?.spentTodayCents === 'number' && Number.isFinite(grant.spentTodayCents) && typeof grant?.budgetResetsAt === 'string') {
     optional.spentTodayCents = grant.spentTodayCents;
     optional.budgetResetsAt = grant.budgetResetsAt;
+    // #10414: the breakdown rides along only when both halves are numbers; otherwise the total meter shows alone.
+    if (Number.isFinite(grant.backgroundCents) && Number.isFinite(grant.chatCents)
+      && typeof grant.backgroundCents === 'number' && typeof grant.chatCents === 'number') {
+      optional.backgroundCents = grant.backgroundCents;
+      optional.chatCents = grant.chatCents;
+    }
   } else if (grant && ('spentTodayCents' in grant || 'budgetResetsAt' in grant)) {
     console.error('[wispGrant] spend meter fields malformed; hiding the meter', { spentTodayCents: grant.spentTodayCents, budgetResetsAt: grant.budgetResetsAt });
   }
   // Absent key = unknown (left undefined, WispGrantPauseControl looks it up); present = authoritative.
   if (grant && 'pausedReason' in grant) optional.pausedReason = str(grant.pausedReason);
+  // #11145: anything else (an older API) stays unknown: a chat surface then claims nothing rather than a default.
+  if (FIRST_LOOK_STATES.has(data?.firstLookState)) optional.firstLookState = data?.firstLookState as WispFirstLookState;
   return {
     ...optional,
     grantId,
@@ -102,6 +133,10 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
     budgetCentsPerDay: int(grant?.budgetCentsPerDay, 200),
     floorTickMinutes: int(grant?.floorTickMinutes, 30),
     wideningAvailable: data?.wideningAvailable === true,
+    // #10973: effective (live AND pinned) on the server; anything but literal true is off.
+    unattendedReads: grant?.unattendedReads === true,
+    // #10390: off unless the server says literally true.
+    summaryRefine: grant?.summaryRefine === true,
   };
 }
 

@@ -143,10 +143,10 @@ function normalizePayload(value: unknown): Record<string, unknown> {
 const TRIGGER_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
 /**
- * There are SIX publishers of `alert.triggered` with heterogeneous payloads
- * (alertService.ts:155 and :706, automationRuntime.ts:1303, networkBaseline.ts:681,
- * warrantyAlertEvaluator.ts:277, metricAnomalyPromotion.ts:278) — some omit `ruleId`
- * entirely, and severity is not guaranteed to be one of the five literals. An
+ * `alert.triggered` comes from many producers with heterogeneous payloads (the
+ * alert outbox for createAlert / createSourcedAlert / createAutomationStyleAlert
+ * envelopes, offline effects, topology and network-isolation alerts) — some
+ * omit `ruleId` entirely, and severity is not guaranteed to be one of the five literals. An
  * out-of-enum value passed straight through would fail `automationTriggerContextSchema`
  * at the execute-run DEQUEUE boundary and dead-letter the whole run, so coerce
  * anything unrecognised to null here instead.

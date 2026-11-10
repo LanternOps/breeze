@@ -110,6 +110,14 @@ async function seedDevice(seed: SeededOrg, opts: { removed?: boolean } = {}): Pr
             '0.0.0-test', '0.112.0', ${opts.removed ? 'decommissioned' : 'online'})
     RETURNING id
   `);
+  if (opts.removed) {
+    // #11153 — a purge needs a confirmed uninstall; this suite is about backups.
+    await exec(sql`
+      INSERT INTO device_commands (device_id, type, payload, status, target_role, uninstall_reasons, completed_at)
+      VALUES (${device!.id}, 'self_uninstall', '{"removeConfig":true}'::jsonb, 'completed', 'agent',
+              ARRAY['device_remove']::text[], now())
+    `);
+  }
   return device!.id;
 }
 

@@ -3,6 +3,7 @@
 package systemstate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -29,7 +30,7 @@ func TestWindowsCollectRegistryPartialFailureIsRequiredStepFailure(t *testing.T)
 	orig := runRegSave
 	defer func() { runRegSave = orig }()
 
-	runRegSave = func(hive, outPath string) ([]byte, error) {
+	runRegSave = func(_ context.Context, hive, outPath string) ([]byte, error) {
 		if hive == "SECURITY" {
 			return []byte("access is denied"), errors.New("exit status 5")
 		}
@@ -40,7 +41,7 @@ func TestWindowsCollectRegistryPartialFailureIsRequiredStepFailure(t *testing.T)
 	}
 
 	c := &WindowsCollector{}
-	artifacts, err := c.collectRegistry(t.TempDir())
+	artifacts, err := c.collectRegistry(context.Background(), t.TempDir())
 
 	if err == nil {
 		t.Fatal("collectRegistry: expected error, got nil")
@@ -69,7 +70,7 @@ func TestWindowsCollectRegistryAllHivesSucceed(t *testing.T) {
 	orig := runRegSave
 	defer func() { runRegSave = orig }()
 
-	runRegSave = func(hive, outPath string) ([]byte, error) {
+	runRegSave = func(_ context.Context, hive, outPath string) ([]byte, error) {
 		if err := os.WriteFile(outPath, []byte("hive-"+hive), 0o600); err != nil {
 			return nil, err
 		}
@@ -77,7 +78,7 @@ func TestWindowsCollectRegistryAllHivesSucceed(t *testing.T) {
 	}
 
 	c := &WindowsCollector{}
-	artifacts, err := c.collectRegistry(t.TempDir())
+	artifacts, err := c.collectRegistry(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatalf("collectRegistry: unexpected error: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestWindowsCollectCertificatesSkipsWhenCertSvcAbsent(t *testing.T) {
 	certSvcInstalled = func() bool { return false }
 
 	c := &WindowsCollector{}
-	artifacts, err := c.collectCertificates(t.TempDir())
+	artifacts, err := c.collectCertificates(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatalf("collectCertificates: unexpected error: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestWindowsCollectCertificatesSkipsWhenCertSvcAbsent(t *testing.T) {
 // RequiredSteps assignment from that function (or a bad json tag on the
 // field) fails this test.
 func TestWindowsRequiredStepsSerialized(t *testing.T) {
-	manifest := newWindowsManifestSkeleton("test-host")
+	manifest := newWindowsManifestSkeleton(context.Background(), "test-host")
 
 	data, err := json.Marshal(manifest)
 	if err != nil {
@@ -158,7 +159,7 @@ func TestWindowsCollectCertificatesFailsWhenCertSvcPresentButCertutilFails(t *te
 	// This preserves that pre-existing failure behavior for a host that
 	// claims (or is faked to claim) the role is present but has no store.
 	c := &WindowsCollector{}
-	_, err := c.collectCertificates(t.TempDir())
+	_, err := c.collectCertificates(context.Background(), t.TempDir())
 	if err == nil {
 		t.Skip("certutil -backupDB unexpectedly succeeded on this host (AD CS may genuinely be installed); nothing to assert")
 	}

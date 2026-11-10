@@ -7,9 +7,10 @@ vi.mock('./dispatchDeviceCommand', () => ({
   dispatchDeviceCommand: vi.fn(),
   dispatchDeviceCommandWithSystemPrecheck: vi.fn(),
 }));
-vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: vi.fn(),
-  isAgentConnected: vi.fn(),
+vi.mock('./agentCommandRelay', () => ({
+  dispatchCommandToAgent: vi.fn(),
+  agentReachability: vi.fn(),
+  dispatchDisposition: vi.fn(() => 'not_delivered'),
 }));
 
 import {

@@ -105,6 +105,293 @@ async function loadOrgOwnedDefinition(
   return { report, orgId: report.orgId, partnerOwned: false } as const;
 }
 
+type ReportAuth = Parameters<typeof getReportWithOrgCheck>[1];
+type ReportPermissions = Parameters<typeof getReportWithOrgCheck>[2];
+
+/**
+ * One recipient operation's outcome, in the route's own status and body, so the
+ * Hono handlers below and the `manage_report_recipients` AI tool (full-control
+ * W18 PR B, #6789) answer identically. Exported in place (W07-D2, plan
+ * Decision 8) so the path-pinned contracts on this file stay valid. `orgId` on a
+ * write is the definition's org, for the tool's audit row; the route never
+ * sends it.
+ */
+export type RecipientOutcome<T> =
+  | { ok: true; status: 200 | 201; value: T; orgId?: string }
+  | { ok: false; status: 400 | 403 | 404 | 409; body: Record<string, unknown> };
+
+const refuse = (status: 400 | 403 | 404 | 409, body: Record<string, unknown>) => ({ ok: false as const, status, body });
+const REPORT_NOT_FOUND = { error: 'Report not found' } as const;
+
+export type ReportRecipientRow = { id: string; contactId: string; name: string | null; email: string | null; mode: string };
+
+export async function listReportRecipients(
+  reportId: string,
+  auth: ReportAuth,
+  permissions: ReportPermissions,
+): Promise<RecipientOutcome<ReportRecipientRow[]>> {
+  const { report, orgId } = await loadOrgOwnedDefinition(reportId, auth, permissions, 'read_history');
+  if (!report) return refuse(404, REPORT_NOT_FOUND);
+  if (!orgId) return { ok: true, status: 200, value: [] };
+
+  const rows = await db.select({
+    id: reportScheduleRecipients.id,
+    contactId: contacts.id,
+    name: contacts.name,
+    email: contacts.email,
+    mode: reportScheduleRecipients.mode,
+  }).from(reportScheduleRecipients)
+    .innerJoin(
+      contacts,
+      and(
+        eq(contacts.id, reportScheduleRecipients.contactId),
+        eq(contacts.orgId, reportScheduleRecipients.orgId),
+      ),
+    )
+    .where(and(
+      eq(reportScheduleRecipients.reportId, report.id),
+      eq(reportScheduleRecipients.orgId, orgId),
+    ))
+    .orderBy(asc(contacts.name), asc(contacts.email));
+
+  return { ok: true, status: 200, value: rows as ReportRecipientRow[] };
+}
+
+/**
+ * `requireDeliveryGate` (the AI tool, Decision 5): every add needs
+ * `reports:export` + MFA, as the series-child delivery gate below already does
+ * for a series 'add'. REST keeps the conditional gate.
+ */
+export async function addReportRecipient(
+  reportId: string,
+  auth: ReportAuth,
+  permissions: ReportPermissions,
+  input: { contactId: string; mode?: 'add' | 'remove' },
+  opts: { requireDeliveryGate?: boolean } = {},
+): Promise<RecipientOutcome<unknown>> {
+  const { report, orgId } = await loadOrgOwnedDefinition(reportId, auth, permissions);
+  if (!report) return refuse(404, REPORT_NOT_FOUND);
+  const refusal = writeRefusal(report);
+  if (refusal || !orgId) return refuse(409, refusal ?? PARTNER_OWNED_REPORT);
+
+  const { contactId, mode } = input;
+  const seriesChild = typeof report.seriesId === 'string';
+  // 'remove' means "exclude this rule match" — without a series rule it
+  // would be silently ignored while the contact kept receiving the report.
+  if (mode === 'remove' && !seriesChild) {
+    return refuse(400, { error: 'recipient_mode_requires_series' });
+  }
+  // INDEX recipient delivery gate: an 'add' on a series child adds a delivery.
+  if (
+    (opts.requireDeliveryGate || (seriesChild && (mode ?? 'add') === 'add'))
+    && !callerMaySetEmailRecipients(auth, permissions as UserPermissions | undefined)
+  ) {
+    return refuse(403, RECIPIENTS_NEED_EXPORT_AND_MFA);
+  }
+
+  const [contact] = await db.select({ id: contacts.id })
+    .from(contacts)
+    .where(and(
+      eq(contacts.id, contactId),
+      eq(contacts.orgId, orgId),
+    ))
+    .limit(1);
+  if (!contact) return refuse(404, { error: 'Contact not found' });
+
+  if (seriesChild) {
+    const overrideMode = mode ?? 'add';
+    const [override] = await db.insert(reportScheduleRecipients).values({
+      reportId: report.id,
+      orgId,
+      contactId,
+      mode: overrideMode,
+    }).onConflictDoUpdate({
+      target: [reportScheduleRecipients.reportId, reportScheduleRecipients.contactId],
+      set: { mode: overrideMode },
+    }).returning();
+    return { ok: true, status: 201, value: override ?? null, orgId };
+  }
+
+  const [recipient] = await db.insert(reportScheduleRecipients).values({
+    reportId: report.id,
+    orgId,
+    contactId,
+  }).onConflictDoNothing().returning();
+
+  return { ok: true, status: recipient ? 201 : 200, value: recipient ?? null, orgId };
+}
+
+export async function removeReportRecipient(
+  reportId: string,
+  auth: ReportAuth,
+  permissions: ReportPermissions,
+  contactId: string,
+): Promise<RecipientOutcome<{ deleted: true }>> {
+  const { report, orgId, partnerOwned } = await loadOrgOwnedDefinition(reportId, auth, permissions);
+  if (!report) return refuse(404, REPORT_NOT_FOUND);
+  if (partnerOwned || !orgId) return refuse(409, PARTNER_OWNED_REPORT);
+
+  // Multi-org report series W02: deleting a 'remove' override on a series
+  // child restores a rule match — a delivery-adding write, so it needs the
+  // same export + MFA gate as an 'add'. Deleting an 'add' row stays ungated.
+  // Without the gate the DELETE is restricted to 'add' rows, so a caller who
+  // fails it can never widen delivery through this route.
+  const mayRestoreRuleMatch = typeof report.seriesId !== 'string'
+    || callerMaySetEmailRecipients(auth, permissions as UserPermissions | undefined);
+  const rows = await db.delete(reportScheduleRecipients)
+    .where(and(
+      eq(reportScheduleRecipients.reportId, report.id),
+      eq(reportScheduleRecipients.orgId, orgId),
+      eq(reportScheduleRecipients.contactId, contactId),
+      ...(mayRestoreRuleMatch ? [] : [eq(reportScheduleRecipients.mode, 'add')]),
+    ))
+    .returning({ id: reportScheduleRecipients.id });
+
+  if (rows.length === 0) {
+    if (!mayRestoreRuleMatch) {
+      const [removeOverride] = await db.select({ id: reportScheduleRecipients.id })
+        .from(reportScheduleRecipients)
+        .where(and(
+          eq(reportScheduleRecipients.reportId, report.id),
+          eq(reportScheduleRecipients.orgId, orgId),
+          eq(reportScheduleRecipients.contactId, contactId),
+          eq(reportScheduleRecipients.mode, 'remove'),
+        ))
+        .limit(1);
+      if (removeOverride) return refuse(403, RECIPIENTS_NEED_EXPORT_AND_MFA);
+    }
+    return refuse(404, { error: 'Recipient not found' });
+  }
+  return { ok: true, status: 200, value: { deleted: true }, orgId };
+}
+
+/** The tool's convert refusal (Decision 5): convert moves an existing delivery, it never adds one. */
+export const RECIPIENT_NOT_A_LEGACY_ADDRESS = {
+  error: 'recipient_not_in_report_email_recipients',
+  message: "Only an address already in the report's email recipients can be converted; add a contact recipient instead.",
+} as const;
+
+export type ConvertedRecipient = {
+  orgId: string;
+  contact: { id: string; name: string | null; email: string | null };
+  createdContact: Awaited<ReturnType<typeof createContact>> | null;
+};
+
+/**
+ * Move one legacy `config.emailRecipients` address onto a contact recipient
+ * (creating the contact when none has that email). The caller writes the
+ * contact-create audit event from `createdContact` (the route through its Hono
+ * context, the tool through `auditToolWrite`).
+ *
+ * `requireDeliveryGate` and `requireLegacyAddress` (the AI tool, Decision 5):
+ * the caller must hold `reports:export` + MFA, and the address must already be
+ * in the locked report's `config.emailRecipients` — checked under the row lock,
+ * before anything is written — so convert can only move an existing delivery.
+ */
+export async function convertReportRecipient(
+  reportId: string,
+  auth: ReportAuth,
+  permissions: ReportPermissions,
+  input: { email: string; name?: string },
+  actorUserId: string,
+  opts: { requireDeliveryGate?: boolean; requireLegacyAddress?: boolean } = {},
+): Promise<RecipientOutcome<ConvertedRecipient>> {
+  const { report, orgId } = await loadOrgOwnedDefinition(reportId, auth, permissions);
+  if (!report) return refuse(404, REPORT_NOT_FOUND);
+  const refusal = writeRefusal(report);
+  if (refusal || !orgId) return refuse(409, refusal ?? PARTNER_OWNED_REPORT);
+  // Multi-org report series W02: convert rewrites config.emailRecipients,
+  // which on a child IS the series internal CC.
+  if (report.seriesId) return refuse(409, seriesManagedRefusal(report.seriesId));
+  if (opts.requireDeliveryGate && !callerMaySetEmailRecipients(auth, permissions as UserPermissions | undefined)) {
+    return refuse(403, RECIPIENTS_NEED_EXPORT_AND_MFA);
+  }
+
+  const email = input.email.trim().toLowerCase();
+
+  const result = await db.transaction(async (tx) => {
+    const [lockedReport] = await tx.select({ config: reports.config, seriesId: reports.seriesId })
+      .from(reports)
+      .where(and(
+        eq(reports.id, report.id),
+        eq(reports.orgId, orgId),
+      ))
+      .limit(1)
+      .for('update');
+    if (!lockedReport) return null;
+    // Adopted as a series child after the unlocked load above.
+    if (lockedReport.seriesId) return { kind: 'series_managed' as const, seriesId: lockedReport.seriesId };
+
+    const reportConfig = lockedReport.config as Record<string, unknown>;
+    const rawEmailRecipients = reportConfig.emailRecipients;
+    if (
+      opts.requireLegacyAddress
+      && !(Array.isArray(rawEmailRecipients)
+        && rawEmailRecipients.some((value: unknown) => typeof value === 'string' && value.trim().toLowerCase() === email))
+    ) {
+      return { kind: 'not_legacy' as const };
+    }
+
+    let [contact] = await tx.select({
+      id: contacts.id,
+      name: contacts.name,
+      email: contacts.email,
+    }).from(contacts)
+      .where(and(
+        eq(contacts.orgId, orgId),
+        sql`lower(${contacts.email}) = ${email}`,
+      ))
+      .limit(1);
+
+    let createdContact = null;
+    if (!contact) {
+      createdContact = await createContact(tx, {
+        orgId,
+        name: input.name ?? null,
+        email,
+      }, { userId: actorUserId });
+      contact = {
+        id: createdContact.id,
+        name: createdContact.name,
+        email: createdContact.email,
+      };
+    }
+
+    await tx.insert(reportScheduleRecipients).values({
+      reportId: report.id,
+      orgId,
+      contactId: contact!.id,
+    }).onConflictDoNothing();
+
+    const legacy = Array.isArray(rawEmailRecipients)
+      ? rawEmailRecipients.filter(
+          (value: unknown) =>
+            typeof value !== 'string'
+            || value.trim().toLowerCase() !== email,
+        )
+      : [];
+
+    await tx.update(reports).set({
+      config: {
+        ...reportConfig,
+        emailRecipients: legacy,
+      },
+      updatedAt: new Date(),
+    }).where(and(
+      eq(reports.id, report.id),
+      eq(reports.orgId, orgId),
+      isNull(reports.seriesId),
+    ));
+
+    return { kind: 'converted' as const, contact: contact!, createdContact };
+  });
+
+  if (!result) return refuse(404, REPORT_NOT_FOUND);
+  if (result.kind === 'series_managed') return refuse(409, seriesManagedRefusal(result.seriesId));
+  if (result.kind === 'not_legacy') return refuse(409, RECIPIENT_NOT_A_LEGACY_ADDRESS);
+  return { ok: true, status: 201, value: { orgId, contact: result.contact, createdContact: result.createdContact } };
+}
+
 recipientsRoutes.use('*', authMiddleware);
 
 const read = requirePermission(
@@ -121,36 +408,12 @@ recipientsRoutes.get(
   requireScope('organization', 'partner', 'system'),
   read,
   async (c) => {
-    const { report, orgId } = await loadOrgOwnedDefinition(
+    const out = await listReportRecipients(
       c.req.param('id')!,
       c.get('auth'),
       c.get('permissions') as UserPermissions | undefined,
-      'read_history',
     );
-    if (!report) return c.json({ error: 'Report not found' }, 404);
-    if (!orgId) return c.json({ data: [] });
-
-    const rows = await db.select({
-      id: reportScheduleRecipients.id,
-      contactId: contacts.id,
-      name: contacts.name,
-      email: contacts.email,
-      mode: reportScheduleRecipients.mode,
-    }).from(reportScheduleRecipients)
-      .innerJoin(
-        contacts,
-        and(
-          eq(contacts.id, reportScheduleRecipients.contactId),
-          eq(contacts.orgId, reportScheduleRecipients.orgId),
-        ),
-      )
-      .where(and(
-        eq(reportScheduleRecipients.reportId, report.id),
-        eq(reportScheduleRecipients.orgId, orgId),
-      ))
-      .orderBy(asc(contacts.name), asc(contacts.email));
-
-    return c.json({ data: rows });
+    return out.ok ? c.json({ data: out.value }, out.status) : c.json(out.body, out.status);
   },
 );
 
@@ -160,61 +423,13 @@ recipientsRoutes.post(
   write,
   zValidator('json', addReportRecipientSchema),
   async (c) => {
-    const { report, orgId } = await loadOrgOwnedDefinition(
+    const out = await addReportRecipient(
       c.req.param('id')!,
       c.get('auth'),
       c.get('permissions') as UserPermissions | undefined,
+      c.req.valid('json'),
     );
-    if (!report) return c.json({ error: 'Report not found' }, 404);
-    const refusal = writeRefusal(report);
-    if (refusal || !orgId) return c.json(refusal ?? PARTNER_OWNED_REPORT, 409);
-
-    const { contactId, mode } = c.req.valid('json');
-    const seriesChild = typeof report.seriesId === 'string';
-    // 'remove' means "exclude this rule match" — without a series rule it
-    // would be silently ignored while the contact kept receiving the report.
-    if (mode === 'remove' && !seriesChild) {
-      return c.json({ error: 'recipient_mode_requires_series' }, 400);
-    }
-    // INDEX recipient delivery gate: an 'add' on a series child adds a delivery.
-    if (
-      seriesChild
-      && (mode ?? 'add') === 'add'
-      && !callerMaySetEmailRecipients(c.get('auth'), c.get('permissions') as UserPermissions | undefined)
-    ) {
-      return c.json(RECIPIENTS_NEED_EXPORT_AND_MFA, 403);
-    }
-
-    const [contact] = await db.select({ id: contacts.id })
-      .from(contacts)
-      .where(and(
-        eq(contacts.id, contactId),
-        eq(contacts.orgId, orgId),
-      ))
-      .limit(1);
-    if (!contact) return c.json({ error: 'Contact not found' }, 404);
-
-    if (seriesChild) {
-      const overrideMode = mode ?? 'add';
-      const [override] = await db.insert(reportScheduleRecipients).values({
-        reportId: report.id,
-        orgId,
-        contactId,
-        mode: overrideMode,
-      }).onConflictDoUpdate({
-        target: [reportScheduleRecipients.reportId, reportScheduleRecipients.contactId],
-        set: { mode: overrideMode },
-      }).returning();
-      return c.json({ data: override ?? null }, 201);
-    }
-
-    const [recipient] = await db.insert(reportScheduleRecipients).values({
-      reportId: report.id,
-      orgId,
-      contactId,
-    }).onConflictDoNothing().returning();
-
-    return c.json({ data: recipient ?? null }, recipient ? 201 : 200);
+    return out.ok ? c.json({ data: out.value }, out.status) : c.json(out.body, out.status);
   },
 );
 
@@ -223,47 +438,13 @@ recipientsRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   write,
   async (c) => {
-    const { report, orgId, partnerOwned } = await loadOrgOwnedDefinition(
+    const out = await removeReportRecipient(
       c.req.param('id')!,
       c.get('auth'),
       c.get('permissions') as UserPermissions | undefined,
+      c.req.param('contactId')!,
     );
-    if (!report) return c.json({ error: 'Report not found' }, 404);
-    if (partnerOwned || !orgId) return c.json(PARTNER_OWNED_REPORT, 409);
-
-    // Multi-org report series W02: deleting a 'remove' override on a series
-    // child restores a rule match — a delivery-adding write, so it needs the
-    // same export + MFA gate as an 'add'. Deleting an 'add' row stays ungated.
-    // Without the gate the DELETE is restricted to 'add' rows, so a caller who
-    // fails it can never widen delivery through this route.
-    const contactId = c.req.param('contactId')!;
-    const mayRestoreRuleMatch = typeof report.seriesId !== 'string'
-      || callerMaySetEmailRecipients(c.get('auth'), c.get('permissions') as UserPermissions | undefined);
-    const rows = await db.delete(reportScheduleRecipients)
-      .where(and(
-        eq(reportScheduleRecipients.reportId, report.id),
-        eq(reportScheduleRecipients.orgId, orgId),
-        eq(reportScheduleRecipients.contactId, contactId),
-        ...(mayRestoreRuleMatch ? [] : [eq(reportScheduleRecipients.mode, 'add')]),
-      ))
-      .returning({ id: reportScheduleRecipients.id });
-
-    if (rows.length === 0) {
-      if (!mayRestoreRuleMatch) {
-        const [removeOverride] = await db.select({ id: reportScheduleRecipients.id })
-          .from(reportScheduleRecipients)
-          .where(and(
-            eq(reportScheduleRecipients.reportId, report.id),
-            eq(reportScheduleRecipients.orgId, orgId),
-            eq(reportScheduleRecipients.contactId, contactId),
-            eq(reportScheduleRecipients.mode, 'remove'),
-          ))
-          .limit(1);
-        if (removeOverride) return c.json(RECIPIENTS_NEED_EXPORT_AND_MFA, 403);
-      }
-      return c.json({ error: 'Recipient not found' }, 404);
-    }
-    return c.json({ data: { deleted: true } });
+    return out.ok ? c.json({ data: out.value }, out.status) : c.json(out.body, out.status);
   },
 );
 
@@ -274,95 +455,18 @@ recipientsRoutes.post(
   requireMfa(),
   zValidator('json', convertReportRecipientSchema),
   async (c) => {
-    const { report, orgId } = await loadOrgOwnedDefinition(
+    const out = await convertReportRecipient(
       c.req.param('id')!,
       c.get('auth'),
       c.get('permissions') as UserPermissions | undefined,
+      c.req.valid('json'),
+      c.get('auth').user.id,
     );
-    if (!report) return c.json({ error: 'Report not found' }, 404);
-    const refusal = writeRefusal(report);
-    if (refusal || !orgId) return c.json(refusal ?? PARTNER_OWNED_REPORT, 409);
-    // Multi-org report series W02: convert rewrites config.emailRecipients,
-    // which on a child IS the series internal CC.
-    if (report.seriesId) return c.json(seriesManagedRefusal(report.seriesId), 409);
+    if (!out.ok) return c.json(out.body, out.status);
 
-    const input = c.req.valid('json');
-    const email = input.email.trim().toLowerCase();
-
-    const result = await db.transaction(async (tx) => {
-      const [lockedReport] = await tx.select({ config: reports.config, seriesId: reports.seriesId })
-        .from(reports)
-        .where(and(
-          eq(reports.id, report.id),
-          eq(reports.orgId, orgId),
-        ))
-        .limit(1)
-        .for('update');
-      if (!lockedReport) return null;
-      // Adopted as a series child after the unlocked load above.
-      if (lockedReport.seriesId) return { kind: 'series_managed' as const, seriesId: lockedReport.seriesId };
-
-      let [contact] = await tx.select({
-        id: contacts.id,
-        name: contacts.name,
-        email: contacts.email,
-      }).from(contacts)
-        .where(and(
-          eq(contacts.orgId, orgId),
-          sql`lower(${contacts.email}) = ${email}`,
-        ))
-        .limit(1);
-
-      let createdContact = null;
-      if (!contact) {
-        createdContact = await createContact(tx, {
-          orgId,
-          name: input.name ?? null,
-          email,
-        }, { userId: c.get('auth').user.id });
-        contact = {
-          id: createdContact.id,
-          name: createdContact.name,
-          email: createdContact.email,
-        };
-      }
-
-      await tx.insert(reportScheduleRecipients).values({
-        reportId: report.id,
-        orgId,
-        contactId: contact!.id,
-      }).onConflictDoNothing();
-
-      const reportConfig = lockedReport.config as Record<string, unknown>;
-      const rawEmailRecipients = reportConfig.emailRecipients;
-      const legacy = Array.isArray(rawEmailRecipients)
-        ? rawEmailRecipients.filter(
-            (value: unknown) =>
-              typeof value !== 'string'
-              || value.trim().toLowerCase() !== email,
-          )
-        : [];
-
-      await tx.update(reports).set({
-        config: {
-          ...reportConfig,
-          emailRecipients: legacy,
-        },
-        updatedAt: new Date(),
-      }).where(and(
-        eq(reports.id, report.id),
-        eq(reports.orgId, orgId),
-        isNull(reports.seriesId),
-      ));
-
-      return { kind: 'converted' as const, contact: contact!, createdContact };
-    });
-
-    if (!result) return c.json({ error: 'Report not found' }, 404);
-    if (result.kind === 'series_managed') return c.json(seriesManagedRefusal(result.seriesId), 409);
-
-    if (result.createdContact) {
-      const createEvent = contactCreateAuditEvent(result.createdContact);
+    const { orgId, contact, createdContact } = out.value;
+    if (createdContact) {
+      const createEvent = contactCreateAuditEvent(createdContact);
       writeContactAudit(c, {
         orgId,
         action: createEvent.action,
@@ -372,6 +476,6 @@ recipientsRoutes.post(
       });
     }
 
-    return c.json({ data: result.contact }, 201);
+    return c.json({ data: contact }, 201);
   },
 );

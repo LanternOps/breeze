@@ -680,6 +680,10 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // 2026-12-20-200100. Functional forge proof:
   // ticketApprovalSettingsPartnerRls.integration.test.ts.
   'ticket_approval_settings',
+  // portal_access_policies (W3 #11380): portal sign-in policy, org override XOR
+  // partner default; both partner-wide SELECT branches ship in its migration.
+  // Functional forge proof: portalAccessPoliciesPartnerRls.integration.test.ts.
+  'portal_access_policies',
   // tool_sources / tool_source_tools (Tool catalog W01, #5215 / #5216, spec
   // 2026-09-07 §5): a registration of an external MCP server is org-scoped
   // (org_id set) OR partner-wide (partner_id set, org_id NULL — one MSP
@@ -1040,6 +1044,15 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // reportsPartnerRls.integration.test.ts. Deliberately NOT in
   // XOR_OWNERSHIP_DUAL_AXIS_TABLES — see the exclusion note there.
   'reports',
+  // #11412 W01 (origin #9246): software_upload_sessions mirrors the owner of
+  // the catalog row it uploads into — org_id XOR partner_id
+  // (software_upload_sessions_one_owner_chk, 2027-01-22-211500). Deliberately
+  // NOT in XOR_OWNERSHIP_DUAL_AXIS_TABLES: an in-flight partner upload is
+  // partner-private, so it carries no partner-wide SELECT branch (plan D3, the
+  // reports/webhooks precedent). The org_id column keeps org-tenant
+  // auto-discovery asserting the org branch; the partner branch, forge, XOR
+  // and cascade proof is softwareUploadSessionsPartnerRls.integration.test.ts.
+  'software_upload_sessions',
   // #4247: report_runs mirrors its parent — org_id XOR partner_id
   // (report_runs_one_owner_chk), pinned to the parent's owner by DEFERRABLE
   // composite FKs, one direct FOR ALL owner policy (no parent EXISTS join).
@@ -1114,6 +1127,9 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // ticket_approval_settings_one_owner_chk, 2026-12-20-200100 (#4617). Its
   // partner-wide SELECT branch ships in the same migration.
   'ticket_approval_settings',
+  // portal_access_policies_one_owner_chk, 2027-01-22-231500 (W3 #11380). Its
+  // partner-wide SELECT branches ship in the same migration.
+  'portal_access_policies',
   // tool_sources_one_owner_chk / tool_source_tools_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-193500 (#5216).
   // Both partner-wide SELECT branches ship in that same migration, so neither

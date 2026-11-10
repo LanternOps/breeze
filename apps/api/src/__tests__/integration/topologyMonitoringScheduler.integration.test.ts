@@ -85,7 +85,7 @@ describe('recurring policy scheduler (M3 Task 7)', () => {
     const bound = (await f.runs())[0]!;
     expect(bound.commandId).not.toBeNull();
     const [command] = await system(() => db.execute<{ id: string; type: string; payload: unknown }>(sql`SELECT id,type,payload FROM device_commands WHERE id = ${bound.commandId}::uuid`));
-    const revalidate = () => system(() => validateTopologyCommandAuthority({ id: command!.id, type: command!.type, deviceId: f.deviceId, payload: command!.payload }, command!.payload));
+    const revalidate = () => system(() => validateTopologyCommandAuthority({ id: command!.id, type: command!.type, deviceId: f.deviceId, payload: command!.payload }, command!.payload, { permissionVersions: 'live' }));
     expect(await revalidate()).toMatchObject({ allow: true });
     const policy = await f.policy();
     await f.inOrg(() => disarmTopologyMonitoringPolicy(f.ctx, f.policyId, policy.revision.toString()));

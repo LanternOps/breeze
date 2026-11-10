@@ -1,0 +1,3 @@
+Synthetic fixtures modeled on the Axcient x360Recover OpenAPI document (`https://developer.axcient.com/specs/x360Recover.yaml`, `info.version` 0.3.1, fetched 2026-11-06) and its WireMock mock server. `/client` uses the live array shape, not the single object the OpenAPI declares.
+
+No live account has been captured yet. W03 (#11272) replaces these files with scrubbed captures. There is no real customer data: clients are `Synthetic Client *`, hosts are `SYN-*`, IPs are documentation addresses, and screenshot and Manager URLs point at `example.invalid`. Tests assert the screenshot URLs never reach persisted output.

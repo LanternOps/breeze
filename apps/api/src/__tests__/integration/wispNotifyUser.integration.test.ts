@@ -55,11 +55,16 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
 
-async function seedGrant(partnerId: string, grantorUserId: string, orgIds: string[], o: { status?: 'active' | 'paused'; pausedReason?: string } = {}) {
+async function seedGrant(
+  partnerId: string, grantorUserId: string, orgIds: string[],
+  o: { status?: 'active' | 'paused'; pausedReason?: string; createdAt?: Date } = {},
+) {
   return withSystemDbAccessContext(async () => {
     const [grant] = await db.insert(wispGrants).values({
       partnerId, orgId: null, grantorUserId, status: o.status ?? 'active',
       ...(o.pausedReason ? { pausedReason: o.pausedReason as never, pausedAt: new Date() } : {}),
+      // created_at is immutable after insert (wisp_grants_update_guard), so pin it here.
+      ...(o.createdAt ? { createdAt: o.createdAt } : {}),
       expiresAt: new Date(Date.now() + 30 * 86_400_000),
     }).returning({ id: wispGrants.id });
     const [revision] = await db.insert(wispGrantRevisions).values({
@@ -316,10 +321,17 @@ describe('W06 readers — real SQL', () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const user = await createUser({ partnerId: partner.id, email: `wisp-brief-${randomUUID()}@wisp.test` });
-    const grantId = await seedGrant(partner.id, user.id, [org.id], { status: 'paused', pausedReason: 'budget_exhausted' });
+    const lateUser = await createUser({ partnerId: partner.id, email: `wisp-brief-late-${randomUUID()}@wisp.test` });
     const now = new Date();
     now.setUTCHours(23, 0, 0, 0); // after the default 08:00 UTC brief time
+    // created_at is pinned on both grants, so the outcome does not depend on the wall clock:
+    // one created yesterday is due today; one created at 12:00 UTC today, after today's
+    // brief time, waits for tomorrow's (#11287).
+    const paused = { status: 'paused', pausedReason: 'budget_exhausted' } as const;
+    const grantId = await seedGrant(partner.id, user.id, [org.id], { ...paused, createdAt: new Date(now.getTime() - 24 * 3_600_000) });
+    await seedGrant(partner.id, lateUser.id, [org.id], { ...paused, createdAt: new Date(now.getTime() - 11 * 3_600_000) });
     await runMorningBriefs(now);
+    expect(await notificationsFor(lateUser.id)).toHaveLength(0);
     const thread = await getOrCreateThread(grantId);
     const rows = await notificationsFor(user.id);
     expect(rows).toHaveLength(1);

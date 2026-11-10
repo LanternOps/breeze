@@ -68,8 +68,9 @@ export function emptyHealthSummary() {
 }
 
 /** The verdict the summary route and the `manage_backup_verification` tool both report. */
-export function verificationHealthStatus(summary: Awaited<ReturnType<typeof getBackupHealthSummary>>): 'critical' | 'degraded' | 'healthy' {
+export function verificationHealthStatus(summary: Awaited<ReturnType<typeof getBackupHealthSummary>>): 'critical' | 'degraded' | 'healthy' | 'unknown' {
   if (summary.escalations.criticalVerificationFailures > 0) return 'critical';
+  if (summary.readFailed) return 'unknown';
   return summary.readiness.lowReadinessCount > 0 ? 'degraded' : 'healthy';
 }
 

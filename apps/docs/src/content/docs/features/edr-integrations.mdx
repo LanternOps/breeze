@@ -386,19 +386,23 @@ Huntress deployment is fully built in: no binary upload is required. Breeze uses
 
 ### SentinelOne
 
-SentinelOne deployment requires a one-time setup step: upload the SentinelOne MSI to the deployment catalog before pushing it to devices.
+SentinelOne deployment requires a one-time setup step: upload the SentinelOne MSI to the built-in SentinelOne package before pushing it to devices. A partner admin with all-organization access uploads it **once, for every organization**.
 
 <Steps>
 1. Download the SentinelOne Windows MSI from your SentinelOne management console.
 2. Navigate to **Software → Deployment** in Breeze and open the **SentinelOne** catalog entry.
-3. Upload the MSI using the **Upload package** option.
+3. On its **Versions** tab, upload the MSI using the **Upload package** option. Leave the install arguments blank to use the package's own template, `SITE_TOKEN={s1_site_token} /q /NORESTART`.
 4. Select your target devices and click **Deploy**.
 </Steps>
 
 Once the MSI is uploaded, subsequent deployments to new devices re-use the same package — you only need to re-upload when SentinelOne releases a new installer version.
 
+<Aside type="caution" title="One shared installer for all organizations">
+  The single uploaded file is served to every organization, so never upload a site-specific installer and never put a site token in the file name. The site token is supplied at install time by the `{s1_site_token}` placeholder, from the organization the device belongs to. Partner users limited to selected organizations cannot upload to a partner-wide package; a full-partner admin must do it.
+</Aside>
+
 <Aside type="caution" title="Install arguments must carry the site token placeholder">
-  From v0.124.0 a SentinelOne deployment is refused at dispatch when the package version's install arguments do not include `SITE_TOKEN={s1_site_token}` — blank arguments, a generic `msiexec` line, or a hard-coded literal token all fail with `SentinelOne install arguments must include SITE_TOKEN={s1_site_token} — edit the installer version`. Breeze substitutes the placeholder with the site token of the device's mapped organization at install time; before this check, such a package installed unregistered or enrolled every organization into one site. Fix the arguments on the package's **Versions** tab.
+  From v0.124.0 a SentinelOne deployment is refused at dispatch when the package version's install arguments do not include `SITE_TOKEN={s1_site_token}` — blank arguments, a generic `msiexec` line, or a hard-coded literal token all fail with `SentinelOne install arguments must include SITE_TOKEN={s1_site_token} — edit the installer version`. Breeze substitutes the placeholder with the site token of the device's mapped organization at install time; before this check, such a package installed unregistered or enrolled every organization into one site. A version created with blank install arguments on this package gets the template above automatically; fix any other arguments on the package's **Versions** tab.
 </Aside>
 
 Package uploads are **chunked and resumable** with a live progress bar, so large installers (200 MB+) upload reliably — an interrupted upload resumes where it left off rather than starting over, and long uploads are no longer cut short by session-token expiry.

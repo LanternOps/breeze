@@ -34,5 +34,13 @@
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Partnerweite Gerätegruppen können nur als Ziele von Konfigurationsrichtlinien des Partners verwendet werden",
   "PARTNER_GROUP_READ_ONLY": "Diese partnerweite Gerätegruppe kann hier nicht geändert werden",
   "PARTNER_GROUP_FILTER_UNSUPPORTED": "Partnerweite Gerätegruppen können nicht in Gruppenfiltern verwendet werden; ihre Filter dürfen keine Gruppen oder Organisationen referenzieren",
-  "SCAN_ALREADY_QUEUED": "Für dieses Gerät ist bereits ein Scan in der Warteschlange."
+  "SCAN_ALREADY_QUEUED": "Für dieses Gerät ist bereits ein Scan in der Warteschlange.",
+  "PORTAL_INVITE_CONTACT_NOT_FOUND": "Dieser Kontakt existiert nicht mehr oder steht Ihnen nicht zur Verfügung.",
+  "PORTAL_INVITE_CONTACT_NO_EMAIL": "Dieser Kontakt hat keine E-Mail-Adresse. Fügen Sie zuerst eine hinzu.",
+  "PORTAL_INVITE_EMAIL_MISMATCH": "Die Einladungs-E-Mail muss mit der E-Mail-Adresse des Kontakts übereinstimmen.",
+  "PORTAL_INVITE_CONTACT_CONFLICT": "Für diese E-Mail-Adresse gibt es bereits einen Portal-Login, der mit einem anderen Kontakt verknüpft ist. Heben Sie diese Verknüpfung zuerst auf.",
+  "PORTAL_INVITE_LOGIN_EMAIL_DIFFERS": "Der Portal-Login dieses Kontakts verwendet eine andere E-Mail-Adresse. Aktualisieren Sie die E-Mail des Kontakts oder trennen Sie zuerst den Login.",
+  "PORTAL_INVITE_ALREADY_ACTIVE": "Diese Person hat bereits einen aktiven Portal-Login.",
+  "PORTAL_INVITE_USER_DISABLED": "Der Portal-Login dieser Person ist deaktiviert. Aktivieren Sie ihn wieder, statt erneut einzuladen.",
+  "PORTAL_INVITE_EXTERNAL_IDENTITY": "Diese E-Mail gehört nur zu einer Microsoft-Entra-Anmeldung. Dafür kann keine Browser-Portaleinladung gesendet werden."
 }

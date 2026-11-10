@@ -7,6 +7,8 @@ const { insertMock, updateMock, selectMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: { insert: insertMock, update: updateMock, select: selectMock },
 }));
 

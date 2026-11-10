@@ -1654,7 +1654,7 @@ async function consumeResolutionDraft(draftId: string, consumedBy: string): Prom
  *    AFTER that transaction commits (jobs/ticketOutboxPublisher.ts) — a
  *    failed proposal can never roll back or fail the technician's action;
  *  - this service stays clear of the action-intent import graph
- *    (intentService → aiTools → commandQueue → routes/agentWs.ts), which
+ *    (intentService → aiTools → … → routes/agentWs.ts), which
  *    the `global`-placement workers that import ticketService must never
  *    reach (workerEntrypointClosure.contract.test.ts);
  *  - the subscriber re-verifies every claim against the draft row before

@@ -270,6 +270,11 @@ describe('wisp concern tools — handlers', () => {
       `Already on Wisp's radar (ID: ${CONCERN}) — use resolve_concern or snooze_concern.`,
     );
     expect(concerns.upsertConcern.mock.calls[1]![0].evidence).toEqual({});
+
+    // #11426: the rollup pattern is server-owned; a chat raise cannot set it through evidence.
+    concerns.upsertConcern.mockResolvedValueOnce({ id: CONCERN, created: true });
+    await run('raise_concern', raise({ evidence: { ticketNumber: 'T-2', pattern: 'forged_pattern' } }));
+    expect(concerns.upsertConcern.mock.calls[2]![0].evidence).toEqual({ ticketNumber: 'T-2' });
   });
 
   it('raise_concern accepts device/quote/invoice/contract subjects and rejects alert/integration/run/task/incident/site at the schema', async () => {

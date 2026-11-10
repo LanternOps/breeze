@@ -73,7 +73,14 @@ import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTool
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
-import { canManagePartnerWidePolicies, partnerWideGateRefusesTool, PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE } from '../services/partnerWideAccess';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_SCOPE_REQUIRED_OVER_MCP_MESSAGE,
+  partnerScopeGateRefusesTool,
+  partnerWideGateRefusesCall,
+  partnerWideGateRefusesTool,
+  PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE,
+} from '../services/partnerWideAccess';
 import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpMessageRateLimitPerMinute, mcpTaskPendingPollIntervalMs, mcpTaskPollIntervalMs, mcpTaskTtlGraceMs, mcpTasksEffective, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
 import { mcpAppsEnabled, mcpAppsServerExtensions } from '../services/mcpAppsConfig';
 import {
@@ -116,7 +123,7 @@ import { buildMcpRequestCorrelation, correlationAuditDetails, type McpRequestCor
 import { requestAuditSink, runMcpTier3Lifecycle, writeMcpToolAuditEvent, type McpTier3ExecutionOutcome } from '../services/mcpTier3Lifecycle';
 import { checkMcpOrigin } from '../services/corsPolicy';
 import { type McpToolExecutionLedgerHandle } from '../services/mcpToolExecutionLedger';
-import { McpExecutionOrgError, resolveMcpExecutionContext, resolveMcpExecutionOrgId } from './mcpExecutionOrg';
+import { McpExecutionOrgError, mcpExecutionOrgRpcError, resolveMcpExecutionContext, resolveMcpExecutionOrgId } from './mcpExecutionOrg';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -1744,6 +1751,8 @@ type McpListingContext = {
   callerFailsMfaGate: boolean;
   /** #10930: true when the tool's handler refuses this caller on every call (partner-wide gate). */
   partnerWideRefused: (toolName: string) => boolean;
+  /** True for a PARTNER_SCOPE_ONLY_TOOLS tool and an org-scoped caller (#11287). */
+  partnerScopeRefused: (toolName: string) => boolean;
   ownsIntents: boolean;
   canRunTier3Unattended: (toolName: string) => boolean;
   canFileTier3Intent: (toolName: string) => boolean;
@@ -1798,6 +1807,8 @@ function buildMcpListingContext(
     // the PARTNER_WIDE_ONLY_TOOLS handlers refuse every call. The gate stays
     // fail-closed; this only stops advertising what it refuses.
     partnerWideRefused: (toolName: string) => partnerWideGateRefusesTool(toolName, auth),
+    // #11287: PARTNER_SCOPE_ONLY_TOOLS handlers answer PARTNER_SCOPE_REQUIRED to every org-scoped caller.
+    partnerScopeRefused: (toolName: string) => partnerScopeGateRefusesTool(toolName, auth),
     ownsIntents,
     canRunTier3Unattended,
     canFileTier3Intent,
@@ -1822,8 +1833,9 @@ function isToolListedForCaller(
   if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name) || canFileTier3Intent(tool.name))) return false;
   // Same invariant for the MFA gate: every call would be refused by the handler.
   if (callerFailsMfaGate && isToolWhollyMfaGated(tool.name, extractActionEnum(tool.input_schema))) return false;
-  // And for the partner-wide gate (#10930).
+  // And for the partner-wide gate (#10930) and the partner-scope check (#11287).
   if (ctx.partnerWideRefused(tool.name)) return false;
+  if (ctx.partnerScopeRefused(tool.name)) return false;
 
   const registryTier = getToolTier(tool.name);
   if (registryTier === undefined) return false;
@@ -2101,6 +2113,11 @@ const MCP_PARTNER_WIDE_UNAVAILABLE_ERROR = {
   code: 'ACCESS_DENIED',
 } as const;
 
+const MCP_PARTNER_SCOPE_REQUIRED_ERROR = {
+  error: PARTNER_SCOPE_REQUIRED_OVER_MCP_MESSAGE,
+  code: 'PARTNER_SCOPE_REQUIRED',
+} as const;
+
 // The partner-wide refusals handlers return, in their several per-tool
 // wordings ("orgAccess must be \"all\"", "Full partner organization access is
 // required", "Full partner scope is required ...").
@@ -2274,13 +2291,25 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   }
 
-  // #10930: a tool whose handler refuses every call without full partner org
-  // access is not listed for this caller (isToolListedForCaller). Refuse it here
-  // with the one MCP wording, before any intent is filed: an mcp_api intent is
-  // released under buildAuthFromApiKey again, so it would be refused there too.
-  if (partnerWideGateRefusesTool(toolName, auth)) {
+  // Refused here with the one MCP wording, before any intent is filed (an
+  // mcp_api intent is released under buildAuthFromApiKey again, so it would be
+  // refused there too):
+  // - #10930: a tool whose handler refuses every call without full partner org
+  //   access (not listed for this caller either, isToolListedForCaller);
+  // - #11287: a listed mixed tool's call whose partner-wide target is in its
+  //   input (a partner baseline create).
+  if (partnerWideGateRefusesTool(toolName, auth) || partnerWideGateRefusesCall(toolName, toolInput, auth)) {
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify(MCP_PARTNER_WIDE_UNAVAILABLE_ERROR) }],
+      isError: true,
+    });
+  }
+  // #11287: the same for a tool whose handler refuses every org-scoped caller
+  // (not listed for one either): refused here, before an intent card is filed
+  // that its release could only fail.
+  if (partnerScopeGateRefusesTool(toolName, auth)) {
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(MCP_PARTNER_SCOPE_REQUIRED_ERROR) }],
       isError: true,
     });
   }
@@ -2468,7 +2497,8 @@ async function handleToolsCall(
     ({ orgId: executionOrgId } = await resolveMcpExecutionContext({ auth, apiKey: apiKey ?? null, toolName, toolInput }));
   } catch (err) {
     if (err instanceof McpExecutionOrgError) {
-      return jsonRpcError(id, -32602, 'Invalid params');
+      const refusal = mcpExecutionOrgRpcError(err);
+      return jsonRpcError(id, -32602, refusal.message, refusal.data);
     }
     console.error('[MCP] Failed to resolve execution org for tool:', toolName, err);
     return jsonRpcError(id, -32000, 'Unable to resolve execution organization');

@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 const ORG_A = '22222222-2222-2222-2222-222222222222';
 const ORG_B = '55555555-5555-5555-5555-555555555555';
 
-const { permissionGate, authState, orgConditionSpy } = vi.hoisted(() => {
+const { permissionGate, authState, orgConditionSpy, txState } = vi.hoisted(() => {
   const authState = {
     canAccessOrg: true,
     partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
@@ -12,6 +12,8 @@ const { permissionGate, authState, orgConditionSpy } = vi.hoisted(() => {
     partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
     // null = system scope (no filter); string[] = partner/org scope accessible orgs
     accessibleOrgIds: ['22222222-2222-2222-2222-222222222222'] as string[] | null,
+    // Orgs canAccessOrg refuses even when canAccessOrg is true.
+    deniedOrgIds: [] as string[],
   };
   // Single hoisted spy so tests can assert the org-filter branch actually fired
   // (called with the snapshot orgId column) and what it produced (a filter for
@@ -22,7 +24,10 @@ const { permissionGate, authState, orgConditionSpy } = vi.hoisted(() => {
     if (ids.length === 0) return `${col} = '00000000-0000-0000-0000-000000000000'`;
     return `${col} IN (${ids.join(',')})`;
   });
-  return { permissionGate: { deny: false }, authState, orgConditionSpy };
+  // `active` is true only while a withDbTransaction callback runs, so a test can
+  // prove a write happened inside the transaction that later threw.
+  const txState = { active: false, rolledBack: 0 };
+  return { permissionGate: { deny: false, mfaDeny: false }, authState, orgConditionSpy, txState };
 });
 
 vi.mock('../db', () => ({
@@ -31,6 +36,17 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
   },
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => {
+    txState.active = true;
+    try {
+      return await fn();
+    } catch (err) {
+      txState.rolledBack += 1;
+      throw err;
+    } finally {
+      txState.active = false;
+    }
+  }),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -38,6 +54,7 @@ vi.mock('../db/schema', () => ({
     id: 'organizations.id',
     name: 'organizations.name',
     partnerId: 'organizations.partner_id',
+    type: 'organizations.type',
   },
   contractLines: {
     id: 'contract_lines.id',
@@ -70,6 +87,7 @@ vi.mock('../db/schema', () => ({
     ignored: 'pax8_company_mappings.ignored',
     lastSeenAt: 'pax8_company_mappings.last_seen_at',
     updatedAt: 'pax8_company_mappings.updated_at',
+    createdAt: 'pax8_company_mappings.created_at',
     metadata: 'pax8_company_mappings.metadata',
     integrationId: 'pax8_company_mappings.integration_id',
     partnerId: 'pax8_company_mappings.partner_id',
@@ -115,7 +133,7 @@ vi.mock('../middleware/auth', () => ({
       partnerOrgAccess: authState.partnerOrgAccess,
       orgId: authState.scope === 'organization' ? ORG_A : null,
       accessibleOrgIds: ids,
-      canAccessOrg: vi.fn(() => authState.canAccessOrg),
+      canAccessOrg: vi.fn((orgId: string) => authState.canAccessOrg && !authState.deniedOrgIds.includes(orgId)),
       // Hoisted spy (impl mirrors middleware/auth.ts orgCondition) so tests can
       // assert the org-filter branch fired and what it produced.
       orgCondition: orgConditionSpy,
@@ -128,7 +146,10 @@ vi.mock('../middleware/auth', () => ({
     if (permissionGate.deny) return c.json({ error: 'Forbidden' }, 403);
     return next();
   }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (permissionGate.mfaDeny) return c.json({ error: 'MFA required' }, 403);
+    return next();
+  }),
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -153,10 +174,16 @@ vi.mock('../services/pax8SyncService', () => ({
   createPax8ClientForIntegration: vi.fn(),
   linkPax8SubscriptionToContractLine: vi.fn(),
   mapPax8Company: vi.fn(async () => ({ pax8CompanyId: 'company-1', orgId: null, ignored: false })),
+  Pax8MapRefusedError: class Pax8MapRefusedError extends Error {},
   unlinkPax8Subscription: vi.fn(),
 }));
 
+vi.mock('../services/mappableOrgs', () => ({
+  loadMappableOrgs: vi.fn(async () => []),
+}));
+
 import { db } from '../db';
+import { loadMappableOrgs } from '../services/mappableOrgs';
 import { pax8Routes } from './pax8';
 import { encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -165,8 +192,10 @@ import {
   createPax8ClientForIntegration,
   linkPax8SubscriptionToContractLine,
   mapPax8Company,
+  Pax8MapRefusedError,
   unlinkPax8Subscription,
 } from '../services/pax8SyncService';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const INTEGRATION_ID = '44444444-4444-4444-4444-444444444444';
 const SNAPSHOT_ID = '66666666-6666-6666-6666-666666666666';
@@ -185,6 +214,11 @@ function partnerGlobalRequests() {
     {
       name: 'POST /companies/map', path: '/pax8/companies/map', method: 'POST',
       body: { integrationId: INTEGRATION_ID, pax8CompanyId: 'company-1', orgId: null }, fullPartnerStatus: 404,
+    },
+    {
+      name: 'POST /companies/map-bulk', path: '/pax8/companies/map-bulk', method: 'POST',
+      body: { integrationId: INTEGRATION_ID, items: [{ pax8CompanyId: 'company-1', orgId: ORG_A, expectedOrgId: null }] },
+      fullPartnerStatus: 404,
     },
     { name: 'GET /subscriptions', path: '/pax8/subscriptions', method: 'GET', body: undefined, fullPartnerStatus: 200 },
     {
@@ -270,7 +304,11 @@ describe('pax8 routes', () => {
     // canAccessOrg path) cannot bleed into the next test's findActiveIntegration call.
     vi.mocked(db.select).mockReset();
     permissionGate.deny = false;
+    permissionGate.mfaDeny = false;
+    txState.active = false;
+    txState.rolledBack = 0;
     authState.canAccessOrg = true;
+    authState.deniedOrgIds = [];
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
     authState.scope = 'partner';
     authState.partnerOrgAccess = 'all';
@@ -529,6 +567,7 @@ describe('pax8 routes', () => {
       partnerId: authState.partnerId,
       name: 'Pax8',
     }]);
+    mockSelectOnce([{ orgId: ORG_A }]);
 
     const res = await app.request('/pax8/companies/map', {
       method: 'POST',
@@ -541,6 +580,547 @@ describe('pax8 routes', () => {
     });
 
     expect(res.status).toBe(200);
+  });
+
+  describe('company suggestions', () => {
+    const integration = { id: INTEGRATION_ID, partnerId: '11111111-1111-1111-1111-111111111111' };
+    const recent = new Date();
+    const companyRow = (over: Record<string, unknown>) => ({
+      pax8CompanyId: 'company-1', pax8CompanyName: 'Acme Inc', status: 'Active', mappedOrgId: null,
+      mappedOrgName: null, ignored: false, lastSeenAt: null, updatedAt: null, createdAt: recent, metadata: {}, ...over,
+    });
+    function mockCompaniesSelect(rows: unknown[]) {
+      mockCompanySelectOnce([integration], rows);
+    }
+    function mockMapLookups(previousOrgId: string | null, companyRows?: unknown[]) {
+      mockSelectOnce([integration]);
+      mockSelectOnce([{ orgId: previousOrgId }]);
+      if (companyRows) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn(() => ({ where: vi.fn(async () => companyRows) })),
+        } as any);
+      }
+    }
+    const postMap = (extra: Record<string, unknown>) => app.request('/pax8/companies/map', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ integrationId: INTEGRATION_ID, pax8CompanyId: 'company-1', ...extra }),
+    });
+
+    it('GET /companies returns suggestion and summary', async () => {
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Acme, Inc.' }]);
+      mockCompaniesSelect([companyRow({})]);
+
+      const res = await app.request('/pax8/companies');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as any;
+      expect(loadMappableOrgs).toHaveBeenCalledWith(db, authState.partnerId);
+      expect(body.data[0].suggestion).toMatchObject({ status: 'match', orgId: ORG_B, orgName: 'Acme, Inc.' });
+      expect(body.data[0].firstSeenAt).toBe(recent.toISOString());
+      expect(body.summary).toEqual({ unmapped: 1, suggested: 1, newUnmapped: 1 });
+    });
+
+    it('hidden, archived, merging, quick_support and holding orgs are never candidates', async () => {
+      // loadMappableOrgs owns that predicate; an org it does not return can never be suggested.
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Other Co' }]);
+      mockCompaniesSelect([companyRow({ pax8CompanyName: 'Quick Support' })]);
+
+      const res = await app.request('/pax8/companies');
+
+      const body = await res.json() as any;
+      expect(loadMappableOrgs).toHaveBeenCalledTimes(1);
+      expect(loadMappableOrgs).toHaveBeenCalledWith(db, authState.partnerId);
+      expect(body.data[0].suggestion).toBeNull();
+      expect(body.summary.suggested).toBe(0);
+    });
+
+    it('map with source=suggestion that no longer matches is audited as manual', async () => {
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Renamed Co' }]);
+      mockMapLookups(null, [{ pax8CompanyId: 'company-1', pax8CompanyName: 'Acme Inc', mappedOrgId: null, ignored: false, createdAt: recent }]);
+
+      const res = await postMap({ orgId: ORG_B, source: 'suggestion' });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ source: 'manual', matchTier: null, matchKey: null }),
+      }));
+    });
+
+    it('map with a still-matching suggestion records source, tier and key', async () => {
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Acme Inc' }]);
+      mockMapLookups(null, [{ pax8CompanyId: 'company-1', pax8CompanyName: 'Acme Inc', mappedOrgId: null, ignored: false, createdAt: recent }]);
+
+      const res = await postMap({ orgId: ORG_B, source: 'suggestion' });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ source: 'suggestion', matchTier: 'exact', matchKey: expect.any(String) }),
+      }));
+    });
+
+    it('map audit carries previousOrgId', async () => {
+      mockMapLookups(ORG_A);
+
+      const res = await postMap({ orgId: null });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_A,
+        action: 'pax8.company.unmap',
+        details: expect.objectContaining({ previousOrgId: ORG_A, source: 'manual', matchTier: null, matchKey: null }),
+      }));
+    });
+
+    it('rename-capture: renaming an org to match an unmapped company writes nothing until a map request', async () => {
+      const rows = [companyRow({ pax8CompanyName: 'Globex' })];
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Initech' }]);
+      mockCompaniesSelect(rows);
+      const before = await (await app.request('/pax8/companies')).json() as any;
+      expect(before.data[0].suggestion).toBeNull();
+
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce([{ id: ORG_B, name: 'Globex' }]);
+      mockCompaniesSelect(rows);
+      const after = await (await app.request('/pax8/companies')).json() as any;
+
+      expect(after.data[0].suggestion).toMatchObject({ status: 'match', orgId: ORG_B });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('single map transaction', () => {
+    const integration = { id: INTEGRATION_ID, partnerId: '11111111-1111-1111-1111-111111111111', name: 'Pax8' };
+    const postMap = () => app.request('/pax8/companies/map', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ integrationId: INTEGRATION_ID, pax8CompanyId: 'company-1', orgId: ORG_A }),
+    });
+
+    it('runs its lookup and write inside one withDbTransaction', async () => {
+      const inTx: boolean[] = [];
+      vi.mocked(mapPax8Company).mockImplementationOnce(async () => {
+        inTx.push(txState.active);
+        return { pax8CompanyId: 'company-1', orgId: ORG_A, ignored: false };
+      });
+      mockSelectOnce([integration]);
+      mockSelectOnce([{ orgId: null }]);
+
+      const res = await postMap();
+
+      expect(res.status).toBe(200);
+      expect(inTx).toEqual([true]);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    });
+
+    it('a refused map returns 400 from a catch outside the transaction and is not audited', async () => {
+      vi.mocked(mapPax8Company).mockRejectedValueOnce(new Pax8MapRefusedError('Target organization does not belong to this partner'));
+      mockSelectOnce([integration]);
+      mockSelectOnce([{ orgId: null }]);
+
+      const res = await postMap();
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({ error: 'Target organization does not belong to this partner' });
+      expect(txState.rolledBack).toBe(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('an unexpected failure is a 500, not a 400 carrying the driver message', async () => {
+      vi.mocked(mapPax8Company).mockRejectedValueOnce(new Error('relation "pax8_company_mappings" does not exist'));
+      mockSelectOnce([integration]);
+      mockSelectOnce([{ orgId: null }]);
+
+      const res = await postMap();
+
+      expect(res.status).toBe(500);
+      expect(await res.text()).not.toContain('pax8_company_mappings');
+      expect(txState.rolledBack).toBe(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /companies/map-bulk', () => {
+    const PARTNER = '11111111-1111-1111-1111-111111111111';
+    const ORG_C = '88888888-8888-4888-8888-888888888888';
+    const integration = { id: INTEGRATION_ID, partnerId: PARTNER, name: 'Pax8' };
+    const created = new Date('2026-11-01T00:00:00.000Z');
+    const companies = [
+      { pax8CompanyId: 'co-acme', pax8CompanyName: 'Acme Inc', mappedOrgId: null, ignored: false, createdAt: created },
+      { pax8CompanyId: 'co-beta', pax8CompanyName: 'Beta LLC', mappedOrgId: null, ignored: false, createdAt: created },
+    ];
+    const mappable = [{ id: ORG_A, name: 'Acme Inc' }, { id: ORG_B, name: 'Beta' }];
+    const items = [
+      { pax8CompanyId: 'co-acme', orgId: ORG_A, expectedOrgId: null },
+      { pax8CompanyId: 'co-beta', orgId: ORG_B, expectedOrgId: null },
+    ];
+    let callsInTx: boolean[];
+
+    /** Any select chain shape; awaiting it (at any link) resolves `rows`. */
+    function mockQueryOnce(rows: unknown[]) {
+      const chain: Record<string, any> = {};
+      for (const method of ['from', 'leftJoin', 'where', 'orderBy', 'limit', 'for']) chain[method] = vi.fn(() => chain);
+      chain.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+        Promise.resolve(rows).then(resolve, reject);
+      vi.mocked(db.select).mockReturnValueOnce(chain as any);
+      return chain;
+    }
+
+    function mockBulkLookups(opts: {
+      locked?: Array<{ pax8CompanyId: string; orgId: string | null; ignored: boolean }>;
+      targets?: Array<{ id: string; partnerId: string; type: string }>;
+      rows?: unknown[];
+      orgs?: Array<{ id: string; name: string }>;
+    } = {}) {
+      mockQueryOnce([integration]);
+      const locked = mockQueryOnce(opts.locked ?? companies.map((c) => ({
+        pax8CompanyId: c.pax8CompanyId, orgId: c.mappedOrgId, ignored: c.ignored,
+      })));
+      mockQueryOnce(opts.targets ?? [
+        { id: ORG_A, partnerId: PARTNER, type: 'customer' },
+        { id: ORG_B, partnerId: PARTNER, type: 'customer' },
+      ]);
+      mockQueryOnce(opts.rows ?? companies);
+      vi.mocked(loadMappableOrgs).mockResolvedValueOnce(opts.orgs ?? mappable);
+      return { locked };
+    }
+
+    const postBulk = (body: unknown) => app.request('/pax8/companies/map-bulk', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    beforeEach(() => {
+      vi.mocked(loadMappableOrgs).mockReset();
+      vi.mocked(loadMappableOrgs).mockResolvedValue([]);
+      callsInTx = [];
+      vi.mocked(mapPax8Company).mockReset();
+      vi.mocked(mapPax8Company).mockImplementation(async (input) => {
+        callsInTx.push(txState.active);
+        return { pax8CompanyId: input.pax8CompanyId, orgId: input.orgId, ignored: false };
+      });
+    });
+
+    it('maps every item inside one transaction, locks the rows, and audits each with its verified source', async () => {
+      const { locked } = mockBulkLookups();
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ data: { mapped: 2 } });
+      // The lock is scoped to this integration, this partner and exactly the
+      // reviewed companies, and taken in id order.
+      const lockWhere = new PgDialect().sqlToQuery(locked.where.mock.calls[0]![0]);
+      expect(lockWhere.params).toEqual([
+        'pax8_company_mappings.integration_id', INTEGRATION_ID,
+        'pax8_company_mappings.partner_id', PARTNER,
+        'pax8_company_mappings.pax8_company_id', 'co-acme', 'co-beta',
+      ]);
+      expect(locked.orderBy).toHaveBeenCalledWith('pax8_company_mappings.pax8_company_id');
+      expect(locked.for).toHaveBeenCalledWith('update');
+      expect(locked.orderBy.mock.invocationCallOrder[0]!).toBeLessThan(locked.for.mock.invocationCallOrder[0]!);
+      expect(mapPax8Company).toHaveBeenCalledTimes(2);
+      expect(mapPax8Company).toHaveBeenCalledWith({
+        integrationId: INTEGRATION_ID, partnerId: PARTNER, pax8CompanyId: 'co-acme', orgId: ORG_A, ignored: false,
+      });
+      expect(callsInTx).toEqual([true, true]);
+      expect(loadMappableOrgs).toHaveBeenCalledWith(db, PARTNER);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(2);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), {
+        orgId: ORG_A,
+        action: 'pax8.company.map',
+        resourceType: 'pax8_company_mapping',
+        resourceName: 'co-acme',
+        details: {
+          integrationId: INTEGRATION_ID, partnerId: PARTNER, ignored: false, previousOrgId: null,
+          source: 'bulk_suggestion', matchTier: 'exact', matchKey: 'acme inc',
+        },
+      });
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_B,
+        resourceName: 'co-beta',
+        details: expect.objectContaining({ source: 'bulk_suggestion', matchTier: 'normalized', matchKey: 'beta' }),
+      }));
+    });
+
+    it('remaps a row that is still on the org the reviewer saw, and audits that previous org', async () => {
+      mockBulkLookups({
+        locked: [{ pax8CompanyId: 'co-acme', orgId: ORG_C, ignored: false }],
+        rows: [{ ...companies[0], mappedOrgId: ORG_C }],
+      });
+
+      const res = await postBulk({
+        integrationId: INTEGRATION_ID,
+        items: [{ pax8CompanyId: 'co-acme', orgId: ORG_A, expectedOrgId: ORG_C }],
+      });
+
+      expect(res.status).toBe(200);
+      expect(mapPax8Company).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_A,
+        details: expect.objectContaining({ previousOrgId: ORG_C, source: 'manual', matchTier: null, matchKey: null }),
+      }));
+    });
+
+    it('a row mapped to a different org than the reviewer saw → 409 STALE_REVIEW', async () => {
+      mockBulkLookups({ locked: [{ pax8CompanyId: 'co-acme', orgId: ORG_B, ignored: false }] });
+
+      const res = await postBulk({
+        integrationId: INTEGRATION_ID,
+        items: [{ pax8CompanyId: 'co-acme', orgId: ORG_A, expectedOrgId: ORG_C }],
+      });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'STALE_REVIEW', pax8CompanyIds: ['co-acme'] });
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
+
+    it('a batch that is both stale and invalid is refused as stale first', async () => {
+      mockBulkLookups({
+        locked: [
+          { pax8CompanyId: 'co-acme', orgId: ORG_C, ignored: false },
+          { pax8CompanyId: 'co-beta', orgId: null, ignored: false },
+        ],
+        targets: [{ id: ORG_A, partnerId: PARTNER, type: 'unassigned_pool' }],
+      });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'STALE_REVIEW', pax8CompanyIds: ['co-acme'] });
+    });
+
+    it('a target refused mid-batch → 400 INVALID_TARGET and the earlier write rolls back', async () => {
+      mockBulkLookups();
+      vi.mocked(mapPax8Company)
+        .mockImplementationOnce(async (input) => {
+          callsInTx.push(txState.active);
+          return { pax8CompanyId: input.pax8CompanyId, orgId: input.orgId, ignored: false };
+        })
+        .mockImplementationOnce(async () => {
+          callsInTx.push(txState.active);
+          throw new Pax8MapRefusedError('The unassigned-device holding area cannot be a mapping target');
+        });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({ code: 'INVALID_TARGET', pax8CompanyIds: ['co-beta'] });
+      expect(callsInTx).toEqual([true, true]);
+      expect(txState.rolledBack).toBe(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('one foreign org → 403 and zero mapPax8Company calls', async () => {
+      authState.deniedOrgIds = [ORG_B];
+      mockQueryOnce([integration]);
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toEqual({
+        error: 'Access to target organization denied', pax8CompanyIds: ['co-beta'],
+      });
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(mapPax8Company).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('holding org → 400 INVALID_TARGET, the transaction rolls back and nothing is written', async () => {
+      mockBulkLookups({
+        targets: [
+          { id: ORG_A, partnerId: PARTNER, type: 'customer' },
+          { id: ORG_B, partnerId: PARTNER, type: 'unassigned_pool' },
+        ],
+      });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({ code: 'INVALID_TARGET', pax8CompanyIds: ['co-beta'] });
+      expect(mapPax8Company).not.toHaveBeenCalled();
+      expect(txState.rolledBack).toBe(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('a target outside the partner, or one that does not exist, → 400 INVALID_TARGET listing both', async () => {
+      mockBulkLookups({ targets: [{ id: ORG_A, partnerId: '99999999-9999-4999-8999-999999999999', type: 'customer' }] });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({ code: 'INVALID_TARGET', pax8CompanyIds: ['co-acme', 'co-beta'] });
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
+
+    it('a write that fails mid-batch rolls the whole batch back and is not audited', async () => {
+      mockBulkLookups();
+      vi.mocked(mapPax8Company)
+        .mockImplementationOnce(async (input) => {
+          callsInTx.push(txState.active);
+          return { pax8CompanyId: input.pax8CompanyId, orgId: input.orgId, ignored: false };
+        })
+        .mockImplementationOnce(async () => {
+          callsInTx.push(txState.active);
+          throw new Error('connection reset');
+        });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(500);
+      // The first item's write ran inside the same transaction callback that threw.
+      expect(callsInTx).toEqual([true, true]);
+      expect(txState.rolledBack).toBe(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('an item whose row changed since review → 409 STALE_REVIEW listing it, zero writes', async () => {
+      mockBulkLookups({
+        locked: [
+          { pax8CompanyId: 'co-acme', orgId: null, ignored: false },
+          { pax8CompanyId: 'co-beta', orgId: ORG_C, ignored: false },
+        ],
+      });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'STALE_REVIEW', pax8CompanyIds: ['co-beta'] });
+      expect(mapPax8Company).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('an item ignored since review → 409 STALE_REVIEW', async () => {
+      mockBulkLookups({
+        locked: [
+          { pax8CompanyId: 'co-acme', orgId: null, ignored: true },
+          { pax8CompanyId: 'co-beta', orgId: null, ignored: false },
+        ],
+      });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'STALE_REVIEW', pax8CompanyIds: ['co-acme'] });
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
+
+    it('replaying a batch that already succeeded → 409, zero writes', async () => {
+      mockBulkLookups({
+        locked: [
+          { pax8CompanyId: 'co-acme', orgId: ORG_A, ignored: false },
+          { pax8CompanyId: 'co-beta', orgId: ORG_B, ignored: false },
+        ],
+      });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'STALE_REVIEW', pax8CompanyIds: ['co-acme', 'co-beta'] });
+      expect(mapPax8Company).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('a company row that no longer exists → 404 NOT_FOUND, zero writes', async () => {
+      mockBulkLookups({ locked: [{ pax8CompanyId: 'co-acme', orgId: null, ignored: false }] });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toMatchObject({ code: 'NOT_FOUND', pax8CompanyIds: ['co-beta'] });
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
+
+    it('org renamed between review and confirm → mapped, audited source manual', async () => {
+      mockBulkLookups({ orgs: [{ id: ORG_A, name: 'Acme Holdings' }, { id: ORG_B, name: 'Beta' }] });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(200);
+      expect(mapPax8Company).toHaveBeenCalledTimes(2);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        resourceName: 'co-acme',
+        details: expect.objectContaining({ source: 'manual', matchTier: null, matchKey: null }),
+      }));
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        resourceName: 'co-beta',
+        details: expect.objectContaining({ source: 'bulk_suggestion' }),
+      }));
+    });
+
+    it('an item pointing at a different org than the suggestion is audited manual', async () => {
+      mockBulkLookups({
+        targets: [
+          { id: ORG_A, partnerId: PARTNER, type: 'customer' },
+          { id: ORG_C, partnerId: PARTNER, type: 'customer' },
+        ],
+      });
+
+      const res = await postBulk({
+        integrationId: INTEGRATION_ID,
+        items: [items[0], { pax8CompanyId: 'co-beta', orgId: ORG_C, expectedOrgId: null }],
+      });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_C,
+        resourceName: 'co-beta',
+        details: expect.objectContaining({ source: 'manual', matchTier: null, matchKey: null }),
+      }));
+    });
+
+    it('returns 404 when the integration is not visible to the caller', async () => {
+      mockQueryOnce([]);
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(404);
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
+
+    it('201 items → 400 before any query', async () => {
+      const tooMany = Array.from({ length: 201 }, (_, i) => ({ pax8CompanyId: `co-${i}`, orgId: ORG_A, expectedOrgId: null }));
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items: tooMany });
+
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('200 items pass validation', async () => {
+      mockQueryOnce([]);
+      const max = Array.from({ length: 200 }, (_, i) => ({ pax8CompanyId: `co-${i}`, orgId: ORG_A, expectedOrgId: null }));
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items: max });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('an empty batch → 400', async () => {
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items: [] });
+
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('duplicate pax8CompanyId → 400 before any query', async () => {
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items: [items[0], { ...items[0], orgId: ORG_B }] });
+
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('MFA required', async () => {
+      permissionGate.mfaDeny = true;
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects an organization-scope caller (Pax8 is partner-scoped)', async () => {

@@ -235,6 +235,24 @@ describe('chatRunBridge (spec §5.5)', () => {
     expect(injected).toMatch(/<untrusted_data source="[^"]+">[\s\S]*Found a corrupt profile/);
   });
 
+  it('labels a device_troubleshooting delivery, keeps its summary fenced, and leaves other runs as "Run"', async () => {
+    const { session } = fakeSession();
+    sessionGet.mockReturnValue(session);
+    readRunForDelivery.mockResolvedValue({ status: 'completed', profile: 'device_troubleshooting', summary: 'Disk is full.', artifacts: [] });
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    await deliverRunEvent({ type: 'ai.agent.run.completed', payload: { runId: RUN } });
+    const injected = drainPendingRunResults(session as never) ?? '';
+    expect(injected).toContain(`Device troubleshooting run ${RUN} completed.`);
+    expect(injected).toMatch(/<untrusted_data source="[^"]+">[\s\S]*Disk is full/);
+
+    readRunForDelivery.mockResolvedValue({ status: 'completed', profile: 'full', summary: 'ok', artifacts: [] });
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    await deliverRunEvent({ type: 'ai.agent.run.completed', payload: { runId: RUN } });
+    const other = drainPendingRunResults(session as never) ?? '';
+    expect(other).toContain(`\n\nRun ${RUN} completed.`);
+    expect(other).not.toContain('Device troubleshooting run');
+  });
+
   it('names the waiting steps to the model, and omits the line when nothing is left to decide', async () => {
     const { session } = fakeSession();
     sessionGet.mockReturnValue(session);

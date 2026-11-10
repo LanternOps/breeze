@@ -19,7 +19,7 @@ const { insertMock, updateMock, selectMock, recordPolicyAuditMock, writeAuditEve
   writeAuditEventMock: vi.fn(),
 }));
 
-vi.mock('../db', () => ({ db: { insert: insertMock, update: updateMock, select: selectMock } }));
+vi.mock('../db', () => ({ db: { insert: insertMock, update: updateMock, select: selectMock }, hasDbAccessContext: () => false }));
 vi.mock('../db/schema/patches', () => ({ patchPolicies: {} }));
 vi.mock('../db/schema/softwarePolicies', () => ({ softwarePolicies: {} }));
 vi.mock('../db/schema/peripheralControl', () => ({ peripheralPolicies: {} }));

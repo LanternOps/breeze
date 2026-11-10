@@ -17,7 +17,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'innerJoin', 'leftJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -38,6 +38,15 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { afterContextWork.push(work); },
+}));
+
+// #11026: selective restore on a snapshot with no index asks for one.
+let afterContextWork: Array<() => unknown> = [];
+const enqueueHydrationMock = vi.fn(async (..._args: unknown[]) => 'job-1');
+vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
+  enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueHydrationMock(...args),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -157,6 +166,10 @@ const gateDeps = vi.hoisted(() => ({
 }));
 vi.mock('../../services/backupRestoreIntegrity', () => ({
   resolveRestoreIntegrity: (...args: unknown[]) => gateDeps.resolveRestoreIntegrity(...args),
+  // The condition itself is proved against Postgres (backupSnapshotBrowse.integration.test.ts).
+  readableIndexCondition: () => undefined,
+  INDEX_BINDABLE_ATTESTATION_STATUSES: new Set(['pending', 'verified', 'producer_only']),
+  indexFailedOnAttestation: () => false,
 }));
 vi.mock('../auth/helpers', () => ({
   userIsMfaProtected: (...args: unknown[]) => gateDeps.userIsMfaProtected(...args),
@@ -467,6 +480,51 @@ describe('restore routes', () => {
   // — which the agent also matches by originalPath — must exact-match
   // backup_snapshot_files.source_path and succeed, instead of 400ing with
   // "Selected path is not available in this snapshot".
+  describe('#11026 selective restore without a readable index', () => {
+    const snapshot = { id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' };
+    const indexRow = (overrides: Record<string, unknown>) => ({
+      id: 'snap-db-1', fileCount: 18000, fileIndexStatus: 'none', fileIndexManifestSha256: null, fileIndexError: null,
+      fileIndexHydratedAt: null, integrityStatus: 'pending', storageIdentity: 's3::e::b', attestationStatus: null,
+      attestationManifestSha256: null, hasRows: false, ...overrides,
+    });
+    const post = () => app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'selective', selectedPaths: ['C:/a.txt'] }),
+    });
+
+    beforeEach(() => {
+      afterContextWork = [];
+      enqueueHydrationMock.mockClear();
+    });
+
+    it('a none snapshot answers 409 index_unavailable and requests hydration after the context exits', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([snapshot]))
+        .mockReturnValueOnce(chainMock([])) // no readable rows
+        .mockReturnValueOnce(chainMock([indexRow({})]));
+      const res = await post();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'index_unavailable' });
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+      for (const run of afterContextWork) await run();
+      expect(enqueueHydrationMock).toHaveBeenCalledWith('snap-db-1', 'browse');
+    });
+
+    it('rows of a snapshot with a mismatched attestation are not readable: 409, and no hydration is requested', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([snapshot]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([indexRow({ hasRows: true, attestationStatus: 'mismatch', attestationManifestSha256: 'a'.repeat(64) })]));
+      const res = await post();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'index_unavailable' });
+      for (const run of afterContextWork) await run();
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('accepts a selective restore selection matching the indexed originalPath', async () => {
     selectMock
       .mockReturnValueOnce(
@@ -612,7 +670,7 @@ describe('restore routes', () => {
     );
   });
 
-  it('expands a selected directory to the indexed files beneath it only (#9628)', async () => {
+  it('sends a selected directory as its stored-form prefix, which the agent expands (#9628, #11026)', async () => {
     selectMock
       .mockReturnValueOnce(
         chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
@@ -624,12 +682,13 @@ describe('restore routes', () => {
       ]))
       .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
       .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
-    insertMock.mockReturnValueOnce(chainMock([{
+    const insertChain = chainMock([{
       id: 'restore-1', snapshotId: 'snap-db-1', deviceId: 'device-1', restoreType: 'selective',
-      selectedPaths: ['/data/pick/a.txt', '/data/pick/sub/b.txt'], status: 'pending', targetPath: null, startedAt: null,
+      selectedPaths: ['/data/pick'], status: 'pending', targetPath: null, startedAt: null,
       completedAt: null, restoredSize: null, restoredFiles: null, targetConfig: null, commandId: null,
       createdAt: new Date('2026-04-01T00:00:00Z'), updatedAt: new Date('2026-04-01T00:00:00Z'),
-    }]));
+    }]);
+    insertMock.mockReturnValueOnce(insertChain);
     queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-1', status: 'sent' } });
 
     const res = await app.request('/restore', {
@@ -639,16 +698,54 @@ describe('restore routes', () => {
     });
 
     expect(res.status).toBe(201);
+    expect(insertChain.values).toHaveBeenCalledWith(expect.objectContaining({ selectedPaths: ['/data/pick'] }));
     expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
       'device-1',
       'backup_restore',
-      expect.objectContaining({ selectedPaths: ['/data/pick/a.txt', '/data/pick/sub/b.txt'] }),
+      expect.objectContaining({ selectedPaths: ['/data/pick'] }),
       expect.anything()
     );
   });
 
-  it('answers 400 naming the count when a directory expands past the cap (#9628)', async () => {
-    const rows = Array.from({ length: 10_001 }, (_, i) => ({ id: `f${i}`, sourcePath: `/big/f${i}.txt` }));
+  it('restores a 50,000-file folder with one prefix, reading the index in pages (#11026)', async () => {
+    const rows = Array.from({ length: 50_000 }, (_, i) => ({ sourcePath: `/big/f${String(i).padStart(5, '0')}.txt` }));
+    const pages: Array<ReturnType<typeof chainMock>> = [];
+    for (let i = 0; i < rows.length; i += 5000) pages.push(chainMock(rows.slice(i, i + 5000)));
+    selectMock.mockReturnValueOnce(
+      chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+    );
+    for (const page of pages) selectMock.mockReturnValueOnce(page);
+    selectMock
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
+    insertMock.mockReturnValueOnce(chainMock([{
+      id: 'restore-1', snapshotId: 'snap-db-1', deviceId: 'device-1', restoreType: 'selective',
+      selectedPaths: ['/big'], status: 'pending', targetPath: null, startedAt: null,
+      completedAt: null, restoredSize: null, restoredFiles: null, targetConfig: null, commandId: null,
+      createdAt: new Date('2026-04-01T00:00:00Z'), updatedAt: new Date('2026-04-01T00:00:00Z'),
+    }]));
+    queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-1', status: 'sent' } });
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'selective', selectedPaths: ['/big'] }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+      'device-1',
+      'backup_restore',
+      expect.objectContaining({ selectedPaths: ['/big'] }),
+      expect.anything()
+    );
+    // Each page after the first starts after the last path of the one before.
+    expect(pages[1]!.limit).toHaveBeenCalledWith(5000);
+  });
+
+  it('answers 400 naming the count when a mixed-separator folder expands past the cap (#9628)', async () => {
+    const rows = Array.from({ length: 10_002 }, (_, i) => ({ id: `f${i}`, sourcePath: i % 2 ? `/big/f${i}.txt` : `\\big\\f${i}.txt` }));
     selectMock
       .mockReturnValueOnce(
         chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
@@ -662,7 +759,7 @@ describe('restore routes', () => {
     });
 
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain('10001');
+    expect((await res.json()).error).toContain('10000-file limit');
     expect(insertMock).not.toHaveBeenCalled();
     expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });

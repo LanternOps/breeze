@@ -3,7 +3,17 @@ import { BACKUP_PROVIDER_KEYS, getBackupProvider, isBackupProviderKey, listBacku
 
 describe('backup provider registry', () => {
   it('exposes exactly the shipped provider keys', () => {
-    expect(BACKUP_PROVIDER_KEYS).toEqual(['cove', 'dropsuite']);
+    expect(BACKUP_PROVIDER_KEYS).toEqual(['cove', 'dropsuite', 'axcient']);
+  });
+
+  it('registers Axcient with its default URL and 30-minute sync', () => {
+    const adapter = getBackupProvider('axcient');
+    expect(adapter.label).toBe('Axcient x360Recover');
+    expect(adapter.defaultBaseUrl).toBe('https://axapi.axcient.com/x360recover');
+    expect(adapter.defaultSyncIntervalMinutes).toBe(30);
+    expect(adapter.inventoryKind).toBeUndefined();
+    expect(adapter.rootContinuity).toBe('root_id');
+    expect(isBackupProviderKey('axcient')).toBe(true);
   });
 
   it('returns a fully-formed adapter for a known key', () => {

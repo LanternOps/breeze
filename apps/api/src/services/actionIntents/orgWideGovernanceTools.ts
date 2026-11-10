@@ -114,6 +114,11 @@ export const ORG_WIDE_GOVERNANCE_TOOL_ACTIONS: ReadonlyMap<string, ReadonlySet<s
   // Google) as one set; no per-site slice exists, so a site-restricted user
   // can neither raise nor approve it.
   ['operator_plan', new Set<string>()],
+  // Full-control W16 PR B (#6786): a schedule runs across an org or a whole partner, and an apply or rollback touches
+  // every device a design names, so a site-restricted user can neither raise nor approve one. This carries the site and
+  // device ceiling across the durable boundary; a partner baseline's partner-wide gate is `assertAgentWriteAllowed`.
+  ['manage_ai_agent_schedules', new Set(['create', 'update', 'delete'])],
+  ['manage_fleet_designs', new Set(['apply', 'rollback'])],
   ...IDENTITY_TENANT_WRITE_TOOLS.map(
     (name) => [name, new Set<string>()] as [string, ReadonlySet<string>],
   ),
