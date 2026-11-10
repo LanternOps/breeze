@@ -196,6 +196,9 @@ export default defineConfig({
       // — none of which the mocked unit suites can prove (see the file's own
       // header comment for the per-property rationale).
       'src/routes/agents/enrollmentCollision.integration.test.ts',
+      // #9521: enrollment vs. first-report lock order on the org export lock and
+      // topology_site_state, plus the in-handler deadlock retry (real triggers).
+      'src/routes/agents/enrollmentDeadlock.integration.test.ts',
       // Co-located real-DB integration test for #2725 (installed inventory must
       // not erase pending third-party rows): proves the raw-SQL CASE guard in
       // upsertInstalledPatches against the real device_patch_status enum and
