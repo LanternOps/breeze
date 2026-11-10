@@ -15,9 +15,10 @@
  *    it feeds) must not churn as the user moves between pages.
  */
 import { createHash } from 'node:crypto';
-import type { AiAgentRunProfile, AiApprovalMode, AiSurface, AiToolAllowlist, AiToolDomain, AiToolProfile } from '@breeze/shared';
+import type { AiAgentRunProfile, AiApprovalMode, AiSurface, AiToolDomain, AiToolProfile } from '@breeze/shared';
 import { CONTEXT_MIN_OUTPUT_TOKENS } from './gateway/openai/contextWindow';
 import { getToolDomain } from '../aiTools';
+import { FULL_IDENTITY_FINGERPRINT, type ToolProfileFacts } from './toolProfileFacts';
 import {
   CURATED_PROFILES,
   PROFILE_PREFIX_TOKENS,
@@ -25,20 +26,7 @@ import {
   type ProfilePrefixTokens,
 } from './toolProfiles';
 
-/** What the resolver needs to know about the model, carried on `ResolvedModel.toolProfileFacts`. */
-export interface ToolProfileFacts {
-  toolProfile: AiToolProfile;
-  toolAllowlist: AiToolAllowlist | null;
-  /** Effective context window (override → min(discovered, fresh observed)); null = unknown. W02 fills it. */
-  effectiveWindow: number | null;
-  /** `gateway` = OpenAI-compatible translation (schemas can be compacted); `anthropic` = platform/BYO/catalog. */
-  transport: 'gateway' | 'anthropic';
-}
-
-/** Facts for a model with no offering row or no profile columns: `auto` + unknown window = `full`. */
-export const DEFAULT_TOOL_PROFILE_FACTS: ToolProfileFacts = Object.freeze({
-  toolProfile: 'auto', toolAllowlist: null, effectiveWindow: null, transport: 'anthropic',
-}) as ToolProfileFacts;
+export { DEFAULT_TOOL_PROFILE_FACTS, type ToolProfileFacts } from './toolProfileFacts';
 
 export interface ExtraToolInput {
   /** The name as registered (an MCP-qualified name for tenant tools, the bare name for outcome/flow tools). */
@@ -88,8 +76,8 @@ export const AUTO_FIT_FRACTION = 0.75;
 /** Page / device context allowance inside the `auto` reserve, in tokens. */
 export const PAGE_CONTEXT_RESERVE_TOKENS = 2000;
 export const RESULT_CHAR_BUDGET = { minimal: 2000, standard: 4000, full: 8000, custom: 8000 } as const;
-/** The fingerprint of the identity exposure. Never a hex digest, so it cannot collide with a constrained one. */
-export const FULL_IDENTITY_FINGERPRINT = 'full';
+/** The fingerprint of the identity exposure (leaf module, shared with turnBinding). */
+export { FULL_IDENTITY_FINGERPRINT };
 
 const ALWAYS_KEEP: Readonly<Partial<Record<AiSurface, readonly string[]>>> = {
   chat: ['set_device_context'],
