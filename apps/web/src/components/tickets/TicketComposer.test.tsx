@@ -5,7 +5,7 @@ const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 
 import TicketComposer from './TicketComposer';
-import { runLogoutHooks } from '@/stores/logoutHooks';
+import { apiLogout, useAuthStore } from '@/stores/auth';
 
 describe('TicketComposer', () => {
   const onSend = vi.fn().mockResolvedValue(undefined);
@@ -169,17 +169,31 @@ describe('TicketComposer', () => {
 
   // Web sign-out is same-document: module state survives it, so the next
   // person to sign in on this browser must not find the last one's drafts.
-  it('drops every unsent draft at sign-out', () => {
-    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-logout" />);
+  function leaveInternalDraft(key: string) {
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey={key} />);
     fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
     fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'Private note' } });
     unmount();
+  }
 
-    runLogoutHooks();
-
-    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-logout" />);
+  function expectNoDraft(key: string) {
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey={key} />);
     expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
     expect(screen.getByTestId('ticket-composer-tab-reply')).toHaveAttribute('aria-checked', 'true');
+  }
+
+  it('drops every unsent draft at sign-out', async () => {
+    leaveInternalDraft('tk-draft-logout');
+    await apiLogout();
+    expectNoDraft('tk-draft-logout');
+  });
+
+  // Session expiry and the throttle mask's Sign Out end the session through the
+  // store's logout() alone, which runs no logout hooks.
+  it('drops every unsent draft when the session ends through the store logout alone', () => {
+    leaveInternalDraft('tk-draft-store-logout');
+    useAuthStore.getState().logout();
+    expectNoDraft('tk-draft-store-logout');
   });
 
   // r / n route here through the workbench: the asked mode, then the caret.

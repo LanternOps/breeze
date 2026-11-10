@@ -4,7 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { TICKET_ATTACHMENT_LIMITS, type TicketTemplateVars } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { showToast } from '../shared/Toast';
-import { registerLogoutHook } from '@/stores/logoutHooks';
+import {
+  deleteTicketComposerDraft,
+  getTicketComposerDraft,
+  setTicketComposerDraft,
+  type TicketComposerMode,
+} from '@/lib/ticketComposerDrafts';
 import CannedResponsePicker from './CannedResponsePicker';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 
@@ -21,19 +26,9 @@ interface AttachmentChip {
   id?: string;
 }
 
-type ComposerMode = 'reply' | 'internal';
-
-/**
- * Unsent text per ticket, for this page session. Moving to another ticket
- * (j/k, the next-ticket offer, back to the queue) unmounts the composer; a
- * half-written reply must be there again on return, never silently dropped.
- * The mode travels with the text: an internal note restored as a public reply
- * would email the requester on Send.
- */
-const draftsByKey = new Map<string, { content: string; mode: ComposerMode }>();
-// Web sign-out is same-document, so module state outlives it: the next person
-// to sign in on this browser must not find the last one's drafts.
-registerLogoutHook(() => draftsByKey.clear());
+// Unsent text per ticket lives in lib/ticketComposerDrafts, which auth.ts's
+// logout() clears on every sign-out path.
+type ComposerMode = TicketComposerMode;
 
 interface Props {
   requesterName: string | null;
@@ -74,14 +69,14 @@ interface Props {
 export default function TicketComposer({ requesterName, requesterEmail, toolbarExtra, draftKey, hidden, onLogTime, logTimeOpen = false, contentClassName, onSend, onUploadAttachment, disabled, templates, templateVars, focusRequest }: Props) {
   const { t } = useTranslation('tickets');
   // Public reply is the default (UI brief); a restored draft keeps its own mode.
-  const [mode, setMode] = useState<ComposerMode>(() => (draftKey ? draftsByKey.get(draftKey)?.mode : undefined) ?? 'reply');
-  const [content, setContent] = useState(() => (draftKey ? draftsByKey.get(draftKey)?.content ?? '' : ''));
+  const [mode, setMode] = useState<ComposerMode>(() => (draftKey ? getTicketComposerDraft(draftKey)?.mode : undefined) ?? 'reply');
+  const [content, setContent] = useState(() => (draftKey ? getTicketComposerDraft(draftKey)?.content ?? '' : ''));
   const [sending, setSending] = useState(false);
   // Mirror the text and its mode into the per-ticket memory; an emptied box forgets it.
   useEffect(() => {
     if (!draftKey) return;
-    if (content) draftsByKey.set(draftKey, { content, mode });
-    else draftsByKey.delete(draftKey);
+    if (content) setTicketComposerDraft(draftKey, { content, mode });
+    else deleteTicketComposerDraft(draftKey);
   }, [draftKey, content, mode]);
   const [chips, setChips] = useState<AttachmentChip[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -187,7 +182,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
       // composer unmounted while the POST was in flight (j/k, the next-ticket
       // offer), that effect never runs again and the reply would come back as
       // an unsent draft. Only the text that was sent is forgotten.
-      if (draftKey && draftsByKey.get(draftKey)?.content === content) draftsByKey.delete(draftKey);
+      if (draftKey && getTicketComposerDraft(draftKey)?.content === content) deleteTicketComposerDraft(draftKey);
       // A chip still sitting in 'error' (e.g. a rejected file type) never made
       // it into attachmentIds, so the comment above just posted WITHOUT it.
       // Keep that chip — clearing it here would silently discard the user's
