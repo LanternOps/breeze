@@ -38,7 +38,7 @@
  * `excludedOpen` in the tenant export policy for exactly this reason. Section 3
  * shows Huntress's normalized `recommendation` text instead.
  */
-import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, min } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, min, ne, or } from 'drizzle-orm';
 import { managedDeviceConditions } from './managedDeviceScope';
 import { db } from '../db';
 import {
@@ -446,6 +446,9 @@ export async function generateThreatDetectionReport(
   // matched Breeze device cannot be site-scoped, so under a restricted
   // authority it is not counted — the same unattributable rule as incidents.
   const agentConditions = [eq(huntressAgents.orgId, orgId)];
+  // A retired (decommissioned) Breeze device is not part of the managed fleet;
+  // an agent with no matched Breeze device stays countable (unattributable).
+  agentConditions.push(or(isNull(devices.id), ne(devices.status, 'decommissioned'))!);
   const agentSitePredicates = sitePredicates(filter);
   if (agentSitePredicates.length > 0) agentConditions.push(...agentSitePredicates);
   const agentRows = await db

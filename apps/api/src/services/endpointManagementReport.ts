@@ -253,6 +253,7 @@ export async function generateEndpointManagementReport(
   let rows: IntuneDeviceRow[] = [];
   if (intuneMeasured) {
     const rowConditions = [
+      ...managedDeviceConditions(orgId),
       eq(m365IntuneDevices.orgId, orgId),
       isNotNull(m365IntuneDevices.breezeDeviceId),
     ];

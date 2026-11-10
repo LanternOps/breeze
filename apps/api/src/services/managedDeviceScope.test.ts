@@ -81,7 +81,7 @@ function recordSelects() {
 }
 
 const excludesDecommissioned = (w: { sql: string; params: unknown[] }) =>
-  /"status"/.test(w.sql) && w.params.includes('decommissioned');
+  /"status" <> \$\d+/.test(w.sql) && w.params.includes('decommissioned');
 
 describe('managedDeviceConditions (#11562)', () => {
   it('excludes decommissioned, ephemeral and parked devices, scoped to the org', () => {
@@ -89,7 +89,7 @@ describe('managedDeviceConditions (#11562)', () => {
     expect(q.sql).toMatch(/"org_id" = \$/);
     expect(q.sql).toMatch(/"is_ephemeral" = \$/);
     expect(q.sql).toMatch(/unassigned_pool|organizations/);
-    expect(q.sql).toMatch(/"status"/);
+    expect(q.sql).toMatch(/"status" <> \$\d+/);
     expect(q.params).toContain('decommissioned');
     expect(q.params).toContain(ORG);
   });
