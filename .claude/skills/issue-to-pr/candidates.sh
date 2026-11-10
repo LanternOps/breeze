@@ -13,8 +13,9 @@
 set -euo pipefail
 
 REPO=LanternOps/breeze
-# Labels that mean "not ready for a fixer": tracked elsewhere, or waiting on a person.
-EXCLUDE='-label:epic -label:feature -label:wave -label:question -label:needs-decision -label:needs-info -label:pending-author -label:pending-verification -label:"blocked:design"'
+# Labels that mean "not ready for a fixer": tracked elsewhere, waiting on a person,
+# or (needs-lab) unverifiable without hardware a worker does not have.
+EXCLUDE='-label:epic -label:feature -label:wave -label:question -label:needs-decision -label:needs-info -label:pending-author -label:pending-verification -label:needs-lab -label:"blocked:design" -label:"blocked:decision" -label:"blocked:plan" -label:"blocked:upstream"'
 RANK='def prio: [.labels[].name] as $l
   | if ($l|index("priority:p0")) then 0 elif ($l|index("priority-top3")) then 1
     elif ($l|index("priority:p1")) then 2 elif ($l|index("priority:p2")) then 3
