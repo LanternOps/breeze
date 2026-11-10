@@ -147,15 +147,19 @@ describe('remote:access gate on /remote/* (#11621)', () => {
     expect(body.code).toBe('REMOTE_ACCESS_PERMISSION_REQUIRED');
   });
 
-  it('a user with no resolvable role gets the same readable 403', async () => {
+  // No resolvable role is a membership/context problem, not a missing grant:
+  // telling that user "add remote:access to your role" would send them the
+  // wrong way, so it keeps the plain refusal.
+  it('a user with no resolvable role keeps the plain 403, not the remote:access denial', async () => {
     authState.current = orgAuth;
     getUserPermissions.mockResolvedValue(null);
 
     const res = await postSession(buildApp());
 
     expect(res.status).toBe(403);
-    const body = (await res.json()) as { code?: string };
-    expect(body.code).toBe('REMOTE_ACCESS_PERMISSION_REQUIRED');
+    const body = (await res.json()) as { error?: string; code?: string };
+    expect(body.code).toBeUndefined();
+    expect(body.error).toBe('No permissions found');
   });
 
   it.each([

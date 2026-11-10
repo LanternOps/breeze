@@ -1097,8 +1097,9 @@ export function requirePermission(
       scope: auth.scope
     });
 
+    // No resolvable role is a membership/context problem, not a missing
+    // grant, so it never takes the opted-in denial ("add X to your role").
     if (!userPerms) {
-      if (options?.denial) throw new PermissionDeniedError(options.denial);
       throw new HTTPException(403, { message: 'No permissions found' });
     }
 

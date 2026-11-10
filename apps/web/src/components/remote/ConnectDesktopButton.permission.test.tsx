@@ -137,6 +137,67 @@ describe('ConnectDesktopButton — remote:access gating (#11621)', () => {
     expect(btn.getAttribute('title') ?? '').not.toMatch(PERMISSION_REASON);
   });
 
+  function routeLauncher(launch: Response) {
+    fetchMock.mockImplementation((path: string) => {
+      if (path.endsWith('/remote-access-launch')) return Promise.resolve(launch);
+      if (path.startsWith('/devices/')) {
+        return Promise.resolve(res({ desktopAccess: null, hasRemoteAccessLauncher: true, remoteAccessLaunchSkipReason: null }));
+      }
+      return Promise.resolve(res({}));
+    });
+  }
+
+  it('third-party launcher: a 403 with the remote-access code names the permission and disables the control', async () => {
+    perms.list = TECH;
+    routeLauncher(res({ error: 'x', code: 'REMOTE_ACCESS_PERMISSION_REQUIRED' }, 403));
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /connect desktop/i })).toHaveAttribute('aria-disabled', 'true');
+    });
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: expect.stringMatching(PERMISSION_REASON),
+    }));
+    expect(fetchMock.mock.calls.some(([p]) => p === '/remote/sessions')).toBe(false);
+    expect(screen.queryByText(/connection failed/i)).toBeNull();
+  });
+
+  it('third-party launcher: a 403 without that code keeps the generic failure path', async () => {
+    perms.list = TECH;
+    routeLauncher(res({ error: 'Access to this site denied' }, 403));
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/connection failed/i)).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: /connection failed/i })).not.toHaveAttribute('aria-disabled');
+    expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringMatching(PERMISSION_REASON),
+    }));
+  });
+
+  it('a server refusal does not outlive a refreshed grant list (e.g. an admin adds remote:access)', async () => {
+    perms.list = TECH;
+    routeLauncher(res({ error: 'x', code: 'REMOTE_ACCESS_PERMISSION_REQUIRED' }, 403));
+
+    const { rerender } = render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /connect desktop/i })).toHaveAttribute('aria-disabled', 'true');
+    });
+
+    // /users/me refreshed: a new grant list that holds remote:access.
+    perms.list = [...TECH];
+    rerender(<ConnectDesktopButton deviceId="dev-1" />);
+
+    expect(screen.getByRole('button', { name: /connect desktop/i })).not.toHaveAttribute('aria-disabled');
+  });
+
   it('a server refusal with the remote-access code (stale client grants) shows the permission, not "Connection failed"', async () => {
     perms.list = TECH;
     fetchMock.mockImplementation((path: string) => {

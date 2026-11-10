@@ -163,6 +163,11 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   // offering a click that cannot succeed.
   const { permissions, can } = usePermissions();
   const [serverDeniedRemoteAccess, setServerDeniedRemoteAccess] = useState(false);
+  // A refusal reflects the grants as they were; a refreshed list (an admin
+  // added the permission, the user switched context) decides afresh.
+  useEffect(() => {
+    setServerDeniedRemoteAccess(false);
+  }, [permissions]);
   const lacksRemoteAccess = serverDeniedRemoteAccess || (permissions !== undefined && !can('remote', 'access'));
   // #9026: the full-size button stays focusable while unavailable
   // (aria-disabled) and points at this visually-hidden reason.
