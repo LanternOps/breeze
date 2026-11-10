@@ -1,0 +1,17 @@
+{
+  "id": "attention-includes-urgent-ticket",
+  "title": "\"What needs my attention today?\" mentions the urgent open ticket",
+  "issue": 11677,
+  "expect": "known-red",
+  "door": "wisp",
+  "steps": [
+    { "name": "attention", "type": "say", "approve": "none", "maxSec": 90,
+      "text": "What needs my attention today? Keep it short." }
+  ],
+  "checks": [
+    { "kind": "reply_matches", "step": "attention", "flags": "i", "pattern": "(invoice|T-2026-0004|urgent ticket|ticket.{0,40}urgent)",
+      "note": "#11677: the urgent Harbor Legal ticket is left out of the attention answer" },
+    { "kind": "max_tool_calls", "step": "attention", "max": 3,
+      "note": "the chip's own prompt promises at most three tool calls for 'keep it short'" }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "id": "device-online-check-in-fires",
+  "title": "\"Tell me the moment it's back online\" schedules a device-online check-in that fires on reconnect",
+  "expect": "pass",
+  "door": "wisp",
+  "steps": [
+    { "name": "ask", "type": "say", "approve": "approve", "maxSec": 120,
+      "text": "One of the partners at Harbor Legal says her MacBook has been off the network all afternoon. Which one is it, and tell me the moment it's back online." },
+    { "name": "scheduled", "type": "wait_sql", "timeoutSec": 30,
+      "sql": "select (count(*) > 0)::text from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online' and status = 'scheduled'",
+      "equals": "true" },
+    { "name": "reconnect", "type": "shell", "argv": ["sim.sh", "restart", "hlmac"] },
+    { "name": "fired", "type": "wait_sql", "timeoutSec": 150,
+      "sql": "select (count(*) > 0)::text from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online' and fired_at is not null",
+      "equals": "true" },
+    { "type": "sleep", "sec": 5 },
+    { "name": "offline-again", "type": "shell", "argv": ["sim.sh", "stop", "hlmac"] }
+  ],
+  "checks": [
+    { "kind": "tool_called", "tool": "schedule_check_in", "step": "ask" },
+    { "kind": "reply_matches", "step": "ask", "pattern": "HL-PARTNER-MBP",
+      "note": "it named the right device" },
+    { "kind": "sql_equals", "equals": "event",
+      "sql": "select coalesce(max(fire_reason), 'not fired') from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online'",
+      "note": "fired by the reconnect, not by the deadline" },
+    { "kind": "sql_equals", "equals": "true",
+      "sql": "select (count(*) > 0)::text from wisp_thread_posts where kind = 'check_in' and created_at > {{since}}",
+      "note": "the technician got a post in the thread" }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "id": "check-in-post-reads-for-human",
+  "title": "A fired device-online check-in posts a line written for the technician, not Wisp's note to itself",
+  "issue": 11675,
+  "expect": "known-red",
+  "door": "wisp",
+  "steps": [
+    { "name": "ask", "type": "say", "approve": "approve", "maxSec": 120,
+      "text": "HL-PARTNER-MBP at Harbor Legal is offline. Tell me the moment it's back online." },
+    { "name": "scheduled", "type": "wait_sql", "timeoutSec": 30, "required": true,
+      "sql": "select (count(*) > 0)::text from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online' and status = 'scheduled'",
+      "equals": "true" },
+    { "name": "reconnect", "type": "shell", "argv": ["sim.sh", "restart", "hlmac"] },
+    { "name": "posted", "type": "wait_sql", "timeoutSec": 150, "required": true,
+      "sql": "select (count(*) > 0)::text from wisp_thread_posts where kind = 'check_in' and created_at > {{since}}",
+      "equals": "true" },
+    { "name": "offline-again", "type": "shell", "argv": ["sim.sh", "stop", "hlmac"] }
+  ],
+  "checks": [
+    { "kind": "sql_equals", "equals": "true",
+      "sql": "select coalesce(bool_and(coalesce(title, '') !~* '^check-in due'), false)::text from wisp_thread_posts where kind = 'check_in' and created_at > {{since}}",
+      "note": "#11675: the title says 'Check-in due:' for an event that happened" },
+    { "kind": "sql_equals", "equals": "true",
+      "sql": "select coalesce(bool_and(coalesce(body, '') !~* '(tell the technician|do not change anything|read-only:)'), false)::text from wisp_thread_posts where kind = 'check_in' and created_at > {{since}}",
+      "note": "#11675: the body is Wisp's instruction to itself" }
+  ]
+}
