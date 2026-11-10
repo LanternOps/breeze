@@ -121,7 +121,8 @@
       "fast-uri": ">=3.1.9 <4.0.0",
       "browserslist@<4.28.7": "4.28.9",
       "happy-dom@<21.0.4": ">=21.0.4 <22.0.0",
-      "@azure/msal-node@<7.1.0": ">=7.1.0 <8.0.0"
+      "@azure/msal-node@<7.1.0": ">=7.1.0 <8.0.0",
+      "@emnapi/runtime": "1.11.3"
     },
     "patchedDependencies": {
       "postgres@3.4.9": "patches/postgres@3.4.9.patch",
