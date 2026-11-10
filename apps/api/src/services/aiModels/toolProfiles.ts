@@ -1,0 +1,166 @@
+/**
+ * Curated tool profiles for small-context models (#11393 W01, spec
+ * 2026-11-06-small-model-tool-profiles §3.1). Each list is a SUBSET filter:
+ * `resolveToolExposure` intersects it with what a surface already registers,
+ * so a name here never adds a tool to a surface that does not have it.
+ *
+ * `minimal` is read-only, literally: every registry tool in a `minimal` list
+ * has base tier 1 and no action in TIER2_ACTIONS / TIER3_ACTIONS /
+ * MFA_GATED_TOOL_ACTIONS (pinned by toolProfiles.contract.test.ts). The only
+ * tier-2 name a `minimal` chat session carries is `set_device_context`, kept
+ * by the resolver's always-keep rule, outside these lists.
+ *
+ * No AI tool is added by this feature; every name here is already declared.
+ */
+import type { AiSurface } from '@breeze/shared';
+import { CLIENT_TOOL_REGISTRIES } from '../clientAiTools';
+
+export type ConstrainedProfile = 'minimal' | 'standard';
+export type ProfiledSurface = 'chat' | 'helper' | 'script_builder' | 'ai_agents' | 'office_chat';
+export const PROFILED_SURFACES: readonly ProfiledSurface[] = ['chat', 'helper', 'script_builder', 'ai_agents', 'office_chat'];
+
+export function isProfiledSurface(surface: AiSurface): surface is ProfiledSurface {
+  return (PROFILED_SURFACES as readonly string[]).includes(surface);
+}
+
+/** Chat `minimal`: plan Decision 5, exactly these 12 (plus `set_device_context` by the always-keep rule). */
+export const CHAT_MINIMAL_TOOLS = [
+  'query_devices',
+  'get_device_details',
+  'get_device_health',
+  'get_device_hardware_health',
+  'get_fleet_health',
+  'get_alert_correlations',
+  'search_logs',
+  'analyze_metrics',
+  'query_audit_log',
+  'search_documentation',
+  'list_organizations',
+  'get_org_summary',
+] as const;
+
+/** Chat `standard`: minimal + the everyday helpdesk set, including supervised (tier 2/3) actions. */
+export const CHAT_STANDARD_TOOLS = [
+  ...CHAT_MINIMAL_TOOLS,
+  'resolve_device_context',
+  'manage_alerts',
+  'manage_alert_rules',
+  'manage_tickets',
+  'list_scripts',
+  'get_script_details',
+  'run_script',
+  'manage_services',
+  'manage_patches',
+  'get_security_posture',
+  'get_vulnerability_report',
+  'browse_device_event_log',
+  'manage_delivery',
+  'analyze_disk_usage',
+  'get_active_users',
+  'get_device_events',
+  'get_device_software',
+  'get_device_context',
+  'find_proven_fixes',
+  'list_sites',
+  'get_script_execution',
+  'get_script_execution_history',
+  'execute_command',
+  'manage_processes',
+  'get_backup_status',
+  'get_device_vulnerabilities',
+  'file_operations',
+  'take_screenshot',
+  'disk_cleanup',
+] as const;
+
+/** Helper: single-device reads. Intersected at runtime with the level's list (`getHelperAllowedTools`). */
+const HELPER_MINIMAL_TOOLS = [
+  'get_device_details',
+  'get_device_hardware_health',
+  'get_device_time_status',
+  'query_device_workloads',
+  'list_time_sync_issues',
+  'analyze_metrics',
+  'analyze_disk_usage',
+  'get_security_posture',
+  'search_logs',
+  'get_active_users',
+  'get_user_experience_metrics',
+] as const;
+
+const HELPER_STANDARD_TOOLS = [
+  ...HELPER_MINIMAL_TOOLS,
+  'get_cis_device_report',
+  'take_screenshot',
+  'analyze_screen',
+  'manage_alerts',
+  'manage_services',
+  'disk_cleanup',
+  'file_operations',
+  'execute_command',
+] as const;
+
+/**
+ * Script builder: bare `SCRIPT_BUILDER_TOOL_TIERS` keys. `minimal` has no
+ * `execute_script_on_device`, so the surface's floor refuses it
+ * (`SURFACE_REQUIRED_TOOLS.script_builder`): a read-only profile cannot test
+ * a script, and the operator is told to widen it rather than given a builder
+ * that silently cannot run anything.
+ */
+const SCRIPT_BUILDER_MINIMAL_TOOLS = [
+  'apply_script_code',
+  'apply_script_metadata',
+  'query_devices',
+  'get_device_details',
+  'list_scripts',
+  'get_script_details',
+  'list_script_templates',
+] as const;
+
+const SCRIPT_BUILDER_STANDARD_TOOLS = [
+  ...SCRIPT_BUILDER_MINIMAL_TOOLS,
+  'get_device_hardware_health',
+  'get_script_execution_history',
+  'get_script_execution',
+  'execute_script_on_device',
+] as const;
+
+function officeClientToolNames(mutating: boolean | 'any'): string[] {
+  const names = new Set<string>();
+  for (const registry of Object.values(CLIENT_TOOL_REGISTRIES)) {
+    for (const [name, def] of Object.entries(registry)) {
+      if (mutating === 'any' || def.mutating === mutating) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * Per surface, per constrained profile. AI agents use the chat lists (they
+ * register the same Breeze registry); a run's outcome tools ride as extra
+ * tools that always survive. Office lists are bare client tool names across
+ * hosts: `minimal` = the non-mutating ones, `standard` = all of them.
+ */
+export const CURATED_PROFILES: Readonly<Record<ProfiledSurface, Readonly<Record<ConstrainedProfile, readonly string[]>>>> = Object.freeze({
+  chat: { minimal: CHAT_MINIMAL_TOOLS, standard: CHAT_STANDARD_TOOLS },
+  ai_agents: { minimal: CHAT_MINIMAL_TOOLS, standard: CHAT_STANDARD_TOOLS },
+  helper: { minimal: HELPER_MINIMAL_TOOLS, standard: HELPER_STANDARD_TOOLS },
+  script_builder: { minimal: SCRIPT_BUILDER_MINIMAL_TOOLS, standard: SCRIPT_BUILDER_STANDARD_TOOLS },
+  office_chat: { minimal: officeClientToolNames(false), standard: officeClientToolNames('any') },
+});
+
+/**
+ * Measured fixed prefix (system prompt + advertised schemas, bytes/3) per
+ * surface and profile, used by `auto`. PLACEHOLDER until W03 measures the
+ * advertised upstream request (`ai:tool-capture --profile`): `null` means
+ * "not measured", and `auto` treats an unmeasured profile as not fitting, so
+ * no constrained profile is auto-picked before W03 + W02 land.
+ */
+export type ProfilePrefixTokens = Readonly<Record<ProfiledSurface, Readonly<Record<'minimal' | 'standard' | 'full', number | null>>>>;
+export const PROFILE_PREFIX_TOKENS: ProfilePrefixTokens = Object.freeze({
+  chat: { minimal: null, standard: null, full: null },
+  helper: { minimal: null, standard: null, full: null },
+  script_builder: { minimal: null, standard: null, full: null },
+  ai_agents: { minimal: null, standard: null, full: null },
+  office_chat: { minimal: null, standard: null, full: null },
+});
