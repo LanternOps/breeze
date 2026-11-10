@@ -194,6 +194,7 @@ func TestReadRebindStagedKeepsOnlyTheNewestUnusableCopy(t *testing.T) {
 func rebindTestIdentity(withCert bool) RebindIdentity {
 	id := RebindIdentity{
 		IntentID:          rebindTestIntent,
+		SourceAgentID:     rebindTestSourceID,
 		AgentID:           rebindTestStagedAgentID,
 		DeviceID:          rebindTestDevice,
 		OrgID:             rebindTestOrg,
@@ -458,5 +459,83 @@ func TestSaveEnrollmentDropsAStagedRebindSet(t *testing.T) {
 	}
 	if s, _ := ReadRebindStaged(cfgPath); s != nil {
 		t.Fatal("a staged reattach set survived a new enrollment")
+	}
+}
+
+// Enrollment removes the reattach set BEFORE it saves the new identity, and
+// fails when it cannot: a confirmed set left beside a new enrollment would
+// write the reattached identity over it on the next start (#10122 review).
+func TestSaveEnrollmentFailsWhenTheStagedRebindSetCannotBeRemoved(t *testing.T) {
+	cfgPath := bindConfig(t)
+	if err := WriteRebindStaged(cfgPath, rebindTestSet(RebindPhaseConfirmed)); err != nil {
+		t.Fatal(err)
+	}
+	orig := rebindRemoveFileFn
+	t.Cleanup(func() { rebindRemoveFileFn = orig })
+	rebindRemoveFileFn = func(string) error { return errors.New("the file is locked") }
+
+	cfg, _ := Load(cfgPath)
+	cfg.AgentID = strings.Repeat("f", 64)
+	cfg.AuthToken = "brz_enrolled_agent"
+	if err := SaveEnrollment(cfg, cfgPath); err == nil {
+		t.Fatal("SaveEnrollment succeeded with the staged reattach set still on disk")
+	}
+	onDisk, err := readAgentIdentityAt(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.AgentID != rebindTestSourceID {
+		t.Fatalf("agent id = %q after a refused enrollment; want the previous one kept", onDisk.AgentID)
+	}
+	if s, _ := ReadRebindStaged(cfgPath); s == nil {
+		t.Fatal("the staged set should still be on disk: its removal failed")
+	}
+
+	rebindRemoveFileFn = orig
+	if err := SaveEnrollment(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveEnrollment once the set can be removed: %v", err)
+	}
+	if s, _ := ReadRebindStaged(cfgPath); s != nil {
+		t.Fatal("the staged set survived the enrollment")
+	}
+	if got, _ := Load(cfgPath); got.AgentID != cfg.AgentID {
+		t.Fatalf("agent id = %q, want the enrolled one", got.AgentID)
+	}
+}
+
+// A confirmed set that outlived a new enrollment (a process that died between
+// the two steps of an older build, or a set written back after it) is never
+// applied: agent.yaml names neither its source nor its target. Start-up keeps
+// the enrollment and discards the set (#10122 review).
+func TestFinishConfirmedRebindNeverUndoesANewerEnrollment(t *testing.T) {
+	cfgPath := bindConfig(t)
+	cfg, _ := Load(cfgPath)
+	enrolled := strings.Repeat("f", 64)
+	cfg.AgentID = enrolled
+	cfg.AuthToken = "brz_enrolled_agent"
+	if err := SaveEnrollment(cfg, cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	// The set is back on disk beside the new enrollment.
+	if err := WriteRebindStaged(cfgPath, rebindTestSet(RebindPhaseConfirmed)); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := FinishConfirmedRebind(cfgPath)
+	if err != nil || changed {
+		t.Fatalf("FinishConfirmedRebind = (%v, %v), want (false, nil)", changed, err)
+	}
+	got, _ := Load(cfgPath)
+	if got.AgentID != enrolled || got.AuthToken != "brz_enrolled_agent" {
+		t.Fatalf("agent id = %q (enrolled token kept: %v); the enrollment was undone",
+			got.AgentID, got.AuthToken == "brz_enrolled_agent")
+	}
+	if s, _ := ReadRebindStaged(cfgPath); s != nil {
+		t.Fatal("the superseded set was kept; it would be retried on every start")
+	}
+
+	id, _ := rebindTestSet(RebindPhaseConfirmed).Identity()
+	if err := ApplyRebindIdentity(cfgPath, id); !errors.Is(err, ErrRebindIdentitySuperseded) {
+		t.Fatalf("ApplyRebindIdentity over a newer enrollment = %v, want ErrRebindIdentitySuperseded", err)
 	}
 }

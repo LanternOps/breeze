@@ -465,10 +465,17 @@ func (h *Heartbeat) driveRebind(d *RebindDirective) {
 		}
 		return
 	}
-	if s != nil && s.Phase != config.RebindPhaseConfirmed && s.SourceAgentID != h.config.AgentID {
-		// Staged under an identity this install no longer has: its
-		// phase 1 and confirm name an agent id that is gone.
-		if !h.discardRebindStaged(s, "staged for a previous identity of this install") {
+	if s != nil && s.SourceAgentID != h.config.AgentID {
+		// Staged under an identity this install no longer has: its phase 1
+		// and confirm name an agent id that is gone. A confirmed set lands
+		// here only when this process runs neither the source nor the
+		// target, i.e. the install was enrolled again: the swap would undo
+		// that enrollment, so it is dropped too.
+		reason := "staged for a previous identity of this install"
+		if s.Phase == config.RebindPhaseConfirmed {
+			reason = "confirmed for an identity this install was enrolled away from"
+		}
+		if !h.discardRebindStaged(s, reason) {
 			return
 		}
 		s = nil

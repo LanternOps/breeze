@@ -74,6 +74,9 @@ func TestRebindStagesConfirmsSwapsAndRestarts(t *testing.T) {
 	r.advance(identityRestartPendingMax) // the restart never came
 	r.drive(nil)
 	r.waitRestarts(2)
+	if !strings.Contains(r.logs.String(), "the restart into the reattached identity was requested but never happened") {
+		t.Fatal("a restart that never landed was retried without a log line")
+	}
 }
 
 // lastWritten is the last set this process persisted.
@@ -317,6 +320,9 @@ func TestRebindConfirmAnswers(t *testing.T) {
 		{name: "409 device_limit_reached", inj: cancelled("device_limit_reached"), wantPhase: config.RebindPhaseEnded, phase1: 1},
 		{name: "409 cancelled", inj: rebindInjection{status: 409, body: map[string]any{"code": "cancelled", "state": "cancelled", "cancelReason": "restage_refused"}}, wantPhase: config.RebindPhaseEnded, phase1: 1},
 		{name: "409 expired", inj: rebindInjection{status: 409, body: map[string]any{"code": "expired", "state": "expired"}}, wantPhase: config.RebindPhaseEnded, phase1: 1},
+		// The route's answer while the target has an unresolved network
+		// isolation episode: no code, no state. Not an end; retried later.
+		{name: "409 isolation_unresolved", inj: rebindInjection{status: 409, body: map[string]any{"error": "isolation_unresolved", "message": "the device has an unresolved network isolation"}}, wantPhase: config.RebindPhaseStaged, phase1: 1},
 		{name: "429 rate_limited", inj: rebindInjection{status: 429, body: map[string]any{"code": "rate_limited"}, retryAfter: "90"}, wantPhase: config.RebindPhaseStaged, phase1: 1},
 		{name: "500", inj: rebindInjection{status: 500}, wantPhase: config.RebindPhaseStaged, phase1: 1},
 		{name: "lost response", inj: rebindInjection{drop: true}, wantPhase: config.RebindPhaseStaged, phase1: 1},

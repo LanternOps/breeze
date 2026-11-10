@@ -896,18 +896,21 @@ func SaveTo(cfg *Config, cfgFile string) error {
 // pending_* set is dropped — it belonged to the previous identity and can
 // never be promoted against the new one. So is a staged reattach set
 // (#8318): its phase 1 and confirm name the previous agent id.
+//
+// The reattach set goes first, and the enrollment fails if it cannot be
+// removed: a confirmed set left beside the new identity would write the
+// reattached identity over it on the next start. (ApplyRebindIdentity also
+// refuses an agent.yaml naming neither the set's source nor its target, so
+// a crash between the two steps cannot undo the enrollment either.)
 func SaveEnrollment(cfg *Config, cfgFile string) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
+	if err := RemoveRebindStaged(cfgFile); err != nil {
+		return fmt.Errorf("removing the staged reattach set of the previous identity: %w", err)
+	}
 	// A new enrollment is no reattach: the environment may pin it again.
 	viper.Set(reattachIntentKey, "")
-	if err := saveToLocked(cfg, cfgFile, credentialsFromConfig); err != nil {
-		return err
-	}
-	if err := RemoveRebindStaged(cfgFile); err != nil {
-		log.Warn("enrollment could not remove a staged reattach set of the previous identity", "error", err.Error())
-	}
-	return nil
+	return saveToLocked(cfg, cfgFile, credentialsFromConfig)
 }
 
 // credentialSource selects who is authoritative for credential keys in a

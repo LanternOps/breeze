@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -15,10 +16,15 @@ import (
 // step persists what the next one relies on before calling; see
 // rebind_flow.go for the state and the triggers.
 
+// rebindMaxSteps bounds one drive of the flow: contradictory answers cannot
+// loop.
+const rebindMaxSteps = 8
+
 // advanceRebind moves the set through its phases until a step must wait.
-// Bounded: contradictory answers cannot loop.
+// Bounded: when contradictory answers use up the steps, the next drive waits
+// for the backoff instead of starting another round of calls at once.
 func (h *Heartbeat) advanceRebind(s *config.RebindStagedSet) {
-	for range 8 {
+	for range rebindMaxSteps {
 		var next *config.RebindStagedSet
 		switch s.Phase {
 		case config.RebindPhaseGenerated:
@@ -36,6 +42,9 @@ func (h *Heartbeat) advanceRebind(s *config.RebindStagedSet) {
 		}
 		s = next
 	}
+	h.logRebindOnce("warn", "the reattach answers kept contradicting each other; waiting before trying again",
+		fmt.Sprintf("intent %s: %d steps, phase %s", s.IntentID, rebindMaxSteps, s.Phase))
+	h.rebindRetryLater(rebindNow(), 0)
 }
 
 func (h *Heartbeat) rebindWait(now time.Time, msg string, ans rebindAnswer) {
@@ -323,6 +332,14 @@ func (h *Heartbeat) rebindSwap(s *config.RebindStagedSet) {
 		h.rebind.swapped.Store(true)
 	}
 	h.mu.Unlock()
+	if errors.Is(err, config.ErrRebindIdentitySuperseded) {
+		// agent.yaml names neither the source nor the target: the install
+		// was enrolled again (by another process) since the confirm. The
+		// enrollment wins; the swap is never written over it.
+		h.tokenRotating.Store(false)
+		h.discardRebindStaged(s, "the install was enrolled again after the reattach was confirmed")
+		return
+	}
 	if err != nil {
 		h.tokenRotating.Store(false)
 		h.logRebindOnce("error", "the reattach is confirmed but the new identity could not be written; retrying", err.Error())
@@ -366,11 +383,12 @@ func (h *Heartbeat) requestRebindRestart() {
 	go h.restartWhenIdle(0, h.rebindRestartOwnedElsewhere,
 		func(reason string) {
 			h.releaseIdentityRestart()
-			log.Warn(reason + " before the restart into the reattached identity; not restarting now, the identity on disk applies on the next restart")
+			log.Warn(reason+" before the restart into the reattached identity; not restarting now, trying again later",
+				"retryIn", rebindRestartRetry.String())
 		},
 		func(err error) {
 			h.releaseIdentityRestart()
-			h.logRebindOnce("error", "restart after the reattach failed; retrying (the new identity applies on the next start)", err.Error())
+			h.logRebindOnce("error", "restart after the reattach failed; trying again in "+rebindRestartRetry.String(), err.Error())
 		})
 }
 
@@ -384,6 +402,10 @@ func (h *Heartbeat) retryRebindRestart() {
 		if identitySyncNow().Sub(requestedAt) < identityRestartPendingMax {
 			return
 		}
+		// Logged every time: an install stuck here holds retired
+		// credentials and never beats, so the log is all there is.
+		log.Error("the restart into the reattached identity was requested but never happened; requesting it again",
+			"requestedAt", requestedAt.UTC().Format(time.RFC3339), "waited", identitySyncNow().Sub(requestedAt).Round(time.Second).String())
 		h.releaseIdentityRestart()
 	}
 	if rebindNow().Sub(time.Unix(0, h.rebind.restartAt.Load())) < rebindRestartRetry {

@@ -182,7 +182,11 @@ func (s *RebindStagedSet) Validate() error {
 type RebindIdentity struct {
 	// IntentID is recorded in agent.yaml (reattach_intent_id): from then on
 	// the identity in the file wins over BREEZE_* environment values.
-	IntentID          string
+	IntentID string
+	// SourceAgentID is the agent id the reattach started from. The swap is
+	// written only while agent.yaml names it or AgentID: any other id is a
+	// later enrollment, which the swap must never undo.
+	SourceAgentID     string
 	AgentID           string
 	DeviceID          string
 	OrgID             string
@@ -204,6 +208,7 @@ func (s *RebindStagedSet) Identity() (RebindIdentity, error) {
 	}
 	return RebindIdentity{
 		IntentID:          s.IntentID,
+		SourceAgentID:     s.SourceAgentID,
 		AgentID:           c.AgentID,
 		DeviceID:          c.DeviceID,
 		OrgID:             c.OrgID,
@@ -223,6 +228,7 @@ var rebindStagedMu sync.Mutex
 var (
 	rebindReadFileFn    = readConfigFileBytes
 	rebindAtomicWriteFn = atomicWriteFile
+	rebindRemoveFileFn  = os.Remove
 	rebindSaveFn        = saveToLockedWithIdentity
 )
 
@@ -386,15 +392,31 @@ func RemoveRebindStaged(cfgFile string) error {
 	}
 	rebindStagedMu.Lock()
 	defer rebindStagedMu.Unlock()
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := rebindRemoveFileFn(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	syncConfigDir(filepath.Dir(path))
 	return nil
 }
 
+// ErrRebindIdentitySuperseded reports that agent.yaml names neither the
+// reattach's source nor its target: the install was enrolled again since the
+// set was confirmed, and the set must be discarded, never applied.
+var ErrRebindIdentitySuperseded = errors.New("agent.yaml names an identity enrolled after the reattach; the reattach no longer applies")
+
+// rebindOwnsIdentityLocked reports whether the identity on disk is one the
+// confirmed swap may (re)write: the source's, or the target's. Callers hold
+// persistMu.
+func rebindOwnsIdentityLocked(cfgPath string, id RebindIdentity) (bool, error) {
+	onDisk, err := readAgentIdentityAt(cfgPath)
+	if err != nil {
+		return false, err
+	}
+	return onDisk.AgentID == id.SourceAgentID || onDisk.AgentID == id.AgentID, nil
+}
+
 func (id RebindIdentity) validate() error {
-	if id.IntentID == "" || id.AgentID == "" || id.DeviceID == "" || id.OrgID == "" || id.SiteID == "" {
+	if id.IntentID == "" || id.SourceAgentID == "" || id.AgentID == "" || id.DeviceID == "" || id.OrgID == "" || id.SiteID == "" {
 		return errors.New("reattached identity is incomplete")
 	}
 	if id.AuthToken == "" || id.WatchdogAuthToken == "" || id.HelperAuthToken == "" {
@@ -533,6 +555,16 @@ func ApplyRebindIdentity(cfgFile string, id RebindIdentity) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
 
+	// Checked under persistMu, so no enrollment can land between the check
+	// and the two saves.
+	owned, err := rebindOwnsIdentityLocked(cfgPath, id)
+	if err != nil {
+		return fmt.Errorf("reading the identity before the reattach swap: %w", err)
+	}
+	if !owned {
+		return ErrRebindIdentitySuperseded
+	}
+
 	cfg, err := loadLocked(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -602,6 +634,10 @@ func verifyRebindIdentityLocked(cfgPath string, id RebindIdentity) error {
 // The staged set is not removed here: it stays until this process has
 // authenticated as the target once (the heartbeat removes it then). A staged
 // set in any other phase is left for the heartbeat to resume.
+//
+// A set whose source and target are both gone from agent.yaml is the
+// leftover of a later enrollment (one whose removal of the set failed, or
+// that died before it): it is removed, and the enrollment is kept.
 func FinishConfirmedRebind(cfgFile string) (bool, error) {
 	s, err := ReadRebindStaged(cfgFile)
 	if err != nil || s == nil || s.Phase != RebindPhaseConfirmed {
@@ -616,6 +652,14 @@ func FinishConfirmedRebind(cfgFile string) (bool, error) {
 		return false, err
 	}
 	if err := ApplyRebindIdentity(cfgFile, id); err != nil {
+		if errors.Is(err, ErrRebindIdentitySuperseded) {
+			log.Warn("a confirmed reattach set names neither this install's agent id nor its source; keeping the newer enrollment and discarding the set",
+				"intentId", s.IntentID)
+			if rmErr := RemoveRebindStaged(cfgFile); rmErr != nil {
+				log.Warn("could not delete the superseded reattach set; it is never applied", "error", rmErr.Error())
+			}
+			return false, nil
+		}
 		return false, err
 	}
 	return true, nil
