@@ -35,7 +35,7 @@ import {
   verifyPlatformAttestation,
 } from '../services/authenticatorAttestation';
 import {
-  requireCurrentPasswordStepUp,
+  resolveEnrollmentStepUp,
   writeAuthAudit,
   enforceApproverRegisterStepUp,
   userHasStrongerReauthFactor,
@@ -77,8 +77,13 @@ const registerVerifySchema = z.object({
   response: attestationResponseSchema,
   label: deviceLabelSchema.optional(),
 });
+// #9007: two proof roads, both optional at the wire. A missing proof still
+// reaches resolveEnrollmentStepUp, which answers the opaque 400
+// `invalid_credentials` (password account) or `enrollment_proof_required`
+// (passwordless account) rather than a generic validation 400.
 const registerGrantMintSchema = z.object({
-  currentPassword: z.string().min(1).max(256),
+  currentPassword: z.string().min(1).max(256).optional(),
+  ssoReauthGrantId: registerGrantIdSchema,
 });
 
 // Mobile hardware-key registration — requires a register_approver_device grant
@@ -194,17 +199,40 @@ function findOwnedDevice(id: string, userId: string): Promise<ApproverDeviceRow[
 // the /me/* group (mirrors users/me + auth/passkeys conventions).
 export const authenticatorRoutes = new Hono();
 
-// #2707: password-fallback grant mint for the browser register flow. Gated:
-// accounts holding a stronger factor (TOTP or a passkey) must mint via
-// POST /auth/mfa/step-up instead — otherwise a stolen session + phished
-// password could register an approver key on an MFA-protected account.
+// #2707 / #9007: fallback grant mint for the browser register flow, for
+// accounts with no stronger factor. Two proof roads, never both:
+//   - password (#2707): the historical road, evaluated first. When both fields
+//     are sent the password decides, and a bad password never falls back.
+//   - SSO re-auth grant (#9007): for passwordless (SSO-only) accounts. The
+//     single-use `enroll_first_factor` / `sso_reauth_manage_factor` grant the
+//     SSO re-auth callback mints is exchanged here, once, for a
+//     `register_approver_device` grant. resolveEnrollmentStepUp owns the road
+//     choice: passwordless only, purpose by userIsMfaProtected (same predicate
+//     as the callback), bound to this bearer's sid + live epochs, consumed
+//     with GETDEL. The approver routes themselves still accept ONLY a
+//     `register_approver_device` grant.
+//
+// Order matters:
+//   1. Stronger factor first. Accounts holding TOTP or a passkey must mint via
+//      POST /auth/mfa/step-up instead, otherwise a stolen session plus a
+//      phished password (or a fresh IdP session) could register an approver
+//      key on an MFA-protected account. No proof is read or consumed before
+//      this check.
+//   2. Epochs + sid next, so an infra blip cannot burn a single-use SSO grant.
+//   3. Proof redemption, then the mint.
+//
+// Every rejected proof answers 400, uniform across both roads (#4470: 401 is
+// reserved for the bearer, and a status that differed by road would be a
+// password/passwordless oracle). The SSO road is not charged the
+// `authenticator:pwd` limiter; its throttle is upstream at /sso/reauth/start,
+// and a spent grant leaves nothing to guess.
 authenticatorRoutes.post(
   '/register-grant',
   authMiddleware,
   zValidator('json', registerGrantMintSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { currentPassword } = c.req.valid('json');
+    const { currentPassword, ssoReauthGrantId } = c.req.valid('json');
 
     if (await userHasStrongerReauthFactor(auth.user.id)) {
       writeAuthAudit(c, {
@@ -218,14 +246,6 @@ authenticatorRoutes.post(
       return c.json({ error: 'stronger_factor_required' }, 403);
     }
 
-    const passwordError = await requireCurrentPasswordStepUp(
-      c,
-      auth.user.id,
-      currentPassword,
-      'authenticator:pwd'
-    );
-    if (passwordError) return passwordError;
-
     const epochs = await getUserEpochs(auth.user.id);
     if (!epochs || !auth.token?.sid) {
       writeAuthAudit(c, {
@@ -238,6 +258,36 @@ authenticatorRoutes.post(
       });
       return c.json({ error: 'Service temporarily unavailable' }, 503);
     }
+
+    const proofInput: { currentPassword?: string; ssoReauthGrantId?: string } = {};
+    if (currentPassword) proofInput.currentPassword = currentPassword;
+    if (ssoReauthGrantId) proofInput.ssoReauthGrantId = ssoReauthGrantId;
+    const proofError = await resolveEnrollmentStepUp(c, auth, proofInput, {
+      keyPrefix: 'authenticator:pwd',
+      consume: true,
+      rejectionStatus: 400,
+    });
+    if (proofError) {
+      // Only a request that committed to the SSO road is audited here; a
+      // rejected password keeps its historical (unaudited) behaviour. Never
+      // the grant value itself.
+      if (!currentPassword && ssoReauthGrantId) {
+        writeAuthAudit(c, {
+          orgId: auth.orgId ?? undefined,
+          action: 'auth.authenticator.register_grant.denied',
+          result: 'failure',
+          reason: 'sso_reauth_rejected',
+          userId: auth.user.id,
+          email: auth.user.email,
+          details: { hadGrantId: true },
+        });
+      }
+      return proofError;
+    }
+    // A mint failure below after a successful SSO consume burns that grant;
+    // accepted, the user re-verifies with the IdP.
+    const method = currentPassword ? 'password' : 'sso_reauth';
+
     const registerGrantId = await mintStepUpGrant({
       userId: auth.user.id,
       operation: 'register_approver_device',
@@ -263,7 +313,7 @@ authenticatorRoutes.post(
       result: 'success',
       userId: auth.user.id,
       email: auth.user.email,
-      details: { method: 'password' },
+      details: { method },
     });
 
     return c.json({ registerGrantId });
@@ -271,7 +321,7 @@ authenticatorRoutes.post(
 );
 
 // Registration is grant-gated (#2707): the browser mints a register grant via
-// POST /register-grant (password fallback) or POST /auth/mfa/step-up (stronger
+// POST /register-grant (password or SSO re-auth fallback) or POST /auth/mfa/step-up (stronger
 // factor), then presents it here as registerGrantId. The SAME grant validated
 // here (non-consuming) is consumed at /devices/webauthn/verify.
 authenticatorRoutes.post(

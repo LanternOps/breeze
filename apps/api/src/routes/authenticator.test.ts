@@ -88,6 +88,7 @@ const {
     },
     helperMocks: {
       requireCurrentPasswordStepUp: vi.fn(),
+      resolveEnrollmentStepUp: vi.fn(),
       writeAuthAudit: vi.fn(),
       enforceApproverRegisterStepUp: vi.fn(),
       userHasStrongerReauthFactor: vi.fn(),
@@ -884,17 +885,95 @@ describe('approver device routes', () => {
   });
 
   describe('POST /register-grant', () => {
-    it('mints a grant after password step-up when no stronger factor exists', async () => {
+    // #9007: the route redeems its proof through resolveEnrollmentStepUp — the
+    // password road (unchanged, evaluated first) or, for a passwordless
+    // account, a single-use SSO re-auth grant. Every rejected proof answers 400
+    // (#4470). The resolver's own road selection is exercised unmocked in
+    // authenticator.registerGrantSso.test.ts; here it is a spy so the route's
+    // ordering, wiring and audit are pinned.
+    const RESOLVER_OPTS = { keyPrefix: 'authenticator:pwd', consume: true, rejectionStatus: 400 };
+
+    beforeEach(() => {
       helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
-      helperMocks.requireCurrentPasswordStepUp.mockResolvedValue(null);
+      helperMocks.resolveEnrollmentStepUp.mockResolvedValue(null);
       epochsMock.getUserEpochs.mockResolvedValue({ authEpoch: 1, mfaEpoch: 2 });
       grantMocks.mintStepUpGrant.mockResolvedValue('grant-uuid');
+    });
 
+    it('password road: calls resolveEnrollmentStepUp with consume + 400 + authenticator:pwd', async () => {
       const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
+
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ registerGrantId: 'grant-uuid' });
+      expect(helperMocks.resolveEnrollmentStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        { currentPassword: 'hunter2!' },
+        RESOLVER_OPTS,
+      );
+      // The historical helper is no longer called directly by this route; the
+      // resolver delegates to it for the password road.
+      expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+      expect(grantMocks.mintStepUpGrant).toHaveBeenCalledWith({
+        userId: 'user-123',
+        operation: 'register_approver_device',
+        authEpoch: 1,
+        mfaEpoch: 2,
+        sid: 'sid-123',
+      });
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.register_grant.minted',
+          result: 'success',
+          details: { method: 'password' },
+        }),
+      );
+    });
+
+    it('sso road: ssoReauthGrantId alone mints and audits method sso_reauth', async () => {
+      const res = await postJson('/register-grant', { ssoReauthGrantId: 'sso-grant' });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ registerGrantId: 'grant-uuid' });
+      expect(helperMocks.resolveEnrollmentStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        { ssoReauthGrantId: 'sso-grant' },
+        RESOLVER_OPTS,
+      );
       expect(grantMocks.mintStepUpGrant).toHaveBeenCalledWith(
-        expect.objectContaining({ operation: 'register_approver_device' }),
+        expect.objectContaining({ operation: 'register_approver_device', sid: 'sid-123' }),
+      );
+      // The proof is redeemed BEFORE the new grant is minted.
+      expect(helperMocks.resolveEnrollmentStepUp.mock.invocationCallOrder[0]).toBeLessThan(
+        grantMocks.mintStepUpGrant.mock.invocationCallOrder[0],
+      );
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.register_grant.minted',
+          details: { method: 'sso_reauth' },
+        }),
+      );
+    });
+
+    it('both fields sent: the resolver sees both (password wins there) and the audit says password', async () => {
+      const res = await postJson('/register-grant', { currentPassword: 'hunter2!', ssoReauthGrantId: 'sso-grant' });
+
+      expect(res.status).toBe(200);
+      expect(helperMocks.resolveEnrollmentStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        { currentPassword: 'hunter2!', ssoReauthGrantId: 'sso-grant' },
+        RESOLVER_OPTS,
+      );
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.register_grant.minted',
+          details: { method: 'password' },
+        }),
       );
     });
 
@@ -903,6 +982,7 @@ describe('approver device routes', () => {
       const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ error: 'stronger_factor_required' });
+      expect(helperMocks.resolveEnrollmentStepUp).not.toHaveBeenCalled();
       expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
       // A4: the deny must be audited (failure result, reason on the details).
       expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
@@ -915,21 +995,88 @@ describe('approver device routes', () => {
       );
     });
 
-    it('propagates password step-up failures (401/429/503)', async () => {
-      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
-      helperMocks.requireCurrentPasswordStepUp.mockImplementation(async (c: any) =>
-        c.json({ error: 'Invalid credentials' }, 401),
-      );
-      const res = await postJson('/register-grant', { currentPassword: 'wrong' });
-      expect(res.status).toBe(401);
+    it('stronger factor 403s before the resolver runs, on the SSO road too', async () => {
+      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(true);
+      const res = await postJson('/register-grant', { ssoReauthGrantId: 'g' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'stronger_factor_required' });
+      expect(helperMocks.resolveEnrollmentStepUp).not.toHaveBeenCalled();
+      expect(grantMocks.mintStepUpGrant).not.toHaveBeenCalled();
     });
 
-    it('503 when sid/epochs unavailable', async () => {
-      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
-      helperMocks.requireCurrentPasswordStepUp.mockResolvedValue(null);
+    it('resolver rejection is returned verbatim and nothing is minted', async () => {
+      helperMocks.resolveEnrollmentStepUp.mockImplementation(async (c: any) =>
+        c.json({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' }, 400),
+      );
+      const res = await postJson('/register-grant', {});
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' });
+      expect(grantMocks.mintStepUpGrant).not.toHaveBeenCalled();
+      expect(helperMocks.writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'auth.authenticator.register_grant.minted' }),
+      );
+    });
+
+    it('sso rejection is audited without the grant value', async () => {
+      helperMocks.resolveEnrollmentStepUp.mockImplementation(async (c: any) =>
+        c.json({ error: 'expired', message: 'expired', code: 'enrollment_grant_expired', reauthUrl: '/sso/reauth/start' }, 400),
+      );
+      const res = await postJson('/register-grant', { ssoReauthGrantId: 'secret-grant' });
+
+      expect(res.status).toBe(400);
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.register_grant.denied',
+          result: 'failure',
+          reason: 'sso_reauth_rejected',
+          details: { hadGrantId: true },
+        }),
+      );
+      expect(JSON.stringify(helperMocks.writeAuthAudit.mock.calls.map((call) => call[1]))).not.toContain('secret-grant');
+      expect(grantMocks.mintStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('a rejected password is not audited as an SSO rejection', async () => {
+      helperMocks.resolveEnrollmentStepUp.mockImplementation(async (c: any) =>
+        c.json({ error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' }, 400),
+      );
+      const res = await postJson('/register-grant', { currentPassword: 'wrong', ssoReauthGrantId: 'g' });
+      expect(res.status).toBe(400);
+      expect(helperMocks.writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ reason: 'sso_reauth_rejected' }),
+      );
+    });
+
+    it('empty body reaches the resolver (no zod 400)', async () => {
+      helperMocks.resolveEnrollmentStepUp.mockImplementation(async (c: any) =>
+        c.json({ error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' }, 400),
+      );
+      const res = await postJson('/register-grant', {});
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'invalid_credentials' });
+      expect(helperMocks.resolveEnrollmentStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        {},
+        RESOLVER_OPTS,
+      );
+    });
+
+    it('ssoReauthGrantId over 128 chars is a 400 validation error before any gate', async () => {
+      const res = await postJson('/register-grant', { currentPassword: 'hunter2!', ssoReauthGrantId: 'x'.repeat(129) });
+      expect(res.status).toBe(400);
+      expect(helperMocks.userHasStrongerReauthFactor).not.toHaveBeenCalled();
+      expect(helperMocks.resolveEnrollmentStepUp).not.toHaveBeenCalled();
+    });
+
+    it('epochs unavailable 503s BEFORE the resolver consumes the grant', async () => {
       epochsMock.getUserEpochs.mockResolvedValue(null);
-      const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
+      const res = await postJson('/register-grant', { ssoReauthGrantId: 'g' });
       expect(res.status).toBe(503);
+      expect(helperMocks.resolveEnrollmentStepUp).not.toHaveBeenCalled();
       // A4: the mint-failure 503 must be audited too.
       expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
@@ -941,13 +1088,21 @@ describe('approver device routes', () => {
       );
     });
 
+    it('propagates proof failures (400/429/503) from the resolver', async () => {
+      for (const status of [400, 429, 503] as const) {
+        helperMocks.resolveEnrollmentStepUp.mockImplementationOnce(async (c: any) =>
+          c.json({ error: 'x' }, status),
+        );
+        const res = await postJson('/register-grant', { currentPassword: 'wrong' });
+        expect(res.status).toBe(status);
+      }
+      expect(grantMocks.mintStepUpGrant).not.toHaveBeenCalled();
+    });
+
     // A5 (previously untested): mintStepUpGrant itself resolving null (e.g.
     // Redis down) — distinct from the epochs/sid-unavailable 503 above — must
     // also 503 and be audited.
     it('503 when mintStepUpGrant resolves null even though epochs/sid are present', async () => {
-      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
-      helperMocks.requireCurrentPasswordStepUp.mockResolvedValue(null);
-      epochsMock.getUserEpochs.mockResolvedValue({ authEpoch: 1, mfaEpoch: 2 });
       grantMocks.mintStepUpGrant.mockResolvedValue(null);
 
       const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
