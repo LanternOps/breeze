@@ -596,7 +596,7 @@
   },
   "backupProviders": {
     "title": "Yedekleme sağlayıcıları",
-    "subtitle": "Cove Data Protection ve NinjaOne SaaS Backup (Dropsuite) yedekleme durumunu Breeze’de görüntüleyin.",
+    "subtitle": "Cove Data Protection, NinjaOne SaaS Backup (Dropsuite) ve Axcient x360Recover yedekleme durumunu Breeze’de görüntüleyin.",
     "partnerOnly": "Yedekleme sağlayıcısı bağlantıları yalnızca iş ortağı hesaplarında kullanılabilir.",
     "addConnection": "Bağlantı ekle",
     "providerLabel": "Sağlayıcı",
@@ -604,6 +604,7 @@
     "nameLabel": "Bağlantı adı",
     "namePlaceholder": "Ana Cove hesabı",
     "namePlaceholderDropsuite": "Ana NinjaOne SaaS Backup hesabı",
+    "namePlaceholderAxcient": "Ana Axcient hesabı",
     "partnerNameLabel": "Cove iş ortağı adı",
     "usernameLabel": "API kullanıcısının oturum açma adı",
     "passwordLabel": "API kullanıcısının belirteci",
@@ -651,6 +652,10 @@
     "errorDelete": "Yedekleme bağlantısı silinemedi",
     "errorMap": "Eşleme güncellenemedi",
     "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "axcient": "Axcient x360Recover",
+    "apiKeyLabel": "API anahtarı",
+    "axcientCredentialsHelp": "x360Portal → Settings → API Keys bölümünde hem x360Recover hem de Billing işaretli bir API anahtarı oluşturun. Breeze yalnızca durumu okur; Axcient’te hiçbir şeyi değiştirmez.",
+    "axcientReentryHelp": "Kayıtlı anahtarı korumak için API anahtarını boş bırakın veya değiştirmek için yenisini girin.",
     "resellerTokenLabel": "Bayi belirteci",
     "authTokenLabel": "Kimlik doğrulama belirteci",
     "baseUrlLabel": "API adresi",
@@ -953,6 +958,8 @@
     "integrationUpdated": "Pax8 entegrasyonu güncellendi",
     "integrationConnected": "Pax8 entegrasyonu bağlandı",
     "companyMapped": "Pax8 şirketinin haritası çıkarıldı",
+    "companiesRefreshFailed": "Şirket listesi yenilenemedi ve güncel olmayabilir. En son hâlini görmek için sayfayı yeniden yükleyin.",
+    "syncStillRunning": "Eşitleme hâlâ sürüyor veya durumu alınamıyor. Birkaç dakika sonra tekrar kontrol edin.",
     "companyUnmapped": "Pax8 şirketinin haritası kaldırıldı",
     "observationsPaused": "Pax8 miktar gözlemleri duraklatıldı",
     "observationsResumed": "Pax8 miktar gözlemlerine devam edildi",
@@ -1067,7 +1074,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Site eşlemeleri kaydedilemedi.",
     "siteMappingsSaved": "Site eşlemeleri kaydedildi",
-    "pickTheSiteThisControllerServesACollector": "Bu denetleyicinin hizmet verdiği siteyi (bir toplayıcı aracı) seçin ve denetleyici URL'sini ve yerel API anahtarını girin.",
+    "pickTheSiteThisControllerServesACollector": "Toplayıcı aracının konumunu ve bir toplayıcı aracı seçin, ardından denetleyici URL'sini ve yerel API anahtarını girin.",
     "failedToRegisterTheController": "Denetleyici kaydedilemedi.",
     "controllerRegistered": "Denetleyici kayıtlı",
     "pickABreezeSiteACollectorAgentAnd": "Bir Breeze sitesi, bir toplayıcı aracı seçin ve denetleyici URL'sini ve yerel API anahtarını girin.",
@@ -1110,7 +1117,8 @@
     "controllers": "Kontrolörler",
     "registerEachSelfHostedUniFiNetworkControllerA": "Şirket içinde barındırılan her UniFi Ağ denetleyicisini kaydedin. Denetleyicinin ağındaki bir Breeze aracısı, yerel Entegrasyonunu API (ürün yazılımı ≥ 9.3) doğrudan yoklar, dolayısıyla UniFi bulut hesabına gerek yoktur. Breeze yerel API anahtarını şifrelenmiş olarak saklar ve bunu seçtiğiniz aracıya iletir.",
     "controllerURL": "Denetleyici URL'si",
-    "siteThisControllerServes": "Bu denetleyicinin hizmet verdiği site",
+    "collectorAgentLocation": "Toplayıcı aracının konumu",
+    "collectorAgentLocationHelp": "Bu denetleyiciyi sorgulayan aracının bulunduğu yer; çoğunlukla kendi iç kuruluşunuz. Denetleyiciyi kaydettikten sonra sitelerini müşterilerle eşleştirirsiniz.",
     "selectSite": "— Siteyi seçin —",
     "collectorAgent": "Koleksiyoncu temsilcisi",
     "localAPIKey": "Yerel API anahtarı",
@@ -1149,6 +1157,7 @@
     "started": "Başlatıldı",
     "trigger": "Tetikleyici",
     "hostsSeen": "Toplantı sahipleri görüldü",
+    "sitesUnmapped": "Eşlenmemiş siteler",
     "hosts": "Toplantı Sahipleri",
     "devicesCreated": "Cihazlar bu senkronizasyonu ekledi",
     "new": "Eklendi",
@@ -1473,7 +1482,8 @@
     "status": {
       "connected": "Bağlı",
       "error": "Hata",
-      "reauth_required": "Yeniden kimlik doğrulama gerekli"
+      "reauth_required": "Yeniden kimlik doğrulama gerekli",
+      "inactive": "Etkin değil"
     },
     "syncStatus": {
       "running": "Çalışıyor",
@@ -1575,5 +1585,28 @@
     "pushTestNote": "Test olayının ulaşması birkaç dakika sürebilir.",
     "pushLast": "Son push olayı: {{relative}}",
     "pushNone": "Henüz push olayı alınmadı"
+  },
+  "externalMatch": {
+    "suggested": "Önerilen: {{target}}",
+    "matchedOn": "“{{key}}” üzerinden eşleşti",
+    "accept": "Kabul et",
+    "possibleMatches_one": "{{count}} olası eşleşme",
+    "possibleMatches_other": "{{count}} olası eşleşme",
+    "alsoMatches": "Ayrıca {{names}} ile eşleşiyor",
+    "pickSite": "{{org}} içinde bir site seçin",
+    "reviewButton_one": "{{count}} önerilen eşleşmeyi gözden geçir",
+    "reviewButton_other": "{{count}} önerilen eşleşmeyi gözden geçir",
+    "reviewTitle": "Önerilen eşleşmeleri gözden geçir",
+    "confirm_one": "Seçilen {{count}} öğeyi eşle",
+    "confirm_other": "Seçilen {{count}} öğeyi eşle",
+    "resolveInTable": "Bunları tabloda çözün",
+    "tierExact": "Aynı ad",
+    "tierNormalized": "Aynı ad, ekler yok sayılarak",
+    "summary": "{{unmapped}} eşlenmemiş · {{suggested}} önerilen",
+    "staleReview": "Bu incelemeyi açtığınızdan beri bazı satırlar değişti. Liste yeniden yüklendi.",
+    "newSinceSync_one": "Son eşitlemeden bu yana {{count}} yeni",
+    "newSinceSync_other": "Son eşitlemeden bu yana {{count}} yeni",
+    "bulkMapped_one": "{{count}} şirket eşlendi",
+    "bulkMapped_other": "{{count}} şirket eşlendi"
   }
 }

@@ -35,6 +35,7 @@
     "expired": "Diese Anfrage ist abgelaufen, bevor entschieden werden konnte.",
     "notSoleApprover": "Diese Anfrage muss jetzt von einer anderen Person genehmigt werden – Sie können Ihre eigene Anfrage nicht mehr genehmigen.",
     "siteCeiling": "Diese Genehmigung gewährt organisationsweite Berechtigungen. Ihr Zugriff ist auf bestimmte Standorte beschränkt, daher muss eine andere Person darüber entscheiden.",
+    "approverScopeRequired": "Diese Genehmigung betrifft alle Organisationen des Partners. Sie muss daher von einer genehmigenden Person auf Partnerebene mit Zugriff auf alle Organisationen entschieden werden.",
     "noApproverDevice": "Zum Genehmigen der eigenen Anfrage ist Touch ID / Windows Hello erforderlich.",
     "freshFactorRequired": "Diese Prüfung erfordert eine neue Passkey-Bestätigung (Touch ID, Windows Hello oder ein Hardwareschlüssel) für genau diese Freigabe. Versuchen Sie es erneut.",
     "registerDevice": "Dieses Gerät registrieren",
@@ -562,7 +563,8 @@
     "overrideErrorStepUp": "Ihr Partner verlangt eine stärkere Genehmigung, als diese Ansicht bieten kann.",
     "overrideErrorNoDevice": "Kein Zielgerät hat das Skript angenommen, es wurde also nichts ausgeführt. Sie können es erneut versuchen.",
     "overrideErrorPolicy": "Die KI-Datenrichtlinie lehnt dieses Skript ab, weil es einen Benutzerprofilpfad liest.",
-    "overrideErrorStrict": "Das Bestätigen dieser Gefahrenmuster erfordert Skript-Schreibrechte und MFA, und jedes Muster muss angekreuzt sein."
+    "overrideErrorStrict": "Das Bestätigen dieser Gefahrenmuster erfordert Skript-Schreibrechte und MFA, und jedes Muster muss angekreuzt sein.",
+    "savedToLibrary": "In der Skriptbibliothek gespeichert"
   },
   "aiRunCard": {
     "title": "Analyselauf",
@@ -615,7 +617,11 @@
     "thinking": "Denken"
   },
   "aiThinking": {
-    "label": "Denkt nach… {{seconds}} s"
+    "label": "Denkt nach… {{seconds}} s",
+    "waitingApproval": "Warten auf Ihre Genehmigung",
+    "waitingApprovalPhone": "Warten auf Ihre Genehmigung (an Ihr Telefon gesendet)",
+    "waitingOthers": "Warten auf einen anderen Genehmiger",
+    "openApprovals": "Genehmigungen öffnen"
   },
   "aiTurnModel": {
     "answeredBy": "Beantwortet von {{model}}",
@@ -656,7 +662,7 @@
       "explain": "Wisp arbeitet im Rahmen Ihrer eigenen Berechtigungen. Bestätigen Sie Ihre Identität, um fortzufahren.",
       "code": "Authentifizierungscode",
       "passkey": "Sie bestätigen mit Ihrem Passkey.",
-      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in Ihrem Profil ein.",
+      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in <profileLink>Ihrem Profil</profileLink> ein.",
       "noOrg": "Wählen Sie zuerst oben eine Organisation aus.",
       "confirm": "Bestätigen",
       "cancel": "Abbrechen",
@@ -692,6 +698,7 @@
     "settings": {
       "title": "Budget und Check-in",
       "budget": "Tagesbudget",
+      "budgetHelp": "Enthält den Chat. Ist es aufgebraucht, pausieren die Hintergrundprüfungen bis 00:00 UTC, und der Chat funktioniert mit einer Warnung weiter. Für den Chat gilt weiterhin das KI-Budget der Organisation.",
       "tick": "Check-in alle (Minuten)",
       "save": "Speichern",
       "unattendedReads": {
@@ -702,6 +709,10 @@
         "securityLog": "Sicherheitsereignisprotokoll durchsuchen",
         "deviceNote": "Notiz zu einem Gerät speichern",
         "applies": "Gilt für neue Unterhaltungen und neue Hintergrundläufe."
+      },
+      "summaryRefine": {
+        "title": "Vom Modell verfasste Sitzungsnotizen",
+        "description": "Wenn eine Unterhaltung endet, schreibt das Modell auf, was geklärt wurde und was noch offen ist. Jede Notiz ist ein Modellaufruf und wird auf das Tagesbudget von Wisp angerechnet. Wenn deaktiviert, behält Wisp stattdessen eine einfache Zusammenfassung."
       }
     },
     "focus": {
@@ -747,10 +758,14 @@
       "unattendedReadsOn": "Unbeaufsichtigte Lesezugriffe aktiviert",
       "unattendedReadsOnFailed": "Unbeaufsichtigte Lesezugriffe konnten nicht aktiviert werden",
       "unattendedReadsOff": "Unbeaufsichtigte Lesezugriffe deaktiviert",
-      "unattendedReadsOffFailed": "Unbeaufsichtigte Lesezugriffe konnten nicht deaktiviert werden"
+      "unattendedReadsOffFailed": "Unbeaufsichtigte Lesezugriffe konnten nicht deaktiviert werden",
+      "summaryRefineOn": "Sitzungsnotizen aktiviert",
+      "summaryRefineOff": "Sitzungsnotizen deaktiviert",
+      "summaryRefineFailed": "Sitzungsnotizen konnten nicht geändert werden"
     },
     "spend": {
       "meter": "{{spent}} von {{budget}} heute",
+      "breakdown": "Hintergrund {{background}} · Chat {{chat}} · {{spent}} von {{budget}} heute",
       "resets": "wird in {{hours}} Std. zurückgesetzt",
       "raise": "Heutiges Budget erhöhen",
       "atCeiling": "Das heutige Budget hat das Limit Ihres Tarifs erreicht.",
@@ -763,8 +778,8 @@
       "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen.",
       "partnerDisabled": "Wisp ist für Ihren Partner ausgeschaltet. Ein Administrator kann es wieder einschalten.",
       "system": {
-        "budgetExhausted": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht. Das Budget wird in {{hours}} Std. zurückgesetzt.",
-        "budgetExhaustedNoTime": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht.",
+        "budgetExhausted": "Das heutige Wisp-Budget ist überschritten: Hintergrundprüfungen sind bis {{time}} UTC pausiert. Der Chat funktioniert weiter.",
+        "budgetExhaustedNoTime": "Das heutige Wisp-Budget ist überschritten: Hintergrundprüfungen sind bis 00:00 UTC pausiert. Der Chat funktioniert weiter.",
         "grantorAccessLost": "Von Breeze pausiert: Ihr Zugriff deckt diese Berechtigung nicht mehr ab. Wisp läuft automatisch weiter, sobald Ihr Zugriff wiederhergestellt ist.",
         "grantorSuspended": "Von Breeze pausiert: Ihr Konto ist gesperrt. Wisp läuft automatisch weiter, sobald die Sperre aufgehoben ist.",
         "factorExpired": "Von Breeze pausiert: Ihre Anmeldeprüfung für diese Berechtigung ist abgelaufen.",
@@ -887,16 +902,37 @@
     "post": {
       "brief": "Morgenbericht",
       "nudge": "Hinweis",
+      "nudgeResolved": "Erledigt",
       "digest": "Übersicht",
       "checkIn": "Nachkontrolle",
       "summary": "Zusammenfassung",
       "open": "Öffnen",
       "unread": "Ungelesen",
-      "specialistResult": "Spezialistenbericht"
+      "specialistResult": "Spezialistenbericht",
+      "firstLook": "Erster Überblick",
+      "couldntLook": "Noch kein Überblick"
+    },
+    "checkIn": {
+      "runNow": "Jetzt ausführen",
+      "runNowMessage": "Führe die Nachkontrolle jetzt durch",
+      "scheduledAt": "Wisp prüft um {{time}} erneut",
+      "cancel": "Nachkontrolle abbrechen",
+      "cancelled": "Nachkontrolle abgebrochen",
+      "cancelFailed": "Die Nachkontrolle konnte nicht abgebrochen werden."
     },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",
       "body": "Ihr erster Bericht kommt jeden Morgen, sobald ich mich umgesehen habe. Fragen Sie mich in der Zwischenzeit gern alles.",
+      "firstLookTitle": "Ich habe mir {{scope}} ein erstes Mal angesehen.",
+      "firstLookBody": "Was ich gefunden habe, steht im Beitrag oben. Fragen Sie mich gern alles dazu.",
+      "couldntLookTitle": "Ich konnte mir {{scope}} noch nicht ansehen.",
+      "couldntLookBody": "Im Beitrag oben steht, warum und wann ich es erneut versuche. Fragen Sie mich in der Zwischenzeit gern alles.",
+      "couldntLookChat": "Auf der Wisp-Startseite steht, warum und wann ich es erneut versuche.",
+      "progress_one": "Angesehene Organisationen: {{lookedAt}} von {{count}}",
+      "progress_other": "Angesehene Organisationen: {{lookedAt}} von {{count}}",
+      "progressQueued": "{{count}} in Warteschlange",
+      "progressFailed": "{{count}} fehlgeschlagen",
+      "briefAt": "Ihr Morgenbericht kommt um {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Was braucht mich heute?",
@@ -940,6 +976,33 @@
       "buttonPlain": "KI dazu fragen",
       "draft": "Zu {{label}}: ",
       "switchFocus": "Wisp konzentriert sich auf {{from}}. Zu {{to}} wechseln?"
+    },
+    "plainChat": {
+      "new": "Neuer einfacher Chat",
+      "newDescription": "Breeze AI mit allen Tools, auf die Sie Zugriff haben. Nicht Wisp.",
+      "wispDescription": "Wisp, mit Ihrer Berechtigung",
+      "label": "Breeze AI · nicht Wisp"
+    },
+    "instruction": {
+      "remembered": "Gemerkt: {{text}}",
+      "conflictBanner": "Widerspricht einer gemerkten Anweisung: „{{text}}“",
+      "enforcedForm": "Wisp wird nicht vorschlagen: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "kein Enddatum",
+      "keep": "Behalten",
+      "keepForOrg": "Für alle bei {{org}} behalten",
+      "forget": "Vergessen",
+      "unmatched": "Als Notiz gespeichert: Ich konnte nicht jeden Gerätenamen zuordnen.",
+      "kept": "Behalten",
+      "keptForOrg": "Für alle bei {{org}} behalten",
+      "crossOrg": "Diese Geräte gehören zu mehr als einer Organisation, daher kann dies nur für Sie behalten werden.",
+      "actionFailed": "Das hat nicht funktioniert. Versuchen Sie es erneut.",
+      "verb": {
+        "reboot": "neu zu starten",
+        "shutdown": "herunterzufahren",
+        "run_script": "ein Skript auszuführen",
+        "patch_install": "Patches zu installieren",
+        "any_change": "irgendeine Änderung vorzunehmen"
+      }
     }
   },
   "wispConcerns": {

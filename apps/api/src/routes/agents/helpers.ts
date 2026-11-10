@@ -290,6 +290,11 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     // CylancePROTECT, rebranded Aurora Endpoint Defense (#9178).
     case 'cylance':
       return 'cylance';
+    // Trend Micro Apex One / Worry-Free / Vision One (#8171).
+    case 'trend_micro':
+    case 'trendmicro':
+    case 'trend-micro':
+      return 'trend_micro';
     case 'unknown':
       return 'unknown';
     default:

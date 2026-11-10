@@ -27,6 +27,8 @@ export const EXTENDED_INPUT_FLAGS: Record<keyof ExtendedInput, string> = {
 export interface InputCapabilitiesSnapshot {
   typeText: boolean;
   releasesHeldInput: boolean;
+  /** The agent honours `release_held_input` on the control channel (#9595). */
+  releaseHeldOnRequest: boolean;
   /** True only with valid inputEpoch and geoEpoch alongside it. */
   reliableInput: boolean;
   inputEpoch: number | null;
@@ -37,6 +39,7 @@ export interface InputCapabilitiesSnapshot {
 const EMPTY: InputCapabilitiesSnapshot = {
   typeText: false,
   releasesHeldInput: false,
+  releaseHeldOnRequest: false,
   reliableInput: false,
   inputEpoch: null,
   geoEpoch: null,
@@ -50,6 +53,7 @@ function readSnapshot(message: Record<string, unknown>): InputCapabilitiesSnapsh
   return {
     typeText: message.typeText === true,
     releasesHeldInput: message.releasesHeldInput === true,
+    releaseHeldOnRequest: message.releaseHeldOnRequest === true,
     reliableInput: message.reliableInput === true && inputEpoch !== null && geoEpoch !== null,
     inputEpoch,
     geoEpoch,

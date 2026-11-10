@@ -60,6 +60,7 @@ const {
 });
 
 vi.mock('../../db', () => ({
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: { select: selectMock, insert: insertMock, update: updateMock },
   hasDbAccessContext: () => ctx.depth > 0,
   runOutsideDbContext: (fn: () => unknown) => fn(),

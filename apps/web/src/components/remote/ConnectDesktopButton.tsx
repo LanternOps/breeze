@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useId } from 'react';
-import { Monitor, MonitorOff, ExternalLink, Download, X, Globe } from 'lucide-react';
+import { Monitor, MonitorOff, ExternalLink, Download, X, Globe, ChevronDown } from 'lucide-react';
 import * as Sentry from '@sentry/astro';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
 import { isAllowedLauncherScheme } from '@breeze/shared';
@@ -8,10 +8,35 @@ import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownlo
 import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '@/components/shared/Toast';
+import { ActionMenu, type ActionMenuItem } from '@/components/shared/ActionMenu';
 import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SessionPickerModal from './SessionPickerModal';
+
+/**
+ * A third-party remote tool this device can be opened with, as GET
+ * /devices/:id reports it in `remoteAccessProviders` (#10922). `kind` says how
+ * it opens: `web` in a new browser tab, `protocol` through the installed app.
+ */
+export interface RemoteToolOption {
+  id: string;
+  label: string;
+  kind: 'web' | 'protocol';
+}
+
+/** What a connect attempt launches: whatever the default resolves to, or a pick from the menu. */
+type ConnectChoice = { kind: 'builtin' } | { kind: 'provider'; id: string };
+
+// 404 codes from POST /devices/:id/remote-access-launch meaning "the picked
+// tool cannot launch on this device any more" (the API's skip reasons), as
+// opposed to the device itself being gone.
+const TOOL_UNAVAILABLE_CODES = new Set([
+  'provider_not_available',
+  'provider_disabled',
+  'missing_device_identifier',
+  'empty_url_template',
+]);
 
 interface Props {
   deviceId: string;
@@ -32,6 +57,14 @@ interface Props {
    * Absent / 'always-on' / null ⇒ unchanged behavior for non-RDS devices.
    */
   helperLifecycleMode?: 'always-on' | 'on-demand' | null;
+  /**
+   * #10922: the tools this device can be opened with, from GET /devices/:id.
+   * When non-empty the full-size button becomes a split button whose menu
+   * offers these plus the built-in viewer. The server re-checks every pick.
+   */
+  remoteAccessProviders?: RemoteToolOption[] | null;
+  /** The tool the primary click launches (null = the built-in viewer). */
+  remoteAccessDefaultProviderId?: string | null;
 }
 
 /**
@@ -114,7 +147,7 @@ function desktopAccessUnavailableReason(
   }
 }
 
-export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null, helperLifecycleMode = null }: Props) {
+export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null, helperLifecycleMode = null, remoteAccessProviders = null, remoteAccessDefaultProviderId = null }: Props) {
   const { t } = useTranslation('remote');
   // #9026: the full-size button stays focusable while unavailable
   // (aria-disabled) and points at this visually-hidden reason.
@@ -132,6 +165,9 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   // RDS hosts (helperLifecycleMode === 'on-demand') gate connect behind a
   // session picker so the tech targets a specific WTS session.
   const [pickerOpen, setPickerOpen] = useState(false);
+  // What the picker's session should open: undefined = the primary click's
+  // default, { kind: 'builtin' } = "Built-in viewer" chosen from the menu.
+  const [pickerChoice, setPickerChoice] = useState<ConnectChoice | undefined>(undefined);
   // Populated when the VNC auto-fallback path times out — carries the info needed
   // for the "Open in Browser" fallback card so we don't navigate away automatically.
   const [vncFallback, setVncFallback] = useState<{ tunnelId: string } | null>(null);
@@ -239,12 +275,128 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     pollTimerRef.current = setTimeout(pollVnc, 1500);
   }, [deviceId, t]);
 
-  const startConnect = useCallback(async (targetSessionId?: number) => {
+  // Request a one-shot launch URL for a third-party tool (RustDesk,
+  // ScreenConnect, TeamViewer, …) from POST /devices/:id/remote-access-launch
+  // and hand it to the browser or the OS. With no `providerId` the server
+  // resolves the default (technician preference, then partner default);
+  // with one (#10922) it launches that tool or refuses — never another tool.
+  //
+  // The URL (with any preset password substituted and percent-encoded) is
+  // never embedded in the GET response, so we only get it back in response to
+  // an explicit click. Each issuance is audited server-side.
+  //
+  // Auto-detect launch mode by URL prefix:
+  //   - http(s):// → open in a new browser tab (ScreenConnect, web-launchers)
+  //   - any other scheme → hand off to the OS protocol handler (RustDesk, etc.)
+  // Either way, the built-in WebRTC desktop flow does not run.
+  //
+  // Defense in depth: the API rejects javascript:, data:, vbscript:,
+  // file:, etc. at write time AND re-checks the substituted URL before
+  // returning 422. We still re-check on the client so a tampered
+  // response can't execute a hostile scheme in the partner's origin.
+  //
+  // Every outcome is surfaced here (toast + inline label) rather than through
+  // runAction, because the 422 and client-side scheme refusals need their own
+  // Sentry capture and copy.
+  const launchViaRemoteTool = useCallback(async (providerId?: string) => {
+    const launchRes = await fetchWithAuth(
+      `/devices/${deviceId}/remote-access-launch`,
+      providerId === undefined
+        ? { method: 'POST' }
+        : { method: 'POST', body: JSON.stringify({ providerId }) },
+    );
+
+    if (launchRes.status === 422) {
+      // Server detected a tampered template that resolved to a
+      // disallowed scheme after substitution. The server already
+      // emitted an audit event and Sentry capture. Surface a loud
+      // user-facing error rather than silently falling back.
+      const body = await launchRes.json().catch(() => ({} as { code?: string }));
+      Sentry.captureMessage(
+        'Remote-access launcher rejected by scheme policy',
+        { level: 'warning', extra: { deviceId, code: body?.code } },
+      );
+      showToast({
+        type: 'error',
+        message: t('connectDesktopButton.errors.securityCheckToast'),
+      });
+      setError(t('connectDesktopButton.errors.securityPolicy'));
+      setStatus('idle');
+      return;
+    }
+
+    if (launchRes.ok) {
+      const body = await launchRes.json() as { launchUrl?: string; scheme?: string };
+      const url = body?.launchUrl;
+      if (typeof url === 'string' && isAllowedLauncherScheme(url)) {
+        setStatus('launching');
+        if (/^https?:\/\//i.test(url)) {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        } else {
+          tryDeepLink(url);
+        }
+        setTimeout(() => setStatus('idle'), 1500);
+        return;
+      }
+      // Defense in depth: server should have returned 422, but the
+      // URL we got back has a disallowed scheme. Refuse the click.
+      Sentry.captureMessage(
+        'Remote-access launcher returned disallowed scheme client-side',
+        { level: 'warning', extra: { deviceId } },
+      );
+      showToast({
+        type: 'error',
+        message: t('connectDesktopButton.errors.securityCheckToast'),
+      });
+      setError(t('connectDesktopButton.errors.securityPolicy'));
+      setStatus('idle');
+      return;
+    }
+    // Non-OK, non-422. Fail loudly to match the 422 path's "config
+    // visibility over network-blip tolerance" framing. A 500 most
+    // likely indicates a partner DB lookup error the admin needs to
+    // see; a 404 means the device record (or, for a menu pick, the
+    // chosen tool's setup) changed since this UI loaded and the user
+    // should refresh. In every case, falling through to WebRTC would
+    // mask the real failure mode.
+    const failure = await launchRes.json().catch(() => ({})) as { code?: unknown };
+    // A launcher-side 404 carries the resolver's skip reason as `code`; a
+    // device that is gone ("Device not found") carries none.
+    const toolGone = launchRes.status === 404
+      && providerId !== undefined
+      && typeof failure.code === 'string'
+      && TOOL_UNAVAILABLE_CODES.has(failure.code);
+    // A pick from a menu that went stale is an expected outcome, not a fault.
+    if (!toolGone) {
+      Sentry.captureMessage(
+        'Remote-access launcher POST failed unexpectedly',
+        { level: 'warning', extra: { deviceId, status: launchRes.status, explicitProvider: providerId !== undefined } },
+      );
+    }
+    const friendly = toolGone
+      ? t('connectDesktopButton.errors.providerUnavailable')
+      : launchRes.status === 404
+        ? t('connectDesktopButton.errors.deviceChanged')
+        : t('connectDesktopButton.errors.server');
+    showToast({ type: 'error', message: friendly });
+    setError(t('connectDesktopButton.errors.http', { status: launchRes.status }));
+    setStatus('idle');
+  }, [deviceId, t]);
+
+  const startConnect = useCallback(async (targetSessionId?: number, choice?: ConnectChoice) => {
     setStatus('creating');
     setError(null);
     setStartFailedReason(null);
 
     try {
+      // #10922: a tool picked from the menu skips the device re-fetch below
+      // (it only decides between the default launcher and the built-in path)
+      // and goes straight to the launcher; the server re-checks the pick.
+      if (choice?.kind === 'provider') {
+        await launchViaRemoteTool(choice.id);
+        return;
+      }
+
       // The `desktopAccess` prop is fetched once when the Remote Tools page mounts
       // and never refreshed. On a slow helper-attach or after the user logs in
       // on the Mac, the snapshot goes stale and we'd route to VNC even when
@@ -280,7 +432,9 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       // is intentionally NOT toasted — that's the expected-empty case.
       // `scheme_not_allowed` would be a 422 on the launch POST, so it's
       // surfaced loudly there rather than here.
-      if (!hasRemoteAccessLauncher && launcherSkipReason && launcherSkipReason !== 'no_provider_configured') {
+      // Not when the built-in viewer was picked from the menu: the default
+      // tool was deliberately passed over, so its skip reason is noise.
+      if (choice === undefined && !hasRemoteAccessLauncher && launcherSkipReason && launcherSkipReason !== 'no_provider_configured') {
         const friendly =
           launcherSkipReason === 'missing_device_identifier'
             ? t('connectDesktopButton.launcherSkip.missingIdentifier')
@@ -301,90 +455,11 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         }
       }
 
-      // If the partner has configured a third-party remote-tool provider
-      // (RustDesk, ScreenConnect, TeamViewer, etc.) and this device has the
-      // matching per-device identifier in its custom_fields, request the
-      // one-shot launch URL from POST /devices/:id/remote-access-launch.
-      // The URL (with any preset password substituted and percent-encoded)
-      // is never embedded in the GET response so we only get it back in
-      // response to an explicit click. Each issuance is audited server-side.
-      //
-      // Auto-detect launch mode by URL prefix:
-      //   - http(s):// → open in a new browser tab (ScreenConnect, web-launchers)
-      //   - any other scheme → hand off to the OS protocol handler (RustDesk, etc.)
-      // Either way, skip the built-in WebRTC desktop flow.
-      //
-      // Defense in depth: the API rejects javascript:, data:, vbscript:,
-      // file:, etc. at write time AND re-checks the substituted URL before
-      // returning 422. We still re-check on the client so a tampered
-      // response can't execute a hostile scheme in the partner's origin.
-      if (hasRemoteAccessLauncher) {
-        const launchRes = await fetchWithAuth(`/devices/${deviceId}/remote-access-launch`, {
-          method: 'POST',
-        });
-
-        if (launchRes.status === 422) {
-          // Server detected a tampered template that resolved to a
-          // disallowed scheme after substitution. The server already
-          // emitted an audit event and Sentry capture. Surface a loud
-          // user-facing error rather than silently falling back.
-          const body = await launchRes.json().catch(() => ({} as { code?: string }));
-          Sentry.captureMessage(
-            'Remote-access launcher rejected by scheme policy',
-            { level: 'warning', extra: { deviceId, code: body?.code } },
-          );
-          showToast({
-            type: 'error',
-            message: t('connectDesktopButton.errors.securityCheckToast'),
-          });
-          setError(t('connectDesktopButton.errors.securityPolicy'));
-          setStatus('idle');
-          return;
-        }
-
-        if (launchRes.ok) {
-          const body = await launchRes.json() as { launchUrl?: string; scheme?: string };
-          const url = body?.launchUrl;
-          if (typeof url === 'string' && isAllowedLauncherScheme(url)) {
-            setStatus('launching');
-            if (/^https?:\/\//i.test(url)) {
-              window.open(url, '_blank', 'noopener,noreferrer');
-            } else {
-              tryDeepLink(url);
-            }
-            setTimeout(() => setStatus('idle'), 1500);
-            return;
-          }
-          // Defense in depth: server should have returned 422, but the
-          // URL we got back has a disallowed scheme. Refuse the click.
-          Sentry.captureMessage(
-            'Remote-access launcher returned disallowed scheme client-side',
-            { level: 'warning', extra: { deviceId } },
-          );
-          showToast({
-            type: 'error',
-            message: t('connectDesktopButton.errors.securityCheckToast'),
-          });
-          setError(t('connectDesktopButton.errors.securityPolicy'));
-          setStatus('idle');
-          return;
-        }
-        // Non-OK, non-422. Fail loudly to match the 422 path's "config
-        // visibility over network-blip tolerance" framing. A 500 most
-        // likely indicates a partner DB lookup error the admin needs to
-        // see; a 404 means the device record changed since this UI
-        // loaded and the user should refresh. In both cases, falling
-        // through to WebRTC would mask the real failure mode.
-        Sentry.captureMessage(
-          'Remote-access launcher POST failed unexpectedly',
-          { level: 'warning', extra: { deviceId, status: launchRes.status } },
-        );
-        const friendly = launchRes.status === 404
-          ? t('connectDesktopButton.errors.deviceChanged')
-          : t('connectDesktopButton.errors.server');
-        showToast({ type: 'error', message: friendly });
-        setError(t('connectDesktopButton.errors.http', { status: launchRes.status }));
-        setStatus('idle');
+      // The partner has a third-party tool configured and this device carries
+      // its identifier: launch the default tool (see launchViaRemoteTool). A
+      // menu pick of "Built-in viewer" (#10922) skips the launcher entirely.
+      if (choice === undefined && hasRemoteAccessLauncher) {
+        await launchViaRemoteTool();
         return;
       }
 
@@ -557,17 +632,30 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       );
       setStatus('idle');
     }
-  }, [deviceId, desktopAccess, remoteAccessPolicy, endSession, connectViaVnc, t]);
+  }, [deviceId, desktopAccess, remoteAccessPolicy, endSession, connectViaVnc, launchViaRemoteTool, t]);
 
   // Entry point for a connect click. RDS hosts open the session picker first;
   // everything else connects immediately (unchanged behavior).
   const handleClick = useCallback(() => {
     if (disabled) return;
     if (helperLifecycleMode === 'on-demand') {
+      setPickerChoice(undefined);
       setPickerOpen(true);
       return;
     }
     void startConnect();
+  }, [disabled, helperLifecycleMode, startConnect]);
+
+  // #10922: the split button's menu. A third-party tool opens on its own, so
+  // it never needs the RDS session picker; the built-in viewer still does.
+  const handleChoose = useCallback((choice: ConnectChoice) => {
+    if (disabled) return;
+    if (choice.kind === 'builtin' && helperLifecycleMode === 'on-demand') {
+      setPickerChoice(choice);
+      setPickerOpen(true);
+      return;
+    }
+    void startConnect(undefined, choice);
   }, [disabled, helperLifecycleMode, startConnect]);
 
   const handleDismiss = useCallback(() => {
@@ -1070,8 +1158,8 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       isOpen={pickerOpen}
       deviceId={deviceId}
       purpose="desktop"
-      onSelect={(sessionId) => { setPickerOpen(false); void startConnect(sessionId); }}
-      onClose={() => setPickerOpen(false)}
+      onSelect={(sessionId) => { setPickerOpen(false); void startConnect(sessionId, pickerChoice); }}
+      onClose={() => { setPickerOpen(false); setPickerChoice(undefined); }}
     />
   );
 
@@ -1134,19 +1222,56 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     );
   }
 
+  // #10922: split button. The menu offers every tool this device can be opened
+  // with except the one the primary click already launches, plus the built-in
+  // viewer. Hidden while the button is disabled (offline): nothing in it could
+  // run, and the primary button already carries the reason.
+  const inFlight = status === 'creating' || status === 'launching';
+  const toolOptions = remoteAccessProviders ?? [];
+  const showToolMenu = toolOptions.length > 0 && !disabled;
+  const defaultTool = toolOptions.find((p) => p.id === remoteAccessDefaultProviderId) ?? null;
+  const toolMenuItems: ActionMenuItem[] = showToolMenu
+    ? [
+        ...toolOptions
+          .filter((p) => p.id !== defaultTool?.id)
+          .map((p): ActionMenuItem => ({
+            id: `tool-${p.id}`,
+            label: p.label,
+            description: p.kind === 'web' ? t('connectDesktopButton.split.opensInBrowser') : undefined,
+            onSelect: () => handleChoose({ kind: 'provider', id: p.id }),
+            disabled: inFlight,
+            testId: `connect-desktop-tool-${p.id}`,
+          })),
+        {
+          id: 'builtin',
+          label: t('connectDesktopButton.split.builtInViewer'),
+          onSelect: () => handleChoose({ kind: 'builtin' }),
+          separatorBefore: toolOptions.some((p) => p.id !== defaultTool?.id),
+          disabled: inFlight,
+          testId: 'connect-desktop-tool-builtin',
+        },
+      ]
+    : [];
+  const primaryTitle = showToolMenu
+    ? defaultTool
+      ? t('connectDesktopButton.split.connectWith', { name: defaultTool.label })
+      : t('connectDesktopButton.split.connectWithBuiltIn')
+    : undefined;
+
   return (
     <div className={`relative ${className}`}>
+      <div className="flex">
       <button
         type="button"
         onClick={handleClick}
         // #9026: `disabled` (offline etc.) keeps the button in the Tab order so
         // its reason is reachable; handleClick already ignores the click. Only
         // the in-flight states use the native attribute.
-        disabled={status === 'creating' || status === 'launching'}
+        disabled={inFlight}
         aria-disabled={disabled || undefined}
-        title={error || (disabled ? disabledTitle : undefined)}
+        title={error || (disabled ? disabledTitle : undefined) || primaryTitle}
         aria-describedby={disabled && disabledTitle ? reasonId : undefined}
-        className={`flex h-9 items-center gap-2 rounded-md border px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:text-muted-foreground ${error ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900' : 'bg-background hover:bg-muted aria-disabled:hover:bg-background'}`}
+        className={`flex h-9 items-center gap-2 border px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:text-muted-foreground ${showToolMenu ? 'rounded-l-md' : 'rounded-md'} ${error ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900' : 'bg-background hover:bg-muted aria-disabled:hover:bg-background'}`}
       >
         <Monitor className="h-4 w-4" />
         {error ? t('connectDesktopButton.errors.connectionFailed') :
@@ -1161,6 +1286,16 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           </>
         )}
       </button>
+      {showToolMenu && (
+        <ActionMenu
+          label={t('connectDesktopButton.split.menuLabel')}
+          items={toolMenuItems}
+          testId="connect-desktop-tool-menu"
+          trigger={<ChevronDown className="h-4 w-4" aria-hidden="true" />}
+          triggerClassName="inline-flex h-9 items-center justify-center rounded-r-md border border-l-0 bg-background px-2 text-sm transition hover:bg-muted"
+        />
+      )}
+      </div>
       {disabled && disabledTitle && <span id={reasonId} className="sr-only">{disabledTitle}</span>}
 
       {fallbackContent}

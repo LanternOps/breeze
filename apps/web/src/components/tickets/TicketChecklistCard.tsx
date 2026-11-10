@@ -402,7 +402,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
                 {editing ? (
                   <div className="space-y-1 rounded-md border bg-muted/30 p-1.5">
                     {item.done && editLabel.trim() !== item.label && (
-                      <p className="text-[11px] text-warning" data-testid="ticket-checklist-edit-warning">
+                      <p className="text-[11px] text-warning-ink" data-testid="ticket-checklist-edit-warning">
                         {t('editDoneWarning')}
                       </p>
                     )}

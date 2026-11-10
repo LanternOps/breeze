@@ -7,6 +7,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { ensureAppRole } from './ensureAppRole';
+import {
+  acquireMigrationAdvisoryLock,
+  releaseMigrationAdvisoryLock,
+  type MigrationLockWaitOptions,
+} from './migrationAdvisoryLock';
 import { seed } from './seed';
 
 const MIGRATION_FILE_PATTERN = /^\d{4}-.*\.sql$/;
@@ -588,6 +593,84 @@ export async function recordMigration(
 export const LEGACY_CUTOFF = 65;
 
 /**
+ * Settings every core migration runs under, so that the migration set applies
+ * the same way for the least-privileged owner role a fresh install can use
+ * (LOGIN, CREATEDB, CREATEROLE, owner of the database, no SUPERUSER, no
+ * BYPASSRLS) as it does for a superuser (#8991):
+ *
+ * - `breeze.scope = 'system'`. Most tables are FORCE ROW LEVEL SECURITY, which
+ *   binds the owner role too. 122 shipped migrations write rows without electing
+ *   system scope themselves (the frozen baseline in `migrationRlsScope.test.ts`,
+ *   #4518). On a role that does not bypass RLS, an unscoped INSERT aborts with
+ *   42501 and an unscoped UPDATE/DELETE silently matches zero rows. Those files
+ *   are content-hash immutable and have already run on every existing install,
+ *   so a fix-forward migration cannot reach a fresh install. The runner has to
+ *   supply the scope. A superuser/BYPASSRLS run is unaffected by RLS either way.
+ *   Every file that sorts after that guard's `BASELINE_CUTOFF` is required to
+ *   elect system scope itself before its first write.
+ * - `createrole_self_grant = 'set, inherit'` (PG16+). PG16 gives a CREATEROLE
+ *   creator ADMIN on a role it creates but no membership, so a later
+ *   `ALTER ... OWNER TO <that role>` fails with "must be able to SET ROLE"
+ *   (`2026-07-16-td-synnex-sftp-price-file.sql`, `breeze_search`). With this
+ *   setting, roles created inside a migration are granted back to the migrating
+ *   role (SET + INHERIT membership), which matches how DigitalOcean's `doadmin`
+ *   behaves. A superuser ignores the setting. The GUC does not exist before
+ *   PG16, hence the version guard.
+ *
+ * `'transaction'` scopes both settings to the per-file transaction, which is
+ * re-established on every file and so survives a postgres.js reconnect.
+ * `'session'` is for `-- @no-transaction` files, where each statement commits
+ * on its own. It relies on the migration connection staying the same for the
+ * whole file, which is why `autoMigrate` disables postgres.js's connection
+ * recycling (`max_lifetime: 0`). `MIGRATION_SESSION_RESET_SQL` undoes it after
+ * the file.
+ */
+export function migrationSessionSql(lifetime: 'transaction' | 'session'): string {
+  const isLocal = lifetime === 'transaction' ? 'true' : 'false';
+  return `SELECT set_config('breeze.scope', 'system', ${isLocal});
+DO $$ BEGIN
+  IF current_setting('server_version_num')::int >= 160000 THEN
+    PERFORM set_config('createrole_self_grant', 'set, inherit', ${isLocal});
+  END IF;
+END $$;`;
+}
+
+/**
+ * Restores what `migrationSessionSql('session')` changed, back to the
+ * role/database defaults. Without it, the settings would carry over to the
+ * `afterMigration` hook and the ledger work that follow. It runs only when the
+ * file succeeds. A failing statement aborts the whole run, and `autoMigrate`
+ * then closes the connection along with the settings.
+ */
+export const MIGRATION_SESSION_RESET_SQL = `RESET "breeze.scope";
+DO $$ BEGIN
+  IF current_setting('server_version_num')::int >= 160000 THEN
+    EXECUTE 'RESET createrole_self_grant';
+  END IF;
+END $$;`;
+
+/**
+ * Apply one transactional migration file and record its ledger row atomically,
+ * under `migrationSessionSql('transaction')`. Used for the fresh-database
+ * baseline and for every pending file.
+ */
+export async function applyMigrationInTransaction(
+  client: postgres.Sql,
+  filename: string,
+  content: string,
+  checksum: string,
+): Promise<void> {
+  await client.begin(async (tx) => {
+    await tx.unsafe(migrationSessionSql('transaction'));
+    await tx.unsafe(content);
+    await tx.unsafe(
+      `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+      [filename, checksum],
+    );
+  });
+}
+
+/**
  * The session advisory-lock key for the CORE migration run. Exported for
  * tests. Mirrors `extensions/migrator.ts`'s per-extension lock
  * (`extensionLockKey` / `hashtextextended(key, 0)`) — same primitive, one
@@ -603,21 +686,29 @@ export const CORE_MIGRATION_LOCK_KEY = 'breeze-core-migrations';
  * idempotent and the ledger INSERT is `ON CONFLICT DO NOTHING`, but a lock
  * removes the window entirely rather than relying on that.
  *
+ * The wait is bounded (#4144): a holder that never lets go fails this boot
+ * with a `MigrationLockTimeoutError` naming its pid after
+ * `MIGRATION_LOCK_TIMEOUT_MS`, instead of stalling it forever. See
+ * `migrationAdvisoryLock.ts`.
+ *
  * `client` here is the SAME `postgres(connectionString, { max: 1 })` pool
  * used for the rest of the run: with a pool ceiling of 1 there is only ever
  * one physical connection to hand out, so every query for the life of this
  * function — transactional or not — runs on that one backend session, and a
- * session-scoped `pg_advisory_lock` taken on it before any other query stays
+ * session-scoped advisory lock taken on it before any other query stays
  * held for the whole run. A separately `.reserve()`d connection (the
  * extension migrator's approach, needed there because it shares a
  * general-purpose pool) would be redundant here.
  */
-async function acquireCoreMigrationLock(client: postgres.Sql): Promise<void> {
-  await client`SELECT pg_advisory_lock(hashtextextended(${CORE_MIGRATION_LOCK_KEY}, 0))`;
+async function acquireCoreMigrationLock(
+  client: postgres.Sql,
+  wait: MigrationLockWaitOptions = {},
+): Promise<void> {
+  await acquireMigrationAdvisoryLock(client, CORE_MIGRATION_LOCK_KEY, { ...wait, label: '[auto-migrate]' });
 }
 
 async function releaseCoreMigrationLock(client: postgres.Sql): Promise<void> {
-  await client`SELECT pg_advisory_unlock(hashtextextended(${CORE_MIGRATION_LOCK_KEY}, 0))`;
+  await releaseMigrationAdvisoryLock(client, CORE_MIGRATION_LOCK_KEY);
 }
 
 /**
@@ -641,16 +732,28 @@ export interface AutoMigrateOptions {
    * aborts the run like a failing migration would.
    */
   afterMigration?: (client: postgres.Sql, filename: string) => Promise<void>;
+  /**
+   * Overrides for the bounded core-lock wait (#4144). Production leaves this
+   * unset, so the wait comes from `MIGRATION_LOCK_TIMEOUT_MS`. The integration
+   * suite passes a short deadline here instead of changing the environment.
+   */
+  lockWait?: MigrationLockWaitOptions;
 }
 
 export async function autoMigrate(options: AutoMigrateOptions = {}): Promise<void> {
   const connectionString =
     process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
-  const client = postgres(connectionString, { max: 1 });
+  // `max_lifetime: 0` turns off postgres.js's connection recycling, which by
+  // default ends a connection after 30-60 minutes and silently opens a new one
+  // for the next query. A long run (an index build on a large install) would
+  // then lose the session advisory lock and, mid `-- @no-transaction` file, the
+  // session-level migration settings (#8991). The connection is meant to be
+  // pinned for the whole run, and this keeps it pinned.
+  const client = postgres(connectionString, { max: 1, max_lifetime: 0 });
 
   try {
-    await acquireCoreMigrationLock(client);
+    await acquireCoreMigrationLock(client, options.lockWait);
     try {
       await runCoreMigrations(client, options);
     } finally {
@@ -711,13 +814,7 @@ async function runCoreMigrations(
       const content = await readFile(sqlPath, 'utf8');
       const checksum = hashSql(content);
       console.log(`[auto-migrate] Applying baseline: ${baseline}`);
-      await client.begin(async (tx) => {
-        await tx.unsafe(content);
-        await tx.unsafe(
-          `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
-          [baseline, checksum],
-        );
-      });
+      await applyMigrationInTransaction(client, baseline, content, checksum);
       applied.set(baseline, checksum);
     }
     // Mark 0002-0065 as applied (already in baseline)
@@ -859,21 +956,17 @@ async function runCoreMigrations(
       // implicit transaction — which `CREATE INDEX CONCURRENTLY`
       // refuses to run inside.
       const statements = splitSqlStatements(content);
+      await client.unsafe(migrationSessionSql('session'));
       for (const stmt of statements) {
         await client.unsafe(stmt);
       }
+      await client.unsafe(MIGRATION_SESSION_RESET_SQL);
       await client.unsafe(
         `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
         [filename, checksum],
       );
     } else {
-      await client.begin(async (tx) => {
-        await tx.unsafe(content);
-        await tx.unsafe(
-          `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
-          [filename, checksum],
-        );
-      });
+      await applyMigrationInTransaction(client, filename, content, checksum);
     }
     appliedCount++;
     await options.afterMigration?.(client, filename);
@@ -890,7 +983,13 @@ async function runCoreMigrations(
   await ensureAppRole();
 
   // ── 8. Auto-seed if no users exist ───────────────────────────────────
-  const userCheck = await client`SELECT id FROM users LIMIT 1`;
+  //    `users` is FORCE ROW LEVEL SECURITY. For a migrating role that does not
+  //    bypass RLS, an unscoped read sees zero rows and would re-seed on every
+  //    boot (#8991), so read under system scope like the migrations above.
+  const userCheck = await client.begin(async (tx) => {
+    await tx.unsafe(`SELECT set_config('breeze.scope', 'system', true)`);
+    return tx`SELECT id FROM users LIMIT 1`;
+  });
   if (userCheck.length === 0) {
     console.log('[auto-migrate] No users found, running initial seed...');
     await seed();

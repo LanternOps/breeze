@@ -47,6 +47,10 @@ type Session struct {
 	cursorDC      *webrtc.DataChannel
 	controlDC     *webrtc.DataChannel
 
+	// softwareSwapRetryAt (unix nanos) suppresses swapToSoftwareEncoder until
+	// then, after it found no usable software encoder (#11392).
+	softwareSwapRetryAt atomic.Int64
+
 	// displayWake keeps the display on for the session (#10874). Set in
 	// StartSession before the capture loop starts; released in doCleanup.
 	displayWake *displayWakeHold
@@ -259,6 +263,13 @@ type SessionManager struct {
 	// once, at teardown, when there was any clipboard activity. Copied onto
 	// each session at creation, like OnSASRequest.
 	OnClipboardSummary func(sessionID string, summary ipc.ClipboardSummary)
+
+	// ClipboardProvider, if set, supplies each new session's clipboard; nil
+	// (or a nil result) means the local system clipboard. The Windows system
+	// helper sets it so that what SYSTEM cannot read, such as an image the
+	// user copied, is read through the user helper (#8393). Set before
+	// sessions start, like OnSASRequest.
+	ClipboardProvider func(sessionID string) clipboard.Provider
 
 	// OnSessionStarted is the symmetric hook: called when a WebRTC peer
 	// connection reaches Connected, i.e. the viewer is actually watching.

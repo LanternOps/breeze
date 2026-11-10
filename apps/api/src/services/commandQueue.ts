@@ -8,7 +8,14 @@ import {
   type DbAccessContext,
 } from '../db';
 import { deviceCommands, devices, auditLogs, users } from '../db/schema';
-import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
+import {
+  agentReachability,
+  dispatchCommandToAgent,
+  dispatchDisposition,
+  type DispatchDisposition,
+  type DispatchOutcome,
+} from './agentCommandRelay';
+import type { AgentCommand } from '../routes/agentWs';
 import { captureException, captureMessage } from './sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from './backupMetrics';
 import { randomUUID } from 'node:crypto';
@@ -65,12 +72,31 @@ export const DEVICE_UNREACHABLE_ERROR =
 // the command can't be delivered, so fail fast instead of queueing forever.
 export const WATCHDOG_STALE_MS = 10 * 60 * 1000;
 
-// Number of times we attempt sendCommandToAgent before releasing the claim
-// and short-circuiting with DEVICE_UNREACHABLE_ERROR. With a 500 ms gap this
-// gives a transient WS hiccup ~1s of grace before the user sees a failure.
+// Maximum dispatch attempts before releasing the claim and short-circuiting
+// with DEVICE_UNREACHABLE_ERROR. With a 500 ms gap this gives a transient WS
+// hiccup ~1s of grace before the user sees a failure. Only an `offline`
+// answer is retried (#4142); any other answer ends the loop on that attempt.
 // Exported so tests can derive the expected call count.
 export const SEND_RETRY_ATTEMPTS = 3;
 export const SEND_RETRY_DELAY_MS = 500;
+
+/**
+ * Push a frame through the relay facade (#4142). The facade never rejects; if
+ * it does anyway, the frame may have gone out, so the answer is treated as
+ * `uncertain` (claim kept) and reported.
+ */
+async function dispatchToAgent(
+  agentId: string,
+  frame: AgentCommand,
+): Promise<{ outcome: DispatchOutcome | null; disposition: DispatchDisposition }> {
+  try {
+    const outcome = await dispatchCommandToAgent(agentId, frame);
+    return { outcome, disposition: dispatchDisposition(outcome) };
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return { outcome: null, disposition: 'uncertain' };
+  }
+}
 
 // Command types for system tools.
 // #5128: the table itself now lives in the leaf module ./commandTypes so the
@@ -188,8 +214,9 @@ function writeAiCommandAudit(input: {
 
 // The transaction-scoped insert chokepoint lives in its own leaf module so
 // that `services/peripheralPolicyState.ts` can reach it WITHOUT pulling this
-// file (and therefore `routes/agentWs.ts`) into two global-placement worker
-// closures — see the header of commandQueueInsert.ts. Re-exported here so
+// file and its large import graph into two global-placement worker closures
+// (it once reached `routes/agentWs.ts`; since #4142 it reaches agents only
+// through the relay facade) — see the header of commandQueueInsert.ts. Re-exported here so
 // every existing importer keeps working.
 export { insertQueuedCommandInTransaction } from './commandQueueInsert';
 
@@ -222,11 +249,13 @@ export interface QueueCommandForExecutionResult {
   refusal?: CommandDispatchRefusal;
   trust?: { capability: 'device_execute'; reason: string };
   /**
-   * #5128. `delivered` = pushed over the live socket. `queued_live` = device
-   * online, waiting for the next heartbeat. `queued_offline` = the device was
-   * not online and the command is waiting for it to come back.
+   * #5128. `delivered` = pushed over the live socket. `indeterminate` = the
+   * push may have reached the agent; the row stays `sent` and the result or
+   * the reaper settles it (#4142). `queued_live` = device online, waiting for
+   * the next heartbeat. `queued_offline` = the device was not online and the
+   * command is waiting for it to come back.
    */
-  delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+  delivery?: 'delivered' | 'indeterminate' | 'queued_offline' | 'queued_live';
   /**
    * #5128. The instant after which the row expires undelivered. NULL for a
    * `reject` policy — those rows stay on the legacy execution clock.
@@ -238,7 +267,16 @@ export type RearmIdempotentCommandResult =
   | { delivered: true }
   | {
       delivered: false;
-      reason: 'agent_disconnected' | 'delivery_failed' | 'command_conflict' | 'command_cancelled';
+      /**
+       * `delivery_indeterminate`: the push may have reached the agent (#4142);
+       * the claim is kept and the result or the reaper settles it.
+       */
+      reason:
+        | 'agent_disconnected'
+        | 'delivery_failed'
+        | 'delivery_indeterminate'
+        | 'command_conflict'
+        | 'command_cancelled';
     };
 
 /**
@@ -310,7 +348,10 @@ export async function rearmIdempotentCommandForDelivery(input: {
   if (!prepared.ok) {
     return { delivered: false, reason: 'command_conflict' };
   }
-  if (!prepared.agentId || !isAgentConnected(prepared.agentId)) {
+  // #4142: only a lease read that answered "no lease" means disconnected. An
+  // agent on another instance is reachable through the relay, and an
+  // unreadable Redis proceeds to the claim, where the dispatch answers.
+  if (!prepared.agentId || (await agentReachability(prepared.agentId)) === 'absent') {
     return { delivered: false, reason: 'agent_disconnected' };
   }
 
@@ -327,18 +368,20 @@ export async function rearmIdempotentCommandForDelivery(input: {
   }
   // #8318 §6.4: push to the agent_id read IN the claim. The one read above,
   // before it, can belong to an install a reattach or re-enroll retired since.
-  const delivered = sendCommandToAgent(claimed.agentId, {
+  const { disposition } = await dispatchToAgent(claimed.agentId, {
     id: input.commandId,
     type: input.type,
     payload: input.payload,
   });
-  if (!delivered) {
-    await withSystemDbAccessContext(() =>
-      releaseClaimedCommandDelivery(input.commandId, claimed.executedAt),
-    );
-    return { delivered: false, reason: 'delivery_failed' };
+  if (disposition === 'delivered') return { delivered: true };
+  if (disposition === 'uncertain') {
+    // It may have reached the agent: keep the claim, never re-push it.
+    return { delivered: false, reason: 'delivery_indeterminate' };
   }
-  return { delivered: true };
+  await withSystemDbAccessContext(() =>
+    releaseClaimedCommandDelivery(input.commandId, claimed.executedAt),
+  );
+  return { delivered: false, reason: 'delivery_failed' };
 }
 
 // Backup-related command types — used to guard backup-specific Prometheus metrics
@@ -410,6 +453,10 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   'schedule_reboot',
   // Safe mode reboot
   CommandTypes.REBOOT_SAFE_MODE,
+  // Vendor updates (#11065): can flash firmware on a customer's machine.
+  CommandTypes.OEM_UPDATE_RUN,
+  // Vendor updates (#11065): hands the vendor tool's schedule back; runs its binary as SYSTEM.
+  CommandTypes.OEM_UPDATE_RELEASE,
   // (Wake-on-LAN audit is written by the wakeOnLan service against the target device,
   // not by the auto-audit path. The deviceCommands row is addressed to the relay agent
   // so the result handler in agentWs matches, but the user-visible action belongs to
@@ -1223,8 +1270,9 @@ async function precheckCommandExecution(
   // 1. Verify device inside the caller's transaction (RLS-protected ONLY when
   // the caller holds a tenant-scoped context — see the header note on #5264
   // and the explicit `expectedOrgId` gate immediately after this SELECT).
-  // agentEdition/agentVersion/watchdogVersion feed the artifact-edition gate
-  // below (#4093) — cheap here because this SELECT already runs.
+  // agentEdition/watchdogEdition/agentVersion/watchdogVersion feed the
+  // artifact-edition gate below (#4093, #4297) — cheap here because this
+  // SELECT already runs.
   const [device] = await db
     .select({
       id: devices.id,
@@ -1236,6 +1284,7 @@ async function precheckCommandExecution(
       agentEdition: devices.agentEdition,
       agentVersion: devices.agentVersion,
       watchdogVersion: devices.watchdogVersion,
+      watchdogEdition: devices.watchdogEdition,
       backupReadProtocolVersion: devices.backupReadProtocolVersion,
       backupWriteProtocolVersion: devices.backupWriteProtocolVersion,
       backupIntegrityProtocolVersion: devices.backupIntegrityProtocolVersion,
@@ -1374,11 +1423,16 @@ async function precheckCommandExecution(
   // we already know the connection is gone wastes ~15–30 s and surfaces a
   // misleading error. Non-interactive callers (and the heartbeat fallback)
   // can still queue normally.
+  //
+  // "Known-dead" is `absent` only (#4142): no local socket AND a presence
+  // read that answered with no lease. An agent connected to another instance
+  // is reached through the relay, and an unreadable Redis is not evidence the
+  // agent is gone.
   if (
     device.agentId &&
     dispatchViaWs &&
     INTERACTIVE_COMMAND_TYPES.has(type) &&
-    !isAgentConnected(device.agentId)
+    (await agentReachability(device.agentId)) === 'absent'
   ) {
     // Log so ops can correlate spikes of unreachable-fast-fails with WS pool
     // health. This is the single most useful signal for diagnosing recurrences
@@ -1605,22 +1659,32 @@ async function dispatchPreparedCommand(
         // never to `device.agentId`, read before it: a reattach or re-enroll
         // that committed in between hands the row to a different install.
         const claimedAgentId = claimed.agentId;
-        let sent = false;
+        // #4142: through the relay facade, so an agent on another instance is
+        // reached. Same command id on every attempt. Only `offline` is retried
+        // (a WS hiccup mid-reconnect); `uncertain` keeps the claim and falls
+        // through to polling (a re-push could run the command twice); any other
+        // not-delivered answer is final and releases once.
+        let disposition: DispatchDisposition = 'not_delivered';
+        let lastStatus: DispatchOutcome['status'] | 'rejected' | 'undeliverable' = 'undeliverable';
         for (let attempt = 0; delivered && attempt < SEND_RETRY_ATTEMPTS; attempt++) {
-          sent = sendCommandToAgent(claimedAgentId, toAgentCommandFrame(delivered));
-          if (sent) {
+          const sent = await dispatchToAgent(claimedAgentId, toAgentCommandFrame(delivered));
+          disposition = sent.disposition;
+          lastStatus = sent.outcome?.status ?? 'rejected';
+          if (disposition !== 'not_delivered') {
             if (attempt > 0) {
-              console.warn('[commandQueue] sendCommandToAgent recovered after retry', {
+              console.warn('[commandQueue] dispatch recovered after retry', {
                 commandId: command.id,
                 deviceId,
                 agentId: claimedAgentId,
                 type,
                 attempt: attempt + 1,
+                status: lastStatus,
               });
             }
             break;
           }
-          console.warn('[commandQueue] sendCommandToAgent failed, will retry', {
+          if (lastStatus !== 'offline') break;
+          console.warn('[commandQueue] dispatch found the agent offline, will retry', {
             commandId: command.id,
             deviceId,
             agentId: claimedAgentId,
@@ -1632,18 +1696,19 @@ async function dispatchPreparedCommand(
             await new Promise((resolve) => setTimeout(resolve, SEND_RETRY_DELAY_MS));
           }
         }
-        if (!sent) {
+        if (disposition === 'not_delivered') {
           await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-          console.warn('[commandQueue] sendCommandToAgent exhausted retries', {
+          console.warn('[commandQueue] dispatch did not deliver; claim released', {
             commandId: command.id,
             deviceId,
             agentId: claimedAgentId,
             type,
-            attempts: SEND_RETRY_ATTEMPTS,
+            status: lastStatus,
           });
-          // All retries exhausted with no successful send. For interactive
-          // commands the user is staring at a spinner — short-circuit with
-          // the unreachable error rather than burning the full poll timeout.
+          // Nothing was delivered. For interactive commands the user is
+          // staring at a spinner — short-circuit with the unreachable error
+          // rather than burning the full poll timeout. (An `uncertain` push
+          // never lands here: it polls, claim kept.)
           // For non-interactive commands, fall through to polling: the agent
           // may still pick the command up via the heartbeat path before the
           // timeout fires, in which case the user gets a real result.

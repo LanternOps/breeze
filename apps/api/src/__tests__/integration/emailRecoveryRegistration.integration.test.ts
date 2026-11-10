@@ -17,7 +17,7 @@
  *   docker run -d --name pr4-pg -e POSTGRES_USER=breeze -e POSTGRES_PASSWORD=breeze \
  *     -e POSTGRES_DB=breeze_test -p 5455:5432 \
  *     --tmpfs /var/lib/postgresql/data:rw,size=2g postgres:16-alpine
- *   docker run -d --name pr4-redis -p 6399:6379 redis:7-alpine
+ *   docker run -d --name pr4-redis -p 6399:6379 redis:8-alpine
  *   until docker exec pr4-pg pg_isready -U breeze >/dev/null 2>&1; do sleep 1; done
  *
  *   cd apps/api && \

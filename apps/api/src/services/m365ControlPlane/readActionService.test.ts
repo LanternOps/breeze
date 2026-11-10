@@ -38,6 +38,7 @@ vi.mock('../../db/schema', () => ({
     orgId: { name: 'org_id' },
     tenantId: { name: 'tenant_id' },
     profile: { name: 'profile' },
+    userId: { name: 'user_id' },
     status: { name: 'status' },
   },
 }));
@@ -48,6 +49,7 @@ vi.mock('drizzle-orm', async (importActual) => {
     ...actual,
     and: vi.fn((...conditions: unknown[]) => ({ op: 'and', conditions })),
     eq: vi.fn((column: unknown, value: unknown) => ({ op: 'eq', column, value })),
+    isNull: vi.fn((column: unknown) => ({ op: 'isNull', column })),
   };
 });
 
@@ -65,6 +67,7 @@ vi.mock('../../db', () => ({
     },
   },
   withDbAccessContext: contextMocks.withCaller,
+  hasDbAccessContext: vi.fn(() => true),
   withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>, label?: string) => { contextMocks.system(label); return fn(); }),
 }));
 
@@ -107,7 +110,7 @@ vi.mock('../auditEvents', async (importActual) => {
   };
 });
 
-import { executeM365UserLookupForCallerTarget, executeM365MailboxReadByOrg, executeM365ReadAction, executeM365ReadActionByOrg } from './readActionService';
+import { executeM365UserLookupForCallerTarget, executeM365MailboxReadByOrg, executeM365ReadAction, executeM365ReadActionByOrg, readM365OrganizationForVerification } from './readActionService';
 import { GraphReadExecutorClientError } from './graphReadExecutorClient';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../auditEvents';
@@ -612,5 +615,120 @@ describe('executeM365UserLookupForCallerTarget (#6354 W05)', () => {
   it('refuses an invalid identifier before any DB access', async () => {
     await executeM365UserLookupForCallerTarget(ORG_ID, '', TENANT_ID, ACTOR_ID);
     expect(dbMocks.selectSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('readM365OrganizationForVerification (portal domain verification, W05)', () => {
+  const ORG_RESOURCE = {
+    id: TENANT_ID,
+    displayName: 'Acme',
+    verifiedDomains: [
+      { name: 'Acme.Example', isInitial: false, isDefault: true, type: 'Managed', capabilities: 'Email' },
+      { name: 'acme.onmicrosoft.com', isInitial: true, isDefault: false, type: 'Managed', capabilities: 'Email' },
+    ],
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    runtimeMocks.enabled.mockReturnValue(true);
+    runtimeMocks.loadConfig.mockReturnValue(RUNTIME_CONFIG);
+    budgetMocks.consume.mockResolvedValue({ allowed: true });
+    executorMocks.createClient.mockReturnValue({ executeReadAction: executorMocks.executeReadAction });
+  });
+
+  it('readM365OrganizationForVerification runs m365.org.get even when M365_GRAPH_READ_TOOLS_ENABLED is off', async () => {
+    runtimeMocks.enabled.mockReturnValue(false);
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockResolvedValue({ success: true, kind: 'resource', resource: ORG_RESOURCE });
+    const result = await readM365OrganizationForVerification(ORG_ID, TENANT_ID);
+    expect(result).toEqual({
+      ok: true,
+      tenantId: TENANT_ID,
+      connectionId: CONNECTION_ID,
+      verifiedDomains: [
+        { name: 'acme.example', isInitial: false },
+        { name: 'acme.onmicrosoft.com', isInitial: true },
+      ],
+    });
+    expect(executorMocks.executeReadAction).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: TENANT_ID, action: ORG_GET_ACTION,
+    }));
+    expect(contextMocks.withCaller).not.toHaveBeenCalled();
+    expect(contextMocks.system).not.toHaveBeenCalled();
+  });
+
+  it('readM365OrganizationForVerification with no held context reads the connection in a system scope closed before the Graph call', async () => {
+    const dbModule = await import('../../db');
+    vi.mocked(dbModule.hasDbAccessContext).mockReturnValueOnce(false);
+    let systemOpen = false;
+    let openDuringGraphCall: boolean | null = null;
+    vi.mocked(dbModule.withSystemDbAccessContext).mockImplementationOnce(async (fn, label) => {
+      contextMocks.system(label);
+      systemOpen = true;
+      try { return await fn(); } finally { systemOpen = false; }
+    });
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockImplementationOnce(async () => {
+      openDuringGraphCall = systemOpen;
+      return { success: true, kind: 'resource', resource: ORG_RESOURCE };
+    });
+    const result = await readM365OrganizationForVerification(ORG_ID, TENANT_ID);
+    expect(result.ok).toBe(true);
+    expect(contextMocks.system).toHaveBeenCalledWith('portalDomainVerification.readM365Connection');
+    expect(openDuringGraphCall).toBe(false);
+  });
+
+  it('readM365OrganizationForVerification: a connection not yet bound to a tenant is connection_not_ready, never no_connection', async () => {
+    dbMocks.selectResults.push([connectionRow({ tenantId: null })]);
+    expect(await readM365OrganizationForVerification(ORG_ID, TENANT_ID)).toEqual({ ok: false, code: 'connection_not_ready' });
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
+  });
+
+  it('readM365OrganizationForVerification refuses a connection bound to a different tenant (no_connection)', async () => {
+    dbMocks.selectResults.push([connectionRow({ tenantId: '99999999-9999-4999-8999-999999999999' })]);
+    const result = await readM365OrganizationForVerification(ORG_ID, TENANT_ID);
+    expect(result).toEqual({ ok: false, code: 'no_connection' });
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
+  });
+
+  it('readM365OrganizationForVerification never runs another action type', async () => {
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockResolvedValue({ success: true, kind: 'resource', resource: ORG_RESOURCE });
+    await readM365OrganizationForVerification(ORG_ID, TENANT_ID.toUpperCase());
+    expect(executorMocks.executeReadAction).toHaveBeenCalledTimes(1);
+    expect(executorMocks.executeReadAction.mock.calls[0]![0].action).toEqual({ type: 'm365.org.get' });
+  });
+
+  it('maps missing, other-org and not-ready connections without an executor call', async () => {
+    dbMocks.selectResults.push([]);
+    expect(await readM365OrganizationForVerification(ORG_ID, TENANT_ID)).toEqual({ ok: false, code: 'no_connection' });
+    dbMocks.selectResults.push([connectionRow({ orgId: 'other-org' })]);
+    expect(await readM365OrganizationForVerification(ORG_ID, TENANT_ID)).toEqual({ ok: false, code: 'no_connection' });
+    dbMocks.selectResults.push([connectionRow({ status: 'revoked' })]);
+    expect(await readM365OrganizationForVerification(ORG_ID, TENANT_ID)).toEqual({ ok: false, code: 'connection_not_ready' });
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
+  });
+
+  it('maps executor failures to executor_error and timeouts to timeout; malformed data is executor_error', async () => {
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockResolvedValue({ success: false, errorCode: 'graph_permission_missing' });
+    expect(await readM365OrganizationForVerification(ORG_ID, TENANT_ID)).toEqual({ ok: false, code: 'executor_error' });
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockResolvedValue({ success: false, errorCode: 'graph_request_timeout' });
+    expect(await readM365OrganizationForVerification(ORG_ID, TENANT_ID)).toEqual({ ok: false, code: 'timeout' });
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockResolvedValue({ success: true, kind: 'resource', resource: { id: TENANT_ID } });
+    expect(await readM365OrganizationForVerification(ORG_ID, TENANT_ID)).toEqual({ ok: false, code: 'executor_error' });
+  });
+});
+
+describe('executeM365ReadActionByOrg gate (portal verification must not weaken it)', () => {
+  it('executeM365ReadActionByOrg still refuses with tools_disabled when the gate is off', async () => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    runtimeMocks.enabled.mockReturnValue(false);
+    const result = await executeM365ReadActionByOrg(ORG_ID, ORG_GET_ACTION);
+    expect(result).toMatchObject({ ok: false, code: 'tools_disabled' });
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
   });
 });

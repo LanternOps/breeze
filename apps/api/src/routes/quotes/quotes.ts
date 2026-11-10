@@ -21,7 +21,7 @@ import {
 } from '../../services/quoteService';
 import { createQuoteOrder, updateQuoteOrder, updateQuoteOrderLine } from '../../services/quoteOrderService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { quoteImages, quoteAcceptances } from '../../db/schema/quotes';
 import { users } from '../../db/schema/users';
 import { partners } from '../../db/schema/orgs';
@@ -312,11 +312,12 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // quote-detail load.
     let partnerAutoEmailRow: { autoEmailInvoiceOnQuoteAccept: boolean } | undefined;
     try {
-      [partnerAutoEmailRow] = await db
+      // Savepoint so a failed read rolls back and the request transaction survives (#11203).
+      [partnerAutoEmailRow] = await withDbTransaction(async () => db
         .select({ autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept })
         .from(partners)
         .where(eq(partners.id, detail.quote.partnerId))
-        .limit(1);
+        .limit(1));
     } catch (err) {
       console.error('GET /quotes/:id: partner auto-email lookup failed', { quoteId: id, partnerId: detail.quote.partnerId, err });
     }

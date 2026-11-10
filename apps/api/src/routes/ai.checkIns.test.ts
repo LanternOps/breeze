@@ -208,6 +208,15 @@ vi.mock('../services/wisp/checkInTurn', async (orig) => ({
   loadFiredCheckIns: ci.load,
   markCheckInsConsumed: ci.consume,
 }));
+// #10426: the lazily-imported standing-state half. Default: nothing to send.
+const ss = vi.hoisted(() => ({
+  forTurn: vi.fn(async (..._a: unknown[]) => null as { block: string; hash: string } | null),
+  markSent: vi.fn(async (..._a: unknown[]) => undefined),
+}));
+vi.mock('../services/wisp/standingStateTurn', () => ({
+  standingStateForTurn: ss.forTurn,
+  markStandingStateSent: ss.markSent,
+}));
 
 // W05 (#7603): the transition gate. Typed against the real signatures (Codex
 // review finding 21): an inferred `{ kind: string }` return would reject the
@@ -240,11 +249,15 @@ const SESSION_ID = '11111111-1111-1111-1111-111111111111';
 const GRANT_ID = '22222222-2222-4222-8222-222222222222';
 const USER_ROW_ID = '77777777-7777-4777-8777-777777777777';
 
+const REVISION_ID = '88888888-8888-4888-8888-888888888888';
+
 const DB_SESSION = {
   id: SESSION_ID, orgId: ORG_ID, sdkSessionId: null, maxTurns: 50, turnCount: 0,
   systemPrompt: 'sp', title: 'existing title', type: 'general', deviceId: null,
-  wispGrantId: GRANT_ID,
+  wispGrantId: GRANT_ID, wispGrantRevisionId: REVISION_ID,
 };
+
+const STANDING = { block: '<wisp_standing_state as_of="2026-11-04 14:40 UTC">\nConcerns open: 1 high · 0 medium · 0 low\n</wisp_standing_state>', hash: 'h1' };
 
 const FIRED: FiredCheckIn[] = [
   {
@@ -489,5 +502,150 @@ describe('POST /ai/sessions/:id/messages — fired Wisp check-ins (#10995)', () 
     const res2 = await post(app);
     expect(res2.status).toBe(500);
     expect(ci.consume).not.toHaveBeenCalled();
+  });
+
+  describe('the standing-state block (#10426)', () => {
+    beforeEach(() => {
+      ss.forTurn.mockResolvedValue(STANDING);
+    });
+
+    it('a Wisp turn opens with the standing state, before the check-ins, and the user text stays last', async () => {
+      await (await post(app)).text();
+      expect(ss.forTurn).toHaveBeenCalledWith({ grantId: GRANT_ID, revisionId: REVISION_ID, sessionId: SESSION_ID, auth: expect.objectContaining({ user: expect.objectContaining({ id: 'user-1' }) }) });
+      const turn = pushed();
+      expect(turn.startsWith('<wisp_standing_state')).toBe(true);
+      expect(turn.indexOf('<wisp_check_ins>')).toBeGreaterThan(turn.indexOf('</wisp_standing_state>'));
+      expect(turn.endsWith('\n\nhi there')).toBe(true);
+      // The stored user row and the system prompt never carry it.
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ role: 'user', content: 'hi there' }));
+      for (const arg of vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]!) {
+        expect(JSON.stringify(arg ?? null)).not.toContain('wisp_standing_state');
+      }
+    });
+
+    it('without fired check-ins the standing state sits directly before the user text', async () => {
+      ci.load.mockResolvedValue([]);
+      await (await post(app)).text();
+      expect(pushed()).toBe(`${STANDING.block}\n\nhi there`);
+    });
+
+    it('is read before the budget reservation and recorded as sent only after dispatch', async () => {
+      await (await post(app)).text();
+      expect(ss.forTurn.mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(reserveAiBudget).mock.invocationCallOrder[0]!);
+      expect(ss.markSent).toHaveBeenCalledWith(SESSION_ID, 'h1');
+      expect(ss.markSent.mock.invocationCallOrder[0]!)
+        .toBeGreaterThan(active.inputController.pushMessage.mock.invocationCallOrder[0]!);
+    });
+
+    it('analysis results stay outermost: results, standing state, check-ins, user text', async () => {
+      active.pendingRunResults = [{ runId: 'run-1', status: 'completed', summary: 'All clear.', artifacts: [] }];
+      await (await post(app)).text();
+      const turn = pushed();
+      const runAt = turn.indexOf('[breeze:analysis-results]');
+      const standingAt = turn.indexOf('<wisp_standing_state');
+      const checkInAt = turn.indexOf('<wisp_check_ins>');
+      expect(runAt).toBe(0);
+      expect(standingAt).toBeGreaterThan(runAt);
+      expect(checkInAt).toBeGreaterThan(standingAt);
+      expect(turn.endsWith('\n\nhi there')).toBe(true);
+    });
+
+    it('instruction capture (#10428) gets only the technician text, never the blocks Wisp adds to the turn', async () => {
+      active.pendingRunResults = [{ runId: 'run-1', status: 'completed', summary: 'All clear.', artifacts: [] }];
+      preflight({ ...DB_SESSION, continuedFromSessionId: '33333333-3333-4333-8333-333333333333' });
+      cont.load.mockResolvedValueOnce('Earlier: the disk was full.');
+      await (await post(app)).text();
+      // Every injected block really is on the turn the model reads...
+      const turn = pushed();
+      for (const marker of ['[breeze:analysis-results]', '<wisp_standing_state', '<wisp_check_ins>', '<prior_conversation_summary>']) {
+        expect(turn).toContain(marker);
+      }
+      // ...and none of them reaches the turn record the capture reads.
+      const opts = vi.mocked(streamingSessionManager.tryTransitionToProcessing).mock.calls[0]![2]!;
+      expect(opts.userMessage).toBe('hi there');
+    });
+
+    it('a topology turn hands instruction capture nothing', async () => {
+      preflight({ ...DB_SESSION, type: 'topology' });
+      topo.prepare.mockResolvedValueOnce({
+        ok: true,
+        prepared: { kind: 'live', runtime: { abort: topo.abort }, prompt: 'TOPOLOGY PROMPT', systemPrompt: 'TOPOLOGY SYSTEM', allowedMcpTools: [] },
+      });
+      await (await post(app)).text();
+      const opts = vi.mocked(streamingSessionManager.tryTransitionToProcessing).mock.calls[0]![2]!;
+      expect(opts).not.toHaveProperty('userMessage');
+    });
+
+    it('a failure to record it after dispatch still streams the turn', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      ss.markSent.mockRejectedValueOnce(new Error('unexpected'));
+      const res = await post(app);
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(pushed().startsWith('<wisp_standing_state')).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('standing state as sent'), expect.objectContaining({ sessionId: SESSION_ID }));
+      warn.mockRestore();
+    });
+
+    it('a session that cannot be created (409 wisp_session_unavailable) records nothing', async () => {
+      vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(
+        Object.assign(new Error('grant paused'), { code: 'wisp_session_unavailable' }),
+      );
+      expect((await post(app)).status).toBe(409);
+      expect(ss.markSent).not.toHaveBeenCalled();
+    });
+
+    it('a refused turn (402) records nothing, so the next turn still carries it', async () => {
+      vi.mocked(reserveAiBudget).mockResolvedValueOnce({ kind: 'denied', message: 'Daily AI budget exceeded' } as any);
+      expect((await post(app)).status).toBe(402);
+      expect(ss.markSent).not.toHaveBeenCalled();
+    });
+
+    it('nothing new to say: the turn is unchanged and nothing is recorded', async () => {
+      ss.forTurn.mockResolvedValue(null);
+      ci.load.mockResolvedValue([]);
+      await (await post(app)).text();
+      expect(pushed()).toBe('hi there');
+      expect(ss.markSent).not.toHaveBeenCalled();
+    });
+
+    it('a non-Wisp turn never reads it and is byte-for-byte unchanged', async () => {
+      preflight({ ...DB_SESSION, wispGrantId: null, wispGrantRevisionId: null });
+      await (await post(app)).text();
+      expect(ss.forTurn).not.toHaveBeenCalled();
+      expect(pushed()).toBe('hi there');
+    });
+
+    it('a session with no revision pin reads nothing', async () => {
+      preflight({ ...DB_SESSION, wispGrantRevisionId: null });
+      ci.load.mockResolvedValue([]);
+      await (await post(app)).text();
+      expect(ss.forTurn).not.toHaveBeenCalled();
+      expect(pushed()).toBe('hi there');
+    });
+
+    it('a failure to load it is reported and the turn goes out without it', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const boom = new Error('module load failed');
+      ss.forTurn.mockRejectedValue(boom);
+      ci.load.mockResolvedValue([]);
+      const res = await post(app);
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(pushed()).toBe('hi there');
+      expect(captureException).toHaveBeenCalledWith(boom, expect.anything(), { wisp_standing_state_phase: 'read' });
+      warn.mockRestore();
+    });
+
+    it('a topology turn never reads it', async () => {
+      preflight({ ...DB_SESSION, type: 'topology' });
+      topo.prepare.mockResolvedValueOnce({
+        ok: true,
+        prepared: { kind: 'live', runtime: { abort: topo.abort }, prompt: 'TOPOLOGY PROMPT', systemPrompt: 'TOPOLOGY SYSTEM', allowedMcpTools: [] },
+      });
+      await (await post(app)).text();
+      expect(ss.forTurn).not.toHaveBeenCalled();
+      expect(pushed()).toBe('TOPOLOGY PROMPT');
+    });
   });
 });

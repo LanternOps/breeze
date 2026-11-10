@@ -380,6 +380,7 @@
         "mrr_renewals": "MRR und Verlängerungen",
         "quote_win_rate": "Angebots-Gewinnquote",
         "client_profitability": "Kundenrentabilität",
+        "ticket_sla_performance": "SLA-Leistung",
         "backup_status": "Sicherungsstatus"
       },
       "threatDetection": {
@@ -409,6 +410,29 @@
         "noncompliant": "Nicht konform",
         "notMeasured": "k. A.",
         "staleEnrolments": "Veraltete Registrierungen"
+      },
+      "slaPerformance": {
+        "priority": "Priorität",
+        "ticketsOpened": "Eröffnete Tickets",
+        "firstResponse": "Erste Reaktion",
+        "resolution": "Lösung",
+        "target": "Ziel",
+        "measured": "Gemessen",
+        "withinSla": "% innerhalb des SLA",
+        "median": "Median",
+        "mean": "Mittelwert",
+        "varies": "variiert",
+        "breaches": "Verstöße",
+        "breachCount_one": "{{count}} Verstoß",
+        "breachCount_other": "{{count}} Verstöße",
+        "unavailable": "Die SLA-Zusammenfassung dieses Laufs konnte nicht gelesen werden und kann hier nicht angezeigt werden. Erstellen Sie den Bericht erneut.",
+        "notes": "Was hier gemessen wird",
+        "priorities": {
+          "urgent": "Dringend",
+          "high": "Hoch",
+          "normal": "Normal",
+          "low": "Niedrig"
+        }
       },
       "identityAccess": {
         "notMeasured": "k. A.",
@@ -486,6 +510,7 @@
         "mrr_renewals": "MRR und Verlängerungen",
         "quote_win_rate": "Angebots-Gewinnquote",
         "client_profitability": "Kundenrentabilität",
+        "ticket_sla_performance": "SLA-Leistung",
         "backup_status": "Sicherungsstatus"
       },
       "runsTable": {
@@ -1039,6 +1064,7 @@
         "mrr_renewals": "MRR und Verlängerungen",
         "quote_win_rate": "Angebots-Gewinnquote",
         "client_profitability": "Kundenrentabilität",
+        "ticket_sla_performance": "SLA-Leistung",
         "backup_status": "Sicherungsstatus"
       },
       "schedules": {
@@ -1119,6 +1145,10 @@
         "quote_win_rate": {
           "name": "Angebots-Gewinnquote",
           "description": "Der Anteil der versendeten Angebote, die gewonnen wurden, gezählt pro Geschäftschance, sodass ein überarbeitetes und erneut versendetes Angebot nur einmal zählt. Die Kennzahl berücksichtigt nur entschiedene Chancen, daneben steht die Zahl der noch offenen. Werte sind netto, pro Währung eine Summe, ohne Umrechnung."
+        },
+        "ticket_sla_performance": {
+          "name": "SLA-Leistung",
+          "description": "Kundentaugliche Reaktions- und Lösungszeiten im Vergleich zum SLA, nach Priorität, mit Verstößen."
         },
         "client_profitability": {
           "name": "Kundenrentabilität",
@@ -1274,6 +1304,12 @@
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen"
     },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Ticketbetreffe einbeziehen",
+      "includeSubjectsHelp": "Zugestellte Berichte sind für alle Portalbenutzer dieser Organisation sichtbar. Deaktiviert lassen, es sei denn, jeder Benutzer darf jeden Ticketbetreff sehen.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
     "clientProfitabilityOptions": {
       "groupBy": "Gruppieren nach",
       "groupByDefault": "Standard für den Berichtsumfang",
@@ -1314,8 +1350,7 @@
         "series": "Ein Bericht pro Organisation",
         "seriesHint": "Eine Definition mit einer eigenen Kopie für jede abgedeckte Organisation, die jeweils an die Kontakte dieser Organisation gesendet wird.",
         "combined": "Alle Organisationen zusammengefasst",
-        "combinedHint": "Ein zusammengefasster Bericht über alle Ihre Organisationen für Ihr eigenes Team.",
-        "seriesUnavailableType": "Dieser Berichtstyp kann nicht als ein Bericht pro Organisation gesendet werden."
+        "combinedHint": "Ein zusammengefasster Bericht über alle Ihre Organisationen für Ihr eigenes Team."
       },
       "schedule": {
         "label": "Wie oft die Kopie jeder Organisation gesendet wird",

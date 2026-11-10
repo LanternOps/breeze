@@ -43,7 +43,7 @@ func TestWindowsCollectRegistry_UnderVSSCopiesFromShadowNotRegExe(t *testing.T) 
 	c := &WindowsCollector{opts: CollectOptions{ShadowPaths: map[string]string{vol: root}}}
 
 	staging := t.TempDir()
-	arts, err := c.collectRegistry(staging)
+	arts, err := c.collectRegistry(context.Background(), staging)
 	if err != nil {
 		t.Fatalf("collectRegistry: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestLive_CollectRegistryFromRealShadowCopy(t *testing.T) {
 
 	c := &WindowsCollector{opts: CollectOptions{ShadowPaths: session.ShadowPaths}}
 	staging := t.TempDir()
-	arts, err := c.collectRegistry(staging)
+	arts, err := c.collectRegistry(context.Background(), staging)
 	if err != nil {
 		t.Fatalf("collectRegistry from the shadow copy: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestLive_SystemImageShapedCaptureTakesItsOwnShadowCopy(t *testing.T) {
 	}
 	forbidRegSave(t)
 
-	manifest, staging, err := CollectSystemStateWithOptions(CollectOptions{})
+	manifest, staging, err := CollectSystemStateWithOptions(context.Background(), CollectOptions{})
 	if err != nil {
 		t.Fatalf("CollectSystemStateWithOptions: %v", err)
 	}

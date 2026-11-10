@@ -10,7 +10,7 @@ vi.mock('../db', () => {
     if (failNext.value) { failNext.value = false; return Promise.reject(new Error('db down')).then(res, rej); }
     return Promise.resolve(rows.shift() ?? []).then(res, rej);
   };
-  return { db: chain };
+  return { db: chain, withDbTransaction: (fn: () => unknown) => fn(), withDbTransactionIfHeld: (fn: () => unknown) => fn() };
 });
 
 import { previousOccurrenceBaselineFor } from './evidenceBaseline';

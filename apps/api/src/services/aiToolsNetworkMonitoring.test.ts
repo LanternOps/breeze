@@ -502,6 +502,20 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     expect(out.truncated).toBe(false);
   });
 
+  // W04 (#11504): the same MAC can be two rows (two controller sites), so a
+  // client row is only identifiable with its collector and controller site.
+  it('client rows include collectorId and localSiteId', async () => {
+    const { unifiClients } = await import('../db/schema');
+    h.svc.getConnection.mockResolvedValue(conn);
+    h.queue.push([{ id: SITE, orgId: ORG }], [], []);
+    await call('get_unifi_status', { action: 'telemetry', siteId: SITE }, partnerAuth());
+    const projections = h.db.select.mock.calls.map((args: unknown[]) => args[0] as Record<string, unknown> | undefined);
+    const clientProjection = projections.find((p) => p?.mac === unifiClients.mac);
+    expect(clientProjection).toBeDefined();
+    expect(clientProjection!.collectorId).toBe(unifiClients.collectorId);
+    expect(clientProjection!.localSiteId).toBe(unifiClients.localSiteId);
+  });
+
   it('hosts: a vendor failure is summarised, never relayed', async () => {
     h.svc.getConnection.mockResolvedValue(conn);
     h.svc.getDecryptedApiKey.mockResolvedValue('secret-key');

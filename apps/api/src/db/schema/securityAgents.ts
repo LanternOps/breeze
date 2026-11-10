@@ -17,15 +17,16 @@ import { softwarePolicies } from './softwarePolicies';
 
 /**
  * The vendors `security_agent_device_status_vendor_chk` admits (hand-synced
- * with the CHECK below and its migration). Narrower than the registry while a vendor is dormant: a dormant vendor
- * gets no rule, so no row names it. `securityAgentVendors.test.ts` fails if an
- * enableable vendor falls outside this list.
+ * with the CHECK below and its newest migration, which
+ * `securityAgentStatusVendorBitdefender.migration.test.ts` pins). A refused row
+ * fails the insert shared by every vendor in a policy, so
+ * `securityAgentVendors.test.ts` fails if an enableable vendor falls outside
+ * this list.
  */
-export const SECURITY_AGENT_STATUS_VENDORS = ['huntress', 'sentinelone', 'controld', 'nextdns'] as const;
+export const SECURITY_AGENT_STATUS_VENDORS = ['huntress', 'sentinelone', 'controld', 'nextdns', 'bitdefender'] as const;
 /**
- * Any registry vendor, so readers and writers need no casts. Wider than the
- * CHECK: the type does not promise an insert succeeds for a vendor outside
- * `SECURITY_AGENT_STATUS_VENDORS`.
+ * Any registry vendor, so readers and writers need no casts. The type does not
+ * promise an insert succeeds for a vendor outside `SECURITY_AGENT_STATUS_VENDORS`.
  */
 export type SecurityAgentStatusVendor = SecurityAgentVendorKey;
 
@@ -90,7 +91,7 @@ export const securityAgentDeviceStatus = pgTable('security_agent_device_status',
     .where(sql`${table.policyId} IS NOT NULL`),
   check(
     'security_agent_device_status_vendor_chk',
-    sql`${table.vendor} IN ('huntress', 'sentinelone', 'controld', 'nextdns')`,
+    sql`${table.vendor} IN ('huntress', 'sentinelone', 'controld', 'nextdns', 'bitdefender')`,
   ),
   check(
     'security_agent_device_status_state_chk',

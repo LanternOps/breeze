@@ -3,6 +3,7 @@ import { db } from '../db';
 import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { policyOwnershipCondition } from './configPolicyOwnership';
+import { reportInvalidStoredSettings } from './invalidStoredSettingsReport';
 import {
   candidatesWithLink,
   type ApplicabilityRule,
@@ -114,7 +115,7 @@ export function createSystemAuthContext(): AuthContext {
 // Internal: Build hierarchy target conditions
 // ============================================
 
-interface DeviceHierarchy {
+export interface DeviceHierarchy {
   deviceId: string;
   orgId: string;
   siteId: string;
@@ -124,7 +125,7 @@ interface DeviceHierarchy {
   osType: string;
 }
 
-async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
+export async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
   // 1. Load device
   const [device] = await executor
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType })
@@ -221,7 +222,7 @@ export function buildRoleOsFilterConditions(device: DeviceRoleOs): SQL[] {
   ];
 }
 
-function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
+export function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
   const conditions: SQL[] = [];
 
   // Device level
@@ -275,7 +276,7 @@ function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
  * Sort rows by hierarchy level (device=5 wins first), then assignment priority ASC,
  * then createdAt ASC (earliest first as tiebreaker).
  */
-type HierarchyRanked = { assignmentLevel: string; assignmentPriority: number; assignmentCreatedAt: Date };
+export type HierarchyRanked = { assignmentLevel: string; assignmentPriority: number; assignmentCreatedAt: Date };
 
 /**
  * The comparator {@link sortByHierarchy} sorts with: negative when `a` wins
@@ -292,7 +293,7 @@ export function compareByHierarchy(a: HierarchyRanked, b: HierarchyRanked): numb
   return a.assignmentCreatedAt.getTime() - b.assignmentCreatedAt.getTime();
 }
 
-function sortByHierarchy<T extends HierarchyRanked>(rows: T[]): T[] {
+export function sortByHierarchy<T extends HierarchyRanked>(rows: T[]): T[] {
   return rows.sort(compareByHierarchy);
 }
 
@@ -429,7 +430,7 @@ export interface ResolvedPatchConfigDetails {
 // legacy `settings.timezone` JSONB key as a non-destructive fallback (the column
 // is backfilled from that key but the UI still writes the key today — see
 // issue #1318 / migration 2026-06-13-c).
-function partnerTimezoneFrom(
+export function partnerTimezoneFrom(
   column: string | null | undefined,
   settings: unknown,
 ): string | null {
@@ -3302,15 +3303,14 @@ export async function resolveSystemProtectionForDevice(
   const policyRevision = winner.linkUpdatedAt ? new Date(winner.linkUpdatedAt).toISOString() : null;
   const parsed = systemProtectionInlineSettingsSchema.safeParse(winner.inlineSettings ?? {});
   if (!parsed.success) {
-    console.warn(
-      '[featureConfigResolver] Malformed system_protection settings; using platform defaults',
-      {
-        deviceId,
-        featureLinkId: winner.featureLinkId,
-        sourcePolicyId: winner.sourcePolicyId,
-        issues: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
-      },
-    );
+    reportInvalidStoredSettings({
+      feature: 'system_protection',
+      orgId: hierarchy.orgId,
+      deviceId,
+      featureLinkId: winner.featureLinkId,
+      sourcePolicyId: winner.sourcePolicyId,
+      issues: parsed.error.issues.map((i) => i.path.join('.') || '(root)'),
+    });
     return { settings: { ...SYSTEM_PROTECTION_DEFAULTS }, policyRevision, isPlatformDefault: false, invalidStoredSettings: true };
   }
 
@@ -3396,7 +3396,9 @@ export async function resolveContainmentPolicy(
   const winner = sortByHierarchy(rows)[0]!;
   const parsed = containmentInlineSettingsSchema.safeParse(winner.inlineSettings);
   if (!parsed.success) {
-    console.warn('[featureConfigResolver] Malformed containment settings; using platform defaults', {
+    reportInvalidStoredSettings({
+      feature: 'containment',
+      orgId: hierarchy.orgId,
       deviceId,
       featureLinkId: winner.featureLinkId,
       sourcePolicyId: winner.sourcePolicyId,

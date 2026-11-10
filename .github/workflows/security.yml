@@ -47,12 +47,22 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      # Restore-only, like every other workflow that runs on PR refs: the seed
+      # (ci-cache-seed.yml) on main is the one place caches are saved (#10762).
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Restore-only, like the pnpm cache above. The installer re-checks the
+      # restored binary against its pinned SHA-256 (#11367).
+      - name: Restore osv-scanner binary
+        uses: ./.github/actions/restore-osv-scanner
+
       - name: Install osv-scanner
+        timeout-minutes: 25
         run: bash scripts/security/install-osv-scanner.sh
 
       # Full gate, no base comparison: on main every blocking advisory counts.
@@ -229,7 +239,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -277,6 +290,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # trivy-action's own cache (on by default) saves the DB and the binary from
+      # every ref, PRs included; here it is off and the seed saves the DB (#10762).
+      - name: Restore Trivy DB cache
+        uses: ./.github/actions/restore-trivy-db
+
       - name: Generate Trivy filesystem SARIF
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -285,6 +303,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-fs.sarif'
           exit-code: '0'
+          cache: 'false'
 
       - name: Upload Trivy filesystem SARIF
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
@@ -299,6 +318,7 @@ jobs:
           format: 'cyclonedx'
           output: 'trivy-fs.cdx.json'
           exit-code: '0'
+          cache: 'false'
 
       - name: Upload Trivy filesystem SBOM
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -315,6 +335,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'
+          cache: 'false'
 
   # Builds and scans every container image this repo publishes, using the SAME
   # Dockerfile the release lanes ship.
@@ -393,6 +414,9 @@ jobs:
           CONTEXT: ${{ matrix.context || '.' }}
         run: docker build -f "$DOCKERFILE" -t "breeze-${IMAGE}:security-scan" "$CONTEXT"
 
+      - name: Restore Trivy DB cache
+        uses: ./.github/actions/restore-trivy-db
+
       - name: Scan image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -400,6 +424,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'
+          cache: 'false'
           ignore-unfixed: ${{ matrix.ignore-unfixed || false }}
           trivyignores: ${{ matrix.trivyignores || '' }}
 

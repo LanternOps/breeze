@@ -4,8 +4,10 @@
  *
  * Callers: the assessment finalizer's `nudge` step, the incident correlator's
  * partner-level nudge, the digest sweep, the morning brief and the check-in
- * fire path (services/wisp/checkIns.ts, #10991) and the specialist post-back
- * (services/wisp/specialistResult.ts, #11085)
+ * fire path (services/wisp/checkIns.ts, #10991), the specialist post-back
+ * (services/wisp/specialistResult.ts, #11085), the first-look post
+ * (services/wisp/firstLook.ts, #10402) and the resolved-nudge follow-up
+ * (services/wisp/nudgeResolved.ts, #11427)
  * (pinned by notifyUser.callers.contract.test.ts). None is reached while
  * `wispEnabled()` is false.
  *
@@ -47,14 +49,18 @@ import { deliverInApp, type ThreadPostDraft } from './deliver';
 import { webCheckInLink, webDeepLink } from './nudgeLinks';
 import { loadNudgePrefs } from './nudgePreferences';
 import { loadUrgentCapableSeverities } from './partnerNudgeSettings';
-import { recordThreadPost, type ThreadPostKind } from './threadPosts';
+import { couldntLookDedupeKey, recordThreadPost, type ThreadPostKind } from './threadPosts';
 import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { incWispNudge } from '../wispMetrics';
 
 /** The post kind of each nudge kind (explicit: a budget notice is never a post). */
 const POST_KIND: Record<WispNudgeKind, ThreadPostKind> = {
-  concern: 'nudge', digest: 'digest', brief: 'brief', check_in: 'check_in', specialist_result: 'specialist_result',
+  concern: 'nudge', digest: 'digest', brief: 'brief', check_in: 'check_in', specialist_result: 'specialist_result', first_look: 'first_look',
+  nudge_resolved: 'nudge_resolved',
 };
+
+/** Kinds that name one concern (`concernId` set iff the kind is one of these). */
+const CONCERN_KINDS: ReadonlySet<WispNudgeKind> = new Set(['concern', 'nudge_resolved']);
 
 /** `wisp.specialist_result:<runId>:<status>` or `wisp.specialist_step:<intentId>:<status>` (specialistResult.ts). */
 const SPECIALIST_DEDUPE_KEY_RE = /^wisp\.specialist_(result|step):[A-Za-z0-9-]{1,64}:[a-z_]{1,32}$/;
@@ -69,7 +75,10 @@ export type NudgePayload = {
   title: string;
   body: string;
   deepLink: string;
-  /** Set iff kind === 'concern'. */
+  /**
+   * Set iff kind is 'concern' or 'nudge_resolved' (#11427: the follow-up that a
+   * nudged concern closed; the concern must already read `resolved`).
+   */
   concernId: string | null;
   threadId: string;
   /** w00 A20: must equal the thread's grant; the thread is a cross-check, not the source. */
@@ -82,9 +91,11 @@ export type NudgePayload = {
   /**
    * Set iff kind === 'check_in' (#10991): the fired `wisp_check_ins` row. Its
    * id is the dedupe key and the link fragment; its org (the thread's) is the
-   * notification's and the post's org.
+   * notification's and the post's org. `link` (W07 #11496) replaces the
+   * post's check-in link: a run check-in's result links to its run page
+   * (relative, same origin).
    */
-  checkIn?: { id: string; orgId: string | null };
+  checkIn?: { id: string; orgId: string | null; link?: string };
   /**
    * Set iff kind === 'specialist_result' (#11085): a device-troubleshooting
    * run's report (or one of its approved steps). `orgId` is the run's org: it
@@ -95,6 +106,11 @@ export type NudgePayload = {
    */
   specialist?: { orgId: string; grantRevisionId: string; dedupeKey: string; link: string };
   /**
+   * kind 'first_look' only (#11145): the post that says no org could be looked
+   * at. It has its own dedupe key, so it leaves the real first look still to come.
+   */
+  firstLookVariant?: 'couldnt_look';
+  /**
    * `false` withholds the push channel for this delivery (the in-app row and
    * the post are still written per the user's channels). A specialist_result
    * never pushes whatever this says: its steps already pushed their own
@@ -102,6 +118,16 @@ export type NudgePayload = {
    */
   push?: false;
 };
+
+/** One first-look post per grant (#10402). */
+export function firstLookDedupeKey(grantId: string): string {
+  return `wisp.first_look:${grantId}`;
+}
+
+/** One resolved-nudge follow-up per concern (#11427); unique per thread (post) and per user (notification). */
+export function nudgeResolvedDedupeKey(concernId: string): string {
+  return `wisp.nudge_resolved:${concernId}`;
+}
 
 export type NudgeSuppressedReason = 'quiet_hours' | 'prefs' | 'backoff' | null;
 export type NotifyUserResult = { inApp: boolean; pushed: number; suppressed: NudgeSuppressedReason };
@@ -123,6 +149,9 @@ const BACKOFF: NotifyUserResult = { inApp: false, pushed: 0, suppressed: 'backof
  *   digest  → wisp.digest:<thread>:<now floored to the cadence, UTC>
  *   brief   → wisp.brief:<thread>:<local date>
  *   check_in → wisp.check_in:<check-in id> (one delivery per check-in, ever)
+ *   first_look → wisp.first_look:<grant> (one per grant, ever)
+ *                wisp.first_look_failed:<grant> for the couldn't-look variant (likewise)
+ *   nudge_resolved → wisp.nudge_resolved:<concern> (one follow-up per concern and thread/user, ever)
  */
 export function nudgeDedupeKey(k: {
   kind?: WispNudgeKind;
@@ -134,11 +163,17 @@ export function nudgeDedupeKey(k: {
   digestCadenceMinutes: number;
   briefLocalDate?: string;
   checkInId?: string;
+  firstLookVariant?: 'couldnt_look';
 }): string {
   const kind = k.kind ?? (k.concernId ? 'concern' : 'digest');
   if (kind === 'check_in') {
     if (!k.checkInId) throw new Error('nudgeDedupeKey: a check_in key needs checkInId');
     return `wisp.check_in:${k.checkInId}`;
+  }
+  if (kind === 'first_look') return k.firstLookVariant === 'couldnt_look' ? couldntLookDedupeKey(k.grantId) : firstLookDedupeKey(k.grantId);
+  if (kind === 'nudge_resolved') {
+    if (!k.concernId) throw new Error('nudgeDedupeKey: a nudge_resolved key needs concernId');
+    return nudgeResolvedDedupeKey(k.concernId);
   }
   if (kind === 'concern') {
     return `wisp.nudge:${k.concernId}:${k.grantId}:${k.nextEligibleNudgeAt?.toISOString() ?? 'first'}`;
@@ -209,11 +244,12 @@ function tagTokens(row: DeviceRow): TaggedPushToken[] {
 }
 
 function assertPayloadShape(p: NudgePayload): void {
-  if (p.kind === 'concern' && !p.concernId) throw new Error('notifyUser: a concern nudge needs a concernId');
-  if (p.kind !== 'concern' && p.concernId !== null) throw new Error(`notifyUser: a ${p.kind} nudge carries no concernId`);
+  if (CONCERN_KINDS.has(p.kind) && !p.concernId) throw new Error(`notifyUser: a ${p.kind} nudge needs a concernId`);
+  if (!CONCERN_KINDS.has(p.kind) && p.concernId !== null) throw new Error(`notifyUser: a ${p.kind} nudge carries no concernId`);
   if (p.kind === 'brief' && !p.briefLocalDate) throw new Error('notifyUser: a brief needs briefLocalDate');
   if (p.kind === 'check_in' && !p.checkIn?.id) throw new Error('notifyUser: a check_in nudge needs checkIn');
   if (p.kind !== 'check_in' && p.checkIn !== undefined) throw new Error(`notifyUser: a ${p.kind} nudge carries no checkIn`);
+  if (p.checkIn?.link !== undefined && !RELATIVE_LINK_RE.test(p.checkIn.link)) throw new Error('notifyUser: a check_in link must be a relative path');
   if (p.kind === 'specialist_result') {
     if (!p.specialist?.orgId || !p.specialist.grantRevisionId) throw new Error('notifyUser: a specialist_result needs specialist');
     if (!SPECIALIST_DEDUPE_KEY_RE.test(p.specialist.dedupeKey)) {
@@ -316,15 +352,24 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
         .where(eq(wispConcerns.id, p.concernId))
         .limit(1);
       if (!c || c.partnerId !== thread.partnerId) throw new Error(`notifyUser: concern ${p.concernId} not found under the thread's partner`);
-      if (c.status !== 'open' && c.status !== 'snoozed') return { backoff: true as const };
-      state = await recipientState(p.concernId, p.grantId);
-      const future = (d: Date | null) => d !== null && d.getTime() > now.getTime();
-      if (state.dismissedAt || future(state.snoozedUntil) || future(state.nextEligibleNudgeAt)) return { backoff: true as const };
-      concern = { orgId: c.orgId, severity: c.severity };
+      if (p.kind === 'nudge_resolved') {
+        // The follow-up says the concern closed: only a committed resolution
+        // qualifies (a resolve inside a caller's still-open transaction, or
+        // one rolled back, reads live here and writes nothing). Not a nudge:
+        // no recipient backoff applies and nothing is counted.
+        if (c.status !== 'resolved') return { backoff: true as const };
+        concern = { orgId: c.orgId, severity: c.severity };
+      } else {
+        if (c.status !== 'open' && c.status !== 'snoozed') return { backoff: true as const };
+        state = await recipientState(p.concernId, p.grantId);
+        const future = (d: Date | null) => d !== null && d.getTime() > now.getTime();
+        if (state.dismissedAt || future(state.snoozedUntil) || future(state.nextEligibleNudgeAt)) return { backoff: true as const };
+        concern = { orgId: c.orgId, severity: c.severity };
+      }
     }
 
     const prefs = await loadNudgePrefs(p.userId);
-    const urgent = concern ? await loadUrgentCapableSeverities(thread.partnerId) : [];
+    const urgent = concern && p.kind === 'concern' ? await loadUrgentCapableSeverities(thread.partnerId) : [];
     const devices = (await userPushTargetsQuery([p.userId])) as DeviceRow[];
     return { backoff: false as const, partnerId: thread.partnerId, concern, state, prefs, urgent, devices };
   }));
@@ -347,7 +392,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   const orgId = p.specialist ? p.specialist.orgId : p.checkIn ? p.checkIn.orgId : concern?.orgId ?? null;
   const link = p.specialist
     ? p.specialist.link
-    : p.checkIn ? webCheckInLink(p.threadId, p.checkIn.id) : webDeepLink(p.threadId, p.concernId);
+    : p.checkIn ? p.checkIn.link ?? webCheckInLink(p.threadId, p.checkIn.id) : webDeepLink(p.threadId, p.concernId);
   const dedupeKey = p.specialist ? p.specialist.dedupeKey : nudgeDedupeKey({
     kind: p.kind,
     concernId: p.concernId,
@@ -358,6 +403,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
     digestCadenceMinutes: prefs.digestCadenceMinutes,
     briefLocalDate: p.briefLocalDate,
     checkInId: p.checkIn?.id,
+    firstLookVariant: p.firstLookVariant,
   });
   const post: ThreadPostDraft = {
     threadId: p.threadId,
@@ -383,7 +429,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
       title: p.title,
       body: p.body,
       link,
-      priority: concern?.severity === 'high' ? 'high' : 'normal',
+      priority: p.kind === 'concern' && concern?.severity === 'high' ? 'high' : 'normal',
       dedupeKey,
       concernId: p.concernId,
       approvalIntentId: p.approvalIntentId ?? null,
@@ -409,12 +455,15 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   // (a retry would hit the dedupe key and never push), so each step reports
   // and carries on.
 
-  // Phase 3 — count the concern nudge.
-  if (p.concernId) await countNudge(p.concernId, p.grantId, now);
+  // Phase 3 — count the concern nudge (a nudge_resolved follow-up is not one).
+  if (p.kind === 'concern' && p.concernId) await countNudge(p.concernId, p.grantId, now);
 
   // Phase 4 — push, outside every DB context. Withheld entirely (not a
-  // suppression) for `push: false` and every specialist report.
-  const pushKind = p.kind === 'specialist_result' || p.push === false ? null : p.kind;
+  // suppression) for `push: false`, every specialist report, the first look
+  // and a resolved-nudge follow-up ("no action needed" never wakes a phone).
+  const pushKind = p.kind === 'specialist_result' || p.kind === 'first_look' || p.kind === 'nudge_resolved' || p.push === false
+    ? null
+    : p.kind;
   let pushTokens = pushKind ? decision.pushTokens : [];
   let suppressed = pushKind ? decision.suppressed : null;
   if (pushTokens.length > 0) {

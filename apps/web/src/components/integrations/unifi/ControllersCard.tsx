@@ -1,12 +1,17 @@
 // Self-hosted controller registration + list. Split out of
-// UnifiIntegration.tsx (#2382) — verbatim move, no behavior change.
+// UnifiIntegration.tsx (#2382); the collector-agent-location copy and default
+// site were added in #11502.
 
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, type Dispatch, type SetStateAction } from "react";
 import { Loader2, Plug } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { formatDateTime } from "@/lib/dateTimeFormat";
-import { agentOptionLabel, collectorStatusClasses } from "./unifiHelpers";
+import {
+  agentOptionLabel,
+  collectorStatusClasses,
+  defaultControllerSiteId,
+} from "./unifiHelpers";
 import type {
   AgentDevice,
   ControllerDraft,
@@ -38,6 +43,18 @@ export default function ControllersCard({
   onRegisterController,
 }: ControllersCardProps) {
   const { t } = useTranslation("integrations");
+
+  // Preselect the lone internal site while the picker is empty. Re-evaluated
+  // whenever the groups change, because the sites can render before the org
+  // rows that say which org is internal. A site already chosen is never replaced.
+  const defaultSiteId = defaultControllerSiteId(sitesByOrg);
+  useEffect(() => {
+    if (!defaultSiteId) return;
+    setControllerDraft((prev) =>
+      prev.siteId ? prev : { ...prev, siteId: defaultSiteId },
+    );
+  }, [defaultSiteId, setControllerDraft]);
+
   return (
     <div
       className="rounded-xl border bg-card p-5 shadow-xs"
@@ -102,8 +119,11 @@ export default function ControllersCard({
             />
           </label>
           <label className="text-sm">
-            <span className="text-muted-foreground">
-              {t("unifiIntegration.siteThisControllerServes")}
+            <span
+              className="text-muted-foreground"
+              data-testid="unifi-controller-site-label"
+            >
+              {t("unifiIntegration.collectorAgentLocation")}
             </span>
             <select
               value={controllerDraft.siteId}
@@ -128,6 +148,12 @@ export default function ControllersCard({
                 </optgroup>
               ))}
             </select>
+            <span
+              className="mt-1 block text-xs text-muted-foreground"
+              data-testid="unifi-controller-site-help"
+            >
+              {t("unifiIntegration.collectorAgentLocationHelp")}
+            </span>
           </label>
           <label className="text-sm">
             <span className="text-muted-foreground">

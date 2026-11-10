@@ -122,6 +122,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
   'services/siteLocation.ts': 'listing: sites a technician may match an arrival against (#4186); excludes hidden orgs, never reads devices',
+  'services/mappableOrgs.ts': 'listing: orgs an external tenant/customer may be mapped onto (EDR, backup and Pax8 mapping and name suggestions); excludes hidden and unassigned-pool orgs, never reads devices',
   'services/partnerVisibleOrgs.ts': 'listing: the partner org-list population, shared with the partner settings inheritance counts (#9170); excludes hidden orgs, never reads devices',
   'services/aiToolsBackupRecoveryReads.ts': 'caller read: joins devices only to apply the site ceiling to a recovery row',
   'services/backupHealthReadModel.ts': 'read model: backup health',
@@ -151,8 +152,6 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/securityScanSweepHits.ts': 'read model: top detection-rule hits of one IOC sweep for the AI ioc_hunt sweep_status read (#6268); joins devices only to apply the caller site ceiling (sweepScanVisibility). Selects no targets',
   'services/securityScanSweeps.ts': 'read model: IOC sweep progress (#6263 W05); joins devices only to apply the caller site ceiling to the aggregates. Sweep targets come from services/securityScanSweepTargets.ts, a FANOUT_MODULES entry',
   'services/scriptLastRun.ts': 'read model: Script Library LAST RUN column (#9563); a max(created_at) over existing script_executions, joining devices only to apply the caller site restriction; selects no targets and dispatches nothing',
-  'services/backupProviders/mapping.ts': 'vendor-customer to org mapping: which org a backup customer is shown under; the holding org and Quick Support are never candidates',
-  'services/edrProviders/mapping.ts': 'vendor-tenant to org mapping: the holding org and Quick Support are never candidates',
   'services/flows/ownedReferences.ts': 'validation: checks that device ids named literally in a flow draft belong to the flow owner org (#5218); selects no targets and dispatches nothing',
   'services/flows/builtins/fleetTargets.ts': "org-pinned (#5221 W06): target selection goes through automationRuntime's resolveAutomationTargetsDetailed (a FANOUT_MODULES entry) with the run org as the only owner org; its own query only re-reads those ids, or an explicit/earlier-step list, inside the RUN org — a flow run never runs in the holding org (partnerFanoutOrgs), so a parked device never matches",
   'services/flows/conversion/context.ts': "conversion preview (#5221 W06): counts a Job's CURRENT target set and its OS types through automationRuntime's resolveAutomationTargetsDetailed (a FANOUT_MODULES entry, parked/holding-org guarded); reads only the OS of those ids and dispatches nothing",
@@ -216,6 +215,10 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/oemUpdates/revalidation.ts': 'vendor update claim recheck (#11065): reads the partner of the one device being claimed; selects no targets. A parked device is cancelled by partitionClaimable first',
+  'services/oemUpdates/alerts.ts': 'vendor update alerts (#11065): reads the hostname of one device the monitor, a sweep or a result already named; selects no targets',
+  'services/oemUpdates/results.ts': 'vendor update results (#11065): applies an agent report to the one device that sent it; selects no targets',
+  'services/remoteToolAlerts/alerts.ts': 'new remote tool alerts (#11306): reads the hostname of the one device whose posture submit found the tool; selects no targets. The posture route denies parked devices (parkedRouteClassification.test.ts)',
   'services/networkIsolation/lifecycle.ts': 'lifecycle: locks explicitly scoped devices to block destructive operations while isolation is unresolved; no background target selection',
   'jobs/networkIsolationSweeper.ts': 'lifecycle: recovery and expiry warnings for existing isolation episodes must survive parked/disabled devices; device lookup only resolves the episode notification site, never selects new isolation targets',
   'services/networkIsolation/service.ts': 'Single-device service under caller RLS and site access; selects no fan-out targets. dispatchDeviceCommand refuses parked devices; heartbeat tombstones retain recovery intent.',
@@ -227,7 +230,12 @@ const EXEMPT: Record<string, string> = {
   'services/localVaultUpdate.ts': 'site-locked vault update (W03-D12, #6757; lifted from routes/backup/vault.ts): row-locks the ONE device that owns a vault the caller already resolved, inside the caller\'s sites, then updates that vault; selects no targets, and the follow-up vault_configure to a parked device is refused by command delivery',
   'services/securityScanStart.ts': 'single-device Scan now (#6263 W05-11, lifted from routes/security/scans.ts): reads the ONE device id the caller named under its own RLS; selects no targets. queueCommand refuses a parked device',
   'jobs/securityScanClaim.ts': 'IOC scan claim (#6263 W05-3): re-reads ONE already-queued scan and its device under the partner lock; selects no targets. The command goes through dispatchDeviceCommand, which refuses a parked device (device_pending_assignment); sweep targets come from services/securityScanSweepTargets.ts and the pump, both FANOUT_MODULES entries',
+  'services/wisp/assessment.ts': 'Wisp assessment digest (#11425): the Metric anomalies section left-joins devices only to read the display name of each open metric_anomaly_incidents row, org-pinned to the assessed org (a GrantCeiling org, hidden orgs already out), capped at 25 rows; read-only context for the model, selects no targets and runs nothing',
+  'services/wisp/concernRollup.ts': 'Wisp same-org device-concern rollup (#11426): left-joins devices (org-pinned) only to read the hostname and display name of each live device concern\'s own subject, to strip them from its summary when grouping; selects concerns, never devices, and dispatches nothing to any device',
   'services/wisp/activity.ts': 'Wisp activity timeline (#11084): left-joins devices only to read the hostname of the one device a specialist run is already pinned to, for its title; a read model filtered to the ceiling orgs (hidden orgs already out), selects no targets and runs nothing',
+  'services/wisp/checkInTriggers.ts': 'Wisp event check-ins W04 (#11493): reads the ONE device / script execution / device command / agent run a check-in names, by id, to evaluate its trigger; the subject must pass assertWithinCeiling (org in GrantCeiling.orgIds, which already excludes hidden orgs) before it can fire, so a parked device never matches; selects no targets and runs nothing',
+  'services/wisp/instructionCaptures.ts': 'Wisp W05 instruction chip (#10428): reads the org of the devices one of the caller\'s own captured instructions already names, under the caller\'s RLS context, to decide whether Keep for everyone may be offered; a read model, selects no targets and runs nothing',
+  'services/wisp/instructionExtractor.ts': 'Wisp W05 instruction capture (#10428): resolves the device names a technician wrote to device ids, an exact hostname/display-name match restricted to GrantCeiling.orgIds (hidden orgs already out, so a parked device never matches) and re-checked against the ceiling site terms; the ids are stored on a memory block as context, selects no targets and runs nothing',
   'services/wisp/concernTools.ts': 'Wisp W05a raise_concern (#9911): one existence check (id, org_id) for a device the user named, AFTER assertWithinCeiling — the org must be in GrantCeiling.orgIds, which already excludes hidden orgs (notHiddenOrgType in grantAuthority), so a parked device never matches; selects no targets and runs nothing',
   'services/wisp/readiness.ts': 'Wisp readiness inventory (#9917): per-org "can Wisp watch X here" booleans for the orgs of a grant ceiling (hidden orgs already out); joins devices only to map a device-level patch-policy assignment to its org; selects no targets',
   'services/wisp/specialistLaunchers.ts': 'Wisp W07 coordinator launchers (#9913): one existence check (id, org_id) for the device a remediation_research or device_troubleshooting request names, AFTER the coordinator\'s assertWithinCeiling — the org must be in GrantCeiling.orgIds, which already excludes hidden orgs, so a parked device never matches; selects no targets',
@@ -335,6 +343,8 @@ const EXEMPT: Record<string, string> = {
   'services/aiOperator/deviceCommandEvidence.ts': 'derived: device lookup by id and org from a task\'s own row',
   'services/aiOperator/identityDiscovery.ts': 'org-pinned: start-form device SUGGESTIONS by last_user, pinned to the task\'s own org; never an effect target',
   'services/aiOperator/requesterAccessGate.ts': 'request path: rechecks a human requester\'s live org/site access to a task\'s device',
+  'services/fleetDesign/applyTargets.ts': 'request path: reads the devices a named Fleet Design report and its approval name, pinned to the report org, for an approval digest; selects no device as a target',
+  'services/aiOperator/serviceRecoveryLaunch.ts': 'request path: reads the one device named on a launch request, pinned to the request org and checked against the caller\'s sites',
   'services/aiOperator/taskReadQueries.ts': 'request path: read-only operator task list/detail/plan queries (moved from routes/ai/operator); devices is joined only to apply the caller\'s site restriction, no device is selected as a target',
   'services/aiOperator/taskService.ts': 'request path: creates a task for a device named on the request, scoped to the request org',
   'services/aiOperator/verification.ts': 'derived: re-validates a task\'s own device is still in the task\'s org',
@@ -379,6 +389,7 @@ const EXEMPT: Record<string, string> = {
   'services/deviceFunction.ts': 'org-pinned: membership check scoped to an explicit org and device pair',
   'services/deviceHierarchy.ts': 'single-device request read keyed on the authenticated device id (scoped.deviceId); loads raw facts only and decides nothing. Parked (pre-assignment) devices never reach its heartbeat caller: heartbeat.ts returns the minimal parked beat at the agent.isPreAssignment early return (routes/agents/heartbeat.ts:492) before any hierarchy consumer runs; resolvers that receive it apply exactly the org rules they applied to their own reads.',
   'services/deviceLifecycle.ts': 'lifecycle: restore/purge of one locked removed device',
+  'services/devicePurgeUninstallGate.ts': 'derived: an SQL expression for the uninstall state of the device row its caller already selects or has locked; selects no work of its own',
   'services/deviceOwnershipEpoch.ts': 'derived: an SQL expression for the epoch of the one device its caller is inserting a row for; selects no work',
   'services/deviceLinkGroups.ts': 'request path: mutations scoped to a link group or caller-supplied devices from link routes and the deletion cascade',
   'services/deviceMtlsCertificateIssuance.ts': 'org-pinned: locks and activates a certificate for one caller-supplied (device, org) pair; not a selector',
@@ -501,6 +512,7 @@ const EXEMPT: Record<string, string> = {
   'services/vulnerabilityRemediation.ts': 'request path: Operator/AI tool remediates explicit device-finding ids under caller\'s auth org condition',
   'services/warrantyPolicyResolution.ts': 'derived: Caller-supplied deviceId; upstream selector already applies notParkedDeviceCondition',
   'ee/workspace/src/services/deviceSummaryService.ts': 'request path: summarize(orgId, deviceId) takes both ids from the calling route, RLS-backed',
+  'services/wisp/checkInRuns.ts': "Wisp run check-ins W07 (#11496): reads the ONE device a check-in's context names, by id, only to learn whether it was deleted; admits one org-level assessment run through enqueueAssessment (org in the live GrantCeiling, which excludes hidden orgs); selects no device targets and dispatches nothing to a device",
 };
 
 describe('contract: background selectors leave parked devices out', () => {

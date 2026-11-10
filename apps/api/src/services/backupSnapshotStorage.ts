@@ -1,5 +1,7 @@
+import { createReadStream } from 'node:fs';
 import { opendir, readFile, rm, stat } from 'node:fs/promises';
 import { join as joinLocalPath, posix as pathPosix, resolve as resolvePath } from 'node:path';
+import { pipeline, Transform, type Readable } from 'node:stream';
 import {
   DeleteObjectsCommand,
   GetObjectCommand,
@@ -29,15 +31,19 @@ type SnapshotStorageInput = {
 export const BACKUP_SNAPSHOT_ROOT_DIR = 'snapshots';
 export const BACKUP_SNAPSHOT_MANIFEST_KEY = 'manifest.json';
 
-// A legitimate manifest is one JSON entry per backed-up file; 200MB comfortably
-// covers very large fleets while still bounding the heap buffer a manifest
-// fetch holds. Every manifest-shaped object this API reads (file-index
-// hydration, GC mark-phase liveness checks, orphan reconcile) is written
-// directly by the reporting agent at a predictable key, so its size is not
-// otherwise bounded — shared here (rather than in backupSnapshotFileIndex.ts,
-// its original home) because backupRetention.ts and backupSnapshotReconcile.ts
-// both need it too and both already sit upstream of that module.
+// Largest manifest-shaped object read WHOLE into memory. Every such object is
+// written directly by the reporting agent at a predictable key, so its size is
+// not otherwise bounded. The snapshot manifest itself is no longer read this
+// way anywhere (file-index hydration, GC marking and orphan reconcile all
+// stream it, under MANIFEST_STREAM_MAX_BYTES); the GC still reads the much
+// smaller system-state manifest whole, under this cap.
 export const MANIFEST_FETCH_MAX_BYTES = 200 * 1024 * 1024;
+
+// Largest snapshot manifest read as a stream (#11026, #11232, #11233): about
+// 4M entries. Bounds the spool's disk use in file-index hydration; GC marking
+// and orphan reconcile read it straight from storage. Nothing holds these
+// bytes in memory.
+export const MANIFEST_STREAM_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 export type BackupObjectListing = { key: string; lastModified: Date | null };
 export type BackupObjectDeleteResult = {
@@ -501,9 +507,89 @@ export function isBackupObjectTooLarge(err: unknown): err is BackupObjectTooLarg
 }
 
 /**
- * Fetches one object's contents as text (used by GC to fetch/parse retained
- * snapshot manifests, and by snapshot reconcile to read an adopted
- * snapshot's manifest). Throws on any failure — callers must treat a throw
+ * Passes bytes through while enforcing the cap on what actually arrives, and,
+ * when a length was declared, that all of it did: a connection dropped between
+ * chunks must read as an error, never as the end of the object.
+ */
+function boundedObjectStream(source: Readable, key: string, maxBytes: number, declared?: number): Readable {
+  let received = 0;
+  const guard = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      received += chunk.length;
+      if (received > maxBytes) {
+        callback(new BackupObjectTooLargeError(key, received, maxBytes));
+        return;
+      }
+      callback(null, chunk);
+    },
+    flush(callback) {
+      if (declared !== undefined && received !== declared) {
+        callback(new Error(`Object ${key} ended early: received ${received} of ${declared} bytes`));
+        return;
+      }
+      callback();
+    },
+  });
+  // pipeline carries an error from either side to the reader and destroys both.
+  // Its callback has nothing left to do: the reader sees the error on `guard`.
+  pipeline(source, guard, () => {});
+  return guard;
+}
+
+async function openS3ObjectStream(providerConfig: Record<string, unknown>, key: string, maxBytes: number): Promise<Readable> {
+  const { bucket, client } = buildS3StorageClient(providerConfig);
+  const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const body = response.Body as Readable | undefined;
+  if (!body) {
+    throw new Error(`Empty response body for ${key}`);
+  }
+  const declared = typeof response.ContentLength === 'number' ? response.ContentLength : undefined;
+  if (declared !== undefined && declared > maxBytes) {
+    // Otherwise the unread response holds its connection until it is collected.
+    body.destroy();
+    throw new BackupObjectTooLargeError(key, declared, maxBytes);
+  }
+  return boundedObjectStream(body, key, maxBytes, declared);
+}
+
+async function openLocalObjectStream(providerConfig: Record<string, unknown>, key: string, maxBytes: number): Promise<Readable> {
+  const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
+  if (!rootPath) {
+    throw new Error('Local backup storage is misconfigured');
+  }
+  const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
+  const targetPath = ensureContainedLocalPath(rootPath, normalizedKey);
+  const stats = await stat(targetPath);
+  if (stats.size > maxBytes) {
+    throw new BackupObjectTooLargeError(key, stats.size, maxBytes);
+  }
+  return boundedObjectStream(createReadStream(targetPath), key, maxBytes);
+}
+
+/**
+ * One object as a stream, for a manifest too large to hold in memory (#11026).
+ * Rejects with BackupObjectTooLargeError from the declared length or file size
+ * before anything is read. When no length is declared, the stream itself errors
+ * with it once `maxBytes` have passed. Not-found and other failures follow
+ * fetchBackupObjectBytes: classify them with isBackupObjectNotFound.
+ */
+export async function openBackupObjectStream(input: {
+  provider: string | null | undefined;
+  providerConfig: unknown;
+  key: string;
+  maxBytes: number;
+}): Promise<NodeJS.ReadableStream> {
+  const provider = input.provider ?? null;
+  const providerConfig = asRecord(input.providerConfig);
+  if (provider === 's3') return openS3ObjectStream(providerConfig, input.key, input.maxBytes);
+  if (provider === 'local') return openLocalObjectStream(providerConfig, input.key, input.maxBytes);
+  throw new Error(`Provider ${provider ?? 'unknown'} does not support object fetch for GC`);
+}
+
+/**
+ * Fetches one object's contents as text (used by GC to fetch/parse a retained
+ * snapshot's system-state manifest; snapshot manifests themselves are
+ * streamed, see openBackupObjectStream). Throws on any failure — callers must treat a throw
  * as "mark phase failed, no sweep this run" per the fail-closed GC contract.
  *
  * `maxBytes`, when passed, rejects (via `BackupObjectTooLargeError`, checked

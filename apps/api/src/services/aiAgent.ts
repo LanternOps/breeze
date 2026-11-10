@@ -19,7 +19,7 @@ import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { getActiveDeviceContext } from './brainDeviceContext';
 import { resolveEntityForCaller, resolveEntityRef, isResolveFailure } from './wisp/entityRefs';
-import type { GrantCeiling } from './wisp/grantAuthority';
+import { ceilingAdmitsTool, type GrantCeiling } from './wisp/grantAuthority';
 import {
   sanitizePageContext,
   sanitizeUntrustedText,
@@ -33,6 +33,7 @@ import { chooseSessionModel, type SessionModelChoice } from './aiModels/sessionM
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { authorizeTopologySessionSite } from './topology/aiToolGate';
 import { topologySessionAccessCondition } from './topology/aiSessionAccess';
+import { timePreStreamPhase } from './aiPreStreamTiming';
 export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
 export { InvalidSessionModelError } from './aiModels/invalidSessionModelError';
 
@@ -290,6 +291,13 @@ export async function createSession(
   // RLS still applies) but is required for the partner-axis `partners` read.
   const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
 
+  // The thread seed, built once the model is chosen: its standing-loop section
+  // names the session's model (#10391). The caller's auth rides along so the
+  // seed's links honour its token scope.
+  const wispSeed = wisp
+    ? await (await import('./wisp/threads')).seedContextForSession(wisp.threadId, wisp.ceiling, auth, { model: choice.model })
+    : '';
+
   const [session] = await db
     .insert(aiSessions)
     .values({
@@ -309,7 +317,7 @@ export async function createSession(
       ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
       ...(wisp ? { wispGrantId: wisp.grantId, wispGrantRevisionId: wisp.revisionId } : {}),
       systemPrompt: wisp
-        ? [await buildSystemPrompt(auth, sanitizedPageContext, undefined, wisp.ceiling), wisp.seed].filter(Boolean).join('\n')
+        ? [await buildSystemPrompt(auth, sanitizedPageContext, undefined, wisp.ceiling), wispSeed].filter(Boolean).join('\n')
         : await buildSystemPrompt(auth, sanitizedPageContext)
     })
     .returning();
@@ -336,8 +344,6 @@ type WispSessionAnchor = {
   /** The session org after focus anchoring. */
   orgId: string;
   focusOrgId: string | null;
-  /** Thread seed appended to the system prompt ('' when empty). */
-  seed: string;
 };
 
 /**
@@ -373,7 +379,7 @@ async function anchorWispSession(
   // Lazy: only a Wisp session loads the Wisp graph.
   const [
     { validateWispGrantForSession, assertGrantCoversSessionOrg, WispSessionError },
-    { getOrCreateThread, seedContextForSession, setThreadFocus },
+    { getOrCreateThread, setThreadFocus },
     { resolveGrantCeiling, assertWithinCeiling, CeilingViolationError, GrantInactiveError },
   ] = await Promise.all([
     import('./wisp/sessionGrant'),
@@ -438,8 +444,6 @@ async function anchorWispSession(
     threadId: thread.id,
     orgId,
     focusOrgId,
-    // The caller's auth: an org-scoped sign-in never sees another org's or a partner-level link.
-    seed: await seedContextForSession(thread.id, ceiling, auth),
   };
 }
 
@@ -779,8 +783,10 @@ export async function handleApproval(
   // but this inline web-chat path historically flipped only ai_tool_executions
   // — leaving the bridge row 'pending' until its 5-minute TTL lapsed, which
   // reads as an unattended-expired approval next to a recorded success in any
-  // audit review. Best-effort: the execution row above is the source of truth
-  // the SDK poll unblocks on, so a mirror failure must not fail the decide.
+  // audit review. The execution row above is the source of truth the SDK poll
+  // unblocks on. Deliberately no savepoint (#11225): with a context held, a failed
+  // mirror still fails the commit and rolls the decision back, so an approval is
+  // never recorded on one ledger and pending on the other. The catch only reports.
   try {
     await db
       .update(approvalRequests)
@@ -956,15 +962,23 @@ export async function buildSystemPrompt(
   // A-W02: the tool index is generated from the registry. Loaded lazily so
   // this module stays importable without the tool hub (routes/devices tests
   // mock db/schema partially and would otherwise pull aiToolSchemas in).
-  const [{ composeStaticSystemPrompt, renderPageContextToolBlocks, resolveToolIndexMode }, { listChatSurfaceToolNames }] = await Promise.all([
+  const [{ composeStaticSystemPrompt, renderPageContextToolBlocks, resolveToolIndexMode }, { listChatSurfaceToolNames }] = await timePreStreamPhase('systemPrompt.modules', () => Promise.all([
     import('./aiToolIndex'),
     import('./aiAgentSdkTools'),
-  ]);
+  ]));
   // W19 (#10065): `lazy` (default) ships the always-on domain index here and
   // pre-expands the page's domains below; `full` ships the legacy whole index.
+  // #11004: synchronous; the tool names come from the cached tool template.
   const toolIndexMode = resolveToolIndexMode();
-  const toolNames = listChatSurfaceToolNames();
-  parts.push(composeStaticSystemPrompt(toolNames, toolIndexMode));
+  // #10430: a Wisp session's index names only the registry tools its grant
+  // ceiling admits, by the same tool term its MCP server is filtered with
+  // (wispSessionToolFilter).
+  const { toolNames, staticPrompt } = timePreStreamPhase('systemPrompt.toolIndex', () => {
+    const all = listChatSurfaceToolNames();
+    const names = ceiling ? all.filter((name) => ceilingAdmitsTool(ceiling, name)) : all;
+    return { toolNames: names, staticPrompt: composeStaticSystemPrompt(names, toolIndexMode) };
+  });
+  parts.push(staticPrompt);
 
 
 

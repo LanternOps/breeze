@@ -57,9 +57,17 @@ describe('CoversControl', () => {
     expect(onChange).toHaveBeenCalledWith({ mode: 'org' });
   });
 
-  it('says when a partner-wide user picked a type that cannot fan out', () => {
-    render(<CoversControl reportType="threat_detection_review" value={ORG} onChange={vi.fn()} />);
-    expect(screen.getByTestId('covers-series-unavailable')).toBeInTheDocument();
+  it('shows no notice for a type that cannot fan out at all, just the org picker', () => {
+    render(<CoversControl reportType="threat_detection_review" value={ORG} onChange={vi.fn()} orgField={PICKER} />);
+    expect(screen.getByTestId('org-picker-stub')).toBeInTheDocument();
+    expect(screen.queryByTestId('covers-series-unavailable')).toBeNull();
+    expect(screen.queryByTestId('covers-mode-series')).toBeNull();
+  });
+
+  it('shows no notice for a type that does fan out', () => {
+    render(<CoversControl reportType="device_inventory" value={ORG} onChange={vi.fn()} orgField={PICKER} />);
+    expect(screen.getByTestId('covers-mode-series')).toBeInTheDocument();
+    expect(screen.queryByTestId('covers-series-unavailable')).toBeNull();
   });
 
   it('locked (series edit) shows no mode choice, only targeting', () => {

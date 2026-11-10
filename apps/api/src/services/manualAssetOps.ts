@@ -21,7 +21,7 @@
  */
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { and, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { manualAssets, sites, devices, discoveredAssets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { RouteAuditInput } from './auditEvents';
@@ -325,7 +325,8 @@ export async function createManualAsset(params: {
 
   let created: typeof manualAssets.$inferSelect | undefined;
   try {
-    [created] = await db.insert(manualAssets).values({
+    // In a savepoint, or the 400 below is lost to the commit (#11203).
+    [created] = await withDbTransaction(async () => db.insert(manualAssets).values({
       orgId: data.orgId,
       siteId: data.siteId,
       name: data.name,
@@ -342,7 +343,7 @@ export async function createManualAsset(params: {
       purchaseDateSource: data.purchaseDate ? 'manual' : null,
       createdBy: actorUserId,
       updatedBy: actorUserId,
-    }).returning();
+    }).returning());
   } catch (err: unknown) {
     // The composite (assigned_contact_id, org_id) FK makes a cross-org
     // assignment unrepresentable at the DB layer — surface it as a clean
@@ -439,10 +440,10 @@ export async function updateManualAsset(params: {
 
   let updated: typeof manualAssets.$inferSelect | undefined;
   try {
-    [updated] = await db.update(manualAssets)
+    [updated] = await withDbTransaction(async () => db.update(manualAssets)
       .set(updates)
       .where(eq(manualAssets.id, id))
-      .returning();
+      .returning());
   } catch (err: unknown) {
     if (isAssignedContactFkViolation(err)) {
       return fail('Assigned contact not found in this organization', 400);

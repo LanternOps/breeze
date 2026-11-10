@@ -49,7 +49,8 @@
       "securityCheckToast": "Uzaktan başlatma kullanılamıyor: güvenlik kontrolü başarısız oldu. Lütfen yöneticinizle iletişime geçin.",
       "securityPolicy": "Uzaktan başlatma güvenlik politikası tarafından engellendi",
       "server": "Uzaktan başlatma başarısız oldu: sunucu hatası. Lütfen yöneticinizle iletişime geçin.",
-      "vncTunnelFailed": "VNC tüneli açılamadı"
+      "vncTunnelFailed": "VNC tüneli açılamadı",
+      "providerUnavailable": "Bu uzaktan erişim aracı artık bu cihaz için kullanılamıyor. Sayfayı yenileyip tekrar deneyin."
     },
     "fallback": {
       "linuxFirstRun": "Linux'ta indirmeyi yürütülebilir hale getirin (chmod +x) ve bir kez çalıştırın. Bu, izleyiciyi kaydeder, böylece oturumlar bundan sonra otomatik olarak açılır.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Görüntü sunucusunda kimlik doğrulaması yapılamadı (X yetkilisi)",
       "x11ConnectFailed": "Bu cihazdaki ekran sunucusuna bağlanılamadı"
     },
-    "opensNewWindow": "(yeni bir pencerede açılır)"
+    "opensNewWindow": "(yeni bir pencerede açılır)",
+    "split": {
+      "builtInViewer": "Yerleşik görüntüleyici",
+      "connectWith": "{{name}} ile bağlan",
+      "connectWithBuiltIn": "Yerleşik görüntüleyici ile bağlan",
+      "menuLabel": "Bağlantı yöntemini seçin",
+      "opensInBrowser": "Yeni bir tarayıcı sekmesinde açılır"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Tünel oluşturuluyor...",
@@ -209,6 +217,7 @@
       "copy": "Kopyala",
       "delete": "Sil",
       "download": "İndir",
+      "mkdir": "Yeni klasör",
       "move": "Taşı",
       "purge": "Temizle",
       "restore": "Geri Yükle",
@@ -250,6 +259,7 @@
     "emptyDirectory": "Boş Dizin",
     "errors": {
       "copy": "Kopyalanamadı",
+      "createFolder": "Klasör oluşturulamadı",
       "delete": "Silinemedi",
       "download": "İndirilemedi",
       "downloadTooLarge": "İndirilemeyecek kadar büyük ({{size}}). Dosya tarayıcısı en fazla {{max}} boyutunda dosya aktarır.",
@@ -264,6 +274,15 @@
     "home": "Ana Sayfa",
     "modified": "Değiştirildi",
     "moveTo": "Şuraya Taşı",
+    "newFolder": {
+      "action": "Yeni klasör",
+      "title": "Yeni klasör",
+      "nameLabel": "Klasör adı",
+      "location": "Şu konumda oluşturulacak: {{path}}",
+      "created": "{{name}} klasörü oluşturuldu",
+      "invalidName": "Klasör adları yol ayırıcıları veya bu cihazın dosya sisteminin izin vermediği karakterler içeremez.",
+      "nameExists": "Burada bu ada sahip bir dosya veya klasör zaten var."
+    },
     "selectedCount": "Seçilen Sayı",
     "size": "Boyut",
     "title": "Dosya Yöneticisi",
@@ -318,7 +337,8 @@
     "title": "Süreç Yöneticisi",
     "totalCpu": "Toplam CPU",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Bunu izle"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -643,9 +663,10 @@
     },
     "stopService": "Hizmeti Durdur\n__BREEZE_TOKEN_2__ üzerindeki __BREEZE_TOKEN_1__ hizmetlerinden ",
     "summary": "{{device}} üzerindeki {{total}} hizmetten {{shown}} tanesi",
-    "title": "Başlık",
+    "title": "Hizmetler",
     "windowsOnlyDescription": "Hizmetler Yöneticisi yalnızca Windows cihazlar için kullanılabilir. {{device}}, {{os}} çalıştırıyor.",
-    "windowsOnlyTitle": "Windows Yalnızca Başlık"
+    "windowsOnlyTitle": "Yalnızca Windows",
+    "monitorThis": "Bunu izle"
   },
   "sessionHistory": {
     "columns": {

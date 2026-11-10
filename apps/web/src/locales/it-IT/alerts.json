@@ -87,7 +87,19 @@
     },
     "createPsaTicket": "Crea ticket PSA",
     "psaTicketRequested": "Ticket PSA richiesto",
-    "failedToCreatePsaTicket": "Impossibile richiedere il ticket PSA"
+    "failedToCreatePsaTicket": "Impossibile richiedere il ticket PSA",
+    "lifecycleLine": {
+      "text": "{{rearm}} · raffreddamento {{minutes}} min ({{source}})",
+      "rearmNewEvidence": "Si riattiva con nuove evidenze",
+      "rearmAfterDelay": "Si riattiva dopo {{minutes}} min",
+      "sources": {
+        "monitor": "questo monitor",
+        "org": "predefinito dell'organizzazione",
+        "partner": "predefinito del partner",
+        "builtin": "predefinito integrato",
+        "legacy": "regola di avviso"
+      }
+    }
   },
   "alertDetails": {
     "closePanel": "Chiudi pannello",

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
@@ -11,7 +12,7 @@ vi.mock('../db', () => ({
 const recordBackupAttestationMock = vi.hoisted(() => vi.fn());
 vi.mock('./backupMetrics', () => ({ recordBackupAttestation: recordBackupAttestationMock }));
 
-import { BackupObjectTooLargeError } from './backupSnapshotStorage';
+import { BackupObjectTooLargeError, MANIFEST_STREAM_MAX_BYTES } from './backupSnapshotStorage';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
 import { RESERVATION_CLEANUP_EVERY_MS } from './backupSnapshotIdReservations';
 import {
@@ -70,6 +71,16 @@ function deps(opts: {
     if (bytes.byteLength > maxBytes) throw new BackupObjectTooLargeError(key, bytes.byteLength, maxBytes);
     return bytes;
   });
+  // The manifest is read as a stream (#11026): same objects, same errors, the
+  // declared length checked before anything is read.
+  const openObject = vi.fn(async ({ key, maxBytes }: { key: string; maxBytes: number }): Promise<NodeJS.ReadableStream> => {
+    if (opts.fetchError) throw opts.fetchError;
+    const bytes = objects[key];
+    if (!bytes) throw new Error('NoSuchKey');
+    if (bytes.byteLength > maxBytes) throw new BackupObjectTooLargeError(key, bytes.byteLength, maxBytes);
+    return Readable.from([Buffer.from(bytes)]);
+  });
+  const readKeys = () => [...fetchObject.mock.calls, ...openObject.mock.calls].map((c) => c[0].key);
   const d: AttestationVerifyDeps = {
     load: vi.fn(async () => ({
       attestation: opts.attestation ?? attestation(),
@@ -81,11 +92,176 @@ function deps(opts: {
       sealedUntil: opts.sealedUntil,
     })),
     fetchObject,
+    openObject,
     finish,
     defer,
   };
-  return { d, finish, fetchObject, defer };
+  return { d, finish, fetchObject, openObject, readKeys, defer };
 }
+
+/** A manifest of exactly `size` bytes, streamed in 1 MiB chunks, and its digest. */
+function paddedManifest(size: number, files: unknown[] = []) {
+  const head = Buffer.from(`{"id":"${SID}","files":${JSON.stringify(files)},"pad":"`);
+  const tail = Buffer.from('"}');
+  const padBytes = size - head.length - tail.length;
+  const chunk = Buffer.alloc(1024 * 1024, 'x');
+  function* pieces() {
+    yield head;
+    for (let left = padBytes; left > 0; left -= chunk.length) yield left >= chunk.length ? chunk : chunk.subarray(0, left);
+    yield tail;
+  }
+  const hash = createHash('sha256');
+  for (const piece of pieces()) hash.update(piece);
+  return { sha256: hash.digest('hex'), stream: () => Readable.from(pieces()) };
+}
+
+function manifestOnly(object: { sha256: string; size: number }, parentProviderSnapshotId: string | null = null) {
+  return attestation({
+    parentProviderSnapshotId,
+    objects: [{ role: 'manifest', key: `snapshots/${SID}/manifest.json`, ...object }],
+  });
+}
+
+describe('verifySnapshotAttestation of a large manifest (#11026)', () => {
+  beforeEach(() => recordBackupAttestationMock.mockReset());
+
+  it('verifies a 300 MiB attested manifest whose bytes match, read as a stream', async () => {
+    const size = 300 * 1024 * 1024;
+    const big = paddedManifest(size, [{ sourcePath: 'a', backupPath: `snapshots/${SID}/files/a` }]);
+    const { d, openObject, fetchObject } = deps({ attestation: manifestOnly({ sha256: big.sha256, size }) });
+    openObject.mockImplementation(async () => big.stream());
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'verified' });
+    expect(openObject).toHaveBeenCalledWith(expect.objectContaining({ maxBytes: size }));
+    expect(fetchObject).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('defers a manifest over the server stream limit, leaving the row pending, without reading it', async () => {
+    const { d, finish, defer, openObject } = deps({
+      attestation: manifestOnly({ sha256: 'a'.repeat(64), size: MANIFEST_STREAM_MAX_BYTES + 1 }),
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'manifest_over_server_limit' });
+    expect(finish).not.toHaveBeenCalled();
+    expect(defer).toHaveBeenCalledWith({ attestationId: 'att-1', reason: 'manifest_over_server_limit' });
+    expect(openObject).not.toHaveBeenCalled();
+  });
+
+  it('defers a full run whose manifest holds an entry larger than the scanner takes, rather than failing it', async () => {
+    const huge = Buffer.from(JSON.stringify({ id: SID, files: [{ sourcePath: 'x'.repeat(1024 * 1024 + 1), backupPath: `snapshots/${SID}/files/a` }] }));
+    const { d, finish } = deps({
+      attestation: manifestOnly({ sha256: sha(huge), size: huge.byteLength }),
+      objects: { [`snapshots/${SID}/manifest.json`]: huge },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'manifest_over_server_limit' });
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it('still fails a stored manifest larger than attested, without reading past the attested size', async () => {
+    const bigger = Buffer.concat([manifest, Buffer.from(' ')]);
+    const { d, openObject } = deps({
+      attestation: manifestOnly({ sha256: sha(manifest), size: manifest.byteLength }),
+      objects: { [`snapshots/${SID}/manifest.json`]: bigger },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'manifest_size_mismatch' });
+    expect(openObject).toHaveBeenCalledWith(expect.objectContaining({ maxBytes: manifest.byteLength }));
+  });
+
+  it('fails a stored manifest that grows past the attested size mid-stream', async () => {
+    const { d, openObject } = deps({ attestation: manifestOnly({ sha256: sha(manifest), size: manifest.byteLength }) });
+    openObject.mockImplementation(async () => {
+      async function* growing() {
+        yield Buffer.from(manifest);
+        throw new BackupObjectTooLargeError('k', manifest.byteLength + 1, manifest.byteLength);
+      }
+      return Readable.from(growing());
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'manifest_size_mismatch' });
+  });
+
+  it('fails a stored manifest shorter than attested', async () => {
+    const { d } = deps({
+      attestation: manifestOnly({ sha256: sha(manifest), size: manifest.byteLength + 10 }),
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'manifest_size_mismatch' });
+  });
+
+  it('reports a digest mismatch ahead of the references the altered bytes carry', async () => {
+    const referencing = Buffer.from(JSON.stringify({ id: SID, files: [{ sourcePath: 'a', backupPath: 'snapshots/snapshot-older/files/a' }] }));
+    const { d } = deps({
+      attestation: manifestOnly({ sha256: 'b'.repeat(64), size: referencing.byteLength }),
+      objects: { [`snapshots/${SID}/manifest.json`]: referencing },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'manifest_digest_mismatch' });
+  });
+
+  it('a full run with an external reference among many own ones still fails, with matching digest', async () => {
+    const files = Array.from({ length: 5000 }, (_, i) => ({ sourcePath: `f${i}`, backupPath: `snapshots/${SID}/files/${i}` }));
+    files[4321] = { sourcePath: 'x', backupPath: 'snapshots/snapshot-older/files/x' };
+    const bytes = Buffer.from(JSON.stringify({ id: SID, files }));
+    const { d } = deps({
+      attestation: manifestOnly({ sha256: sha(bytes), size: bytes.byteLength }),
+      objects: { [`snapshots/${SID}/manifest.json`]: bytes },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'unexpected_references' });
+  });
+
+  it.each([
+    ['malformed JSON', '{"id":"x","files":[{"backupPath":"a"},,]}'],
+    ['a non-string backupPath', JSON.stringify({ id: SID, files: [{ backupPath: 7 }] })],
+    ['files that is not an array', JSON.stringify({ id: SID, files: { a: 1 } })],
+  ])('a full run with %s finishes manifest_unparseable', async (_name, text) => {
+    const bytes = Buffer.from(text);
+    const { d } = deps({
+      attestation: manifestOnly({ sha256: sha(bytes), size: bytes.byteLength }),
+      objects: { [`snapshots/${SID}/manifest.json`]: bytes },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'manifest_unparseable' });
+  });
+
+  it('an incremental run is not parsed: only its bytes are checked', async () => {
+    const bytes = Buffer.from('not json at all');
+    const { d } = deps({
+      attestation: manifestOnly({ sha256: sha(bytes), size: bytes.byteLength }, 'snapshot-older'),
+      objects: { [`snapshots/${SID}/manifest.json`]: bytes },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'verified' });
+  });
+
+  it('a manifest with no files key still passes', async () => {
+    const bytes = Buffer.from(JSON.stringify({ id: SID }));
+    const { d } = deps({
+      attestation: manifestOnly({ sha256: sha(bytes), size: bytes.byteLength }),
+      objects: { [`snapshots/${SID}/manifest.json`]: bytes },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'verified' });
+  });
+
+  it('a manifest read that breaks mid-stream leaves the row pending', async () => {
+    const { d, openObject, finish } = deps({ attestation: manifestOnly({ sha256: sha(manifest), size: manifest.byteLength }) });
+    openObject.mockImplementation(async () => {
+      async function* broken() {
+        yield Buffer.from(manifest.subarray(0, 4));
+        throw new Error('connection reset');
+      }
+      return Readable.from(broken());
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'fetch_failed:manifest' });
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it('a missing manifest leaves the row pending with its own reason', async () => {
+    const notFound = Object.assign(new Error('The specified key does not exist.'), { name: 'NoSuchKey' });
+    const { d, openObject } = deps({ attestation: manifestOnly({ sha256: sha(manifest), size: manifest.byteLength }) });
+    openObject.mockRejectedValue(notFound);
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'retry', reason: 'object_missing:manifest' });
+  });
+
+  it('sidecar roles keep the buffered read and its cap', async () => {
+    const { d, fetchObject, openObject } = deps();
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'verified' });
+    expect(fetchObject.mock.calls.map((c) => c[0].key)).toEqual([`snapshots/${SID}/layout.json`]);
+    expect(openObject.mock.calls.map((c) => c[0].key)).toEqual([`snapshots/${SID}/manifest.json`]);
+  });
+});
 
 describe('verifySnapshotAttestation', () => {
   beforeEach(() => recordBackupAttestationMock.mockReset());
@@ -270,12 +446,12 @@ describe('verifySnapshotAttestation key root (#7081)', () => {
   const P = 'msp/acme';
 
   it('binds a prefixed snapshot to its logical attestation and fetches the physical control objects', async () => {
-    const { d, fetchObject } = deps({
+    const { d, readKeys } = deps({
       snapshot: { keyLayout: 'prefixed_flat', keyPrefix: P },
       objects: { [`${P}/snapshots/${SID}/manifest.json`]: manifest, [`${P}/snapshots/${SID}/layout.json`]: layout },
     });
     expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'verified' });
-    expect(fetchObject.mock.calls.map((c) => c[0].key).sort()).toEqual([
+    expect(readKeys().sort()).toEqual([
       `${P}/snapshots/${SID}/layout.json`,
       `${P}/snapshots/${SID}/manifest.json`,
     ]);

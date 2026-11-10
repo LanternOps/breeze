@@ -7,7 +7,7 @@
  * finalizer's own ordering, refusals, caps and per-step isolation.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AI_AGENT_LIMIT_DEFAULTS, type AssessmentOutcome, type Concern } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, updateConcernSchema, type AssessmentOutcome, type Concern } from '@breeze/shared';
 
 const state = vi.hoisted(() => ({ runStatus: 'running' as string }));
 
@@ -37,6 +37,7 @@ const concerns = vi.hoisted(() => ({
   resolveConcern: vi.fn(),
   recordNudge: vi.fn(),
   getConcernForCeiling: vi.fn(),
+  setConcernPattern: vi.fn(),
 }));
 vi.mock('../wisp/concerns', () => concerns);
 
@@ -66,6 +67,13 @@ vi.mock('../wisp/grantAuthority', async (importOriginal) => ({
 }));
 
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+
+const evaluateStandingInstructions = vi.hoisted(() => vi.fn());
+vi.mock('../wisp/standingInstructionGate', () => ({
+  evaluateStandingInstructions,
+  standingConflictDescription: (text: string, description: string) => `Conflicts with a remembered instruction: '${text}'. ${description}`,
+  STANDING_CHECK_UNAVAILABLE_MESSAGE: "Couldn't check remembered instructions; try again.",
+}));
 
 import { finalizeAssessment } from './runFinalizers';
 import { GrantInactiveError, type GrantCeiling } from '../wisp/grantAuthority';
@@ -112,8 +120,8 @@ function assessmentCtx(overrides: Partial<AssessmentRunContext> = {}): Assessmen
   return {
     grantId: GRANT_ID, grantRevisionId: REVISION_ID, grantorUserId: GRANTOR, threadId: THREAD_ID,
     threadSummary: '', openConcerns: [], changedSince: null,
-    digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [] },
-    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false,
+    digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [], anomalies: [] },
+    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false, noEarlierAssessment: false,
     ...overrides,
   };
 }
@@ -149,9 +157,11 @@ beforeEach(() => {
   concerns.resolveConcern.mockResolvedValue(undefined);
   concerns.recordNudge.mockResolvedValue({ nudgeCount: 1, nextEligibleNudgeAt: new Date() });
   concerns.getConcernForCeiling.mockResolvedValue(concern());
+  concerns.setConcernPattern.mockResolvedValue(undefined);
   deliverInApp.mockResolvedValue({ created: true });
   notifyUser.mockResolvedValue({ inApp: true, pushed: 1, suppressed: null });
   createActionIntent.mockResolvedValue({ id: 'intent-1', status: 'pending_approval' });
+  evaluateStandingInstructions.mockResolvedValue({ action: 'none' });
   rollupPartnerPicture.mockResolvedValue('picture');
   renderReadinessSummary.mockReturnValue("I can watch tickets here. I can't watch backups (no backup integration configured).");
 });
@@ -179,6 +189,44 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       raisedByGrantId: GRANT_ID, lastAssessedRunId: RUN_ID,
     });
     expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  // #11426: the shared key a recurring problem carries across devices, which
+  // the same-org rollup (wisp/concernRollup.ts) groups by.
+  describe('record_concern pattern (#11426)', () => {
+    const DEVICE_RAISE = {
+      subject: { kind: 'device' as const, id: TICKET_ID }, summary: 'incident_opened event, but Breeze has no incidents', severity: 'low' as const,
+    };
+
+    it('passes the normalised pattern through upsertConcern', async () => {
+      await finalizeAssessment(makeCtx(), makeResult(calls({ concernsRaised: [{ ...DEVICE_RAISE, pattern: '  Phantom Incident-Event ' }] })));
+      expect(concerns.upsertConcern).toHaveBeenCalledWith(expect.objectContaining({ pattern: 'phantom_incident_event' }));
+    });
+
+    it('never takes the pattern from model evidence (the evidence key is server-owned)', async () => {
+      await finalizeAssessment(makeCtx(), makeResult(calls({ concernsRaised: [{ ...DEVICE_RAISE, evidence: { a: 1, pattern: 'forged' } }] })));
+      const input = concerns.upsertConcern.mock.calls[0]![0] as Record<string, unknown>;
+      expect(input.evidence).toEqual({ a: 1 });
+      expect(input).not.toHaveProperty('pattern');
+    });
+
+    it('a re-raise of a live concern stamps the pattern on it', async () => {
+      concerns.upsertConcern.mockResolvedValue({ id: C2, created: false });
+      const result = makeResult(calls({ concernsRaised: [{ ...DEVICE_RAISE, pattern: 'phantom_incident_event' }] }));
+      expect(await finalizeAssessment(makeCtx(), result)).toBeNull();
+      expect(concerns.setConcernPattern).toHaveBeenCalledWith(C2, 'phantom_incident_event');
+    });
+
+    it('a new concern is not stamped twice, and no pattern means no stamp', async () => {
+      await finalizeAssessment(makeCtx(), makeResult(calls({ concernsRaised: [{ ...DEVICE_RAISE, pattern: 'phantom_incident_event' }, DEVICE_RAISE] })));
+      expect(concerns.setConcernPattern).not.toHaveBeenCalled();
+    });
+
+    it("update_concern that replaces evidence keeps the concern's pattern and drops a model-sent one", async () => {
+      concerns.getConcernForCeiling.mockResolvedValue(concern({ evidence: { pattern: 'phantom_incident_event', old: true } }));
+      await finalizeAssessment(makeCtx(), makeResult(calls({ concernsUpdated: [{ concernId: C1, evidence: { x: 1, pattern: 'forged' } }] })));
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { evidence: { x: 1, pattern: 'phantom_incident_event' }, lastAssessedRunId: RUN_ID });
+    });
   });
 
   it('11 raises → 10 upserts + raise_cap', async () => {
@@ -222,6 +270,22 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       severity: 'low', evidence: { x: 1, approvalIntentId: 'intent-old' }, lastAssessedRunId: RUN_ID,
     });
     expect(concerns.resolveConcern).toHaveBeenCalledWith(C1, { grantId: GRANT_ID }, 'customer replied');
+  });
+
+  // #11427: the run loop captures `validateOutcomeToolInput('update_concern', input)`,
+  // i.e. the shared schema's parse output. A call with an outcome and no status
+  // (what the model sent in prod) must reach the finalizer as a resolve.
+  it('update_concern with an outcome and no status (as captured by the run loop) resolves the concern', async () => {
+    const captured = updateConcernSchema.parse({
+      concernId: C1, summary: 'SAM23 restarted', outcome: 'The pending-reboot alert resolved, so the device restarted',
+    });
+    const result = makeResult(calls({ concernsUpdated: [captured] }));
+    await finalizeAssessment(makeCtx(), result);
+    expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { summary: 'SAM23 restarted', lastAssessedRunId: RUN_ID });
+    expect(concerns.resolveConcern).toHaveBeenCalledWith(
+      C1, { grantId: GRANT_ID }, 'The pending-reboot alert resolved, so the device restarted',
+    );
+    expect(result.outcome.assessmentSkipped).toBeUndefined();
   });
 
   describe('nudge', () => {
@@ -406,6 +470,47 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       await finalizeAssessment(makeCtx(), result);
       expect(createActionIntent).toHaveBeenCalledTimes(AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun);
       expect(result.outcome.assessmentSkipped).toEqual(['propose_cap']);
+    });
+  });
+
+  describe('propose_action standing instructions (#10428)', () => {
+    const proposal = { toolName: 'run_script', input: { scriptId: 's-1' }, reason: 'clear the spooler' };
+
+    it('refuse → propose_standing_instruction, no intent, gate called with the ceiling', async () => {
+      evaluateStandingInstructions.mockResolvedValue({ action: 'refuse', error: 'nope', match: {} });
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(evaluateStandingInstructions).toHaveBeenCalledWith(expect.objectContaining({
+        ceiling: expect.objectContaining({ grantId: GRANT_ID }), toolName: 'run_script', input: { scriptId: 's-1' },
+        auth: result.agentAuth,
+      }));
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_standing_instruction']);
+    });
+
+    it('lookup throws → propose_standing_instruction_unverified, no intent (fails closed)', async () => {
+      evaluateStandingInstructions.mockRejectedValue(new Error('db down'));
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_standing_instruction_unverified']);
+    });
+
+    it('warn → intent reason is prefixed with the conflict description', async () => {
+      evaluateStandingInstructions.mockResolvedValue({ action: 'warn', text: 'no reboots on Fridays', matches: [] });
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).toHaveBeenCalledTimes(1);
+      expect(createActionIntent.mock.calls[0]![1]).toMatchObject({
+        reason: `Conflicts with a remembered instruction: 'no reboots on Fridays'. Proposed by Wisp assessment ${RUN_ID}: clear the spooler`,
+      });
+    });
+
+    it('none → unchanged reason (control)', async () => {
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent.mock.calls[0]![1]).toMatchObject({ reason: `Proposed by Wisp assessment ${RUN_ID}: clear the spooler` });
+      expect(result.outcome.assessmentSkipped).toBeUndefined();
     });
   });
 
@@ -605,11 +710,193 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(result.outcome.assessmentSkipped).toEqual(['readiness_slot_held']);
     });
 
-    it('writes nothing when every check is serviceable, or the run is not an onboarding one', async () => {
+    it('creates nothing when every check is serviceable, or the run is not an onboarding one', async () => {
       const allGood = { ...readiness, checks: [readiness.checks[0]!], missingIntegrations: [] };
       await finalizeAssessment(makeCtx(assessmentCtx({ reason: { kind: 'onboarding' }, readiness: allGood })), makeResult());
       await finalizeAssessment(makeCtx(assessmentCtx({ reason: { kind: 'tick' }, readiness })), makeResult());
       expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    });
+
+    // #10406 × #11429: an on-demand run can be an org's first look under the
+    // grant (asked before any assessment, or it took over a queued onboarding
+    // job). That look creates the note, as onboarding would; an on-demand run
+    // after an earlier assessment only refreshes a live note, like any run.
+    it('an on_demand run with no earlier assessment creates the note; one after an earlier assessment does not', async () => {
+      const onDemand = { kind: 'on_demand' as const, requestId: 'req-1' };
+      await finalizeAssessment(makeCtx(assessmentCtx({ reason: onDemand, readiness, firstLook: true, noEarlierAssessment: true })), makeResult());
+      expect(concerns.upsertConcern).toHaveBeenCalledTimes(1);
+      expect(concerns.upsertConcern).toHaveBeenCalledWith(expect.objectContaining({
+        subject: { kind: 'readiness', id: ORG_ID }, signature: `readiness:${ORG_ID}`,
+      }));
+
+      concerns.upsertConcern.mockClear();
+      await finalizeAssessment(makeCtx(assessmentCtx({ reason: onDemand, readiness, firstLook: true, noEarlierAssessment: false })), makeResult());
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+    });
+  });
+
+  // #11429: the note used to be written on onboarding only, then touched by
+  // every run and never closed. Every run now re-evaluates it.
+  describe('readiness note lifecycle on every run (#11429)', () => {
+    const SUMMARY = "I can watch tickets here. I can't watch backups (no backup integration configured).";
+    const gaps = {
+      orgId: ORG_ID, orgName: 'Acme',
+      checks: [
+        { watchKind: 'ticket_waiting' as const, serviceable: true, reason: null },
+        { watchKind: 'backup_health' as const, serviceable: false, reason: 'no backup integration configured' },
+      ],
+      missingIntegrations: ['backup'],
+    };
+    const allServiceable = {
+      ...gaps,
+      checks: [gaps.checks[0]!, { watchKind: 'backup_health' as const, serviceable: true, reason: null }],
+      missingIntegrations: [],
+    };
+    // As read back from jsonb: key order is not the order it was written in.
+    const storedEvidence = {
+      readiness: {
+        missingIntegrations: ['backup'],
+        checks: gaps.checks.map((c) => ({ reason: c.reason, serviceable: c.serviceable, watchKind: c.watchKind })),
+      },
+    };
+    const note = (o: Partial<Concern> = {}) => concern({
+      id: C2, subject: { kind: 'readiness', id: ORG_ID }, severity: 'info', signature: `readiness:${ORG_ID}`,
+      summary: SUMMARY, evidence: storedEvidence, ...o,
+    });
+    const run = (o: Partial<AssessmentRunContext>) => makeCtx(assessmentCtx({ reason: { kind: 'tick' }, ...o }));
+
+    it('a later run whose checks are all serviceable resolves the live note with all_checks_serviceable', async () => {
+      const result = makeResult();
+      expect(await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note()] }), result)).toBeNull();
+      expect(concerns.resolveConcern).toHaveBeenCalledTimes(1);
+      // System automation: no grant, so no concern_outcome memory block.
+      expect(concerns.resolveConcern).toHaveBeenCalledWith(C2, {}, 'all_checks_serviceable');
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toBeUndefined();
+    });
+
+    it('stamps the run on the note before resolving it, so the next no-changes probe does not count the close as news', async () => {
+      await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C2, { lastAssessedRunId: RUN_ID });
+      expect(concerns.updateConcern.mock.invocationCallOrder[0]!)
+        .toBeLessThan(concerns.resolveConcern.mock.invocationCallOrder[0]!);
+    });
+
+    it('an onboarding run whose checks are all serviceable resolves a live note too', async () => {
+      await finalizeAssessment(
+        makeCtx(assessmentCtx({ reason: { kind: 'onboarding' }, readiness: allServiceable, openConcerns: [note()] })),
+        makeResult(),
+      );
+      expect(concerns.resolveConcern).toHaveBeenCalledWith(C2, {}, 'all_checks_serviceable');
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+    });
+
+    it('a tick never writes the note when its gaps are unchanged (no updated_at bump), but still touches the others', async () => {
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [concern({ id: C1 }), note()] }), makeResult());
+      expect(concerns.updateConcern.mock.calls).toEqual([[C1, { lastAssessedRunId: RUN_ID }]]);
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+    });
+
+    it('a tick refreshes the note, stamped with the run, when its gaps changed', async () => {
+      const older = {
+        readiness: {
+          checks: [{ watchKind: 'ticket_waiting', serviceable: false, reason: 'no tickets in 90 days' }, gaps.checks[1]],
+          missingIntegrations: ['backup'],
+        },
+      };
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [note({ summary: 'older text', evidence: older })] }), makeResult());
+      expect(concerns.updateConcern.mock.calls).toEqual([[C2, {
+        summary: SUMMARY,
+        evidence: { readiness: { checks: gaps.checks, missingIntegrations: ['backup'] } },
+        lastAssessedRunId: RUN_ID,
+      }]]);
+    });
+
+    // The store trims what it writes; a rendered summary with edge whitespace
+    // must still compare equal to what the last refresh stored.
+    it('a rendered summary with edge whitespace compares equal to the trimmed one stored', async () => {
+      renderReadinessSummary.mockReturnValue(`${SUMMARY}  `);
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a missing integration was added', { ...gaps, missingIntegrations: ['backup', 'psa'] }],
+      ['a check\'s reason changed', { ...gaps, checks: [gaps.checks[0]!, { ...gaps.checks[1]!, reason: 'backup vendor not synced yet' }] }],
+    ])('a tick refreshes the note when only its evidence changed (%s), the summary being the same', async (_l, changed) => {
+      await finalizeAssessment(run({ readiness: changed, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).toHaveBeenCalledTimes(1);
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C2, {
+        summary: SUMMARY,
+        evidence: { readiness: { checks: changed.checks, missingIntegrations: changed.missingIntegrations } },
+        lastAssessedRunId: RUN_ID,
+      });
+    });
+
+    it.each([
+      ['no readiness key', {}],
+      ['an empty readiness object', { readiness: {} }],
+      ['checks that are not an array', { readiness: { checks: 'x', missingIntegrations: ['backup'] } }],
+      ['missingIntegrations null', { readiness: { checks: gaps.checks, missingIntegrations: null } }],
+      ['a null check', { readiness: { checks: [null, gaps.checks[1]], missingIntegrations: ['backup'] } }],
+    ])('a stored note with %s reads as changed and is refreshed once, keeping its other evidence', async (_l, stored) => {
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [note({ evidence: { ...stored, href: '/x' } })] }), makeResult());
+      expect(concerns.updateConcern.mock.calls).toEqual([[C2, {
+        summary: SUMMARY,
+        evidence: { href: '/x', readiness: { checks: gaps.checks, missingIntegrations: ['backup'] } },
+        lastAssessedRunId: RUN_ID,
+      }]]);
+    });
+
+    it('a failed stamp leaves the note unresolved and the run partially applied', async () => {
+      concerns.updateConcern.mockRejectedValueOnce(new Error('db down'));
+      const result = makeResult();
+      expect(await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note()] }), result))
+        .toBe('assessment_partially_applied');
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    });
+
+    it('a refresh keeps the approval card on the note', async () => {
+      const intent = '00000000-0000-4000-8000-0000000000e1';
+      await finalizeAssessment(run({
+        readiness: gaps,
+        openConcerns: [note({ summary: 'older text', evidence: { ...storedEvidence, approvalIntentId: intent }, approvalIntentId: intent })],
+      }), makeResult());
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C2, expect.objectContaining({
+        evidence: { readiness: { checks: gaps.checks, missingIntegrations: ['backup'] }, approvalIntentId: intent },
+      }));
+    });
+
+    it('a tick never re-creates a note that is not live (one the user dismissed stays dismissed)', async () => {
+      await finalizeAssessment(run({ readiness: gaps, openConcerns: [] }), makeResult());
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+
+    it('no readiness inventory this run (it failed) leaves the note alone', async () => {
+      await finalizeAssessment(run({ readiness: null, openConcerns: [note()] }), makeResult());
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    });
+
+    it('only the run org\'s own note under the run\'s partner is resolved; the no-agent note is not this one', async () => {
+      const noAgent = note({
+        id: '00000000-0000-4000-8000-0000000000c3', signature: `wisp-readiness:no-effective-agent:${ORG_ID}`,
+      });
+      const otherPartner = note({ id: '00000000-0000-4000-8000-0000000000c4', partnerId: OTHER_PARTNER });
+      await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [noAgent, otherPartner] }), makeResult());
+      expect(concerns.resolveConcern).not.toHaveBeenCalled();
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+
+    it('a failed resolve is recorded as partially applied and does not stop the touch', async () => {
+      concerns.resolveConcern.mockRejectedValue(new Error('db down'));
+      const result = makeResult();
+      expect(await finalizeAssessment(run({ readiness: allServiceable, openConcerns: [note(), concern({ id: C1 })] }), result))
+        .toBe('assessment_partially_applied');
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { lastAssessedRunId: RUN_ID });
     });
   });
 });

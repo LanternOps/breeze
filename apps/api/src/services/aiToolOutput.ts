@@ -1070,6 +1070,16 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Full-control W18 PR B (#6789): portal text is typed by MSP staff and shown to customers; recipient names and
+  // emails are contacts. None becomes instructions.
+  manage_org_portal_settings: new Set(['welcomeMessage', 'footerText', 'customCss', 'supportEmail', 'supportPhone', 'logoUrl', 'partnerInvoiceFooter', 'partnerLogoUrl']),
+  manage_report_recipients: new Set(['name', 'email']),
+  // Full-control W16 PR A (#6786): the service name is the model's (and so a prompt's) text, echoed back; an
+  // admission refusal's sentence, returned as `error`, can quote it.
+  create_operator_task: new Set(['serviceName', 'error']),
+  // Full-control W16 PR B (#6786): a design's labels, names and refs were written by a model from device evidence, and
+  // hostnames by devices; none becomes instructions, and neither does a stored ledger error.
+  manage_fleet_designs: new Set(['label', 'groupName', 'policyName', 'name', 'itemName', 'hostname', 'itemRef', 'functionKey', 'error']),
   // Full-control W18 PR A (#6789): names and emails are typed by people (contacts, portal invitees, staff), role
   // names and descriptions by tenant admins, external-link labels by integrations. None becomes instructions.
   get_org_summary: new Set(['name', 'email', 'phone', 'siteName']),

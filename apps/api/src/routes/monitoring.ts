@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { optionalQueryBoolean } from '@breeze/shared';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext as RequestAuthContext } from '../middleware/auth';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, snmpAlertThresholds, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { suggestTemplate, type TemplateSuggestion } from '../services/snmpTemplateSuggest';
@@ -694,9 +694,10 @@ monitoringRoutes.put(
       // non-fatal since the primary row was already upserted successfully.
       if (existingRows.length > 1) {
         try {
-          await db.update(snmpDevices)
+          // Savepoint so a failed update rolls back and the held transaction survives (#11203).
+          await withDbTransaction(async () => db.update(snmpDevices)
             .set({ isActive: false })
-            .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), sql`${snmpDevices.id} <> ${upserted.id}`));
+            .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId), sql`${snmpDevices.id} <> ${upserted.id}`)));
         } catch (err) {
           console.error(`[monitoring] Failed to deactivate duplicate SNMP devices for asset=${assetId}, org=${asset.orgId}, kept=${upserted.id}:`, err);
         }
@@ -959,7 +960,8 @@ monitoringRoutes.get(
     // already snapshots all services on every heartbeat cycle)
     let changeLogNames: { subject: string }[] = [];
     try {
-      changeLogNames = allowedSiteIds === undefined
+      // Savepoint so a missing table does not abort the request transaction (#11203).
+      changeLogNames = await withDbTransaction(async () => allowedSiteIds === undefined
         ? await db
             .select({ subject: deviceChangeLog.subject })
             .from(deviceChangeLog)
@@ -977,7 +979,7 @@ monitoringRoutes.get(
               inArray(devices.siteId, allowedSiteIds)
             ))
             .groupBy(deviceChangeLog.subject)
-            .limit(1000);
+            .limit(1000));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('does not exist')) {
@@ -992,7 +994,8 @@ monitoringRoutes.get(
         name: serviceProcessCheckResults.name,
         watchType: serviceProcessCheckResults.watchType,
       };
-      checkNames = allowedSiteIds === undefined
+      // Savepoint so a missing table does not abort the request transaction (#11203).
+      checkNames = await withDbTransaction(async () => allowedSiteIds === undefined
         ? await db
             .select(selection)
             .from(serviceProcessCheckResults)
@@ -1009,7 +1012,7 @@ monitoringRoutes.get(
               inArray(devices.siteId, allowedSiteIds)
             ))
             .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
-            .limit(500);
+            .limit(500));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('does not exist')) {

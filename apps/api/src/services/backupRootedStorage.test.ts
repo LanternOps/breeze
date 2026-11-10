@@ -4,10 +4,12 @@ type Listing = { key: string; lastModified: Date | null };
 const iterateMock = vi.fn();
 const fetchTextMock = vi.fn();
 const deleteKeysMock = vi.fn();
+const openStreamMock = vi.fn();
 vi.mock('./backupSnapshotStorage', () => ({
   iterateBackupObjectsUnderPrefix: iterateMock,
   fetchBackupObjectText: fetchTextMock,
   deleteBackupObjectKeys: deleteKeysMock,
+  openBackupObjectStream: openStreamMock,
 }));
 
 const {
@@ -15,6 +17,7 @@ const {
   deleteRootedObjectKeys,
   fetchRootedObjectText,
   iterateRootedObjects,
+  openRootedObjectStream,
 } = await import('./backupRootedStorage');
 const { LEGACY_FLAT_ROOT } = await import('./backupKeyLayout');
 
@@ -39,6 +42,22 @@ describe('rooted backup storage', () => {
     iterateMock.mockReset();
     fetchTextMock.mockReset();
     deleteKeysMock.mockReset();
+    openStreamMock.mockReset();
+  });
+
+  it('opens a manifest stream at its physical key under the root, with the caller\'s cap (#11232)', async () => {
+    const stream = Symbol('stream');
+    openStreamMock.mockResolvedValue(stream);
+
+    expect(await openRootedObjectStream({ ...s3, root: LEGACY_FLAT_ROOT }, 'snapshots/a1/manifest.json', 99)).toBe(stream);
+    expect(openStreamMock).toHaveBeenLastCalledWith({ provider: 's3', providerConfig: s3.providerConfig, key: 'snapshots/a1/manifest.json', maxBytes: 99 });
+
+    await openRootedObjectStream({ ...s3, root: P }, 'snapshots/b1/manifest.json', 99);
+    expect(openStreamMock).toHaveBeenLastCalledWith({ provider: 's3', providerConfig: s3.providerConfig, key: 'orgB/snapshots/b1/manifest.json', maxBytes: 99 });
+
+    await expect(openRootedObjectStream({ provider: 'local', providerConfig: { path: '/tmp/x' }, root: P }, 'snapshots/b1/manifest.json', 99))
+      .rejects.toBeInstanceOf(BackupKeyRootInvariantError);
+    expect(openStreamMock).toHaveBeenCalledTimes(2);
   });
 
   it('the legacy root passes every call through unchanged', async () => {

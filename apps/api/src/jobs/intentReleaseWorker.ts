@@ -1422,7 +1422,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     let recomputed: { digest: string | null; context?: ToolExecutionContext };
     try {
       recomputed = await withSystemDbAccessContext(() =>
-        computeEffectDigestForRelease(intent.actionName, intent.arguments, db),
+        computeEffectDigestForRelease(intent.actionName, intent.arguments, db, { intentOrgId: intent.orgId }),
       );
     } catch (err) {
       // Fail closed with a categorized code, like every other step in this

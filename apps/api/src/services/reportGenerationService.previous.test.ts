@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-vi.mock('../db', () => ({ db: { select: vi.fn() } }));
+vi.mock('../db', () => ({
+  db: { select: vi.fn() },
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
+}));
 
 import { db } from '../db';
 import { previousBaselineFor } from './reportGenerationService';

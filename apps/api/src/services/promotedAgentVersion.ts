@@ -1,5 +1,5 @@
 import { and, desc, eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { agentVersions } from '../db/schema';
 import { getBinaryEdition } from './binaryEdition';
 import { captureException, captureMessage } from './sentry';
@@ -333,7 +333,7 @@ export async function getPromotedAgentVersionForDisplay(): Promise<string | null
 
   let row: { version: string } | undefined;
   try {
-    [row] = await db
+    [row] = await withDbTransactionIfHeld(() => db
       .select({ version: agentVersions.version })
       .from(agentVersions)
       .where(
@@ -344,7 +344,7 @@ export async function getPromotedAgentVersionForDisplay(): Promise<string | null
         ),
       )
       .orderBy(desc(agentVersions.createdAt))
-      .limit(1);
+      .limit(1));
   } catch (err) {
     console.error(
       '[promotedAgentVersion] display-only promoted-version lookup failed; ' +

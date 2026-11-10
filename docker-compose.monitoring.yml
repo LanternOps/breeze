@@ -3,10 +3,16 @@
 #
 # Includes: Prometheus, Grafana, Alertmanager, Loki, Promtail, and DB exporters.
 # Requires the base docker-compose.yml to be running.
+#
+# Every image is digest-pinned and overridable via <SERVICE>_IMAGE_REF
+# (PROMETHEUS_, GRAFANA_, ALERTMANAGER_, LOKI_, PROMTAIL_, REDIS_EXPORTER_,
+# POSTGRES_EXPORTER_). Refresh pins deliberately: `docker buildx imagetools
+# inspect <image:tag>` for the digest, then rerun the promtool/amtool/Loki
+# config checks listed in the PR that introduced them (#7812).
 
 services:
   prometheus:
-    image: prom/prometheus:v2.52.0
+    image: ${PROMETHEUS_IMAGE_REF:-prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06}
     container_name: breeze-prometheus
     restart: unless-stopped
     command:
@@ -35,7 +41,7 @@ services:
       - breeze
 
   grafana:
-    image: grafana/grafana:10.4.5
+    image: ${GRAFANA_IMAGE_REF:-grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205}
     container_name: breeze-grafana
     restart: unless-stopped
     environment:
@@ -64,7 +70,7 @@ services:
       - breeze
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: ${ALERTMANAGER_IMAGE_REF:-prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b}
     container_name: breeze-alertmanager
     restart: unless-stopped
     command:
@@ -85,7 +91,7 @@ services:
       - breeze
 
   loki:
-    image: grafana/loki:2.9.8
+    image: ${LOKI_IMAGE_REF:-grafana/loki:3.6.20@sha256:be040ec94865dabe4821ce1c0f109452bd4b5acb566ae376672696eb43caedb7}
     container_name: breeze-loki
     restart: unless-stopped
     command: -config.file=/etc/loki/config.yml
@@ -104,7 +110,7 @@ services:
       - breeze
 
   promtail:
-    image: grafana/promtail:2.9.8
+    image: ${PROMTAIL_IMAGE_REF:-grafana/promtail:3.6.11@sha256:a761cb834cfaeee29745440d4884d6748f0a08d8f68928db1d707018c1dcfbe9}
     container_name: breeze-promtail
     restart: unless-stopped
     command: -config.file=/etc/promtail/config.yml
@@ -119,7 +125,7 @@ services:
       - breeze
 
   redis-exporter:
-    image: oliver006/redis_exporter:v1.61.0
+    image: ${REDIS_EXPORTER_IMAGE_REF:-oliver006/redis_exporter:v1.97.0@sha256:f5f903fbe77571d455ede0453b084d6840bc62fc105efac001034421cab83b99}
     container_name: breeze-redis-exporter
     restart: unless-stopped
     command: >
@@ -136,7 +142,7 @@ services:
       - breeze
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.15.0
+    image: ${POSTGRES_EXPORTER_IMAGE_REF:-prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e}
     container_name: breeze-postgres-exporter
     restart: unless-stopped
     # No hard `depends_on: postgres` here on purpose: this overlay must compose

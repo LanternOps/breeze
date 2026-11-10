@@ -6,7 +6,7 @@
  * and backup configs. These must be created before they can be linked to a config policy.
  */
 
-import { db, withDbTransaction } from '../db';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { pgErrorCode } from '../utils/pgErrors';
 import { patchPolicies } from '../db/schema/patches';
 import { softwarePolicies } from '../db/schema/softwarePolicies';
@@ -214,7 +214,8 @@ function backupProfileWhere(auth: AuthContext): SQL | undefined {
 function safeHandler(toolName: string, fn: Handler): Handler {
   return async (input, auth, context) => {
     try {
-      return await fn(input, auth, context);
+      // In a savepoint, or the error JSON below is lost to the commit (#11203).
+      return await (hasDbAccessContext() ? withDbTransaction(() => fn(input, auth, context)) : fn(input, auth, context));
     } catch (err: unknown) {
       const code = pgErrorCode(err);
       // Log BEFORE the pg-code early returns — those branches return without

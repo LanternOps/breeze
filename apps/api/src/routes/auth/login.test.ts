@@ -997,6 +997,74 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     });
   });
 
+  // #10650: the challenge offers TOTP through the shared factor predicate, so a
+  // backup authenticator beside a primary passkey is offered while a stale
+  // secret beside an SMS primary is not.
+  const mfaRow = (overrides: Record<string, unknown>) => ({
+    id: 'user-1',
+    email: 'admin@msp.com',
+    name: 'Admin User',
+    passwordHash: 'password-hash',
+    status: 'active',
+    mfaEnabled: true,
+    mfaSecret: 'secret',
+    mfaMethod: 'totp',
+    mfaRecoveryCodes: ['scrypt$v1$hash-1'],
+    phoneNumber: null,
+    avatarUrl: null,
+    ...overrides,
+  });
+
+  it('offers the backup authenticator app on a passkey-primary account, keeping passkey primary', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([mfaRow({ mfaMethod: 'passkey' })]) as any);
+    vi.mocked(userHasUsablePasskey).mockResolvedValueOnce(true);
+    const setexMock = vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaRequired: true,
+      mfaMethod: 'passkey',
+      allowedMethods: { totp: true, sms: false, passkey: true },
+    });
+    const written = JSON.parse(setexMock.mock.calls[0]?.[2] as string) as Record<string, unknown>;
+    expect(written).toMatchObject({ mfaMethod: 'passkey', allowedMethods: { totp: true, passkey: true } });
+  });
+
+  it('does not offer a stale TOTP secret beside an SMS primary', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([mfaRow({ mfaMethod: 'sms', phoneNumber: '+15555550100' })]) as any);
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
+    });
+    vi.mocked(getRedis).mockReturnValue({ setex: vi.fn(async () => 'OK') } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaMethod: 'sms',
+      allowedMethods: { totp: false, sms: true },
+    });
+  });
+
+  it('still offers TOTP on a legacy enabled row whose mfa_method was never written', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([mfaRow({ mfaMethod: null })]) as any);
+    vi.mocked(getRedis).mockReturnValue({ setex: vi.fn(async () => 'OK') } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaMethod: 'totp',
+      allowedMethods: { totp: true },
+    });
+  });
+
   it('issues a recovery-only challenge for a new client when the primary is disallowed', async () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,

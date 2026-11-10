@@ -284,7 +284,7 @@
     "alertThresholds": "Avvisa al (% del budget)",
     "alertThresholdsHelp": "Gli admin partner con accesso alla fatturazione ricevono un avviso in-app a ogni soglia e un'email per gli avvisi mensili e di limite raggiunto. Lascia vuoto per ereditare 50, 80, 95.",
     "notSet": "Non impostato, le org si configurano singolarmente",
-    "description": "I valori di budget vengono applicati a tutte le organizzazioni figlie. Gli importi in dollari sono archiviati internamente in centesimi.",
+    "description": "Un valore impostato qui si applica a tutte le organizzazioni e le blocca. Un campo lasciato vuoto viene configurato per organizzazione. Gli importi in dollari sono archiviati internamente in centesimi.",
     "modes": {
       "perStep": "Per passaggio",
       "actionPlan": "Piano d'azione",
@@ -1095,8 +1095,8 @@
         "description": "Invia email dal tuo dominio"
       },
       "aiBudgets": {
-        "label": "Budget AI",
-        "description": "Limiti di spesa AI"
+        "label": "Budget e limiti IA",
+        "description": "Limiti di spesa, avvisi e limiti di frequenza IA"
       },
       "aiProvider": {
         "label": "Provider e modelli IA",
@@ -1119,8 +1119,8 @@
         "description": "Service desk, fatturazione e topologia on/off"
       },
       "aiApprovals": {
-        "label": "Timeout di approvazione IA",
-        "description": "Per quanto tempo Breeze AI attende l'approvazione di un'azione controllata"
+        "label": "Approvazioni IA",
+        "description": "Modalità di approvazione e per quanto Breeze AI attende un'approvazione"
       },
       "callerVerification": {
         "label": "Verifica del chiamante",
@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Ospiti noti",
         "description": "Dispositivi approvati di visitatori e tecnici per indirizzo MAC"
+      },
+      "customerPortal": {
+        "label": "Portale clienti",
+        "description": "Regole predefinite di accesso e registrazione per i portali dei tuoi clienti e richieste di accesso in attesa di una decisione"
       }
     },
     "saved": "Impostazioni partner salvate",
@@ -1198,6 +1202,7 @@
       "badge": {
         "locks": "Blocca le organizzazioni",
         "locksConditional": "Blocca le organizzazioni se attivo",
+        "locksWhenSet": "Blocca le organizzazioni una volta impostato",
         "overridable": "L’organizzazione può modificarlo",
         "overridableCap": "L’organizzazione può modificarlo, fino a {{limit}}",
         "partnerOnly": "Per tutto il partner"
@@ -1205,6 +1210,7 @@
       "badgeHelp": {
         "locks": "Finché è impostato, ogni organizzazione usa il tuo valore. Il valore proprio dell’organizzazione viene ignorato.",
         "locksConditional": "Se attivo, ogni organizzazione usa il tuo valore invece del proprio. Se disattivo, le organizzazioni usano il proprio.",
+        "locksWhenSet": "Una volta impostato un valore, ogni organizzazione lo usa e il proprio viene ignorato. Finché è vuoto, ogni organizzazione configura il proprio.",
         "overridable": "Il tuo valore è quello predefinito. Un’organizzazione che imposta un proprio valore usa quello.",
         "overridableCap": "Il tuo valore è quello predefinito. Un’organizzazione può impostare un proprio valore, fino a {{limit}}.",
         "partnerOnly": "Le organizzazioni non hanno un’impostazione propria. Il tuo valore vale per tutte."
@@ -1851,7 +1857,8 @@
       "load": "Caricamento criterio di sicurezza approvazioni non riuscito.",
       "save": "Impossibile salvare il criterio di sicurezza approvazioni.",
       "unavailable": "Nessun criterio disponibile."
-    }
+    },
+    "scopeNote": "Queste impostazioni si applicano a tutte le organizzazioni del tuo account partner."
   },
   "orgAuditRetentionSettings": {
     "title": "Conservazione dei log di audit",
@@ -2321,7 +2328,8 @@
     "actions": {
       "resend": "Reinvia",
       "reactivate": "Riattiva",
-      "sendInvite": "Invia invito"
+      "sendInvite": "Invia invito",
+      "grantBrowserAccess": "Concedi l’accesso da browser"
     },
     "fields": {
       "nameOptional": "Nome (facoltativo)",
@@ -2343,13 +2351,19 @@
       "inviteResent": "Invito reinviato",
       "reactivated": "Utente riattivato",
       "disabled": "Utente disabilitato",
-      "removed": "Utente rimosso"
+      "removed": "Utente rimosso",
+      "browserAccessGranted": "Accesso da browser concesso"
     },
     "errors": {
       "load": "Impossibile caricare gli utenti del portale.",
       "sendInvite": "Impossibile inviare l'invito",
       "action": "Azione non riuscita",
       "invalidEmail": "Inserisci un indirizzo email valido"
+    },
+    "badges": {
+      "noBrowserAccess": "Nessun accesso da browser",
+      "microsoft": "Accesso con Microsoft",
+      "google": "Accesso con Google"
     }
   },
   "orgRemoteAccessSettings": {
@@ -2968,7 +2982,8 @@
       "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
       "enabledCreateHint": "I nuovi agenti vengono creati spenti. Controlla l’elenco degli strumenti consentiti e i limiti qui sotto, poi accendi questo quando vuoi che l’agente inizi a essere eseguito.",
       "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
-      "recipientRoleNoMembers": "nessun membro attivo"
+      "recipientRoleNoMembers": "nessun membro attivo",
+      "enabledHintNoMode": "Quando è disattivato, l’agente non viene eseguito."
     },
     "policyKeys": {
       "tools": {
@@ -3165,6 +3180,7 @@
           "blocked_by_source": "Escluso dalle origini di aggiornamento della policy",
           "held_by_deferral": "Trattenuto dalla finestra di differimento",
           "blocked_by_category": "Escluso dalle regole di categoria dell'anello",
+          "managed_by_vendor_updates": "Gestita dagli aggiornamenti del produttore",
           "blocked_by_app_rule": "Bloccato da una regola dell'app",
           "blocked_by_feature_update_policy": "Escluso dal criterio dell'anello per gli aggiornamenti delle funzionalità di Windows",
           "awaiting_manual_approval": "In attesa di approvazione manuale",
@@ -5506,7 +5522,21 @@
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
     "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'app di autenticazione.",
     "ssoReauthManageHint": "Questo account accede tramite un provider di identità e non ha una password. Verifica con il tuo provider per confermare questa modifica.",
-    "ssoReauthManageVerified": "Identità verificata con il tuo provider. Completa il passaggio seguente per confermare questa modifica."
+    "ssoReauthManageVerified": "Identità verificata con il tuo provider. Completa il passaggio seguente per confermare questa modifica.",
+    "notSetUp": "Non configurata",
+    "notAvailable": "Non disponibile",
+    "backup": "Di riserva",
+    "addBackup": "Aggiungi backup",
+    "totpBackupAddHint": "Aggiungi un’app di autenticazione come backup, così potrai accedere anche se la passkey non è disponibile.",
+    "totpPolicyDisallowed": "La policy della tua organizzazione non consente le app di autenticazione.",
+    "totpBackupActiveHint": "Usa un codice della tua app di autenticazione se la passkey non è disponibile.",
+    "totpBackupVerifyNote": "Quando premi Verifica, confermerai con la tua passkey.",
+    "confirmBackupButton": "Verifica e aggiungi backup",
+    "removeTotpTitle": "Rimuovi app di autenticazione",
+    "removeTotpBackupDescription": "Continuerai ad accedere con la tua passkey. I tuoi codici di recupero restano invariati.",
+    "removeTotpPrimaryDescription": "La tua passkey diventa il metodo di accesso principale. I tuoi codici di recupero restano invariati.",
+    "removeTotpConfirmWithPasskey": "Confermerai con la tua passkey.",
+    "removing": "Rimozione..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importa da Pax8",
@@ -5631,7 +5661,13 @@
     "ssoReauthManageProofExpired": "La verifica con il provider di identità è scaduta. Verifica di nuovo per confermare questa modifica.",
     "verifyWithIdpToDeletePasskey": "Questo account non ha una password. Verifica con il tuo provider di identità prima di rimuovere una passkey.",
     "deletePasskeySsoReauth": "Verifica l'identità per rimuovere una passkey",
-    "deletePasskeySsoVerified": "Identità verificata. Scegli Elimina sulla passkey che vuoi rimuovere."
+    "deletePasskeySsoVerified": "Identità verificata. Scegli Elimina sulla passkey che vuoi rimuovere.",
+    "authenticatorBackupAdded": "App di autenticazione aggiunta come backup. I tuoi codici di recupero non sono cambiati",
+    "authenticatorAppRemoved": "App di autenticazione rimossa. Accederai con la tua passkey",
+    "authenticatorCodeRejectedWaitForNext": "Codice non accettato. Ogni codice funziona una sola volta: se lo hai appena usato, attendi il prossimo codice della tua app di autenticazione.",
+    "passkeyConfirmationCanceled": "La conferma con passkey è stata annullata o è scaduta.",
+    "passkeyProofRejected": "Impossibile verificare la passkey. Riprova.",
+    "failedToRemoveAuthenticatorApp": "Impossibile rimuovere l’app di autenticazione"
   },
   "roleManager": {
     "roles": "Ruoli",
@@ -6358,8 +6394,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Budget AI",
-    "description": "Limiti di spesa, limiti di frequenza e modalità di approvazione per Breeze AI in questa organizzazione. I campi impostati dal partner sono mostrati qui, ma possono essere modificati solo nella scheda del partner.",
+    "title": "Budget e limiti IA",
+    "description": "Limiti di spesa, avvisi e limiti di frequenza di Breeze AI in questa organizzazione. I campi impostati dal partner sono mostrati qui ma possono essere modificati solo nella scheda partner.",
     "selectOrganization": "Seleziona un'organizzazione per configurare il suo budget AI."
   },
   "orgSettingsPage": {
@@ -6387,6 +6423,8 @@
       "generalDescription": "Profilo e predefiniti",
       "contacts": "Contatti",
       "contactsDescription": "Persone da raggiungere presso questo cliente, per sito o per l’intera organizzazione",
+      "domains": "Domini",
+      "domainsDescription": "Domini email dei clienti e prova di proprietà",
       "contracts": "Contratti",
       "contractsDescription": "Accordi ricorrenti",
       "billing": "Fatturazione",
@@ -6901,7 +6939,8 @@
         "pam_open_actuation": "L'organizzazione che verrà unita (e dismessa) ha sessioni di accesso privilegiato (PAM) che non hanno ancora completato la pulizia. Attendi che si chiudano, poi riprova l'unione.",
         "pam_evidence": "L'organizzazione che verrà unita ha una cronologia di accesso privilegiato (PAM) e lo spostamento della cronologia PAM tra organizzazioni non è abilitato in questa distribuzione. Unisci nella direzione opposta, oppure non unire queste organizzazioni.",
         "payment_in_flight": "Un pagamento dell'organizzazione che verrà unita è ancora in corso. Attendi che si concluda, poi riprova l'unione.",
-        "lineage_depth": "Queste organizzazioni sono già state unite troppe volte e questa unione supererebbe la profondità massima della cronologia delle unioni."
+        "lineage_depth": "Queste organizzazioni sono già state unite troppe volte e questa unione supererebbe la profondità massima della cronologia delle unioni.",
+        "entra_tenant_conflict": "L'organizzazione che verrà unita ha un tenant Microsoft dimostrato e anche l'organizzazione che rimane è collegata a un tenant Microsoft. Rimuovi uno dei collegamenti ai tenant, poi riprova l'unione."
       }
     },
     "archive": {
@@ -7076,28 +7115,165 @@
   },
   "customerDomainsCard": {
     "title": "Domini email cliente",
-    "description": "Instrada i domini email cliente verificati verso l'organizzazione corretta.",
+    "managedPerOrg": "I domini sono gestiti per organizzazione. Apri un’organizzazione per aggiungere, verificare, spostare o rimuovere i suoi domini.",
+    "emptySummary": "Nessun dominio email cliente per ora. Aggiungili nella scheda Domini di ogni organizzazione.",
     "errors": {
-      "load": "Impossibile caricare le mappature dei domini cliente.",
-      "save": "Impossibile salvare la mappatura del dominio cliente. Riprova."
-    },
-    "toasts": {
-      "added": "Mappatura dominio cliente aggiunta",
-      "saved": "Mappatura dominio cliente salvata",
-      "deleted": "Mappatura dominio cliente eliminata"
+      "load": "Impossibile caricare le mappature dei domini cliente."
     },
     "columns": {
       "domain": "Dominio",
-      "autoCreateContact": "Creazione automatica contatto"
+      "status": "Stato"
     },
-    "empty": "Non ci sono ancora mappature di domini cliente.",
-    "placeholders": {
-      "domain": "customer.example.com",
-      "organization": "Seleziona organizzazione..."
-    },
-    "new": "Nuovo",
     "actions": {
-      "addDomain": "Aggiungi dominio"
+      "manage": "Gestisci"
+    }
+  },
+  "orgDomains": {
+    "title": "Domini",
+    "description": "Domini email che appartengono a questo cliente. Un dominio dichiarato instrada la posta in arrivo verso questa organizzazione. Un dominio verificato è la prova che il cliente ne è il proprietario, e su di essa si basano l’autoregistrazione al portale e l’accesso con Google.",
+    "forbidden": "La gestione dei domini dei clienti richiede un ruolo di amministratore con accesso a tutte le organizzazioni.",
+    "partnerOnly": "I domini dei clienti sono gestiti dal tuo fornitore di servizi.",
+    "checkingAccess": "Verifica dell’accesso in corso…",
+    "empty": "Nessun dominio per ora. Aggiungi qui sotto il dominio email del cliente.",
+    "neverChecked": "Mai",
+    "notCurrent": "Le prove alla base di questa verifica non sono più valide. Il controllo giornaliero la rimuoverà, a meno che non venga superato di nuovo.",
+    "inactiveSuspended": "Inattivo: non viene usato per l’instradamento della posta né per l’accesso finché non viene riattivato.",
+    "stale": "L’elenco potrebbe non essere aggiornato: non è stato possibile ricaricarlo dopo la modifica.",
+    "columns": {
+      "domain": "Dominio",
+      "status": "Stato",
+      "lastChecked": "Ultimo controllo",
+      "autoCreateContact": "Crea contatto automaticamente"
+    },
+    "aria": {
+      "active": "{{domain}} è attivo",
+      "autoCreateContact": "Crea automaticamente i contatti per {{domain}}",
+      "verify": "Verifica di {{domain}}",
+      "move": "Sposta {{domain}}",
+      "delete": "Elimina {{domain}}"
+    },
+    "states": {
+      "declared": "Dichiarato — solo instradamento della posta",
+      "pending_dns": "DNS in attesa",
+      "verified": "Verificato · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "Record DNS TXT",
+      "entra_tenant": "Microsoft (il tenant Entra dimostrato dell’organizzazione)",
+      "google_directory": "Directory di Google Workspace"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "Il tenant Microsoft dell’organizzazione non è ancora dimostrato.",
+        "connection_missing": "Richiede una connessione Microsoft 365 per il tenant dimostrato. Collega Microsoft 365 per questa organizzazione oppure usa il DNS.",
+        "not_enabled": "La verifica Microsoft non è disponibile su questo server."
+      },
+      "google_directory": {
+        "connection_missing": "Richiede una connessione Google Workspace per questa organizzazione.",
+        "not_enabled": "Google Workspace non è abilitato su questo server."
+      }
+    },
+    "cleared": {
+      "record_missing": "Verifica persa: il record DNS non è stato trovato.",
+      "not_in_directory": "Verifica persa: il dominio non è più presente nella directory.",
+      "tenant_not_proven": "Verifica persa: il tenant Microsoft non è più dimostrato.",
+      "connection_missing": "Verifica persa: la connessione alla directory è stata rimossa.",
+      "stale": "Verifica persa: non è stato possibile ricontrollarla per 7 giorni.",
+      "repointed": "Verifica persa: il dominio è stato spostato in un’altra organizzazione.",
+      "msp_removed": "Verifica rimossa.",
+      "displaced": "Verifica persa: il dominio è stato verificato da un’altra organizzazione."
+    },
+    "checkReasons": {
+      "record_missing": "Il record DNS non è stato trovato. Le modifiche DNS possono richiedere tempo per comparire; ricontrolla più tardi.",
+      "not_in_directory": "Il dominio non è un dominio verificato nella directory.",
+      "tenant_not_proven": "Il tenant Microsoft dell’organizzazione non è dimostrato.",
+      "connection_missing": "L’organizzazione non ha alcuna connessione alla directory corrispondente.",
+      "dns_error": "Impossibile interrogare il DNS. Riprova più tardi.",
+      "timeout": "Il controllo è scaduto. Riprova più tardi.",
+      "graph_unavailable": "Microsoft 365 non è raggiungibile. Riprova più tardi.",
+      "graph_tenant_mismatch": "Microsoft 365 ha risposto per un tenant diverso da quello dimostrato.",
+      "google_scope_missing": "Nella delega di Google Workspace manca l’ambito {{scope}}. Aggiungilo nella console Google Admin, quindi ricontrolla.",
+      "google_access_denied": "Google Workspace ha rifiutato l’accesso. Controlla l’email dell’amministratore e la delega.",
+      "google_unavailable": "Google Workspace non è raggiungibile. Riprova più tardi.",
+      "unknown": "Il controllo non è stato superato."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "Questo dominio non fa più parte di questa organizzazione. Ricarica la pagina.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "Questo dominio è verificato per un’altra organizzazione. Il suo proprietario deve prima rimuovere l’altra verifica (record DNS o connessione alla directory).",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "La verifica del dominio è cambiata durante questo controllo. Ricontrolla.",
+      "DOMAIN_INACTIVE": "Attiva il dominio prima di verificarlo.",
+      "DOMAIN_DNS_NOT_STARTED": "Ottieni prima il record DNS.",
+      "DOMAIN_ALREADY_VERIFIED": "Questo dominio è verificato con un altro metodo. Rimuovi prima quella verifica."
+    },
+    "verify": {
+      "methodLegend": "Metodo di verifica",
+      "methodLocked": "Per cambiare metodo, rimuovi prima la verifica attuale.",
+      "openPortalTab": "Dimostra il tenant in Portale clienti › Accesso e registrazione.",
+      "dnsStartHint": "Ottieni un record TXT da far pubblicare all’amministratore DNS del cliente.",
+      "startDns": "Ottieni record DNS",
+      "starting": "Recupero del record…",
+      "dnsInstructions": "Chiedi all’amministratore DNS del cliente di aggiungere questo record TXT, poi controllalo.",
+      "recordName": "Nome del record (host)",
+      "recordValue": "Valore del record",
+      "copy": "Copia",
+      "copied": "Copiato",
+      "googleScopeHint": "La delega di Google Workspace dell’organizzazione deve includere {{scope}}.",
+      "inactive": "Questo dominio è disattivato. Attivalo per verificarlo.",
+      "verify": "Verifica",
+      "checkNow": "Controlla ora",
+      "checking": "Controllo in corso…",
+      "resultFailed": "Non verificato. {{reason}}",
+      "resultUnavailable": "Il controllo non è stato completato. {{reason}}",
+      "removeVerification": "Rimuovi verifica",
+      "removeTitle": "Rimuovere la verifica di {{domain}}?",
+      "removeMessage": "Il dominio resta in questa organizzazione per l’instradamento della posta. L’autoregistrazione e l’accesso con Google non si fidano più di esso finché non viene verificato di nuovo."
+    },
+    "actions": {
+      "verify": "Verifica",
+      "manageVerification": "Verifica",
+      "move": "Sposta"
+    },
+    "add": {
+      "label": "Aggiungi un dominio",
+      "placeholder": "contoso.com",
+      "submit": "Aggiungi dominio"
+    },
+    "move": {
+      "title": "Spostare {{domain}} in un’altra organizzazione?",
+      "message": "La posta in arrivo da questo dominio verrà instradata verso l’organizzazione che scegli.",
+      "messageVerified": "Il dominio perderà la verifica. La nuova organizzazione dovrà verificarlo di nuovo e dovrà essere pubblicato di nuovo un record DNS con un nuovo valore.",
+      "targetLabel": "Organizzazione",
+      "targetPlaceholder": "Seleziona un’organizzazione…",
+      "orgsFailed": "Impossibile caricare le organizzazioni. Chiudi e riprova."
+    },
+    "delete": {
+      "title": "Eliminare {{domain}}?",
+      "message": "La posta in arrivo da questo dominio non verrà più instradata verso questa organizzazione.",
+      "messageVerified": "La posta in arrivo da questo dominio non verrà più instradata verso questa organizzazione e la sua verifica verrà rimossa."
+    },
+    "toasts": {
+      "added": "{{domain}} aggiunto",
+      "saved": "{{domain}} salvato",
+      "deleted": "{{domain}} eliminato",
+      "moved": "{{domain}} spostato in {{org}}",
+      "verified": "{{domain}} verificato",
+      "verificationRemoved": "Verifica rimossa per {{domain}}",
+      "copyFailed": "Impossibile copiare. Seleziona il testo e copialo manualmente."
+    },
+    "errors": {
+      "load": "Impossibile caricare i domini.",
+      "save": "Impossibile salvare il dominio. Riprova.",
+      "delete": "Impossibile eliminare il dominio. Riprova.",
+      "add": "Impossibile aggiungere il dominio. Riprova.",
+      "alreadyMapped": "Questo dominio è già stato aggiunto a un’organizzazione del tuo account.",
+      "startDns": "Impossibile ottenere il record DNS. Riprova.",
+      "check": "Impossibile eseguire il controllo. Riprova.",
+      "removeVerification": "Impossibile rimuovere la verifica. Riprova."
     }
   },
   "customFieldsPage": {
@@ -7367,7 +7543,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Confermerai con la tua passkey (Touch ID / Windows Hello) al momento della registrazione.",
     "authenticatorCode": "Codice authenticator",
-    "confirmYourPassword": "Conferma la password"
+    "confirmYourPassword": "Conferma la password",
+    "switchToAuthenticatorCode": "Usa invece l’app di autenticazione",
+    "usePasskeyInstead": "Usa invece la tua passkey"
   },
   "tenantVariablesPage": {
     "orgOwnedNote": "Le variabili appartenenti a un’organizzazione sono elencate nella rispettiva organizzazione.",
@@ -7565,6 +7743,45 @@
       "create": "Impossibile aggiungere il contatto.",
       "update": "Impossibile salvare il contatto.",
       "delete": "Impossibile eliminare il contatto."
+    },
+    "portal": {
+      "column": "Portale",
+      "status": {
+        "none": "Nessun accesso",
+        "invited": "Invitato",
+        "active": "Attivo",
+        "disabled": "Disattivato",
+        "requested": "Richiesto"
+      },
+      "actions": {
+        "give": "Concedi accesso al portale",
+        "resend": "Reinvia invito",
+        "bulkGive": "Concedi accesso al portale ({{count}})",
+        "selectAll": "Seleziona tutti i contatti di questa pagina",
+        "selectRow": "Seleziona {{name}}"
+      },
+      "form": {
+        "giveAccess": "Concedi accesso al portale (invia un invito a questo indirizzo e-mail)",
+        "needsEmail": "Aggiungi un indirizzo e-mail per concedere l’accesso al portale."
+      },
+      "toasts": {
+        "invited": "Invito al portale inviato",
+        "inviteEmailFailed": "Accesso al portale creato, ma non è stato possibile inviare l’e-mail di invito. Usa Reinvia invito.",
+        "bulkSummary": "Accesso al portale: {{details}}",
+        "resendEmailFailed": "Non è stato possibile inviare l’e-mail di invito. Riprova più tardi con Reinvia invito."
+      },
+      "outcomes": {
+        "invited": "Invitati: {{count}}",
+        "already_has_access": "Hanno già accesso: {{count}}",
+        "no_email": "Senza indirizzo e-mail: {{count}}",
+        "email_bound_to_other_contact": "E-mail usata da un altro contatto: {{count}}",
+        "duplicate_email_in_batch": "E-mail duplicata nella selezione: {{count}}",
+        "emailNotSent": "E-mail di invito non inviate: {{count}}"
+      },
+      "errors": {
+        "invite": "Impossibile concedere l’accesso al portale.",
+        "bulkInvite": "Impossibile concedere l’accesso al portale ai contatti selezionati."
+      }
     }
   },
   "bulkContactImport": {
@@ -7834,7 +8051,8 @@
     "productDefault": "Predefinito del prodotto ({{minutes}} minuti)",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
     "description": "Per quanto tempo un turno live di Breeze AI attende che qualcuno approvi un'azione controllata (Tier 2/3) prima di rinunciare.",
-    "notForUnattendedNote": "Questo non è per lavoro notturno o incustodito — il lavoro di lunga durata passa attraverso la coda delle approvazioni, che ha una propria scadenza."
+    "notForUnattendedNote": "Questo non è per lavoro notturno o incustodito — il lavoro di lunga durata passa attraverso la coda delle approvazioni, che ha una propria scadenza.",
+    "modeDescription": "Come la chat di Breeze AI chiede conferma prima di eseguire azioni protette. Si applica che sia impostato o meno un limite di spesa."
   },
   "orgAiApprovalTimeout": {
     "title": "Timeout di approvazione IA",
@@ -8220,5 +8438,226 @@
     "hideContent": "Nascondi contenuto",
     "conversationUnavailable": "Questa conversazione non è più disponibile.",
     "usersLoadFailed": "Impossibile caricare i tecnici."
+  },
+  "orgAiApprovalMode": {
+    "title": "Modalità di approvazione IA",
+    "description": "Come la chat di Breeze AI chiede conferma prima di eseguire azioni protette (Tier 2/3) in questa organizzazione. Si applica che sia impostato o meno un limite di spesa.",
+    "save": "Salva"
+  },
+  "portalAccessPolicy": {
+    "title": "Accesso e registrazione",
+    "orgDescription": "Come accedono al portale clienti le persone di questa organizzazione e come ottengono l’accesso da browser le nuove persone. Un campo lasciato su Eredita segue il valore predefinito del partner.",
+    "partnerDescription": "Il valore predefinito per ogni organizzazione cliente. Ogni organizzazione può sostituire qualsiasi campo nella propria scheda Portale clienti.",
+    "loading": "Caricamento delle impostazioni di accesso…",
+    "readOnly": "Puoi visualizzare queste impostazioni ma non modificarle. Modificare il valore predefinito del partner richiede l’accesso completo al partner.",
+    "save": "Salva impostazioni di accesso",
+    "sources": {
+      "partner": "Predefinito del partner",
+      "default": "Predefinito di Breeze"
+    },
+    "signIn": {
+      "title": "Come accedono le persone"
+    },
+    "newPeople": {
+      "title": "Come ottengono l’accesso da browser le nuove persone"
+    },
+    "options": {
+      "on": "Attivo",
+      "off": "Disattivato"
+    },
+    "microsoft": {
+      "label": "Accesso con Microsoft"
+    },
+    "google": {
+      "label": "Accesso con Google"
+    },
+    "password": {
+      "label": "Accesso con password",
+      "allowed": "Consentito",
+      "ssoOnly": "Disattivato — solo Microsoft/Google",
+      "ssoOnlyNeedsSso": "Disponibile dopo l’attivazione dell’accesso con Microsoft o Google."
+    },
+    "fallback": "L’accesso con password è attivo perché non è abilitato alcun accesso con Microsoft o Google.",
+    "invites": {
+      "label": "Inviti dall’MSP",
+      "value": "Sempre attivi"
+    },
+    "selfRegistration": {
+      "label": "Autoregistrazione",
+      "off": "Disattivata",
+      "approval": "Richiede approvazione",
+      "instant": "Immediata"
+    },
+    "ssoNewPerson": {
+      "label": "Primo accesso con Microsoft / Google",
+      "invitedOnly": "Solo persone invitate",
+      "approval": "Richiede approvazione",
+      "instant": "Immediato"
+    },
+    "requests": "Richieste ({{count}})",
+    "errors": {
+      "load": "Impossibile caricare le impostazioni di accesso.",
+      "save": "Impossibile salvare le impostazioni di accesso.",
+      "methodUnavailable": "Questo metodo di accesso non è ancora disponibile in questa distribuzione di Breeze.",
+      "ssoOnlyNeedsSso": "Attiva l’accesso con Microsoft o Google prima di disattivare l’accesso con password.",
+      "tenantNotProven": "Dimostra il tenant Microsoft di questa organizzazione prima di attivare l’accesso con Microsoft.",
+      "sessionHours": "Inserisci un numero intero di ore da 1 a 168."
+    },
+    "toasts": {
+      "saved": "Impostazioni di accesso salvate."
+    },
+    "sessionHours": {
+      "label": "Durata della sessione Microsoft / Google (ore)",
+      "help": "Gli accessi con Microsoft e Google terminano dopo questo numero di ore, indipendentemente da quanto sia attiva la persona. Da 1 a 168."
+    },
+    "entraTenant": {
+      "title": "Tenant Microsoft",
+      "loading": "Caricamento del tenant Microsoft…",
+      "loadError": "Impossibile caricare il tenant Microsoft.",
+      "status": {
+        "none": "Nessun tenant Microsoft è ancora collegato. L’accesso con Microsoft resta disattivato per questa organizzazione finché il suo tenant non è dimostrato.",
+        "unproven": "Il tenant {{tenantId}} è collegato ma non dimostrato. L’accesso con Microsoft resta disattivato per questa organizzazione finché non lo è.",
+        "proven": "Tenant {{tenantId}} dimostrato il {{date}} tramite {{method}}."
+      },
+      "via": {
+        "m365_connection": "la connessione Microsoft 365",
+        "proof_run": "un accesso da amministratore"
+      },
+      "proveConnection": "Usa la connessione Microsoft 365 (tenant {{tenantId}})",
+      "tenantLabel": "ID o dominio del tenant",
+      "tenantHelp": "Crea un link e invialo a un Amministratore globale o a un Amministratore ruoli con privilegi del tenant del cliente. Il link è valido per 72 ore.",
+      "createLink": "Crea link di dimostrazione",
+      "linkLabel": "Link di dimostrazione",
+      "linkExpires": "Scade il {{date}}. Funziona solo per il tenant {{tenantId}}.",
+      "consentLabel": "Link di consenso dell’amministratore",
+      "consentHelp": "L’amministratore del tenant lo apre una sola volta, così tutte le persone dell’organizzazione possono accedere.",
+      "copy": "Copia",
+      "copied": "Copiato",
+      "remove": "Rimuovi collegamento al tenant",
+      "removeConfirm": {
+        "title": "Rimuovere il collegamento al tenant Microsoft?",
+        "message": "L’accesso con Microsoft si interrompe per questa organizzazione e le sue sessioni Microsoft terminano. Questo rimuove anche l’associazione al tenant di AI for Office dell’organizzazione, quindi AI for Office smette di funzionare qui finché non viene collegato di nuovo un tenant."
+      },
+      "toasts": {
+        "proven": "Tenant Microsoft dimostrato.",
+        "linkCreated": "Link di dimostrazione creato.",
+        "removed": "Collegamento al tenant Microsoft rimosso.",
+        "copyFailed": "Impossibile copiare il link. Selezionalo e copialo manualmente."
+      },
+      "errors": {
+        "prove": "Impossibile dimostrare il tenant dalla connessione Microsoft 365.",
+        "createLink": "Impossibile creare il link di dimostrazione.",
+        "remove": "Impossibile rimuovere il collegamento al tenant.",
+        "provenElsewhere": "Questo tenant Microsoft è già dimostrato per un’altra organizzazione. Solo un link di dimostrazione completato dall’amministratore del tenant può spostarlo.",
+        "orgHasOtherTenant": "Questa organizzazione è collegata a un altro tenant Microsoft. Rimuovi prima quel collegamento.",
+        "noVerifiedConnection": "Questa organizzazione non ha alcuna connessione Microsoft 365 il cui tenant sia stato verificato con un accesso da amministratore.",
+        "hintRequired": "Inserisci l’ID tenant Microsoft del cliente o uno dei suoi domini verificati.",
+        "hintInvalid": "Non è un ID tenant Microsoft né un dominio verificato da un tenant Microsoft.",
+        "hintLookupFailed": "Impossibile contattare Microsoft per cercare quel dominio. Riprova oppure inserisci l’ID del tenant.",
+        "protectedOrg": "Questa organizzazione non può essere collegata a un tenant Microsoft."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Disattivare l’accesso con password?",
+      "intro": "Il salvataggio disattiva l’accesso con password per le organizzazioni seguenti.",
+      "partnerIntro": "Il salvataggio di questo valore predefinito del partner disattiva l’accesso con password per queste organizzazioni. La pagina di ogni organizzazione elenca gli account che non possono ancora accedere.",
+      "explain": "Le persone già collegate a Microsoft perdono la password e vengono disconnesse. Le persone senza un collegamento a Microsoft non possono accedere finché non accettano un invito all’accesso con Microsoft.",
+      "columns": {
+        "org": "Organizzazione",
+        "passwordsToClear": "Password rimosse",
+        "strandedTotal": "Non possono ancora accedere"
+      },
+      "openOrg": "Apri",
+      "strandedTitle": "Non possono ancora accedere",
+      "strandedMore": "e altri {{count}}",
+      "strandedLoadError": "Impossibile caricare i nomi di questi account.",
+      "sendInvites": "Dopo il salvataggio, invia a questi account inviti all’accesso con Microsoft",
+      "confirm": "Disattiva l’accesso con password",
+      "changed": "L’impatto è cambiato da quando hai aperto questa finestra. Controlla i nuovi numeri."
+    },
+    "stranded": {
+      "title": "Non possono ancora accedere ({{count}})",
+      "description": "Questi account non hanno un collegamento a Microsoft, quindi non possono accedere mentre l’accesso con password è disattivato. Invia a ciascuno un invito all’accesso con Microsoft.",
+      "loadError": "Impossibile caricare gli account che non possono accedere.",
+      "invite": "Invia invito all’accesso con Microsoft",
+      "inviteAll": "Invita tutti",
+      "more": "Visualizzati {{shown}} di {{count}}.",
+      "toasts": {
+        "invited": "Inviti all’accesso con Microsoft inviati: {{count}}.",
+        "partial": "Inviti all’accesso con Microsoft inviati: {{invited}} su {{total}}. Gli altri erano già collegati o non è stato possibile invitarli.",
+        "emailFailed": "{{count}} account sono passati a invitato, ma non è stato possibile inviare l'email di invito. Usa Invia di nuovo nell'elenco degli utenti del portale."
+      },
+      "errors": {
+        "invite": "Impossibile inviare gli inviti all’accesso con Microsoft.",
+        "unavailable": "L’accesso con Microsoft non è disponibile per questa organizzazione, quindi non c’è nulla con cui invitare."
+      }
+    },
+    "domains": {
+      "label": "Domini",
+      "none": "Nessun dominio per ora",
+      "manage": "Gestisci in Organizzazione › Domini",
+      "loadFailed": "Impossibile caricare i domini."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Richieste di accesso",
+    "description": "Persone in attesa di accedere al portale di questa organizzazione. Approva per concedere l’accesso oppure rifiuta per chiudere la richiesta.",
+    "columns": {
+      "person": "Persona",
+      "source": "Come hanno richiesto",
+      "requested": "Richiesto"
+    },
+    "sources": {
+      "self": "Autoregistrazione",
+      "entra": "Accesso con Microsoft",
+      "google": "Accesso con Google",
+      "addin_user": "Componente aggiuntivo AI for Office"
+    },
+    "selectAll": "Seleziona tutte le richieste",
+    "selectOne": "Seleziona la richiesta di {{email}}",
+    "accountExists": "Ha già un account — Rifiuta per chiudere la richiesta",
+    "actions": {
+      "approve": "Approva",
+      "deny": "Rifiuta",
+      "approveSelected": "Approva selezionate ({{count}})",
+      "denySelected": "Rifiuta selezionate ({{count}})"
+    },
+    "results": {
+      "accountExists": "Ha già un account",
+      "notPending": "Non più in sospeso",
+      "notFound": "Richiesta non trovata",
+      "identityLinked": "Accesso già collegato a un altro account",
+      "failed": "Impossibile decidere su questa richiesta",
+      "entraTenantNotProven": "Il tenant Microsoft di questa organizzazione non è più dimostrato"
+    },
+    "denyDialog": {
+      "title": "Rifiuta richiesta di accesso",
+      "message": "Rifiutare la richiesta di {{email}}? La persona riceve un’e-mail che indica che non è stata approvata.",
+      "bulkMessage_one": "Rifiutare {{count}} richiesta? La persona riceve un’e-mail che indica che non è stata approvata.",
+      "bulkMessage_other": "Rifiutare {{count}} richieste? Ogni persona riceve un’e-mail che indica che non è stata approvata."
+    },
+    "toasts": {
+      "approved": "Accesso approvato per {{email}}.",
+      "denied": "Richiesta di {{email}} rifiutata.",
+      "bulkDone_one": "{{count}} richiesta decisa.",
+      "bulkDone_other": "{{count}} richieste decise.",
+      "bulkPartial": "{{succeeded}} richieste su {{total}} decise. Le altre sono contrassegnate nell’elenco."
+    },
+    "errors": {
+      "load": "Impossibile caricare le richieste di accesso.",
+      "action": "Impossibile aggiornare la richiesta di accesso.",
+      "bulk": "Impossibile decidere sulle richieste selezionate."
+    },
+    "summary": {
+      "title": "Richieste di accesso in sospeso",
+      "description": "Richieste in attesa nelle tue organizzazioni clienti. Apri un’organizzazione per approvarle o rifiutarle.",
+      "empty": "Nessuna richiesta in sospeso",
+      "orgPending_one": "{{count}} in sospeso",
+      "orgPending_other": "{{count}} in sospeso",
+      "review": "Esamina richieste",
+      "loadError": "Impossibile caricare le richieste di accesso in sospeso."
+    },
+    "refreshFailed": "Impossibile aggiornare le richieste di accesso: questo elenco potrebbe non essere aggiornato.",
+    "more": "Vengono mostrate le prime {{count}} richieste. Decidi su queste per vedere le altre."
   }
 }

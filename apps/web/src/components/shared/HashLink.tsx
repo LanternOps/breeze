@@ -84,6 +84,7 @@ export default function HashLink({
   };
 
   return (
+    // bare-hash-anchor-exempt: this is the canonical implementation
     <a {...rest} href={`#${fragment}`} onClick={handleClick}>
       {children}
     </a>

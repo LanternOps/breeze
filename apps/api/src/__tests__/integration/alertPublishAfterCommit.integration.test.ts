@@ -23,6 +23,10 @@
  *   cd apps/api && npx vitest run --config vitest.integration.config.ts \
  *     src/__tests__/integration/alertPublishAfterCommit.integration.test.ts
  *   pnpm test-stack down
+ *
+ * #11348 adds the automation / flow `create_alert` writer and metric anomaly
+ * promotion, which published inline until then, plus the flow ancestry the
+ * outbox must carry for a flow step's alert (Decision 14 loop guard).
  */
 import './setup';
 
@@ -90,11 +94,14 @@ vi.mock('../../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn(a
 import { closeDb, db, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import {
   alertRules, alertTemplates, alerts, configPolicyAssignments, configPolicyFeatureLinks,
-  configPolicyMonitors, configurationPolicies, deviceEventLogs, devices, monitorDefinitions,
+  configPolicyMonitors, configurationPolicies, deviceEventLogs, devices, metricAnomalies, monitorDefinitions,
   userNotifications,
 } from '../../db/schema';
 import { enqueueAlertCorrelation } from '../../jobs/alertCorrelation';
-import { isCooldownActive } from '../../services/alertCooldown';
+import { isCooldownActive, isFlapping } from '../../services/alertCooldown';
+import { createAutomationStyleAlert, type AutomationStyleAlertProvenance } from '../../services/alertCreation';
+import { promoteMetricAnomalyToAlert } from '../../services/metricAnomalyPromotion';
+import { withFlowExecutionContext } from '../../services/flows/flowExecutionContext';
 import { publishEvent } from '../../services/eventBus';
 import {
   createSourcedAlert, evaluateDeviceAlerts, getApplicableRules, resolveAlert,
@@ -117,7 +124,11 @@ const HOLD_MS = 2_000;
 type ProcessAlertResult = { queued: number; inAppSent: boolean };
 const processAlertRuns = new Map<string, ProcessAlertResult[]>();
 /** Every event the notification-dispatcher subscriber received. */
-const deliveries: Array<{ alertId: string; type: string; insideOpenTransaction: boolean }> = [];
+const deliveries: Array<{
+  alertId: string; type: string; insideOpenTransaction: boolean;
+  /** The event's flow ancestry, as the flow event trigger reads it. */
+  flowRunId?: string; flowChainDepth?: number;
+}> = [];
 let worker: Worker | undefined;
 
 function deliveriesFor(alertId: string, type = 'alert.triggered') {
@@ -136,7 +147,12 @@ beforeAll(() => {
     eventTypes: ['alert.triggered', 'alert.acknowledged', 'alert.resolved'],
     handler: async (event) => {
       const alertId = (event.payload as { alertId?: string }).alertId;
-      if (alertId) deliveries.push({ alertId, type: event.type, insideOpenTransaction: h.insideOpenTransaction });
+      if (alertId) {
+        deliveries.push({
+          alertId, type: event.type, insideOpenTransaction: h.insideOpenTransaction,
+          flowRunId: event.metadata?.flowRunId, flowChainDepth: event.metadata?.flowChainDepth,
+        });
+      }
       return handleAlertLifecycleEvent(event);
     },
   });
@@ -546,5 +562,136 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
     expect(pendingDispatch(await readAlert(alertId))).toBeUndefined();
     expect(correlationsFor()).toBe(1);
     expect(await isCooldownActive(row!.ruleId!, f.deviceId)).toBe(true);
+  });
+});
+
+async function seedMetricAnomaly(f: Seeded): Promise<string> {
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - 5 * 60_000);
+  const [row] = await withSystemDbAccessContext(() => db.insert(metricAnomalies).values({
+    orgId: f.orgId, deviceId: f.deviceId, sourceTable: 'device_metrics', metricType: 'system',
+    metricName: 'cpu_percent', anomalyType: 'spike', status: 'open', windowStart, windowEnd,
+    bucketSeconds: 300, observedValue: 97, baselineValue: 40, baselineMin: 20, baselineMax: 60,
+    score: 8, confidence: 0.87, sampleCount: 5, baselineSummary: { modelVersion: 'metric-anomalies-v1' },
+    evidence: {},
+  }).returning({ id: metricAnomalies.id }));
+  if (!row) throw new Error('metric anomaly seed failed');
+  return row.id;
+}
+
+async function automationStyleAlert(f: Seeded, provenance: AutomationStyleAlertProvenance): Promise<string | null> {
+  const created = await createAutomationStyleAlert({
+    orgId: f.orgId, deviceId: f.deviceId, severity: 'high', title: 'Automation alert',
+    message: 'Raised by a create_alert action', provenance,
+  });
+  return created?.alertId ?? null;
+}
+
+const automationProvenance = (): AutomationStyleAlertProvenance => ({
+  kind: 'automation', automationId: randomUUID(), runId: randomUUID(),
+});
+
+/** Create with the after-commit dispatch dropped, as if the process died after COMMIT. */
+async function createWithDispatchLost(create: () => Promise<string | null>): Promise<string> {
+  h.dropAlertDispatch = true;
+  try {
+    return await createWithTransactionHeldOpen(create);
+  } finally {
+    h.dropAlertDispatch = false;
+  }
+}
+
+runDb('#11348 — create_alert and metric anomaly alerts reach process-alert only after COMMIT', () => {
+  it('automation create_alert alert is delivered, and records no cooldown or flap state for its subject', async () => {
+    const f = await seedOrgWithRecipient();
+    const correlationsFor = () => vi.mocked(enqueueAlertCorrelation).mock.calls
+      .filter(([input]) => input.deviceId === f.deviceId).length;
+
+    const alertId = await createWithTransactionHeldOpen(() => automationStyleAlert(f, automationProvenance()));
+
+    await expectDelivered(alertId);
+    expect(deliveriesFor(alertId)).toHaveLength(1);
+    // Correlation is the last post-publish effect: once it ran, any noise
+    // control effect would have run too.
+    await expect.poll(correlationsFor, { timeout: 10_000, interval: 50 }).toBe(1);
+    const row = await readAlert(alertId);
+    expect(row).toMatchObject({ status: 'active', subjectKey: `automation-alert:${alertId}` });
+    expect(pendingDispatch(row)).toBeUndefined();
+    expect(await isFlapping(row!.ruleId!, f.deviceId, 10, 1, row!.subjectKey!)).toBe(false);
+    expect(await isCooldownActive(row!.ruleId!, f.deviceId, row!.subjectKey!)).toBe(false);
+  });
+
+  it('a rolled-back automation action announces nothing', async () => {
+    const f = await seedOrgWithRecipient();
+    let alertId: string | null = null;
+
+    // The automation runtime's per-device transaction rolls the action back
+    // when its outcome cannot be stamped (#3189).
+    await expect(withSystemDbAccessContext(async () => {
+      alertId = await automationStyleAlert(f, automationProvenance());
+      throw new Error('action outcome was not stamped');
+    })).rejects.toThrow('action outcome was not stamped');
+
+    expect(alertId).toEqual(expect.any(String));
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(await readAlert(alertId!)).toBeUndefined();
+    expect(deliveries.filter((d) => d.alertId === alertId)).toEqual([]);
+  });
+
+  it('a flow step alert carries the step ancestry staged with it, even when a later drain publishes it', async () => {
+    const f = await seedOrgWithRecipient();
+    const flowRunId = randomUUID();
+
+    const alertId = await withFlowExecutionContext({ runId: flowRunId, chainDepth: 2 }, () =>
+      createWithDispatchLost(() => automationStyleAlert(f, { kind: 'flow', flowRunId })));
+    expect(pendingDispatch(await readAlert(alertId))).toMatchObject({ flow: { runId: flowRunId, chainDepth: 2 } });
+
+    // Crash recovery runs outside any flow step: the ancestry must come from
+    // the envelope, or the flow event trigger would read depth 0.
+    await drainSubjectAlertOutbox();
+
+    await expectDelivered(alertId);
+    expect(deliveriesFor(alertId)).toEqual([expect.objectContaining({ flowRunId, flowChainDepth: 2 })]);
+  });
+
+  it('a drain started inside a flow step stamps no ancestry on an alert no flow raised', async () => {
+    const f = await seedOrgWithRecipient();
+
+    const alertId = await createWithDispatchLost(() => automationStyleAlert(f, automationProvenance()));
+    await withFlowExecutionContext({ runId: randomUUID(), chainDepth: 1 }, () => drainSubjectAlertOutbox());
+
+    await expectDelivered(alertId);
+    const [delivery] = deliveriesFor(alertId);
+    expect(delivery?.flowRunId).toBeUndefined();
+    expect(delivery?.flowChainDepth).toBeUndefined();
+  });
+
+  it('promoted metric anomaly alert is delivered once; a repeat promotion raises and publishes nothing', async () => {
+    const f = await seedOrgWithRecipient();
+    const anomalyId = await seedMetricAnomaly(f);
+    const promote = () => promoteMetricAnomalyToAlert({
+      orgId: f.orgId, deviceId: f.deviceId, anomalyId, requireCreateAlertsFlag: false,
+    });
+
+    const alertId = await createWithTransactionHeldOpen(async () => {
+      const result = await promote();
+      return result.status === 'promoted' ? result.alertId : null;
+    });
+
+    await expectDelivered(alertId);
+    const row = await readAlert(alertId);
+    // `alerts.episode_id` is the monitor breach episode (#5290), never set here.
+    expect(row).toMatchObject({ ruleId: null, deviceId: f.deviceId, episodeId: null, status: 'active' });
+    expect((row!.context as { source?: string }).source).toBe('metric_anomaly');
+    const published = vi.mocked(publishEvent).mock.calls
+      .filter(([type, , payload]) => type === 'alert.triggered' && (payload as { alertId?: string }).alertId === alertId);
+    expect(published).toHaveLength(1);
+    expect(published[0]![2]).toMatchObject({ source: 'metric_anomaly', anomalyId, deviceId: f.deviceId });
+    expect(published[0]![3]).toBe('metric-anomaly-promotion');
+
+    // The anomaly's link is the dedupe: no second alert, nothing republished.
+    expect(await withSystemDbAccessContext(promote)).toMatchObject({ status: 'promoted', alertId, created: false });
+    await drainSubjectAlertOutbox();
+    expect(deliveriesFor(alertId)).toHaveLength(1);
   });
 });

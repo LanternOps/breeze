@@ -3473,6 +3473,35 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
       });
     });
 
+    it('a SILENT watchdog beat does not resurrect a stale stored watchdogEdition — this beat supersedes it, so the main-agent fallback decides (#4297)', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      selectMock.mockReturnValueOnce(
+        selectChainResolving([
+          {
+            id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+            architecture: 'amd64', agentVersion: '0.107.1', watchdogVersion: '0.108.0',
+            // Reported by an earlier, newer watchdog build; the build beating
+            // now (e.g. after a rollback) is silent.
+            watchdogEdition: 'hosted',
+            agentEdition: 'self-host',
+            lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+          },
+        ]),
+      );
+      selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+      const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'watchdog', agentVersion: '0.107.1', watchdogState: 'FAILOVER' }),
+      });
+      expect(resp.status).toBe(200);
+      expect(vi.mocked(agentAcceptsServedEdition)).toHaveBeenCalledWith({
+        reportedEdition: 'self-host',
+        agentVersion: '0.107.1',
+      });
+    });
+
     it('a withheld RECOVERY (main agent silent) logs at error level and captures to Sentry — a device stuck offline must never be silent', async () => {
       const { agentAcceptsServedEdition } = await import('./helpers');
       const { captureException } = await import('../../services/sentry');
@@ -4365,6 +4394,104 @@ describe('agentEdition / migrationRequired persistence (self-healing)', () => {
     expect(updateArg).toHaveProperty('watchdogStatus');
     expect(updateArg).not.toHaveProperty('agentEdition');
     expect(updateArg).not.toHaveProperty('migrationRequired');
+  });
+});
+
+// ---------------------------------------------------------------------
+// watchdogEdition persistence (#4297). The column records what the watchdog
+// reported about ITSELF, paired with the watchdog_version it reported in the
+// same beat; it must never outlive the build it describes.
+// ---------------------------------------------------------------------
+describe('watchdogEdition persistence (#4297)', () => {
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    watchdogVersion: '0.65.10',
+    watchdogEdition: 'hosted',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+  };
+
+  async function setup(row: Record<string, unknown> = deviceRow) {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    vi.clearAllMocks();
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([row]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+    return setSpy;
+  }
+
+  function firstSet(setSpy: ReturnType<typeof vi.fn>): Record<string, unknown> {
+    return (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+  }
+
+  function watchdogBeat(extra: Record<string, unknown> = {}) {
+    return buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'watchdog', agentVersion: '0.66.0', watchdogState: 'MONITORING', ...extra }),
+    });
+  }
+
+  function mainBeat(extra: Record<string, unknown> = {}) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, ...extra }),
+    });
+  }
+
+  it('a watchdog beat writes its reported edition together with its version', async () => {
+    const setSpy = await setup({ ...deviceRow, lastSeenAt: new Date(), watchdogEdition: null });
+    const resp = await watchdogBeat({ agentEdition: 'self-host' });
+    expect(resp.status).toBe(200);
+    expect(firstSet(setSpy)).toMatchObject({ watchdogVersion: '0.66.0', watchdogEdition: 'self-host' });
+  });
+
+  it('a SILENT watchdog beat clears the stored edition — the build at this version has not reported one', async () => {
+    const setSpy = await setup({ ...deviceRow, lastSeenAt: new Date() });
+    const resp = await watchdogBeat();
+    expect(resp.status).toBe(200);
+    const update = firstSet(setSpy);
+    expect(update.watchdogVersion).toBe('0.66.0');
+    expect(update).toHaveProperty('watchdogEdition', null);
+  });
+
+  it('a main-agent beat reporting a DIFFERENT installed watchdog version clears the stored edition', async () => {
+    const setSpy = await setup();
+    const resp = await mainBeat({ watchdogVersion: '0.64.0' });
+    expect(resp.status).toBe(200);
+    const update = firstSet(setSpy);
+    expect(update.watchdogVersion).toBe('0.64.0');
+    expect(update).toHaveProperty('watchdogEdition', null);
+  });
+
+  it('a main-agent beat reporting the SAME watchdog version leaves the stored edition alone', async () => {
+    const setSpy = await setup();
+    const resp = await mainBeat({ watchdogVersion: '0.65.10' });
+    expect(resp.status).toBe(200);
+    expect(firstSet(setSpy)).not.toHaveProperty('watchdogEdition');
+  });
+
+  it('a main-agent beat without a watchdog version (old agent) leaves the stored edition alone', async () => {
+    const setSpy = await setup();
+    const resp = await mainBeat();
+    expect(resp.status).toBe(200);
+    expect(firstSet(setSpy)).not.toHaveProperty('watchdogEdition');
   });
 });
 
@@ -5440,7 +5567,7 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
     expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'probe read failed' }));
   });
 
-  it('with a policy set, helper and the per-feature builders get it, and only the hierarchy/set savepoint opens (#8142)', async () => {
+  it('with a policy set, helper and the per-feature builders get it, and only the hierarchy/set, probe and topology savepoints open (#8142)', async () => {
     const helpers = await import('./helpers');
     const { loadDevicePolicySet } = await import('../../services/devicePolicySet');
     const set = { deviceId: 'device-1', hierarchy: { ...TEST_HIERARCHY }, candidates: [] };
@@ -5463,9 +5590,10 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    // Hierarchy/set + two policy probe savepoints. #4618's negative containment
-    // lookup adds no savepoint, and the absent episode needs no block build.
-    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
+    // Hierarchy/set + two policy probe savepoints + topology. #4618's negative
+    // containment lookup adds no savepoint, and the absent episode needs no block
+    // build.
+    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(4);
   });
 
   it('with a policy set holding a OneDrive settings link, the OneDrive DB phase runs with the set, in a savepoint, before monitoring (#8142)', async () => {
@@ -9349,10 +9477,28 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     expect(body).toEqual({ commands: [], containment: { networkIsolation: null } });
     expect(setSpy).toHaveBeenCalledTimes(1);
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(Object.keys(written).sort()).toEqual(['watchdogLastSeen', 'watchdogStatus', 'watchdogVersion']);
+    // #4297 — watchdogEdition rides with watchdogVersion so the pair always
+    // describes the same build; this body reports none, so it is cleared.
+    expect(Object.keys(written).sort()).toEqual(['watchdogEdition', 'watchdogLastSeen', 'watchdogStatus', 'watchdogVersion']);
+    expect(written.watchdogEdition).toBeNull();
     expect(whereSpy.mock.calls[0]![0]).toEqual(
       and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
+  });
+
+  it("watchdog: records the watchdog's reported edition with its version (#4297)", async () => {
+    await parkedBeat('watchdog', { ...richHeartbeatBody, agentEdition: 'hosted' });
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(written).toMatchObject({ watchdogVersion: '0.70.1', watchdogEdition: 'hosted' });
+  });
+
+  it('agent: a parked main-agent beat never writes watchdogEdition (#4297)', async () => {
+    await parkedBeat('agent', { ...richHeartbeatBody, agentEdition: 'hosted' });
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(setSpy.mock.calls[0]![0]).not.toHaveProperty('watchdogEdition');
   });
 
   it('refuses a credential role mismatch the same way the full beat does', async () => {

@@ -16,6 +16,9 @@ describe('classifySendRefusal', () => {
     [409, 'something_else', 'error'],
     [402, 'insufficient_credits', 'credits'],
     [402, null, 'error'],
+    [410, 'session_expired', 'expired'], // #11430: the session was retired before this turn ran
+    [410, null, 'error'], // an uncoded 410 is not known to be a retired session
+
     [500, null, 'error'],
     [429, 'turn_in_progress', 'error'],
     [400, 'model_unavailable', 'error'],

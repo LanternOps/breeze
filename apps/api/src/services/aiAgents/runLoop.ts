@@ -96,6 +96,11 @@ import {
 } from '../wisp/grantAuthority';
 
 import { classifyWispUnattendedRead } from '../wisp/unattendedReads';
+import {
+  STANDING_CHECK_UNAVAILABLE_MESSAGE,
+  evaluateStandingInstructions,
+  standingConflictDescription,
+} from '../wisp/standingInstructionGate';
 
 /** Wisp W02 — how long one run frame reuses a resolved delegation ceiling. */
 const GRANT_CEILING_MEMO_MS = 15_000;
@@ -1006,6 +1011,8 @@ export function createAgentRunPreToolUse(args: {
     toolName: string,
     input: Record<string, unknown>,
     downgradeReason?: string,
+    /** #10428 W06: a standing instruction this call conflicts with (warn, not refuse). */
+    standingConflictText?: string | null,
   ): Promise<{ allowed: false; error: string }> {
     const action = readToolAction(toolName, input);
     const entry: OutcomeProposedAction = {
@@ -1046,7 +1053,9 @@ export function createAgentRunPreToolUse(args: {
           input,
           source: 'ai_agent',
           orgId: run.orgId,
-          reason: `Proposed by ${agentName} for run ${run.id}`,
+          reason: standingConflictText
+            ? standingConflictDescription(standingConflictText, `Proposed by ${agentName} for run ${run.id}`)
+            : `Proposed by ${agentName} for run ${run.id}`,
           // #5205 W06, spec §6.2: "Every mutating tool call on a task-linked
           // run must enter the operation reservation path, even if the model
           // calls an existing tool directly." This IS that path — passing the
@@ -1334,11 +1343,29 @@ export function createAgentRunPreToolUse(args: {
       return { allowed: false, error: `${reason}. Stay on the target device.` };
     }
 
+    // #10428 W06: the grantor's standing instructions, under the same ceiling.
+    // A confirmed exact deny refuses; any other match is carried onto the
+    // proposal's card. A check that cannot run refuses (fails closed).
+    let standingConflictText: string | null = null;
     if (grantCeiling) {
       const ceilingDenial = delegationCeilingDenial(grantCeiling, toolName, input);
       if (ceilingDenial) {
         outcome.deniedActions.push({ tool: toolName, reason: ceilingDenial });
         return { allowed: false, error: ceilingDenial };
+      }
+      let standingDenial: string | null = null;
+      try {
+        const standing = await evaluateStandingInstructions({ ceiling: grantCeiling, toolName, input, auth: agentAuth });
+        if (standing.action === 'refuse') standingDenial = standing.error;
+        if (standing.action === 'warn') standingConflictText = standing.text;
+      } catch (error) {
+        console.error('[aiAgentRunLoop] standing-instruction check failed; denying', { runId: run.id, toolName, error });
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        standingDenial = STANDING_CHECK_UNAVAILABLE_MESSAGE;
+      }
+      if (standingDenial) {
+        outcome.deniedActions.push({ tool: toolName, reason: standingDenial });
+        return { allowed: false, error: standingDenial };
       }
     }
 
@@ -1442,7 +1469,7 @@ export function createAgentRunPreToolUse(args: {
           }
         }
       }
-      return recordProposal(check, toolName, input);
+      return recordProposal(check, toolName, input, undefined, standingConflictText);
     }
 
     if (check.disposition === 'act') {
@@ -1456,6 +1483,11 @@ export function createAgentRunPreToolUse(args: {
           outcome.deniedActions.push({ tool: toolName, reason: denial });
           return { allowed: false, error: fresh.ok ? denial : fresh.error };
         }
+      }
+      // #10428 W06: an effect that matches a standing instruction never runs
+      // unattended; a human decides it, with the conflict on the card.
+      if (standingConflictText) {
+        return recordProposal(check, toolName, input, 'matches a standing instruction', standingConflictText);
       }
       // Same pure resolver `checkAgentGuardrails` already called to reach
       // 'act' — deterministic on the same (toolName, input), so this can
@@ -1513,7 +1545,7 @@ export function createAgentRunPreToolUse(args: {
         // cheap nonblocking fix) is set only for a missing/malformed-identity
         // normalizeTarget downgrade — threaded through so the proposal a
         // human reviews carries WHY it wasn't auto-executed.
-        return recordProposal(check, toolName, input, revalidated.reason);
+        return recordProposal(check, toolName, input, revalidated.reason, standingConflictText);
       }
 
       if (op.key === 'execute_playbook') {
@@ -3865,6 +3897,12 @@ async function recordActExecutionEvidence(
   }
 }
 
+/** W07: `trigger_ref.wisp.reason.kind === 'check_in'` (a run check-in's assessment). */
+function isCheckInRunRef(triggerRef: unknown): boolean {
+  const wisp = (triggerRef as { wisp?: { reason?: { kind?: unknown } } } | null | undefined)?.wisp;
+  return wisp?.reason?.kind === 'check_in';
+}
+
 async function finishRun(
   ctx: RunContext,
   status: keyof typeof TERMINAL_EVENT,
@@ -3914,6 +3952,44 @@ async function finishRun(
       });
       captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
         op: 'wisp.specialistResult.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
+  // W07 (#11496): a run check-in's assessment posts its result to the
+  // thread — after the final status is committed (the post reads it), and
+  // never allowed to change it. The tick's reconcile re-sweeps a missed post;
+  // the check-in's dedupe key keeps that to one. Lazy, like the posts above,
+  // and gated on the reason so no other assessment pays a lookup.
+  if (ctx.run.profile === 'assessment' && isCheckInRunRef(ctx.run.triggerRef)) {
+    try {
+      const { postCheckInRunResult } = await import('../wisp/checkInRuns');
+      await runOutsideDbContext(() => postCheckInRunResult(ctx.run.id));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] check-in result post failed — the wake tick re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.checkInRuns.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
+  // #10402: this assessment may be the one that settles its grant's onboarding
+  // batch — after the final status is committed (the post counts it), and never
+  // allowed to change it. The grant reconciler re-sweeps a missed post; the
+  // dedupe key keeps that to exactly one. Lazy, like the specialist post above.
+  if (ctx.run.profile === 'assessment' && ctx.run.grantId) {
+    try {
+      const { postFirstLookIfDone } = await import('../wisp/firstLook');
+      const grantId = ctx.run.grantId;
+      await runOutsideDbContext(() => postFirstLookIfDone(grantId));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] first-look post failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.firstLook.finishRun', runId: ctx.run.id,
       });
     }
   }

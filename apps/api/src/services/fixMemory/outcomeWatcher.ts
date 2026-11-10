@@ -21,7 +21,7 @@
  * transition to store.transitionOutcome, whose CAS makes every path
  * (sweeper, event, redelivery) safe to run concurrently.
  */
-import { and, asc, eq, gt, isNotNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, lte, ne, sql, type SQL } from 'drizzle-orm';
 import { FIX_OUTCOME_WINDOWS, isFixOutcomeTerminal, type FixOutcomeState } from '@breeze/shared';
 import { db } from '../../db';
 import {
@@ -32,6 +32,7 @@ import {
   inSystemDbContext, probeTelemetryFreshness, readAlertRecovery, telemetryProbeFor,
   type AlertRecoveryReading, type TelemetryFreshness,
 } from '../outcomeProbes';
+import { recoveryDeadlineFrom } from './scriptTerminalHook';
 import { alertSignature } from './signatureLoader';
 import { fillOutcomeSignature, transitionOutcome, type OutcomeTransition } from './store';
 
@@ -43,8 +44,10 @@ const RECURRENCE_MAX_PAGES = 20;
 /**
  * `neverDelivered`: the execution failed because its command expired on the
  * reaper's DELIVERY clock (it never reached the device). Not evidence about the fix.
+ * `completedAt`: when the script (or built-in command) finished, when known;
+ * the recovery window is measured from it (#7279).
  */
-export interface ScriptReading { status: string; exitCode: number | null; neverDelivered?: boolean }
+export interface ScriptReading { status: string; exitCode: number | null; neverDelivered?: boolean; completedAt?: Date | null }
 export interface EpisodeReading { status: string; closeReason: string | null; resolvedByUserId: string | null; resolvedAt: Date | null }
 export type RecoveryReading =
   | { kind: 'still_active' }
@@ -60,10 +63,7 @@ export function decidePending(i: { script: ScriptReading | null; deadlineAt: Dat
   if (!i.script) return deadlinePassed ? { to: 'inconclusive', reason: 'script_execution_missing' } : null;
   switch (i.script.status) {
     case 'completed':
-      return {
-        to: 'awaiting_recovery', reason: 'script_succeeded',
-        deadlineAt: new Date(i.now.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * HOUR_MS),
-      };
+      return { to: 'awaiting_recovery', reason: 'script_succeeded', deadlineAt: recoveryDeadlineFrom(i.script.completedAt, i.now) };
     case 'failed':
     case 'timeout':
       if (i.script.neverDelivered) return { to: 'inconclusive', reason: 'script_never_delivered' };
@@ -153,15 +153,18 @@ async function deviceLeftOrg(row: FixOutcomeRow): Promise<boolean> {
  * A failed/timed-out execution that never started is checked against its
  * command row: only a DELIVERY-clock expiry (staleCommandReaper,
  * result.clock = 'delivery') means it never reached the device. A missing
- * started_at alone is not enough: agents on the HTTP polling path never get
- * one, and their reported failures are real.
+ * started_at alone is not enough: rows delivered before the HTTP claim began
+ * stamping it (#7279, commandDelivery.ts) never got one, and their reported
+ * failures are real.
  */
 async function readScript(executionId: string | null, deviceId: string): Promise<ScriptReading | null> {
   if (!executionId) return null;
-  const [s] = await db.select({ status: scriptExecutions.status, exitCode: scriptExecutions.exitCode, startedAt: scriptExecutions.startedAt })
-    .from(scriptExecutions).where(eq(scriptExecutions.id, executionId)).limit(1);
+  const [s] = await db.select({
+    status: scriptExecutions.status, exitCode: scriptExecutions.exitCode,
+    startedAt: scriptExecutions.startedAt, completedAt: scriptExecutions.completedAt,
+  }).from(scriptExecutions).where(eq(scriptExecutions.id, executionId)).limit(1);
   if (!s) return null;
-  const reading: ScriptReading = { status: s.status, exitCode: s.exitCode ?? null };
+  const reading: ScriptReading = { status: s.status, exitCode: s.exitCode ?? null, completedAt: s.completedAt ?? null };
   if ((s.status === 'failed' || s.status === 'timeout') && !s.startedAt) {
     const [expired] = await db.select({ id: deviceCommands.id }).from(deviceCommands).where(and(
       eq(deviceCommands.deviceId, deviceId),
@@ -182,10 +185,12 @@ async function readScript(executionId: string | null, deviceId: string): Promise
  */
 export function readingFromCommand(
   status: string | null,
-  detail?: { result: unknown; executedAt: Date | null },
+  detail?: { result: unknown; executedAt: Date | null; completedAt?: Date | null },
 ): ScriptReading | null {
   if (!status) return null;
-  if (status === 'completed') return { status: 'completed', exitCode: 0 };
+  if (status === 'completed') {
+    return detail?.completedAt ? { status: 'completed', exitCode: 0, completedAt: detail.completedAt } : { status: 'completed', exitCode: 0 };
+  }
   if (status === 'failed' || status === 'timeout') {
     const clock = detail?.result && typeof detail.result === 'object'
       ? (detail.result as Record<string, unknown>).clock : undefined;
@@ -220,10 +225,11 @@ async function readActionReading(row: FixOutcomeRow): Promise<ScriptReading | nu
       .limit(1);
     return readingFromCleanupRun(run?.status ?? null, run?.error ?? null);
   }
-  const [cmd] = await db.select({ status: deviceCommands.status, result: deviceCommands.result, executedAt: deviceCommands.executedAt })
-    .from(deviceCommands)
+  const [cmd] = await db.select({
+    status: deviceCommands.status, result: deviceCommands.result, executedAt: deviceCommands.executedAt, completedAt: deviceCommands.completedAt,
+  }).from(deviceCommands)
     .where(and(eq(deviceCommands.id, row.actionCommandId!), eq(deviceCommands.deviceId, row.deviceId))).limit(1);
-  return cmd ? readingFromCommand(cmd.status, { result: cmd.result, executedAt: cmd.executedAt }) : null;
+  return cmd ? readingFromCommand(cmd.status, { result: cmd.result, executedAt: cmd.executedAt, completedAt: cmd.completedAt }) : null;
 }
 
 /**
@@ -292,14 +298,29 @@ export function recurrencePrefilter(condition: string | null): SQL | null {
   return null;
 }
 
+/** Runs one page of the recurrence scan (advanceOutcome gives each its own system transaction). */
+type PageRunner = <T>(fn: () => Promise<T>) => Promise<T>;
+const runInline: PageRunner = (fn) => fn();
+type PageCursor = { at: string; id: string };
+
 /**
  * Did the same signature come back on this device inside the hold window?
  * Candidates are filtered in SQL (device, (recovered_at, min(now, holding_until)],
  * prefilter), ordered by (triggered_at, id) and paged by keyset, so a real
  * recurrence can never be hidden behind an arbitrary unordered LIMIT.
  * 'unscanned' = page cap hit without an answer (fails closed as inconclusive).
+ *
+ * The keyset cursor is triggered_at as Postgres renders it, at full microsecond
+ * precision (#7279). A cursor carried as a JS Date is truncated to the
+ * millisecond, so the next page re-read every candidate later in the same
+ * millisecond and a burst of them could page the scan into its cap.
+ * to_char and an ISO-8601 literal round-trip whatever the session DateStyle;
+ * the column is `timestamp without time zone`, so no zone is involved.
+ *
+ * Each page (its candidate SELECT and the signature reads for it) runs through
+ * `runPage`, so a noisy device never holds one transaction open for the scan.
  */
-async function scanRecurrence(row: FixOutcomeRow, now: Date): Promise<Recurrence> {
+async function scanRecurrence(row: FixOutcomeRow, now: Date, runPage: PageRunner = runInline): Promise<Recurrence> {
   // No signature means there is nothing to compare a candidate recurrence
   // against — that is a failure to rule recurrence out, not evidence there is
   // none, so it must fail closed the same way a capped scan does.
@@ -315,7 +336,7 @@ async function scanRecurrence(row: FixOutcomeRow, now: Date): Promise<Recurrence
       lte(metricAnomalyEpisodes.firstSeenAt, windowEnd),
     ];
     if (row.anomalyEpisodeId) conds.push(ne(metricAnomalyEpisodes.id, row.anomalyEpisodeId));
-    const [again] = await db.select({ id: metricAnomalyEpisodes.id }).from(metricAnomalyEpisodes).where(and(...conds)).limit(1);
+    const [again] = await runPage(() => db.select({ id: metricAnomalyEpisodes.id }).from(metricAnomalyEpisodes).where(and(...conds)).limit(1));
     if (again) return 'recurred';
   }
   const base: SQL[] = [
@@ -328,20 +349,27 @@ async function scanRecurrence(row: FixOutcomeRow, now: Date): Promise<Recurrence
   const prefilter = recurrencePrefilter(condition);
   if (prefilter) base.push(prefilter);
   const alertFamily = family === 'correlation' ? 'correlation' : 'alert';
-  let cursor: { triggeredAt: Date; id: string } | null = null;
+  const signatureKey = row.signatureKey;
+  let cursor: PageCursor | null = null;
   for (let page = 0; page < RECURRENCE_MAX_PAGES; page += 1) {
-    const conds = [...base];
-    if (cursor) {
-      conds.push(or(gt(alerts.triggeredAt, cursor.triggeredAt), and(eq(alerts.triggeredAt, cursor.triggeredAt), gt(alerts.id, cursor.id)))!);
-    }
-    const batch = await db.select({ id: alerts.id, triggeredAt: alerts.triggeredAt }).from(alerts)
-      .where(and(...conds)).orderBy(asc(alerts.triggeredAt), asc(alerts.id)).limit(RECURRENCE_PAGE);
-    for (const candidate of batch) {
-      const resolved = await alertSignature(candidate.id, alertFamily);
-      if (resolved && resolved.signature.key === row.signatureKey) return 'recurred';
-    }
-    if (batch.length < RECURRENCE_PAGE) return 'clear';
-    cursor = batch[batch.length - 1]!;
+    const after: PageCursor | null = cursor;
+    const result: Recurrence | PageCursor = await runPage(async () => {
+      const conds = [...base];
+      if (after) conds.push(sql`(${alerts.triggeredAt}, ${alerts.id}) > (${after.at}::timestamp, ${after.id}::uuid)`);
+      const batch = await db.select({
+        id: alerts.id,
+        cursorAt: sql<string>`to_char(${alerts.triggeredAt}, 'YYYY-MM-DD"T"HH24:MI:SS.US')`,
+      }).from(alerts).where(and(...conds)).orderBy(asc(alerts.triggeredAt), asc(alerts.id)).limit(RECURRENCE_PAGE);
+      for (const candidate of batch) {
+        const resolved = await alertSignature(candidate.id, alertFamily);
+        if (resolved && resolved.signature.key === signatureKey) return 'recurred';
+      }
+      if (batch.length < RECURRENCE_PAGE) return 'clear';
+      const last = batch[batch.length - 1]!;
+      return { at: last.cursorAt, id: last.id };
+    });
+    if (typeof result === 'string') return result;
+    cursor = result;
   }
   return 'unscanned';
 }
@@ -359,9 +387,11 @@ async function sourceStillResolved(row: FixOutcomeRow): Promise<boolean> {
   return reading.kind === 'recovered';
 }
 
+type Overrides = { script?: ScriptReading; alert?: AlertRecoveryReading };
+
 async function decide(
   row: FixOutcomeRow, moved: boolean, now: Date,
-  overrides: { script?: ScriptReading; alert?: AlertRecoveryReading },
+  overrides: Overrides & { recurrence?: Recurrence },
 ): Promise<OutcomeTransition | null> {
   if (row.state === 'pending') {
     if (moved) return { to: 'cancelled', reason: 'device_moved' };
@@ -379,7 +409,7 @@ async function decide(
     return decideAwaitingRecovery({ reading, createdAt: row.createdAt, startedAt, deadlineAt: row.deadlineAt, now });
   }
   if (!row.holdingUntil || !row.recoveredAt) return { to: 'inconclusive', reason: 'hold_window_missing' };
-  const recurrence: Recurrence = moved ? 'clear' : await scanRecurrence(row, now);
+  const recurrence: Recurrence = moved ? 'clear' : overrides.recurrence ?? await scanRecurrence(row, now);
   const due = now.getTime() >= row.holdingUntil.getTime();
   const freshness = !moved && recurrence === 'clear' && due
     ? await probeTelemetryFreshness({
@@ -394,26 +424,71 @@ async function decide(
   return transition;
 }
 
+/** Everything scanRecurrence reads from the row: a scan is only reused for an unchanged row. */
+function recurrenceInputs(row: FixOutcomeRow): string {
+  return JSON.stringify([
+    row.state, row.deviceId, row.signatureKey, row.alertId, row.anomalyEpisodeId,
+    row.recoveredAt?.getTime() ?? null, row.holdingUntil?.getTime() ?? null, conditionOf(row),
+  ]);
+}
+
+type AdvancePass =
+  | { kind: 'done'; state: FixOutcomeState | null }
+  | { kind: 'needs_scan'; row: FixOutcomeRow };
+
+/**
+ * One read-decide-CAS pass in the caller's (system) transaction. A signed hold
+ * that still needs its recurrence scan stops before deciding unless `scanned`
+ * carries a scan of this same row.
+ */
+async function advancePass(
+  outcomeId: string, now: Date, overrides: Overrides, scanned: { inputs: string; recurrence: Recurrence } | null,
+): Promise<AdvancePass> {
+  const [loaded] = await db.select().from(fixOutcomes).where(eq(fixOutcomes.id, outcomeId)).limit(1);
+  if (!loaded) return { kind: 'done', state: null };
+  if (isFixOutcomeTerminal(loaded.state)) return { kind: 'done', state: loaded.state };
+  // fillOutcomeSignature returns the PERSISTED row (reloaded if another writer
+  // signed it first), so `decide` never sees an unsigned snapshot. The same
+  // reload can reveal that a concurrent writer already finished the attempt.
+  const row = await fillOutcomeSignature(loaded, now);
+  if (isFixOutcomeTerminal(row.state)) return { kind: 'done', state: row.state };
+  const moved = await deviceLeftOrg(row);
+  let recurrence: Recurrence | undefined;
+  if (row.state === 'holding' && !moved && row.signatureKey && row.recoveredAt && row.holdingUntil) {
+    if (!scanned) return { kind: 'needs_scan', row };
+    // The hold changed while the scan ran (rare): leave it for the next sweep
+    // rather than deciding on a scan of a different window.
+    if (scanned.inputs !== recurrenceInputs(row)) return { kind: 'done', state: row.state };
+    recurrence = scanned.recurrence;
+  }
+  const transition = await decide(row, moved, now, { ...overrides, recurrence });
+  if (!transition) return { kind: 'done', state: row.state };
+  // transitionOutcome aggregates from the row its CAS returns, not from `row`.
+  const won = await transitionOutcome(row, transition, now);
+  return { kind: 'done', state: won ? transition.to : row.state };
+}
+
+/**
+ * Advance one attempt. A signed hold's recurrence scan can page through up to
+ * RECURRENCE_MAX_PAGES x RECURRENCE_PAGE candidate alerts, resolving a
+ * signature for each, so it does not run inside the decide transaction
+ * (#7279): the first pass stops at the hold, the scan runs one short system
+ * transaction per page, and a second pass decides with it (the CAS still
+ * guards the write). Inside an already-open system context (tests) the pages
+ * simply join it.
+ */
 export async function advanceOutcome(
   outcomeId: string,
-  opts: { now?: Date; overrides?: { script?: ScriptReading; alert?: AlertRecoveryReading } } = {},
+  opts: { now?: Date; overrides?: Overrides } = {},
 ): Promise<FixOutcomeState | null> {
   const now = opts.now ?? new Date();
-  return inSystemDbContext(async () => {
-    const [loaded] = await db.select().from(fixOutcomes).where(eq(fixOutcomes.id, outcomeId)).limit(1);
-    if (!loaded) return null;
-    if (isFixOutcomeTerminal(loaded.state)) return loaded.state;
-    // fillOutcomeSignature returns the PERSISTED row (reloaded if another writer
-    // signed it first), so `decide` never sees an unsigned snapshot. The same
-    // reload can reveal that a concurrent writer already finished the attempt.
-    const row = await fillOutcomeSignature(loaded, now);
-    if (isFixOutcomeTerminal(row.state)) return row.state;
-    const transition = await decide(row, await deviceLeftOrg(row), now, opts.overrides ?? {});
-    if (!transition) return row.state;
-    // transitionOutcome aggregates from the row its CAS returns, not from `row`.
-    const won = await transitionOutcome(row, transition, now);
-    return won ? transition.to : row.state;
-  }, 'fixOutcomeWatcher.advance');
+  const overrides = opts.overrides ?? {};
+  const first = await inSystemDbContext(() => advancePass(outcomeId, now, overrides, null), 'fixOutcomeWatcher.advance');
+  if (first.kind === 'done') return first.state;
+  const recurrence = await scanRecurrence(first.row, now, (fn) => inSystemDbContext(fn, 'fixOutcomeWatcher.recurrencePage'));
+  const scanned = { inputs: recurrenceInputs(first.row), recurrence };
+  const second = await inSystemDbContext(() => advancePass(outcomeId, now, overrides, scanned), 'fixOutcomeWatcher.advance');
+  return second.kind === 'done' ? second.state : second.row.state;
 }
 
 async function outcomeIdsWhere(condition: SQL): Promise<string[]> {

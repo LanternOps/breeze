@@ -102,6 +102,21 @@ async function seedTenant(grantorPerms: Perm[]) {
   return { partner, org, grantor, admin, deviceId: device!.id, grant };
 }
 
+/**
+ * The partner's Patching agent baseline (#10487): a `patch_plan` request from
+ * an assessment checks it before it raises a card, as the chat path does.
+ */
+async function seedPatchAgent(t: Awaited<ReturnType<typeof seedTenant>>, o: { enabled: boolean }) {
+  await sys(() => db.insert(aiAgents).values({
+    partnerId: t.partner.id, orgId: null, kind: 'patch', name: 'Wisp Patching', enabled: o.enabled, mode: 'shadow', model: null,
+    toolAllowlist: [],
+    protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+    limits: { maxConcurrentRuns: 5, maxRunsPerHour: 50, maxBudgetCentsPerDay: 1000 },
+    triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: false },
+    recipients: { userIds: [], roleIds: [] }, instructions: null, cooldownSeconds: 0, createdBy: t.admin.id,
+  } as never));
+}
+
 /** Wisp's own assessment run under the grant (fixture: admitted, then profiled). */
 async function seedAssessmentRun(t: Awaited<ReturnType<typeof seedTenant>>, deviceId: string) {
   const r = await createAndEnqueueAgentRun({
@@ -150,6 +165,7 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
       { resource: 'ai_agents', action: 'write' },
       { resource: 'devices', action: 'read' },
     ]);
+    await seedPatchAgent(t, { enabled: true });
     const runId = await seedAssessmentRun(t, t.deviceId);
     const requestId = randomUUID();
     const input = {
@@ -172,6 +188,29 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
     const children = await sys(() => db.select({ id: aiAgentRuns.id }).from(aiAgentRuns)
       .where(eq(aiAgentRuns.requestedByRunId, runId)));
     expect(children).toEqual([]);
+  });
+
+  // #10487: the run path checks the kind prerequisite before the card, as the
+  // chat path does (#10193) — real resolver, real agent rows.
+  it.each([
+    ['switched off', true, { refused: 'agent_disabled', detail: 'disabled', message: expect.stringContaining('"Wisp Patching" is switched off') }],
+    ['missing', false, { refused: 'no_effective_agent', message: expect.stringContaining('/settings/ai-agents') }],
+  ] as const)('an asks-first kind whose agent is %s is refused before any card is minted', async (_l, seedOff, expected) => {
+    const t = await seedTenant([
+      { resource: 'ai_sessions', action: 'use' },
+      { resource: 'ai_agents', action: 'write' },
+      { resource: 'devices', action: 'read' },
+    ]);
+    if (seedOff) await seedPatchAgent(t, { enabled: false });
+    const runId = await seedAssessmentRun(t, t.deviceId);
+    const result = await requestSpecialist({
+      grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'patch_plan',
+      params: {}, requestedByRunId: runId,
+    }, { requestId: randomUUID(), reason: 'Patch compliance dropped this week' });
+    expect(result).toEqual(expected);
+    const intents = await sys(() => db.select({ id: actionIntents.id }).from(actionIntents)
+      .where(and(eq(actionIntents.orgId, t.org.id), eq(actionIntents.actionName, WISP_SPECIALIST_REQUEST_TOOL))));
+    expect(intents).toEqual([]);
   });
 
   it('a request naming a child run as its requester is refused depth_exceeded (depth is one)', async () => {
@@ -201,6 +240,7 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
       { resource: 'ai_agents', action: 'write' },
       { resource: 'devices', action: 'read' },
     ]);
+    await seedPatchAgent(t, { enabled: true });
     const runId = await seedAssessmentRun(t, t.deviceId);
     const requestId = randomUUID();
     const card = await requestSpecialist({

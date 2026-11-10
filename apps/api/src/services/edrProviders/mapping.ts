@@ -6,7 +6,7 @@ import {
   type AutoMapNameSuggestion,
 } from '../externalTenantMapping';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
-import { notHiddenOrgType } from '../unassignedPool/visibility';
+import { loadMappableOrgs } from '../mappableOrgs';
 import type { EdrSyncTx, PersistConnection } from './persist';
 
 export type { AutoMapNameSuggestion };
@@ -23,22 +23,6 @@ export type { AutoMapNameSuggestion };
  * Callers: `remapEdrTenant` is reached only from PUT /edr/tenants/:id/mapping
  * (behind requireEdrPartnerAdmin); `autoMapEdrTenants` only from the sync worker.
  */
-
-/** Orgs a tenant may be mapped onto: the partner's live, visible, non-holding orgs. */
-async function loadMappableOrgs(tx: EdrSyncTx, partnerId: string) {
-  return tx
-    .select({ id: organizations.id, name: organizations.name })
-    .from(organizations)
-    .where(and(
-      eq(organizations.partnerId, partnerId),
-      isNull(organizations.deletedAt),
-      isNull(organizations.archivedAt),
-      sql`${organizations.status} NOT IN ('archived','purging','merging')`,
-      // Quick Support and the holding org are never a customer to map onto.
-      notHiddenOrgType(),
-      sql`${organizations.type} <> 'unassigned_pool'`,
-    ));
-}
 
 async function loadUnmappedTenants(tx: EdrSyncTx, connectionId: string) {
   return tx

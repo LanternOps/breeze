@@ -6,7 +6,9 @@ import { Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { usePortalAuth } from '@/lib/auth';
 import { portalApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { getLinkStatus, startMicrosoftLink, type LinkStatus } from '@/lib/oidc';
 import { BTN_PRIMARY, INPUT } from './ui';
+import { MicrosoftSignInButton } from './MicrosoftSignInButton';
 
 // The API's updateProfile accepts `name` only (routes/portal/schemas.ts);
 // it used to strip a changed email silently and this form then said
@@ -55,6 +57,42 @@ export function ProfileSettings() {
   const passwordForm = useForm<PasswordFormData>({
     resolver: zodResolver(passwordSchema)
   });
+
+  // Microsoft account card. null = unknown or not offered: the card stays hidden.
+  const [linkStatus, setLinkStatus] = useState<LinkStatus | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  // Read after mount (not in the initial state) so the hydrated tree matches the SSR HTML.
+  const [ssoCode, setSsoCode] = useState<string | null>(null);
+  useEffect(() => {
+    setSsoCode(new URLSearchParams(window.location.search).get('sso'));
+  }, []);
+  const ssoBanner =
+    ssoCode === 'linked'
+      ? 'Your Microsoft account is connected.'
+      : ssoCode === 'unavailable'
+        ? "Microsoft sign-in isn't set up for this account here."
+        : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    void getLinkStatus().then((status) => {
+      if (!cancelled) setLinkStatus(status);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onConnectMicrosoft = async () => {
+    setLinkBusy(true);
+    setLinkError(null);
+    const result = await startMicrosoftLink();
+    if (!result.ok) {
+      setLinkError(result.error);
+      setLinkBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (user) {
@@ -105,6 +143,16 @@ export function ProfileSettings() {
 
   return (
     <div className="max-w-2xl space-y-8">
+      {ssoBanner && (
+        <div
+          role="status"
+          data-testid="portal-profile-sso-banner"
+          className="rounded-md bg-muted p-3 text-sm text-foreground"
+        >
+          {ssoBanner}
+        </div>
+      )}
+
       {/* Your details — a ruled section, not a boxed card with an icon chip. */}
       <section className="border-t border-border/70 pt-5">
         <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
@@ -365,6 +413,39 @@ export function ProfileSettings() {
           </div>
         </form>
       </section>
+
+      {linkStatus && (linkStatus.available || linkStatus.linked) && (
+        <section data-testid="portal-profile-microsoft" className="border-t border-border/70 pt-5">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            Microsoft account
+          </h2>
+          {linkStatus.linked ? (
+            <p className="mt-4 text-sm text-foreground">
+              Connected. You can sign in to the portal with Microsoft.
+            </p>
+          ) : (
+            <div className="mt-4 space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Connect your Microsoft work account to sign in without a password.
+              </p>
+              {linkError && (
+                <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {linkError}
+                </div>
+              )}
+              <div className="sm:max-w-xs">
+                <MicrosoftSignInButton
+                  onClick={onConnectMicrosoft}
+                  busy={linkBusy}
+                  label="Connect Microsoft"
+                  testId="portal-profile-connect-microsoft"
+                />
+              </div>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<HPIA>
+  <Recommendations>
+    <Drivers>
+      <Recommendation TargetComponent="Example Network Driver" TargetVersion="1.0.0" ReferenceVersion="1.2.0">
+        <Solution>
+          <Softpaq>
+            <Id>sp100001</Id>
+            <Name>Example Network Driver</Name>
+            <Version>1.2.0</Version>
+          </Softpaq>
+        </Solution>
+      </Recommendation>
+      <Recommendation TargetComponent="Example Audio Driver" TargetVersion="2.0.0" ReferenceVersion="2.1.0">
+        <Solution>
+          <Softpaq>
+            <Id>SP100002</Id>
+            <Name>Example Audio Driver</Name>
+            <Version>2.1.0</Version>
+          </Softpaq>
+        </Solution>
+      </Recommendation>
+    </Drivers>
+    <Software>
+      <Recommendation TargetComponent="Example Utility" TargetVersion="3.0.0" ReferenceVersion="3.0.1">
+        <Solution>
+          <Softpaq>
+            <Id>sp100003</Id>
+            <Name>Example Utility</Name>
+            <Version>3.0.1</Version>
+          </Softpaq>
+        </Solution>
+      </Recommendation>
+    </Software>
+  </Recommendations>
+</HPIA>

@@ -320,6 +320,7 @@
     "generateNewToken": "Genera nuovo token",
     "generateNewLink": "Genera nuovo link",
     "cliTokenReuse": "Generato in precedenza. Valido fino al {{date}}, a meno che tutte le registrazioni dei dispositivi non siano già state utilizzate.",
+    "cliTokenReuseVerified": "Generato in precedenza. Valido fino al {{date}}.",
     "linkReuse": "Generato in precedenza per {{platform}}. Valido fino al {{date}}.",
     "generateToken": "Genera token",
     "cliTokenNotGenerated": "Nessun token. Scegli la sede, il numero di dispositivi e la scadenza, quindi genera un token. Ogni token è una chiave di registrazione attiva.",
@@ -429,6 +430,18 @@
         "message": "Vuoi davvero rimuovere {{hostname}}? Il dispositivo verrà tolto dalla tua flotta attiva e non sarà più monitorato. La cronologia viene conservata e potrai ripristinarlo in seguito.",
         "confirm": "Rimuovi"
       },
+      "forcePermanentDelete": {
+        "confirm": "Elimina comunque",
+        "reason": {
+          "agentReturned": "Una disinstallazione era stata completata in precedenza, ma l'agent si è collegato di nuovo da allora (è stato reinstallato).",
+          "cancelled": "La disinstallazione dell'agent è stata annullata prima dell'esecuzione.",
+          "expired": "L'agent non è mai tornato a ritirare la disinstallazione prima della scadenza.",
+          "failed": "Il comando di disinstallazione è stato eseguito sul dispositivo ma ha segnalato un errore.",
+          "none": "Nessuna disinstallazione dell'agent è stata messa in coda per questo dispositivo (è stato rimosso lasciando l'agent installato)."
+        },
+        "risk": "Eliminare {{hostname}} ora può lasciare l'agent installato e in esecuzione senza che nessuno lo gestisca. Questa azione non può essere annullata.",
+        "title": "L'agent non ha confermato la rimozione"
+      },
       "permanentDelete": {
         "title": "Eliminare {{hostname}} definitivamente?",
         "message": "Questa operazione elimina tutta la cronologia del dispositivo: ticket, avvisi, record di patch e backup. Non è reversibile.",
@@ -508,7 +521,10 @@
       "allCommands": "{{reason}} — non ha un agente per eseguire comandi."
     },
     "installHomebrew": "Installa Homebrew",
-    "restartAgent": "Riavvia agente"
+    "restartAgent": "Riavvia agente",
+    "runVendorUpdates": "Esegui aggiornamenti del produttore",
+    "runVendorUpdatesHint": "Esegue lo strumento di aggiornamento del produttore su questo dispositivo.",
+    "runVendorUpdatesAgentUpgradeRequired": "Aggiornamento dell'agente necessario: gli aggiornamenti del produttore richiedono l'agente {{version}} o successivo"
   },
   "deviceActivityFeed": {
     "activity": "Attività",
@@ -945,6 +961,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Stato backup, processi, snapshot e verifica",
     "theOsReportsAPendingReboot": "L'OS segnala un riavvio in sospeso (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Riavvio in sospeso",
+    "backupRunning": "Backup attivo",
+    "backupRunningTooltip": "Su questo dispositivo è in corso un backup. Apri la scheda Backup per vederne lo stato di avanzamento.",
     "restartScheduled": "Riavvio programmato",
     "restartInProgress": "Riavvio in corso",
     "restartScheduledFor": "Riavvio programmato per le {{time}}",
@@ -955,6 +973,7 @@
     "restartCannotBePostponed": "Non può essere rimandato",
     "restartSourcePatchJob": "Richiesto da un'installazione di patch",
     "restartSourceMaintenanceWindow": "Richiesto da una finestra di manutenzione",
+    "restartSourceOemUpdates": "Richiesto da un'esecuzione di aggiornamenti del produttore",
     "restartSourceManual": "Richiesto da un tecnico",
     "restartSourceUnknown": "Riavvio programmato",
     "agentV": "Agente v",
@@ -1038,6 +1057,10 @@
       "label": "approvazione",
       "byRing": "definita dall'anello di aggiornamento collegato",
       "manualOnly": "solo approvazioni manuali (nessun anello di aggiornamento collegato)"
+    },
+    "containment": {
+      "extraDestinations": "Destinazioni aggiuntive durante l’isolamento",
+      "invalid": "Le impostazioni di contenimento di questo criterio non sono valide, quindi l’isolamento usa i valori predefiniti fissi, senza destinazioni aggiuntive."
     },
     "chainResolutionRule": "Decide prima il livello: Dispositivo prevale su Gruppo di dispositivi, poi Sito, Organizzazione e Partner. La priorità (vince il numero più basso) decide solo tra criteri dello stesso livello. Le funzionalità barrate sono state sovrascritte da un criterio più vicino.",
     "featureOverriddenBy": "Sovrascritta da {{policy}}"
@@ -2122,6 +2145,8 @@
       "deferredUntil": "Approvazione automatica il {{date}}",
       "deferredUntilTitle": "L'anello di aggiornamento {{ring}} trattiene le nuove patch per la sua finestra di rinvio. Questa viene approvata il {{date}} e installata con la successiva esecuzione pianificata.",
       "excluded": "Esclusa dal criterio",
+      "managedByVendorUpdates": "Gestita dagli aggiornamenti del produttore",
+      "managedByVendorUpdatesTitle": "Lo strumento di aggiornamento del produttore la distribuisce su questo dispositivo, quindi le esecuzioni pianificate la saltano.",
       "excludedSourceTitle": "Le origini del criterio patch non includono questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedCategoryTitle": "L'anello di aggiornamento {{ring}} esclude la categoria di questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedAppRuleTitle": "Una regola di blocco o di fissaggio app dell'anello di aggiornamento collegato trattiene questa patch, quindi le esecuzioni pianificate la saltano.",
@@ -2692,7 +2717,11 @@
       "bulkMaintenanceSuccess_one": "{{count}} dispositivo {{verb}} modalità di manutenzione",
       "bulkMaintenanceSuccess_other": "{{count}} dispositivi {{verb}} modalità di manutenzione",
       "bulkPurgeFailed": "Eliminazione definitiva non riuscita: {{reason}}",
-      "bulkPurgeNoneDeleted": "Nessun dispositivo è stato eliminato: {{reasons}}",
+      "bulkPurgeNoneDeleted": "Nessun dispositivo è stato eliminato. {{reasons}}",
+      "bulkPurgeSkipOther_one": "{{count}} saltato, motivo: {{code}}.",
+      "bulkPurgeSkipOther_other": "{{count}} saltati, motivo: {{code}}.",
+      "bulkPurgeSkipUninstallNotConfirmed_one": "{{count}} saltato perché il suo agent non ha mai confermato la disinstallazione. Eliminalo separatamente dalla pagina del dispositivo.",
+      "bulkPurgeSkipUninstallNotConfirmed_other": "{{count}} saltati perché i loro agent non hanno mai confermato la disinstallazione. Eliminali uno alla volta dalla pagina del dispositivo.",
       "bulkWakeAllFailed": "Riattivazione in blocco non riuscita per tutti i dispositivi",
       "bulkWakeSent": "Riattivazione in blocco inviata",
       "bulkWakeSomeFailed": "Riattivazione in blocco parzialmente non riuscita",
@@ -2759,8 +2788,8 @@
       "bulkMaintenanceSomeFailed_other": "{{count}} dispositivi {{verb}} modalità di manutenzione; {{failed}} non riusciti: {{devices}}",
       "bulkPurgeDone_one": "{{count}} dispositivo eliminato definitivamente",
       "bulkPurgeDone_other": "{{count}} dispositivi eliminati definitivamente",
-      "bulkPurgeDoneWithSkips_one": "{{count}} dispositivo eliminato definitivamente; {{skipped}} ignorati ({{reasons}})",
-      "bulkPurgeDoneWithSkips_other": "{{count}} dispositivi eliminati definitivamente; {{skipped}} ignorati ({{reasons}})",
+      "bulkPurgeDoneWithSkips_one": "{{count}} dispositivo eliminato definitivamente; {{reasons}}",
+      "bulkPurgeDoneWithSkips_other": "{{count}} dispositivi eliminati definitivamente; {{reasons}}",
       "bulkPurgeStarted_one": "Eliminazione definitiva di {{count}} dispositivo…",
       "bulkPurgeStarted_other": "Eliminazione definitiva di {{count}} dispositivi…",
       "bulkRestoreAllFailed_one": "Ripristino non riuscito per {{count}} dispositivo",
@@ -2912,6 +2941,13 @@
       "logShippingFailing": "Invio dei log non riuscito",
       "networkIsolation": {
         "active": "Isolato"
+      },
+      "helperVersion": "Versione helper",
+      "deviceFunction": "Funzione del dispositivo",
+      "hostsWorkloads": "Ospita carichi di lavoro",
+      "workloadRuntimes": "Runtime dei carichi di lavoro",
+      "warranty": {
+        "status": "Stato della garanzia"
       }
     }
   },
@@ -4879,6 +4915,11 @@
       "isolation_not_found": "Impossibile trovare questo episodio di isolamento.",
       "relay_unavailable": "Un relay per il desktop remoto non è disponibile. Disattiva l’opzione relay o configura TURN.",
       "invalid_allowlist": "L’elenco di autorizzazioni di isolamento del server non è valido. Contatta l’amministratore.",
+      "invalid_allowlist_server_url_missing": "Questo dispositivo non ha un URL del server agente e AGENT_SERVER_URL non è impostata sul server. Imposta AGENT_SERVER_URL e riprova.",
+      "invalid_allowlist_server_url_invalid": "L’URL del server agente di questo dispositivo non è un URL http(s) valido. Controlla l’URL del server del dispositivo o AGENT_SERVER_URL.",
+      "invalid_allowlist_backup_url_invalid": "AGENT_BACKUP_SERVER_URL non è un URL http(s) valido. Correggila e riprova.",
+      "invalid_allowlist_relay_config_invalid": "Le impostazioni del relay TURN (TURN_HOST, TURN_TLS_HOST, TURN_PORT, TURN_TLS_PORT) non sono valide. Correggile o disattiva l’opzione relay.",
+      "invalid_allowlist_policy_invalid": "La policy di contenimento salvata contiene una voce della allowlist non valida o troppo grande. Controlla le destinazioni consentite della policy.",
       "isolation_conflict": "L’episodio di isolamento è cambiato. Aggiorna lo stato e riprova.",
       "isolation_secret_unavailable": "I codici di ripristino sono temporaneamente indisponibili. Contatta l’amministratore.",
       "approval_mismatch": "L’approvazione non corrisponde a questa richiesta di isolamento.",
@@ -4886,6 +4927,123 @@
       "device_decommissioned": "Un dispositivo dismesso non può avviare un nuovo isolamento.",
       "device_pending_assignment": "Assegna questo dispositivo a un’organizzazione prima di avviare l’isolamento.",
       "backup_helper_update_required": "Aggiorna l’assistente di backup prima di avviare l’isolamento."
+    }
+  },
+  "runVendorUpdatesDialog": {
+    "title": "Esegui aggiornamenti del produttore",
+    "description": "Esegue ora lo strumento di aggiornamento di {{vendor}} su {{hostname}}. Può installare driver e applicazioni e aggiornare BIOS e firmware.",
+    "rebootLegend": "Se gli aggiornamenti richiedono un riavvio",
+    "whenFinishedLabel": "Riavvia al termine",
+    "whenFinishedDescription": "Breeze riavvia il dispositivo dopo l'esecuzione, con l'avviso stabilito dal suo criterio di patch. Sono inclusi gli aggiornamenti di BIOS e firmware.",
+    "leaveToMeLabel": "Lascia il riavvio a me",
+    "leaveToMeDescription": "Breeze non riavvia il dispositivo. Qualcuno lo riavvia in seguito per completare gli aggiornamenti.",
+    "skippedNote": "Con questa scelta gli aggiornamenti di BIOS e firmware vengono saltati, perché richiedono un riavvio controllato da Breeze. Driver e applicazioni vengono comunque eseguiti.",
+    "confirm": "Esegui aggiornamenti",
+    "submitting": "Avvio in corso...",
+    "cancel": "Annulla",
+    "genericError": "Impossibile avviare gli aggiornamenti del produttore su questo dispositivo.",
+    "queued": "Aggiornamenti del produttore avviati su {{hostname}}.",
+    "queuedSkipped": "Aggiornamenti del produttore avviati su {{hostname}}. BIOS e firmware sono stati saltati.",
+    "refusal": {
+      "flagOff": "Gli aggiornamenti del produttore non sono attivati per questa organizzazione.",
+      "laneClosed": "Gli aggiornamenti del produttore non sono ancora disponibili per il produttore di questo dispositivo.",
+      "killSwitch": "Gli aggiornamenti del produttore sono sospesi per il produttore di questo dispositivo.",
+      "agentTooOld": "L'agente di questo dispositivo è troppo vecchio per gli aggiornamenti del produttore. Aggiorna l'agente alla versione {{version}} o successiva.",
+      "notApplicable": "Gli aggiornamenti del produttore non si applicano a questo dispositivo.",
+      "notSupported": "Lo strumento del produttore non supporta questo modello.",
+      "ephemeral": "Gli aggiornamenti del produttore non vengono eseguiti sui dispositivi Quick Support.",
+      "parked": "Assegna questo dispositivo a un'organizzazione prima di eseguire gli aggiornamenti del produttore.",
+      "offline": "Il dispositivo non è online. Gli aggiornamenti del produttore si avviano solo su un dispositivo online in questo momento.",
+      "runInFlight": "Su questo dispositivo è già in corso un'esecuzione di aggiornamenti del produttore.",
+      "noOpenCategories": "Con questa scelta non si può eseguire nulla. Qui sono disponibili solo BIOS e firmware: scegli Riavvia al termine.",
+      "decommissioned": "Questo dispositivo è dismesso, quindi non è possibile inviargli nulla.",
+      "cancelledAtClaim": "L'esecuzione è stata annullata prima di raggiungere il dispositivo. Riprova."
+    }
+  },
+  "vendorUpdates": {
+    "title": "Aggiornamenti del produttore",
+    "refreshState": "Aggiorna",
+    "loadError": "Impossibile caricare gli aggiornamenti del produttore per questo dispositivo.",
+    "retryLoad": "Riprova",
+    "empty": "Su questo dispositivo non è ancora stato eseguito alcun aggiornamento del produttore.",
+    "state": {
+      "upToDate": "Aggiornato",
+      "overdue": "In ritardo",
+      "failing": "In errore",
+      "notSupported": "Non supportato",
+      "notManaged": "Non gestito",
+      "waitingForReboot": "In attesa del riavvio",
+      "rebootOverdue": "Riavvio in ritardo"
+    },
+    "stateDescription": {
+      "upToDate": "L'ultima esecuzione pianificata è terminata.",
+      "overdue": "Nessuna esecuzione è terminata dalla scadenza della pianificazione.",
+      "failing": "L'ultima esecuzione non è terminata. Vedi sotto cosa fare.",
+      "notSupported": "Lo strumento del produttore non supporta questo modello.",
+      "notManaged": "Nessun criterio pianifica qui gli aggiornamenti del produttore. Puoi comunque eseguirli su richiesta.",
+      "notOffered": "Al momento gli aggiornamenti del produttore non sono disponibili su questo dispositivo.",
+      "waitingForReboot": "Gli aggiornamenti sono installati e diventano effettivi dopo il prossimo riavvio.",
+      "rebootOverdue": "Un riavvio è in attesa da più di tre giorni."
+    },
+    "lastRunHeading": "Ultima esecuzione",
+    "outcomeLabel": "Esito",
+    "noOutcomeYet": "In attesa del report del dispositivo",
+    "errorCodeLabel": "Codice di errore",
+    "toolVersionLabel": "Versione dello strumento",
+    "lastAttemptLabel": "Avviata",
+    "installedLabel": "Installati",
+    "failedLabel": "Non riusciti",
+    "rebootLabel": "Riavvio",
+    "rebootPendingSince": "Riavvio necessario dal {{date}}",
+    "rebootNotNeeded": "Nessun riavvio necessario",
+    "outcome": {
+      "success": "Riuscita",
+      "successRebootRequired": "Riuscita, riavvio necessario",
+      "noUpdates": "Nessun aggiornamento trovato",
+      "partial": "Installata in parte",
+      "failed": "Non terminata",
+      "notSupported": "Modello non supportato",
+      "toolUnavailable": "Strumento non disponibile",
+      "blockedOnBattery": "Bloccata: a batteria",
+      "blockedRebootPending": "Bloccata: riavvio in sospeso",
+      "blockedNoRecoveryKey": "Bloccata: nessuna chiave di ripristino",
+      "retryLater": "Verrà riprovata",
+      "interrupted": "Interrotta"
+    },
+    "outcomeHelp": {
+      "partial": "Alcuni aggiornamenti sono stati installati e altri no. Controlla gli elementi non riusciti qui sotto, poi esegui di nuovo gli aggiornamenti del produttore.",
+      "failed": "Lo strumento del produttore non è terminato. Controlla il codice di errore, poi esegui di nuovo gli aggiornamenti del produttore.",
+      "notSupported": "Lo strumento del produttore non supporta questo modello, quindi Breeze smette di richiederlo finché non cambiano la versione dello strumento o il modello.",
+      "toolUnavailable": "Lo strumento di aggiornamento del produttore non è installato e non è stato possibile scaricarlo. Verifica che il dispositivo raggiunga il sito di download del produttore.",
+      "blockedOnBattery": "BIOS e firmware vengono eseguiti solo con alimentazione di rete e batteria sufficiente. Collega il dispositivo all'alimentazione, poi esegui di nuovo gli aggiornamenti del produttore.",
+      "blockedRebootPending": "Il dispositivo ha già un riavvio in sospeso. Dopo il riavvio, esegui di nuovo gli aggiornamenti del produttore.",
+      "blockedNoRecoveryKey": "BIOS e firmware restano bloccati finché Breeze non possiede la chiave di ripristino BitLocker attuale di questo dispositivo. Salva la chiave in Breeze, poi esegui di nuovo gli aggiornamenti del produttore.",
+      "retryLater": "Lo strumento del produttore ha chiesto di riprovare più tardi. Breeze non ha modificato nulla sul dispositivo.",
+      "interrupted": "L'esecuzione si è fermata prima di terminare, di solito perché il dispositivo si è riavviato o l'agente si è fermato. Esegui di nuovo gli aggiornamenti del produttore."
+    },
+    "categoriesHeading": "Cosa può essere eseguito su questo dispositivo",
+    "category": {
+      "bios": "BIOS",
+      "firmware": "Firmware",
+      "driver": "Driver",
+      "application": "Applicazioni"
+    },
+    "gateOpen": "Disponibile",
+    "gateClosed": "Non ancora disponibile su {{vendor}}. Breeze attiva ogni tipo di aggiornamento solo dopo averlo provato su hardware reale.",
+    "itemResult": {
+      "installed": "installato",
+      "failed": "non riuscito",
+      "skipped": "saltato"
+    },
+    "history": {
+      "heading": "Cronologia delle esecuzioni",
+      "loadError": "Impossibile caricare la cronologia delle esecuzioni.",
+      "noResult": "Nessun risultato leggibile",
+      "bySchedule": "Pianificazione",
+      "byUnknown": "Sconosciuto",
+      "range": "{{from}}-{{to}} di {{total}}",
+      "previousPage": "Precedente",
+      "nextPage": "Successivo"
     }
   }
 }

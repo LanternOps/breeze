@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { devices } from '../../db/schema';
 
 /**
@@ -15,10 +15,11 @@ export async function attachDeviceNames<T extends { deviceId: string }>(
   const names = new Map<string, string>();
   try {
     const ids = [...new Set(rows.map((r) => r.deviceId))];
-    const found = await db
+    // Savepoint so a failed lookup rolls back and the caller's transaction survives (#11203).
+    const found = await withDbTransaction(async () => db
       .select({ id: devices.id, displayName: devices.displayName, hostname: devices.hostname })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), inArray(devices.id, ids)));
+      .where(and(eq(devices.orgId, orgId), inArray(devices.id, ids))));
     for (const d of found) {
       const name = d.displayName?.trim() || d.hostname?.trim();
       if (name) names.set(d.id, name);

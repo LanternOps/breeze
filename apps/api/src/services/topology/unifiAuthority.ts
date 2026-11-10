@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { TopologyScope } from '@breeze/shared';
-import { assertInTransaction, db } from '../../db';
+import { assertInTransaction, db, withDbTransaction } from '../../db';
 import { devices, topologyCollectionSources, unifiCollectors, unifiSiteMappings } from '../../db/schema';
 import { loadTopologyFlags } from './flags';
 import { captureException } from '../sentry';
@@ -134,7 +134,7 @@ export type UnifiTopologyAdvertisement = { acceptedUnifiTopologyVersions: number
  * savepoint so legacy config delivery never breaks. */
 export async function unifiTopologyAdvertisement(deviceId: string, collectorId: string): Promise<UnifiTopologyAdvertisement | null> {
   try {
-    return await db.transaction(async () => {
+    return await withDbTransaction(async () => {
       const collector = await loadUnifiCollector(collectorId);
       const current = collector ? await currentUnifiCollectorTopology(deviceId, collector) : null;
       if (!current || !collector) return null;

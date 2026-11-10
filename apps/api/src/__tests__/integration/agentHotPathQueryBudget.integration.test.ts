@@ -184,9 +184,12 @@ const COLD_TX = 7;
 // a cache miss only (so a failed read cannot abort the org transaction); warm
 // and steady-state beats hit the cache and are unchanged.
 // #4618: each heartbeat adds exactly one indexed containment episode lookup, no savepoint.
-const COLD_STATEMENTS = 52;
-const CACHES_MISS_STATEMENTS = 22;
-const CONFIGURED_STEADY_STATEMENTS = 23;
+// #7268: each heartbeat claim adds exactly one revalidation prepare read (bucket
+// revalidationPrepare), no savepoint while no prepared-type row is pending:
+// cold 52 -> 53, caches-miss 22 -> 23, configured 23 -> 24.
+const COLD_STATEMENTS = 53;
+const CACHES_MISS_STATEMENTS = 23;
+const CONFIGURED_STEADY_STATEMENTS = 24;
 
 // Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
 // so a regression names itself instead of showing up as "statements 31 > 26".
@@ -227,6 +230,10 @@ const BUCKET_MATCHERS = {
     s.includes('from "config_policy_onedrive_libraries"') || s.includes('from "onedrive_device_state"') || s.includes('from "m365_connections"'),
   peripheralCapabilityWrites: (s: string) =>
     s.startsWith('update "device_commands"') || s.startsWith('update "peripheral_policy_device_states"'),
+  // #7268: prepareCommandRevalidations' pending-row read, issued before the
+  // claim takes its first device_commands row lock. One per claim, on every beat.
+  revalidationPrepare: (s: string) =>
+    s.startsWith('select "id", "type", "device_id", "payload", "created_by" from "device_commands"'),
 } as const;
 
 type Bucket = keyof typeof BUCKET_MATCHERS;
@@ -503,7 +510,8 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // context. Was 4 tx / 31 statements. 19 -> 20: #8190's workload-inventory
   // policy read (bucket workloadInventoryPolicy) on a workload cache miss.
   // #4618: 20 -> 21 for the single containment episode lookup.
-  'POST /agents/:id/heartbeat': { transactions: 3, statements: 21 },
+  // #7268: 21 -> 22 for the claim's revalidation prepare read (bucket revalidationPrepare).
+  'POST /agents/:id/heartbeat': { transactions: 3, statements: 22 },
   'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
   'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
   'PUT /agents/:id/security/status': { transactions: 2, statements: 10 },
@@ -518,7 +526,9 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // Self-managed. getDeviceEventLogSettings is Redis-cached for 120 s, but the
   // agent sends every ~15 min, so steady state is the cache miss: device,
   // org-partner and group reads outside the heartbeat's hierarchy pass-through.
-  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 20 },
+  // #11225: 20 -> 22 for the savepoints around the settings read and the insert
+  // batch, whose catches could not otherwise survive a statement failure.
+  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 22 },
   [COMMAND_RESULT_KEY]: { transactions: 4, statements: 18 },
   [WS_COMMAND_RESULT_KEY]: { transactions: 4, statements: 17 },
   // The per-frame credential re-check (one system-context device read): a pong
@@ -827,12 +837,16 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // runs on a workload settings-cache miss; warm is a Redis hit and stays 14.
     expect(steady.transactions).toBe(ROUTE_ONLY_STEADY_HEARTBEAT_TX);
     // #4618: 15 -> 16 for the containment episode lookup.
-    expect(steady.statements).toBeLessThanOrEqual(16);
+    // #7268: 16 -> 17 for the claim's revalidation prepare read.
+    expect(steady.statements).toBeLessThanOrEqual(17);
     expect(steady.buckets.workloadInventoryPolicy).toBe(1);
     expect(warm.buckets.workloadInventoryPolicy).toBe(0);
     expect(warm.transactions).toBe(2);
     // #4618: 14 -> 15 for the containment episode lookup.
-    expect(warm.statements).toBeLessThanOrEqual(15);
+    // #7268: 15 -> 16 for the claim's revalidation prepare read.
+    expect(warm.statements).toBeLessThanOrEqual(16);
+    // #7268: exactly one prepare read per claim, on every beat shape.
+    for (const beat of [cold, warm, steady]) expect(beat.buckets.revalidationPrepare).toBe(1);
     expect(cold.transactions).toBeLessThanOrEqual(COLD_TX);
     expect(cold.statements).toBeLessThanOrEqual(COLD_STATEMENTS);
     expect(cold.buckets.hierarchyLoad).toBe(1);
@@ -1011,7 +1025,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.buckets.perFeatureAssignmentRead).toBe(0);
     // 16 -> 17: #8190's workload-inventory policy read (workload cache miss).
     // #4618: 17 -> 18 for the containment episode lookup.
-    expect(steady.statements).toBeLessThanOrEqual(18);
+    // #7268: 18 -> 19 for the claim's revalidation prepare read.
+    expect(steady.statements).toBeLessThanOrEqual(19);
   });
 
   // Both guards assert the same invariant from two directions: a REAL SQL error
@@ -1321,7 +1336,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.transactions).toBe(2);
     // 14 -> 15: #8190's workload-inventory policy read (workload cache miss).
     // #4618: 15 -> 16 for the containment episode lookup.
-    expect(steady.statements).toBeLessThanOrEqual(16);
+    // #7268: 16 -> 17 for the claim's revalidation prepare read.
+    expect(steady.statements).toBeLessThanOrEqual(17);
   });
 
   runDb('cross-tenant assignments forged onto this device never reach its heartbeat (#8142)', async () => {

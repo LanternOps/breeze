@@ -50,6 +50,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // so the service owns its caller-scoped transaction; the cancel does the
   // same so its CAS and the command-cancel propagation are one short unit.
   { method: 'POST', pattern: /^\/api\/v1\/security\/scan\/[0-9a-f-]{36}\/?$/i },
+  // Run vendor updates (#11065 W04): the dispatch seam commits the run on its own
+  // connection and only then pushes it to the socket. Under a request transaction
+  // the handler would hold one pooled connection while waiting for a second
+  // (#1105). The handler reads the device in a short caller-scoped context.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[0-9a-f-]{36}\/oem-updates\/run\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/security\/scans\/[0-9a-f-]{36}\/cancel\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.

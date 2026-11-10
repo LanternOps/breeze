@@ -9,7 +9,7 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { HEALTH_SOURCES } from '../../services/connectionHealth/sources';
@@ -45,6 +45,11 @@ async function planFor(source: (typeof HEALTH_SOURCES)[number]): Promise<string>
   })));
 }
 
+// The m365_sync stale arm is compiled only with tenant sync on (#10021 D7a);
+// the generic no-seq-scan case must plan it too.
+beforeAll(() => { vi.stubEnv('M365_TENANT_SYNC_ENABLED', 'true'); });
+afterAll(() => { vi.unstubAllEnvs(); });
+
 describe('connection health source index contract (spec §1.3)', () => {
   it('classifies every table a source covers', () => {
     for (const s of HEALTH_SOURCES) {
@@ -65,14 +70,33 @@ describe('connection health source index contract (spec §1.3)', () => {
 
   it.each([
     ['dns_filter', 'dns_filter_integrations_sync_error_idx'],
+    ['dns_filter', 'dns_filter_integrations_stale_idx'],
+    ['dns_filter', 'dns_filter_integrations_never_synced_idx'],
     ['m365_connection', 'm365_connections_unhealthy_idx'],
     ['m365_sync', 'm365_sync_state_unhealthy_idx'],
+    ['m365_sync', 'm365_sync_state_stale_idx'],
+    ['m365_sync', 'm365_sync_state_never_succeeded_idx'],
     ['oauth_grant', 'oauth_grants_auto_revoked_idx'],
     ['webhook', 'webhook_deliveries_failed_at_recent_idx'],
     ['google_workspace', 'google_workspace_connections_probe_failed_idx'],
   ])('%s uses %s', async (kind, index) => {
     const source = HEALTH_SOURCES.find((s) => s.kind === kind)!;
     expect(await planFor(source)).toContain(index);
+  });
+
+  // Plan D5c, corrected: under RLS (the app role) the planner pushes only
+  // leakproof quals into an index, so an index on the stale-at expression is
+  // never an Index Cond (it degraded to an is_active filter reading every
+  // active row). The stale arms are plain-column pre-filters; this asserts each
+  // index is used WITH an Index Cond, tying schema, source and migration.
+  it.each([
+    ['dns_filter', 'dns_filter_integrations_stale_idx'],
+    ['dns_filter', 'dns_filter_integrations_never_synced_idx'],
+    ['m365_sync', 'm365_sync_state_stale_idx'],
+    ['m365_sync', 'm365_sync_state_never_succeeded_idx'],
+  ])('%s: the stale arm is an Index Cond on %s', async (kind, index) => {
+    const plan = await planFor(HEALTH_SOURCES.find((s) => s.kind === kind)!);
+    expect(plan, plan).toMatch(new RegExp(`Bitmap Index Scan on ${index}[^\\n]*\\n\\s*Index Cond:`));
   });
 
   it('webhook: the windowed broken query never walks the per-webhook failed index (W4)', async () => {
