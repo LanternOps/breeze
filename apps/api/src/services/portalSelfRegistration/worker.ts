@@ -121,13 +121,16 @@ export async function initializePortalSelfRegistrationWorker(): Promise<void> {
   );
   attachWorkerObservability(worker, 'portalSelfRegistrationWorker');
   worker.on('error', (error) => {
+    // A connection-level error carries no job data.
     console.error(`${LOG} worker error:`, error);
     captureException(error);
   });
   worker.on('failed', (job, error) => {
-    // job.data holds an address: log the id only.
-    console.error(`${LOG} job ${job?.id} failed:`, error instanceof Error ? error.message : 'unknown');
-    captureException(error);
+    // job.data holds an address, and a failed query's message embeds its
+    // parameters: report the job id and the error's class only.
+    const name = error instanceof Error ? error.name : 'unknown';
+    console.error(`${LOG} job ${job?.id} failed`, { error: name });
+    captureException(new Error(`${LOG} job failed: ${name}`));
   });
   console.log(`${LOG} worker initialized`);
 }

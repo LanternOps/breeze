@@ -87,11 +87,28 @@ beforeEach(() => {
 });
 
 describe('emailDomainOf', () => {
-  it('is the lower-cased text after the last @', () => {
+  it('is the lower-cased domain of a single plain mailbox', () => {
     expect(emailDomainOf(' Pat@Contoso.Example.COM ')).toBe('contoso.example.com');
-    expect(emailDomainOf('"a@b"@contoso.example.com')).toBe('contoso.example.com');
+    expect(emailDomainOf('pat.doe+tag@contoso.example.com')).toBe('contoso.example.com');
     expect(emailDomainOf('no-at-sign')).toBeNull();
     expect(emailDomainOf('trailing@')).toBeNull();
+    expect(emailDomainOf('@contoso.example.com')).toBeNull();
+  });
+
+  it('refuses list, quoting and display-name syntax (no parser differential with the mail transport)', () => {
+    for (const tricky of [
+      '"a@b"@contoso.example.com',
+      'attacker@evil.example.com,pat@contoso.example.com',
+      'attacker@evil.example.com;pat@contoso.example.com',
+      'Pat <attacker@evil.example.com>@contoso.example.com',
+      'attacker@evil.example.com@contoso.example.com',
+      'pat@contoso.example.com (comment)',
+      'pat @contoso.example.com',
+      'pat@[192.0.2.1]',
+      'pat\@x@contoso.example.com',
+    ]) {
+      expect(emailDomainOf(tricky), tricky).toBeNull();
+    }
   });
 });
 
