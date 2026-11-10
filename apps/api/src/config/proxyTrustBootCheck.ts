@@ -12,6 +12,9 @@ import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os';
  * produces ONE warning naming both. It is advisory only — a proxy outside the
  * attached networks is a legitimate topology — so it never throws and never
  * alters config.
+ *
+ * Limitation: overlap is judged per subnet, so a stale /32 that still falls
+ * inside the same attached network is not detected — only subnet-level drift.
  */
 
 type InterfaceMap = NodeJS.Dict<NetworkInterfaceInfo[]>;
@@ -24,6 +27,13 @@ interface ParsedCidr {
 }
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
+
+/** Mirrors services/clientIp.ts: unset/'auto' trusts headers outside production. */
+function proxyHeadersTrusted(env: Record<string, string | undefined>): boolean {
+  const mode = (env.TRUST_PROXY_HEADERS ?? 'auto').trim().toLowerCase();
+  if (mode === 'auto') return env.NODE_ENV !== 'production';
+  return TRUTHY.has(mode);
+}
 
 function parseCidr(entry: string): ParsedCidr | null {
   const [network, prefixRaw, extra] = entry.split('/');
@@ -142,6 +152,11 @@ export function findTrustedProxyCidrMismatch(input: TrustedProxyCidrCheckInput):
 
   if (configured.some((c) => attached.some((a) => overlaps(c, a)))) return null;
 
+  // A proxy on the same host (API run directly, proxy on loopback) is a normal
+  // topology; loopback is excluded from `attached`, so recognise it here.
+  const loopbacks = [parseCidr('127.0.0.0/8'), parseCidr('::1/128')].filter((l): l is ParsedCidr => l !== null);
+  if (configured.some((c) => loopbacks.some((l) => overlaps(c, l)))) return null;
+
   const uniqueAttached = [...new Set(attached.map((a) => a.raw))];
   return (
     `[proxy-trust] TRUSTED_PROXY_CIDRS (${configured.map((c) => c.raw).join(', ')}) does not overlap any subnet this API is attached to `
@@ -168,12 +183,16 @@ export function warnOnTrustedProxyCidrMismatch(
       ? options.interfaces()
       : options.interfaces ?? networkInterfaces();
     const message = findTrustedProxyCidrMismatch({
-      trustProxyHeaders: TRUTHY.has((env.TRUST_PROXY_HEADERS ?? '').trim().toLowerCase()),
+      trustProxyHeaders: proxyHeadersTrusted(env),
       trustedProxyCidrs: env.TRUSTED_PROXY_CIDRS,
       interfaces,
     });
     if (message) (options.warn ?? console.warn)(message);
-  } catch {
-    // Advisory only: a failure to enumerate interfaces must never affect boot.
+  } catch (err) {
+    // Advisory only: must never affect boot, but say that the check did not run
+    // so a skipped check is not mistaken for a passing one.
+    (options.warn ?? console.warn)(
+      `[proxy-trust] could not verify TRUSTED_PROXY_CIDRS against attached subnets (check skipped): ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }

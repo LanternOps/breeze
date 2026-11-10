@@ -68,7 +68,47 @@ describe('findTrustedProxyCidrMismatch', () => {
   });
 });
 
+describe('non-aligned subnets', () => {
+  const docker: Ifaces = { eth0: [v4('172.17.9.5/20')] };
+  const base = { trustProxyHeaders: true, trustedProxyCidrs: '198.51.100.7/32' };
+  it('masks host bits in the warning text', () => {
+    const msg = findTrustedProxyCidrMismatch({ ...base, interfaces: docker });
+    expect(msg).toContain('172.17.0.0/20');
+    expect(msg).not.toContain('172.17.9.5');
+    expect(findTrustedProxyCidrMismatch({ ...base, interfaces: { eth0: [v4('192.0.2.77/25')] } })).toContain('192.0.2.0/25');
+    expect(findTrustedProxyCidrMismatch({ ...base, interfaces: { eth0: [v6('2001:db8:0:5::5/60')] } })).toContain('2001:db8::/60');
+  });
+  it('overlaps inside a /20 and not just outside it', () => {
+    expect(findTrustedProxyCidrMismatch({ trustProxyHeaders: true, trustedProxyCidrs: '172.17.15.9/32', interfaces: docker })).toBeNull();
+    expect(findTrustedProxyCidrMismatch({ trustProxyHeaders: true, trustedProxyCidrs: '172.17.16.1/32', interfaces: docker })).not.toBeNull();
+  });
+  it('lists a shared subnet once and keeps malformed entries out of the message', () => {
+    const msg = findTrustedProxyCidrMismatch({
+      trustProxyHeaders: true,
+      trustedProxyCidrs: 'not-a-cidr,198.51.100.7/32',
+      interfaces: { eth0: [v4('192.0.2.5/24')], eth1: [v4('192.0.2.6/24')] },
+    })!;
+    expect(msg.match(/192\.0\.2\.0\/24/g)).toHaveLength(1);
+    expect(msg).not.toContain('not-a-cidr');
+  });
+});
+
+describe('loopback proxy', () => {
+  it('does not warn when the proxy is on loopback', () => {
+    expect(findTrustedProxyCidrMismatch({ trustProxyHeaders: true, trustedProxyCidrs: '127.0.0.1/32', interfaces: ifaces })).toBeNull();
+    expect(findTrustedProxyCidrMismatch({ trustProxyHeaders: true, trustedProxyCidrs: '::1/128', interfaces: ifaces })).toBeNull();
+  });
+});
+
 describe('warnOnTrustedProxyCidrMismatch', () => {
+  it('treats unset TRUST_PROXY_HEADERS as auto: on outside production, off in production', () => {
+    const warn = vi.fn();
+    warnOnTrustedProxyCidrMismatch({ TRUSTED_PROXY_CIDRS: '198.51.100.7/32', NODE_ENV: 'development' }, { interfaces: ifaces, warn });
+    expect(warn).toHaveBeenCalledTimes(1);
+    warnOnTrustedProxyCidrMismatch({ TRUSTED_PROXY_CIDRS: '198.51.100.7/32', NODE_ENV: 'production' }, { interfaces: ifaces, warn });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it('logs one warning and never throws', () => {
     const warn = vi.fn();
     warnOnTrustedProxyCidrMismatch({ TRUST_PROXY_HEADERS: 'true', TRUSTED_PROXY_CIDRS: '198.51.100.7/32' }, { interfaces: ifaces, warn });
@@ -81,7 +121,9 @@ describe('warnOnTrustedProxyCidrMismatch', () => {
       { TRUST_PROXY_HEADERS: 'true', TRUSTED_PROXY_CIDRS: '198.51.100.7/32' },
       { interfaces: () => { throw new Error('boom'); }, warn },
     )).not.toThrow();
-    expect(warn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain('check skipped');
+    expect(warn.mock.calls[0]![0]).toContain('boom');
   });
 
   it('accepts the boolean spellings validate.ts accepts', () => {
