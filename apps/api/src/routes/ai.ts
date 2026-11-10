@@ -849,6 +849,8 @@ aiRoutes.post(
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
       // #11430: coded so a client can tell a retired session (nothing ran; a fresh one can carry the message) from any other refusal.
       if (err.includes('expired')) return c.json({ error: err, code: 'session_expired' }, 410);
+      // #11609: closed elsewhere. Nothing ran, so the client keeps the text and can continue in a new session.
+      if (err.includes('was closed')) return c.json({ error: err, code: 'session_closed' }, 410);
       return c.json({ error: err }, 400);
     }
 

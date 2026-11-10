@@ -3,7 +3,7 @@
 // has today; this module only decides, it issues no requests.
 import { RECOVERABLE_MODEL_CODES } from './aiModelPickerStore';
 
-export type SendRefusal = 'attach' | 'continuation' | 'choose_model' | 'credits' | 'turn_limit' | 'expired' | 'error';
+export type SendRefusal = 'attach' | 'continuation' | 'choose_model' | 'credits' | 'turn_limit' | 'expired' | 'closed' | 'error';
 
 export function classifySendRefusal(status: number, code: string | null): SendRefusal {
   if (status === 409) {
@@ -20,5 +20,7 @@ export function classifySendRefusal(status: number, code: string | null): SendRe
   // nothing ran and a fresh session can carry the same message. Coded, so no
   // other refusal ever reads as one.
   if (status === 410 && code === 'session_expired') return 'expired';
+  // #11609: the session was closed elsewhere before this turn ran; nothing ran.
+  if (status === 410 && code === 'session_closed') return 'closed';
   return 'error';
 }

@@ -637,12 +637,15 @@ async function runPreFlightAdmission(
     // below would have produced that wording lazily. Without this, the same
     // terminal state surfaced as 410 or 400 depending purely on which path
     // got there first.
+    // #11609: 'closed' (ended elsewhere, e.g. DELETE /ai/sessions/:id) is worded
+    // the same way so the route can code it (410 session_closed) instead of a
+    // bare 400 the client can only show raw.
     return {
       ok: false,
       error:
         session.status === 'expired'
           ? 'Session has expired. Please start a new session.'
-          : 'Session is not active',
+          : 'This conversation was closed. Please start a new session.',
     };
   }
 

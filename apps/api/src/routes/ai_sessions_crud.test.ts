@@ -712,6 +712,20 @@ describe('AI routes', () => {
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     });
 
+    it('#11609: a session closed elsewhere is a coded 410 (session_closed), not a bare 400', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'This conversation was closed. Please start a new session.' });
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual({ error: expect.stringContaining('closed'), code: 'session_closed' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
     it('preserves the structured retryable 503 from resolver preflight failures', async () => {
       vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
         ok: false,

@@ -583,6 +583,62 @@ describe('aiStore — Wisp rolls to a fresh session when the bound one expired (
   });
 });
 
+// #11609: the bound session was closed elsewhere (DELETE /ai/sessions/:id), so
+// the next send is refused with a coded 410 session_closed. Nothing ran.
+describe('aiStore — a session closed elsewhere never loses the typed message (#11609)', () => {
+  const closed410 = () => response({ error: 'This conversation was closed. Please start a new session.', code: 'session_closed' }, 410);
+  const messagePosts = () => fetchMock.mock.calls
+    .filter(([url, init]) => String(url).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST')
+    .map(([url, init]) => ({ url: String(url), body: JSON.parse(String((init as RequestInit).body)) as Record<string, unknown> }));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAiStore.setState({
+      sessionId: 'sess-old', sessionOrgId: 'org-a', hydratedSessionId: 'sess-old', messages: [], isLoading: false, isStreaming: false,
+      error: null, errorCode: null, composerDraft: '', pageContext: null, wisp: wisp(),
+    });
+  });
+
+  it('Wisp rolls to a fresh session and re-sends the same message once, with no banner', async () => {
+    const bytes = new TextEncoder().encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return closed410();
+      if (url === '/ai/sessions/sess-new/messages') {
+        return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+      }
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('what changed overnight?');
+
+    const posts = messagePosts();
+    expect(posts.map((p) => p.url)).toEqual(['/ai/sessions/sess-old/messages', '/ai/sessions/sess-new/messages']);
+    expect(posts[1]!.body.content).toBe('what changed overnight?');
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBe('sess-new');
+    expect(s.error).toBeNull();
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('a plain chat keeps the text in the composer and shows a plain-words, coded error (no raw "Session is not active")', async () => {
+    useAiStore.setState({ wisp: null });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/messages')) return closed410();
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+
+    const s = useAiStore.getState();
+    expect(s.composerDraft).toBe('hello');
+    expect(s.errorCode).toBe('session_closed');
+    expect(s.error).toBeTruthy();
+    expect(s.error).not.toMatch(/not active/i);
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(0);
+    expect(s.isStreaming).toBe(false);
+    expect(messagePosts()).toHaveLength(1);
+  });
+});
+
 describe('isActiveGrant (W05 #10136)', () => {
   it('is true only for a grant the server reports active', () => {
     expect(isActiveGrant(wisp())).toBe(true);
