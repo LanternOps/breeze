@@ -446,7 +446,8 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   }, [inFocus, focusedInList]);
 
   // The board's active row follows the ticket in focus, so going back lands on it.
-  useEffect(() => { if (focused) setActiveId(focused.id); }, [focused?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const focusedId = focused?.id;
+  useEffect(() => { if (focusedId) setActiveId(focusedId); }, [focusedId]);
 
   // An offer belongs to the ticket that was resolved; moving on retires it.
   useEffect(() => {
