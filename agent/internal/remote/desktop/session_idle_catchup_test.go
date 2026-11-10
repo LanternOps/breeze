@@ -125,11 +125,24 @@ func TestCaptureAndSendFrame_IdleCatchUpDeliversNewestFrame(t *testing.T) {
 	}
 }
 
-// The normal path (OpenH264 and every encoder that does not hold frames) must
-// not be re-fed at idle.
+// An encoder that implements the catch-up but does not hold frames (the
+// software MFT with low-latency mode working) is never re-fed at idle, and an
+// encoder without the catch-up (OpenH264, NVENC, AMF) is never asked.
 func TestCaptureAndSendFrame_IdleNoCatchUpForNonHoldingEncoder(t *testing.T) {
+	backend := &holdingStubBackend{hold: 0}
+	s := newIdleCatchUpSession(t, 3, backend)
+	for i := 0; i < 20; i++ {
+		s.captureAndSendFrame(16 * time.Millisecond)
+	}
+	if backend.encodes != 3 {
+		t.Fatalf("encodes = %d, want only the 3 captured frames", backend.encodes)
+	}
+	if got := lastSentFrame(s); !bytes.Equal(got, []byte{3}) {
+		t.Fatalf("viewer's newest frame is %v, want [3]", got)
+	}
+
 	stub := newWarmupStub(encodeOK)
-	s := newIdleCatchUpSession(t, 3, stub)
+	s = newIdleCatchUpSession(t, 3, stub)
 	for i := 0; i < 20; i++ {
 		s.captureAndSendFrame(16 * time.Millisecond)
 	}

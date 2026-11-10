@@ -55,8 +55,13 @@ func TestSoftwareMFT_OneOutputPerInput(t *testing.T) {
 	if nils > 0 {
 		t.Fatalf("software MFT returned no output for %d of 10 inputs; low-latency mode set before negotiation should make it one-in-one-out", nils)
 	}
-	if out, _ := m.CatchUpIdle(); out != nil {
-		t.Fatalf("a one-in-one-out encoder must not be re-fed at idle")
+	for i := 0; i < 5; i++ {
+		if out, _ := m.CatchUpIdle(); out != nil {
+			t.Fatalf("a one-in-one-out encoder must not be re-fed at idle")
+		}
+	}
+	if m.catchUp.refeeds != 0 {
+		t.Fatalf("re-submits = %d on a one-in-one-out encoder, want 0", m.catchUp.refeeds)
 	}
 }
 
@@ -100,6 +105,24 @@ func TestSoftwareMFT_IdleCatchUpPushesHeldFramesOut(t *testing.T) {
 	}
 	if caught != held {
 		t.Fatalf("catch-up outputs = %d, want %d", caught, held)
+	}
+
+	// The accounting must stay in step: the next screen change is held the
+	// same way and needs the same number of re-submits, not a growing number.
+	if out, err := m.Encode(softwareMFTTestFrame(30)); err != nil || out == nil {
+		t.Fatalf("a new frame after catch-up must push a held frame out (out=%v err=%v)", out != nil, err)
+	}
+	if got := m.catchUp.held(); got != held {
+		t.Fatalf("held after a new frame = %d, want %d", got, held)
+	}
+	for i := 0; i < 50; i++ {
+		if _, err := m.CatchUpIdle(); err != nil {
+			t.Fatalf("catch-up: %v", err)
+		}
+	}
+	if m.catchUp.refeeds != held || m.catchUp.newest > m.catchUp.emitted {
+		t.Fatalf("second change: re-submits=%d (want %d), newest=%d emitted=%d",
+			m.catchUp.refeeds, held, m.catchUp.newest, m.catchUp.emitted)
 	}
 
 	// A flush with frames inside: the retained frame is carried into the new

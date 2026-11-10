@@ -19,7 +19,9 @@ package desktop
 // maxIdleCatchUpRefeeds bounds the re-submits made for one real frame. It
 // covers the 5-frame hold measured on the software MFT plus the same again for
 // a warm-up after a flush, and stays below mftSoftwareStallThreshold so the
-// re-submits alone cannot trip the stall flush.
+// re-submits alone cannot trip the stall flush. Only the software MFT uses
+// the catch-up; hardware MFTs, whose stall flush fires at 4–8 empty outputs,
+// never re-submit.
 const maxIdleCatchUpRefeeds = 12
 
 // idleCatchUp counts inputs and outputs in the current encoder stream. A

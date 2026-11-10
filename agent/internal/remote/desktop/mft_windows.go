@@ -115,6 +115,9 @@ type mftEncoder struct {
 	catchUp       idleCatchUp
 	retainedNV12  []byte
 	catchUpLogged bool
+	// lastSubmitOK is set when the current Encode/EncodeTexture call's frame
+	// was accepted by ProcessInput; only such a frame is retained.
+	lastSubmitOK bool
 	// lateLowLatency is a test hook: when set, CODECAPI_AVLowLatencyMode is
 	// not applied before media-type negotiation, reproducing the pre-#11622
 	// encoder that holds 5 frames. Production code never sets it.

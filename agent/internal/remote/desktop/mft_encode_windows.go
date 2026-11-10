@@ -33,6 +33,7 @@ const mftAsyncInputWait = 3 * time.Millisecond
 func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastSubmitOK = false
 
 	if len(frame) == 0 {
 		return nil, fmt.Errorf("empty frame")
@@ -143,6 +144,7 @@ func (m *mftEncoder) submitSync(sample uintptr, refeed bool, failPrefix string) 
 			return out, nil // Return what we drained
 		}
 		m.catchUp.noteSubmitted(refeed)
+		m.lastSubmitOK = true
 		if out != nil {
 			m.trackNilOutput(out)
 			return out, nil
@@ -151,6 +153,7 @@ func (m *mftEncoder) submitSync(sample uintptr, refeed bool, failPrefix string) 
 		return nil, fmt.Errorf("%s: 0x%08X", failPrefix, uint32(ret))
 	} else {
 		m.catchUp.noteSubmitted(refeed)
+		m.lastSubmitOK = true
 	}
 
 	// Try to get output
@@ -171,11 +174,13 @@ func (m *mftEncoder) noteSyncOutput(out []byte) {
 }
 
 // releaseOrRetainNV12 disposes of the NV12 buffer of a frame Encode or
-// EncodeTexture just submitted. A synchronous MFT keeps it as the retained
-// frame for CatchUpIdle (returning the previous one to the pool); an async MFT
-// returns it to the pool as before. Caller holds m.mu.
+// EncodeTexture converted. A synchronous MFT that accepted the frame keeps it
+// as the retained frame for CatchUpIdle (returning the previous one to the
+// pool), so the retained pixels are always those of the newest submitted
+// frame. Otherwise (async MFT, encoder torn down, input refused or failed) the
+// buffer goes back to the pool as before. Caller holds m.mu.
 func (m *mftEncoder) releaseOrRetainNV12(nv12 []byte) {
-	if m.asyncMode || !m.inited {
+	if m.asyncMode || !m.inited || !m.lastSubmitOK {
 		putNV12Buffer(nv12)
 		return
 	}
@@ -205,13 +210,15 @@ func (m *mftEncoder) stallThresholds() (flushAt, refuseAt int) {
 // CatchUpIdle implements optionalIdleCatchUp (#11622). While the screen is
 // static, a synchronous MFT that still holds the newest submitted frame gets
 // the retained frame again, which pushes one held frame out; the output is
-// returned for the capture loop to send. It is a no-op for async (hardware)
-// MFTs, for an encoder that emitted the newest frame already (a one-in-one-out
-// encoder never re-submits), and once the per-frame budget is spent.
+// returned for the capture loop to send. It is a no-op for hardware MFTs
+// (async or not: their stall thresholds are below the re-submit budget, and
+// the lab has not shown them holding frames), for an encoder that emitted the
+// newest frame already (a one-in-one-out encoder never re-submits), and once
+// the per-frame budget is spent.
 func (m *mftEncoder) CatchUpIdle() ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.inited || m.asyncMode || m.permanentlyStalled || m.transform == 0 {
+	if !m.inited || m.isHW || m.asyncMode || m.permanentlyStalled || m.transform == 0 {
 		return nil, nil
 	}
 	if len(m.retainedNV12) == 0 {
@@ -776,6 +783,7 @@ func (m *mftEncoder) forceKeyframeLocked() error {
 func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastSubmitOK = false
 
 	if bgraTexture == 0 {
 		return nil, fmt.Errorf("nil BGRA texture")
