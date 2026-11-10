@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Échec de l'envoi des journaux",
       "networkIsolation": {
         "active": "Isolé"
+      },
+      "helperVersion": "Version de l'assistant",
+      "deviceFunction": "Fonction de l'appareil",
+      "hostsWorkloads": "Héberge des charges de travail",
+      "workloadRuntimes": "Environnements d'exécution des charges de travail",
+      "warranty": {
+        "status": "État de la garantie"
       }
     }
   },

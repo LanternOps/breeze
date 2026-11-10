@@ -662,7 +662,7 @@
       "explain": "Wisp arbeitet im Rahmen Ihrer eigenen Berechtigungen. Bestätigen Sie Ihre Identität, um fortzufahren.",
       "code": "Authentifizierungscode",
       "passkey": "Sie bestätigen mit Ihrem Passkey.",
-      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in Ihrem Profil ein.",
+      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in <profileLink>Ihrem Profil</profileLink> ein.",
       "noOrg": "Wählen Sie zuerst oben eine Organisation aus.",
       "confirm": "Bestätigen",
       "cancel": "Abbrechen",

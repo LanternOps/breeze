@@ -543,4 +543,11 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     expect(await screen.findByText(/Wisp needs a passkey or an authenticator app/)).toBeInTheDocument();
     expect(screen.getByTestId('wisp-grant-confirm')).toBeDisabled();
   });
+
+  it('the no-factor sentence links to the profile page', async () => {
+    routes((url) => (url === '/users/me' ? res({ mfaMethod: 'sms' }) : undefined));
+    render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={vi.fn()} />);
+    const link = await screen.findByRole('link', { name: /profile/i });
+    expect(link.getAttribute('href')).toBe('/settings/profile');
+  });
 });

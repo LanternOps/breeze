@@ -7767,14 +7767,16 @@
       "toasts": {
         "invited": "Portal daveti gönderildi",
         "inviteEmailFailed": "Portal girişi oluşturuldu ancak davet e-postası gönderilemedi. Daveti yeniden gönder seçeneğini kullanın.",
-        "bulkSummary": "Portal erişimi: {{details}}"
+        "bulkSummary": "Portal erişimi: {{details}}",
+        "resendEmailFailed": "Davet e-postası gönderilemedi. Daha sonra Daveti yeniden gönder seçeneğini tekrar deneyin."
       },
       "outcomes": {
         "invited": "Davet edilen: {{count}}",
         "already_has_access": "Zaten erişimi olan: {{count}}",
         "no_email": "E-posta adresi olmayan: {{count}}",
         "email_bound_to_other_contact": "E-postası başka bir kişide kullanılan: {{count}}",
-        "duplicate_email_in_batch": "Seçimde yinelenen e-posta: {{count}}"
+        "duplicate_email_in_batch": "Seçimde yinelenen e-posta: {{count}}",
+        "emailNotSent": "Gönderilmeyen davet e-postaları: {{count}}"
       },
       "errors": {
         "invite": "Portal erişimi verilemedi.",

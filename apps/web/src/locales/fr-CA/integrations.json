@@ -1074,7 +1074,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossible d’enregistrer les associations de sites.",
     "siteMappingsSaved": "Cartographies du site enregistrées",
-    "pickTheSiteThisControllerServesACollector": "Choisissez le site desservi par ce contrôleur et un agent collecteur, puis saisissez l’URL du contrôleur et la clé API locale.",
+    "pickTheSiteThisControllerServesACollector": "Choisissez l'emplacement de l'agent collecteur et un agent collecteur, puis saisissez l'URL du contrôleur et la clé API locale.",
     "failedToRegisterTheController": "Impossible d’enregistrer le contrôleur.",
     "controllerRegistered": "Contrôleur enregistré",
     "pickABreezeSiteACollectorAgentAnd": "Choisissez un site Breeze et un agent collecteur, puis saisissez l’URL du contrôleur et la clé API locale.",

@@ -356,8 +356,19 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	slog.Info("StartSession: encoder created", "session", sessionID, "backend", enc.BackendName(), "elapsed", time.Since(encoderStart))
 	session.encoder.Store(enc)
 
+	// OpenH264 failed to load, so the software path returned the passthrough
+	// placeholder. On Windows, fall back to the Media Foundation encoder
+	// (hardware MFT, else Microsoft's software MFT) instead of refusing the
+	// session; this is what happens at the sign-in screen, where the encoder
+	// is created with PreferHardware=false (#11392). When that fails too, the
+	// error names the OpenH264 load failure so the operator sees the cause.
+	usedPlaceholderFallback := false
 	if enc.BackendIsPlaceholder() {
-		return "", fmt.Errorf("no H264 encoder available (backend=%s)", enc.BackendName())
+		if err := enc.ReplacePlaceholderBackend(); err != nil {
+			return "", err
+		}
+		usedPlaceholderFallback = true
+		slog.Info("StartSession: encoder replaced placeholder", "session", sessionID, "backend", enc.BackendName())
 	}
 
 	// Pass D3D11 device to encoder for GPU zero-copy pipeline setup.
@@ -373,6 +384,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	if err := enc.SetDimensions(w, h); err != nil {
 		return "", fmt.Errorf("failed to set encoder dimensions: %w", err)
+	}
+	// The fallback MFT activates in SetDimensions, which only logs a failure
+	// (and retries on every Encode). Refuse the session with the cause now
+	// rather than stream nothing.
+	if usedPlaceholderFallback {
+		if err := enc.FallbackActivationError(); err != nil {
+			return "", err
+		}
 	}
 
 	// If the capturer produces BGRA, tell the encoder to skip BGRA→RGBA conversion

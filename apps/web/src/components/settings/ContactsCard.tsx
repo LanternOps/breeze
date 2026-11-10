@@ -393,11 +393,11 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
     }
   }
 
-  async function givePortalAccess(c: Contact) {
+  async function givePortalAccess(c: Contact, resend = false) {
     if (portalBusyId || !c.email) return;
     setPortalBusyId(c.id);
     try {
-      await giveContactPortalAccess(orgId, { id: c.id, email: c.email, name: c.name }, t);
+      await giveContactPortalAccess(orgId, { id: c.id, email: c.email, name: c.name }, t, { resend });
     } catch (err) {
       handleActionError(err, t('contactsCard.portal.errors.invite'));
     } finally {
@@ -824,7 +824,7 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
                         <button
                           type="button"
                           data-testid={`org-contacts-portal-${portalState.status === 'none' ? 'give' : 'resend'}-${c.id}`}
-                          onClick={() => void givePortalAccess(c)}
+                          onClick={() => void givePortalAccess(c, portalState.status === 'invited')}
                           disabled={portalBusyId !== null}
                           className="rounded-md px-2 py-1 text-xs underline hover:bg-muted disabled:opacity-50"
                         >
