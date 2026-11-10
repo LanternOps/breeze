@@ -18,6 +18,10 @@ export const entraTenantChecker: DomainVerificationChecker = {
 
       const read = await readM365OrganizationForVerification(target.orgId, proven.tenantId);
       if (!read.ok) {
+        if (read.code !== 'no_connection') {
+          // A permanent Graph/schema problem must not look like a silent outage.
+          console.warn(`[portalDomainVerification] entra organization read for org ${target.orgId} returned ${read.code}`);
+        }
         switch (read.code) {
           case 'no_connection':
             return { status: 'fail', reason: 'connection_missing' };

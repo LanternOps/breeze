@@ -183,6 +183,8 @@ export function registerOrgCustomerDomainRoutes(orgRoutes: Hono): void {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
       const { domainId } = c.req.valid('param');
+      // Ownership before the limiter, so foreign ids never create limiter keys.
+      if (!(await ownedDomain(org.id, domainId))) return notFound(c);
       const blocked = await limited(c, org.id, domainId);
       if (blocked) return blocked;
       try {

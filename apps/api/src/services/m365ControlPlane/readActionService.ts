@@ -534,7 +534,12 @@ export async function readM365OrganizationForVerification(
     : await withSystemDbAccessContext(read, 'portalDomainVerification.readM365Connection');
   const connection = rows[0];
   if (!connection || connection.orgId !== orgId) return { ok: false, code: 'no_connection' };
-  if (connection.tenantId === null || connection.tenantId.toLowerCase() !== expectedTenantId.toLowerCase()) {
+  // Not yet bound to a tenant (consent mid-flight): transient, never a
+  // definitive "no connection" (which clears a verification at once).
+  if (connection.tenantId === null) return { ok: false, code: 'connection_not_ready' };
+  // Bound to another tenant than the proven one: this connection is not the
+  // evidence source any more.
+  if (connection.tenantId.toLowerCase() !== expectedTenantId.toLowerCase()) {
     return { ok: false, code: 'no_connection' };
   }
   const gate = orgConnectionGate(connection, orgId);

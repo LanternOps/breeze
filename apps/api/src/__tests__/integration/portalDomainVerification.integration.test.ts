@@ -440,6 +440,31 @@ describe('transfer rule (D5, Review Focus 1)', () => {
     expect((await rowOf(row.id)).verifiedAt).toBeNull();
   });
 
+  it('a pass whose Google connection was replaced in place during the check is not recorded (CONFLICT_RETRY)', async () => {
+    const org = await newOrg();
+    const [conn] = await admin().insert(googleWorkspaceConnections).values({
+      orgId: org.orgId,
+      customerDomain: 'irrelevant.example.com',
+      adminEmail: 'admin@first.example.com',
+      serviceAccountEmail: 'sa@first.iam.gserviceaccount.com',
+      serviceAccountKey: 'not-a-real-key',
+    }).returning();
+    const row = await seedDomain(org, { token: null });
+    const { checkers } = fakeCheckers(new Map<string, Verdict>([[row.id, async () => {
+      const evidence = { via: 'google_directory' as const, connectionId: conn!.id, binding: googleConnectionBinding(conn!) };
+      await admin().update(googleWorkspaceConnections)
+        .set({ adminEmail: 'admin@second.example.com', serviceAccountEmail: 'sa@second.iam.gserviceaccount.com' })
+        .where(eq(googleWorkspaceConnections.id, conn!.id));
+      return { status: 'pass', evidence };
+    }]]));
+    await expectRefusal(
+      verifyCustomerDomain(verifyInput(org, row.id, 'google_directory'), { checkers }),
+      'DOMAIN_VERIFICATION_CONFLICT_RETRY',
+      409,
+    );
+    expect((await rowOf(row.id)).verifiedAt).toBeNull();
+  });
+
   it('an email failure after displacement keeps both writes', async () => {
     const { domain, a, b, incumbent, challenger } = await incumbentAndChallenger();
     mail.fail = true;

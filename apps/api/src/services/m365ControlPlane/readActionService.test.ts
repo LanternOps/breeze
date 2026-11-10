@@ -678,6 +678,12 @@ describe('readM365OrganizationForVerification (portal domain verification, W05)'
     expect(openDuringGraphCall).toBe(false);
   });
 
+  it('readM365OrganizationForVerification: a connection not yet bound to a tenant is connection_not_ready, never no_connection', async () => {
+    dbMocks.selectResults.push([connectionRow({ tenantId: null })]);
+    expect(await readM365OrganizationForVerification(ORG_ID, TENANT_ID)).toEqual({ ok: false, code: 'connection_not_ready' });
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
+  });
+
   it('readM365OrganizationForVerification refuses a connection bound to a different tenant (no_connection)', async () => {
     dbMocks.selectResults.push([connectionRow({ tenantId: '99999999-9999-4999-8999-999999999999' })]);
     const result = await readM365OrganizationForVerification(ORG_ID, TENANT_ID);

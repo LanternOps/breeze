@@ -373,6 +373,12 @@ async function liveRecheckVerifiedRow(row: CustomerDomainRow, checkers: DomainVe
   return runChecker(checkers, method, targetOf(row));
 }
 
+/** Inside a write transaction: refuse (retry) if the evidence's source changed since the check. */
+async function assertEvidenceStillCurrent(orgId: string, evidence: DomainVerificationEvidence): Promise<void> {
+  const facts = (await loadEvidenceFactsInContext([orgId])).get(orgId);
+  if (!evidenceStructurallyCurrent(evidence, facts)) throw conflictRetry();
+}
+
 async function lockDomain(domain: string): Promise<void> {
   await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`portal-domain:${normalizeDomain(domain)}`}))`);
 }
@@ -441,16 +447,25 @@ interface LossNotice {
 async function notifyVerificationLost(notice: LossNotice): Promise<void> {
   try {
     const email = getEmailService();
-    if (!email) return;
+    if (!email) {
+      console.warn(`[portalDomainVerification] email not configured: no loss notice for ${notice.domain} (org ${notice.orgId}, ${notice.reason})`);
+      return;
+    }
     const [names] = await withSystemDbAccessContext(() => db
       .select({ orgName: organizations.name, partnerName: partners.name })
       .from(organizations)
       .innerJoin(partners, eq(partners.id, organizations.partnerId))
       .where(eq(organizations.id, notice.orgId))
       .limit(1), 'portalDomainVerification.lossNames');
-    if (!names) return;
+    if (!names) {
+      console.warn(`[portalDomainVerification] org ${notice.orgId} not found: no loss notice for ${notice.domain}`);
+      return;
+    }
     const admins = await listActivePartnerAdmins(notice.partnerId);
-    if (admins.length === 0) return;
+    if (admins.length === 0) {
+      console.warn(`[portalDomainVerification] partner ${notice.partnerId} has no active admins: no loss notice for ${notice.domain}`);
+      return;
+    }
     await email.sendPortalDomainVerificationLost({
       to: admins.map((a) => a.email),
       partnerName: names.partnerName,
@@ -617,6 +632,7 @@ async function refreshVerifiedRow(
     await lockDomain(row.domain);
     const current = await selectRowById(row.id, true);
     if (!current || !sameVerification(current, row)) return undefined;
+    await assertEvidenceStillCurrent(row.orgId, result.evidence);
     const [r] = await db
       .update(customerEmailDomains)
       .set({
@@ -706,6 +722,9 @@ async function commitVerification(
     }
     if (incumbentResult?.status !== 'fail') throw verifiedElsewhere();
   }
+  // The proof source must still be the one the check used (an Entra tenant
+  // proof or Google connection revoked/replaced during the check).
+  await assertEvidenceStillCurrent(row.orgId, evidence);
 
   let displaced: LossNotice | null = null;
   if (incumbentNow) {

@@ -7,6 +7,7 @@
  */
 import { hasDbAccessContext, withSystemDbAccessContext } from '../../../db';
 import { getDirectoryDomainsClient } from '../../googleClient';
+import { captureException } from '../../sentry';
 import { googleConnectionBinding } from './googleBinding';
 import { decryptConnectionKey, loadGoogleConnection } from '../../googleHelpers';
 import type {
@@ -60,7 +61,18 @@ export const googleDirectoryChecker: DomainVerificationChecker = {
         : await withSystemDbAccessContext(() => loadGoogleConnection(target.orgId), 'portalDomainVerification.loadGoogleConnection');
       if (!conn) return { status: 'fail', reason: 'connection_missing' };
 
-      const client = getDirectoryDomainsClient(decryptConnectionKey(conn), conn.adminEmail);
+      let key: string;
+      try {
+        key = decryptConnectionKey(conn);
+      } catch {
+        // Permanent until the connection is re-saved (e.g. after an encryption
+        // key rotation). Report a sanitized error: the original may carry key
+        // material. Still `unavailable`: the 7-day stale rule bounds it.
+        captureException(new Error('portal domain verification: Google connection key could not be decrypted'));
+        console.error(`[portalDomainVerification] google connection key for org ${target.orgId} could not be decrypted`);
+        return { status: 'unavailable', reason: 'google_unavailable' };
+      }
+      const client = getDirectoryDomainsClient(key, conn.adminEmail);
       const res = await withTimeout(
         Promise.resolve(client.domains.list({ customer: 'my_customer' }, { timeout: GOOGLE_REQUEST_TIMEOUT_MS })),
         GOOGLE_REQUEST_TIMEOUT_MS,
