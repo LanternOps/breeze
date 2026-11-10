@@ -662,7 +662,7 @@
       "explain": "Wisp, sizin yapmaya yetkili olduğunuz işlemler kapsamında çalışır. Devam etmek için kimliğinizi doğrulayın.",
       "code": "Kimlik doğrulayıcı kodu",
       "passkey": "Geçiş anahtarınızla onaylayacaksınız.",
-      "noFactor": "Wisp için bir geçiş anahtarı veya kimlik doğrulayıcı uygulaması gerekir. Önce profilinizde birini kurun.",
+      "noFactor": "Wisp için bir geçiş anahtarı veya kimlik doğrulayıcı uygulaması gerekir. Önce <profileLink>profilinizde</profileLink> birini kurun.",
       "noOrg": "Önce üst bölümden bir kuruluş seçin.",
       "confirm": "Onayla",
       "cancel": "İptal",
