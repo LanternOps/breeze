@@ -377,27 +377,30 @@ async function recordInTransaction(
                        and "pui"."entra_tenant_id" = ${tenantId})`,
       ))
       .returning({ id: portalUsers.id });
-    await db.insert(auditLogs).values({
-      orgId: other.orgId,
-      ...actor,
-      action: AUDIT_DISPLACED,
-      resourceType: 'client_ai_tenant_mapping',
-      resourceId: other.id,
-      resourceName: tenantId,
-      details: { tenantId, displacedByOrgId: input.orgId, wasProven },
-      result: 'success',
-    });
     // #11582: a PROVEN tenant was Microsoft sign-in for that org; if it was on
-    // there, its portal now falls back to password (D2). Same transaction, so a
-    // refused proof below rolls this row back with the displacement.
+    // there, its portal now falls back to password (D2). Both rows go in one
+    // statement inside the proof transaction, so a refused proof below rolls
+    // the fallback row back with the displacement.
     const fallback = wasProven ? await getPortalPasswordFallbackImpact(other.orgId) : null;
-    if (fallback) {
-      await db.insert(auditLogs).values({
-        ...portalPasswordFallbackAuditEvent(other.orgId, tenantId, 'tenant_displaced', fallback),
+    await db.insert(auditLogs).values([
+      {
+        orgId: other.orgId,
         ...actor,
-        result: 'success',
-      });
-    }
+        action: AUDIT_DISPLACED,
+        resourceType: 'client_ai_tenant_mapping',
+        resourceId: other.id,
+        resourceName: tenantId,
+        details: { tenantId, displacedByOrgId: input.orgId, wasProven },
+        result: 'success' as const,
+      },
+      ...(fallback
+        ? [{
+            ...portalPasswordFallbackAuditEvent(other.orgId, tenantId, 'tenant_displaced', fallback),
+            ...actor,
+            result: 'success' as const,
+          }]
+        : []),
+    ]);
     displaced = {
       orgId: other.orgId,
       partnerId: other.partnerId,
