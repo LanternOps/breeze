@@ -26,6 +26,8 @@ export const MAIN_BROKEN_PRS = 3;
 export const MAIN_BROKEN_WINDOW_MS = 6 * 3600_000;
 export const SUSPECTED_STALE_MS = 12 * 3600_000;
 const NOT_A_FLAKE_SIGNAL = new Set(['real', 'gate_fault']);
+// Test ids are free text: no mention, no issue reference in what is posted.
+const neutralKey = (k) => String(k).replace(/@/g, '').replace(/#(?=\d)/g, 'no. ');
 
 const iso = (t) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const ms = (s) => Date.parse(s);
@@ -62,7 +64,9 @@ export function updateBreakers(prev, { verdicts = [], mainRuns = [], queuePasses
     if (v.class === 'infra' && v.signature) {
       const b = find('outage', v.signature);
       if (b) {
-        b.until = iso(now + OUTAGE_HOLD_MS);
+        // Extend from the removal, so an old removal processed late (the
+        // runner was off) cannot hold the queue for another 20 minutes.
+        b.until = iso(Math.max(ms(b.until), Math.min(now, ms(v.at)) + OUTAGE_HOLD_MS));
         if (!b.prs.includes(v.pr)) b.prs.push(v.pr);
       } else {
         const prs = prsWithin('outage', v.signature, OUTAGE_WINDOW_MS);
@@ -162,6 +166,7 @@ export function breakerDecisions({ opened = [], confirmed = [] }, now) {
     });
   }
   for (const b of confirmed) {
+    const key = neutralKey(b.key);
     out.push({
       actionId: `breaker:main_broken:${b.key}:${b.openedAt}:issue`,
       kind: 'main_broken_confirmed',
@@ -172,12 +177,12 @@ export function breakerDecisions({ opened = [], confirmed = [] }, now) {
         {
           op: 'issue_upsert',
           args: {
-            title: `Queue blocked: ${b.key} fails on main`.slice(0, 250),
+            title: `Queue blocked: ${key} fails on main`.slice(0, 250),
             labels: ['ci-red'],
             body: [
               `The CI shepherd saw this test fail on both attempts in ${b.prs.length} merge-queue runs within 6 h, and it failed again in CI run ${b.mainRun} on main.`,
               '',
-              `Test: \`${b.key.replace(/`/g, "'")}\``,
+              `Test: \`${key.replace(/`/g, "'")}\``,
               '',
               'PRs that fail on it wait (label `ci-shepherd:wait-main`) until a merge-queue run passes it or this issue is closed.',
             ].join('\n'),

@@ -16,14 +16,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { apply, readMode } from './apply.mjs';
-import { parkInBreaker, updateBreakers } from './breakers.mjs';
+import { apply, readModeDetail } from './apply.mjs';
+import { parkInBreaker, setBreakerIssue, updateBreakers } from './breakers.mjs';
 import { classifyRun } from './classify.mjs';
 import { LABELS, decide, staleReasons, summarizeVerdict } from './decide.mjs';
 import { History } from './evidence.mjs';
 import { groupRunFor, headPushedAt, prSnapshot, recentRemovals, requiredJobIds, runFacts } from './facts.mjs';
 import { acquireLock, appendJsonl, loadState, readJsonl, releaseLock, saveState, tickBudget, writeJsonl } from './state.mjs';
-import { actOnBreakers, ingestSightings, sweepBreakers, sweepParked, sweepReadds, sweepResume, sweepStuck } from './sweeps.mjs';
+import { actOnBreakers, ingestSightings, settled, sweepBreakers, sweepParked, sweepReadds, sweepResume, sweepStuck } from './sweeps.mjs';
 import { createWriter, readOnlyGitHub } from './writer.mjs';
 
 const ms = (s) => Date.parse(s);
@@ -33,6 +33,7 @@ const VERDICT_DAYS = 7;
 const SIGHTING_DAYS = 30;
 const MAX_REMOVAL_FAILURES = 3;
 const MAX_PENDING_TRIES = 5;
+const REMOVAL_PAGES = 5;
 // The share of a tick's API budget sightings ingest may use. A completed CI
 // run costs several calls (jobs, artifacts, each failed test job's
 // annotations and log); one live shadow tick spent its whole 600 on ingest.
@@ -66,6 +67,8 @@ async function decideRemoval(t, removal) {
   if (!quick.length) {
     const up = updateBreakers(t.state.breakers, { verdicts: [summary] }, t.now);
     t.state.breakers = up.state;
+    // A breaker whose timer ran out here still owes its parked PRs a restore.
+    t.state.clearedBreakers = [...(t.state.clearedBreakers ?? []), ...up.cleared];
     await actOnBreakers(t, up);
   }
   const priorVerdicts = t.state.verdicts.filter((v) => v.pr === removal.pr && v.head === snapshot.headSha);
@@ -93,22 +96,32 @@ function prune(state, now) {
     state[map] = Object.fromEntries(Object.entries(state[map]).filter(([, at]) => !older(at, 2)));
   }
   state.selfOps = state.selfOps.filter((o) => !older(o.at, 1));
+  // Failure counts of removals that are now decided or out of the window.
+  state.failures = Object.fromEntries(Object.entries(state.failures).filter(([id]) => !state.seen[id] && Object.keys(state.seen).length < 100_000));
 }
 
+// Statuses: ok, degraded (ok, with errors in the summary), partial (left act
+// mid-apply), locked, off, hourly_budget_spent, budget_exceeded,
+// mode_unreadable, error. The CLI exits 0 only for ok, locked, off and
+// hourly_budget_spent, so runs.log's exit code shows every other one.
 export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () => Date.now(), exec, repoRoot, log = (l) => process.stdout.write(`${l}\n`) }) {
   const lock = acquireLock(stateDir, now);
   if (!lock.ok) {
-    log(`ci-shepherd tick locked (held since ${lock.heldSince})`);
+    log(`ci-shepherd tick status=locked held_since=${lock.heldSince}`);
     return { status: 'locked' };
   }
-  const state = loadState(stateDir);
   const decisionsPath = join(stateDir, 'decisions.jsonl');
   const sightingsPath = join(stateDir, 'sightings.jsonl');
   const startCalls = gh.calls;
   const summary = { status: 'ok', mode: null, removals: 0, decisions: {}, sweeps: {}, errors: [], budget: 0, calls: 0 };
-  const warn = (m) => summary.errors.push(m);
+  const error = (m) => summary.errors.push(m);
+  const record = (entry) => appendJsonl(decisionsPath, entry);
+  let state = null;
   try {
-    const { used, budget } = tickBudget(state, now);
+    const loaded = loadState(stateDir);
+    state = loaded.state;
+    if (loaded.corrupt) error(`state.json did not parse; kept as ${loaded.corrupt} and started over`);
+    const { budget } = tickBudget(state, now);
     summary.budget = budget;
     if (budget <= 0) {
       summary.status = 'hourly_budget_spent';
@@ -116,7 +129,15 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
     }
     gh.budget = gh.calls + budget;
     const ro = readOnlyGitHub(gh);
-    summary.mode = await readMode(ro, repo, { warn });
+    const start = await readModeDetail(ro, repo);
+    summary.mode = start.mode;
+    if (start.warning) error(start.warning);
+    if (start.degraded) {
+      // Unreadable is not "shadow": consuming removals now would record them
+      // as seen and an act-mode shepherd would never act on them.
+      summary.status = 'mode_unreadable';
+      return summary;
+    }
     if (summary.mode === 'off') {
       summary.status = 'off';
       return summary;
@@ -135,6 +156,7 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
       history: History.fromSightings(readJsonl(sightingsPath).filter((s) => now - ms(s.at) <= 14 * 86_400_000)),
       mode: summary.mode,
       lastSummary: null,
+      error,
     };
     t.snapshot = async (pr, withFiles = false) => {
       const s = await prSnapshot(t.gh, { repo, pr, withFiles });
@@ -144,24 +166,27 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
     const viewer = acting ? (await gh.rest('GET', 'user')).body?.login : null;
     if (acting && !viewer) throw new Error('cannot read the operator login');
     const writer = acting ? createWriter({ gh, exec, repo }) : null;
-    const record = (entry) => appendJsonl(decisionsPath, entry);
+    // Anything but a readable `act` ends act for the rest of this tick: no
+    // writer, read-only reads.
     const modeNow = async () => {
-      const m = await readMode(ro, repo, { warn });
-      if (m !== 'act') {
-        // Out of act for the rest of this tick: no writer, read-only reads.
-        t.mode = m;
+      const r = await readModeDetail(ro, repo);
+      if (r.mode !== 'act') {
+        if (t.mode === 'act') error(`left act mid-tick: ${r.warning ?? `mode is now ${r.mode}`}`);
+        t.mode = r.mode;
         t.gh = ro;
       }
-      return m;
+      return r.mode;
     };
 
     // apply + act-mode persistence: a decision is pending (saved) before its
-    // first write and leaves the list once applied or skipped.
+    // first write and leaves the list once applied or skipped. A main CI
+    // dispatch is never pending: a crash after it must not dispatch twice, and
+    // any later main run decides the breaker anyway.
     t.act = async (decision, source) => {
       summary.decisions[decision.kind] = (summary.decisions[decision.kind] ?? 0) + 1;
       const writes = t.mode === 'act' && decision.kind !== 'noop' && decision.mutations.length > 0;
       const key = `${decision.actionId}#${decision.kind}`;
-      if (writes && !state.pending.some((p) => p.key === key)) {
+      if (writes && decision.kind !== 'dispatch_main' && !state.pending.some((p) => p.key === key)) {
         state.pending.push({ key, decision, source, since: iso(now), tries: 0 });
         saveState(stateDir, state);
       }
@@ -184,13 +209,16 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
           record: (e) => record({ ...e, source }),
         });
       } catch (e) {
-        if (entry) entry.tries++;
         if (e.name === 'BudgetExceeded') throw e;
-        summary.errors.push(`${decision.actionId} ${decision.kind}: ${e.message}`);
+        if (entry) entry.tries++;
+        error(`${decision.actionId} ${decision.kind}: ${e.message}`);
+        record({ ...decision, mode: t.mode, status: 'error', reason: e.message, source, tries: entry?.tries ?? null });
         return { status: 'error', reason: e.message };
       }
       if (entry && res.status !== 'partial') state.pending = state.pending.filter((p) => p.key !== key);
       if (res.status === 'partial') summary.status = 'partial';
+      if (decision.pr === null && settled(res)) state.done[`${t.mode}:${decision.actionId}`] = iso(now);
+      if (res.issue && decision.breaker) state.breakers = setBreakerIssue(state.breakers, decision.breaker.key, res.issue);
       return res;
     };
 
@@ -198,19 +226,29 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
     if (acting) {
       for (const p of [...state.pending]) {
         if (p.tries >= MAX_PENDING_TRIES) {
-          summary.errors.push(`dropped pending ${p.key} after ${p.tries} tries`);
+          error(`abandoned pending ${p.key} after ${p.tries} failed tries; the PR may be half-applied`);
+          record({ ...p.decision, mode: t.mode, status: 'abandoned', source: `pending:${p.source}`, tries: p.tries });
           state.pending = state.pending.filter((x) => x !== p);
           continue;
         }
+        if (t.mode !== 'act') break;
         await t.act(p.decision, `pending:${p.source}`);
       }
     }
 
     // 4. New removals.
     const since = iso((state.cursor ? ms(state.cursor) : now) - LOOKBACK_MS);
-    const removals = (await recentRemovals(t.gh, { repo, since, maxPages: 3 })).filter((r) => !state.seen[r.id]);
+    const stats = {};
+    const removals = (await recentRemovals(t.gh, { repo, since, maxPages: REMOVAL_PAGES, stats })).filter((r) => !state.seen[r.id]);
+    if (stats.complete === false) error(`removal scan stopped at ${REMOVAL_PAGES} pages before ${since}; older removals were not read`);
     let firstUnfinished = null;
     for (const removal of removals) {
+      // Act ended mid-tick: leave the rest for the next act tick rather than
+      // record them as seen in shadow.
+      if (acting && t.mode !== 'act') {
+        firstUnfinished ??= removal;
+        break;
+      }
       try {
         const { decision, summary: s } = await decideRemoval(t, removal);
         t.lastSummary = s;
@@ -226,51 +264,83 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
           throw e;
         }
         state.failures[removal.id] = (state.failures[removal.id] ?? 0) + 1;
-        summary.errors.push(`removal ${removal.id} (PR ${removal.pr}): ${e.message}`);
-        if (state.failures[removal.id] >= MAX_REMOVAL_FAILURES) state.seen[removal.id] = removal.at;
-        else firstUnfinished ??= removal;
+        if (state.failures[removal.id] >= MAX_REMOVAL_FAILURES) {
+          state.seen[removal.id] = removal.at;
+          error(`gave up on removal ${removal.id} (PR ${removal.pr}) after ${MAX_REMOVAL_FAILURES} failed ticks: ${e.message}`);
+          record({ actionId: `${removal.pr}:r:${removal.id}`, kind: 'noop', pr: removal.pr, removalId: removal.id, removalAt: removal.at, mutations: [], reasons: ['gave_up'], mode: t.mode, status: 'error', reason: e.message, source: 'removal', at: iso(now) });
+        } else {
+          error(`removal ${removal.id} (PR ${removal.pr}), try ${state.failures[removal.id]}: ${e.message}`);
+          firstUnfinished ??= removal;
+        }
       }
     }
     state.cursor = firstUnfinished ? firstUnfinished.at : iso(now);
 
-    // 5. Sweeps. Breakers read the main-run and queue-run evidence the
-    // previous tick's ingest collected.
-    const evidence = state.breakerEvidence ?? { mainRuns: [], queuePasses: [] };
-    await sweepBreakers(t, evidence);
-    state.breakerEvidence = { mainRuns: [], queuePasses: [] };
-    await sweepStuck(t);
-    await sweepReadds(t);
-    await sweepParked(t);
-    await sweepResume(t);
+    // 5. Sweeps, each isolated: one failing does not stop the others.
+    // Breakers read the evidence earlier ingests collected.
+    const sweep = async (name, fn) => {
+      try {
+        await fn();
+      } catch (e) {
+        if (e.name === 'BudgetExceeded') throw e;
+        error(`${name}: ${e.message}`);
+      }
+    };
+    await sweep('breakers', async () => {
+      const evidence = state.breakerEvidence ?? { mainRuns: [], queuePasses: [] };
+      await sweepBreakers(t, evidence);
+      state.breakerEvidence = { mainRuns: [], queuePasses: [] };
+    });
+    await sweep('stuck entries', () => sweepStuck(t));
+    await sweep('re-adds', () => sweepReadds(t));
+    await sweep('parked PRs', () => sweepParked(t));
+    await sweep('resume label', () => sweepResume(t));
 
     // 6. Sightings last, on what is left of the budget and at most
     // INGEST_SHARE of it: evidence can wait a tick, queue decisions cannot.
-    const ingestLimit = Math.min(gh.budget, gh.calls + Math.floor(budget * INGEST_SHARE));
-    const ingest = await ingestSightings(t, { callLimit: ingestLimit });
-    summary.sweeps.ingested = ingest.runs;
-    summary.sweeps.sightings = ingest.sightings;
-    if (ingest.deferred) summary.sweeps.ingestDeferred = ingest.deferred;
-    state.breakerEvidence = { mainRuns: ingest.mainRuns, queuePasses: ingest.queuePasses };
+    await sweep('ingest', async () => {
+      const ingestLimit = Math.min(gh.budget, gh.calls + Math.floor(budget * INGEST_SHARE));
+      const ingest = await ingestSightings(t, { callLimit: ingestLimit });
+      summary.sweeps.ingested = ingest.runs;
+      summary.sweeps.sightings = ingest.sightings;
+      if (ingest.deferred) summary.sweeps.ingestDeferred = ingest.deferred;
+    });
     return summary;
   } catch (e) {
-    if (e.name !== 'BudgetExceeded') throw e;
-    summary.status = 'budget_exceeded';
+    if (e.name === 'BudgetExceeded') {
+      summary.status = 'budget_exceeded';
+      return summary;
+    }
+    // Anything else: report it in the summary line (the last line run.sh
+    // logs) instead of letting a stack trace replace it.
+    summary.status = 'error';
+    error(`tick failed: ${e.message}`);
     return summary;
   } finally {
+    if (summary.status === 'ok' && summary.errors.length) summary.status = 'degraded';
     summary.calls = gh.calls - startCalls;
-    if (summary.calls > 0) state.calls.push({ at: iso(now), n: summary.calls });
-    prune(state, now);
-    saveState(stateDir, state);
-    if (ms(state.sightingsPrunedAt ?? 0) < now - 86_400_000) {
-      const keep = readJsonl(sightingsPath).filter((s) => now - ms(s.at) <= SIGHTING_DAYS * 86_400_000);
-      writeJsonl(sightingsPath, keep);
-      state.sightingsPrunedAt = iso(now);
-      saveState(stateDir, state);
+    if (state) {
+      if (summary.calls > 0) state.calls.push({ at: iso(now), n: summary.calls });
+      prune(state, now);
+      try {
+        saveState(stateDir, state);
+        if (ms(state.sightingsPrunedAt ?? 0) < now - 86_400_000) {
+          const keep = readJsonl(sightingsPath).filter((s) => now - ms(s.at) <= SIGHTING_DAYS * 86_400_000);
+          writeJsonl(sightingsPath, keep);
+          state.sightingsPrunedAt = iso(now);
+          saveState(stateDir, state);
+        }
+      } catch (e) {
+        summary.status = 'error';
+        error(`saving state failed: ${e.message}`);
+      }
     }
     releaseLock(stateDir, lock.token);
     log(renderSummary(summary));
   }
 }
+
+export const OK_STATUSES = new Set(['ok', 'locked', 'off', 'hourly_budget_spent']);
 
 export function renderSummary(s) {
   const decisions = Object.entries(s.decisions)

@@ -78,7 +78,8 @@ export function summarizeVerdict(verdict, facts = null) {
 
 export function isSelfRemoval(ev, pr, selfOps = []) {
   if (ev.type !== 'removed' || ev.reason !== 'manual') return false;
-  return selfOps.some((o) => o.pr === pr && o.op === 'dequeue' && ms(ev.at) >= ms(o.at) - 1000 && ms(ev.at) - ms(o.at) <= SELF_OP_WINDOW_MS);
+  // GitHub stamps the event with its own clock: allow a skew of a minute.
+  return selfOps.some((o) => o.pr === pr && o.op === 'dequeue' && ms(ev.at) >= ms(o.at) - 60_000 && ms(ev.at) - ms(o.at) <= SELF_OP_WINDOW_MS);
 }
 
 // failed_checks removals of the PR's current head up to and including this one.
@@ -263,10 +264,12 @@ export function stuckDecision({ snapshot, run, priorStuck = 0, now }) {
 
 // The `ci-shepherd:resume` label releases a hold. The budget is unchanged, so
 // the next failed_checks removal of this head is held again.
-export function resumeDecision(snapshot, now) {
+// `holds` (stuck-entry holds of this head) keeps a second resume after a
+// second stuck hold from reusing the first one's action id.
+export function resumeDecision(snapshot, now, { holds = 0 } = {}) {
   const n = headRemovals(snapshot, now);
   return {
-    ...sweepBase(snapshot, `${snapshot.pr}:${snapshot.headSha.slice(0, 12)}:resume:n${n}`, now),
+    ...sweepBase(snapshot, `${snapshot.pr}:${snapshot.headSha.slice(0, 12)}:resume:n${n}s${holds}`, now),
     kind: 'resume',
     reasons: ['ci-shepherd:resume label'],
     mutations: [

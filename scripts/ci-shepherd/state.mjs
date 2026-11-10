@@ -6,7 +6,7 @@
 //   lock            {token, at}; older than 15 min is stale and taken over
 //   decisions.jsonl one line per decision applied or recorded (shadow)
 //   sightings.jsonl flake sightings from completed CI runs (evidence.mjs)
-import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, closeSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -31,26 +31,32 @@ export const emptyState = () => ({
   selfOps: [],
   stuck: {},
   stuckCount: {},
+  stuckHolds: {},
+  clearedBreakers: [],
+  breakerEvidence: { mainRuns: [], queuePasses: [] },
   resumed: {},
   ingested: {},
   done: {},
   calls: [],
 });
 
+// { state, corrupt }. A state.json that does not parse is kept beside it as
+// state.json.corrupt-<ms> and the tick starts over; `corrupt` names that file
+// so the tick can report it. Markers on the PRs keep act mode from repeating
+// a comment it already posted.
 export function loadState(dir) {
   const path = join(dir, 'state.json');
-  if (!existsSync(path)) return emptyState();
+  if (!existsSync(path)) return { state: emptyState(), corrupt: null };
   const text = readFileSync(path, 'utf8');
-  let parsed;
   try {
-    parsed = JSON.parse(text);
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+    return { state: { ...emptyState(), ...parsed }, corrupt: null };
   } catch {
-    // Keep the bad file for a human; start over. Markers on the PRs keep act
-    // mode from repeating a comment it already posted.
-    renameSync(path, `${path}.corrupt-${Date.now()}`);
-    return emptyState();
+    const kept = `${path}.corrupt-${Date.now()}`;
+    renameSync(path, kept);
+    return { state: emptyState(), corrupt: kept };
   }
-  return { ...emptyState(), ...parsed };
 }
 
 export function saveState(dir, state) {
@@ -61,8 +67,21 @@ export function saveState(dir, state) {
   renameSync(tmp, path);
 }
 
+// A killed writer can leave a last line without its newline; start a new
+// line rather than glue this record onto the torn one.
 export function appendJsonl(path, obj) {
-  appendFileSync(path, `${JSON.stringify(obj)}\n`);
+  let lead = '';
+  if (existsSync(path)) {
+    const size = statSync(path).size;
+    if (size > 0) {
+      const fd = openSync(path, 'r');
+      const b = Buffer.alloc(1);
+      readSync(fd, b, 0, 1, size - 1);
+      closeSync(fd);
+      if (b[0] !== 0x0a) lead = '\n';
+    }
+  }
+  appendFileSync(path, `${lead}${JSON.stringify(obj)}\n`);
 }
 
 export function readJsonl(path) {
@@ -85,30 +104,45 @@ export function writeJsonl(path, list) {
   renameSync(tmp, path);
 }
 
-// { ok: true, token } or { ok: false, heldSince }.
+// { ok: true, token } or { ok: false, heldSince }. The body is written to a
+// temp file and linked/renamed into place, so a reader never sees a half
+// lock. An unreadable lock counts as held until its mtime is stale.
 export function acquireLock(dir, now, staleMs = LOCK_STALE_MS) {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, 'lock');
   const token = randomUUID();
-  const body = JSON.stringify({ token, at: new Date(now).toISOString(), pid: process.pid });
+  const tmp = `${path}.${token}`;
+  writeFileSync(tmp, JSON.stringify({ token, at: new Date(now).toISOString(), pid: process.pid }));
   try {
-    const fd = openSync(path, 'wx');
-    writeFileSync(fd, body);
-    closeSync(fd);
-    return { ok: true, token };
-  } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
+    try {
+      // link() fails with EEXIST when a lock is there: atomic create.
+      linkSync(tmp, path);
+      return { ok: true, token };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    let heldAt = NaN;
+    try {
+      heldAt = Date.parse(JSON.parse(readFileSync(path, 'utf8')).at);
+    } catch {
+      try {
+        heldAt = statSync(path).mtimeMs;
+      } catch {
+        heldAt = NaN;
+      }
+    }
+    if (!Number.isNaN(heldAt) && now - heldAt < staleMs) return { ok: false, heldSince: new Date(heldAt).toISOString() };
+    renameSync(tmp, path);
+    // Two takers of one stale lock: only the one whose token landed proceeds.
+    const mine = JSON.parse(readFileSync(path, 'utf8')).token === token;
+    return mine ? { ok: true, token, tookStale: Number.isNaN(heldAt) ? 'unreadable' : new Date(heldAt).toISOString() } : { ok: false, heldSince: 'contended' };
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Renamed into place, or already gone.
+    }
   }
-  let held = null;
-  try {
-    held = JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    held = null;
-  }
-  const at = held ? Date.parse(held.at) : NaN;
-  if (!Number.isNaN(at) && now - at < staleMs) return { ok: false, heldSince: held.at };
-  writeFileSync(path, body);
-  return { ok: true, token, tookStale: held?.at ?? 'unreadable' };
 }
 
 export function releaseLock(dir, token) {

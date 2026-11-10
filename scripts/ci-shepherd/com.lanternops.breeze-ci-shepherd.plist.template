@@ -21,10 +21,14 @@
     <string>__USER__</string>
     <key>PATH</key>
     <string>__PATH__</string>
+    <key>BREEZE_CI_SHEPHERD_HOME</key>
+    <string>__SHEPHERD_HOME__</string>
+    <key>BREEZE_CI_SHEPHERD_STATE</key>
+    <string>__STATE_DIR__</string>
   </dict>
   <key>StandardOutPath</key>
-  <string>__HOME__/.local/state/breeze-ci-shepherd/launchd.out.log</string>
+  <string>__STATE_DIR__/launchd.out.log</string>
   <key>StandardErrorPath</key>
-  <string>__HOME__/.local/state/breeze-ci-shepherd/launchd.err.log</string>
+  <string>__STATE_DIR__/launchd.err.log</string>
 </dict>
 </plist>

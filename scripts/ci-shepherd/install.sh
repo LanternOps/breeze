@@ -44,6 +44,8 @@ render() {
   t="$(replace_all "$t" __HOME__ "$(xml_escape "$HOME")")"
   t="$(replace_all "$t" __USER__ "$(xml_escape "${USER:-$(id -un)}")")"
   t="$(replace_all "$t" __PATH__ "$(xml_escape "$PATH")")"
+  t="$(replace_all "$t" __STATE_DIR__ "$(xml_escape "$STATE_DIR")")"
+  t="$(replace_all "$t" __SHEPHERD_HOME__ "$(xml_escape "$HOME_DIR")")"
   printf '%s\n' "$t"
 }
 
@@ -60,5 +62,7 @@ if [ ! -d "$HOME_DIR/checkout/.git" ]; then
   git -C "$HOME_DIR/checkout" config credential.helper '!gh auth git-credential'
 fi
 render > "$PLIST"
+# Re-install: unload a loaded copy first (bootstrap refuses a loaded label).
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "installed $PLIST"

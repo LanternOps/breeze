@@ -6,11 +6,24 @@
 import { apply, readMode } from './apply.mjs';
 import { LABELS } from './decide.mjs';
 import { headPushedAt, prSnapshot } from './facts.mjs';
+import { acquireLock, loadState, releaseLock, saveState } from './state.mjs';
 import { createWriter, readOnlyGitHub } from './writer.mjs';
 
 const iso = (t) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-export async function probe({ gh, repo, pr, exec, now = Date.now(), clock = () => Date.now(), record = () => {} }) {
+// It holds the tick's lock (no tick runs beside it) and records its dequeue
+// in the tick's state, so the next tick does not read it as human intent.
+export async function probe({ gh, repo, pr, exec, stateDir, now = Date.now(), clock = () => Date.now(), record = () => {} }) {
+  const lock = acquireLock(stateDir, now);
+  if (!lock.ok) return { status: 'refused', reason: `a tick holds the lock (since ${lock.heldSince})` };
+  try {
+    return await probeLocked({ gh, repo, pr, exec, stateDir, now, clock, record });
+  } finally {
+    releaseLock(stateDir, lock.token);
+  }
+}
+
+async function probeLocked({ gh, repo, pr, exec, stateDir, now, clock, record }) {
   const ro = readOnlyGitHub(gh);
   const mode = await readMode(ro, repo);
   if (mode !== 'act') return { status: 'refused', reason: `mode is ${mode}, not act` };
@@ -22,7 +35,8 @@ export async function probe({ gh, repo, pr, exec, now = Date.now(), clock = () =
   if (!snap.labels.includes(LABELS.probe)) return { status: 'refused', reason: `PR lacks the ${LABELS.probe} label` };
   if (snap.state !== 'OPEN' || snap.isFork) return { status: 'refused', reason: 'PR is not an open same-repo PR' };
   const viewer = (await gh.rest('GET', 'user')).body?.login;
-  const selfOps = [];
+  const { state } = loadState(stateDir);
+  const selfOps = state.selfOps;
   const ctx = {
     mode,
     repo,
@@ -32,7 +46,10 @@ export async function probe({ gh, repo, pr, exec, now = Date.now(), clock = () =
     modeNow: () => readMode(ro, repo),
     clock,
     selfOps,
-    onSelfOp: (op) => selfOps.push(op),
+    onSelfOp: (op) => {
+      selfOps.push(op);
+      saveState(stateDir, state);
+    },
     record,
   };
   const base = { pr, head: snap.headSha, class: null, signature: null, at: iso(now), expect: { state: 'OPEN', head: snap.headSha } };

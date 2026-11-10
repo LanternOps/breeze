@@ -7,14 +7,17 @@ HOME_DIR=${BREEZE_CI_SHEPHERD_HOME:-$HOME/.local/share/breeze-ci-shepherd}
 STATE_DIR=${BREEZE_CI_SHEPHERD_STATE:-$HOME/.local/state/breeze-ci-shepherd}
 mkdir -p "$STATE_DIR" "$HOME_DIR"
 
+# Each step fails the run on its own: `set -e` is off inside the `if` below,
+# and a failed fetch must not leave the tick running yesterday's code.
 prepare() {
   if [ ! -d "$HOME_DIR/checkout/.git" ]; then
-    git clone --filter=blob:none https://github.com/LanternOps/breeze.git "$HOME_DIR/checkout"
-    git -C "$HOME_DIR/checkout" config credential.helper '!gh auth git-credential'
+    git clone --filter=blob:none https://github.com/LanternOps/breeze.git "$HOME_DIR/checkout" || { echo "ci-shepherd run: clone failed"; return 1; }
+    git -C "$HOME_DIR/checkout" config credential.helper '!gh auth git-credential' || { echo "ci-shepherd run: credential config failed"; return 1; }
   fi
-  git -C "$HOME_DIR/checkout" fetch --quiet origin main
-  git -C "$HOME_DIR/checkout" checkout --quiet --detach FETCH_HEAD
-  GH_TOKEN="$(gh auth token)"
+  git -C "$HOME_DIR/checkout" fetch --quiet origin main || { echo "ci-shepherd run: fetch of main failed"; return 1; }
+  git -C "$HOME_DIR/checkout" checkout --quiet --detach FETCH_HEAD || { echo "ci-shepherd run: checkout failed"; return 1; }
+  GH_TOKEN="$(gh auth token)" || { echo "ci-shepherd run: gh auth token failed"; return 1; }
+  [ -n "$GH_TOKEN" ] || { echo "ci-shepherd run: gh auth token is empty"; return 1; }
   export GH_TOKEN
 }
 

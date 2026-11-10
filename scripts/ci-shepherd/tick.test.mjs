@@ -27,6 +27,8 @@ const iso = (t) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const RUNNER_LOST = { name: 'Integration Tests (shard 11/16)', step: 'Run integration tests', annotations: ['The hosted runner lost communication with the server.'] };
 const UNKNOWN = { name: 'Security Audit', step: 'Run audit', annotations: [] };
 
+const tmpState = () => mkdtempSync(join(tmpdir(), 'ci-shepherd-state-'));
+
 function setup({ mode = null } = {}) {
   const world = createWorld({ mode, now: T0 });
   const gh = createGitHub({ token: 'test', fetchImpl: world.fetchImpl, budget: 100_000 });
@@ -36,6 +38,28 @@ function setup({ mode = null } = {}) {
   const state = () => JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'));
   const writesOf = (op, pr) => world.writes.filter((x) => x.op === op && (pr === undefined || x.pr === pr));
   return { world, gh, stateDir, run, decisions, state, writesOf };
+}
+
+// PR 107: in the queue 40 min, its CI run completed 10 min ago with no CI
+// Success job (the stuck-entry sweep's case).
+function stuckPr(env) {
+  const { world } = env;
+  world.addPr(107, { queue: { state: 'QUEUED', position: 2, enqueuedAt: iso(T0 - 40 * MIN), groupSha: 'feed'.repeat(10) } });
+  world.runs.push({
+    id: 7007,
+    run_attempt: 1,
+    head_sha: 'feed'.repeat(10),
+    head_branch: `gh-readonly-queue/main/pr-107-${'c'.repeat(40)}`,
+    head_repository: { full_name: REPO },
+    event: 'merge_group',
+    status: 'completed',
+    conclusion: 'failure',
+    path: '.github/workflows/ci.yml',
+    created_at: iso(T0 - 40 * MIN),
+    updated_at: iso(T0 - 10 * MIN),
+    pull_requests: [],
+    jobs: [{ id: 70071, name: 'Lint', run_attempt: 1, conclusion: 'success', started_at: iso(T0 - 39 * MIN), completed_at: iso(T0 - 30 * MIN), steps: [], annotations: [], log: null }],
+  });
 }
 
 // A world where every kind of write would be due: a real failure (hold), an
@@ -53,22 +77,7 @@ function busyWorld(env) {
     world.removeFailed(n, { at: iso(T0 - off * MIN), job: RUNNER_LOST });
   }
   world.addPr(106, { labels: [LABELS.hold, LABELS.resume], autoMerge: false });
-  world.addPr(107, { queue: { state: 'QUEUED', position: 2, enqueuedAt: iso(T0 - 40 * MIN), groupSha: 'feed'.repeat(10) } });
-  world.runs.push({
-    id: 7007,
-    run_attempt: 1,
-    head_sha: 'feed'.repeat(10),
-    head_branch: `gh-readonly-queue/main/pr-107-${'c'.repeat(40)}`,
-    head_repository: { full_name: REPO },
-    event: 'merge_group',
-    status: 'completed',
-    conclusion: 'failure',
-    path: '.github/workflows/ci.yml',
-    created_at: iso(T0 - 40 * MIN),
-    updated_at: iso(T0 - 10 * MIN),
-    pull_requests: [],
-    jobs: [{ id: 70071, name: 'Lint', run_attempt: 1, conclusion: 'success', started_at: iso(T0 - 39 * MIN), completed_at: iso(T0 - 30 * MIN), steps: [], annotations: [], log: null }],
-  });
+  stuckPr(env);
 }
 
 test('shadow makes no write call, and records what it would do (one line per removal)', async () => {
@@ -207,16 +216,20 @@ test('act: the mode flipping to shadow mid-apply stops with partial; the next ac
   env.world.addPr(101);
   env.world.removeFailed(101, { at: iso(T0 - 10 * MIN) });
   env.world.reAdd(101, iso(T0 - 9 * MIN));
+  env.world.addPr(102);
+  const later = env.world.removeFailed(102, { at: iso(T0 - 8 * MIN) });
   const s1 = await env.run();
   assert.equal(s1.status, 'partial');
   assert.equal(env.writesOf('disable_auto_merge').length, 1);
   assert.equal(env.writesOf('dequeue').length, 0, 'stopped before the next mutation');
+  assert.equal(env.state().seen[later.id], undefined, 'a removal after the flip is left for the next act tick, not consumed in shadow');
   const s2 = await env.run();
   assert.equal(s2.mode, 'act');
-  assert.equal(env.writesOf('comment_post').length, 1);
-  assert.equal(env.writesOf('dequeue').length, 1);
-  assert.equal(env.writesOf('label_add').length, 1);
-  assert.equal(env.writesOf('comment_edit').length, 1);
+  assert.equal(env.writesOf('comment_post', 101).length, 1);
+  assert.equal(env.writesOf('dequeue', 101).length, 1);
+  assert.equal(env.writesOf('label_add', 101).length, 1);
+  assert.equal(env.writesOf('comment_edit', 101).length, 1);
+  assert.equal(env.writesOf('label_add', 102).length, 1, 'the removal left over is decided in act');
 });
 
 test('an invalid or unreadable mode value means shadow', async () => {
@@ -389,17 +402,17 @@ test('summarizeVerdict keeps only untouched ids that failed both attempts', () =
 test('probe refuses outside act mode or without the probe label, and runs hold then resume in act', async () => {
   const shadow = createWorld({ mode: 'shadow' });
   shadow.addPr(401, { labels: [LABELS.probe] });
-  const r1 = await probe({ gh: createGitHub({ token: 't', fetchImpl: shadow.fetchImpl }), repo: REPO, pr: 401, exec: shadow.exec, now: T0, clock: () => T0 });
+  const r1 = await probe({ gh: createGitHub({ token: 't', fetchImpl: shadow.fetchImpl }), repo: REPO, pr: 401, exec: shadow.exec, stateDir: tmpState(), now: T0, clock: () => T0 });
   assert.equal(r1.status, 'refused');
   assert.deepEqual(shadow.writeCalls(), []);
   const nolabel = createWorld({ mode: 'act' });
   nolabel.addPr(401);
-  const r2 = await probe({ gh: createGitHub({ token: 't', fetchImpl: nolabel.fetchImpl }), repo: REPO, pr: 401, exec: nolabel.exec, now: T0, clock: () => T0 });
+  const r2 = await probe({ gh: createGitHub({ token: 't', fetchImpl: nolabel.fetchImpl }), repo: REPO, pr: 401, exec: nolabel.exec, stateDir: tmpState(), now: T0, clock: () => T0 });
   assert.equal(r2.status, 'refused');
   assert.deepEqual(nolabel.writeCalls(), []);
   const act = createWorld({ mode: 'act' });
   act.addPr(401, { labels: [LABELS.probe], queue: { state: 'QUEUED', position: 1 } });
-  const r3 = await probe({ gh: createGitHub({ token: 't', fetchImpl: act.fetchImpl }), repo: REPO, pr: 401, exec: act.exec, now: T0, clock: () => T0 });
+  const r3 = await probe({ gh: createGitHub({ token: 't', fetchImpl: act.fetchImpl }), repo: REPO, pr: 401, exec: act.exec, stateDir: tmpState(), now: T0, clock: () => T0 });
   assert.equal(r3.status, 'applied', JSON.stringify(r3));
   assert.deepEqual(
     act.writes.map((w) => w.op),
@@ -425,4 +438,207 @@ test('CLI: tick runs one shadow tick through main; probe without --pr exits 2 be
     process.stderr.write = stderr;
   }
   assert.equal(made, 0);
+});
+
+// ── Review follow-ups ────────────────────────────────────────────────────
+
+const holdWorld = (env, n = 101) => {
+  env.world.addPr(n);
+  const r = env.world.removeFailed(n, { at: iso(T0 - 10 * MIN) });
+  env.world.reAdd(n, iso(T0 - 9 * MIN));
+  return r;
+};
+
+test('act: a crash after a successful dequeue resumes, not skipped as a human removal', async () => {
+  const env = setup({ mode: 'act' });
+  holdWorld(env);
+  env.world.failOnce('label_add');
+  await env.run();
+  assert.equal(env.writesOf('dequeue').length, 1);
+  assert.equal(env.writesOf('label_add').length, 0);
+  // GitHub logged the dequeue as a manual removal, stamped 30 s before the
+  // shepherd's own clock (server skew): still the shepherd's own.
+  const ev = env.world.prs.get(101).events.at(-1);
+  assert.equal(ev.reason, 'manual');
+  ev.createdAt = iso(T0 - 30_000);
+  await env.run();
+  assert.equal(env.writesOf('label_add').length, 1);
+  assert.equal(env.writesOf('comment_post').length, 1);
+  assert.equal(parseMarkers(env.world.prs.get(101).comments, { viewer: 'operator' })[0].status, 'done');
+});
+
+test('a marker on the second page of comments is found: no duplicate comment', async () => {
+  const env = setup({ mode: 'act' });
+  holdWorld(env);
+  const pr = env.world.prs.get(101);
+  for (let i = 0; i < 150; i++) pr.comments.push({ id: 90_000 + i, author: 'someone', body: `comment ${i}` });
+  env.world.failOnce('dequeue');
+  await env.run();
+  assert.ok(pr.comments.findIndex((c) => c.author === 'operator') >= 100, 'the marker sits on page 2');
+  await env.run();
+  assert.equal(env.writesOf('comment_post').length, 1);
+  assert.equal(env.writesOf('dequeue').length, 1);
+});
+
+test('shadow then act: a resume label seen in shadow is still applied once act starts', async () => {
+  const env = setup({ mode: 'shadow' });
+  env.world.addPr(106, { labels: [LABELS.hold, LABELS.resume], autoMerge: false });
+  await env.run();
+  assert.ok(env.decisions().some((l) => l.kind === 'resume' && l.status === 'shadow'));
+  env.world.mode = 'act';
+  env.world.clock += 5 * MIN;
+  await env.run();
+  assert.equal(env.writesOf('label_remove', 106).length, 2, 'hold and resume labels removed');
+  assert.equal(env.writesOf('enqueue', 106).length, 1);
+  assert.deepEqual(env.world.prs.get(106).labels, []);
+});
+
+test('act: outage backs off the third PR; a breaker that expires inside a later removal still restores it', async () => {
+  const env = setup({ mode: 'act' });
+  for (const [n, off] of [[103, 8], [104, 7], [105, 6]]) {
+    env.world.addPr(n);
+    env.world.removeFailed(n, { at: iso(T0 - off * MIN), job: RUNNER_LOST });
+  }
+  await env.run();
+  const pr = env.world.prs.get(105);
+  assert.ok(pr.labels.includes(LABELS.backoff));
+  assert.equal(pr.autoMerge, false);
+  // 25 min later a real failure on another PR is decided first in the tick:
+  // its breaker update expires the outage. The parked PR is restored anyway.
+  env.world.clock = T0 + 25 * MIN;
+  env.world.addPr(110);
+  env.world.removeFailed(110, { at: iso(T0 + 24 * MIN) });
+  await env.run();
+  assert.equal(env.writesOf('enqueue', 105).length, 1);
+  assert.ok(!pr.labels.includes(LABELS.backoff));
+  assert.equal(env.state().clearedBreakers.length, 0);
+});
+
+test('apply: a newer removal supersedes the decision; skipped with no write', async () => {
+  const world = createWorld({ mode: 'act', now: T0 });
+  const gh = createGitHub({ token: 't', fetchImpl: world.fetchImpl });
+  world.addPr(101);
+  const r = world.removeFailed(101, { at: iso(T0 - 10 * MIN) });
+  const snapshot = async (pr) => {
+    const s = await prSnapshot(gh, { repo: REPO, pr, withFiles: false });
+    return { ...s, headPushedAt: await headPushedAt(gh, { repo: REPO, headSha: s.headSha }) };
+  };
+  const d = decide({ removal: { pr: 101, id: r.id, at: r.at, reason: 'failed_checks' }, snapshot: await snapshot(101), verdict: { class: 'unknown', run: r.runId, attempt: 1 }, now: T0 });
+  world.removeFailed(101, { at: iso(T0 - 2 * MIN) });
+  const res = await apply(gh, d, { mode: 'act', repo: REPO, viewer: 'operator', writer: createWriter({ gh, exec: world.exec, repo: REPO }), reread: snapshot, modeNow: async () => 'act', clock: () => T0, selfOps: [] });
+  assert.deepEqual(res, { status: 'skipped', reason: 'newer_removal' });
+  assert.deepEqual(world.writeCalls(), []);
+  assert.deepEqual(world.execs, []);
+});
+
+test('act: a pending decision that keeps failing is abandoned after 5 tries, with a decisions.jsonl line', async () => {
+  const env = setup({ mode: 'act' });
+  holdWorld(env);
+  for (let i = 0; i < 10; i++) env.world.failOnce('comment_post');
+  for (let i = 0; i < 6; i++) {
+    await env.run();
+    env.world.clock += MIN;
+  }
+  assert.equal(env.state().pending.length, 0);
+  const abandoned = env.decisions().filter((l) => l.status === 'abandoned');
+  assert.equal(abandoned.length, 1);
+  assert.equal(abandoned[0].pr, 101);
+  assert.equal(env.decisions().filter((l) => l.status === 'error').length, 5);
+});
+
+test('act: a stuck re-queue whose enqueue failed after the dequeue is completed by the next tick', async () => {
+  const env = setup({ mode: 'act' });
+  stuckPr(env);
+  env.world.failOnce('enqueue');
+  await env.run();
+  assert.equal(env.writesOf('dequeue', 107).length, 1);
+  assert.equal(env.writesOf('enqueue', 107).length, 0);
+  await env.run();
+  assert.equal(env.writesOf('enqueue', 107).length, 1);
+  assert.equal(env.writesOf('comment_post', 107).length, 1);
+});
+
+test('act: a held PR that gets a new head loses its shepherd labels', async () => {
+  const env = setup({ mode: 'act' });
+  holdWorld(env);
+  await env.run();
+  const pr = env.world.prs.get(101);
+  assert.deepEqual(pr.labels, [LABELS.hold]);
+  Object.assign(pr, { headSha: 'e'.repeat(40), headPushedAt: iso(T0 + MIN) });
+  env.world.clock = T0 + 5 * MIN;
+  await env.run();
+  assert.deepEqual(pr.labels, []);
+  assert.ok(parseMarkers(pr.comments, { viewer: 'operator' }).some((m) => m.decision === 'resume_new_head' && m.status === 'done'));
+  assert.equal(env.state().parked.length, 0);
+});
+
+test('ingest skips fork runs: no sightings, no evidence read', async () => {
+  const env = setup();
+  env.world.runs.push({
+    id: 8008,
+    run_attempt: 1,
+    head_sha: 'f0'.repeat(20),
+    head_branch: 'fork-branch',
+    head_repository: { full_name: 'someone/breeze' },
+    event: 'pull_request',
+    status: 'completed',
+    conclusion: 'failure',
+    path: '.github/workflows/ci.yml',
+    created_at: iso(T0 - 20 * MIN),
+    updated_at: iso(T0 - 15 * MIN),
+    pull_requests: [],
+    jobs: [{ id: 80081, name: 'Integration Tests (shard 11/16)', run_attempt: 1, conclusion: 'failure', started_at: iso(T0 - 19 * MIN), completed_at: iso(T0 - 15 * MIN), steps: [], annotations: [], log: 'FAIL src/a.test.ts > a > b' }],
+  });
+  const s = await env.run();
+  assert.equal(s.sweeps.ingested ?? 0, 0);
+  assert.ok(!env.world.calls.some((c) => /\/actions\/runs\/8008/.test(c.path)), 'the fork run was never read');
+});
+
+test('a failing sweep is reported and the others still run; a failing tick reports status=error as its last line', async () => {
+  const env = setup();
+  busyWorld(env);
+  env.world.failingGets.push([/\/issues\?labels=ci-shepherd%3Aresume/, 500]);
+  const s = await env.run();
+  assert.equal(s.status, 'degraded');
+  assert.ok(s.errors.some((e) => /resume label/.test(e)));
+  assert.ok(env.decisions().some((l) => l.kind === 'requeue_stuck'), 'the stuck sweep ran');
+  assert.ok(s.sweeps.ingested > 0, 'ingest ran');
+
+  const env2 = setup();
+  busyWorld(env2);
+  env2.world.failRemovals = true;
+  const lines = [];
+  const s2 = await env2.run({ log: (l) => lines.push(l) });
+  assert.equal(s2.status, 'error');
+  assert.match(lines.at(-1), /^ci-shepherd tick status=error .*first_error="tick failed: /);
+  const { main } = await import('./shepherd.mjs');
+  assert.equal(await main(['tick', '--state-dir', env2.stateDir], { makeGitHub: () => env2.gh, exec: env2.world.exec, now: () => T0, log: () => {} }), 1);
+});
+
+test('an unreadable mode variable consumes nothing: status mode_unreadable', async () => {
+  const env = setup({ mode: 'HTTP_500' });
+  busyWorld(env);
+  const s = await env.run();
+  assert.equal(s.status, 'mode_unreadable');
+  assert.deepEqual(env.state().seen, {});
+  assert.equal(env.decisions().length, 0);
+});
+
+test('a corrupt state.json is kept aside and reported', async () => {
+  const env = setup();
+  writeFileSync(join(env.stateDir, 'state.json'), '{"cursor": ');
+  const s = await env.run();
+  assert.equal(s.status, 'degraded');
+  assert.ok(s.errors.some((e) => /state\.json did not parse/.test(e)));
+});
+
+test('writer: issue upsert reuses an open issue with the same title; the main CI dispatch is one gh call', async () => {
+  const world = createWorld({ mode: 'act' });
+  const w = createWriter({ gh: createGitHub({ token: 't', fetchImpl: world.fetchImpl }), exec: world.exec, repo: REPO });
+  const a = await w.issueUpsert({ title: 'Queue blocked: x fails on main', body: 'b', labels: ['ci-red'] });
+  const b = await w.issueUpsert({ title: 'Queue blocked: x fails on main', body: 'b', labels: ['ci-red'] });
+  assert.equal(a, b);
+  assert.equal(world.writes.filter((x) => x.op === 'issue_create').length, 1);
+  await w.dispatchMainCi();
+  assert.deepEqual(world.execs.at(-1), ['workflow', 'run', 'CI', '--ref', 'main', '-R', REPO]);
 });

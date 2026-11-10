@@ -213,12 +213,14 @@ test('osv burst: the third PR opens the outage breaker, later removals back off,
   assert.equal(opened[0].kind, 'outage');
   assert.equal(opened[0].key, 'download_5xx');
   const outage = state.breakers[0];
-  assert.equal(outage.until, iso(lastAt + 20 * MIN), 'each match extends the window');
+  // Each match extends the window to 20 min after that removal.
+  const lastRemoval = lastAt - MIN;
+  assert.equal(outage.until, iso(lastRemoval + 20 * MIN), 'each match extends the window');
   assert.equal(outage.restore.length, 5);
 
   // Still inside the window: nothing clears.
-  assert.equal(updateBreakers(state, {}, lastAt + 19 * MIN).cleared.length, 0);
-  const done = updateBreakers(state, {}, lastAt + 20 * MIN);
+  assert.equal(updateBreakers(state, {}, lastRemoval + 19 * MIN).cleared.length, 0);
+  const done = updateBreakers(state, {}, lastRemoval + 20 * MIN);
   assert.equal(done.cleared.length, 1);
   assert.equal(done.state.breakers.length, 0);
   const restores = done.cleared[0].restore.map((e) =>
@@ -275,7 +277,9 @@ test('date bomb: three PRs → suspected with one main CI dispatch across ticks;
   const issues = breakerDecisions(conf, now).filter((d) => d.mutations.some((m) => m.op === 'issue_upsert'));
   assert.equal(issues.length, 1);
   const up = issues[0].mutations.find((m) => m.op === 'issue_upsert').args;
-  assert.equal(up.title, `Queue blocked: ${id} fails on main`.slice(0, 250));
+  // The real id quotes an issue number; posted text never references one.
+  assert.equal(up.title, `Queue blocked: ${id.replace(/#(?=\d)/g, 'no. ')} fails on main`.slice(0, 250));
+  assert.doesNotMatch(up.title + up.body, /#\d|@\w/);
   assert.deepEqual(up.labels, ['ci-red']);
   // A second tick does not upsert again.
   assert.equal(breakerDecisions(updateBreakers(state, {}, now + MIN), now + MIN).length, 0);

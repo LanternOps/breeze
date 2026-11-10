@@ -24,6 +24,7 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     writes: [],
     execs: [],
     failing: new Map(),
+    failingGets: [], // [RegExp, status]: matching GETs answer that status
     nextId: 1000,
   };
   const id = () => w.nextId++;
@@ -141,6 +142,7 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       }
       return json(200, { errors: [{ message: 'unknown mutation' }] });
     }
+    if (w.failRemovals && /pullRequests\(/.test(query)) return json(502, { message: 'Bad Gateway' });
     if (/pullRequests\(/.test(query)) {
       const nodes = [...w.prs.values()].map((pr) => ({ number: pr.number, updatedAt: iso(w.clock), timelineItems: { nodes: pr.events.slice(-20) } }));
       return json(200, { data: { repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } } });
@@ -170,8 +172,10 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     if (method === 'GET' && p === '/user') return json(200, { login: viewer });
     if (method === 'GET' && p === 'R/actions/variables/CI_SHEPHERD_MODE') {
       const v = typeof w.mode === 'function' ? w.mode() : w.mode;
+      if (v === 'HTTP_500') return json(500, { message: 'Server Error' });
       return v === null ? notFound() : json(200, { name: 'CI_SHEPHERD_MODE', value: v });
     }
+    for (const [re, status] of w.failingGets) if (method === 'GET' && re.test(`${path}${q.size ? `?${q}` : ''}`)) return json(status, { message: 'injected' });
     if (method === 'GET' && (m = /^R\/pulls\/(\d+)\/files$/.exec(p))) return json(200, (w.prs.get(Number(m[1]))?.files ?? []).map((filename) => ({ filename })));
     if (method === 'GET' && p === 'R/actions/runs' && q.get('head_sha')) {
       const pr = [...w.prs.values()].find((x) => x.headSha === q.get('head_sha'));
@@ -211,7 +215,11 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     }
     if ((m = /^R\/issues\/(\d+)\/comments$/.exec(p))) {
       const pr = w.prs.get(Number(m[1]));
-      if (method === 'GET') return json(200, pr.comments.map((c) => ({ id: c.id, user: { login: c.author }, body: c.body })));
+      if (method === 'GET') {
+        const per = Number(q.get('per_page') ?? 30);
+        const page = Number(q.get('page') ?? 1);
+        return json(200, pr.comments.slice((page - 1) * per, page * per).map((c) => ({ id: c.id, user: { login: c.author }, body: c.body })));
+      }
       if (method === 'POST') {
         if (shouldFail('comment_post')) return json(502, { message: 'Bad Gateway' });
         const c = { id: id(), author: viewer, body: body.body };
@@ -232,6 +240,7 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       return notFound();
     }
     if (method === 'POST' && (m = /^R\/issues\/(\d+)\/labels$/.exec(p))) {
+      if (shouldFail('label_add')) return json(502, { message: 'Bad Gateway' });
       const pr = w.prs.get(Number(m[1]));
       for (const l of body.labels) if (!pr.labels.includes(l)) pr.labels.push(l);
       write('label_add', { pr: pr.number, labels: body.labels });

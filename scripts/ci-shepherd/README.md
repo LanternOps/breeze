@@ -105,9 +105,18 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
 State lives in `~/.local/state/breeze-ci-shepherd/`.
 
 - `runs.log`: one line per run. UTC timestamp, `exit=<code>`, then the tick's
-  summary line. A non-zero exit still gets a line.
+  summary line (`status=… mode=… removals=… decisions=… calls=…/…`, and
+  `errors=<n> first_error=…` when anything went wrong). A failed fetch, a
+  missing `gh` token or a failed tick still gets a line, with a non-zero exit.
+  Exit 0 means `status` is `ok`, `locked`, `off` or `hourly_budget_spent`.
+  Anything else needs a look: `degraded` (it ran, some step failed),
+  `partial` (act was switched off mid-write; the next act tick finishes it),
+  `budget_exceeded`, `mode_unreadable` (the variable could not be read, so
+  nothing was consumed) or `error`.
 - `decisions.jsonl`: one JSON line per decision. `status` is `shadow`,
-  `applied`, `skipped` or `partial`. `source` says where the decision came
+  `applied`, `skipped` (stale by the time it was applied), `partial`, `error`
+  (a write failed; retried next tick) or `abandoned` (failed 5 times; the PR
+  may be half-done and needs a human). `source` says where the decision came
   from. Review the `shadow` lines here before going to act.
 - `state.json`: the cursor, seen removals, breakers and pending intents.
 - `sightings.jsonl`: flake sightings from completed CI runs.

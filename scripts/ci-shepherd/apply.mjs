@@ -20,20 +20,27 @@ export const MODE_VARIABLE = 'CI_SHEPHERD_MODE';
 
 // Unset → shadow. Unreadable or not one of off|shadow|act → shadow, with a
 // warning. Only a readable, exact `act` lets the shepherd write.
-export async function readMode(gh, repo, { warn = () => {} } = {}) {
+// `degraded` is true when the variable could not be read at all (a network
+// error or a non-200/404 answer): the tick must not consume work on it.
+export async function readModeDetail(gh, repo) {
   let res;
   try {
     res = await gh.rest('GET', `repos/${repo}/actions/variables/${MODE_VARIABLE}`);
   } catch (e) {
     if (e.name === 'BudgetExceeded') throw e;
-    warn(`${MODE_VARIABLE} unreadable (${e.message}); using shadow`);
-    return 'shadow';
+    return { mode: 'shadow', degraded: true, warning: `${MODE_VARIABLE} unreadable (${e.message}); using shadow` };
   }
-  if (res.status === 404) return 'shadow';
-  const value = res.status === 200 ? String(res.body?.value ?? '').trim() : null;
-  if (value !== null && MODES.has(value)) return value;
-  warn(`${MODE_VARIABLE} ${res.status === 200 ? `has invalid value ${JSON.stringify(value).slice(0, 40)}` : `read failed (${res.status})`}; using shadow`);
-  return 'shadow';
+  if (res.status === 404) return { mode: 'shadow', degraded: false, warning: null };
+  if (res.status !== 200) return { mode: 'shadow', degraded: true, warning: `${MODE_VARIABLE} read failed (${res.status}); using shadow` };
+  const value = String(res.body?.value ?? '').trim();
+  if (MODES.has(value)) return { mode: value, degraded: false, warning: null };
+  return { mode: 'shadow', degraded: false, warning: `${MODE_VARIABLE} has invalid value ${JSON.stringify(value).slice(0, 40)}; using shadow` };
+}
+
+export async function readMode(gh, repo, { warn = () => {} } = {}) {
+  const r = await readModeDetail(gh, repo);
+  if (r.warning) warn(r.warning);
+  return r.mode;
 }
 
 // Why a decision no longer fits the PR, or null.
@@ -41,7 +48,10 @@ export function precheck(decision, snapshot, { selfOps = [], now = null } = {}) 
   const e = decision.expect ?? {};
   if (e.state && snapshot.state !== e.state) return `pr_${String(snapshot.state).toLowerCase()}`;
   if (e.head && snapshot.headSha !== e.head) return 'head_moved';
-  if (e.queued === true && !snapshot.queue) return 'not_queued';
+  // A stuck re-queue dequeues first; once its own dequeue is recorded, a
+  // resumed attempt must go on to the enqueue, not stop at "not queued".
+  const dequeuedBySelf = selfOps.some((o) => o.pr === decision.pr && o.op === 'dequeue' && Date.parse(o.at) >= Date.parse(decision.at));
+  if (e.queued === true && !snapshot.queue && !dequeuedBySelf) return 'not_queued';
   if (e.removalId) {
     const removal = { id: e.removalId, at: decision.removalAt, reason: 'failed_checks', pr: decision.pr };
     const stale = staleReasons(removal, snapshot, { selfOps, now });
@@ -168,6 +178,10 @@ export async function apply(gh, decision, ctx) {
       default:
         throw new Error(`apply: unknown op ${m.op}`);
     }
+  }
+  if (!(await stillAct())) {
+    record('partial', { reason: 'mode_changed' });
+    return { status: 'partial', reason: 'mode_changed' };
   }
   await w.editComment(commentId, renderComment(decision, markerOf(decision, 'done')));
   record('applied');

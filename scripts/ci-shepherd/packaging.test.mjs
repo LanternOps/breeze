@@ -1,7 +1,7 @@
 // Packaging checks for the launchd runner and runbook (W06b B4, #10750).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, existsSync, readdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -38,6 +38,43 @@ test('install.sh creates the clone before loading the job, and only touches that
     assert.ok(l.includes('git -C "$HOME_DIR/checkout"') || (/git clone /.test(l) && l.includes('"$HOME_DIR/checkout"')), `bare git: ${l}`);
   }
   for (const bad of ['git stash', 'pkill', 'reset --hard']) assert.ok(!s.includes(bad), bad);
+});
+
+// Fake git/gh/node on PATH; `failOn` names the step that fails.
+function runSh(failOn) {
+  const root = mkdtempSync(join(tmpdir(), 'shepherd-run-'));
+  const bin = join(root, 'bin');
+  const home = join(root, 'home');
+  const state = join(root, 'state');
+  mkdirSync(bin);
+  mkdirSync(join(home, 'checkout', '.git'), { recursive: true });
+  const fake = (name, body) => {
+    writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`);
+    chmodSync(join(bin, name), 0o755);
+  };
+  fake('git', `case "$*" in *fetch*) [ "${failOn}" = fetch ] && exit 1 ;; esac; exit 0`);
+  fake('gh', `[ "${failOn}" = token ] && exit 1; echo tok`);
+  fake('node', `echo ran > "${root}/node-ran"; echo "ci-shepherd tick status=ok mode=shadow"`);
+  let code = 0;
+  try {
+    execFileSync('bash', [join(here, 'run.sh')], { env: { HOME: root, PATH: `${bin}:/usr/bin:/bin`, BREEZE_CI_SHEPHERD_HOME: home, BREEZE_CI_SHEPHERD_STATE: state }, stdio: 'pipe' });
+  } catch (e) {
+    code = e.status;
+  }
+  return { code, log: readFileSync(join(state, 'runs.log'), 'utf8'), ran: existsSync(join(root, 'node-ran')) };
+}
+
+test('run.sh: a failed fetch or token stops the run before the tick, and runs.log says why', () => {
+  const ok = runSh('none');
+  assert.equal(ok.code, 0);
+  assert.ok(ok.ran);
+  assert.match(ok.log, /exit=0 ci-shepherd tick status=ok/);
+  for (const [step, why] of [['fetch', /fetch of main failed/], ['token', /gh auth token failed/]]) {
+    const r = runSh(step);
+    assert.notEqual(r.code, 0, step);
+    assert.equal(r.ran, false, `${step}: the tick must not run on stale code or without a token`);
+    assert.match(r.log, why);
+  }
 });
 
 test('README carries the runbook', () => {

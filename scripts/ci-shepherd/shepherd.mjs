@@ -7,8 +7,9 @@
 //
 //   shepherd.mjs tick [--state-dir <dir>]
 //       One tick (tick.mjs). Default state dir: $HOME/.local/state/breeze-ci-shepherd.
-//   shepherd.mjs probe --pr <n>
-//       G-act: hold then resume a PR labelled ci-shepherd:probe, in act mode only.
+//   shepherd.mjs probe --pr <n> [--state-dir <dir>]
+//       G-act: hold then resume a PR labelled ci-shepherd:probe, in act mode
+//       only, under the tick's lock.
 //
 //   shepherd.mjs classify --run <id> --pr <n> [--history <sightings.jsonl>]
 //       Prints the RunVerdict for one merge_group CI run as JSON.
@@ -33,7 +34,7 @@ import { History, ingestRun, readSightings } from './evidence.mjs';
 import { groupRunFor, prSnapshot, recentRemovals, requiredJobIds, runFacts } from './facts.mjs';
 import { createGitHub } from './github.mjs';
 import { probe } from './probe.mjs';
-import { tick } from './tick.mjs';
+import { OK_STATUSES, tick } from './tick.mjs';
 import { ghCli } from './writer.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -199,10 +200,10 @@ export async function main(argv, { makeGitHub = (budget) => createGitHub({ token
   const gh = makeGitHub(opts.budget);
   if (opts.command === 'tick') {
     const summary = await tick({ gh, repo: opts.repo, stateDir: opts.stateDir ?? DEFAULT_STATE_DIR, now: now(), clock: now, exec, repoRoot: REPO_ROOT, ...(log ? { log } : {}) });
-    return summary.status === 'ok' || summary.status === 'locked' || summary.status === 'off' || summary.status === 'hourly_budget_spent' ? 0 : 1;
+    return OK_STATUSES.has(summary.status) ? 0 : 1;
   }
   if (opts.command === 'probe') {
-    const res = await probe({ gh, repo: opts.repo, pr: opts.pr, exec, now: now(), clock: now });
+    const res = await probe({ gh, repo: opts.repo, pr: opts.pr, exec, stateDir: opts.stateDir ?? DEFAULT_STATE_DIR, now: now(), clock: now });
     (log ?? ((l) => process.stdout.write(`${l}\n`)))(`ci-shepherd probe ${JSON.stringify(res)}`);
     return res.status === 'applied' ? 0 : res.status === 'refused' ? 2 : 1;
   }
