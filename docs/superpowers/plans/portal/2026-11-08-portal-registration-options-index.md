@@ -44,7 +44,7 @@ tracking_issue: LanternOps/breeze#11377
 | W3 Policy + access requests + identities read switch | `2026-11-08-portal-registration-options-w03-access-policy.md` (W03a API, W03b web) | W2 | High | plan written |
 | W4 Tenant proof + Microsoft sign-in + OIDC layer + session caps + `sso_only` | `2026-11-09-portal-registration-options-w04-entra-sign-in.md` (W04a API, W04b web + portal) | W3 | High | plan written |
 | W5 Domain verification + Organization › Domains | `2026-11-11-portal-registration-options-w05-domain-verification.md` (W05a API, W05b web) | W3 (Entra method: W4) | Medium | plan written |
-| W6 Self-registration | write at start | W3, W5 | High | — |
+| W6 Self-registration | `2026-11-10-portal-registration-options-w06-self-registration.md` (W06a API, W06b portal + web) | W3, W5 | High | plan written |
 | W7 Sign in with Google | write at start | W4, W5 | High | — |
 | W8 Directory deprovisioning | write at start | W4 or W7 | High | — |
 | W9 Entra SCIM Users (#8278) | write at start | W4 | High | — |
@@ -72,6 +72,7 @@ Later wave plans must use these names. If W2's plan or code renames any of them,
 | W4 | OIDC common layer: `services/portalOidc/` (`createPortalOidcState` / `consumePortalOidcState`, `PortalOidcProvider`, `resolvePortalOidcSignIn` for §5.6), `linkPortalUserIdentity` (D4 fence), `mintPortalBrowserSession` | W7 |
 | W4 | tenant proof on `client_ai_tenant_mappings` (`proven_at`, `proven_via`, `proven_by_user_id`, `proven_evidence`; cleared on tenant change) + `findProvenEntraTenantForOrg` / `findOrgByProvenEntraTenant` | W5 (`entra_tenant` method), W8, W9 |
 | W4 | Rule: every identity-removing writer clears `portal_users.entra_*` and bumps `auth_epoch` (Entra sessions carry their tenant and die durably) | W8, W9 |
+| W6 | `routes/portal/requestHost.ts` (`requestHost`, `hostOrgIdFor`, moved out of `oidc.ts`); `GET /portal/auth/methods` gains `requestAccess`; `self_register` capability-token family in `routes/portal/capabilityTokens.ts` | W7 |
 | W5 | domain verification state on `customer_email_domains` + `isDomainVerifiedForOrg(domain, orgId)`, `findOrgByVerifiedDomain(domain)`, `listVerifiedDomainsForOrg(orgId)` (`services/portalDomainVerification/`; evidence re-checked at use) | W6, W7 |
 
 ## Wave entry checklist (W3+)
