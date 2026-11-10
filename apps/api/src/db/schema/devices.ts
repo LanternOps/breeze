@@ -818,7 +818,7 @@ export const deviceCommands = pgTable('device_commands', {
   // counts as incarnation 1. See services/commandIncarnation.ts.
   deviceIncarnation: integer('device_incarnation')
 }, (table) => ({
-  // #4342 W1 retention (2027-01-22-233800, built CONCURRENTLY). The job's
+  // #4342 W1 retention (2027-01-23-093000, built CONCURRENTLY). The job's
   // terminal-age scan, and its keep-newest-per-reader probe
   // (jobs/deviceCommandRetention.ts KEEP_NEWEST_COMMAND_READERS). Older
   // device_commands indexes live only in their migrations.
