@@ -117,6 +117,18 @@ vi.mock('../extensions/ExtensionSlotHost', () => ({
   ),
 }));
 
+// Organization › Domains (portal registration W5): shown to partner/system callers only.
+const jwtState = vi.hoisted(() => ({
+  current: { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } } as unknown,
+}));
+vi.mock('@/lib/authScope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/authScope')>()),
+  useJwtClaims: () => jwtState.current,
+}));
+vi.mock('./orgDomains/OrgDomainsTab', () => ({
+  default: ({ orgId }: { orgId: string }) => <div data-testid="org-domains-tab-stub">{orgId}</div>,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const showToastMock = vi.mocked(showToast);
@@ -1061,5 +1073,65 @@ describe('OrgSettingsPage portal tab layout', () => {
     const users = await screen.findByTestId('portal-users-editor');
     expect(settings.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(card.compareDocumentPosition(users) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('OrgSettingsPage — Domains tab (portal registration W5)', () => {
+  const orgDetails = {
+    id: 'org-1', name: 'Acme Systems', slug: 'acme', status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z', settings: {}
+  };
+  const partnerClaims = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    jwtState.current = partnerClaims;
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+  });
+
+  afterEach(() => {
+    window.location.hash = '';
+    jwtState.current = partnerClaims;
+  });
+
+  it('#domains selects the tab and mounts the Domains tab for this org', async () => {
+    window.location.hash = '#domains';
+    render(<OrgSettingsPage orgId="org-1" />);
+    const link = await screen.findByRole('link', { name: /^domains$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    expect(await screen.findByTestId('org-domains-tab-stub')).toHaveTextContent('org-1');
+  });
+
+  it('lists Domains in the Organization group after Contacts for a system caller too', async () => {
+    jwtState.current = { status: 'resolved', claims: { scope: 'system', orgId: null, partnerId: null } };
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('org-name-input');
+    const contacts = screen.getByTestId('org-settings-tab-contacts');
+    const domains = screen.getByTestId('org-settings-tab-domains');
+    expect(contacts.compareDocumentPosition(domains) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('the tab is hidden for callers without domain governance (organization scope)', async () => {
+    jwtState.current = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: null } };
+    window.location.hash = '#domains';
+    render(<OrgSettingsPage orgId="org-1" />);
+    // An old #domains link lands on a notice, never a blank pane or the tab itself.
+    expect(await screen.findByTestId('org-domains-partner-only')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-settings-tab-domains')).toBeNull();
+    expect(screen.queryByTestId('org-domains-tab-stub')).toBeNull();
+  });
+
+  it('does not mount the Domains tab while the scope is still unresolved', async () => {
+    jwtState.current = { status: 'unresolved' };
+    window.location.hash = '#domains';
+    render(<OrgSettingsPage orgId="org-1" />);
+    expect(await screen.findByTestId('org-domains-pending')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-domains-tab-stub')).toBeNull();
+    expect(screen.queryByTestId('org-settings-tab-domains')).toBeNull();
   });
 });

@@ -17,6 +17,7 @@ import { isPortalAccessPolicyView, type PortalAccessPolicyDraft, type SsoOnlyImp
 import { EntraTenantPanel } from './EntraTenantPanel';
 import { SsoOnlyConfirmDialog } from './SsoOnlyConfirmDialog';
 import { StrandedAccountsList } from './StrandedAccountsList';
+import { OrgDomainsSummaryRow } from './OrgDomainsSummaryRow';
 import {
   confirmRequiredImpact,
   isConfirmRequiredStatus,
@@ -293,6 +294,8 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
            e.g. the customer admin finished a proof link while this page was open. */
         entraSlot={<EntraTenantPanel key={String(view.entraTenantProven)} orgId={orgId} onChanged={() => void refreshView()} />}
       />
+      {/* Spec §4 Domains row (portal registration W5): read-only, managed under Organization › Domains. */}
+      <OrgDomainsSummaryRow orgId={orgId} />
       {ssoOnlyEffective && <StrandedAccountsList orgId={orgId} reloadKey={strandedReload} />}
       <SsoOnlyConfirmDialog
         open={confirm !== null}

@@ -137,8 +137,12 @@
       "remove": "Quitar archivo",
       "tooMany": "Puedes adjuntar como máximo {{max}} archivos a un comentario.",
       "tooLarge": "{{name}} supera los 10 MB.",
-      "sentWithoutAttachment_one": "Nota publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
-      "sentWithoutAttachment_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos."
+      "rejectedType": "No se adjuntó {{name}}: solo se admiten imágenes JPEG, PNG y WebP, y archivos PDF.",
+      "rejectedEmpty": "No se adjuntó {{name}}: el archivo está vacío.",
+      "sentWithoutAttachmentReply_one": "Respuesta publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
+      "sentWithoutAttachmentNote_one": "Nota publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
+      "sentWithoutAttachmentReply_other": "Respuesta publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos.",
+      "sentWithoutAttachmentNote_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos."
     },
     "modeLabel": "Visibilidad del comentario"
   },

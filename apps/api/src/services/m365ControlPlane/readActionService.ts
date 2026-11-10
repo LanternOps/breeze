@@ -12,8 +12,8 @@ import {
   type M365SyncDomain,
   type M365SyncFailureCode,
 } from '@breeze/shared/m365';
-import { and, eq } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { and, eq, isNull } from 'drizzle-orm';
+import { db, hasDbAccessContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, type RequestLike } from '../auditEvents';
@@ -471,24 +471,100 @@ export async function executeM365ReadActionByOrg(
     eq(m365Connections.orgId, orgId),
     eq(m365Connections.profile, PROFILE),
   )).limit(1);
-  const connection = rows[0];
-  // Defense-in-depth over RLS + the eq(orgId) filter: a mismatch means one of
-  // them is broken, so fail closed rather than read another org's tenant.
-  const notReady = connection && connection.orgId !== orgId ? 'missing' : connectionNotReadyState(connection);
-  const snapshot = notReady ? null : connectionExecutionSnapshot(connection as M365ConnectionRow);
-  if (!snapshot) {
+  const gate = orgConnectionGate(rows[0], orgId);
+  if (!gate.snapshot) {
     return {
       ok: false,
       code: 'connection_not_ready',
-      message: connectionNotReadyMessage(notReady ?? 'missing'),
+      message: connectionNotReadyMessage(gate.notReady),
     };
   }
 
-  return callGraphReadExecutor(snapshot, action, {
+  return callGraphReadExecutor(gate.snapshot, action, {
     route: 'read',
     correlationId: randomUUID(),
     ...(opts?.actorId ? { actorId: opts.actorId } : {}),
   }) as Promise<M365ReadActionServiceResult>;
+}
+
+/**
+ * The connection gate shared by the org-keyed readers: a missing row, a row of
+ * another org (defense-in-depth over RLS + the eq(orgId) filter: a mismatch
+ * means one of them is broken, so fail closed rather than read another org's
+ * tenant), or a non-executable state yields `notReady`; otherwise a snapshot.
+ */
+function orgConnectionGate(
+  connection: M365ConnectionRow | undefined,
+  orgId: string,
+): { snapshot: M365ConnectionExecutionSnapshot; notReady?: undefined } | { snapshot: null; notReady: ConnectionNotReadyState } {
+  const notReady = connection && connection.orgId !== orgId ? 'missing' : connectionNotReadyState(connection);
+  const snapshot = notReady ? null : connectionExecutionSnapshot(connection as M365ConnectionRow);
+  if (!snapshot) return { snapshot: null, notReady: notReady ?? 'missing' };
+  return { snapshot };
+}
+
+export type M365OrganizationRead =
+  | { ok: true; tenantId: string; connectionId: string; verifiedDomains: Array<{ name: string; isInitial: boolean }> } // names lowercased
+  | { ok: false; code: 'no_connection' | 'connection_not_ready' | 'executor_error' | 'timeout' };
+
+/**
+ * Portal domain verification (W05): `m365.org.get` for the org's
+ * customer-graph-read connection bound to `expectedTenantId`. Skips the AI
+ * tools env gate (that gate serves AI tools; this is an internal ownership
+ * check) but keeps every connection gate. Reads the connection under the
+ * held db context, or a short system scope closed before the Graph call when
+ * none is held; the only action it can run is the fixed `m365.org.get`.
+ * The executor wrapper still records the read-action metrics/audit event.
+ */
+export async function readM365OrganizationForVerification(
+  orgId: string,
+  expectedTenantId: string,
+): Promise<M365OrganizationRead> {
+  const read = () => db.select().from(m365Connections).where(and(
+    eq(m365Connections.orgId, orgId),
+    eq(m365Connections.profile, PROFILE),
+    isNull(m365Connections.userId),
+  )).limit(1);
+  // Under a held context, read there. With none held (the domain verification
+  // service and worker run checks outside any transaction), elect a short
+  // system scope that closes BEFORE the Graph call, so no transaction is held
+  // across the network round trip (pattern: executeM365MailboxReadByOrg).
+  const rows = hasDbAccessContext()
+    ? await read()
+    : await withSystemDbAccessContext(read, 'portalDomainVerification.readM365Connection');
+  const connection = rows[0];
+  if (!connection || connection.orgId !== orgId) return { ok: false, code: 'no_connection' };
+  // Not yet bound to a tenant (consent mid-flight): transient, never a
+  // definitive "no connection" (which clears a verification at once).
+  if (connection.tenantId === null) return { ok: false, code: 'connection_not_ready' };
+  // Bound to another tenant than the proven one: this connection is not the
+  // evidence source any more.
+  if (connection.tenantId.toLowerCase() !== expectedTenantId.toLowerCase()) {
+    return { ok: false, code: 'no_connection' };
+  }
+  const gate = orgConnectionGate(connection, orgId);
+  if (!gate.snapshot) return { ok: false, code: 'connection_not_ready' };
+
+  const action = m365ReadActionSchema.safeParse({ type: 'm365.org.get' });
+  if (!action.success) return { ok: false, code: 'executor_error' };
+  const result = await callGraphReadExecutor(gate.snapshot, action.data, {
+    route: 'read',
+    correlationId: randomUUID(),
+  }) as M365ReadActionServiceResult;
+  if (!result.ok) {
+    return { ok: false, code: result.code === 'graph_request_timeout' ? 'timeout' : 'executor_error' };
+  }
+  if (result.kind !== 'resource') return { ok: false, code: 'executor_error' };
+
+  const { id, verifiedDomains } = result.resource as { id?: unknown; verifiedDomains?: unknown };
+  if (typeof id !== 'string' || !id || !Array.isArray(verifiedDomains)) return { ok: false, code: 'executor_error' };
+  const domains: Array<{ name: string; isInitial: boolean }> = [];
+  for (const entry of verifiedDomains) {
+    const name = (entry as { name?: unknown } | null)?.name;
+    if (typeof name !== 'string' || !name) return { ok: false, code: 'executor_error' };
+    domains.push({ name: name.toLowerCase(), isInitial: (entry as { isInitial?: unknown }).isInitial === true });
+  }
+  return { ok: true, tenantId: id, connectionId: gate.snapshot.id, verifiedDomains: domains };
 }
 
 export type M365MailboxReadResult =

@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Günlük gönderimi başarısız",
       "networkIsolation": {
         "active": "Yalıtılmış"
+      },
+      "helperVersion": "Yardımcı Sürümü",
+      "deviceFunction": "Cihaz İşlevi",
+      "hostsWorkloads": "İş Yüklerini Barındırır",
+      "workloadRuntimes": "İş Yükü Çalışma Zamanları",
+      "warranty": {
+        "status": "Garanti Durumu"
       }
     }
   },

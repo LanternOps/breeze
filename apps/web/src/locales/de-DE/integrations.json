@@ -1074,7 +1074,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Standort-Zuordnungen konnten nicht gespeichert werden.",
     "siteMappingsSaved": "Standort-Zuordnungen gespeichert",
-    "pickTheSiteThisControllerServesACollector": "Den Standort auswählen, den dieser Controller verwaltet, einen Collector-Agenten festlegen und Controller-URL sowie lokalen API-Schlüssel eingeben.",
+    "pickTheSiteThisControllerServesACollector": "Wählen Sie den Standort des Collector-Agents und einen Collector-Agent aus und geben Sie Controller-URL und lokalen API-Schlüssel ein.",
     "failedToRegisterTheController": "Der Controller konnte nicht registriert werden.",
     "controllerRegistered": "Controller registriert",
     "pickABreezeSiteACollectorAgentAnd": "Breeze-Standort und Collector-Agenten auswählen sowie Controller-URL und lokalen API-Schlüssel eingeben.",

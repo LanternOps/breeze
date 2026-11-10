@@ -6377,6 +6377,8 @@
       "generalDescription": "Profil et paramètres par défaut",
       "contacts": "Contacts",
       "contactsDescription": "Personnes à joindre chez ce client, par site ou pour toute l’organisation",
+      "domains": "Domaines",
+      "domainsDescription": "Domaines de messagerie des clients et preuve de propriété",
       "contracts": "Contrats",
       "contractsDescription": "Accords récurrents",
       "billing": "Facturation",
@@ -7067,28 +7069,165 @@
   },
   "customerDomainsCard": {
     "title": "Domaines de messagerie client",
-    "description": "Orientez les domaines d’email clients vérifiés vers la bonne organisation.",
+    "managedPerOrg": "Les domaines sont gérés par organisation. Ouvrez une organisation pour ajouter, vérifier, déplacer ou supprimer ses domaines.",
+    "emptySummary": "Aucun domaine de messagerie client pour le moment. Ajoutez-les dans l’onglet Domaines de chaque organisation.",
     "errors": {
-      "load": "Les mappages de domaine client ne se chargeaient pas.",
-      "save": "Impossible d’enregistrer la cartographie du domaine client. Réessayez."
-    },
-    "toasts": {
-      "added": "Ajout de la cartographie du domaine client",
-      "saved": "Association du domaine client enregistrée",
-      "deleted": "Cartographie du domaine client supprimée"
+      "load": "Les mappages de domaine client ne se chargeaient pas."
     },
     "columns": {
       "domain": "Domaine",
-      "autoCreateContact": "Création automatique de contact"
+      "status": "Statut"
     },
-    "empty": "Pas encore de mappage de domaine client.",
-    "placeholders": {
-      "domain": "customer.example.com",
-      "organization": "Organisation sélectionnée..."
-    },
-    "new": "Nouveau",
     "actions": {
-      "addDomain": "Ajouter le domaine"
+      "manage": "Gérer"
+    }
+  },
+  "orgDomains": {
+    "title": "Domaines",
+    "description": "Domaines de messagerie qui appartiennent à ce client. Un domaine déclaré achemine les e-mails entrants vers cette organisation. Un domaine vérifié prouve que le client en est propriétaire ; l’inscription autonome au portail et la connexion Google s’appuient dessus.",
+    "forbidden": "La gestion des domaines clients nécessite un rôle d’administrateur ayant accès à toutes les organisations.",
+    "partnerOnly": "Les domaines clients sont gérés par votre prestataire de services.",
+    "checkingAccess": "Vérification de l’accès…",
+    "empty": "Aucun domaine pour le moment. Ajoutez ci-dessous le domaine de messagerie du client.",
+    "neverChecked": "Jamais",
+    "notCurrent": "Les éléments de preuve à l’origine de cette vérification ne sont plus valides. La revérification quotidienne la supprimera, sauf si elle réussit de nouveau.",
+    "inactiveSuspended": "Inactif : non utilisé pour l’acheminement des e-mails ni pour la connexion tant qu’il n’est pas réactivé.",
+    "stale": "La liste n’est peut-être pas à jour : elle n’a pas pu être rechargée après votre modification.",
+    "columns": {
+      "domain": "Domaine",
+      "status": "Statut",
+      "lastChecked": "Dernière vérification",
+      "autoCreateContact": "Créer le contact automatiquement"
+    },
+    "aria": {
+      "active": "{{domain}} est actif",
+      "autoCreateContact": "Créer automatiquement les contacts pour {{domain}}",
+      "verify": "Vérification de {{domain}}",
+      "move": "Déplacer {{domain}}",
+      "delete": "Supprimer {{domain}}"
+    },
+    "states": {
+      "declared": "Déclaré — acheminement des e-mails uniquement",
+      "pending_dns": "DNS en attente",
+      "verified": "Vérifié · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "Enregistrement DNS TXT",
+      "entra_tenant": "Microsoft (le tenant Entra prouvé de l’organisation)",
+      "google_directory": "Annuaire Google Workspace"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "Le tenant Microsoft de l’organisation n’est pas encore prouvé.",
+        "connection_missing": "Nécessite une connexion Microsoft 365 pour le tenant prouvé. Connectez Microsoft 365 pour cette organisation, ou utilisez le DNS.",
+        "not_enabled": "La vérification Microsoft n’est pas disponible sur ce serveur."
+      },
+      "google_directory": {
+        "connection_missing": "Nécessite une connexion Google Workspace pour cette organisation.",
+        "not_enabled": "Google Workspace n’est pas activé sur ce serveur."
+      }
+    },
+    "cleared": {
+      "record_missing": "Vérification perdue : l’enregistrement DNS est introuvable.",
+      "not_in_directory": "Vérification perdue : le domaine ne figure plus dans l’annuaire.",
+      "tenant_not_proven": "Vérification perdue : le tenant Microsoft n’est plus prouvé.",
+      "connection_missing": "Vérification perdue : la connexion à l’annuaire a été supprimée.",
+      "stale": "Vérification perdue : elle n’a pas pu être revérifiée pendant 7 jours.",
+      "repointed": "Vérification perdue : le domaine a été déplacé vers une autre organisation.",
+      "msp_removed": "Vérification supprimée.",
+      "displaced": "Vérification perdue : le domaine a été vérifié par une autre organisation."
+    },
+    "checkReasons": {
+      "record_missing": "L’enregistrement DNS est introuvable. Les modifications DNS peuvent mettre du temps à apparaître ; vérifiez à nouveau plus tard.",
+      "not_in_directory": "Le domaine n’est pas un domaine vérifié dans l’annuaire.",
+      "tenant_not_proven": "Le tenant Microsoft de l’organisation n’est pas prouvé.",
+      "connection_missing": "L’organisation n’a aucune connexion d’annuaire correspondante.",
+      "dns_error": "Impossible d’interroger le DNS. Réessayez plus tard.",
+      "timeout": "La vérification a expiré. Réessayez plus tard.",
+      "graph_unavailable": "Microsoft 365 est injoignable. Réessayez plus tard.",
+      "graph_tenant_mismatch": "Microsoft 365 a répondu pour un autre tenant que celui qui a été prouvé.",
+      "google_scope_missing": "Il manque à la délégation Google Workspace l’étendue {{scope}}. Ajoutez-la dans la console Google Admin, puis vérifiez à nouveau.",
+      "google_access_denied": "Google Workspace a refusé l’accès. Vérifiez l’adresse e-mail de l’administrateur et la délégation.",
+      "google_unavailable": "Google Workspace est injoignable. Réessayez plus tard.",
+      "unknown": "La vérification n’a pas abouti."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "Ce domaine ne fait plus partie de cette organisation. Rechargez la page.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "Ce domaine est vérifié pour une autre organisation. Son propriétaire doit d’abord supprimer l’autre vérification (enregistrement DNS ou connexion d’annuaire).",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "La vérification du domaine a changé pendant cette vérification. Vérifiez à nouveau.",
+      "DOMAIN_INACTIVE": "Activez le domaine avant de le vérifier.",
+      "DOMAIN_DNS_NOT_STARTED": "Obtenez d’abord l’enregistrement DNS.",
+      "DOMAIN_ALREADY_VERIFIED": "Ce domaine est vérifié par une autre méthode. Supprimez d’abord cette vérification."
+    },
+    "verify": {
+      "methodLegend": "Méthode de vérification",
+      "methodLocked": "Pour changer de méthode, supprimez d’abord la vérification actuelle.",
+      "openPortalTab": "Prouvez le tenant sous Portail client › Connexion et inscription.",
+      "dnsStartHint": "Obtenez un enregistrement TXT à faire publier par l’administrateur DNS du client.",
+      "startDns": "Obtenir l’enregistrement DNS",
+      "starting": "Obtention de l’enregistrement…",
+      "dnsInstructions": "Demandez à l’administrateur DNS du client d’ajouter cet enregistrement TXT, puis vérifiez-le.",
+      "recordName": "Nom de l’enregistrement (hôte)",
+      "recordValue": "Valeur de l’enregistrement",
+      "copy": "Copier",
+      "copied": "Copié",
+      "googleScopeHint": "La délégation Google Workspace de l’organisation doit inclure {{scope}}.",
+      "inactive": "Ce domaine est désactivé. Activez-le pour le vérifier.",
+      "verify": "Vérifier",
+      "checkNow": "Vérifier maintenant",
+      "checking": "Vérification en cours…",
+      "resultFailed": "Non vérifié. {{reason}}",
+      "resultUnavailable": "La vérification n’a pas pu se terminer. {{reason}}",
+      "removeVerification": "Supprimer la vérification",
+      "removeTitle": "Supprimer la vérification de {{domain}} ?",
+      "removeMessage": "Le domaine reste rattaché à cette organisation pour l’acheminement des e-mails. L’inscription autonome et la connexion Google cessent de lui faire confiance tant qu’il n’est pas de nouveau vérifié."
+    },
+    "actions": {
+      "verify": "Vérifier",
+      "manageVerification": "Vérification",
+      "move": "Déplacer"
+    },
+    "add": {
+      "label": "Ajouter un domaine",
+      "placeholder": "contoso.com",
+      "submit": "Ajouter le domaine"
+    },
+    "move": {
+      "title": "Déplacer {{domain}} vers une autre organisation ?",
+      "message": "Les e-mails entrants de ce domaine seront acheminés vers l’organisation que vous choisissez.",
+      "messageVerified": "Le domaine perdra sa vérification. La nouvelle organisation devra le vérifier de nouveau, et un enregistrement DNS devra être publié à nouveau avec une nouvelle valeur.",
+      "targetLabel": "Organisation",
+      "targetPlaceholder": "Sélectionner une organisation…",
+      "orgsFailed": "Impossible de charger les organisations. Fermez cette fenêtre et réessayez."
+    },
+    "delete": {
+      "title": "Supprimer {{domain}} ?",
+      "message": "Les e-mails entrants de ce domaine ne seront plus acheminés vers cette organisation.",
+      "messageVerified": "Les e-mails entrants de ce domaine ne seront plus acheminés vers cette organisation, et sa vérification sera supprimée."
+    },
+    "toasts": {
+      "added": "{{domain}} ajouté",
+      "saved": "{{domain}} enregistré",
+      "deleted": "{{domain}} supprimé",
+      "moved": "{{domain}} déplacé vers {{org}}",
+      "verified": "{{domain}} vérifié",
+      "verificationRemoved": "Vérification supprimée pour {{domain}}",
+      "copyFailed": "Copie impossible. Sélectionnez le texte et copiez-le manuellement."
+    },
+    "errors": {
+      "load": "Impossible de charger les domaines.",
+      "save": "Impossible d’enregistrer le domaine. Réessayez.",
+      "delete": "Impossible de supprimer le domaine. Réessayez.",
+      "add": "Impossible d’ajouter le domaine. Réessayez.",
+      "alreadyMapped": "Ce domaine est déjà ajouté à une organisation de votre compte.",
+      "startDns": "Impossible d’obtenir l’enregistrement DNS. Réessayez.",
+      "check": "Impossible d’exécuter la vérification. Réessayez.",
+      "removeVerification": "Impossible de supprimer la vérification. Réessayez."
     }
   },
   "customFieldsPage": {
@@ -7628,14 +7767,16 @@
       "toasts": {
         "invited": "Invitation au portail envoyée",
         "inviteEmailFailed": "Identifiant de portail créé, mais l’e-mail d’invitation n’a pas pu être envoyé. Utilisez Renvoyer l’invitation.",
-        "bulkSummary": "Accès au portail : {{details}}"
+        "bulkSummary": "Accès au portail : {{details}}",
+        "resendEmailFailed": "L’e-mail d’invitation n’a pas pu être envoyé. Réessayez plus tard avec Renvoyer l’invitation."
       },
       "outcomes": {
         "invited": "Invités : {{count}}",
         "already_has_access": "Ont déjà accès : {{count}}",
         "no_email": "Sans adresse e-mail : {{count}}",
         "email_bound_to_other_contact": "E-mail utilisé par un autre contact : {{count}}",
-        "duplicate_email_in_batch": "E-mail en double dans la sélection : {{count}}"
+        "duplicate_email_in_batch": "E-mail en double dans la sélection : {{count}}",
+        "emailNotSent": "E-mails d’invitation non envoyés : {{count}}"
       },
       "errors": {
         "invite": "Impossible de donner accès au portail.",
@@ -8450,6 +8591,12 @@
         "invite": "Impossible d’envoyer les invitations de connexion Microsoft.",
         "unavailable": "La connexion Microsoft n’est pas disponible pour cette organisation, il n’y a donc rien avec quoi inviter."
       }
+    },
+    "domains": {
+      "label": "Domaines",
+      "none": "Aucun domaine pour le moment",
+      "manage": "Gérer dans Organisation › Domaines",
+      "loadFailed": "Impossible de charger les domaines."
     }
   },
   "portalAccessRequests": {

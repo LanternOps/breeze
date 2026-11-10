@@ -662,7 +662,7 @@
       "explain": "O Wisp atua dentro do que você tem permissão para fazer. Confirme que é você para continuar.",
       "code": "Código do autenticador",
       "passkey": "Você confirmará com sua passkey.",
-      "noFactor": "O Wisp precisa de uma passkey ou de um app autenticador. Configure um primeiro no seu perfil.",
+      "noFactor": "O Wisp precisa de uma passkey ou de um app autenticador. Configure um primeiro no <profileLink>seu perfil</profileLink>.",
       "noOrg": "Selecione primeiro uma organização no cabeçalho.",
       "confirm": "Confirmar",
       "cancel": "Cancelar",

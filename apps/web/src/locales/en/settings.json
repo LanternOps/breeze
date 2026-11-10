@@ -6425,6 +6425,8 @@
       "generalDescription": "Profile and defaults",
       "contacts": "Contacts",
       "contactsDescription": "People to reach at this customer, by site or organization-wide",
+      "domains": "Domains",
+      "domainsDescription": "Customer email domains and proof of ownership",
       "contracts": "Contracts",
       "contractsDescription": "Recurring agreements",
       "billing": "Billing",
@@ -7115,28 +7117,165 @@
   },
   "customerDomainsCard": {
     "title": "Customer email domains",
-    "description": "Route verified customer email domains to the right organization.",
+    "managedPerOrg": "Domains are managed per organization. Open an organization to add, verify, move or remove its domains.",
+    "emptySummary": "No customer email domains yet. Add them under each organization's Domains tab.",
     "errors": {
-      "load": "Customer domain mappings failed to load.",
-      "save": "Could not save customer domain mapping. Retry."
-    },
-    "toasts": {
-      "added": "Customer domain mapping added",
-      "saved": "Customer domain mapping saved",
-      "deleted": "Customer domain mapping deleted"
+      "load": "Customer domain mappings failed to load."
     },
     "columns": {
       "domain": "Domain",
+      "status": "Status"
+    },
+    "actions": {
+      "manage": "Manage"
+    }
+  },
+  "orgDomains": {
+    "title": "Domains",
+    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which portal self-registration and Sign in with Google rely on.",
+    "forbidden": "Managing customer domains requires an admin role with access to every organization.",
+    "partnerOnly": "Customer domains are managed by your service provider.",
+    "checkingAccess": "Checking access…",
+    "empty": "No domains yet. Add the customer's email domain below.",
+    "neverChecked": "Never",
+    "notCurrent": "The evidence behind this verification no longer checks out. The daily re-check will clear it unless it passes again.",
+    "inactiveSuspended": "Inactive: not used for mail routing or sign-in until it is turned back on.",
+    "stale": "The list may be out of date: it could not be reloaded after your change.",
+    "columns": {
+      "domain": "Domain",
+      "status": "Status",
+      "lastChecked": "Last checked",
       "autoCreateContact": "Auto-create contact"
     },
-    "empty": "No customer domain mappings yet.",
-    "placeholders": {
-      "domain": "customer.example.com",
-      "organization": "Select organization..."
+    "aria": {
+      "active": "{{domain}} is active",
+      "autoCreateContact": "Auto-create contacts for {{domain}}",
+      "verify": "Verification for {{domain}}",
+      "move": "Move {{domain}}",
+      "delete": "Delete {{domain}}"
     },
-    "new": "New",
+    "states": {
+      "declared": "Declared — mail routing only",
+      "pending_dns": "Pending DNS",
+      "verified": "Verified · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "DNS TXT record",
+      "entra_tenant": "Microsoft (the organization's proven Entra tenant)",
+      "google_directory": "Google Workspace directory"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "The organization's Microsoft tenant is not proven yet.",
+        "connection_missing": "Needs a Microsoft 365 connection for the proven tenant. Connect Microsoft 365 for this organization, or use DNS.",
+        "not_enabled": "Microsoft verification is not available on this server."
+      },
+      "google_directory": {
+        "connection_missing": "Needs a Google Workspace connection for this organization.",
+        "not_enabled": "Google Workspace is not enabled on this server."
+      }
+    },
+    "cleared": {
+      "record_missing": "Verification lost: the DNS record was not found.",
+      "not_in_directory": "Verification lost: the domain is no longer in the directory.",
+      "tenant_not_proven": "Verification lost: the Microsoft tenant is no longer proven.",
+      "connection_missing": "Verification lost: the directory connection was removed.",
+      "stale": "Verification lost: it could not be re-checked for 7 days.",
+      "repointed": "Verification lost: the domain was moved to another organization.",
+      "msp_removed": "Verification removed.",
+      "displaced": "Verification lost: the domain was verified by another organization."
+    },
+    "checkReasons": {
+      "record_missing": "The DNS record was not found. DNS changes can take a while to appear; check again later.",
+      "not_in_directory": "The domain is not a verified domain in the directory.",
+      "tenant_not_proven": "The organization's Microsoft tenant is not proven.",
+      "connection_missing": "The organization has no matching directory connection.",
+      "dns_error": "DNS could not be queried. Try again later.",
+      "timeout": "The check timed out. Try again later.",
+      "graph_unavailable": "Microsoft 365 could not be reached. Try again later.",
+      "graph_tenant_mismatch": "Microsoft 365 answered for a different tenant than the proven one.",
+      "google_scope_missing": "The Google Workspace delegation grant is missing the scope {{scope}}. Add it in the Google Admin console, then check again.",
+      "google_access_denied": "Google Workspace refused access. Check the admin email and the delegation grant.",
+      "google_unavailable": "Google Workspace could not be reached. Try again later.",
+      "unknown": "The check did not pass."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "This domain is no longer in this organization. Reload the page.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "This domain is verified for another organization. Its owner must remove the other verification (DNS record or directory connection) first.",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "The domain's verification changed while this check ran. Check again.",
+      "DOMAIN_INACTIVE": "Turn the domain on before verifying it.",
+      "DOMAIN_DNS_NOT_STARTED": "Get the DNS record first.",
+      "DOMAIN_ALREADY_VERIFIED": "This domain is verified by another method. Remove that verification first."
+    },
+    "verify": {
+      "methodLegend": "Verification method",
+      "methodLocked": "To switch methods, remove the current verification first.",
+      "openPortalTab": "Prove the tenant under Portal › Sign-in & registration.",
+      "dnsStartHint": "Get a TXT record for the customer's DNS admin to publish.",
+      "startDns": "Get DNS record",
+      "starting": "Getting record…",
+      "dnsInstructions": "Ask the customer's DNS admin to add this TXT record, then check it.",
+      "recordName": "Record name (host)",
+      "recordValue": "Record value",
+      "copy": "Copy",
+      "copied": "Copied",
+      "googleScopeHint": "The organization's Google Workspace delegation grant must include {{scope}}.",
+      "inactive": "This domain is turned off. Turn it on to verify it.",
+      "verify": "Verify",
+      "checkNow": "Check now",
+      "checking": "Checking…",
+      "resultFailed": "Not verified. {{reason}}",
+      "resultUnavailable": "The check could not finish. {{reason}}",
+      "removeVerification": "Remove verification",
+      "removeTitle": "Remove verification for {{domain}}?",
+      "removeMessage": "The domain stays on this organization for mail routing. Self-registration and Sign in with Google stop trusting it until it is verified again."
+    },
     "actions": {
-      "addDomain": "Add domain"
+      "verify": "Verify",
+      "manageVerification": "Verification",
+      "move": "Move"
+    },
+    "add": {
+      "label": "Add a domain",
+      "placeholder": "contoso.com",
+      "submit": "Add domain"
+    },
+    "move": {
+      "title": "Move {{domain}} to another organization?",
+      "message": "Inbound email from this domain will route to the organization you choose.",
+      "messageVerified": "The domain will lose its verification. The new organization must verify it again, and a DNS record must be published again with a new value.",
+      "targetLabel": "Organization",
+      "targetPlaceholder": "Select an organization…",
+      "orgsFailed": "Organizations failed to load. Close this and try again."
+    },
+    "delete": {
+      "title": "Delete {{domain}}?",
+      "message": "Inbound email from this domain will no longer route to this organization.",
+      "messageVerified": "Inbound email from this domain will no longer route to this organization, and its verification is removed."
+    },
+    "toasts": {
+      "added": "{{domain}} added",
+      "saved": "{{domain}} saved",
+      "deleted": "{{domain}} deleted",
+      "moved": "{{domain}} moved to {{org}}",
+      "verified": "{{domain}} verified",
+      "verificationRemoved": "Verification removed for {{domain}}",
+      "copyFailed": "Could not copy. Select the text and copy it manually."
+    },
+    "errors": {
+      "load": "Domains failed to load.",
+      "save": "Could not save the domain. Retry.",
+      "delete": "Could not delete the domain. Retry.",
+      "add": "Could not add the domain. Retry.",
+      "alreadyMapped": "This domain is already added to an organization in your account.",
+      "startDns": "Could not get the DNS record. Retry.",
+      "check": "Could not run the check. Retry.",
+      "removeVerification": "Could not remove the verification. Retry."
     }
   },
   "customFieldsPage": {
@@ -7719,14 +7858,16 @@
       "toasts": {
         "invited": "Portal invite sent",
         "inviteEmailFailed": "Portal login created, but the invite email could not be sent. Use Resend invite.",
-        "bulkSummary": "Portal access: {{details}}"
+        "bulkSummary": "Portal access: {{details}}",
+        "resendEmailFailed": "The invite email could not be sent. Try Resend invite again later."
       },
       "outcomes": {
         "invited": "Invited: {{count}}",
         "already_has_access": "Already has access: {{count}}",
         "no_email": "No email address: {{count}}",
         "email_bound_to_other_contact": "Email used by another contact: {{count}}",
-        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}"
+        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}",
+        "emailNotSent": "Invite emails not sent: {{count}}"
       },
       "errors": {
         "invite": "Could not give portal access.",
@@ -8450,6 +8591,12 @@
         "invite": "Couldn't send Microsoft sign-in invites.",
         "unavailable": "Microsoft sign-in isn't available for this organization, so there is nothing to invite with."
       }
+    },
+    "domains": {
+      "label": "Domains",
+      "none": "No domains yet",
+      "manage": "Manage in Organization › Domains",
+      "loadFailed": "Domains could not be loaded."
     }
   },
   "portalAccessRequests": {

@@ -77,6 +77,8 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   // Portal registration W4 (#11381): Breeze tells the displaced partner's admins
   // that another org proved their customer's Microsoft tenant. Platform lane.
   { name: 'partner.portal_entra_tenant.displaced', params: { ...MESSAGE, purpose: 'partner.portal_entra_tenant.displaced' }, expectedFrom: DEFAULT_FROM },
+  // Portal registration W5 (#11382): domain verification lost notice. Platform lane.
+  { name: 'partner.portal_domain_verification.lost', params: { ...MESSAGE, purpose: 'partner.portal_domain_verification.lost' }, expectedFrom: DEFAULT_FROM },
   { name: 'deployment.invite', params: { ...MESSAGE, purpose: 'deployment.invite' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.staff_notification', params: { ...MESSAGE, purpose: 'ticket.staff_notification' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.customer_notification (with partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
@@ -302,6 +304,17 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
       to: ['admin@msp.test'], partnerName: 'Acme MSP', orgName: 'Contoso', tenantId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
     });
     expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'partner.portal_entra_tenant.displaced', to: ['admin@msp.test'] });
+    expect(spy.mock.calls[0]![0]).not.toHaveProperty('partnerId');
+    expect(resendSendMock.mock.calls[0]![0].from).toBe(DEFAULT_FROM);
+  });
+
+  it('sendPortalDomainVerificationLost is a platform send to the partner admins, never partner-branded', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendPortalDomainVerificationLost({
+      to: ['admin@msp.test'], partnerName: 'Acme MSP', orgName: 'Contoso', domain: 'contoso.test', reason: 'stale',
+    });
+    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'partner.portal_domain_verification.lost', to: ['admin@msp.test'] });
     expect(spy.mock.calls[0]![0]).not.toHaveProperty('partnerId');
     expect(resendSendMock.mock.calls[0]![0].from).toBe(DEFAULT_FROM);
   });

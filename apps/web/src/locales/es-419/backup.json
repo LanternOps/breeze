@@ -693,7 +693,8 @@
     "confirmLargeFolderSelection": "Esta selección abarca unos {{count}} archivos y la restauración puede tardar. ¿Continuar?",
     "name": "Nombre",
     "size2": "Tamaño",
-    "modified": "Modificado"
+    "modified": "Modificado",
+    "noSnapshotsYetFilesAppearHere": "Aún no hay instantáneas. Los archivos aparecerán aquí cuando se complete la primera copia de seguridad."
   },
   "vMRestoreConfirmStep": {
     "reviewConfirm": "Revisar y confirmar",

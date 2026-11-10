@@ -198,6 +198,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('recoveryMediaWorker'),
   consumers('warrantyWorker'),
   consumers('ssoDomainRecheckWorker'),
+  consumers('portalDomainRecheckWorker'),
   { kind: 'non_consumer', initializer: 'incidentCorrelationWorker' },
   { kind: 'non_consumer', initializer: 'incidentTimelineEnricher' },
   { kind: 'non_consumer', initializer: 'incidentSlaMonitor' },
