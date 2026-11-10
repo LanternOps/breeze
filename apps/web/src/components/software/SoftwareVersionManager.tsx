@@ -960,6 +960,7 @@ export default function SoftwareVersionManager({
                 type="text"
                 value={formState.version}
                 aria-invalid={fieldErrors.version ? true : undefined}
+                aria-describedby={fieldErrors.version ? "version-error" : undefined}
                 onChange={(event) => {
                   setFieldErrors((prev) => ({ ...prev, version: undefined }));
                   setFormState((prev) => ({
@@ -973,7 +974,7 @@ export default function SoftwareVersionManager({
                 className={`mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${fieldErrors.version ? "border-destructive/60" : ""}`}
               />
               {fieldErrors.version && (
-                <p role="alert" className="mt-1 text-xs text-destructive">
+                <p id="version-error" role="alert" className="mt-1 text-xs text-destructive">
                   {fieldErrors.version}
                 </p>
               )}
@@ -1015,6 +1016,7 @@ export default function SoftwareVersionManager({
               <VariableInput
                 value={formState.downloadUrl}
                 invalid={Boolean(fieldErrors.downloadUrl)}
+                aria-describedby={fieldErrors.downloadUrl ? "download-url-error" : undefined}
                 onChange={(value) => {
                   setFieldErrors((prev) => ({ ...prev, downloadUrl: undefined }));
                   handleDownloadUrlChange(value);
@@ -1027,7 +1029,7 @@ export default function SoftwareVersionManager({
               />
             </div>
             {fieldErrors.downloadUrl && (
-              <p role="alert" className="mt-1 text-xs text-destructive">
+              <p id="download-url-error" role="alert" className="mt-1 text-xs text-destructive">
                 {fieldErrors.downloadUrl}
               </p>
             )}

@@ -63,7 +63,11 @@ describe('SoftwareVersionManager Add Version validation (#11606)', () => {
 
     expect(await screen.findByText(/valid http\(s\) url/i)).toBeInTheDocument();
     expect(urlInput()).toHaveAttribute('aria-invalid', 'true');
+    expect(urlInput()).toHaveFocus();
     expect(posts()).toHaveLength(0);
+
+    fireEvent.change(urlInput(), { target: { value: 'https://cdn.example/a.msi' } });
+    expect(screen.queryByText(/valid http\(s\) url/i)).not.toBeInTheDocument();
   });
 
   it('still accepts a URL carrying a {{variable}} token', async () => {
