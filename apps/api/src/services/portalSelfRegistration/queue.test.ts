@@ -3,13 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { addMock } = vi.hoisted(() => ({ addMock: vi.fn() }));
 vi.mock('bullmq', () => ({ Queue: class { add = addMock; close = vi.fn(); } }));
 vi.mock('../redis', () => ({ getBullMQConnection: () => ({}) }));
+const capture = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException: capture }));
 
-import { enqueuePortalSelfRegistration } from './queue';
+import { PORTAL_SELF_REGISTRATION_ENQUEUE_TIMEOUT_MS, enqueuePortalSelfRegistration } from './queue';
 import { PORTAL_SELF_REGISTRATION_QUEUE } from './types';
 
 const data = { email: 'pat@contoso.example.com', name: 'Pat Doe', host: 'portal.contoso.example.com' };
 
-beforeEach(() => addMock.mockReset());
+beforeEach(() => { addMock.mockReset(); capture.mockReset(); });
 
 describe('enqueuePortalSelfRegistration (W6 D3)', () => {
   it('adds one job with BullMQ-assigned id, one attempt and PII-safe retention', async () => {
@@ -33,5 +35,20 @@ describe('enqueuePortalSelfRegistration (W6 D3)', () => {
     const logged = JSON.stringify(error.mock.calls);
     expect(logged).not.toContain(data.email);
     expect(logged).not.toContain(data.name);
+  });
+
+  it('a hung add (Redis down, BullMQ retrying forever) gives up after the bound and reports it', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      addMock.mockImplementation(() => new Promise(() => {}));
+      const pending = enqueuePortalSelfRegistration(data);
+      await vi.advanceTimersByTimeAsync(PORTAL_SELF_REGISTRATION_ENQUEUE_TIMEOUT_MS + 1);
+      expect(await pending).toBe(false);
+      expect(capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('EnqueueTimeoutError') }));
+      expect(JSON.stringify(capture.mock.calls)).not.toContain(data.email);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

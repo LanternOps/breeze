@@ -90,6 +90,7 @@ describe('emailDomainOf', () => {
   it('is the lower-cased domain of a single plain mailbox', () => {
     expect(emailDomainOf(' Pat@Contoso.Example.COM ')).toBe('contoso.example.com');
     expect(emailDomainOf('pat.doe+tag@contoso.example.com')).toBe('contoso.example.com');
+    expect(emailDomainOf("o'brien@contoso.example.com")).toBe('contoso.example.com');
     expect(emailDomainOf('no-at-sign')).toBeNull();
     expect(emailDomainOf('trailing@')).toBeNull();
     expect(emailDomainOf('@contoso.example.com')).toBeNull();
@@ -105,6 +106,8 @@ describe('emailDomainOf', () => {
       'pat@contoso.example.com (comment)',
       'pat @contoso.example.com',
       'pat@[192.0.2.1]',
+      'pat%attacker.example.com@contoso.example.com',
+      'attacker.example.com!pat@contoso.example.com',
       'pat\@x@contoso.example.com',
     ]) {
       expect(emailDomainOf(tricky), tricky).toBeNull();

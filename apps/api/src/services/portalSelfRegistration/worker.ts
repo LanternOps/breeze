@@ -21,6 +21,7 @@ import { getBullMQConnection } from '../redis';
 import { captureException } from '../sentry';
 import { attachWorkerObservability } from '../../jobs/workerObservability';
 import { emailDomainOf, resolveSelfRegistrationTarget } from './eligibility';
+import { reportSelfRegistrationFailure, safeErrorFields, sanitizedError } from './errors';
 import { PORTAL_SELF_REGISTRATION_QUEUE, type PortalSelfRegistrationJobData, type SelfRegistrationTarget } from './types';
 
 export type PortalSelfRegistrationJobResult = 'link_sent' | 'existing_account_sent' | 'ineligible' | 'not_sent';
@@ -63,6 +64,7 @@ export async function processPortalSelfRegistration(data: PortalSelfRegistration
   const emailService = getEmailService();
   if (!emailService) {
     console.warn(`${LOG} email service not configured; nothing sent`, { orgId: target.orgId, domain: target.domain });
+    reportSelfRegistrationFailure('not sent: email_unconfigured');
     return 'not_sent';
   }
 
@@ -77,7 +79,8 @@ export async function processPortalSelfRegistration(data: PortalSelfRegistration
         partnerName: target.partnerName,
       });
     } catch (err) {
-      console.error(`${LOG} existing-account email failed`, { orgId: target.orgId, domain: target.domain, error: err instanceof Error ? err.name : 'unknown' });
+      console.error(`${LOG} existing-account email failed`, { orgId: target.orgId, domain: target.domain, ...safeErrorFields(err) });
+      reportSelfRegistrationFailure('not sent: email_send_failed', err);
       return 'not_sent';
     }
     await auditEmailSent(email, target, 'existing_account');
@@ -93,6 +96,7 @@ export async function processPortalSelfRegistration(data: PortalSelfRegistration
   });
   if (!rawToken) {
     console.error(`${LOG} link token not issued (state backend unavailable)`, { orgId: target.orgId, domain: target.domain });
+    reportSelfRegistrationFailure('not sent: token_store_unavailable');
     return 'not_sent';
   }
   try {
@@ -104,7 +108,8 @@ export async function processPortalSelfRegistration(data: PortalSelfRegistration
       partnerName: target.partnerName,
     });
   } catch (err) {
-    console.error(`${LOG} verify email failed`, { orgId: target.orgId, domain: target.domain, error: err instanceof Error ? err.name : 'unknown' });
+    console.error(`${LOG} verify email failed`, { orgId: target.orgId, domain: target.domain, ...safeErrorFields(err) });
+    reportSelfRegistrationFailure('not sent: email_send_failed', err);
     return 'not_sent';
   }
   await auditEmailSent(email, target, 'verify_link');
@@ -113,8 +118,32 @@ export async function processPortalSelfRegistration(data: PortalSelfRegistration
 
 /** The error BullMQ, the shared failure listener and Sentry see: class name only, no message, no cause. */
 export function sanitizedJobError(err: unknown): Error {
-  const name = err instanceof Error ? err.name : 'unknown';
-  return new Error(`${LOG} job failed: ${name}`);
+  return sanitizedError('job failed', err);
+}
+
+/**
+ * A job older than the link lifetime is dropped unsent: its requester has
+ * long since been told "we've emailed you", and a waiting job's address and
+ * name should not sit in Redis while the consumer is down.
+ */
+export const PORTAL_SELF_REGISTRATION_JOB_MAX_AGE_MS = 30 * 60 * 1000;
+
+export async function processPortalSelfRegistrationJob(
+  job: Pick<Job<PortalSelfRegistrationJobData>, 'data' | 'timestamp'>,
+  now: number = Date.now(),
+): Promise<PortalSelfRegistrationJobResult> {
+  if (now - job.timestamp > PORTAL_SELF_REGISTRATION_JOB_MAX_AGE_MS) {
+    console.warn(`${LOG} stale job dropped unsent`, { ageMs: now - job.timestamp });
+    reportSelfRegistrationFailure('not sent: stale_job');
+    return 'not_sent';
+  }
+  try {
+    return await processPortalSelfRegistration(job.data);
+  } catch (err) {
+    // Sanitize BEFORE BullMQ and the shared observability listener see it: a
+    // failed query's message embeds its parameters (the address).
+    throw sanitizedJobError(err);
+  }
 }
 
 let worker: Worker<PortalSelfRegistrationJobData> | null = null;
@@ -122,15 +151,7 @@ let worker: Worker<PortalSelfRegistrationJobData> | null = null;
 export async function initializePortalSelfRegistrationWorker(): Promise<void> {
   worker = new Worker<PortalSelfRegistrationJobData>(
     PORTAL_SELF_REGISTRATION_QUEUE,
-    async (job: Job<PortalSelfRegistrationJobData>) => {
-      try {
-        return await processPortalSelfRegistration(job.data);
-      } catch (err) {
-        // Sanitize BEFORE BullMQ and the shared observability listener see
-        // it: a failed query's message embeds its parameters (the address).
-        throw sanitizedJobError(err);
-      }
-    },
+    async (job: Job<PortalSelfRegistrationJobData>) => processPortalSelfRegistrationJob(job),
     // A stalled job (worker crash mid-send) is failed, never re-run: a re-run
     // could send a second email.
     { connection: getBullMQConnection(), concurrency: WORKER_CONCURRENCY, maxStalledCount: 0 },

@@ -26,11 +26,18 @@ vi.mock('../auditEvents', () => ({
   writeAuditEventAsync: mocks.audit,
 }));
 vi.mock('../redis', () => ({ getBullMQConnection: () => ({}) }));
-vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+const capture = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException: capture }));
 vi.mock('../../jobs/workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../../db', () => ({ db: {}, withSystemDbAccessContext: (fn: () => unknown) => fn() }));
 
-import { buildSelfRegistrationVerifyUrl, processPortalSelfRegistration, sanitizedJobError } from './worker';
+import {
+  PORTAL_SELF_REGISTRATION_JOB_MAX_AGE_MS,
+  buildSelfRegistrationVerifyUrl,
+  processPortalSelfRegistration,
+  processPortalSelfRegistrationJob,
+  sanitizedJobError,
+} from './worker';
 
 const ORG = '7c0a1f7e-1111-4222-8333-444455556666';
 const PARTNER = '9d0a1f7e-1111-4222-8333-444455556666';
@@ -149,6 +156,35 @@ describe('processPortalSelfRegistration (W6 D7)', () => {
     mocks.resolveTarget.mockResolvedValue({ kind: 'eligible', ...base, policyFingerprint: 'f'.repeat(64) });
     expect(await processPortalSelfRegistration(job())).toBe('not_sent');
     expect(mocks.issueToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('processPortalSelfRegistrationJob', () => {
+  it('drops a job older than the link lifetime unsent and reports it', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const now = Date.now();
+    expect(await processPortalSelfRegistrationJob({ data: job(), timestamp: now - PORTAL_SELF_REGISTRATION_JOB_MAX_AGE_MS - 1 }, now)).toBe('not_sent');
+    expect(mocks.resolveTarget).not.toHaveBeenCalled();
+    expect(capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('stale_job') }));
+  });
+
+  it('a thrown failure reaches BullMQ sanitized', async () => {
+    mocks.resolveTarget.mockRejectedValue(new Error(`Failed query params: ${ADDRESS}`));
+    const err = await processPortalSelfRegistrationJob({ data: job(), timestamp: Date.now() }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).not.toContain(ADDRESS);
+  });
+
+  it('a send failure is reported to Sentry without the address', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.resolveTarget.mockResolvedValue({ kind: 'eligible', ...base, policyFingerprint: 'f'.repeat(64) });
+    mocks.sendLink.mockRejectedValue(Object.assign(new Error(`550 rejected ${ADDRESS}`), { code: 'EENVELOPE' }));
+    await processPortalSelfRegistration(job());
+    expect(capture).toHaveBeenCalledTimes(1);
+    const reported = capture.mock.calls[0]![0] as Error;
+    expect(reported.message).toContain('email_send_failed');
+    expect(reported.message).toContain('EENVELOPE');
+    expect(reported.message).not.toContain(ADDRESS);
   });
 });
 

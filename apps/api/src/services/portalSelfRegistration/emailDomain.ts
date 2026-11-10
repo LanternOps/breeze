@@ -1,11 +1,13 @@
 /**
  * Characters that never belong in the single plain mailbox self-registration
- * accepts: whitespace and controls, quoting, address-list and display-name
- * syntax, comments, and route syntax. An address carrying any of them could
- * be parsed differently by a mail transport (two recipients, a display name)
- * than by this domain split, so it is refused outright (parser differential).
+ * accepts: whitespace and controls, double quotes, address-list and
+ * display-name syntax, comments, and source-route syntax (`%`, `!`, which a
+ * legacy relay could honour to deliver elsewhere). An address carrying any of
+ * them could be parsed differently by a mail transport (two recipients, a
+ * display name, a relay hop) than by this domain split, so it is refused
+ * outright (parser differential). An apostrophe (o'brien@…) is fine.
  */
-const NOT_A_PLAIN_MAILBOX = /[\s\p{Cc}"'(),:;<>[\]\\]/u;
+const NOT_A_PLAIN_MAILBOX = /[\s\p{Cc}"(),:;<>[\]\\%!]/u;
 
 /**
  * The exact, lower-cased domain of a single plain mailbox `local@domain`

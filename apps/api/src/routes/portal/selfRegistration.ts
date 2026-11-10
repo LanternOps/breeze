@@ -25,7 +25,8 @@ import { rateLimitIpKey } from '../../services/clientIp';
 import { ANONYMOUS_ACTOR_ID, writeAuditEventAsync } from '../../services/auditEvents';
 import { getPortalSignInCapabilities } from '../../services/portalAccessPolicy';
 import { emailDomainOf, enqueuePortalSelfRegistration } from '../../services/portalSelfRegistration';
-import { completePortalSelfRegistration } from '../../services/portalSelfRegistration/complete';
+import { completePortalSelfRegistration, type CompleteSelfRegistrationOutcome } from '../../services/portalSelfRegistration/complete';
+import { reportSelfRegistrationFailure, safeErrorFields } from '../../services/portalSelfRegistration/errors';
 import { getRedis } from '../../services/redis';
 import { consumePortalSelfRegistrationToken } from './capabilityTokens';
 import { checkRateLimit, getClientIp, normalizeEmail, sweepPortalState } from './helpers';
@@ -47,7 +48,10 @@ export const SELF_REGISTER_INVALID_LINK = 'This link is invalid or has expired. 
 const TOO_MANY = 'Too many requests. Please try again later.';
 const NOT_FOUND = 'Not found';
 const UNAVAILABLE = 'Service temporarily unavailable';
-const TRY_LATER = 'Try again in a few minutes.';
+/** The link was consumed but completion failed on an infrastructure error: the link is spent, so say so. */
+export const SELF_REGISTER_REQUEST_AGAIN = 'Something went wrong. Request access again in a few minutes.';
+/** D10 residual: the account exists but its invite token was not minted. */
+export const SELF_REGISTER_ACCOUNT_PENDING_SETUP = "Your account was created, but we couldn't finish setting it up. Ask your IT provider to resend your invitation.";
 
 const sha256Hex = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -114,7 +118,6 @@ selfRegistrationRoutes.post('/auth/self-register/verify', zValidator('json', sel
     return c.json({ error: SELF_REGISTER_INVALID_LINK }, 400);
   }
 
-  const result = await completePortalSelfRegistration(payload);
   const audit = {
     orgId: payload.orgId,
     actorType: 'system' as const,
@@ -123,6 +126,20 @@ selfRegistrationRoutes.post('/auth/self-register/verify', zValidator('json', sel
     initiatedBy: 'manual' as const,
     action: 'portal.auth.self_register.verify',
   };
+
+  // The token is already burned. An infrastructure failure past this point
+  // must not surface the raw error (a failed query's message embeds the
+  // address) through the global error handler, and must tell the requester
+  // the link is spent.
+  let result: CompleteSelfRegistrationOutcome;
+  try {
+    result = await completePortalSelfRegistration(payload);
+  } catch (err) {
+    console.error('[portal-self-registration] verify failed after consume', { orgId: payload.orgId, ...safeErrorFields(err) });
+    reportSelfRegistrationFailure('verify failed after consume', err);
+    await writeAuditEventAsync(c, { ...audit, resourceType: 'portal_auth', result: 'failure', details: { outcome: 'error' } });
+    return c.json({ error: SELF_REGISTER_REQUEST_AGAIN }, 503);
+  }
 
   switch (result.outcome) {
     case 'refused':
@@ -162,10 +179,9 @@ selfRegistrationRoutes.post('/auth/self-register/verify', zValidator('json', sel
         details: { outcome: 'account_created', mode: 'instant', inviteIssued: result.inviteToken !== null },
       });
       if (!result.inviteToken) {
-        // D10 residual: the account exists (invited, visible to the MSP, who
-        // can resend); a repeat request now gets the existing-account email.
-        console.error('[portal-self-registration] invite token not issued after account creation', { orgId: result.orgId });
-        return c.json({ error: TRY_LATER }, 503);
+        // D10 residual (logged and reported in complete.ts): the account
+        // exists, invited and visible to the MSP, who can resend the invite.
+        return c.json({ error: SELF_REGISTER_ACCOUNT_PENDING_SETUP }, 503);
       }
       return c.json({ outcome: 'account_created', next: `/accept-invite?token=${encodeURIComponent(result.inviteToken)}` });
   }

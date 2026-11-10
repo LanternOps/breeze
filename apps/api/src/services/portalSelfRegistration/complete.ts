@@ -32,6 +32,7 @@ import { createPortalAccessRequest } from '../portalAccessRequests';
 import { isDomainVerifiedForOrg } from '../portalDomainVerification';
 import { getActiveOrgTenant } from '../tenantStatus';
 import { emailDomainOf } from './emailDomain';
+import { reportSelfRegistrationFailure, safeErrorFields } from './errors';
 
 export type SelfRegistrationRefusal = 'org_inactive' | 'domain_not_verified' | 'policy_changed' | 'mode_off';
 
@@ -167,10 +168,12 @@ export async function completePortalSelfRegistration(
       authEpoch: account.authEpoch,
     });
   } catch (err) {
-    console.error('[portal-self-registration] invite token issue failed after account creation', {
-      orgId, error: err instanceof Error ? err.name : 'unknown',
-    });
+    console.error('[portal-self-registration] invite token issue failed after account creation', { orgId, ...safeErrorFields(err) });
     inviteToken = null;
+  }
+  if (!inviteToken) {
+    // D10 residual: reported once, here (the route answers 503).
+    reportSelfRegistrationFailure('instant account created without an invite token');
   }
   return { outcome: 'account_created', orgId, portalUserId: account.portalUserId, inviteToken };
 }

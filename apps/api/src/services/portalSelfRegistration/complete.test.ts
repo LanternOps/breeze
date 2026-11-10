@@ -41,6 +41,8 @@ vi.mock('../contacts/portalInvite', async (importOriginal) => ({
 }));
 vi.mock('../contacts/loginLink', () => ({ linkLoginToContact: mocks.linkLoginToContact }));
 vi.mock('../../routes/portal/capabilityTokens', () => ({ issuePortalCapabilityToken: mocks.issuePortalCapabilityToken }));
+const capture = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException: capture }));
 vi.mock('../../db', () => ({
   db: {
     select: () => {
@@ -140,6 +142,7 @@ describe('completePortalSelfRegistration — instant (D10)', () => {
   it('a token store outage leaves the account and returns a null invite token', async () => {
     mocks.issuePortalCapabilityToken.mockResolvedValue(null);
     expect(await completePortalSelfRegistration(payload(), NOW)).toEqual({ outcome: 'account_created', orgId: ORG, portalUserId: 'new-user', inviteToken: null });
+    expect(capture).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('without an invite token') }));
   });
 
   it('instant mode never modifies an existing account at the address', async () => {

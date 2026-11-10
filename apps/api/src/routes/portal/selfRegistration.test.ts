@@ -61,7 +61,13 @@ vi.mock('../../services/redis', async (importOriginal) => ({
 
 import { Hono } from 'hono';
 import { authRoutes } from './auth';
-import { SELF_REGISTER_ACCEPTED_MESSAGE, SELF_REGISTER_INVALID_LINK, selfRegistrationRoutes } from './selfRegistration';
+import {
+  SELF_REGISTER_ACCEPTED_MESSAGE,
+  SELF_REGISTER_ACCOUNT_PENDING_SETUP,
+  SELF_REGISTER_INVALID_LINK,
+  SELF_REGISTER_REQUEST_AGAIN,
+  selfRegistrationRoutes,
+} from './selfRegistration';
 import { portalRateLimitBuckets } from './helpers';
 import { __testOnly as policyTestOnly } from '../../services/portalAccessPolicy';
 
@@ -108,6 +114,7 @@ beforeEach(() => {
   h.domainCalls.length = 0;
   h.hostCalls.length = 0;
   h.redisRef.current = {};
+  ipCounter = 0;
   h.enqueue.mockResolvedValue(true);
   h.audit.mockResolvedValue(undefined);
   portalRateLimitBuckets.clear();
@@ -157,6 +164,8 @@ describe('POST /auth/self-register (D3, Review Focus 1)', () => {
     expect(ipSnaps[1]).toEqual(ipSnaps[0]);
     expect(JSON.parse(ipSnaps[0]!.body)).toEqual({ error: 'Too many requests. Please try again later.' });
     expect(Number(ipSnaps[0]!.retryAfter)).toBeGreaterThan(0);
+    // A throttled submit enqueues nothing: 5 accepted per IP, twice.
+    expect(h.enqueue).toHaveBeenCalledTimes(10);
 
     // Per email: 3 / day, from different IPs.
     const emailSnaps = [];
@@ -164,6 +173,7 @@ describe('POST /auth/self-register (D3, Review Focus 1)', () => {
       for (let n = 0; n < 3; n += 1) expect((await submit({ email, name: 'P' })).status).toBe(200);
       emailSnaps.push(await snapshot(await submit({ email, name: 'P' })));
     }
+    expect(h.enqueue).toHaveBeenCalledTimes(16);
     expect(emailSnaps[0]!.status).toBe(429);
     expect(emailSnaps[1]).toEqual(emailSnaps[0]);
 
@@ -287,7 +297,23 @@ describe('POST /auth/self-register/verify (D8–D10, Review Focus 4)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     h.consume.mockResolvedValue(PAYLOAD);
     h.complete.mockResolvedValue({ outcome: 'account_created', orgId: ORG, portalUserId: 'u-1', inviteToken: null });
-    expect((await verify('t')).status).toBe(503);
+    const res = await verify('t');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: SELF_REGISTER_ACCOUNT_PENDING_SETUP });
+  });
+
+  it('verify: a completion failure after the token is burned answers 503 "request again" and never surfaces the raw error', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.consume.mockResolvedValue(PAYLOAD);
+    h.complete.mockRejectedValue(Object.assign(new Error(`Failed query: insert ... params: ${PAYLOAD.email},${PAYLOAD.name}`), { name: 'DrizzleQueryError' }));
+    const res = await verify('t');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: SELF_REGISTER_REQUEST_AGAIN });
+    const logged = JSON.stringify(error.mock.calls);
+    expect(logged).toContain('DrizzleQueryError');
+    expect(logged).not.toContain(PAYLOAD.email);
+    expect(logged).not.toContain(PAYLOAD.name);
+    expect(h.audit.mock.calls.at(-1)![1]).toMatchObject({ orgId: ORG, action: 'portal.auth.self_register.verify', result: 'failure', details: { outcome: 'error' } });
   });
 
   it('verify: request_sent audits against the access request', async () => {

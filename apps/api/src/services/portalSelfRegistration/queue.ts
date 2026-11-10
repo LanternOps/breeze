@@ -9,7 +9,15 @@
  */
 import { Queue } from 'bullmq';
 import { getBullMQConnection } from '../redis';
+import { reportSelfRegistrationFailure, safeErrorFields } from './errors';
 import { PORTAL_SELF_REGISTRATION_QUEUE, type PortalSelfRegistrationJobData } from './types';
+
+/**
+ * The BullMQ connection retries forever while Redis is down, so an unbounded
+ * add would hang the public submit. Bounded: a slow or failed enqueue answers
+ * the same 200 after at most this long, whatever the address.
+ */
+export const PORTAL_SELF_REGISTRATION_ENQUEUE_TIMEOUT_MS = 3000;
 
 export const PORTAL_SELF_REGISTRATION_JOB = 'self-register';
 
@@ -28,12 +36,22 @@ function getQueue(): Queue<PortalSelfRegistrationJobData> {
 
 /** False when the job could not be enqueued (logged without PII); the route still answers its uniform 200. */
 export async function enqueuePortalSelfRegistration(data: PortalSelfRegistrationJobData): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await getQueue().add(PORTAL_SELF_REGISTRATION_JOB, data, PORTAL_SELF_REGISTRATION_JOB_OPTIONS);
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(Object.assign(new Error('enqueue timed out'), { name: 'EnqueueTimeoutError' })),
+        PORTAL_SELF_REGISTRATION_ENQUEUE_TIMEOUT_MS,
+      );
+    });
+    await Promise.race([getQueue().add(PORTAL_SELF_REGISTRATION_JOB, data, PORTAL_SELF_REGISTRATION_JOB_OPTIONS), timeout]);
     return true;
   } catch (err) {
-    console.error('[portal-self-registration] enqueue failed', { error: err instanceof Error ? err.name : 'unknown' });
+    console.error('[portal-self-registration] enqueue failed', safeErrorFields(err));
+    reportSelfRegistrationFailure('enqueue failed', err);
     return false;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
