@@ -1,6 +1,6 @@
 /**
  * #4342 W3 — `log_correlations.alert_id` and `network_change_events.alert_id`
- * become ON DELETE SET NULL (migration 2027-01-22-233900). Before it, both were
+ * become ON DELETE SET NULL (migration 2027-01-23-094000). Before it, both were
  * NO ACTION, so deleting a closed alert that a log correlation or a network
  * change event pointed at aborted with 23503 — the alert retention job could
  * never remove one. The rows themselves are history that outlives the alert,
@@ -17,7 +17,7 @@ import { splitSqlStatements } from '../../db/autoMigrate';
 import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
-const MIGRATION = '2027-01-22-233900-alert-retention-fk-set-null.sql';
+const MIGRATION = '2027-01-23-094000-alert-retention-fk-set-null.sql';
 const CONSTRAINTS = ['log_correlations_alert_id_alerts_id_fk', 'network_change_events_alert_id_alerts_id_fk'];
 
 async function seed() {

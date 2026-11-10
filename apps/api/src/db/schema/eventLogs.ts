@@ -125,7 +125,7 @@ export const logCorrelations = pgTable('log_correlations', {
   occurrences: integer('occurrences').notNull(),
   affectedDevices: jsonb('affected_devices').$type<LogCorrelationAffectedDevice[]>().notNull(),
   sampleLogs: jsonb('sample_logs').$type<LogCorrelationSampleLog[]>(),
-  // ON DELETE SET NULL (2027-01-22-233900, #4342 W3): history that outlives
+  // ON DELETE SET NULL (2027-01-23-094000, #4342 W3): history that outlives
   // the alert, which closed-alert retention may delete.
   alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'set null' }),
   status: logCorrelationStatusEnum('status').notNull().default('active'),

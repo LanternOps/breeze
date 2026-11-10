@@ -38,7 +38,7 @@
  * `remediation_suggestions`, `metric_anomalies`, `metric_anomaly_episodes`,
  * `ai_agent_runs`, `ai_agent_fix_watches`, `fix_outcomes`,
  * `alert_correlation_groups.root_alert_id`, and — since migration
- * 2027-01-22-233900 — `log_correlations` and `network_change_events`, which
+ * 2027-01-23-094000 — `log_correlations` and `network_change_events`, which
  * were NO ACTION and would have aborted the delete.
  *
  * A closed alert with neither close stamp (legacy or hand-edited rows) is never
