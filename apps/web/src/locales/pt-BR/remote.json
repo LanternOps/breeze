@@ -161,7 +161,7 @@
     "dateRange": "Intervalo de datas",
     "detailsTitle": "Detalhes do evento",
     "eventCount": "Quantidade de eventos",
-    "eventIdPlaceholder": "ID do evento",
+    "eventIdPlaceholder": "ex.: 7036",
     "eventLogs": "Logs de Eventos",
     "eventsTitle": "{{name}} Eventos",
     "fields": {
@@ -189,9 +189,9 @@
     },
     "logTitle": "Log {{name}}",
     "lookupEventId": "Consultar ID do evento",
-    "noEvents": "Nenhum evento",
-    "noHandler": "Nenhum manipulador disponível",
-    "noMatches": "Nenhuma correspondência",
+    "noEvents": "Nenhum log de eventos disponível.",
+    "noHandler": "Nenhum log de eventos disponível. Conecte um manipulador de consultas para buscar eventos deste dispositivo.",
+    "noMatches": "Nenhum evento encontrado. Tente ajustar os filtros.",
     "page": "Página {{current}} de {{total}}",
     "ranges": {
       "allTime": "Todo o período",
@@ -201,7 +201,7 @@
       "lastHour": "Última hora"
     },
     "recordId": "ID do registro: {{id}}",
-    "searchPlaceholder": "Pesquisar...",
+    "searchPlaceholder": "Pesquisar eventos...",
     "showing": "Mostrando {{start}} para {{end}} de {{total}}",
     "time": {
       "daysAgo": "há {{count}} d",
@@ -241,7 +241,7 @@
       "minutesAgo": "há {{count}} min"
     },
     "title": "Atividade de arquivos",
-    "unverifiedHint": "O resultado ainda não foi verificado"
+    "unverifiedHint": "O dispositivo não respondeu a tempo — atualize para verificar"
   },
   "fileManager": {
     "activeCount": "{{count}} ativo(s)",
@@ -325,7 +325,7 @@
     "noMatches": "Nenhuma correspondência",
     "processMemory": "Memória dos processos",
     "processes": "Processos",
-    "searchPlaceholder": "Pesquisar...",
+    "searchPlaceholder": "Pesquisar por nome ou PID...",
     "showing": "Mostrando {{shown}} de {{total}} processos",
     "status": {
       "idle": "Ocioso",
@@ -387,11 +387,11 @@
     "device": "Dispositivo: {{id}}",
     "editValue": "Editar valor",
     "enterDecimalValue": "Informe o valor decimal",
-    "enterHexBytes": "Informe os bytes hexadecimais",
+    "enterHexBytes": "Insira bytes hexadecimais separados por espaços (ex.: 00 01 02 03)",
     "enterHexValue": "Informe o valor hexadecimal",
     "enterKeyName": "Informe o nome da chave",
     "enterStringValue": "Informe o valor da string",
-    "enterStrings": "Informe as strings",
+    "enterStrings": "Insira cada string em uma nova linha",
     "enterValueName": "Informe o nome do valor",
     "errors": {
       "createKey": "Falha ao criar a chave do registro",
@@ -423,7 +423,7 @@
     "noValues": "Nenhum valor nesta chave",
     "parentPath": "Caminho pai",
     "root": "Raiz",
-    "searchPlaceholder": "Pesquisar...",
+    "searchPlaceholder": "Pesquisar valores...",
     "title": "Editor do Registro",
     "value": "Valor",
     "valueCount": "Quantidade de valores",
@@ -452,11 +452,11 @@
         "title": "Iniciar sessão de terminal"
       }
     },
-    "noOnlineDevices": "Nenhum dispositivo online",
-    "noSearchMatches": "Nenhum resultado para a pesquisa",
+    "noOnlineDevices": "Nenhum dispositivo online disponível.",
+    "noSearchMatches": "Nenhum dispositivo corresponde à sua pesquisa.",
     "openDeviceList": "Abrir lista de dispositivos",
     "os": "SO",
-    "searchPlaceholder": "Pesquisar..."
+    "searchPlaceholder": "Pesquisar dispositivos online..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -564,7 +564,7 @@
       "start": "Iniciar",
       "stop": "Parar"
     },
-    "adjustSearch": "Ajustar pesquisa",
+    "adjustSearch": "Tente ajustar sua pesquisa",
     "arguments": "Argumentos",
     "author": "Autor",
     "deviceId": "ID do dispositivo: {{id}}",
@@ -633,7 +633,7 @@
       "stop": "Parar"
     },
     "actionBlocked": "Ação bloqueada",
-    "adjustHint": "Ajuste os filtros para encontrar serviços",
+    "adjustHint": "Tente ajustar a pesquisa ou os filtros.",
     "agentRestartConfirm": "Confirmar reinicialização do agente",
     "agentStopBlocked": "Não é possível parar o serviço do agente",
     "allStatus": "Todos os status",
@@ -652,7 +652,7 @@
     "page": "Página {{current}} de {{total}}",
     "refreshHint": "Atualizar a lista de serviços",
     "restartService": "Reiniciar serviço",
-    "searchPlaceholder": "Pesquisar...",
+    "searchPlaceholder": "Pesquisar serviços...",
     "serviceConfirm": "Tem certeza de que deseja {{action}} o serviço {{service}}?",
     "showing": "Mostrando {{start}} para {{end}} de {{total}}",
     "startService": "Iniciar serviço",
@@ -688,7 +688,7 @@
     },
     "noSessions": "Nenhuma sessão",
     "page": "Página {{current}} de {{total}}",
-    "searchPlaceholder": "Pesquisar...",
+    "searchPlaceholder": "Pesquisar por dispositivo ou usuário...",
     "showing": "Mostrando {{start}} para {{end}} de {{total}}",
     "stats": {
       "averageDuration": "Duração média",
@@ -756,7 +756,7 @@
     "deletePermanently": "Excluir permanentemente",
     "deleteSelected": "Excluir permanentemente ({{count}})",
     "empty": "Vazio",
-    "emptyConfirm": "Tem certeza de que deseja esvaziar a lixeira?",
+    "emptyConfirm": "Esvaziar toda a lixeira? Todos os itens serão excluídos permanentemente. Isso não pode ser desfeito.",
     "emptyTrash": "Esvaziar lixeira",
     "errors": {
       "empty": "Falha ao esvaziar a lixeira",
@@ -775,13 +775,13 @@
   "vncViewer": {
     "connect": "Conectar",
     "credentials": {
-      "macDescription": "Credenciais do Mac",
+      "macDescription": "O Mac está usando a autenticação do Apple Remote Desktop. Insira uma conta de usuário do macOS com acesso ao Compartilhamento de Tela (o nome de login e a senha do usuário).",
       "macLoginRequired": "O login do Mac é obrigatório",
       "macPassword": "Senha do Mac",
-      "macUsername": "Nome de usuário do Mac",
+      "macUsername": "Nome de usuário do macOS",
       "password": "Senha",
       "passwordRequired": "A senha é obrigatória",
-      "vncDescription": "Credenciais VNC"
+      "vncDescription": "Insira a senha definida em System Settings > General > Sharing > Screen Sharing > Computer Settings."
     },
     "disconnect": "Desconectar",
     "errors": {
@@ -803,7 +803,7 @@
       "error": "Erro",
       "passwordRequired": "Senha obrigatória"
     },
-    "syncClipboard": "Sincronizar área de transferência",
+    "syncClipboard": "Sincronizar a área de transferência com o remoto",
     "tunnel": "Túnel {{id}}"
   },
   "vncViewerPage": {
