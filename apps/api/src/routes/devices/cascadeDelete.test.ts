@@ -119,6 +119,7 @@ import {
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isAgentConnected, sendCommandToAgent } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 
 const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
 
@@ -892,6 +893,44 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
 
       expect(res.status).toBe(409);
       expect(screenshotMocks.removeScreenshotFiles).not.toHaveBeenCalled();
+    });
+
+    it.each(['40P01', '40001', '57014'])('answers transient Postgres %s with a retryable 409, not a 500 (#11627)', async (code) => {
+      rigDeviceLookup(DEVICE);
+      vi.mocked(db.transaction).mockImplementation(async () => {
+        throw Object.assign(new Error('Failed query'), { cause: { code } });
+      });
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toMatch(/try again/i);
+    });
+
+    it('answers an unclassified cascade failure with an actionable message and reports it (#11627)', async () => {
+      rigDeviceLookup(DEVICE);
+      vi.mocked(db.transaction).mockImplementation(async () => {
+        throw Object.assign(new Error('Failed query'), { cause: { code: '23502' } });
+      });
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      // Still a 500 (a deterministic server defect must not advertise "retry"),
+      // but the body is something the UI can show instead of the global
+      // "Internal Server Error", and the failure reaches Sentry.
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.code).toBe('DEVICE_PURGE_FAILED');
+      expect(body.error).toMatch(/could not be permanently deleted/i);
+      expect(body.error).toContain('23502');
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('still reports success when some files cannot be removed', async () => {

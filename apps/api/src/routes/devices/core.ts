@@ -2862,8 +2862,11 @@ coreRoutes.delete(
       // the transient, retryable conflict it is. The lock is the FIRST
       // statement of the purge, so a bounded lock failure rolls back having
       // mutated nothing at all and a retry is an ordinary retry.
-      if (pgCode === '55P03') {
-        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it`, err);
+      // #11627 — deadlock (40P01) / serialization failure (40001) / statement
+      // timeout (57014) are the same story: the purge rolled back whole and
+      // nothing was applied, so a retry is an ordinary retry.
+      if (pgCode === '55P03' || pgCode === '40P01' || pgCode === '40001' || pgCode === '57014') {
+        console.warn(`[devices] transient ${pgCode} during permanent delete of ${deviceId}; another writer holds it`, err);
         return c.json({
           error: 'Device is busy: another operation is currently modifying it. Try again in a moment.',
         }, 409);
@@ -2878,7 +2881,15 @@ coreRoutes.delete(
       // unchanged so the response contract and Sentry reporting stay owned by
       // onError.
       console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId}`, err);
-      throw err;
+      // #11627 — still a 500, but answered here with a body the UI can show.
+      // Rethrowing reached the global onError, whose literal "Internal Server
+      // Error" is all the operator saw in the toast. Sentry reporting moves
+      // here with the response.
+      captureException(err, c);
+      return c.json({
+        error: `This device could not be permanently deleted because of a server-side error${pgCode ? ` (database code ${pgCode})` : ''}. Try again; if it keeps failing, contact support.`,
+        code: 'DEVICE_PURGE_FAILED',
+      }, 500);
     }
 
     // #8117 — the purge committed (its system context is a top-level
