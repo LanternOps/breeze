@@ -121,6 +121,9 @@ vi.mock('../services/wisp/concernRollup', () => ({
   rollupDeviceConcerns: (...a: unknown[]) => { h.order.push('rollupDeviceConcerns'); return h.rollupDeviceConcerns(...a); },
 }));
 vi.mock('../services/wisp/assessment', () => ({ enqueueAssessment: h.enqueueAssessment }));
+// W07: the running-check-in sweep is pinned by wispCheckInRuns.integration.test.ts.
+const reconcileRunningCheckIns = vi.hoisted(() => vi.fn(async (_now: Date) => ({ posted: 0 })));
+vi.mock('../services/wisp/checkInRuns', () => ({ reconcileRunningCheckIns }));
 vi.mock('../services/wisp/checkIns', () => ({
   fireCheckIn: (...a: unknown[]) => { h.order.push('fireCheckIn'); return h.fireCheckIn(...a); },
   reconcileOrphanCheckIns: (...a: unknown[]) => { h.order.push('reconcileOrphanCheckIns'); return h.reconcileOrphanCheckIns(...a); },
@@ -227,7 +230,7 @@ describe('processWakeTick', () => {
     expect(result).toEqual({
       grantsTicked: 0, watchesFired: 0, watchesUnchanged: 0, staleTicketsPublished: 0, watchesStopped: 0,
       grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, concernRollupsOpened: 0, checkInsRefired: 0,
-      checkInTriggersFired: 0, checkInTriggersCancelled: 0,
+      checkInTriggersFired: 0, checkInTriggersCancelled: 0, checkInRunsPosted: 0,
     });
     expect(h.executes).toHaveLength(0);
     expect(h.order).toEqual([]);
@@ -577,6 +580,24 @@ describe('processWakeTick', () => {
     const result = await processWakeTick(NOW);
     expect(result).toMatchObject({ checkInTriggersFired: 2, checkInTriggersCancelled: 1 });
     expect(h.reconcileCheckInTriggers).toHaveBeenCalledWith(NOW);
+  });
+
+  it('W07: processWakeTick reports the run check-ins the running reconcile posted', async () => {
+    reconcileRunningCheckIns.mockResolvedValueOnce({ posted: 3 });
+    const result = await processWakeTick(NOW);
+    expect(result.checkInRunsPosted).toBe(3);
+    expect(reconcileRunningCheckIns).toHaveBeenCalledWith(NOW);
+  });
+
+  it('W07: a running-check-in reconcile failure is reported under its own section and the later sections still run', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const boom = new Error('running reconcile boom');
+    reconcileRunningCheckIns.mockRejectedValueOnce(boom);
+    const result = await processWakeTick(NOW);
+    expect(result.checkInRunsPosted).toBe(0);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'reconcileRunningCheckIns' });
+    expect(h.pollStaleTickets).toHaveBeenCalledWith(NOW);
+    err.mockRestore();
   });
 
   it('W04: a trigger reconcile failure is reported under its own section and the later sections still run', async () => {

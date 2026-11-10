@@ -10,14 +10,15 @@ import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { OverflowTabs, type OverflowTab } from '../shared/OverflowTabs';
 import { loginPathWithNext } from '../../lib/authScope';
-import TicketQueueList from './TicketQueueList';
+import TicketQueueList, { queueOptionId } from './TicketQueueList';
 import TicketArchivedList from './TicketArchivedList';
 import TicketWorkbench from './TicketWorkbench';
 import InboundReviewQueue from './InboundReviewQueue';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { usePermissions } from '../../lib/permissions';
 import { useQueueKeyboard } from './useQueueKeyboard';
-import { type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
+import { formatRelative, NEUTRAL_CHIP_TEXT, slaState, ticketDisplayNumber, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
+import { useUiStore } from '../../stores/uiStore';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { replaceUrl } from '../../lib/replaceUrl';
@@ -50,6 +51,26 @@ function skipReasonLabel(code: string, t: TFunction): string {
 
 function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPriority, t: TFunction): string {
   return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketsPage.priority.${priority}`);
+}
+
+/** What the queue's live region says when j/k lands on a ticket:
+ *  "<number> <subject>, <priority> priority[, <SLA state>]". */
+function queueAnnouncement(ticket: TicketSummary, config: TicketConfig | null, t: TFunction): string {
+  const parts = {
+    number: ticketDisplayNumber(ticket),
+    subject: ticket.subject,
+    priority: translatedPriorityLabel(config, ticket.priority, t),
+  };
+  const sla = slaState(ticket);
+  const slaText =
+    sla.kind === 'ok' ? t('ticketsPage.announce.sla.ok', { relative: formatRelative(sla.minutesLeft) })
+    : sla.kind === 'at-risk' ? t('ticketsPage.announce.sla.atRisk', { relative: formatRelative(sla.minutesLeft) })
+    : sla.kind === 'paused' ? t('ticketsPage.announce.sla.paused', { relative: formatRelative(sla.minutesLeft) })
+    : sla.kind === 'breached' ? t('ticketsPage.announce.sla.breached')
+    : null;
+  return slaText
+    ? t('ticketsPage.announce.ticketWithSla', { ...parts, sla: slaText })
+    : t('ticketsPage.announce.ticket', parts);
 }
 
 function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus, t: TFunction): string {
@@ -217,6 +238,9 @@ export default function TicketsPage() {
   const [assignees, setAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
   // Bulk selection (UI brief §6): checkbox column + slide-up action bar.
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
+  // Polite live-region text: set on keyboard moves and `x` toggles only, so
+  // auto-select on load and pointer clicks stay silent.
+  const [announcement, setAnnouncement] = useState('');
   const [bulkAssignee, setBulkAssignee] = useState(''); // '' = none; 'unassign' sentinel = null assignee
   const [bulkStatus, setBulkStatus] = useState('');
   // Bulk delete is confirm-gated (soft-delete hides from all queues).
@@ -543,8 +567,14 @@ export default function TicketsPage() {
     if (tickets.length === 0) return;
     const idx = selected ? tickets.findIndex((t) => t.id === selected.id) : -1;
     const next = tickets[Math.min(tickets.length - 1, Math.max(0, idx + delta))];
-    if (next) select(next);
-  }, [tickets, selected, select]);
+    if (!next) return;
+    select(next);
+    // DOM focus follows the selection (roving tab stop) so Tab leaves from
+    // the right row and the row scrolls into view; the live region gives a
+    // short summary instead of the row's full text.
+    document.getElementById(queueOptionId(next.id))?.focus();
+    setAnnouncement(queueAnnouncement(next, config, t));
+  }, [tickets, selected, select, config, t]);
 
   const assignMe = useCallback(async () => {
     if (!selected) return;
@@ -577,6 +607,14 @@ export default function TicketsPage() {
       return next;
     });
   }, []);
+
+  // `x`: the keyboard path to bulk selection (row checkboxes are pointer-only).
+  const toggleActiveBulk = useCallback(() => {
+    if (!selected) return;
+    const count = bulkSelectedIds.size + (bulkSelectedIds.has(selected.id) ? -1 : 1);
+    toggleBulkSelect(selected.id);
+    setAnnouncement(t('ticketsPage.selectedCount', { count }));
+  }, [selected, bulkSelectedIds, toggleBulkSelect, t]);
 
   const clearBulkSelection = useCallback(() => {
     setBulkSelectedIds(new Set());
@@ -666,6 +704,8 @@ export default function TicketsPage() {
     onFocusReply: () => focusComposer(false),
     onFocusInternal: () => focusComposer(true),
     onResolve: () => { if (selected) setResolveToken((t) => t + 1); },
+    // Bulk selection lives on the live queue tabs only (review/archived have none).
+    onToggleBulk: tab === 'review' || tab === 'archived' ? undefined : toggleActiveBulk,
     onEscape: () => (document.activeElement as HTMLElement | null)?.blur()
   });
 
@@ -888,7 +928,21 @@ export default function TicketsPage() {
               >
                 {t('ticketsPage.selectAll')}
               </button>
+              {/* The queue's j/k/x/a/r/n/e keys are otherwise undiscoverable:
+                  this opens the global `?` card, which lists them. */}
+              <button
+                type="button"
+                onClick={() => useUiStore.getState().openShortcutsHelp()}
+                aria-label={t('common:layout.shortcuts.title')}
+                aria-keyshortcuts="?"
+                data-testid="tickets-shortcuts-hint"
+                className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+              >
+                {t('ticketsPage.shortcutsButton')}
+                <kbd aria-hidden="true" className={cn('inline-flex min-w-4 items-center justify-center rounded border bg-muted px-1 font-mono text-[11px] font-semibold leading-4', NEUTRAL_CHIP_TEXT)}>?</kbd>
+              </button>
             </div>
+            <p role="status" className="sr-only" data-testid="tickets-queue-announcer">{announcement}</p>
             <div className="min-h-0 flex-1 overflow-y-auto">
               <TicketQueueList
                 tickets={tickets}
@@ -899,6 +953,7 @@ export default function TicketsPage() {
                 onClearFilters={filtersActive ? clearFilters : undefined}
                 bulkSelectedIds={bulkSelectedIds}
                 onToggleSelect={toggleBulkSelect}
+                hostHandlesArrowKeys
               />
             </div>
             {bulkSelectedIds.size > 0 && (

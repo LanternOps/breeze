@@ -154,7 +154,7 @@ deployment env vars.
 | `IS_HOSTED` | — | Yes (prod) | `true` for hosted SaaS edition, `false` for self-hosted. Must be set explicitly — the API refuses to boot otherwise. Controls signup gating, billing, email-verification policy, and the default for signup-abuse detection. |
 | `ABUSE_SIGNALS_ENABLED` | value of `IS_HOSTED` | | Signup-abuse detection switch. Defaults to the value of `IS_HOSTED` — **on** for a hosted deployment, **off** for a self-hosted one (its heuristics police untrusted public signups and are noise on a single-team install; when off, the only artifact is one `[AbuseSignals] Disabled` line at boot). Set `true` to opt a genuinely multi-tenant self-hosted service in, or `false` to switch a hosted deployment off. When set, it must be a boolean (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) — validated at boot. |
 | `TRUST_PROXY_HEADERS` | — | Yes (prod) | `true` when behind a reverse proxy (Caddy, Cloudflare). Must be set explicitly in production. |
-| `TRUSTED_PROXY_CIDRS` | — | When `TRUST_PROXY_HEADERS=true` | Comma-separated CIDRs of trusted reverse proxies (e.g., `10.0.0.0/8,172.16.0.0/12`). Required when proxy headers are trusted. |
+| `TRUSTED_PROXY_CIDRS` | — | When `TRUST_PROXY_HEADERS=true` | Comma-separated CIDRs of trusted reverse proxies (e.g., `10.0.0.0/8,172.16.0.0/12`).  Required when proxy headers are trusted. At startup the API compares the list with the subnets it is attached to and logs one `[proxy-trust]` warning if none overlap — usually a pinned container address that went stale after a recreate or host reboot. It is a warning only (a proxy outside the attached networks is a valid topology); fix it by setting the proxy's current `/32` or by pinning the proxy to a static address. |
 | `INTERNAL_SERVICE_CIDRS` | — (compose: `BREEZE_DOCKER_SUBNET`) | | Private CIDRs of in-cluster callers (portal and web server-side rendering) whose plain-HTTP calls to `INTERNAL_API_HOSTS` are let through `FORCE_HTTPS`. The API checks the socket source address and never exempts a trusted proxy. Empty disables the exemption; public or all-address ranges refuse startup. |
 | `INTERNAL_API_HOSTS` | `api:3001` | | Comma-separated `host:port` values that in-cluster callers use to reach the API (the host in `INTERNAL_API_URL`). |
 | `TRUST_CF_CONNECTING_IP` | `false` | `true` / `false`, `1` / `0`, `yes` / `no`, `on` / `off` (empty or unset is allowed) | Set to `true` **only** when Breeze is fronted by Cloudflare. Cloudflare overwrites the `CF-Connecting-IP` header at its edge, but a non-Cloudflare reverse proxy (including the bundled Caddy) does not strip it — so trusting it without a Cloudflare front would let a client spoof the header to defeat IP allowlists and per-IP rate limits. When off, client IPs are resolved from `X-Forwarded-For` instead. If you are behind Cloudflare and leave this unset, client-IP attribution (rate limits, audit logs, IP allowlists) falls back to `X-Forwarded-For`; the API logs a startup warning in that case. **From v0.106.0 a value outside the list above stops the API from starting** — previously a typo here was silently read as "off", quietly attributing every client IP to the wrong address. |
@@ -369,6 +369,17 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `USER_RISK_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
+
+#### Report-only retention jobs
+
+Some retention jobs ship **report-only**: each nightly run counts the rows it would delete and deletes nothing. Each of these jobs has its own `<NAME>_RETENTION_ENFORCE` variable, listed with that job's other settings when the job is added.
+
+- **Default:** `false`, so the job only reports. An unset or empty value uses the default.
+- **Turning deletion on:** set the variable to `true` (or `1`) and restart the API. Only `true`/`1` and `false`/`0` are accepted, in any letter case. Any other value logs a warning and the job stays report-only.
+- **What to check before turning it on:** after a few nightly runs, read the job's `REPORT-ONLY` log line, which has the form `[ExampleRetention] REPORT-ONLY: 1200 example_table rows eligible (window 120 d); set EXAMPLE_RETENTION_ENFORCE=true to delete`, and the Prometheus gauge `breeze_retention_rows_eligible{job_name="…"}`. Both show how many rows the first enforcing run would remove. The count stops at one run's capacity (`BATCH_SIZE × MAX_BATCHES`). The log line marks a capped count with `+`, and a larger backlog drains over several nights.
+- **Once enforcing:** the job reports `breeze_retention_rows_deleted_total`. While a backlog remains, it also sets `breeze_retention_backlog_incomplete` to `1`.
+
+Deleted rows cannot be recovered. Confirm you have a current database backup before you turn on any `_ENFORCE` variable.
 
 ### Metric history retention (`metric_rollups`)
 
@@ -1255,6 +1266,30 @@ The warranty worker looks each physical device's serial number up against its ma
 | Variable | Default | Description |
 |---|---|---|
 | `CLIENT_AI_ENTRA_CLIENT_ID` | — | Entra application (client) ID for the multi-tenant **Breeze AI for Office** add-in app registration. The entire `/api/v1/client-ai/admin/*` admin surface (tenant mapping, org policy, usage, templates) answers `404` ("Breeze AI for Office is not enabled") until this is set. Leave unset if you don't use the Office add-ins' AI features. |
+
+## Customer portal Microsoft sign-in (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORTAL_ENTRA_CLIENT_ID` | — | Application (client) ID of the multi-tenant **Breeze Portal** Entra app registration. Sign in with Microsoft for the customer portal stays off until both this and the secret are set. |
+| `PORTAL_ENTRA_CLIENT_SECRET` | — | Client secret for that app registration. |
+| `PORTAL_ENTRA_CALLBACK_BASE_URL` | origin of `PUBLIC_URL`, then `PUBLIC_APP_URL`, then `PUBLIC_API_URL` | Base URL used to build the redirect URIs. Set it only when the portal is served from a different host than the API; use the portal host. |
+
+To set up the app registration:
+
+1. In Microsoft Entra, register a new application with supported account types **Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant)** and platform **Web**.
+2. Add two redirect URIs:
+   - `https://<your-breeze-domain>/api/v1/portal/auth/oidc/entra/callback`
+   - `https://<your-breeze-domain>/api/v1/portal/auth/oidc/entra/consent-return`
+3. Under **Certificates & secrets**, add a client secret and put its value in `PORTAL_ENTRA_CLIENT_SECRET`.
+4. Under **API permissions**, add the delegated permissions `openid`, `profile` and `email`, plus `Directory.Read.All`. `Directory.Read.All` is used only during the tenant proof sign-in, so a customer's administrator can confirm their role. **Do not grant tenant-wide admin consent for `Directory.Read.All`**; customers consent to `openid profile email` only.
+5. Under **Token configuration**, add the ID-token optional claims `acct`, `email` and `xms_edov`.
+
+<Aside>
+  The portal and the API must be served from one site, as in the default Caddy layout. The sign-in binding cookie is `SameSite=Lax`, so a split-site deployment can't complete the sign-in. If your portal is served from a separate host, set `PORTAL_ENTRA_CALLBACK_BASE_URL` to the portal host.
+</Aside>
+
+See [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/) for how MSPs and customer administrators use it.
 
 ## Accounting (QuickBooks Online)
 

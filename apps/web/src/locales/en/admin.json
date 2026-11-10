@@ -1002,6 +1002,7 @@
       "contract_document": "Contract document",
       "contract_template": "Contract template",
       "custom_field": "Custom field",
+      "customer_email_domain": "Customer email domain",
       "deployment": "Deployment",
       "deployment_invite": "Deployment invite",
       "deployment_target": "Deployment target",

@@ -109,6 +109,18 @@ describe('PortalAccessRequestsList', () => {
     expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Denied the request from r1@acme.test.' }));
   });
 
+  it('W4: a bulk row refused because the tenant is no longer proven gets its own label', async () => {
+    mockApi([[req('r1')], [req('r1')]], () => res({ data: [
+      { requestId: 'r1', result: 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN' },
+    ] }));
+    render(<PortalAccessRequestsList orgId={ORG} />);
+    fireEvent.click(await screen.findByLabelText('Select all requests'));
+    fireEvent.click(screen.getByTestId('portal-access-requests-bulk-approve'));
+    expect(await screen.findByTestId('portal-access-request-error-r1')).toHaveTextContent(
+      "This organization's Microsoft tenant is no longer proven",
+    );
+  });
+
   it('bulk decide reports per-row errors', async () => {
     const onChanged = vi.fn();
     mockApi([[req('r1'), req('r2')], [req('r2')]], () => res({ data: [

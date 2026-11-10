@@ -619,6 +619,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
   'orgPortalAccessPolicy.ts': { exempt: 'identity', note: 'Portal sign-in policy, partner default and org override (#11380 W3): which sign-in methods an org\'s portal accepts is authentication configuration and stays human. The W3 plan gives it no AI tool, and manage_org_portal_settings does not gain it.' },
+  'orgCustomerDomains.ts': { exempt: 'identity', note: 'Customer domain verification (#11382 W5): proving a customer owns an email domain feeds portal self-registration and Google sign-in trust, so it stays a human decision; the W5 plan gives it no AI tool. Domain CRUD stays reachable through manage_ticket_config.' },
+  'orgPortalEntraTenant.ts': { exempt: 'identity', note: 'Portal Microsoft tenant proof (#11381 W4): proving, linking or removing the Entra tenant that Microsoft sign-in trusts is an identity decision that stays human; the W4 plan gives it no AI tool.' },
   'orgPortalAccessRequests.ts': { exempt: 'identity', note: 'Portal access-request queue (#11380 W3): approve/deny creates portal accounts or grants browser access, an identity decision that stays human like portal-user invites (orgPortalUsers.ts).' },
   'orgPortalPreview.ts': { exempt: 'staff_ui_render', note: 'Staff read-only Customer view of the portal read models (#9350). Permanently no AI action (#11129): it is a human-facing render that adds no capability over the per-domain read tools (it shows the customer-flag-filtered view of the same data); manage_org_portal_settings stays get/update/set_sensitive_access. Revisit if an agent workflow needs the customer-as-seen view.' },
   'orgPortalSettings.ts': { tools: ['manage_org_portal_settings'] }, // W18 PR B (#6789): get, update, four-eyes set_sensitive_access; customCss stays human
@@ -676,6 +678,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/auth.ts': { exempt: 'portal' },
   'portal/backups.ts': { exempt: 'portal' },
   'portal/branding.ts': { exempt: 'portal' },
+  'portal/oidc.ts': { exempt: 'portal' },
   'portal/dashboard.ts': { exempt: 'portal' },
   'portal/devices.ts': { exempt: 'portal' },
   'portal/documents.ts': { exempt: 'portal' },

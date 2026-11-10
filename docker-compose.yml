@@ -272,6 +272,12 @@ x-api-env: &api-env
   # for self-host/droplet deploys to enable it. Same compose-interpolation gap
   # class as IS_HOSTED / RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS.
   CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+  # Customer portal "Sign in with Microsoft" (the portal's own Entra app). Off
+  # unless both the client ID and secret are set; the callback base is optional
+  # (defaults to the origin of PUBLIC_URL). See .env.example.
+  PORTAL_ENTRA_CLIENT_ID: ${PORTAL_ENTRA_CLIENT_ID:-}
+  PORTAL_ENTRA_CLIENT_SECRET: ${PORTAL_ENTRA_CLIENT_SECRET:-}
+  PORTAL_ENTRA_CALLBACK_BASE_URL: ${PORTAL_ENTRA_CALLBACK_BASE_URL:-}
   # Optional customer Graph-read onboarding. The executor is intentionally
   # not part of this generic Compose stack: deploy it separately with a
   # workload identity, private ingress, and controlled HTTPS egress.

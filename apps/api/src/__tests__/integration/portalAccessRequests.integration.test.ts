@@ -17,6 +17,8 @@ const routeFaults = vi.hoisted(() => ({
   contactLinkCrashEmail: null as string | null,
   // Every decision email runs a real failing statement before it "sends".
   emailDbFault: false,
+  // Parks an approval inside its transaction (after its tenant check) until the test lets go.
+  contactLinkGate: null as null | (() => Promise<void>),
 }));
 const sentEmails = vi.hoisted(() => [] as Array<{ kind: 'invite' | 'approved' | 'declined'; to: string }>);
 
@@ -36,6 +38,7 @@ vi.mock('../../services/contacts/loginLink', async (importOriginal) => {
   return {
     ...actual,
     linkLoginToContact: async (...args: Parameters<typeof actual.linkLoginToContact>) => {
+      if (routeFaults.contactLinkGate) await routeFaults.contactLinkGate();
       if (routeFaults.contactLink) {
         // A REAL statement failure (22012) on the approve transaction, caught,
         // then surfaced as the service's own 409: the #11203 shape.
@@ -74,14 +77,17 @@ vi.mock('../../services/email', async (importOriginal) => {
       sendPortalInvite: async (m: { to: string }) => { await emailPathStatement(); sentEmails.push({ kind: 'invite', to: m.to }); },
       sendPortalAccessApproved: async (m: { to: string }) => { await emailPathStatement(); sentEmails.push({ kind: 'approved', to: m.to }); },
       sendPortalAccessDeclined: async (m: { to: string }) => { await emailPathStatement(); sentEmails.push({ kind: 'declined', to: m.to }); },
+      // A displacement (recordEntraTenantProof) mails the displaced partner; not under test here.
+      sendPortalEntraTenantDisplaced: async () => undefined,
     }),
   };
 });
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db, withDbAccessContext, withDbTransaction, type DbAccessContext } from '../../db';
 import {
-  auditLogs, contacts, portalAccessPolicies, portalAccessRequests, portalUserIdentities, portalUsers,
+  auditLogs, clientAiTenantMappings, contacts, portalAccessPolicies, portalAccessRequests, portalUserIdentities, portalUsers,
 } from '../../db/schema';
+import { recordEntraTenantProof } from '../../services/portalEntraTenantProof';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { runPolicy } from '../../services/orgMerge';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
@@ -300,6 +306,20 @@ async function serviceFixture() {
 
 const sys = <T>(fn: () => Promise<T>) => withDbAccessContext(SYSTEM_CTX, fn);
 
+/**
+ * The org's proven tenant, recorded by the real proof service as a proof run
+ * does (W4 D7). An `entra` request is only ever created for a tenant proven for
+ * its org (sign-in resolves the org through the proven mapping), and approval
+ * re-checks that it still is. Called with no DB context held.
+ */
+async function proveTenant(orgId: string, tid: string = randomUUID()) {
+  const outcome = await recordEntraTenantProof({
+    orgId, tenantId: tid, via: 'proof_run', evidence: { adminOid: randomUUID(), runId: randomUUID() }, provenByUserId: null,
+  });
+  return { tid, displaced: outcome.displaced };
+}
+const provenTid = async (orgId: string) => (await proveTenant(orgId)).tid;
+
 type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
 function settle<T>(p: Promise<T>): Promise<Settled<T>> {
   return p.then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }));
@@ -496,7 +516,7 @@ describe('service', () => {
   it('approve entra creates an active, granted, identity-only account (auth_method entra) with identity + entra_* columns + contact', async () => {
     const { org, decider, ctx } = await serviceFixture();
     const email = `entra-${randomUUID()}@example.test`;
-    const tid = randomUUID();
+    const tid = await provenTid(org.id);
     const oid = randomUUID();
     const requestId = requestIdOf(await createPortalAccessRequest({ source: 'entra', orgId: org.id, email, name: 'Ent Ra', tid, oid }));
     const now = new Date();
@@ -621,7 +641,7 @@ describe('service', () => {
     const { org, decider, ctx } = await serviceFixture();
     const otherPartner = await createPartner();
     const otherOrg = await createOrganization({ partnerId: otherPartner.id });
-    const tid = randomUUID();
+    const tid = await provenTid(org.id);
     const oid = randomUUID();
     // Drift: a legacy login with entra_* set and no identity row.
     await sys(() => db.insert(portalUsers).values({
@@ -636,6 +656,116 @@ describe('service', () => {
     expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
     expect(await loginsFor(org.id, email)).toEqual([]);
     expect((await readRequest(requestId)).status).toBe('pending');
+  });
+
+  describe("approve entra re-checks the org's proven tenant (inv. 4: a request outlives a displacement)", () => {
+    const TENANT_CHANGED = {
+      code: 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN',
+      httpStatus: 409,
+      message: "This organization's Microsoft tenant has changed since this request was made. Ask the person to sign in again.",
+    };
+
+    async function expectRefusedAndNothingWritten(
+      fixture: Awaited<ReturnType<typeof serviceFixture>>,
+      request: { requestId: string; email: string; tid: string; oid: string },
+    ) {
+      const err = await rejectionOf(withDbAccessContext(fixture.ctx, () =>
+        approvePortalAccessRequest({ orgId: fixture.org.id, requestId: request.requestId, deciderUserId: fixture.decider.id })));
+      expect(err).toBeInstanceOf(PortalAccessRequestError);
+      expect(err).toMatchObject(TENANT_CHANGED);
+      // No account, no identity, no contact; the request is still pending.
+      expect(await loginsFor(fixture.org.id, request.email)).toEqual([]);
+      expect(await sys(() => db.select().from(portalUserIdentities).where(and(
+        eq(portalUserIdentities.issuer, entraIssuer(request.tid)), eq(portalUserIdentities.subject, request.oid),
+      )))).toEqual([]);
+      expect(await sys(() => db.select().from(contacts).where(and(
+        eq(contacts.orgId, fixture.org.id), eq(contacts.email, request.email),
+      )))).toEqual([]);
+      expect((await readRequest(request.requestId)).status).toBe('pending');
+    }
+
+    async function entraRequest(orgId: string, tid: string) {
+      const email = `stale-${randomUUID()}@example.test`;
+      const oid = randomUUID();
+      const requestId = requestIdOf(await createPortalAccessRequest({ source: 'entra', orgId, email, name: null, tid, oid }));
+      return { requestId, email, tid, oid };
+    }
+
+    it('the tenant was displaced to another partner\'s org by a proof run since the request → 409, nothing written', async () => {
+      const fixture = await serviceFixture();
+      const tid = await provenTid(fixture.org.id);
+      const request = await entraRequest(fixture.org.id, tid);
+
+      // Days later a proof run in another partner's org takes the tenant (D7).
+      const otherPartner = await createPartner();
+      const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+      const { displaced } = await proveTenant(otherOrg.id, tid);
+      expect(displaced).toMatchObject({ orgId: fixture.org.id, wasProven: true });
+
+      await expectRefusedAndNothingWritten(fixture, request);
+    });
+
+    it('the org now holds a proof for a different tenant → 409, nothing written', async () => {
+      const fixture = await serviceFixture();
+      const request = await entraRequest(fixture.org.id, randomUUID());
+      await provenTid(fixture.org.id);
+      await expectRefusedAndNothingWritten(fixture, request);
+    });
+
+    it('the org maps the tenant but the mapping is unproven (proof cleared) → 409, nothing written', async () => {
+      const fixture = await serviceFixture();
+      const tid = randomUUID();
+      await sys(() => db.insert(clientAiTenantMappings).values({ orgId: fixture.org.id, entraTenantId: tid }));
+      await expectRefusedAndNothingWritten(fixture, await entraRequest(fixture.org.id, tid));
+    });
+
+    it('the org has no tenant mapping at all → 409, nothing written', async () => {
+      const fixture = await serviceFixture();
+      await expectRefusedAndNothingWritten(fixture, await entraRequest(fixture.org.id, randomUUID()));
+    });
+
+    it('a displacement racing the approval waits for it (FOR SHARE), then bumps the new account\'s epoch with the org\'s other tenant identities', async () => {
+      const fixture = await serviceFixture();
+      const tid = await provenTid(fixture.org.id);
+      const request = await entraRequest(fixture.org.id, tid);
+      const otherPartner = await createPartner();
+      const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+
+      // Park the approval inside its transaction, after the tenant check.
+      let parked!: () => void;
+      const isParked = new Promise<void>((resolve) => { parked = resolve; });
+      let letGo!: () => void;
+      const gate = new Promise<void>((resolve) => { letGo = resolve; });
+      routeFaults.contactLinkGate = async () => { parked(); await gate; };
+      try {
+        const approving = settle(withDbAccessContext(fixture.ctx, () =>
+          approvePortalAccessRequest({ orgId: fixture.org.id, requestId: request.requestId, deciderUserId: fixture.decider.id })));
+        await isParked;
+        const displacing = settle(proveTenant(otherOrg.id, tid));
+        try {
+          // The displacement's FOR UPDATE on the org's mapping row waits on the approval's FOR SHARE.
+          await waitForLockWaiters('%from "client_ai_tenant_mappings"%for update%', 1);
+        } finally {
+          letGo();
+        }
+        const approved = await approving;
+        const displacedOutcome = await displacing;
+
+        expect(approved.ok, approved.ok ? '' : String(approved.error)).toBe(true);
+        expect(displacedOutcome.ok, displacedOutcome.ok ? '' : String(displacedOutcome.error)).toBe(true);
+        const created = approved.ok ? approved.value : null;
+        // The displacement ran after the approval committed, so it saw the new
+        // account and killed any session it could mint (epoch +1).
+        expect(displacedOutcome.ok && displacedOutcome.value.displaced).toMatchObject({ orgId: fixture.org.id, epochsBumped: 1 });
+        const [login] = await loginsFor(fixture.org.id, request.email);
+        expect(login).toMatchObject({ id: created!.portalUserId, authEpoch: created!.authEpoch + 1 });
+        const [mapping] = await sys(() => db.select().from(clientAiTenantMappings).where(eq(clientAiTenantMappings.entraTenantId, tid)));
+        expect(mapping).toMatchObject({ orgId: otherOrg.id });
+      } finally {
+        routeFaults.contactLinkGate = null;
+        letGo();
+      }
+    });
   });
 
   it('approve self racing an MSP invite for the same address yields exactly one account', async () => {
@@ -712,7 +842,7 @@ describe('service', () => {
     const { org, decider, ctx } = await serviceFixture();
     const email = `double-${randomUUID()}@example.test`;
     const requestId = requestIdOf(await createPortalAccessRequest({
-      source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+      source: 'entra', orgId: org.id, email, name: null, tid: await provenTid(org.id), oid: randomUUID(),
     }));
 
     // Queue both approvers (two connections) on the request row lock so they genuinely overlap.
@@ -862,12 +992,13 @@ describe('routes (real router)', () => {
 
   it('decide: an unexpected SQL failure on one id is INTERNAL_ERROR; the other approvals commit WITH their audit rows and emails', async () => {
     const { org, post, base } = await routeFixture();
+    const tid = await provenTid(org.id);
     const made: Array<{ id: string; email: string }> = [];
     for (const tag of ['x', 'y', 'z']) {
       const email = `d-crash-${tag}-${randomUUID()}@example.test`;
       made.push({
         id: requestIdOf(await createPortalAccessRequest({
-          source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+          source: 'entra', orgId: org.id, email, name: null, tid, oid: randomUUID(),
         })),
         email,
       });
@@ -955,7 +1086,7 @@ describe('routes (real router)', () => {
     const selfEmail = `mailfail-self-${randomUUID()}@example.test`;
     const denyEmail = `mailfail-deny-${randomUUID()}@example.test`;
     const entraId = requestIdOf(await createPortalAccessRequest({
-      source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: randomUUID(), oid: randomUUID(),
+      source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: await provenTid(org.id), oid: randomUUID(),
     }));
     const selfId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: selfEmail, name: null }));
     const denyId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email: denyEmail, name: null, sub: `g-${randomUUID()}` }));
@@ -997,7 +1128,7 @@ describe('routes (real router)', () => {
     const { org, post, base } = await routeFixture();
     const email = `mailfail-nosp-${randomUUID()}@example.test`;
     const requestId = requestIdOf(await createPortalAccessRequest({
-      source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+      source: 'entra', orgId: org.id, email, name: null, tid: await provenTid(org.id), oid: randomUUID(),
     }));
     routeFaults.emailDbFault = true;
     routeFaults.noSavepoint = true;
@@ -1016,7 +1147,7 @@ describe('routes (real router)', () => {
     const { org, post, base } = await routeFixture();
     const email = `fault-${randomUUID()}@example.test`;
     const requestId = requestIdOf(await createPortalAccessRequest({
-      source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+      source: 'entra', orgId: org.id, email, name: null, tid: await provenTid(org.id), oid: randomUUID(),
     }));
 
     routeFaults.contactLink = true;
@@ -1042,7 +1173,7 @@ describe('routes (real router)', () => {
     const { org, post, base } = await routeFixture();
     const email = `nosp-${randomUUID()}@example.test`;
     const requestId = requestIdOf(await createPortalAccessRequest({
-      source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+      source: 'entra', orgId: org.id, email, name: null, tid: await provenTid(org.id), oid: randomUUID(),
     }));
     routeFaults.contactLink = true;
     routeFaults.noSavepoint = true;
@@ -1062,7 +1193,7 @@ describe('routes (real router)', () => {
     const takenEmail = `d-taken-${randomUUID()}@example.test`;
     const selfEmail = `d-self-${randomUUID()}@example.test`;
     const entraId = requestIdOf(await createPortalAccessRequest({
-      source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: randomUUID(), oid: randomUUID(),
+      source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: await provenTid(org.id), oid: randomUUID(),
     }));
     const takenId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: takenEmail, name: null }));
     const selfId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: selfEmail, name: null }));

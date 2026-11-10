@@ -2328,7 +2328,8 @@
     "actions": {
       "resend": "Tekrar gönder",
       "reactivate": "Yeniden Etkinleştir",
-      "sendInvite": "Davet gönder"
+      "sendInvite": "Davet gönder",
+      "grantBrowserAccess": "Tarayıcı erişimi ver"
     },
     "fields": {
       "nameOptional": "Ad (isteğe bağlı)",
@@ -2350,7 +2351,8 @@
       "inviteResent": "Yeniden davet et",
       "reactivated": "Kullanıcı yeniden etkinleştirildi",
       "disabled": "Kullanıcı devre dışı bırakıldı",
-      "removed": "Kullanıcı kaldırıldı"
+      "removed": "Kullanıcı kaldırıldı",
+      "browserAccessGranted": "Tarayıcı erişimi verildi"
     },
     "errors": {
       "load": "Portal kullanıcıları yüklenemedi.",
@@ -6428,6 +6430,8 @@
       "generalDescription": "Profil ve varsayılanlar",
       "contacts": "Kişiler",
       "contactsDescription": "Bu müşteride ulaşılacak kişiler; siteye göre veya kuruluş genelinde",
+      "domains": "Alan adları",
+      "domainsDescription": "Müşteri e-posta alan adları ve sahiplik kanıtı",
       "contracts": "Sözleşmeler",
       "contractsDescription": "Yinelenen anlaşmalar",
       "billing": "Faturalandırma",
@@ -6942,7 +6946,8 @@
         "pam_open_actuation": "Birleştirilerek kapatılacak kuruluşta temizliği henüz tamamlanmamış ayrıcalıklı erişim (PAM) oturumları var. Oturumların kapanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
         "pam_evidence": "Birleştirilerek kapatılacak kuruluşun ayrıcalıklı erişim (PAM) geçmişi var ve PAM geçmişinin kuruluşlar arasında taşınması bu dağıtımda etkin değil. Ters yönde birleştirin veya bu kuruluşları birleştirmeyin.",
         "payment_in_flight": "Birleştirilerek kapatılacak kuruluşun işlemdeki bir ödemesi var. Ödemenin tamamlanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
-        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak."
+        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak.",
+        "entra_tenant_conflict": "Birleştirilerek kapatılacak kuruluşun kanıtlanmış bir Microsoft kiracısı var ve kalan kuruluş da bir Microsoft kiracısına bağlı. Kiracı bağlantılarından birini kaldırın, ardından birleştirmeyi yeniden deneyin."
       }
     },
     "archive": {
@@ -7117,28 +7122,165 @@
   },
   "customerDomainsCard": {
     "title": "Müşteri e-posta alanları",
-    "description": "Doğrulanmış müşteri e-posta alan adlarını doğru kuruluşa yönlendirin.",
+    "managedPerOrg": "Alan adları kuruluş başına yönetilir. Alan adlarını eklemek, doğrulamak, taşımak veya kaldırmak için bir kuruluşu açın.",
+    "emptySummary": "Henüz müşteri e-posta alan adı yok. Bunları her kuruluşun Alan adları sekmesinden ekleyin.",
     "errors": {
-      "load": "Müşteri etki alanı eşlemeleri yüklenemedi.",
-      "save": "Müşteri etki alanı eşlemesi kaydedilemedi. Tekrar dene."
-    },
-    "toasts": {
-      "added": "Müşteri alanı eşlemesi eklendi",
-      "saved": "Müşteri alanı eşlemesi kaydedildi",
-      "deleted": "Müşteri alanı eşlemesi silindi"
+      "load": "Müşteri etki alanı eşlemeleri yüklenemedi."
     },
     "columns": {
       "domain": "Alan Adı",
+      "status": "Durum"
+    },
+    "actions": {
+      "manage": "Yönet"
+    }
+  },
+  "orgDomains": {
+    "title": "Alan adları",
+    "description": "Bu müşteriye ait e-posta alan adları. Bildirilmiş bir alan adı, gelen e-postayı bu kuruluşa yönlendirir. Doğrulanmış bir alan adı, müşterinin onun sahibi olduğunun kanıtıdır; portal kendi kendine kaydı ve Google ile oturum açma buna dayanır.",
+    "forbidden": "Müşteri alan adlarını yönetmek, tüm kuruluşlara erişimi olan bir yönetici rolü gerektirir.",
+    "partnerOnly": "Müşteri alan adları hizmet sağlayıcınız tarafından yönetilir.",
+    "checkingAccess": "Erişim denetleniyor…",
+    "empty": "Henüz alan adı yok. Müşterinin e-posta alan adını aşağıdan ekleyin.",
+    "neverChecked": "Hiçbir zaman",
+    "notCurrent": "Bu doğrulamanın dayandığı kanıt artık geçerli değil. Yeniden geçmediği sürece günlük yeniden denetim onu kaldıracak.",
+    "inactiveSuspended": "Pasif: yeniden açılana kadar e-posta yönlendirme veya oturum açma için kullanılmaz.",
+    "stale": "Liste güncel olmayabilir: değişikliğinizden sonra yeniden yüklenemedi.",
+    "columns": {
+      "domain": "Alan adı",
+      "status": "Durum",
+      "lastChecked": "Son denetim",
       "autoCreateContact": "Kişiyi otomatik oluştur"
     },
-    "empty": "Henüz müşteri alanı eşlemesi yok.",
-    "placeholders": {
-      "domain": "müşteri.example.com",
-      "organization": "Kuruluşu seçin..."
+    "aria": {
+      "active": "{{domain}} etkin",
+      "autoCreateContact": "{{domain}} için kişileri otomatik oluştur",
+      "verify": "{{domain}} doğrulaması",
+      "move": "{{domain}} taşı",
+      "delete": "{{domain}} sil"
     },
-    "new": "Yeni",
+    "states": {
+      "declared": "Bildirilmiş — yalnızca e-posta yönlendirme",
+      "pending_dns": "DNS bekleniyor",
+      "verified": "Doğrulandı · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "DNS TXT kaydı",
+      "entra_tenant": "Microsoft (kuruluşun kanıtlanmış Entra tenant’ı)",
+      "google_directory": "Google Workspace dizini"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "Kuruluşun Microsoft tenant’ı henüz kanıtlanmadı.",
+        "connection_missing": "Kanıtlanmış tenant için bir Microsoft 365 bağlantısı gerekir. Bu kuruluş için Microsoft 365’i bağlayın veya DNS kullanın.",
+        "not_enabled": "Microsoft doğrulaması bu sunucuda kullanılamıyor."
+      },
+      "google_directory": {
+        "connection_missing": "Bu kuruluş için bir Google Workspace bağlantısı gerekir.",
+        "not_enabled": "Google Workspace bu sunucuda etkin değil."
+      }
+    },
+    "cleared": {
+      "record_missing": "Doğrulama kayboldu: DNS kaydı bulunamadı.",
+      "not_in_directory": "Doğrulama kayboldu: alan adı artık dizinde değil.",
+      "tenant_not_proven": "Doğrulama kayboldu: Microsoft tenant’ı artık kanıtlanmış değil.",
+      "connection_missing": "Doğrulama kayboldu: dizin bağlantısı kaldırıldı.",
+      "stale": "Doğrulama kayboldu: 7 gün boyunca yeniden denetlenemedi.",
+      "repointed": "Doğrulama kayboldu: alan adı başka bir kuruluşa taşındı.",
+      "msp_removed": "Doğrulama kaldırıldı.",
+      "displaced": "Doğrulama kayboldu: alan adı başka bir kuruluş tarafından doğrulandı."
+    },
+    "checkReasons": {
+      "record_missing": "DNS kaydı bulunamadı. DNS değişikliklerinin görünmesi biraz zaman alabilir; daha sonra yeniden denetleyin.",
+      "not_in_directory": "Alan adı, dizinde doğrulanmış bir alan adı değil.",
+      "tenant_not_proven": "Kuruluşun Microsoft tenant’ı kanıtlanmadı.",
+      "connection_missing": "Kuruluşun eşleşen bir dizin bağlantısı yok.",
+      "dns_error": "DNS sorgulanamadı. Daha sonra yeniden deneyin.",
+      "timeout": "Denetim zaman aşımına uğradı. Daha sonra yeniden deneyin.",
+      "graph_unavailable": "Microsoft 365’e ulaşılamadı. Daha sonra yeniden deneyin.",
+      "graph_tenant_mismatch": "Microsoft 365, kanıtlanmış olandan farklı bir tenant için yanıt verdi.",
+      "google_scope_missing": "Google Workspace yetki devrinde {{scope}} kapsamı eksik. Bunu Google Admin konsolunda ekleyin, ardından yeniden denetleyin.",
+      "google_access_denied": "Google Workspace erişimi reddetti. Yönetici e-postasını ve yetki devrini kontrol edin.",
+      "google_unavailable": "Google Workspace’e ulaşılamadı. Daha sonra yeniden deneyin.",
+      "unknown": "Denetim geçmedi."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "Bu alan adı artık bu kuruluşta değil. Sayfayı yeniden yükleyin.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "Bu alan adı başka bir kuruluş için doğrulanmış. Önce o kuruluşun sahibi diğer doğrulamayı (DNS kaydı veya dizin bağlantısı) kaldırmalıdır.",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "Bu denetim çalışırken alan adının doğrulaması değişti. Yeniden denetleyin.",
+      "DOMAIN_INACTIVE": "Doğrulamadan önce alan adını açın.",
+      "DOMAIN_DNS_NOT_STARTED": "Önce DNS kaydını alın.",
+      "DOMAIN_ALREADY_VERIFIED": "Bu alan adı başka bir yöntemle doğrulanmış. Önce o doğrulamayı kaldırın."
+    },
+    "verify": {
+      "methodLegend": "Doğrulama yöntemi",
+      "methodLocked": "Yöntemi değiştirmek için önce mevcut doğrulamayı kaldırın.",
+      "openPortalTab": "Tenant’ı Müşteri Portalı › Oturum açma ve kayıt altında kanıtlayın.",
+      "dnsStartHint": "Müşterinin DNS yöneticisinin yayımlaması için bir TXT kaydı alın.",
+      "startDns": "DNS kaydını al",
+      "starting": "Kayıt alınıyor…",
+      "dnsInstructions": "Müşterinin DNS yöneticisinden bu TXT kaydını eklemesini isteyin, ardından denetleyin.",
+      "recordName": "Kayıt adı (ana bilgisayar)",
+      "recordValue": "Kayıt değeri",
+      "copy": "Kopyala",
+      "copied": "Kopyalandı",
+      "googleScopeHint": "Kuruluşun Google Workspace yetki devri {{scope}} kapsamını içermelidir.",
+      "inactive": "Bu alan adı kapalı. Doğrulamak için açın.",
+      "verify": "Doğrula",
+      "checkNow": "Şimdi denetle",
+      "checking": "Denetleniyor…",
+      "resultFailed": "Doğrulanmadı. {{reason}}",
+      "resultUnavailable": "Denetim tamamlanamadı. {{reason}}",
+      "removeVerification": "Doğrulamayı kaldır",
+      "removeTitle": "{{domain}} doğrulaması kaldırılsın mı?",
+      "removeMessage": "Alan adı, e-posta yönlendirme için bu kuruluşta kalır. Kendi kendine kayıt ve Google ile oturum açma, yeniden doğrulanana kadar ona güvenmeyi bırakır."
+    },
     "actions": {
-      "addDomain": "Alan adı ekle"
+      "verify": "Doğrula",
+      "manageVerification": "Doğrulama",
+      "move": "Taşı"
+    },
+    "add": {
+      "label": "Alan adı ekle",
+      "placeholder": "contoso.com",
+      "submit": "Alan adı ekle"
+    },
+    "move": {
+      "title": "{{domain}} başka bir kuruluşa taşınsın mı?",
+      "message": "Bu alan adından gelen e-postalar seçtiğiniz kuruluşa yönlendirilir.",
+      "messageVerified": "Alan adı doğrulamasını kaybeder. Yeni kuruluşun onu yeniden doğrulaması gerekir ve yeni bir değerle bir DNS kaydı yeniden yayımlanmalıdır.",
+      "targetLabel": "Kuruluş",
+      "targetPlaceholder": "Bir kuruluş seçin…",
+      "orgsFailed": "Kuruluşlar yüklenemedi. Bunu kapatıp yeniden deneyin."
+    },
+    "delete": {
+      "title": "{{domain}} silinsin mi?",
+      "message": "Bu alan adından gelen e-postalar artık bu kuruluşa yönlendirilmez.",
+      "messageVerified": "Bu alan adından gelen e-postalar artık bu kuruluşa yönlendirilmez ve doğrulaması kaldırılır."
+    },
+    "toasts": {
+      "added": "{{domain}} eklendi",
+      "saved": "{{domain}} kaydedildi",
+      "deleted": "{{domain}} silindi",
+      "moved": "{{domain}}, {{org}} kuruluşuna taşındı",
+      "verified": "{{domain}} doğrulandı",
+      "verificationRemoved": "{{domain}} doğrulaması kaldırıldı",
+      "copyFailed": "Kopyalanamadı. Metni seçip elle kopyalayın."
+    },
+    "errors": {
+      "load": "Alan adları yüklenemedi.",
+      "save": "Alan adı kaydedilemedi. Yeniden deneyin.",
+      "delete": "Alan adı silinemedi. Yeniden deneyin.",
+      "add": "Alan adı eklenemedi. Yeniden deneyin.",
+      "alreadyMapped": "Bu alan adı hesabınızdaki bir kuruluşa zaten eklenmiş.",
+      "startDns": "DNS kaydı alınamadı. Yeniden deneyin.",
+      "check": "Denetim çalıştırılamadı. Yeniden deneyin.",
+      "removeVerification": "Doğrulama kaldırılamadı. Yeniden deneyin."
     }
   },
   "customFieldsPage": {
@@ -7625,14 +7767,16 @@
       "toasts": {
         "invited": "Portal daveti gönderildi",
         "inviteEmailFailed": "Portal girişi oluşturuldu ancak davet e-postası gönderilemedi. Daveti yeniden gönder seçeneğini kullanın.",
-        "bulkSummary": "Portal erişimi: {{details}}"
+        "bulkSummary": "Portal erişimi: {{details}}",
+        "resendEmailFailed": "Davet e-postası gönderilemedi. Daha sonra Daveti yeniden gönder seçeneğini tekrar deneyin."
       },
       "outcomes": {
         "invited": "Davet edilen: {{count}}",
         "already_has_access": "Zaten erişimi olan: {{count}}",
         "no_email": "E-posta adresi olmayan: {{count}}",
         "email_bound_to_other_contact": "E-postası başka bir kişide kullanılan: {{count}}",
-        "duplicate_email_in_batch": "Seçimde yinelenen e-posta: {{count}}"
+        "duplicate_email_in_batch": "Seçimde yinelenen e-posta: {{count}}",
+        "emailNotSent": "Gönderilmeyen davet e-postaları: {{count}}"
       },
       "errors": {
         "invite": "Portal erişimi verilemedi.",
@@ -8355,10 +8499,104 @@
       "load": "Oturum açma ayarları yüklenemedi.",
       "save": "Oturum açma ayarları kaydedilemedi.",
       "methodUnavailable": "Bu oturum açma yöntemi bu Breeze dağıtımında henüz kullanılamıyor.",
-      "ssoOnlyNeedsSso": "Şifreyle oturum açmayı kapatmadan önce Microsoft veya Google ile oturum açmayı etkinleştirin."
+      "ssoOnlyNeedsSso": "Şifreyle oturum açmayı kapatmadan önce Microsoft veya Google ile oturum açmayı etkinleştirin.",
+      "tenantNotProven": "Microsoft ile oturum açmayı açmadan önce bu kuruluşun Microsoft kiracısını kanıtlayın.",
+      "sessionHours": "1 ile 168 arasında tam sayı olarak saat girin."
     },
     "toasts": {
       "saved": "Oturum açma ayarları kaydedildi."
+    },
+    "sessionHours": {
+      "label": "Microsoft / Google oturum süresi (saat)",
+      "help": "Microsoft ve Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında."
+    },
+    "entraTenant": {
+      "title": "Microsoft kiracısı",
+      "loading": "Microsoft kiracısı yükleniyor…",
+      "loadError": "Microsoft kiracısı yüklenemedi.",
+      "status": {
+        "none": "Henüz bağlı bir Microsoft kiracısı yok. Kiracısı kanıtlanana kadar bu kuruluş için Microsoft ile oturum açma kapalı kalır.",
+        "unproven": "{{tenantId}} kiracısı bağlı ancak kanıtlanmamış. Kanıtlanana kadar bu kuruluş için Microsoft ile oturum açma kapalı kalır.",
+        "proven": "{{tenantId}} kiracısı {{date}} tarihinde {{method}} ile kanıtlandı."
+      },
+      "via": {
+        "m365_connection": "Microsoft 365 bağlantısı",
+        "proof_run": "bir yönetici oturum açması"
+      },
+      "proveConnection": "Microsoft 365 bağlantısını kullan (kiracı {{tenantId}})",
+      "tenantLabel": "Kiracı kimliği veya etki alanı",
+      "tenantHelp": "Bir bağlantı oluşturun ve müşterinin kiracısının Genel Yöneticisine veya Ayrıcalıklı Rol Yöneticisine gönderin. Bağlantı 72 saat geçerlidir.",
+      "createLink": "Kanıt bağlantısı oluştur",
+      "linkLabel": "Kanıt bağlantısı",
+      "linkExpires": "Son geçerlilik: {{date}}. Yalnızca {{tenantId}} kiracısı için çalışır.",
+      "consentLabel": "Yönetici onay bağlantısı",
+      "consentHelp": "Kiracının yöneticisi bunu bir kez açar; böylece kuruluştaki herkes oturum açabilir.",
+      "copy": "Kopyala",
+      "copied": "Kopyalandı",
+      "remove": "Kiracı bağlantısını kaldır",
+      "removeConfirm": {
+        "title": "Microsoft kiracı bağlantısı kaldırılsın mı?",
+        "message": "Bu kuruluş için Microsoft ile oturum açma durur ve Microsoft oturumları sona erer. Bu işlem kuruluşun AI for Office kiracı eşlemesini de kaldırır; bir kiracı yeniden bağlanana kadar AI for Office burada çalışmaz."
+      },
+      "toasts": {
+        "proven": "Microsoft kiracısı kanıtlandı.",
+        "linkCreated": "Kanıt bağlantısı oluşturuldu.",
+        "removed": "Microsoft kiracı bağlantısı kaldırıldı.",
+        "copyFailed": "Bağlantı kopyalanamadı. Bağlantıyı seçip kendiniz kopyalayın."
+      },
+      "errors": {
+        "prove": "Kiracı, Microsoft 365 bağlantısından kanıtlanamadı.",
+        "createLink": "Kanıt bağlantısı oluşturulamadı.",
+        "remove": "Kiracı bağlantısı kaldırılamadı.",
+        "provenElsewhere": "Bu Microsoft kiracısı başka bir kuruluş için zaten kanıtlanmış. Onu yalnızca kiracının yöneticisi tarafından tamamlanan bir kanıt bağlantısı taşıyabilir.",
+        "orgHasOtherTenant": "Bu kuruluş farklı bir Microsoft kiracısına bağlı. Önce bu bağlantıyı kaldırın.",
+        "noVerifiedConnection": "Bu kuruluşun, kiracısı bir yönetici oturum açmasıyla doğrulanmış bir Microsoft 365 bağlantısı yok.",
+        "hintRequired": "Müşterinin Microsoft kiracı kimliğini veya doğrulanmış etki alanlarından birini girin.",
+        "hintInvalid": "Bu, bir Microsoft kiracı kimliği ya da bir Microsoft kiracısı tarafından doğrulanmış bir etki alanı değil.",
+        "hintLookupFailed": "Bu etki alanını aramak için Microsoft'a ulaşılamadı. Yeniden deneyin veya kiracı kimliğini girin.",
+        "protectedOrg": "Bu kuruluş bir Microsoft kiracısına bağlanamaz."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Şifreyle oturum açma kapatılsın mı?",
+      "intro": "Kaydetmek, aşağıdaki kuruluşlar için şifreyle oturum açmayı kapatır.",
+      "partnerIntro": "Bu iş ortağı varsayılanını kaydetmek, bu kuruluşlar için şifreyle oturum açmayı kapatır. Her kuruluşun sayfasında henüz oturum açamayan hesaplar listelenir.",
+      "explain": "Microsoft'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Microsoft bağlantısı olmayan kişiler, Microsoft ile oturum açma davetini kabul edene kadar oturum açamaz.",
+      "columns": {
+        "org": "Kuruluş",
+        "passwordsToClear": "Kaldırılan şifreler",
+        "strandedTotal": "Henüz oturum açamayanlar"
+      },
+      "openOrg": "Aç",
+      "strandedTitle": "Henüz oturum açamayanlar",
+      "strandedMore": "ve {{count}} tane daha",
+      "strandedLoadError": "Bu hesapların adları yüklenemedi.",
+      "sendInvites": "Kaydettikten sonra bu hesaplara Microsoft ile oturum açma davetleri gönder",
+      "confirm": "Şifreyle oturum açmayı kapat",
+      "changed": "Etki, siz bunu açtığınızdan beri değişti. Yeni sayıları gözden geçirin."
+    },
+    "stranded": {
+      "title": "Henüz oturum açamayanlar ({{count}})",
+      "description": "Bu hesapların Microsoft bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir Microsoft ile oturum açma daveti gönderin.",
+      "loadError": "Oturum açamayan hesaplar yüklenemedi.",
+      "invite": "Microsoft ile oturum açma daveti gönder",
+      "inviteAll": "Hepsini davet et",
+      "more": "{{count}} içinden {{shown}} gösteriliyor.",
+      "toasts": {
+        "invited": "Gönderilen Microsoft ile oturum açma davetleri: {{count}}.",
+        "partial": "Gönderilen Microsoft ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
+        "emailFailed": "{{count}} hesap davet edildi durumuna geçti ancak davet e-postası gönderilemedi. Portal kullanıcıları listesinde Yeniden gönder'i kullanın."
+      },
+      "errors": {
+        "invite": "Microsoft ile oturum açma davetleri gönderilemedi.",
+        "unavailable": "Bu kuruluş için Microsoft ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok."
+      }
+    },
+    "domains": {
+      "label": "Alan adları",
+      "none": "Henüz alan adı yok",
+      "manage": "Kuruluş › Alan adları altında yönetin",
+      "loadFailed": "Alan adları yüklenemedi."
     }
   },
   "portalAccessRequests": {
@@ -8389,7 +8627,8 @@
       "notPending": "Artık beklemede değil",
       "notFound": "Talep bulunamadı",
       "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
-      "failed": "Bu talebe karar verilemedi"
+      "failed": "Bu talebe karar verilemedi",
+      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil"
     },
     "denyDialog": {
       "title": "Erişim talebini reddet",

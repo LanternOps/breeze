@@ -693,7 +693,8 @@
     "confirmLargeFolderSelection": "Bu seçim yaklaşık {{count}} dosyayı kapsıyor ve geri yükleme biraz sürebilir. Devam edilsin mi?",
     "name": "Ad",
     "size2": "Boyut",
-    "modified": "Değiştirildi"
+    "modified": "Değiştirildi",
+    "noSnapshotsYetFilesAppearHere": "Henüz anlık görüntü yok. Dosyalar, ilk yedekleme tamamlandıktan sonra burada görünür."
   },
   "vMRestoreConfirmStep": {
     "reviewConfirm": "İncele ve onayla",

@@ -8,6 +8,7 @@ import { getOrgPolicy, isClientUserPermitted } from '../services/clientAiPolicy'
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import {
   CLIENT_AI_REDIS_KEYS,
+  CLIENT_AI_SESSION_MAX_AGE_SECONDS,
   CLIENT_AI_SESSION_TTL_SECONDS,
   type ClientAiSessionPayload,
 } from '../routes/clientAi/schemas';
@@ -88,6 +89,17 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
     || session.authEpoch <= 0
     || user.authEpoch !== session.authEpoch
   ) {
+    await redis.del(CLIENT_AI_REDIS_KEYS.session(token));
+    await redis.srem(CLIENT_AI_REDIS_KEYS.userSessions(user.id), token);
+    return c.json({ error: 'Invalid or expired session' }, 401);
+  }
+
+  // Absolute lifetime (W4, plan D9 / OD1): refused at CLIENT_AI_SESSION_MAX_AGE_SECONDS
+  // from the stored createdAt however active the session has been, so the
+  // add-in re-exchanges and an IdP disable takes effect. A missing or
+  // unparseable createdAt fails closed. Reads no portal policy (inv. 9).
+  const createdAtMs = typeof session.createdAt === 'string' ? Date.parse(session.createdAt) : Number.NaN;
+  if (!(Date.now() - createdAtMs < CLIENT_AI_SESSION_MAX_AGE_SECONDS * 1000)) {
     await redis.del(CLIENT_AI_REDIS_KEYS.session(token));
     await redis.srem(CLIENT_AI_REDIS_KEYS.userSessions(user.id), token);
     return c.json({ error: 'Invalid or expired session' }, 401);

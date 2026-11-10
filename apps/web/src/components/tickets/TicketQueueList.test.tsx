@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
-import TicketQueueList from './TicketQueueList';
+import TicketQueueList, { queueOptionId } from './TicketQueueList';
 import type { TicketSummary } from './ticketConfig';
 
 const makeTicket = (overrides: Partial<TicketSummary> & { id: string }): TicketSummary => ({
@@ -115,6 +115,93 @@ describe('TicketQueueList org label and row activation (#9564)', () => {
       <TicketQueueList tickets={[makeTicket({ id: 'tk-2', orgName: null })]} selectedId={null} onSelect={vi.fn()} loading={false} />
     );
     expect(screen.queryByTestId('ticket-org-tk-2')).toBeNull();
+  });
+});
+
+describe('TicketQueueList listbox semantics', () => {
+  const three = [
+    makeTicket({ id: 'tk-1', internalNumber: 'T-1' }),
+    makeTicket({ id: 'tk-2', internalNumber: 'T-2' }),
+    makeTicket({ id: 'tk-3', internalNumber: 'T-3' }),
+  ];
+
+  it('is one tab stop: only the selected row is tabbable and the list items are presentational', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-2" onSelect={vi.fn()} loading={false} onToggleSelect={vi.fn()} bulkSelectedIds={new Set()} />);
+    const listbox = screen.getByRole('listbox', { name: 'Ticket queue' });
+    expect(screen.getAllByRole('option')).toHaveLength(3);
+    for (const li of listbox.querySelectorAll('li')) expect(li).toHaveAttribute('role', 'presentation');
+    expect(screen.getByTestId('ticket-row-tk-1')).toHaveAttribute('tabindex', '-1');
+    expect(screen.getByTestId('ticket-row-tk-2')).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('ticket-row-tk-3')).toHaveAttribute('tabindex', '-1');
+    const tabbable = listbox.querySelectorAll('[tabindex="0"], input:not([tabindex="-1"])');
+    expect(tabbable).toHaveLength(1);
+  });
+
+  it('makes the first row the tab stop when nothing in the list is selected', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-elsewhere" onSelect={vi.fn()} loading={false} />);
+    expect(screen.getByTestId('ticket-row-tk-1')).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('ticket-row-tk-2')).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('keeps row checkboxes out of the tab order and reports bulk state on the option', () => {
+    const onToggleSelect = vi.fn();
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} onToggleSelect={onToggleSelect} bulkSelectedIds={new Set(['tk-3'])} />);
+    const box = screen.getByTestId('ticket-select-tk-1');
+    expect(box).toHaveAttribute('tabindex', '-1');
+    // The option carries the state for assistive tech (x toggles it); the
+    // pointer-only checkbox is hidden so the listbox owns only options.
+    expect(box).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByTestId('ticket-row-tk-1')).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('ticket-row-tk-3')).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(box);
+    expect(onToggleSelect).toHaveBeenCalledWith('tk-1');
+  });
+
+  it('omits aria-checked when the host offers no bulk selection', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} />);
+    expect(screen.getByTestId('ticket-row-tk-1')).not.toHaveAttribute('aria-checked');
+  });
+
+  it('shows a row checkbox whenever its row has keyboard focus, not only on hover', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} onToggleSelect={vi.fn()} bulkSelectedIds={new Set()} />);
+    expect(screen.getByTestId('ticket-select-tk-1').className).toContain('group-has-[:focus-visible]:opacity-100');
+  });
+
+  it('gives each row a stable id so the page can move focus to it', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} />);
+    expect(screen.getByTestId('ticket-row-tk-2')).toHaveAttribute('id', queueOptionId('tk-2'));
+  });
+
+  // A host without the page's j/k hook (the organization record's Tickets
+  // tab): with one tab stop, rows 2..N are reachable only through the arrows.
+  it('moves focus between rows with ArrowDown/ArrowUp/Home/End when the host has no queue keys', () => {
+    const onSelect = vi.fn();
+    render(<TicketQueueList tickets={three} selectedId={null} onSelect={onSelect} loading={false} />);
+    const [r1, r2, r3] = ['tk-1', 'tk-2', 'tk-3'].map((id) => screen.getByTestId(`ticket-row-${id}`));
+    r1.focus();
+    fireEvent.keyDown(r1, { key: 'ArrowDown' });
+    expect(r2).toHaveFocus();
+    // The tab stop follows focus, so Tab out and back returns to this row.
+    expect(r2).toHaveAttribute('tabindex', '0');
+    expect(r1).toHaveAttribute('tabindex', '-1');
+    fireEvent.keyDown(r2, { key: 'End' });
+    expect(r3).toHaveFocus();
+    fireEvent.keyDown(r3, { key: 'ArrowDown' });
+    expect(r3).toHaveFocus();
+    fireEvent.keyDown(r3, { key: 'Home' });
+    expect(r1).toHaveFocus();
+    fireEvent.keyDown(r1, { key: 'ArrowUp' });
+    expect(r1).toHaveFocus();
+    // Moving focus never activates (here, activation navigates away).
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('leaves the arrows to a host that owns queue navigation (TicketsPage j/k)', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} hostHandlesArrowKeys />);
+    const r1 = screen.getByTestId('ticket-row-tk-1');
+    r1.focus();
+    expect(fireEvent.keyDown(r1, { key: 'ArrowDown' })).toBe(true);
+    expect(r1).toHaveFocus();
   });
 });
 

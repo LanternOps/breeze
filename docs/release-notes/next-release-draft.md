@@ -63,8 +63,21 @@ Last release: **v0.127.0** (2026-11-08).
 
 - When a Wisp chat message gives a standing instruction ("don't reboot PC-01 and PC-02", "never patch the CEO laptop"), Wisp saves it to the technician's own memory as unconfirmed, and a chip under the reply offers **Keep**, **Keep for everyone at &lt;org&gt;** (only when every named device is in one organization) and **Forget**. For an instruction Wisp could enforce later, the chip shows the exact form ("Wisp will not propose: reboot · PC-01, PC-02 · no end date").
 - Quoted lines and fenced blocks (pasted emails, tickets) are never read as instructions. Device names are matched to devices inside the grant only; a name that does not match exactly one device saves the instruction as a note instead.
-- The extraction is one small model call per matching message, charged to the grant's background line and capped at 20 per grant per UTC day. It is skipped when the grant or org budget is spent. This release captures instructions only; Wisp does not yet refuse actions that match them.
+- The extraction is one small model call per matching message, charged to the grant's background line and capped at 20 per grant per UTC day. It is skipped when the grant or org budget is spent.
 - New routes under `/api/v1/wisp/memory/captures`. Migration `2027-01-22-233400-wisp-standing-instruction-capture.sql` adds an egress surface and a partial index; no new table or column.
+
+### Wisp follows the standing instructions you keep
+
+- When you keep an instruction such as "don't reboot PC-01", Wisp refuses to propose an action that breaks it ("Refused: matches a standing instruction ('don't reboot PC-01'). Ask the user to lift it."). Only an unconditional "don't" on named devices is enforced, and only after you tap **Keep**. You can still act from the device page.
+- An instruction you have not kept yet, one with a condition ("during business hours"), or an action that only might break it (a script could reboot the device) never blocks. The approval card shows a red banner, "Conflicts with a remembered instruction", and Wisp asks for approval even where the grant would normally run the action without asking.
+- The check runs in chat, on assessment and troubleshooting proposals, and again when an approved action is released. An approval raised before you kept the instruction is refused at release.
+- A patch install counts as a reboot, because AI-initiated patch jobs reboot when a patch requires it. No migration.
+
+### Wisp check-ins can check on their own
+
+- A Wisp check-in can now be scheduled with `mode: 'run'`: when it fires, Wisp checks on its own (one read-only assessment of one organization under the grant) and posts what it found to the thread, linked to the run. Scheduling one always asks for approval on a card, because the check spends grant budget while nobody is watching. A check-in in the default `notify` mode is unchanged.
+- One check-in runs at most one assessment, however often it is retried. If the grant was revised since the check-in was scheduled, today's budget is spent, or the check cannot start, Wisp runs nothing and posts "I couldn't check on my own: … Run it now?" instead. A run that does not finish posts "My check didn't finish (…). Run it now?".
+- Migration `2027-01-22-233600-wisp-check-ins-run-mode.sql` adds three columns to `wisp_check_ins` (`mode`, `run_id`, `grant_revision_id`) and a `running` status. Existing rows become `notify` check-ins. It writes no rows.
 
 ## Migrations
 

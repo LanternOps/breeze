@@ -662,7 +662,7 @@
       "explain": "Wisp works within what you are allowed to do. Confirm it is you to continue.",
       "code": "Authenticator code",
       "passkey": "You will confirm with your passkey.",
-      "noFactor": "Wisp needs a passkey or an authenticator app. Set one up in your profile first.",
+      "noFactor": "Wisp needs a passkey or an authenticator app. Set one up in <profileLink>your profile</profileLink> first.",
       "noOrg": "Select an organization in the header first.",
       "confirm": "Confirm",
       "cancel": "Cancel",
@@ -985,6 +985,7 @@
     },
     "instruction": {
       "remembered": "Remembered: {{text}}",
+      "conflictBanner": "Conflicts with a remembered instruction: “{{text}}”",
       "enforcedForm": "Wisp will not propose: {{verb}} · {{targets}} · {{until}}",
       "noEnd": "no end date",
       "keep": "Keep",

@@ -41,7 +41,7 @@ function TimerRow({ label, state, testId }: { label: string; state: TimerState; 
     : t('slaTimers.state.left', { relative: formatRelative(state.minutesLeft) });
   const tone =
     (state.kind === 'breached' || state.kind === 'metLate') ? 'text-red-700 dark:text-red-400'
-    : state.kind === 'met' ? 'text-success'
+    : state.kind === 'met' ? 'text-success-ink'
     : 'text-muted-foreground';
   return (
     <div className="flex items-center justify-between text-sm" data-testid={testId}>

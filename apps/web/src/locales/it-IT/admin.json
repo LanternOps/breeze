@@ -1002,6 +1002,7 @@
       "contract_document": "Documento del contratto",
       "contract_template": "Modello di contratto",
       "custom_field": "Campo personalizzato",
+      "customer_email_domain": "Dominio email del cliente",
       "deployment": "Distribuzione",
       "deployment_invite": "Invito alla distribuzione",
       "deployment_target": "Destinazione di distribuzione",

@@ -6,6 +6,7 @@
  * module none of them owns and none of them imports at runtime.
  */
 import type { Concern, Watch, WatchKind } from '@breeze/shared';
+import type { CheckInEvidence } from './checkInTriggers';
 
 /**
  * Why an assessment was requested (w00 "Triage engine (W05)" + A33).
@@ -25,6 +26,13 @@ import type { Concern, Watch, WatchKind } from '@breeze/shared';
  * event job (wake.ts `requestAssessment` upgrades an unclaimed tick job, or
  * adds a successor job). `requestId` is the chat
  * request's id, kept for traceability and never shown to the model.
+ *
+ * `check_in` (W07 #11496, #10410) is a run-mode check-in firing
+ * (wisp/checkInRuns.ts): the person approved, on a card, that Wisp checks on
+ * its own when it fires. `instruction` is the check-in's instruction after
+ * `sanitizeCheckInInstruction`; `evidence` is what the trigger's state showed
+ * when it fired (an event check-in), null for a time check-in. `checkInId`
+ * links the run back to its row and is never shown to the model.
  */
 export type AssessmentReason =
   | {
@@ -38,7 +46,8 @@ export type AssessmentReason =
   | { kind: 'tick' }
   | { kind: 'watch'; watchId: string; hits?: WatchHitSummary }
   | { kind: 'onboarding' }
-  | { kind: 'on_demand'; requestId: string };
+  | { kind: 'on_demand'; requestId: string }
+  | { kind: 'check_in'; checkInId: string; instruction: string; evidence: CheckInEvidence | null };
 
 /**
  * #11424 — what the wake scheduler's in-code evaluation of a watch found, sent

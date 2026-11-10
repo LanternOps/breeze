@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -24,9 +24,17 @@ interface Props {
    *  (the organization record's Tickets tab), where every row would otherwise
    *  repeat the same name the page's own header already shows. */
   hideOrg?: boolean;
+  /** The host moves the selection with ArrowUp/ArrowDown itself (TicketsPage's
+   *  window-level j/k hook). Otherwise the list moves focus between rows. */
+  hostHandlesArrowKeys?: boolean;
 }
 
 type TFunction = ReturnType<typeof useTranslation>['t'];
+
+/** DOM id of a queue row, so the page can move focus to it on j/k. */
+export function queueOptionId(ticketId: string): string {
+  return `ticket-option-${ticketId}`;
+}
 
 function timeAgo(iso: string, t: TFunction): string {
   const mins = (Date.now() - new Date(iso).getTime()) / 60_000;
@@ -45,9 +53,29 @@ function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus
   return systemRow?.name ?? t(/* i18n-dynamic */ `ticketQueueList.status.${status}`);
 }
 
-function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect, hideOrg = false }: Props) {
+function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect, hideOrg = false, hostHandlesArrowKeys = false }: Props) {
   const { t } = useTranslation('tickets');
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const anyBulkSelected = (bulkSelectedIds?.size ?? 0) > 0;
+  // Roving tabindex: the list is one tab stop, on the selected row, else the
+  // last focused row, else the first. On TicketsPage j/k move DOM focus with
+  // the selection (TicketsPage.move); elsewhere the arrows move focus.
+  const inList = (id: string | null) => id !== null && tickets.some((tk) => tk.id === id);
+  const tabStopId = inList(selectedId) ? selectedId : inList(focusedId) ? focusedId : tickets[0]?.id ?? null;
+
+  const onRowArrowKey = (e: ReactKeyboardEvent<HTMLDivElement>, index: number) => {
+    if (hostHandlesArrowKeys) return;
+    const last = tickets.length - 1;
+    const target =
+      e.key === 'ArrowDown' ? Math.min(last, index + 1)
+      : e.key === 'ArrowUp' ? Math.max(0, index - 1)
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? last
+      : null;
+    if (target === null) return;
+    e.preventDefault();
+    document.getElementById(queueOptionId(tickets[target].id))?.focus();
+  };
 
   // Skeleton only on a cold load (no rows yet). A background reconcile after a
   // mutation keeps `loading` true briefly — blanking the populated list with the
@@ -85,42 +113,54 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
 
   return (
     <ul className="divide-y" role="listbox" aria-label={t('ticketQueueList.ariaLabel')} data-testid="tickets-queue">
-      {tickets.map((ticket) => (
-        <li key={ticket.id} className="group relative">
-          {/* Sibling of the row button (not nested) so checkbox clicks never trigger
-              row selection. Hidden until row hover or an active selection (brief §6). */}
+      {tickets.map((ticket, index) => (
+        // presentation: the listbox owns options only; the li is layout.
+        <li key={ticket.id} role="presentation" className="group relative">
+          {/* Sibling of the row (not nested) so checkbox clicks never trigger
+              row selection. Pointer-only: out of the tab order and hidden from
+              assistive tech (a checkbox is not a valid listbox child). The row
+              carries the same state as aria-checked and `x` toggles it.
+              Hidden until row hover, keyboard focus on the row, or an active
+              selection (brief §6). */}
           {onToggleSelect && (
             <input
               type="checkbox"
+              tabIndex={-1}
+              aria-hidden="true"
               checked={bulkSelectedIds?.has(ticket.id) ?? false}
               onChange={() => onToggleSelect(ticket.id)}
               onClick={(e) => e.stopPropagation()}
-              aria-label={t('ticketQueueList.selectTicket', { ticket: ticket.internalNumber ?? ticket.subject })}
+              title={t('ticketQueueList.selectTicket', { ticket: ticket.internalNumber ?? ticket.subject })}
               data-testid={`ticket-select-${ticket.id}`}
               className={cn(
                 'absolute left-2 top-3 z-10 h-4 w-4 cursor-pointer accent-primary transition-opacity',
                 anyBulkSelected || bulkSelectedIds?.has(ticket.id)
                   ? 'opacity-100'
-                  : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+                  : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'
               )}
             />
           )}
-          {/* role="option" + tabIndex + onKeyDown give the row a button's focus
-              and Enter/Space activation. Keep it free of nested links: the whole
-              row is the select target, and an anchor inside it (the org name used
-              to be one) captures clicks in the middle of the row and navigates
-              away instead of opening the ticket (#9564). The workbench header
-              carries the org record link. */}
+          {/* role="option" + roving tabIndex + onKeyDown give the row a
+              button's focus and Enter/Space activation. Keep it free of nested
+              links: the whole row is the select target, and an anchor inside it
+              (the org name used to be one) captures clicks in the middle of the
+              row and navigates away instead of opening the ticket (#9564). The
+              workbench header carries the org record link. */}
           <div
+            id={queueOptionId(ticket.id)}
             role="option"
-            tabIndex={0}
+            tabIndex={ticket.id === tabStopId ? 0 : -1}
             aria-selected={ticket.id === selectedId}
+            aria-checked={onToggleSelect ? (bulkSelectedIds?.has(ticket.id) ?? false) : undefined}
             onClick={() => onSelect(ticket)}
+            onFocus={() => setFocusedId(ticket.id)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 onSelect(ticket);
+                return;
               }
+              onRowArrowKey(e, index);
             }}
             data-testid={`ticket-row-${ticket.id}`}
             className={cn(
@@ -154,7 +194,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
               <TicketTypeChip type={ticket.ticketType} testId={`ticket-type-chip-${ticket.id}`} />
               {ticket.mergedIntoTicketId && (
                 // #8972: a merged tombstone, listed only under "Show merged".
-                <span className="inline-flex items-center rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 font-medium text-primary" data-testid={`ticket-row-merged-${ticket.id}`}>
+                <span className="inline-flex items-center rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 font-medium text-primary-ink" data-testid={`ticket-row-merged-${ticket.id}`}>
                   {t('ticketQueueList.merged')}
                 </span>
               )}
@@ -162,7 +202,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
                 <span
                   className={cn(
                     'inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium tabular-nums',
-                    ticket.checklist.done === ticket.checklist.total && 'text-success'
+                    ticket.checklist.done === ticket.checklist.total && 'text-success-ink'
                   )}
                   title={t('ticketQueueList.checklistTitle', { done: ticket.checklist.done, total: ticket.checklist.total })}
                   data-testid={`ticket-checklist-chip-${ticket.id}`}

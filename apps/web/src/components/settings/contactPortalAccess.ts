@@ -169,6 +169,7 @@ export async function giveContactPortalAccess(
   orgId: string,
   contact: { id: string; email: string; name: string | null },
   t: TFunction,
+  opts: { resend?: boolean } = {},
 ): Promise<void> {
   const result = await runAction<{ emailSent?: boolean }>({
     request: () => fetchWithAuth(`${base(orgId)}/invite`, {
@@ -183,7 +184,12 @@ export async function giveContactPortalAccess(
     onUnauthorized: unauthorized,
   });
   if (result?.emailSent === false) {
-    showToast({ type: 'warning', message: t('settings:contactsCard.portal.toasts.inviteEmailFailed') });
+    showToast({
+      type: 'warning',
+      message: opts.resend
+        ? t('settings:contactsCard.portal.toasts.resendEmailFailed')
+        : t('settings:contactsCard.portal.toasts.inviteEmailFailed'),
+    });
   } else {
     showToast({ type: 'success', message: t('settings:contactsCard.portal.toasts.invited') });
   }
@@ -212,12 +218,17 @@ export async function giveContactsPortalAccess(
     onUnauthorized: unauthorized,
   });
   const { results, counts } = body.data;
-  const details = CONTACT_PORTAL_INVITE_OUTCOMES
-    .filter((o) => counts[o] > 0)
-    .map((o) => t(/* i18n-dynamic */ OUTCOME_LABEL_KEYS[o], { count: counts[o] }))
-    .join(' · ');
+  const emailsNotSent = results.filter((r) => r.outcome === 'invited' && !r.emailSent).length;
+  const details = [
+    ...CONTACT_PORTAL_INVITE_OUTCOMES
+      .filter((o) => counts[o] > 0)
+      .map((o) => t(/* i18n-dynamic */ OUTCOME_LABEL_KEYS[o], { count: counts[o] })),
+    ...(emailsNotSent > 0
+      ? [t('settings:contactsCard.portal.outcomes.emailNotSent', { count: emailsNotSent })]
+      : []),
+  ].join(' · ');
   const clean = CONTACT_PORTAL_INVITE_OUTCOMES.every((o) => o === 'invited' || counts[o] === 0)
-    && !results.some((r) => r.outcome === 'invited' && !r.emailSent);
+    && emailsNotSent === 0;
   showToast({
     type: clean ? 'success' : 'warning',
     message: t('settings:contactsCard.portal.toasts.bulkSummary', { details }),

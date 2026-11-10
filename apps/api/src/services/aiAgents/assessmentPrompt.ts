@@ -151,11 +151,47 @@ function reasonLine(reason: AssessmentReason): string {
     // The request id is traceability only: no tool can look it up (#10388).
     case 'on_demand':
       return 'on demand (a person asked Wisp for this assessment in chat)';
+    // W07: the check-in id is traceability only, like the request id.
+    case 'check_in':
+      return 'a check-in the person scheduled in chat';
     default: {
       const exhaustive: never = reason;
       return `unknown (${String((exhaustive as { kind?: unknown }).kind)})`;
     }
   }
+}
+
+/** Code points of a check-in instruction rendered (the column's own limit). */
+const CHECK_IN_INSTRUCTION_MAX = 1000;
+const CHECK_IN_ANSWER_LINE =
+  'Do that check first with your read tools. Then end with a short plain-text answer for the person (at most 6 '
+  + 'sentences): what you checked and what you found. It is posted to their Wisp thread as your reply, so say '
+  + 'plainly when you could not tell. Record a concern, nudge or proposal only if what you found calls for one.';
+
+/**
+ * W07 (#11496): the follow-up a run-mode check-in asked for. The instruction
+ * was approved by the person on a card when it was scheduled, and was
+ * sanitised when the run was admitted; it is single-lined again here so it
+ * can never start a line of its own. The trigger's evidence (a script's
+ * output head) is device text: fenced.
+ */
+function checkInLines(reason: Extract<AssessmentReason, { kind: 'check_in' }>): string[] {
+  const lines = [`Follow-up the user asked for: ${sanitizeSweepText(reason.instruction, CHECK_IN_INSTRUCTION_MAX) || '(empty)'}`];
+  const e = reason.evidence;
+  if (e) {
+    const head = [
+      `trigger ${sanitizeSweepText(e.kind, 32)}`,
+      `status ${sanitizeSweepText(e.status, 64)}`,
+      `at ${sanitizeSweepText(e.at, 40)}`,
+      ...(e.exitCode !== undefined ? [`exit code ${e.exitCode ?? 'unknown'}`] : []),
+      ...(e.lastSeenAt !== undefined ? [`last seen ${e.lastSeenAt ? sanitizeSweepText(e.lastSeenAt, 40) : 'unknown'}`] : []),
+    ].join(' | ');
+    const body = e.outputHead ? `${head}\noutput (first part):\n${e.outputHead}` : head;
+    lines.push('What the trigger showed when the check-in fired:');
+    lines.push(wrapUntrustedData('check_in_evidence', body));
+  }
+  lines.push(CHECK_IN_ANSWER_LINE);
+  return lines;
 }
 
 function concernLine(c: Concern): string {
@@ -252,6 +288,7 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     + 'assessment, and kinds that ask first become an approval card; at most 3 per assessment).');
   lines.push(`Why this assessment: ${a ? reasonLine(a.reason) : 'unknown'}.`);
   if (a?.firstLook) lines.push(a.reason.kind === 'on_demand' ? ON_DEMAND_LINE : FIRST_LOOK_LINE);
+  if (a?.reason.kind === 'check_in') lines.push(...checkInLines(a.reason));
   lines.push('');
 
   // (2) Authority disclaimer.

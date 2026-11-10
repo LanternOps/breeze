@@ -227,6 +227,19 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                 <td className="py-2">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : '—'}</td>
                 <td className="py-2">
                   <div className="flex justify-end gap-2">
+                    {/* W4 (#11381): an add-in account gets browser access without
+                        losing its add-in session (the API does not bump its epoch). */}
+                    {u.browserAccess === 'none' && u.effectiveStatus === 'active' && (
+                      <button
+                        type="button"
+                        data-testid={`portal-user-grant-browser-${u.id}`}
+                        disabled={busyId === u.id}
+                        onClick={() => void mutate(u.id, `/${u.id}/browser-access`, 'POST', undefined, t('orgPortalUsersEditor.toasts.browserAccessGranted'))}
+                        className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50 disabled:opacity-50"
+                      >
+                        {t('orgPortalUsersEditor.actions.grantBrowserAccess')}
+                      </button>
+                    )}
                     {u.effectiveStatus === 'pending_setup' && (
                       <button
                         type="button"

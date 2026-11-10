@@ -18,6 +18,11 @@
  * happen by …` line under its header (`triggerLine`), built only from shared
  * constants, a known trigger kind and a UUID.
  *
+ * A run check-in (W07 #11496) reaches a turn only when it could not check on
+ * its own (the grant changed, the budget was spent, its run did not finish):
+ * a run that finished posted its answer and is `consumed`, never `fired`. It
+ * gets one fixed line saying so, so "yes, run it" has something to refer to.
+ *
  * A leaf module (db, the table, the sanitizer, shared constants) so the chat
  * route does not load the Wisp graph. Both DB functions run on the AMBIENT
  * db: the route calls them in the requesting user's own context, so RLS binds
@@ -33,6 +38,7 @@ import {
   WISP_ENTITY_KINDS,
   type WispCheckInContext,
   type WispCheckInFireReason,
+  type WispCheckInMode,
   type WispCheckInTriggerEvent,
   type WispCheckInTriggerKind,
 } from '@breeze/shared';
@@ -52,6 +58,8 @@ export type FiredCheckIn = {
   fireReason?: WispCheckInFireReason | null;
   /** For an event check-in, the deadline. */
   dueAt?: Date;
+  /** W07: absent / `notify` for a notify check-in. */
+  mode?: WispCheckInMode;
 };
 
 export const CHECK_IN_BLOCK_OPEN = '<wisp_check_ins>';
@@ -144,6 +152,8 @@ function subjectLine(context: WispCheckInContext | null): string | null {
 }
 
 const TRIGGER_EVENTS: ReadonlySet<string> = new Set(WISP_CHECK_IN_TRIGGER_EVENTS);
+/** W07: a fired run check-in's fixed line (only our own constant is rendered). */
+export const CHECK_IN_RUN_NOT_DONE_LINE = 'You could not check on your own (mode run); Breeze asked the user whether to run it now.';
 
 /**
  * An event check-in's trigger line: what was met, or (a deadline fire) what
@@ -169,6 +179,7 @@ export function renderCheckInBlock(rows: FiredCheckIn[]): string | null {
     const lines = [`[Wisp check-in fired ${utcStamp(row.firedAt)}, scheduled ${utcStamp(row.createdAt)} by you]`];
     const trigger = triggerLine(row);
     if (trigger) lines.push(trigger);
+    if (row.mode === 'run') lines.push(CHECK_IN_RUN_NOT_DONE_LINE);
     lines.push(`Instruction: ${sanitizeCheckInInstruction(row.instruction)}`);
     const subject = subjectLine(row.context);
     if (subject) lines.push(subject);
@@ -195,6 +206,7 @@ export async function loadFiredCheckIns(grantId: string, userId: string): Promis
       triggerSubjectId: wispCheckIns.triggerSubjectId,
       fireReason: wispCheckIns.fireReason,
       dueAt: wispCheckIns.dueAt,
+      mode: wispCheckIns.mode,
     })
     .from(wispCheckIns)
     .where(and(

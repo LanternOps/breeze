@@ -693,7 +693,8 @@
     "confirmLargeFolderSelection": "Esta seleção abrange cerca de {{count}} arquivos e a restauração pode demorar. Continuar?",
     "name": "Nome",
     "size2": "Tamanho",
-    "modified": "Modificado"
+    "modified": "Modificado",
+    "noSnapshotsYetFilesAppearHere": "Ainda não há snapshots. Os arquivos aparecem aqui depois que o primeiro backup for concluído."
   },
   "vMRestoreConfirmStep": {
     "reviewConfirm": "Revisar e confirmar",

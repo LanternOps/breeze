@@ -693,7 +693,8 @@
     "confirmLargeFolderSelection": "Questa selezione comprende circa {{count}} file e il ripristino potrebbe richiedere tempo. Continuare?",
     "name": "Nome",
     "size2": "Dimensione",
-    "modified": "Modificato"
+    "modified": "Modificato",
+    "noSnapshotsYetFilesAppearHere": "Ancora nessuno snapshot. I file compariranno qui dopo il completamento del primo backup."
   },
   "vMRestoreConfirmStep": {
     "reviewConfirm": "Rivedi e conferma",

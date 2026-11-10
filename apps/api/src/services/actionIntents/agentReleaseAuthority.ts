@@ -304,6 +304,18 @@ export async function checkAgentReleaseAuthority(
       }
       throw error;
     }
+    // #10428 W06 (Review Focus 3): an intent raised before the grantor
+    // confirmed a standing instruction cannot release the action it now
+    // denies (terminal). A check that cannot run pauses, like an evaluator
+    // outage above, rather than stranding the claim.
+    try {
+      const { checkStandingInstructionsForRelease } = await import('../wisp/standingInstructionRelease');
+      const standing = await checkStandingInstructionsForRelease(intent, ceiling);
+      if (standing) return { ok: false, errorCode: standing.errorCode, details: { ...standing.details, ...grantDetails } };
+    } catch (error) {
+      captureException(error, undefined, { grantId: run.grantId, stage: 'release_standing_instructions' });
+      return { ok: false, errorCode: 'grant_ceiling_unavailable', details: { ...grantDetails, code: 'unavailable' } };
+    }
   }
 
   // Wave-5A review fix (#3827): refresh THIS lane's own kill-state read,
