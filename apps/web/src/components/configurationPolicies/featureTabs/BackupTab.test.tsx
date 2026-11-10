@@ -359,6 +359,10 @@ describe('BackupTab', () => {
     const err = await screen.findByText(/Add at least one backup path/i);
     expect(err.hasAttribute('data-field-error')).toBe(true);
     await waitFor(() => expect(document.activeElement?.tagName).toBe('INPUT'));
+    // The focused input is the one belonging to the path list (right above the message).
+    expect(
+      document.activeElement!.compareDocumentPosition(err) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(screen.getByTestId('save-blocked-hint')).toBeTruthy();
   });
 

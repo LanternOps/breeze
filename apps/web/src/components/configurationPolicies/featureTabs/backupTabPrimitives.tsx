@@ -43,7 +43,7 @@ export function FieldError({ message }: { message?: string }) {
   // data-field-error lets FeatureTabShell find the first invalid field after a
   // blocked Save and move focus there (#11554).
   return (
-    <p role="alert" data-field-error="" className="mt-1 text-xs text-destructive">
+    <p data-field-error="" className="mt-1 text-xs text-destructive">
       {message}
     </p>
   );

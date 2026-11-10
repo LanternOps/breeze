@@ -70,16 +70,52 @@ export default function FeatureTabShell({
   const [revealTick, setRevealTick] = useState(0);
   const [blockedHint, setBlockedHint] = useState<string | null>(null);
 
+  const [thrownMessage, setThrownMessage] = useState<string | null>(null);
+  const awaitingSettle = useRef(false);
+
   const handleSaveClick = async () => {
+    awaitingSettle.current = true;
+    setBlockedHint(null);
+    setThrownMessage(null);
     try {
-      await onSave();
+      const result = onSave();
+      if (result && typeof (result as Promise<unknown>).then === "function") {
+        await result;
+      } else {
+        // Tabs that wrap their async persist in `() => void persist()` give us
+        // nothing to await: let a synchronous validation failure render, and
+        // reveal again below when `saving` settles.
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    } catch (err) {
+      // A throwing tab save must not be a mute click either.
+      console.error("[FeatureTabShell] save failed", err);
+      setThrownMessage(err instanceof Error ? err.message : "");
     } finally {
       setRevealTick((t) => t + 1);
     }
   };
 
+  // Void-returning tabs: reveal once the in-flight save settles.
+  useEffect(() => {
+    if (saving) {
+      setBlockedHint(null);
+    } else if (awaitingSettle.current) {
+      setRevealTick((t) => t + 1);
+    }
+  }, [saving]);
+
+  // Drop the hint once whatever it described is gone (field fixed, banner cleared).
+  useEffect(() => {
+    if (blockedHint === null) return;
+    const stillInvalid =
+      !!bodyRef.current?.querySelector("[data-field-error]") || !!bannerRef.current;
+    if (!stillInvalid) setBlockedHint(null);
+  });
+
   useEffect(() => {
     if (revealTick === 0) return;
+    if (!saving) awaitingSettle.current = false;
     const fieldError = bodyRef.current?.querySelector<HTMLElement>("[data-field-error]");
     const banner = bannerRef.current;
     const target = fieldError ?? banner;
@@ -215,16 +251,16 @@ export default function FeatureTabShell({
           </div>
           {!isInherited && (
             <div className="flex items-center gap-3">
-            {blockedHint !== null && !saving && (
+            {(blockedHint ?? thrownMessage) !== null && !saving && (
               <p
                 data-testid="save-blocked-hint"
                 role="status"
                 className="max-w-md text-right text-sm text-destructive"
               >
-                {blockedHint
+                {(blockedHint ?? thrownMessage)
                   ? i18n.t(
                       "policies:configurationPolicies.featureTabs.featureTabShell.notSaved",
-                      { reason: blockedHint },
+                      { reason: blockedHint ?? thrownMessage },
                     )
                   : i18n.t(
                       "policies:configurationPolicies.featureTabs.featureTabShell.saveBlocked",
