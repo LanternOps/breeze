@@ -34,6 +34,12 @@ export default function OrgDomainsTab({ orgId }: Props) {
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
   const [availability, setAvailability] = useState<DomainMethodAvailability>(UNKNOWN_AVAILABILITY);
   const [openPanel, setOpenPanel] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // The panel renders below the table, possibly off-screen from the row that opened it.
+  useEffect(() => {
+    if (openPanel) panelRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [openPanel]);
   const [savingRow, setSavingRow] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<CustomerDomainView | null>(null);
   const [moving, setMoving] = useState<CustomerDomainView | null>(null);
@@ -307,6 +313,7 @@ export default function OrgDomainsTab({ orgId }: Props) {
       {openRow && (
         <div
           id={`org-domains-panel-${openRow.id}`}
+          ref={panelRef}
           role="region"
           aria-labelledby={`org-domains-panel-title-${openRow.id}`}
           className="space-y-2"

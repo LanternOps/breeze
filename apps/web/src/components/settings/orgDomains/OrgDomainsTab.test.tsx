@@ -100,7 +100,19 @@ describe('OrgDomainsTab', () => {
     expect(panelWrap.closest('.overflow-x-auto')).toBeNull();
     expect(panelWrap.contains(screen.getByTestId('domain-verification-panel'))).toBe(true);
     expect(panelWrap.getAttribute('id')).toBe(verify.getAttribute('aria-controls'));
-    expect(panelWrap.textContent).toContain('contoso.com');
+    expect(screen.getByRole('region', { name: /contoso\.com/ })).toBe(panelWrap);
+  });
+
+  it('swaps the panel between rows and toggles it closed', async () => {
+    baseRoutes([domainView(), domainView({ id: 'd2', domain: 'fabrikam.com' })]);
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-verify-d1'));
+    expect(await screen.findByRole('region', { name: /contoso\.com/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('org-domains-verify-d2'));
+    expect(await screen.findByRole('region', { name: /fabrikam\.com/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('org-domains-panel-row-d1')).toBeNull();
+    fireEvent.click(screen.getByTestId('org-domains-verify-d2'));
+    expect(screen.queryByTestId('org-domains-panel-row-d2')).toBeNull();
   });
 
   it('Microsoft is disabled with a link to #portal when the org has no proven tenant', async () => {
