@@ -8555,6 +8555,26 @@
         "protectedOrg": "This organization can't be linked to a Microsoft tenant."
       }
     },
+    "passwordFallbackNotice": {
+      "title": "Portal sign-in fell back to password",
+      "body": "Microsoft sign-in is off for this organization's portal, so its users sign in with a password until the tenant is proven again.",
+      "tenant": "(Tenant {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "The Microsoft tenant link was removed on {{date}}.",
+        "ai_for_office_mapping_removed": "The AI for Office tenant mapping, which held the proof, was removed on {{date}}.",
+        "ai_for_office_mapping_changed": "The AI for Office tenant mapping was changed to another tenant on {{date}}, which cleared the proof.",
+        "tenant_displaced": "Another organization proved this Microsoft tenant on {{date}}.",
+        "unknown": "The Microsoft tenant proof was lost on {{date}}."
+      },
+      "rerun": "Re-run the tenant proof",
+      "dismiss": "Dismiss",
+      "toasts": {
+        "dismissed": "Notice dismissed."
+      },
+      "errors": {
+        "dismiss": "Couldn't dismiss the notice."
+      }
+    },
     "ssoOnlyConfirm": {
       "title": "Turn off password sign-in?",
       "intro": "Saving turns off password sign-in for the organizations below.",
