@@ -88,5 +88,5 @@ export async function findPortalUserByEmail(
     .from(portalUsers)
     .where(and(eq(portalUsers.orgId, orgId), portalLoginEmailEquals(email)))
     .limit(2);
-  return soleCaseInsensitiveMatch(rows);
+  return soleCaseInsensitiveMatch(rows, 'add-in link-email sender lookup', { orgId });
 }

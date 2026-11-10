@@ -627,10 +627,13 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
-  // The address matches case-insensitively (#11541). One address in several
-  // orgs keeps its existing behaviour (the first row is reset). Two password
-  // logins in ONE org whose addresses differ only by case have no principled
-  // pick, so no token is issued; the response below is the same uniform 200.
+  // The address matches case-insensitively (#11541). Only password logins with
+  // browser access are candidates (the token's only use is a browser sign-in),
+  // so a stale row without access neither receives a token nor blocks one.
+  // One address in several orgs keeps its existing behaviour (the first row is
+  // reset). Two candidates in ONE org whose addresses differ only by case have
+  // no principled pick, so no token is issued for the address at all; the
+  // response below is the same uniform 200.
   const candidates = await withSystemDbAccessContext(() =>
     db
       .select({
@@ -667,15 +670,20 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
       .leftJoin(partners, eq(partners.id, organizations.partnerId))
       .where(
         orgId
-          ? and(eq(portalUsers.orgId, orgId), portalLoginEmailEquals(normalizedEmail), eq(portalUsers.authMethod, 'password'))
-          : and(portalLoginEmailEquals(normalizedEmail), eq(portalUsers.authMethod, 'password'))
+          ? and(eq(portalUsers.orgId, orgId), portalLoginEmailEquals(normalizedEmail), eq(portalUsers.authMethod, 'password'), eq(portalUsers.browserAccess, 'granted'))
+          : and(portalLoginEmailEquals(normalizedEmail), eq(portalUsers.authMethod, 'password'), eq(portalUsers.browserAccess, 'granted'))
       )
       .limit(PORTAL_LOGIN_CANDIDATE_CAP + 1)
   );
   const ambiguous = candidates.length > PORTAL_LOGIN_CANDIDATE_CAP || portalLoginEmailMatchIsAmbiguous(candidates);
-  if (ambiguous && candidates.length > 0) {
-    // Operator signal only (never in the response): the data needs cleanup.
-    console.warn('[portal] password reset not issued: the address is ambiguous (case-only duplicates in one org, or over the candidate cap)', { candidates: candidates.length });
+  if (ambiguous) {
+    // Operator signal only, never in the response: the rows need cleanup.
+    // Internal ids only, never the address.
+    console.warn('[portal] password reset not issued: the address matches several logins in one org, or more than the candidate cap; every org for the address is refused', {
+      candidates: candidates.length,
+      orgIds: [...new Set(candidates.map((r) => r.orgId))],
+      portalUserIds: candidates.map((r) => r.id),
+    });
   }
   const user = ambiguous ? undefined : candidates[0];
 

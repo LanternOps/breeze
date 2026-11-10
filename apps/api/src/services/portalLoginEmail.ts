@@ -47,7 +47,21 @@ export function portalLoginEmailMatchIsAmbiguous(rows: ReadonlyArray<{ orgId: st
  * sender to one login: several matches (case variants, or one address in
  * several orgs) are ambiguous, and an arbitrary pick could attribute the
  * message to the wrong person or the wrong tenant. Query with `.limit(2)`.
+ *
+ * The caller cannot tell "ambiguous" from "unknown", so the ambiguous case is
+ * logged here for the operator: `lookup` names the call site and `context`
+ * carries internal ids only, never the address.
  */
-export function soleCaseInsensitiveMatch<T>(rows: ReadonlyArray<T>): T | null {
+export function soleCaseInsensitiveMatch<T extends { id: string }>(
+  rows: ReadonlyArray<T>,
+  lookup: string,
+  context: Record<string, string> = {},
+): T | null {
+  if (rows.length > 1) {
+    console.warn(`[portal] ${lookup}: the address matches several portal logins; treated as no login`, {
+      ...context,
+      portalUserIds: rows.map((r) => r.id),
+    });
+  }
   return rows.length === 1 ? rows[0]! : null;
 }

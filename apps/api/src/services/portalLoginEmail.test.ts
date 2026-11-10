@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   portalLoginEmailEquals,
@@ -35,8 +35,22 @@ describe('portalLoginEmailMatchIsAmbiguous', () => {
 
 describe('soleCaseInsensitiveMatch', () => {
   it('returns the row only when exactly one matched', () => {
-    expect(soleCaseInsensitiveMatch([])).toBeNull();
-    expect(soleCaseInsensitiveMatch([{ id: 1 }])).toEqual({ id: 1 });
-    expect(soleCaseInsensitiveMatch([{ id: 1 }, { id: 2 }])).toBeNull();
+    expect(soleCaseInsensitiveMatch([], 'test')).toBeNull();
+    expect(soleCaseInsensitiveMatch([{ id: 'a' }], 'test')).toEqual({ id: 'a' });
+    expect(soleCaseInsensitiveMatch([{ id: 'a' }, { id: 'b' }], 'test')).toBeNull();
+  });
+
+  it('logs the ambiguous case with ids and context, never the address', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      soleCaseInsensitiveMatch([{ id: 'a' }], 'test');
+      expect(warn).not.toHaveBeenCalled();
+      soleCaseInsensitiveMatch([{ id: 'a' }, { id: 'b' }], 'sender lookup', { orgId: 'o-1' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('sender lookup');
+      expect(warn.mock.calls[0]![1]).toEqual({ orgId: 'o-1', portalUserIds: ['a', 'b'] });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

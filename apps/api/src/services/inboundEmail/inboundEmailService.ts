@@ -762,7 +762,7 @@ async function findPortalUserInPartner(email: string, partnerId: string): Promis
     .innerJoin(organizations, eq(portalUsers.orgId, organizations.id))
     .where(and(portalLoginEmailEquals(email), eq(organizations.partnerId, partnerId)))
     .limit(2);
-  return soleCaseInsensitiveMatch(rows);
+  return soleCaseInsensitiveMatch(rows, 'inbound email sender lookup', { partnerId });
 }
 
 // Resolve TICKETS_INBOUND_DOMAIN defensively. The inbound worker runs `getConfig()`

@@ -1911,6 +1911,30 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
     expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).orgId).toBe('org-a');
   });
 
+  // #11541: the sender lookup is case-insensitive, so an address can match two
+  // logins. Neither is chosen: the requester's own login is not used to bind
+  // the reply when a case-only twin also matches.
+  it('DENIED: a sender matching several portal logins binds no ticket (#11541)', async () => {
+    state.selectRows['tickets'] = [victimTicket({
+      submitterEmail: null,
+      submittedBy: null,
+      requesterContactId: 'ct-requester',
+    })];
+    state.selectRows['portal_users'] = [
+      { id: 'pu-requester-login', orgId: 'org-b', contactId: 'ct-requester' },
+      { id: 'pu-case-twin', orgId: 'org-b', contactId: null },
+    ];
+
+    await processInboundEmail(email({
+      from: 'requester@customer-b.example',
+      subject: `Re: [${VICTIM_TOKEN}] still waiting`,
+    }));
+
+    expect(comments()).toHaveLength(0);
+    expect(reopened()).toHaveLength(0);
+    expect(inboundOf()[0]!.ticketId ?? null).toBeNull();
+  });
+
   it('DENIED: a legacy contact-only ticket cannot be claimed without a current portal identity', async () => {
     state.selectRows['tickets'] = [victimTicket({ submitterEmail: null, submittedBy: null, requesterContactId: 'legacy-contact' })];
 

@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { userRow, userRows, selectWhereSpy, updateSpy, updateWhereSpy, sendPasswordResetSpy, updateRows } = vi.hoisted(() => ({
+const { userRow, userRows, selectWhereSpy, selectLimitSpy, updateSpy, updateWhereSpy, sendPasswordResetSpy, updateRows } = vi.hoisted(() => ({
   userRow: { current: null as any },
   // #11541: when set, a select returns ALL these rows (case-variant duplicates).
   userRows: { current: null as any[] | null },
   selectWhereSpy: vi.fn(),
+  selectLimitSpy: vi.fn(),
   updateSpy: vi.fn(),
   updateWhereSpy: vi.fn(),
   sendPasswordResetSpy: vi.fn(),
@@ -23,7 +24,7 @@ vi.mock('../../db', () => ({
   db: {
     // W04: forgot-password inner-joins organizations for the partner that owns
     // the portal user's org (spec §8.2), so the chain must accept innerJoin.
-    select: () => { const chain: any = { innerJoin: () => chain, leftJoin: () => chain, where: (w: unknown) => { selectWhereSpy(w); return chain; }, limit: () => Promise.resolve(userRows.current ?? (userRow.current ? [userRow.current] : [])) }; return { from: () => chain }; },
+    select: () => { const chain: any = { innerJoin: () => chain, leftJoin: () => chain, where: (w: unknown) => { selectWhereSpy(w); return chain; }, limit: (n: number) => { selectLimitSpy(n); return Promise.resolve(userRows.current ?? (userRow.current ? [userRow.current] : [])); } }; return { from: () => chain }; },
     update: () => ({ set: (v: any) => ({ where: (w: unknown) => {
       updateSpy(v);
       updateWhereSpy(w);
@@ -53,6 +54,7 @@ vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
 import { createHash } from 'crypto';
 import { authRoutes } from './auth';
 import { issuePortalCapabilityToken } from './capabilityTokens';
+import { PORTAL_LOGIN_CANDIDATE_CAP } from './loginCandidates';
 import { portalInviteTokens, portalRateLimitBuckets, portalResetTokens } from './helpers';
 import { pickEffectivePortalAccessPolicy } from '../../services/portalAccessPolicy';
 
@@ -370,6 +372,9 @@ describe('POST /auth/forgot-password', () => {
     const i = q.params.indexOf('email');
     expect(q.sql).toContain(`lower($${i + 1}) = $${i + 2}`);
     expect(q.params[i + 1]).toBe('mixed.case@acme.example');
+    // Only browser-granted password logins are candidates, so a stale row
+    // without access can neither take the token nor block it.
+    expect(q.params).toEqual(expect.arrayContaining(['authMethod', 'password', 'browserAccess', 'granted']));
     expect(portalResetTokens.size).toBe(1);
     expect(sendPasswordResetSpy).toHaveBeenCalledWith(expect.objectContaining({ to: 'Mixed.Case@Acme.Example' }));
   });
@@ -388,6 +393,35 @@ describe('POST /auth/forgot-password', () => {
     expect(await res.text()).toBe(control);
     expect(portalResetTokens.size).toBe(0);
     expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+  });
+
+  it('case-only duplicates fail closed on the orgId-scoped lookup too (#11541)', async () => {
+    const control = await (await forgot({ email: 'nobody@acme.example', orgId: ORG_ID })).text();
+    portalRateLimitBuckets.clear();
+    userRows.current = [
+      activeRow({ id: USER_ID, email: 'Cust@Acme.Example' }),
+      activeRow({ id: '11111111-2222-4333-8444-000000000002', email: 'cust@acme.example' }),
+    ];
+    const res = await forgot({ email: 'cust@acme.example', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(control);
+    expect(portalResetTokens.size).toBe(0);
+    expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+  });
+
+  it('more candidates than the cap (all in distinct orgs) fail closed with the uniform response', async () => {
+    const control = await (await forgot({ email: 'nobody@acme.example' })).text();
+    portalRateLimitBuckets.clear();
+    userRows.current = Array.from({ length: PORTAL_LOGIN_CANDIDATE_CAP + 1 }, (_, n) => activeRow({
+      id: `11111111-2222-4333-8444-${String(n).padStart(12, '0')}`,
+      orgId: `7c0a1f7e-3333-4222-8333-${String(n).padStart(12, '0')}`,
+    }));
+    const res = await forgot({ email: 'cust@acme.example' });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(control);
+    expect(portalResetTokens.size).toBe(0);
+    expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+    expect(selectLimitSpy).toHaveBeenCalledWith(PORTAL_LOGIN_CANDIDATE_CAP + 1);
   });
 
   it('one address in two different orgs still resets one of them (unchanged)', async () => {
