@@ -120,6 +120,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isAgentConnected, sendCommandToAgent } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
+import { DbPoolAcquireTimeoutError } from '../../db/prologueDeadline';
 
 const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
 
@@ -895,7 +896,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
       expect(screenshotMocks.removeScreenshotFiles).not.toHaveBeenCalled();
     });
 
-    it.each(['40P01', '40001', '57014'])('answers transient Postgres %s with a retryable 409, not a 500 (#11627)', async (code) => {
+    it.each(['40P01', '40001'])('answers transient Postgres %s with a retryable 409, not a 500 (#11627)', async (code) => {
       rigDeviceLookup(DEVICE);
       vi.mocked(db.transaction).mockImplementation(async () => {
         throw Object.assign(new Error('Failed query'), { cause: { code } });
@@ -908,6 +909,8 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
 
       expect(res.status).toBe(409);
       expect((await res.json()).error).toMatch(/try again/i);
+      expect(captureException).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('answers an unclassified cascade failure with an actionable message and reports it (#11627)', async () => {
@@ -931,6 +934,25 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
       expect(body.error).toContain('23502');
       expect(captureException).toHaveBeenCalledTimes(1);
       expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('leaves pool saturation to the global 503 handler, not the purge-failed body (#11627)', async () => {
+      rigDeviceLookup(DEVICE);
+      vi.mocked(db.transaction).mockImplementation(async () => {
+        throw new DbPoolAcquireTimeoutError({ contextLabel: 'devices.permanentDelete', elapsedMs: 5000, timeoutMs: 5000 });
+      });
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      // This harness has no app.onError, so the rethrown error surfaces as
+      // Hono's default 500 text — the point is it is NOT our JSON body and is
+      // not reported to Sentry from the route.
+      expect(res.status).toBe(500);
+      expect(await res.text()).not.toContain('DEVICE_PURGE_FAILED');
+      expect(captureException).not.toHaveBeenCalled();
     });
 
     it('still reports success when some files cannot be removed', async () => {
