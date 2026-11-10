@@ -15,6 +15,9 @@ export const STUCK_SETTLE_MS = 2 * 60_000;
 const RECORD_MAX_AGE_MS = 24 * 3600_000;
 const PARKED_MAX_AGE_MS = 14 * 86_400_000;
 const INGEST_LOOKBACK_MS = 6 * 3600_000;
+// Calls one run's facts can take when only retry-shard jobs are read: the run,
+// its jobs, the artifact list, and a few reports, annotations and logs.
+export const INGEST_RUN_RESERVE = 12;
 
 const dropPark = (t, pr) => {
   t.state.parked = t.state.parked.filter((p) => p.pr !== pr);
@@ -135,7 +138,7 @@ export async function sweepResume(t) {
 // only: a fork's evidence is not ours). Also returns what the breakers need:
 // completed main runs and their failing ids, and green merge_group runs with
 // the ids they quarantined. The cursor moves past a run only once it is in.
-export async function ingestSightings(t) {
+export async function ingestSightings(t, { callLimit = Infinity } = {}) {
   const since = t.state.ingestCursor ?? iso(t.now - 30 * 60_000);
   const created = iso(ms(since) - INGEST_LOOKBACK_MS);
   const runs = [];
@@ -152,8 +155,18 @@ export async function ingestSightings(t) {
   const mainRuns = [];
   const queuePasses = [];
   let count = 0;
+  let done = 0;
   for (const r of fresh) {
-    const facts = await runFacts(t.gh, { repo: t.repo, runId: r.id, ciYml: t.ciYml, withGate: false });
+    // Stop before a run that could not finish inside the limit; the cursor
+    // stays before it and the next tick starts there.
+    if (t.gh.calls + INGEST_RUN_RESERVE > callLimit) break;
+    let facts;
+    try {
+      facts = await runFacts(t.gh, { repo: t.repo, runId: r.id, ciYml: t.ciYml, withGate: false, labelledOnly: true });
+    } catch (e) {
+      if (e.name === 'BudgetExceeded') break;
+      throw e;
+    }
     const sightings = ingestRun(facts, { repo: t.repo, repoRoot: t.repoRoot });
     for (const s of sightings) appendJsonl(t.sightingsPath, s);
     count += sightings.length;
@@ -171,6 +184,7 @@ export async function ingestSightings(t) {
     }
     t.state.ingested[`${r.id}:${r.run_attempt}`] = iso(t.now);
     t.state.ingestCursor = r.updated_at;
+    done++;
   }
-  return { runs: fresh.length, sightings: count, mainRuns, queuePasses };
+  return { runs: done, deferred: fresh.length - done, sightings: count, mainRuns, queuePasses };
 }

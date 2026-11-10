@@ -501,7 +501,9 @@ async function gateFor(gh, repo, headSha) {
 // annotations and log fetched; any retry-shard job's flake report is read when
 // the job failed or uploaded one. A fetch that fails is recorded on the fact
 // (`errors`, `logStatus`, `reportError`), never dropped.
-export async function runFacts(gh, { repo, runId, ciYml, withGate = true }) {
+// `labelledOnly` (sightings ingest): annotations and logs are read only for
+// retry-shard jobs, the only ones a sighting can come from.
+export async function runFacts(gh, { repo, runId, ciYml, withGate = true, labelledOnly = false }) {
   const r = await getJson(gh, `repos/${repo}/actions/runs/${runId}`);
   const queuePr = QUEUE_BRANCH_PR.exec(r.head_branch ?? '');
   const run = {
@@ -543,7 +545,7 @@ export async function runFacts(gh, { repo, runId, ciYml, withGate = true }) {
       errors: [],
     };
     const failed = isFailedConclusion(j.conclusion) && j.name !== CI_SUCCESS;
-    if (failed) {
+    if (failed && (!labelledOnly || ident.label)) {
       const ann = await annotationsOf(gh, repo, j.id);
       fact.annotations = ann.annotations;
       if (ann.error) fact.errors.push(ann.error);

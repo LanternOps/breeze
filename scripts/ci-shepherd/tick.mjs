@@ -33,6 +33,10 @@ const VERDICT_DAYS = 7;
 const SIGHTING_DAYS = 30;
 const MAX_REMOVAL_FAILURES = 3;
 const MAX_PENDING_TRIES = 5;
+// The share of a tick's API budget sightings ingest may use. A completed CI
+// run costs several calls (jobs, artifacts, each failed test job's
+// annotations and log); one live shadow tick spent its whole 600 on ingest.
+export const INGEST_SHARE = 0.4;
 
 // A removal → { decision, summary }. Stale removals (rule 1) are decided
 // before any run evidence is read.
@@ -229,15 +233,24 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
     }
     state.cursor = firstUnfinished ? firstUnfinished.at : iso(now);
 
-    // 5. Sightings, then 6. sweeps.
-    const ingest = await ingestSightings(t);
-    summary.sweeps.ingested = ingest.runs;
-    summary.sweeps.sightings = ingest.sightings;
-    await sweepBreakers(t, ingest);
+    // 5. Sweeps. Breakers read the main-run and queue-run evidence the
+    // previous tick's ingest collected.
+    const evidence = state.breakerEvidence ?? { mainRuns: [], queuePasses: [] };
+    await sweepBreakers(t, evidence);
+    state.breakerEvidence = { mainRuns: [], queuePasses: [] };
     await sweepStuck(t);
     await sweepReadds(t);
     await sweepParked(t);
     await sweepResume(t);
+
+    // 6. Sightings last, on what is left of the budget and at most
+    // INGEST_SHARE of it: evidence can wait a tick, queue decisions cannot.
+    const ingestLimit = Math.min(gh.budget, gh.calls + Math.floor(budget * INGEST_SHARE));
+    const ingest = await ingestSightings(t, { callLimit: ingestLimit });
+    summary.sweeps.ingested = ingest.runs;
+    summary.sweeps.sightings = ingest.sightings;
+    if (ingest.deferred) summary.sweeps.ingestDeferred = ingest.deferred;
+    state.breakerEvidence = { mainRuns: ingest.mainRuns, queuePasses: ingest.queuePasses };
     return summary;
   } catch (e) {
     if (e.name !== 'BudgetExceeded') throw e;
@@ -264,5 +277,6 @@ export function renderSummary(s) {
     .map(([k, v]) => `${k}:${v}`)
     .join(',');
   const errs = s.errors.length ? ` errors=${s.errors.length} first_error=${JSON.stringify(s.errors[0]).slice(0, 200)}` : '';
-  return `ci-shepherd tick status=${s.status} mode=${s.mode ?? '-'} removals=${s.removals ?? 0} decisions=${decisions || '-'} ingested=${s.sweeps?.ingested ?? 0} calls=${s.calls ?? 0}/${s.budget ?? 0}${errs}`;
+  const deferred = s.sweeps?.ingestDeferred ? ` ingest_deferred=${s.sweeps.ingestDeferred}` : '';
+  return `ci-shepherd tick status=${s.status} mode=${s.mode ?? '-'} removals=${s.removals ?? 0} decisions=${decisions || '-'} ingested=${s.sweeps?.ingested ?? 0}${deferred} calls=${s.calls ?? 0}/${s.budget ?? 0}${errs}`;
 }

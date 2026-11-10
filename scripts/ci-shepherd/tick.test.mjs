@@ -284,6 +284,46 @@ test('budget exceeded mid-tick: the cursor is not advanced past the unprocessed 
   assert.deepEqual(byRemoval.map((l) => l.pr).sort(), [201, 202, 203]);
 });
 
+test('sightings ingest runs last on a capped share: a flood of completed runs never starves removals or sweeps', async () => {
+  const env = setup();
+  busyWorld(env);
+  for (let i = 0; i < 60; i++) {
+    env.world.runs.push({
+      id: 50_000 + i,
+      run_attempt: 1,
+      head_sha: `${String(i).padStart(4, '0')}${'d'.repeat(36)}`,
+      head_branch: `feature-${i}`,
+      head_repository: { full_name: REPO },
+      event: 'pull_request',
+      status: 'completed',
+      conclusion: 'failure',
+      path: '.github/workflows/ci.yml',
+      created_at: iso(T0 - 25 * MIN),
+      updated_at: iso(T0 - 20 * MIN + i * 1000),
+      pull_requests: [],
+      jobs: [{ id: 60_000 + i, name: 'Integration Tests (shard 11/16)', run_attempt: 1, conclusion: 'failure', started_at: iso(T0 - 24 * MIN), completed_at: iso(T0 - 20 * MIN), steps: [{ name: 'Run integration tests', conclusion: 'failure' }], annotations: [], log: null }],
+    });
+  }
+  writeFileSync(join(env.stateDir, 'state.json'), JSON.stringify({ calls: [{ at: iso(T0 - 30 * MIN), n: 1500 - 200 }] }));
+  const s = await env.run();
+  assert.equal(s.status, 'ok', JSON.stringify(s.errors));
+  assert.equal(s.removals, 5);
+  assert.ok(env.decisions().some((l) => l.kind === 'resume'), 'sweeps ran');
+  assert.ok(env.decisions().some((l) => l.kind === 'requeue_stuck'), 'sweeps ran');
+  assert.ok(s.sweeps.ingestDeferred > 0, 'ingest stopped at its share');
+  assert.ok(s.calls <= 200);
+  const cursor = env.state().ingestCursor;
+  const deferred = env.world.runs.filter((r) => r.event === 'pull_request' && !env.state().ingested[`${r.id}:1`]);
+  for (const r of deferred) assert.ok(Date.parse(r.updated_at) > Date.parse(cursor), 'the cursor stays before every deferred run');
+  // Later ticks drain the rest.
+  for (let k = 0; k < 8; k++) {
+    writeFileSync(join(env.stateDir, 'state.json'), JSON.stringify({ ...env.state(), calls: [] }));
+    env.world.clock += 5 * MIN;
+    await env.run();
+  }
+  assert.equal(env.world.runs.filter((r) => r.event === 'pull_request' && !env.state().ingested[`${r.id}:1`]).length, 0);
+});
+
 test('ci_success_missing sweep: dequeues and enqueues once; counts against the infra budget', async () => {
   const env = setup({ mode: 'act' });
   busyWorld(env);
