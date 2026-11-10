@@ -367,6 +367,22 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `USER_RISK_RETENTION_DAYS` | `90` | Days to keep resolved user-risk signal history, floored at 30 |
 | `USER_RISK_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
 | `USER_RISK_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `DEVICE_COMMAND_RETENTION_DAYS` | `120` | Report-only until `DEVICE_COMMAND_RETENTION_ENFORCE=true` (see below). Days to keep: 90–365 (values below 90 are raised to 90, the patch install-failure lookback). Nightly at 11:08 UTC. Removes: Terminal (completed, failed, timeout, cancelled) device commands past the window, except the newest command a reader still needs per device (last patch scan, last log-level change, current device-remove uninstall, newest OEM update run and release). |
+| `DEVICE_COMMAND_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
+| `DEVICE_COMMAND_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
+| `DEVICE_COMMAND_RETENTION_ENFORCE` | `false` | `true` or `1` (any letter case) turns deletion on; unset, empty or anything else keeps the job report-only: it counts eligible rows, logs a `REPORT-ONLY` line and sets `breeze_retention_rows_eligible`, and deletes nothing. See [Report-only retention jobs](#report-only-retention-jobs) |
+| `FILESYSTEM_SNAPSHOT_RETENTION_DAYS` | `7` | Report-only until `FILESYSTEM_SNAPSHOT_RETENTION_ENFORCE=true` (see below). Days to keep: 1–365. Nightly at 11:18 UTC. Removes: Filesystem snapshots past the window that have a newer snapshot of the same device and scan path (the latest per path is always kept). |
+| `FILESYSTEM_SNAPSHOT_RETENTION_BATCH_SIZE` | `100` | Rows deleted per batch |
+| `FILESYSTEM_SNAPSHOT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `FILESYSTEM_SNAPSHOT_RETENTION_ENFORCE` | `false` | `true` or `1` (any letter case) turns deletion on; unset, empty or anything else keeps the job report-only: it counts eligible rows, logs a `REPORT-ONLY` line and sets `breeze_retention_rows_eligible`, and deletes nothing. See [Report-only retention jobs](#report-only-retention-jobs) |
+| `NETWORK_MONITOR_RESULT_RETENTION_DAYS` | `30` | Report-only until `NETWORK_MONITOR_RESULT_RETENTION_ENFORCE=true` (see below). Days to keep: 1–365. Nightly at 11:33 UTC. Removes: Network monitor results past the window that have a newer result for the same monitor (a paused monitor keeps its last result). |
+| `NETWORK_MONITOR_RESULT_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
+| `NETWORK_MONITOR_RESULT_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
+| `NETWORK_MONITOR_RESULT_RETENTION_ENFORCE` | `false` | `true` or `1` (any letter case) turns deletion on; unset, empty or anything else keeps the job report-only: it counts eligible rows, logs a `REPORT-ONLY` line and sets `breeze_retention_rows_eligible`, and deletes nothing. See [Report-only retention jobs](#report-only-retention-jobs) |
+| `DEVICE_SESSION_RETENTION_DAYS` | `365` | Report-only until `DEVICE_SESSION_RETENTION_ENFORCE=true` (see below). Days to keep: 1–1095. Nightly at 11:48 UTC. Removes: Closed device sessions whose logout (or last update) is past the window. |
+| `DEVICE_SESSION_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
+| `DEVICE_SESSION_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
+| `DEVICE_SESSION_RETENTION_ENFORCE` | `false` | `true` or `1` (any letter case) turns deletion on; unset, empty or anything else keeps the job report-only: it counts eligible rows, logs a `REPORT-ONLY` line and sets `breeze_retention_rows_eligible`, and deletes nothing. See [Report-only retention jobs](#report-only-retention-jobs) |
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
 
