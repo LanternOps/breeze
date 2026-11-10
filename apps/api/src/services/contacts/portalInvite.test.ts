@@ -484,6 +484,12 @@ describe('dropPortalRoleForRemovedLogin (#11599)', () => {
     for (const w of r.wheres) expect(compile(w).params).toContain(ORG);
   });
 
+  it('locks the contact row FOR UPDATE so a concurrent invite cannot interleave', async () => {
+    const r = recorder([[{ roles: ['portal'] }], []]);
+    await dropPortalRoleForRemovedLogin(r.exec, input);
+    expect(r.forStrengths).toEqual(['update']);
+  });
+
   it('keeps the role while another login is still bound to the contact', async () => {
     const r = recorder([[{ roles: ['portal'] }], [{ id: 'pu-other' }]]);
     await dropPortalRoleForRemovedLogin(r.exec, input);

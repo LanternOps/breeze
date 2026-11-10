@@ -377,6 +377,9 @@ export async function dropPortalRoleForRemovedLogin(
     .select({ roles: contacts.roles })
     .from(contacts)
     .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
+    // FOR UPDATE conflicts with a concurrent invite's FOR KEY SHARE on this row,
+    // so a bind cannot slip a new login in between the check below and the write.
+    .for('update')
     .limit(1);
   const roles = row?.roles ?? [];
   if (!roles.includes('portal')) return;
