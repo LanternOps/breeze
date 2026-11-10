@@ -7219,6 +7219,7 @@
     },
     "verify": {
       "methodLegend": "Método de verificação",
+      "panelTitle": "Verificar {{domain}}",
       "methodLocked": "Para trocar de método, remova primeiro a verificação atual.",
       "openPortalTab": "Comprove o locatário em Portal do Cliente › Login e cadastro.",
       "dnsStartHint": "Obtenha um registro TXT para o administrador de DNS do cliente publicar.",

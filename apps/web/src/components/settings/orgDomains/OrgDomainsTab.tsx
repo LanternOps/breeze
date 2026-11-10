@@ -34,6 +34,12 @@ export default function OrgDomainsTab({ orgId }: Props) {
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
   const [availability, setAvailability] = useState<DomainMethodAvailability>(UNKNOWN_AVAILABILITY);
   const [openPanel, setOpenPanel] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // The panel renders below the table, possibly off-screen from the row that opened it.
+  useEffect(() => {
+    if (openPanel) panelRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [openPanel]);
   const [savingRow, setSavingRow] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<CustomerDomainView | null>(null);
   const [moving, setMoving] = useState<CustomerDomainView | null>(null);
@@ -177,6 +183,7 @@ export default function OrgDomainsTab({ orgId }: Props) {
   }
 
   const movingVerified = moving?.state === 'verified';
+  const openRow = openPanel ? rows.find((r) => r.id === openPanel) ?? null : null;
 
   return (
     <section className="space-y-4 rounded-lg border bg-card p-6 shadow-xs" data-testid="org-domains-tab">
@@ -289,13 +296,6 @@ export default function OrgDomainsTab({ orgId }: Props) {
                       </div>
                     </td>
                   </tr>
-                  {openPanel === row.id && (
-                    <tr id={`org-domains-panel-${row.id}`} data-testid={`org-domains-panel-row-${row.id}`}>
-                      <td colSpan={6} className="px-2 pb-4">
-                        <DomainVerificationPanel key={row.id} orgId={orgId} domain={row} availability={availability} onChanged={refresh} />
-                      </td>
-                    </tr>
-                  )}
                 </Fragment>
               );
             })}
@@ -307,6 +307,24 @@ export default function OrgDomainsTab({ orgId }: Props) {
           </tbody>
         </table>
       </div>
+
+      {/* Rendered outside the scrolling table: inside a table row the panel takes the
+          table's scrolled width and is cut off at the left edge on a phone (#11597). */}
+      {openRow && (
+        <div
+          id={`org-domains-panel-${openRow.id}`}
+          ref={panelRef}
+          role="region"
+          aria-labelledby={`org-domains-panel-title-${openRow.id}`}
+          className="space-y-2"
+          data-testid={`org-domains-panel-row-${openRow.id}`}
+        >
+          <h3 id={`org-domains-panel-title-${openRow.id}`} className="break-all text-sm font-medium">
+            {t('orgDomains.verify.panelTitle', { domain: openRow.domain })}
+          </h3>
+          <DomainVerificationPanel key={openRow.id} orgId={orgId} domain={openRow} availability={availability} onChanged={refresh} />
+        </div>
+      )}
 
       <AddDomainForm orgId={orgId} onAdded={refresh} />
 
