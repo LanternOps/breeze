@@ -39,6 +39,7 @@
  * shows Huntress's normalized `recommendation` text instead.
  */
 import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, min } from 'drizzle-orm';
+import { managedDeviceConditions } from './managedDeviceScope';
 import { db } from '../db';
 import {
   devices,
@@ -362,7 +363,7 @@ export async function generateThreatDetectionReport(
   // every path, including the data-gap paths below — a report that returns
   // early without ever binding the reader's scope has not been proven to honour
   // it (reportGenerationService.test.ts pins this for every report type).
-  const deviceConditions = [eq(devices.orgId, orgId), ...sitePredicates(filter)];
+  const deviceConditions = [...managedDeviceConditions(orgId), ...sitePredicates(filter)];
   const deviceRows = await db
     .select({ id: devices.id })
     .from(devices)

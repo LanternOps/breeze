@@ -54,7 +54,7 @@ import {
   UnsupportedReportScopeError,
 } from './reportErrors';
 
-import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { managedDeviceConditions } from './managedDeviceScope';
 export {
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
@@ -415,7 +415,7 @@ export async function readDeviceInventoryRows(orgId: string, conditions: SQL[]) 
     })
     .from(devices)
     .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition(), ...conditions))
+    .where(and(...managedDeviceConditions(orgId), ...conditions))
     .orderBy(devices.hostname);
 }
 
@@ -436,7 +436,7 @@ export async function generateDeviceInventoryReport(
   // devices live in the partner's hidden 'quick_support' org, which deliberately
   // stays inside accessibleOrgIds so RLS lets a tech reach their own session.
   // Nothing filters them out for us — reports must exclude them explicitly.
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
@@ -536,7 +536,7 @@ export async function readSoftwareInventoryRows(orgId: string, conditions: SQL[]
     })
     .from(deviceSoftware)
     .innerJoin(devices, eq(deviceSoftware.deviceId, devices.id))
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition(), ...conditions))
+    .where(and(...managedDeviceConditions(orgId), ...conditions))
     .orderBy(deviceSoftware.name, devices.hostname);
 }
 
@@ -546,7 +546,7 @@ export async function generateSoftwareInventoryReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'software_inventory');
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
@@ -631,7 +631,7 @@ export async function generateComplianceReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'compliance');
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
@@ -702,7 +702,7 @@ export async function generatePerformanceReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'performance');
-  const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const deviceConditions: SQL[] = managedDeviceConditions(orgId);
   if (addAllowedSiteCondition(deviceConditions, authority)) {
     return emptyRowsReport();
   }
@@ -777,7 +777,7 @@ export async function generateExecutiveSummaryReport(
   // configured window, preset or explicit. The device figures are a
   // point-in-time snapshot of the fleet and are deliberately not windowed.
   const reportWindow = resolveReportDateRange(config.dateRange);
-  const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const deviceConditions: SQL[] = managedDeviceConditions(orgId);
   const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, authority);
   const deviceWhereCondition = and(...deviceConditions);
 
