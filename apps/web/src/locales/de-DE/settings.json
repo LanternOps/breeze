@@ -6377,8 +6377,8 @@
       "generalDescription": "Profil und Standardeinstellungen",
       "contacts": "Kontakte",
       "contactsDescription": "Ansprechpartner bei diesem Kunden, je Standort oder organisationsweit",
-      "domains": "Domains",
-      "domainsDescription": "Customer email domains and proof of ownership",
+      "domains": "Domänen",
+      "domainsDescription": "E-Mail-Domänen von Kunden und Eigentumsnachweis",
       "contracts": "Verträge",
       "contractsDescription": "Wiederkehrende Vereinbarungen",
       "billing": "Abrechnung",
@@ -7069,8 +7069,8 @@
   },
   "customerDomainsCard": {
     "title": "Kunden-E-Mail-Domänen",
-    "managedPerOrg": "Domains are managed per organization. Open an organization to add, verify, move or remove its domains.",
-    "emptySummary": "No customer email domains yet. Add them under each organization's Domains tab.",
+    "managedPerOrg": "Domänen werden pro Organisation verwaltet. Öffnen Sie eine Organisation, um ihre Domänen hinzuzufügen, zu verifizieren, zu verschieben oder zu entfernen.",
+    "emptySummary": "Noch keine E-Mail-Domänen von Kunden. Fügen Sie sie auf dem Tab „Domänen“ der jeweiligen Organisation hinzu.",
     "errors": {
       "load": "Die Zuordnungen der Kundendomänen konnten nicht geladen werden."
     },
@@ -7079,38 +7079,38 @@
       "status": "Status"
     },
     "actions": {
-      "manage": "Manage"
+      "manage": "Verwalten"
     }
   },
   "orgDomains": {
-    "title": "Domains",
-    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which portal self-registration and Sign in with Google rely on.",
-    "forbidden": "Managing customer domains requires an admin role with access to every organization.",
-    "partnerOnly": "Customer domains are managed by your service provider.",
-    "checkingAccess": "Checking access…",
-    "empty": "No domains yet. Add the customer's email domain below.",
-    "neverChecked": "Never",
-    "notCurrent": "The evidence behind this verification no longer checks out. The daily re-check will clear it unless it passes again.",
-    "inactiveSuspended": "Inactive: not used for mail routing or sign-in until it is turned back on.",
+    "title": "Domänen",
+    "description": "E-Mail-Domänen, die zu diesem Kunden gehören. Eine deklarierte Domäne leitet eingehende E-Mails an diese Organisation weiter. Eine verifizierte Domäne ist der Nachweis, dass der Kunde sie besitzt; darauf stützen sich die Selbstregistrierung im Portal und die Google-Anmeldung.",
+    "forbidden": "Zum Verwalten von Kundendomänen ist eine Administratorrolle mit Zugriff auf alle Organisationen erforderlich.",
+    "partnerOnly": "Kundendomänen werden von Ihrem Dienstleister verwaltet.",
+    "checkingAccess": "Zugriff wird geprüft…",
+    "empty": "Noch keine Domänen. Fügen Sie unten die E-Mail-Domäne des Kunden hinzu.",
+    "neverChecked": "Nie",
+    "notCurrent": "Der Nachweis hinter dieser Verifizierung ist nicht mehr gültig. Die tägliche Neuprüfung hebt sie auf, sofern er nicht wieder besteht.",
+    "inactiveSuspended": "Inaktiv: wird weder für die E-Mail-Weiterleitung noch für die Anmeldung verwendet, bis sie wieder aktiviert wird.",
     "columns": {
-      "domain": "Domain",
+      "domain": "Domäne",
       "status": "Status",
-      "lastChecked": "Last checked",
-      "autoCreateContact": "Auto-create contact"
+      "lastChecked": "Zuletzt geprüft",
+      "autoCreateContact": "Kontakt automatisch anlegen"
     },
     "aria": {
-      "active": "{{domain}} is active",
-      "autoCreateContact": "Auto-create contacts for {{domain}}"
+      "active": "{{domain}} ist aktiv",
+      "autoCreateContact": "Kontakte für {{domain}} automatisch anlegen"
     },
     "states": {
-      "declared": "Declared — mail routing only",
-      "pending_dns": "Pending DNS",
-      "verified": "Verified · {{method}}"
+      "declared": "Deklariert — nur E-Mail-Weiterleitung",
+      "pending_dns": "DNS ausstehend",
+      "verified": "Verifiziert · {{method}}"
     },
     "methods": {
-      "dns_txt": "DNS TXT record",
-      "entra_tenant": "Microsoft (the organization's proven Entra tenant)",
-      "google_directory": "Google Workspace directory"
+      "dns_txt": "DNS-TXT-Eintrag",
+      "entra_tenant": "Microsoft (der nachgewiesene Entra-Mandant der Organisation)",
+      "google_directory": "Google Workspace-Verzeichnis"
     },
     "methodsShort": {
       "dns_txt": "DNS",
@@ -7119,111 +7119,111 @@
     },
     "methodUnavailable": {
       "entra_tenant": {
-        "tenant_not_proven": "The organization's Microsoft tenant is not proven yet.",
-        "connection_missing": "Needs a Microsoft 365 connection for the proven tenant. Connect Microsoft 365 for this organization, or use DNS.",
-        "not_enabled": "Microsoft verification is not available on this server."
+        "tenant_not_proven": "Der Microsoft-Mandant der Organisation ist noch nicht nachgewiesen.",
+        "connection_missing": "Erfordert eine Microsoft 365-Verbindung für den nachgewiesenen Mandanten. Verbinden Sie Microsoft 365 für diese Organisation oder verwenden Sie DNS.",
+        "not_enabled": "Die Microsoft-Verifizierung ist auf diesem Server nicht verfügbar."
       },
       "google_directory": {
-        "connection_missing": "Needs a Google Workspace connection for this organization.",
-        "not_enabled": "Google Workspace is not enabled on this server."
+        "connection_missing": "Erfordert eine Google Workspace-Verbindung für diese Organisation.",
+        "not_enabled": "Google Workspace ist auf diesem Server nicht aktiviert."
       }
     },
     "cleared": {
-      "record_missing": "Verification lost: the DNS record was not found.",
-      "not_in_directory": "Verification lost: the domain is no longer in the directory.",
-      "tenant_not_proven": "Verification lost: the Microsoft tenant is no longer proven.",
-      "connection_missing": "Verification lost: the directory connection was removed.",
-      "stale": "Verification lost: it could not be re-checked for 7 days.",
-      "repointed": "Verification lost: the domain was moved to another organization.",
-      "msp_removed": "Verification removed.",
-      "displaced": "Verification lost: the domain was verified by another organization."
+      "record_missing": "Verifizierung verloren: Der DNS-Eintrag wurde nicht gefunden.",
+      "not_in_directory": "Verifizierung verloren: Die Domäne ist nicht mehr im Verzeichnis enthalten.",
+      "tenant_not_proven": "Verifizierung verloren: Der Microsoft-Mandant ist nicht mehr nachgewiesen.",
+      "connection_missing": "Verifizierung verloren: Die Verzeichnisverbindung wurde entfernt.",
+      "stale": "Verifizierung verloren: Sie konnte 7 Tage lang nicht neu geprüft werden.",
+      "repointed": "Verifizierung verloren: Die Domäne wurde einer anderen Organisation zugewiesen.",
+      "msp_removed": "Verifizierung entfernt.",
+      "displaced": "Verifizierung verloren: Die Domäne wurde von einer anderen Organisation verifiziert."
     },
     "checkReasons": {
-      "record_missing": "The DNS record was not found. DNS changes can take a while to appear; check again later.",
-      "not_in_directory": "The domain is not a verified domain in the directory.",
-      "tenant_not_proven": "The organization's Microsoft tenant is not proven.",
-      "connection_missing": "The organization has no matching directory connection.",
-      "dns_error": "DNS could not be queried. Try again later.",
-      "timeout": "The check timed out. Try again later.",
-      "graph_unavailable": "Microsoft 365 could not be reached. Try again later.",
-      "graph_tenant_mismatch": "Microsoft 365 answered for a different tenant than the proven one.",
-      "google_scope_missing": "The Google Workspace delegation grant is missing the scope {{scope}}. Add it in the Google Admin console, then check again.",
-      "google_access_denied": "Google Workspace refused access. Check the admin email and the delegation grant.",
-      "google_unavailable": "Google Workspace could not be reached. Try again later.",
-      "unknown": "The check did not pass."
+      "record_missing": "Der DNS-Eintrag wurde nicht gefunden. DNS-Änderungen können eine Weile dauern, bis sie sichtbar werden; prüfen Sie später erneut.",
+      "not_in_directory": "Die Domäne ist keine verifizierte Domäne im Verzeichnis.",
+      "tenant_not_proven": "Der Microsoft-Mandant der Organisation ist nicht nachgewiesen.",
+      "connection_missing": "Die Organisation hat keine passende Verzeichnisverbindung.",
+      "dns_error": "DNS konnte nicht abgefragt werden. Versuchen Sie es später erneut.",
+      "timeout": "Die Prüfung ist abgelaufen. Versuchen Sie es später erneut.",
+      "graph_unavailable": "Microsoft 365 war nicht erreichbar. Versuchen Sie es später erneut.",
+      "graph_tenant_mismatch": "Microsoft 365 hat für einen anderen als den nachgewiesenen Mandanten geantwortet.",
+      "google_scope_missing": "Der Google Workspace-Delegierungsberechtigung fehlt der Scope {{scope}}. Fügen Sie ihn in der Google Admin-Konsole hinzu und prüfen Sie dann erneut.",
+      "google_access_denied": "Google Workspace hat den Zugriff verweigert. Prüfen Sie die Administrator-E-Mail-Adresse und die Delegierungsberechtigung.",
+      "google_unavailable": "Google Workspace war nicht erreichbar. Versuchen Sie es später erneut.",
+      "unknown": "Die Prüfung wurde nicht bestanden."
     },
     "verifyErrors": {
-      "CUSTOMER_DOMAIN_NOT_FOUND": "This domain is no longer in this organization. Reload the page.",
-      "DOMAIN_VERIFIED_ELSEWHERE": "This domain is verified for another organization. Its owner must remove the other verification (DNS record or directory connection) first.",
-      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "The domain's verification changed while this check ran. Check again.",
-      "DOMAIN_INACTIVE": "Turn the domain on before verifying it.",
-      "DOMAIN_DNS_NOT_STARTED": "Get the DNS record first.",
-      "DOMAIN_ALREADY_VERIFIED": "This domain is verified by another method. Remove that verification first."
+      "CUSTOMER_DOMAIN_NOT_FOUND": "Diese Domäne gehört nicht mehr zu dieser Organisation. Laden Sie die Seite neu.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "Diese Domäne ist für eine andere Organisation verifiziert. Deren Eigentümer muss zuerst die andere Verifizierung (DNS-Eintrag oder Verzeichnisverbindung) entfernen.",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "Die Verifizierung der Domäne hat sich während dieser Prüfung geändert. Prüfen Sie erneut.",
+      "DOMAIN_INACTIVE": "Aktivieren Sie die Domäne, bevor Sie sie verifizieren.",
+      "DOMAIN_DNS_NOT_STARTED": "Rufen Sie zuerst den DNS-Eintrag ab.",
+      "DOMAIN_ALREADY_VERIFIED": "Diese Domäne ist bereits mit einer anderen Methode verifiziert. Entfernen Sie zuerst diese Verifizierung."
     },
     "verify": {
-      "methodLegend": "Verification method",
-      "methodLocked": "To switch methods, remove the current verification first.",
-      "openPortalTab": "Prove the tenant under Portal › Sign-in & registration.",
-      "dnsStartHint": "Get a TXT record for the customer's DNS admin to publish.",
-      "startDns": "Get DNS record",
-      "starting": "Getting record…",
-      "dnsInstructions": "Ask the customer's DNS admin to add this TXT record, then check it.",
-      "recordName": "Record name (host)",
-      "recordValue": "Record value",
-      "copy": "Copy",
-      "copied": "Copied",
-      "googleScopeHint": "The organization's Google Workspace delegation grant must include {{scope}}.",
-      "inactive": "This domain is turned off. Turn it on to verify it.",
-      "verify": "Verify",
-      "checkNow": "Check now",
-      "checking": "Checking…",
-      "resultFailed": "Not verified. {{reason}}",
-      "resultUnavailable": "The check could not finish. {{reason}}",
-      "removeVerification": "Remove verification",
-      "removeTitle": "Remove verification for {{domain}}?",
-      "removeMessage": "The domain stays on this organization for mail routing. Self-registration and Sign in with Google stop trusting it until it is verified again."
+      "methodLegend": "Verifizierungsmethode",
+      "methodLocked": "Um die Methode zu wechseln, entfernen Sie zuerst die aktuelle Verifizierung.",
+      "openPortalTab": "Weisen Sie den Mandanten unter Kundenportal › Anmeldung & Registrierung nach.",
+      "dnsStartHint": "Rufen Sie einen TXT-Eintrag ab, den der DNS-Administrator des Kunden veröffentlichen kann.",
+      "startDns": "DNS-Eintrag abrufen",
+      "starting": "Eintrag wird abgerufen…",
+      "dnsInstructions": "Bitten Sie den DNS-Administrator des Kunden, diesen TXT-Eintrag hinzuzufügen, und prüfen Sie ihn anschließend.",
+      "recordName": "Eintragsname (Host)",
+      "recordValue": "Eintragswert",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "googleScopeHint": "Die Google Workspace-Delegierungsberechtigung der Organisation muss {{scope}} enthalten.",
+      "inactive": "Diese Domäne ist ausgeschaltet. Schalten Sie sie ein, um sie zu verifizieren.",
+      "verify": "Verifizieren",
+      "checkNow": "Jetzt prüfen",
+      "checking": "Wird geprüft…",
+      "resultFailed": "Nicht verifiziert. {{reason}}",
+      "resultUnavailable": "Die Prüfung konnte nicht abgeschlossen werden. {{reason}}",
+      "removeVerification": "Verifizierung entfernen",
+      "removeTitle": "Verifizierung für {{domain}} entfernen?",
+      "removeMessage": "Die Domäne bleibt für die E-Mail-Weiterleitung bei dieser Organisation. Selbstregistrierung und Google-Anmeldung vertrauen ihr erst wieder, wenn sie erneut verifiziert wurde."
     },
     "actions": {
-      "verify": "Verify",
-      "manageVerification": "Verification",
-      "move": "Move"
+      "verify": "Verifizieren",
+      "manageVerification": "Verifizierung",
+      "move": "Verschieben"
     },
     "add": {
-      "label": "Add a domain",
+      "label": "Domäne hinzufügen",
       "placeholder": "contoso.com",
-      "submit": "Add domain"
+      "submit": "Domäne hinzufügen"
     },
     "move": {
-      "title": "Move {{domain}} to another organization?",
-      "message": "Inbound email from this domain will route to the organization you choose.",
-      "messageVerified": "The domain will lose its verification. The new organization must verify it again, and a DNS record must be published again with a new value.",
-      "targetLabel": "Organization",
-      "targetPlaceholder": "Select an organization…",
-      "orgsFailed": "Organizations failed to load. Close this and try again."
+      "title": "{{domain}} in eine andere Organisation verschieben?",
+      "message": "Eingehende E-Mails von dieser Domäne werden an die von Ihnen gewählte Organisation weitergeleitet.",
+      "messageVerified": "Die Domäne verliert ihre Verifizierung. Die neue Organisation muss sie erneut verifizieren, und ein DNS-Eintrag muss mit einem neuen Wert erneut veröffentlicht werden.",
+      "targetLabel": "Organisation",
+      "targetPlaceholder": "Organisation auswählen…",
+      "orgsFailed": "Die Organisationen konnten nicht geladen werden. Schließen Sie dies und versuchen Sie es erneut."
     },
     "delete": {
-      "title": "Delete {{domain}}?",
-      "message": "Inbound email from this domain will no longer route to this organization.",
-      "messageVerified": "Inbound email from this domain will no longer route to this organization, and its verification is removed."
+      "title": "{{domain}} löschen?",
+      "message": "Eingehende E-Mails von dieser Domäne werden nicht mehr an diese Organisation weitergeleitet.",
+      "messageVerified": "Eingehende E-Mails von dieser Domäne werden nicht mehr an diese Organisation weitergeleitet, und ihre Verifizierung wird entfernt."
     },
     "toasts": {
-      "added": "{{domain}} added",
-      "saved": "{{domain}} saved",
-      "deleted": "{{domain}} deleted",
-      "moved": "{{domain}} moved to {{org}}",
-      "verified": "{{domain}} verified",
-      "verificationRemoved": "Verification removed for {{domain}}",
-      "copyFailed": "Could not copy. Select the text and copy it manually."
+      "added": "{{domain}} hinzugefügt",
+      "saved": "{{domain}} gespeichert",
+      "deleted": "{{domain}} gelöscht",
+      "moved": "{{domain}} nach {{org}} verschoben",
+      "verified": "{{domain}} verifiziert",
+      "verificationRemoved": "Verifizierung für {{domain}} entfernt",
+      "copyFailed": "Kopieren nicht möglich. Markieren Sie den Text und kopieren Sie ihn manuell."
     },
     "errors": {
-      "load": "Domains failed to load.",
-      "save": "Could not save the domain. Retry.",
-      "delete": "Could not delete the domain. Retry.",
-      "add": "Could not add the domain. Retry.",
-      "alreadyMapped": "This domain is already added to an organization in your account.",
-      "startDns": "Could not get the DNS record. Retry.",
-      "check": "Could not run the check. Retry.",
-      "removeVerification": "Could not remove the verification. Retry."
+      "load": "Die Domänen konnten nicht geladen werden.",
+      "save": "Die Domäne konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+      "delete": "Die Domäne konnte nicht gelöscht werden. Versuchen Sie es erneut.",
+      "add": "Die Domäne konnte nicht hinzugefügt werden. Versuchen Sie es erneut.",
+      "alreadyMapped": "Diese Domäne wurde bereits einer Organisation in Ihrem Konto hinzugefügt.",
+      "startDns": "Der DNS-Eintrag konnte nicht abgerufen werden. Versuchen Sie es erneut.",
+      "check": "Die Prüfung konnte nicht ausgeführt werden. Versuchen Sie es erneut.",
+      "removeVerification": "Die Verifizierung konnte nicht entfernt werden. Versuchen Sie es erneut."
     }
   },
   "customFieldsPage": {
@@ -8587,9 +8587,9 @@
       }
     },
     "domains": {
-      "label": "Domains",
-      "none": "No domains yet",
-      "manage": "Manage in Organization › Domains"
+      "label": "Domänen",
+      "none": "Noch keine Domänen",
+      "manage": "Verwalten unter Organisation › Domänen"
     }
   },
   "portalAccessRequests": {

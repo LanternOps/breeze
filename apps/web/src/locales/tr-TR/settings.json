@@ -6430,8 +6430,8 @@
       "generalDescription": "Profil ve varsayılanlar",
       "contacts": "Kişiler",
       "contactsDescription": "Bu müşteride ulaşılacak kişiler; siteye göre veya kuruluş genelinde",
-      "domains": "Domains",
-      "domainsDescription": "Customer email domains and proof of ownership",
+      "domains": "Alan adları",
+      "domainsDescription": "Müşteri e-posta alan adları ve sahiplik kanıtı",
       "contracts": "Sözleşmeler",
       "contractsDescription": "Yinelenen anlaşmalar",
       "billing": "Faturalandırma",
@@ -7122,48 +7122,48 @@
   },
   "customerDomainsCard": {
     "title": "Müşteri e-posta alanları",
-    "managedPerOrg": "Domains are managed per organization. Open an organization to add, verify, move or remove its domains.",
-    "emptySummary": "No customer email domains yet. Add them under each organization's Domains tab.",
+    "managedPerOrg": "Alan adları kuruluş başına yönetilir. Alan adlarını eklemek, doğrulamak, taşımak veya kaldırmak için bir kuruluşu açın.",
+    "emptySummary": "Henüz müşteri e-posta alan adı yok. Bunları her kuruluşun Alan adları sekmesinden ekleyin.",
     "errors": {
       "load": "Müşteri etki alanı eşlemeleri yüklenemedi."
     },
     "columns": {
       "domain": "Alan Adı",
-      "status": "Status"
+      "status": "Durum"
     },
     "actions": {
-      "manage": "Manage"
+      "manage": "Yönet"
     }
   },
   "orgDomains": {
-    "title": "Domains",
-    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which portal self-registration and Sign in with Google rely on.",
-    "forbidden": "Managing customer domains requires an admin role with access to every organization.",
-    "partnerOnly": "Customer domains are managed by your service provider.",
-    "checkingAccess": "Checking access…",
-    "empty": "No domains yet. Add the customer's email domain below.",
-    "neverChecked": "Never",
-    "notCurrent": "The evidence behind this verification no longer checks out. The daily re-check will clear it unless it passes again.",
-    "inactiveSuspended": "Inactive: not used for mail routing or sign-in until it is turned back on.",
+    "title": "Alan adları",
+    "description": "Bu müşteriye ait e-posta alan adları. Bildirilmiş bir alan adı, gelen e-postayı bu kuruluşa yönlendirir. Doğrulanmış bir alan adı, müşterinin onun sahibi olduğunun kanıtıdır; portal kendi kendine kaydı ve Google ile oturum açma buna dayanır.",
+    "forbidden": "Müşteri alan adlarını yönetmek, tüm kuruluşlara erişimi olan bir yönetici rolü gerektirir.",
+    "partnerOnly": "Müşteri alan adları hizmet sağlayıcınız tarafından yönetilir.",
+    "checkingAccess": "Erişim denetleniyor…",
+    "empty": "Henüz alan adı yok. Müşterinin e-posta alan adını aşağıdan ekleyin.",
+    "neverChecked": "Hiçbir zaman",
+    "notCurrent": "Bu doğrulamanın dayandığı kanıt artık geçerli değil. Yeniden geçmediği sürece günlük yeniden denetim onu kaldıracak.",
+    "inactiveSuspended": "Pasif: yeniden açılana kadar e-posta yönlendirme veya oturum açma için kullanılmaz.",
     "columns": {
-      "domain": "Domain",
-      "status": "Status",
-      "lastChecked": "Last checked",
-      "autoCreateContact": "Auto-create contact"
+      "domain": "Alan adı",
+      "status": "Durum",
+      "lastChecked": "Son denetim",
+      "autoCreateContact": "Kişiyi otomatik oluştur"
     },
     "aria": {
-      "active": "{{domain}} is active",
-      "autoCreateContact": "Auto-create contacts for {{domain}}"
+      "active": "{{domain}} etkin",
+      "autoCreateContact": "{{domain}} için kişileri otomatik oluştur"
     },
     "states": {
-      "declared": "Declared — mail routing only",
-      "pending_dns": "Pending DNS",
-      "verified": "Verified · {{method}}"
+      "declared": "Bildirilmiş — yalnızca e-posta yönlendirme",
+      "pending_dns": "DNS bekleniyor",
+      "verified": "Doğrulandı · {{method}}"
     },
     "methods": {
-      "dns_txt": "DNS TXT record",
-      "entra_tenant": "Microsoft (the organization's proven Entra tenant)",
-      "google_directory": "Google Workspace directory"
+      "dns_txt": "DNS TXT kaydı",
+      "entra_tenant": "Microsoft (kuruluşun kanıtlanmış Entra tenant’ı)",
+      "google_directory": "Google Workspace dizini"
     },
     "methodsShort": {
       "dns_txt": "DNS",
@@ -7172,111 +7172,111 @@
     },
     "methodUnavailable": {
       "entra_tenant": {
-        "tenant_not_proven": "The organization's Microsoft tenant is not proven yet.",
-        "connection_missing": "Needs a Microsoft 365 connection for the proven tenant. Connect Microsoft 365 for this organization, or use DNS.",
-        "not_enabled": "Microsoft verification is not available on this server."
+        "tenant_not_proven": "Kuruluşun Microsoft tenant’ı henüz kanıtlanmadı.",
+        "connection_missing": "Kanıtlanmış tenant için bir Microsoft 365 bağlantısı gerekir. Bu kuruluş için Microsoft 365’i bağlayın veya DNS kullanın.",
+        "not_enabled": "Microsoft doğrulaması bu sunucuda kullanılamıyor."
       },
       "google_directory": {
-        "connection_missing": "Needs a Google Workspace connection for this organization.",
-        "not_enabled": "Google Workspace is not enabled on this server."
+        "connection_missing": "Bu kuruluş için bir Google Workspace bağlantısı gerekir.",
+        "not_enabled": "Google Workspace bu sunucuda etkin değil."
       }
     },
     "cleared": {
-      "record_missing": "Verification lost: the DNS record was not found.",
-      "not_in_directory": "Verification lost: the domain is no longer in the directory.",
-      "tenant_not_proven": "Verification lost: the Microsoft tenant is no longer proven.",
-      "connection_missing": "Verification lost: the directory connection was removed.",
-      "stale": "Verification lost: it could not be re-checked for 7 days.",
-      "repointed": "Verification lost: the domain was moved to another organization.",
-      "msp_removed": "Verification removed.",
-      "displaced": "Verification lost: the domain was verified by another organization."
+      "record_missing": "Doğrulama kayboldu: DNS kaydı bulunamadı.",
+      "not_in_directory": "Doğrulama kayboldu: alan adı artık dizinde değil.",
+      "tenant_not_proven": "Doğrulama kayboldu: Microsoft tenant’ı artık kanıtlanmış değil.",
+      "connection_missing": "Doğrulama kayboldu: dizin bağlantısı kaldırıldı.",
+      "stale": "Doğrulama kayboldu: 7 gün boyunca yeniden denetlenemedi.",
+      "repointed": "Doğrulama kayboldu: alan adı başka bir kuruluşa taşındı.",
+      "msp_removed": "Doğrulama kaldırıldı.",
+      "displaced": "Doğrulama kayboldu: alan adı başka bir kuruluş tarafından doğrulandı."
     },
     "checkReasons": {
-      "record_missing": "The DNS record was not found. DNS changes can take a while to appear; check again later.",
-      "not_in_directory": "The domain is not a verified domain in the directory.",
-      "tenant_not_proven": "The organization's Microsoft tenant is not proven.",
-      "connection_missing": "The organization has no matching directory connection.",
-      "dns_error": "DNS could not be queried. Try again later.",
-      "timeout": "The check timed out. Try again later.",
-      "graph_unavailable": "Microsoft 365 could not be reached. Try again later.",
-      "graph_tenant_mismatch": "Microsoft 365 answered for a different tenant than the proven one.",
-      "google_scope_missing": "The Google Workspace delegation grant is missing the scope {{scope}}. Add it in the Google Admin console, then check again.",
-      "google_access_denied": "Google Workspace refused access. Check the admin email and the delegation grant.",
-      "google_unavailable": "Google Workspace could not be reached. Try again later.",
-      "unknown": "The check did not pass."
+      "record_missing": "DNS kaydı bulunamadı. DNS değişikliklerinin görünmesi biraz zaman alabilir; daha sonra yeniden denetleyin.",
+      "not_in_directory": "Alan adı, dizinde doğrulanmış bir alan adı değil.",
+      "tenant_not_proven": "Kuruluşun Microsoft tenant’ı kanıtlanmadı.",
+      "connection_missing": "Kuruluşun eşleşen bir dizin bağlantısı yok.",
+      "dns_error": "DNS sorgulanamadı. Daha sonra yeniden deneyin.",
+      "timeout": "Denetim zaman aşımına uğradı. Daha sonra yeniden deneyin.",
+      "graph_unavailable": "Microsoft 365’e ulaşılamadı. Daha sonra yeniden deneyin.",
+      "graph_tenant_mismatch": "Microsoft 365, kanıtlanmış olandan farklı bir tenant için yanıt verdi.",
+      "google_scope_missing": "Google Workspace yetki devrinde {{scope}} kapsamı eksik. Bunu Google Admin konsolunda ekleyin, ardından yeniden denetleyin.",
+      "google_access_denied": "Google Workspace erişimi reddetti. Yönetici e-postasını ve yetki devrini kontrol edin.",
+      "google_unavailable": "Google Workspace’e ulaşılamadı. Daha sonra yeniden deneyin.",
+      "unknown": "Denetim geçmedi."
     },
     "verifyErrors": {
-      "CUSTOMER_DOMAIN_NOT_FOUND": "This domain is no longer in this organization. Reload the page.",
-      "DOMAIN_VERIFIED_ELSEWHERE": "This domain is verified for another organization. Its owner must remove the other verification (DNS record or directory connection) first.",
-      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "The domain's verification changed while this check ran. Check again.",
-      "DOMAIN_INACTIVE": "Turn the domain on before verifying it.",
-      "DOMAIN_DNS_NOT_STARTED": "Get the DNS record first.",
-      "DOMAIN_ALREADY_VERIFIED": "This domain is verified by another method. Remove that verification first."
+      "CUSTOMER_DOMAIN_NOT_FOUND": "Bu alan adı artık bu kuruluşta değil. Sayfayı yeniden yükleyin.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "Bu alan adı başka bir kuruluş için doğrulanmış. Önce o kuruluşun sahibi diğer doğrulamayı (DNS kaydı veya dizin bağlantısı) kaldırmalıdır.",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "Bu denetim çalışırken alan adının doğrulaması değişti. Yeniden denetleyin.",
+      "DOMAIN_INACTIVE": "Doğrulamadan önce alan adını açın.",
+      "DOMAIN_DNS_NOT_STARTED": "Önce DNS kaydını alın.",
+      "DOMAIN_ALREADY_VERIFIED": "Bu alan adı başka bir yöntemle doğrulanmış. Önce o doğrulamayı kaldırın."
     },
     "verify": {
-      "methodLegend": "Verification method",
-      "methodLocked": "To switch methods, remove the current verification first.",
-      "openPortalTab": "Prove the tenant under Portal › Sign-in & registration.",
-      "dnsStartHint": "Get a TXT record for the customer's DNS admin to publish.",
-      "startDns": "Get DNS record",
-      "starting": "Getting record…",
-      "dnsInstructions": "Ask the customer's DNS admin to add this TXT record, then check it.",
-      "recordName": "Record name (host)",
-      "recordValue": "Record value",
-      "copy": "Copy",
-      "copied": "Copied",
-      "googleScopeHint": "The organization's Google Workspace delegation grant must include {{scope}}.",
-      "inactive": "This domain is turned off. Turn it on to verify it.",
-      "verify": "Verify",
-      "checkNow": "Check now",
-      "checking": "Checking…",
-      "resultFailed": "Not verified. {{reason}}",
-      "resultUnavailable": "The check could not finish. {{reason}}",
-      "removeVerification": "Remove verification",
-      "removeTitle": "Remove verification for {{domain}}?",
-      "removeMessage": "The domain stays on this organization for mail routing. Self-registration and Sign in with Google stop trusting it until it is verified again."
+      "methodLegend": "Doğrulama yöntemi",
+      "methodLocked": "Yöntemi değiştirmek için önce mevcut doğrulamayı kaldırın.",
+      "openPortalTab": "Tenant’ı Müşteri Portalı › Oturum açma ve kayıt altında kanıtlayın.",
+      "dnsStartHint": "Müşterinin DNS yöneticisinin yayımlaması için bir TXT kaydı alın.",
+      "startDns": "DNS kaydını al",
+      "starting": "Kayıt alınıyor…",
+      "dnsInstructions": "Müşterinin DNS yöneticisinden bu TXT kaydını eklemesini isteyin, ardından denetleyin.",
+      "recordName": "Kayıt adı (ana bilgisayar)",
+      "recordValue": "Kayıt değeri",
+      "copy": "Kopyala",
+      "copied": "Kopyalandı",
+      "googleScopeHint": "Kuruluşun Google Workspace yetki devri {{scope}} kapsamını içermelidir.",
+      "inactive": "Bu alan adı kapalı. Doğrulamak için açın.",
+      "verify": "Doğrula",
+      "checkNow": "Şimdi denetle",
+      "checking": "Denetleniyor…",
+      "resultFailed": "Doğrulanmadı. {{reason}}",
+      "resultUnavailable": "Denetim tamamlanamadı. {{reason}}",
+      "removeVerification": "Doğrulamayı kaldır",
+      "removeTitle": "{{domain}} doğrulaması kaldırılsın mı?",
+      "removeMessage": "Alan adı, e-posta yönlendirme için bu kuruluşta kalır. Kendi kendine kayıt ve Google ile oturum açma, yeniden doğrulanana kadar ona güvenmeyi bırakır."
     },
     "actions": {
-      "verify": "Verify",
-      "manageVerification": "Verification",
-      "move": "Move"
+      "verify": "Doğrula",
+      "manageVerification": "Doğrulama",
+      "move": "Taşı"
     },
     "add": {
-      "label": "Add a domain",
+      "label": "Alan adı ekle",
       "placeholder": "contoso.com",
-      "submit": "Add domain"
+      "submit": "Alan adı ekle"
     },
     "move": {
-      "title": "Move {{domain}} to another organization?",
-      "message": "Inbound email from this domain will route to the organization you choose.",
-      "messageVerified": "The domain will lose its verification. The new organization must verify it again, and a DNS record must be published again with a new value.",
-      "targetLabel": "Organization",
-      "targetPlaceholder": "Select an organization…",
-      "orgsFailed": "Organizations failed to load. Close this and try again."
+      "title": "{{domain}} başka bir kuruluşa taşınsın mı?",
+      "message": "Bu alan adından gelen e-postalar seçtiğiniz kuruluşa yönlendirilir.",
+      "messageVerified": "Alan adı doğrulamasını kaybeder. Yeni kuruluşun onu yeniden doğrulaması gerekir ve yeni bir değerle bir DNS kaydı yeniden yayımlanmalıdır.",
+      "targetLabel": "Kuruluş",
+      "targetPlaceholder": "Bir kuruluş seçin…",
+      "orgsFailed": "Kuruluşlar yüklenemedi. Bunu kapatıp yeniden deneyin."
     },
     "delete": {
-      "title": "Delete {{domain}}?",
-      "message": "Inbound email from this domain will no longer route to this organization.",
-      "messageVerified": "Inbound email from this domain will no longer route to this organization, and its verification is removed."
+      "title": "{{domain}} silinsin mi?",
+      "message": "Bu alan adından gelen e-postalar artık bu kuruluşa yönlendirilmez.",
+      "messageVerified": "Bu alan adından gelen e-postalar artık bu kuruluşa yönlendirilmez ve doğrulaması kaldırılır."
     },
     "toasts": {
-      "added": "{{domain}} added",
-      "saved": "{{domain}} saved",
-      "deleted": "{{domain}} deleted",
-      "moved": "{{domain}} moved to {{org}}",
-      "verified": "{{domain}} verified",
-      "verificationRemoved": "Verification removed for {{domain}}",
-      "copyFailed": "Could not copy. Select the text and copy it manually."
+      "added": "{{domain}} eklendi",
+      "saved": "{{domain}} kaydedildi",
+      "deleted": "{{domain}} silindi",
+      "moved": "{{domain}}, {{org}} kuruluşuna taşındı",
+      "verified": "{{domain}} doğrulandı",
+      "verificationRemoved": "{{domain}} doğrulaması kaldırıldı",
+      "copyFailed": "Kopyalanamadı. Metni seçip elle kopyalayın."
     },
     "errors": {
-      "load": "Domains failed to load.",
-      "save": "Could not save the domain. Retry.",
-      "delete": "Could not delete the domain. Retry.",
-      "add": "Could not add the domain. Retry.",
-      "alreadyMapped": "This domain is already added to an organization in your account.",
-      "startDns": "Could not get the DNS record. Retry.",
-      "check": "Could not run the check. Retry.",
-      "removeVerification": "Could not remove the verification. Retry."
+      "load": "Alan adları yüklenemedi.",
+      "save": "Alan adı kaydedilemedi. Yeniden deneyin.",
+      "delete": "Alan adı silinemedi. Yeniden deneyin.",
+      "add": "Alan adı eklenemedi. Yeniden deneyin.",
+      "alreadyMapped": "Bu alan adı hesabınızdaki bir kuruluşa zaten eklenmiş.",
+      "startDns": "DNS kaydı alınamadı. Yeniden deneyin.",
+      "check": "Denetim çalıştırılamadı. Yeniden deneyin.",
+      "removeVerification": "Doğrulama kaldırılamadı. Yeniden deneyin."
     }
   },
   "customFieldsPage": {
@@ -8587,9 +8587,9 @@
       }
     },
     "domains": {
-      "label": "Domains",
-      "none": "No domains yet",
-      "manage": "Manage in Organization › Domains"
+      "label": "Alan adları",
+      "none": "Henüz alan adı yok",
+      "manage": "Kuruluş › Alan adları altında yönetin"
     }
   },
   "portalAccessRequests": {
