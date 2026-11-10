@@ -1350,8 +1350,7 @@
         "series": "One report per organization",
         "seriesHint": "One definition, with a separate copy for every organization it covers, each sent to that organization's contacts.",
         "combined": "All organizations combined",
-        "combinedHint": "One combined report across all your organizations, for your own team.",
-        "seriesUnavailableType": "This report type can't be sent as one report per organization."
+        "combinedHint": "One combined report across all your organizations, for your own team."
       },
       "schedule": {
         "label": "How often each organization's copy is sent",

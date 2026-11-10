@@ -35,6 +35,7 @@ import { getRecipe } from '../aiOperator/recipes';
 import { admitTask } from '../aiOperator/taskService';
 import type { GrantCeiling } from './grantAuthority';
 import type { SpecialistKind } from './specialistPolicy';
+import { assessmentParamsSchema, launchAssessment, type AssessmentLaunchReport } from './specialists/assessmentLaunch';
 import { executeBulkTicketReply, type BulkTicketReplyReport } from './specialists/bulkTicketReply';
 import { agentOffMessage, type AgentOffReason } from './specialistRefusalMessages';
 import { buildContinuationSeed, continuationDedupeKey, continuationOf } from './troubleshootContinuation';
@@ -59,8 +60,9 @@ export type SpecialistRefusal =
   | 'continuation_refused';
 
 export type LaunchResult =
-  | { admitted: true; runId?: string; taskId?: string; report?: BulkTicketReplyReport }
-  | { refused: SpecialistRefusal; detail?: string; message?: string; report?: BulkTicketReplyReport };
+  /** `message`: the sentence the model reads back, when the launcher has one (#10406). */
+  | { admitted: true; runId?: string; taskId?: string; report?: BulkTicketReplyReport | AssessmentLaunchReport; message?: string }
+  | { refused: SpecialistRefusal; detail?: string; message?: string; report?: BulkTicketReplyReport | AssessmentLaunchReport };
 
 export interface LaunchContext {
   orgId: string;
@@ -126,6 +128,7 @@ const PARAMS_SCHEMAS: Readonly<Record<SpecialistKind, z.ZodType>> = Object.freez
   remediation_research: researchParamsSchema,
   bulk_ticket_reply: bulkTicketReplyParamsSchema,
   device_troubleshooting: troubleshootParamsSchema,
+  assessment: assessmentParamsSchema,
 });
 
 /** The parsed params for `kind`, or null when they do not fit its schema. */
@@ -408,6 +411,9 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
     const resolved = await resolveEffectiveAgentSystem(orgId, 'troubleshoot');
     return resolved ? agentOffRefusal(resolved) : null;
   },
+  // #10406: each org's own admission (enqueueAssessment) owns the agent and
+  // budget checks; the launcher reports per org.
+  assessment: async () => null,
 });
 
 // ---------------------------------------------------------------------------
@@ -672,4 +678,5 @@ export const SPECIALIST_LAUNCHERS: Readonly<Record<SpecialistKind, (ctx: LaunchC
   remediation_research: launchRemediationResearch,
   bulk_ticket_reply: launchBulkTicketReply,
   device_troubleshooting: launchDeviceTroubleshooting,
+  assessment: launchAssessment,
 });

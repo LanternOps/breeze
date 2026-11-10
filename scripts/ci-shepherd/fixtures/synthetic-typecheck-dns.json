@@ -1,0 +1,63 @@
+{
+  "name": "synthetic-typecheck-dns",
+  "synthetic": true,
+  "source": { "run": 900000001, "pr": 900001, "recordedAt": "2026-11-08" },
+  "prFiles": ["apps/api/src/routes/devices.ts"],
+  "facts": {
+    "run": {
+      "id": 900000001,
+      "attempt": 1,
+      "headSha": "1111111111111111111111111111111111111111",
+      "headBranch": "gh-readonly-queue/main/pr-900001-2222222222222222222222222222222222222222",
+      "headRepo": "LanternOps/breeze",
+      "event": "merge_group",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-11-08T10:00:00Z",
+      "updatedAt": "2026-11-08T10:12:00Z",
+      "pr": 900001
+    },
+    "jobs": [
+      {
+        "id": 900000101,
+        "name": "Type Check",
+        "jobId": "typecheck",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T10:01:00Z",
+        "completedAt": "2026-11-08T10:03:00Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Install dependencies",
+        "annotations": ["Process completed with exit code 1."],
+        "logStatus": 200,
+        "logTail": "Run pnpm install --frozen-lockfile\n ERR_PNPM_META_FETCH_FAIL  GET https://registry.npmjs.org/zod: request to https://registry.npmjs.org/zod failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org\n##[error]Process completed with exit code 1.",
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      },
+      {
+        "id": 900000199,
+        "name": "CI Success",
+        "jobId": "ci-success",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T10:11:00Z",
+        "completedAt": "2026-11-08T10:11:10Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Check all jobs passed",
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "ciSuccess": "present",
+    "gate": null
+  }
+}

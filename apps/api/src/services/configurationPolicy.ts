@@ -89,6 +89,7 @@ import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
 import { scheduleComplianceAlertReconcile } from './complianceAlertReconcileTrigger';
+import { scheduleOemPolicySideRefresh } from './oemUpdates/policySideRefreshTrigger';
 import {
   capturePeripheralLinkDeleteScope,
   schedulePeripheralLinkReconcile,
@@ -814,6 +815,8 @@ export async function updateConfigPolicy(
   // is no longer active close through the reconcile.
   if (data.status !== undefined && data.status !== existing.status) {
     scheduleComplianceAlertReconcile({ configPolicyId: id }, 'policy-status');
+    // A switched-on/off policy carrying vendor updates changes its devices' winning link (#11242).
+    scheduleOemPolicySideRefresh({ configPolicyId: id, onlyIfOemLinked: true }, 'policy-status');
     // Only an active config policy's Peripheral Control link governs devices
     // (#9619); a no-op when the policy carries no peripheral link.
     schedulePeripheralLinkReconcile({ configPolicyId: id, standalone: true }, 'policy-status');
@@ -865,6 +868,7 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
       ? { orgId: existing.orgId }
       : existing.partnerId ? { partnerId: existing.partnerId } : null;
     if (deleted && owner) scheduleComplianceAlertReconcile(owner, 'policy-delete');
+    if (deleted && owner) scheduleOemPolicySideRefresh(owner, 'policy-delete');
     if (deleted && peripheralScope) {
       schedulePeripheralLinkReconcile({ ...peripheralScope, standalone: true }, 'policy-delete');
     }
@@ -2136,6 +2140,10 @@ export async function addFeatureLink(
   if (added && featureType === 'compliance') {
     scheduleComplianceAlertReconcile({ configPolicyId }, 'feature-link-add');
   }
+  // A vendor-updates link changes which link wins for the policy's devices (#11242).
+  if (added && featureType === 'oem_updates') {
+    scheduleOemPolicySideRefresh({ configPolicyId }, 'feature-link-add');
+  }
   // #9619: a Peripheral Control link is authoritative for which devices get the
   // linked peripheral policy; linking moves devices in/out of it.
   if (added && featureType === 'peripheral_control' && added.featurePolicyId) {
@@ -2173,6 +2181,7 @@ export async function updateFeatureLink(
   }
 
   let updatedComplianceOf: string | null = null;
+  let updatedOemUpdatesOf: string | null = null;
   let peripheralLinkChange: { configPolicyId: string; policyIds: string[] } | null = null;
   const result = await executor.transaction(async (tx) => {
     // Fetch current link to get featureType, scoped to configPolicyId when provided
@@ -2344,6 +2353,7 @@ export async function updateFeatureLink(
       );
     }
     if (existing.featureType === 'compliance') updatedComplianceOf = existing.configPolicyId;
+    if (existing.featureType === 'oem_updates') updatedOemUpdatesOf = existing.configPolicyId;
     if (existing.featureType === 'peripheral_control' && updates.featurePolicyId !== undefined) {
       // Re-pointing the link moves devices out of the old policy and into the new one.
       peripheralLinkChange = {
@@ -2358,6 +2368,9 @@ export async function updateFeatureLink(
   // open alerts close through the reconcile.
   if (updatedComplianceOf) {
     scheduleComplianceAlertReconcile({ configPolicyId: updatedComplianceOf }, 'feature-link-update');
+  }
+  if (updatedOemUpdatesOf) {
+    scheduleOemPolicySideRefresh({ configPolicyId: updatedOemUpdatesOf }, 'feature-link-update');
   }
   const peripheralChange = peripheralLinkChange as { configPolicyId: string; policyIds: string[] } | null;
   if (peripheralChange && peripheralChange.policyIds.length > 0) {
@@ -2399,6 +2412,10 @@ export async function removeFeatureLink(linkId: string, configPolicyId: string) 
   // they raised close through the reconcile.
   if (removed?.featureType === 'compliance') {
     scheduleComplianceAlertReconcile({ configPolicyId }, 'feature-link-remove');
+  }
+  // The policy no longer carries the link, but its devices still need recomputing (#11242).
+  if (removed?.featureType === 'oem_updates') {
+    scheduleOemPolicySideRefresh({ configPolicyId }, 'feature-link-remove');
   }
   // Unlinking returns the peripheral policy to its own targeting (#9619). A
   // `kept` row stayed live, so nothing changed for it.
@@ -2561,6 +2578,7 @@ export async function assignPolicy(
   // now; alerts raised by rules the device no longer follows close.
   if (assignment) {
     scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-add');
+    scheduleOemPolicySideRefresh({ configPolicyId, onlyIfOemLinked: true }, 'assignment-add');
     // A new assignment brings a linked peripheral policy to the target's devices (#9619).
     schedulePeripheralLinkReconcile({ configPolicyId, assignments: [{ level, targetId }] }, 'assignment-add');
   }
@@ -2856,6 +2874,7 @@ export async function unassignPolicy(assignmentId: string, configPolicyId: strin
     .returning();
   if (deleted) {
     scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-remove');
+    scheduleOemPolicySideRefresh({ configPolicyId, onlyIfOemLinked: true }, 'assignment-remove');
     schedulePeripheralLinkReconcile(
       { configPolicyId, assignments: [{ level: deleted.level, targetId: deleted.targetId }] },
       'assignment-remove',

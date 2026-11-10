@@ -17,6 +17,7 @@ import {
   listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
   listCustomerEmailDomains, createCustomerEmailDomain, updateCustomerEmailDomain, deleteCustomerEmailDomain,
 } from '../services/ticketConfigService';
+import { requireCustomerDomainGovernance as adminMiddleware } from '../middleware/customerDomainGovernance';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -58,22 +59,6 @@ function requirePartnerId(c: { get: (k: 'auth') => unknown; json: (b: unknown, s
   if (!auth.partnerId) return c.json({ error: 'Partner context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
   return auth.partnerId;
 }
-
-// Middleware version of the admin check — runs after writePerm (which populates
-// c.get('permissions')) and gates mutating routes so a non-admin gets a clear
-// admin-403 rather than a generic permission-denied message. Full-partner
-// capability is checked first so wildcard/platform-admin status cannot bypass
-// selected/none organization access.
-const adminMiddleware = async (c: Context, next: Next) => {
-  const auth = c.get('auth') as AuthContext;
-  if (!canManagePartnerWidePolicies(auth)) {
-    return c.json({ error: partnerGlobalDeniedMessage, code: ERROR_CODES.ACCESS_DENIED }, 403);
-  }
-  const perms = c.get('permissions') as UserPermissions | undefined;
-  const isAdmin = auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false);
-  if (!isAdmin) return c.json({ error: 'Managing ticket configuration requires an admin role', code: ERROR_CODES.ACCESS_DENIED }, 403);
-  return next();
-};
 
 // GET / — full partner ticketing config (statuses + priority settings).
 ticketConfigRoutes.get('/', scopes, readPerm, requirePartnerGlobalAccess, async (c) => {

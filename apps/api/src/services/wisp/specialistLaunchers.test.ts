@@ -19,6 +19,11 @@ const h = vi.hoisted(() => ({
   executeBulkTicketReply: vi.fn(),
   buildContinuationSeed: vi.fn(),
   recipeKinds: {} as Record<string, string>,
+  // #10406 launchAssessment
+  orgsWithOpenAlerts: vi.fn(),
+  chargeableUnderGrant: vi.fn(),
+  requestAssessment: vi.fn(),
+  captureException: vi.fn(),
 }));
 
 function nextRows(table: string): unknown[] {
@@ -70,12 +75,17 @@ vi.mock('../aiOperator/taskService', () => ({ admitTask: h.admitTask }));
 vi.mock('../aiOperator/recipes', () => ({ getRecipe: h.getRecipe }));
 vi.mock('../aiOperator/recipeReadiness', () => ({ RECIPE_AGENT_KINDS: h.recipeKinds }));
 vi.mock('./specialists/bulkTicketReply', () => ({ executeBulkTicketReply: h.executeBulkTicketReply }));
+vi.mock('./openAlertOrgs', () => ({ orgsWithOpenAlerts: h.orgsWithOpenAlerts }));
+vi.mock('./budget', () => ({ chargeableUnderGrant: h.chargeableUnderGrant }));
+vi.mock('./wake', () => ({ requestAssessment: h.requestAssessment }));
+vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('./troubleshootContinuation', async (orig) => ({
   ...(await orig<typeof import('./troubleshootContinuation')>()),
   buildContinuationSeed: h.buildContinuationSeed,
 }));
 
 import { GrantDepthExceededError } from '../aiAgents/runService';
+import { launchAssessment } from './specialists/assessmentLaunch';
 import { SPECIALIST_KINDS } from './specialistPolicy';
 import {
   SPECIALIST_LAUNCHERS,
@@ -744,7 +754,7 @@ describe('launchBulkTicketReply', () => {
 describe('SPECIALIST_LAUNCHERS', () => {
   it('has exactly the policy kinds', () => {
     expect(Object.keys(SPECIALIST_LAUNCHERS).sort()).toEqual([...SPECIALIST_KINDS].sort());
-    expect(SPECIALIST_KINDS).toHaveLength(7);
+    expect(SPECIALIST_KINDS).toHaveLength(8);
   });
 });
 
@@ -925,5 +935,170 @@ describe('specialistParamsError (#10144)', () => {
     expect(specialistParamsError('analysis', {})).toMatch(/goal/);
     expect(specialistParamsError('sweep', {})).toBeNull();
     expect(specialistParamsError('patch_plan', undefined)).toBeNull();
+  });
+});
+
+// #10406 — Wisp's own assessment from chat: the launcher expands the scope
+// inside the live ceiling, re-gates every org, pre-checks N x 25 cents, then
+// asks the wake coordinator for one on-demand assessment per org.
+describe('launchAssessment (#10406)', () => {
+  const orgN = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const ORGS = Array.from({ length: 12 }, (_, i) => orgN(i + 1));
+  const OD = { kind: 'on_demand', requestId: REQ };
+
+  function liveCeiling(o: Record<string, unknown> = {}) {
+    return {
+      grantId: GRANT, revisionId: REV, partnerId: PARTNER, grantorUserId: GRANTOR, scopeOrgId: null, partnerWide: true,
+      orgIds: new Set([ORG, ...ORGS]), siteIds: null, permissionKeys: new Set(['*:*']), toolAllowlist: null,
+      deniedTools: new Set(), orgTerms: new Map(), status: 'active', ...o,
+    } as never;
+  }
+  const actor = (blocked: string[] = []) => ({ canAccessOrg: (id: string) => !blocked.includes(id) }) as never;
+  const withAlerts = (ids: string[]) => ids.map((orgId, i) => ({ orgId, orgName: `Org ${String.fromCharCode(65 + i)}` }));
+  const launch = (o: Partial<LaunchContext> = {}) => launchAssessment(ctx({
+    grant: { grantId: GRANT, grantRevisionId: REV, requestedByRunId: null },
+    params: { scope: 'orgs_with_open_alerts' }, ceiling: liveCeiling(), actorAuth: actor(), ...o,
+  }));
+  const requestedOrgs = () => h.requestAssessment.mock.calls.map((c) => (c[0] as { orgId: string }).orgId);
+
+  beforeEach(() => {
+    h.chargeableUnderGrant.mockResolvedValue({ ok: true });
+    h.requestAssessment.mockResolvedValue('queued');
+  });
+
+  it('orgs_with_open_alerts: asks for the assessable ceiling orgs (limit 10) and requests each, in the order given', async () => {
+    // A site-restricted org is not assessable and is never asked about.
+    const restricted = ORGS[11]!;
+    const ceilingWithSite = liveCeiling({ orgTerms: new Map([[restricted, { permissionKeys: new Set(['*:*']), siteIds: new Set(['s1']) }]]) });
+    h.orgsWithOpenAlerts.mockResolvedValue(withAlerts(ORGS.slice(0, 10)));
+
+    const r = await launch({ ceiling: ceilingWithSite });
+
+    const [askedIds, limit] = h.orgsWithOpenAlerts.mock.calls[0]!;
+    expect([...(askedIds as string[])].sort()).toEqual([ORG, ...ORGS.slice(0, 11)].sort());
+    expect(limit).toBe(10);
+    expect(h.chargeableUnderGrant).toHaveBeenCalledWith(GRANT, 10 * 25);
+    expect(requestedOrgs()).toEqual(ORGS.slice(0, 10));
+    for (const c of h.requestAssessment.mock.calls) expect(c[0]).toEqual({ grantId: GRANT, orgId: expect.any(String), reason: OD });
+    expect(r).toMatchObject({ admitted: true });
+    expect((r as { report: { orgs: unknown[] } }).report.orgs).toHaveLength(10);
+  });
+
+  it('refuses budget_exhausted at N x 25 cents and requests nothing', async () => {
+    h.orgsWithOpenAlerts.mockResolvedValue(withAlerts(ORGS.slice(0, 10)));
+    h.chargeableUnderGrant.mockResolvedValue({ ok: false, reason: 'budget_exhausted' });
+    await expect(launch()).resolves.toEqual({ refused: 'budget_exhausted' });
+    expect(h.chargeableUnderGrant).toHaveBeenCalledWith(GRANT, 250);
+    expect(h.requestAssessment).not.toHaveBeenCalled();
+  });
+
+  // Review finding: the alerts read is a system read, so it only ever sees the
+  // orgs this grant AND the person asking may assess. An org outside that set
+  // can neither use up the limit of 10 nor be named in the result.
+  it('gates the orgs BEFORE the alerts read: an org term without alerts:read, or an org the person cannot reach, is never read or named', async () => {
+    const [a, b, c, d] = ORGS;
+    h.orgsWithOpenAlerts.mockResolvedValue(withAlerts([a!, c!]));
+    const ceilingNoAlerts = liveCeiling({ orgTerms: new Map([[b!, { permissionKeys: new Set(['ai_agents:write']), siteIds: null }]]) });
+
+    const r = await launch({ ceiling: ceilingNoAlerts, actorAuth: actor([d!]) });
+
+    const asked = h.orgsWithOpenAlerts.mock.calls[0]![0] as string[];
+    expect(asked).toContain(a);
+    expect(asked).toContain(c);
+    expect(asked).not.toContain(b);
+    expect(asked).not.toContain(d);
+    expect(requestedOrgs()).toEqual([a, c]);
+    expect(h.chargeableUnderGrant).toHaveBeenCalledWith(GRANT, 2 * 25);
+    expect((r as { report: unknown }).report).toEqual({
+      orgs: [
+        { orgId: a, orgName: 'Org A', outcome: 'queued' },
+        { orgId: c, orgName: 'Org B', outcome: 'queued' },
+      ],
+    });
+  });
+
+  it('scope org re-gates the anchor: an org term without alerts:read is skipped/permission and nothing is requested', async () => {
+    h.tables.organizations = [[{ name: 'Greenwood' }]];
+    const noAlerts = liveCeiling({ orgTerms: new Map([[ORG, { permissionKeys: new Set(['ai_agents:write']), siteIds: null }]]) });
+    await expect(launch({ params: { scope: 'org' }, ceiling: noAlerts })).resolves.toEqual({
+      refused: 'admission_skipped', detail: 'no_assessable_orgs',
+      report: { orgs: [{ orgId: ORG, orgName: 'Greenwood', outcome: 'skipped', reason: 'permission' }] },
+    });
+    expect(h.requestAssessment).not.toHaveBeenCalled();
+  });
+
+  it('the report mirrors what requestAssessment returned, and the message names them', async () => {
+    const [a, b, c, d] = ORGS;
+    h.orgsWithOpenAlerts.mockResolvedValue(withAlerts([a!, b!, c!, d!]));
+    h.requestAssessment
+      .mockResolvedValueOnce('queued')
+      .mockResolvedValueOnce('upgraded')
+      .mockResolvedValueOnce('queued')
+      .mockResolvedValueOnce('coalesced');
+
+    const r = await launch() as { admitted: true; message: string; report: { orgs: Array<{ outcome: string }> } };
+
+    expect(r.report.orgs.map((o) => o.outcome)).toEqual(['queued', 'upgraded', 'queued', 'coalesced']);
+    expect(r.message).toBe('Queued Wisp assessments for 3 orgs (Org A, Org B, Org C); 1 already queued (Org D). Results land in this thread.');
+  });
+
+  it('no org with open alerts → admission_skipped no_open_alerts, with no budget read and no request', async () => {
+    h.orgsWithOpenAlerts.mockResolvedValue([]);
+    await expect(launch()).resolves.toEqual({ refused: 'admission_skipped', detail: 'no_open_alerts' });
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(h.requestAssessment).not.toHaveBeenCalled();
+  });
+
+  it('scope org covers the anchor org only, named from its row', async () => {
+    h.tables.organizations = [[{ name: 'Greenwood\nClinic' }]];
+    const r = await launch({ params: { scope: 'org' } }) as { admitted: true; message: string; report: unknown };
+    expect(h.orgsWithOpenAlerts).not.toHaveBeenCalled();
+    expect(h.chargeableUnderGrant).toHaveBeenCalledWith(GRANT, 25);
+    expect(requestedOrgs()).toEqual([ORG]);
+    expect(r.report).toEqual({ orgs: [{ orgId: ORG, orgName: 'Greenwood Clinic', outcome: 'queued' }] });
+    expect(r.message).toBe('Queued a Wisp assessment for Greenwood Clinic. Results land in this thread.');
+  });
+
+  it('scope org on an org the grant reaches only through a site is refused no_assessable_orgs, nothing requested', async () => {
+    h.tables.organizations = [[{ name: 'Greenwood' }]];
+    const siteOnly = liveCeiling({ orgTerms: new Map([[ORG, { permissionKeys: new Set(['*:*']), siteIds: new Set(['s1']) }]]) });
+    const r = await launch({ params: { scope: 'org' }, ceiling: siteOnly });
+    expect(r).toEqual({
+      refused: 'admission_skipped', detail: 'no_assessable_orgs',
+      report: { orgs: [{ orgId: ORG, orgName: 'Greenwood', outcome: 'skipped', reason: 'not_assessable' }] },
+    });
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(h.requestAssessment).not.toHaveBeenCalled();
+  });
+
+  it('a queue failure for one org is reported and does not stop the others; all failing is queue_unavailable', async () => {
+    const [a, b] = ORGS;
+    h.orgsWithOpenAlerts.mockResolvedValue(withAlerts([a!, b!]));
+    h.requestAssessment.mockRejectedValueOnce(new Error('redis down')).mockResolvedValueOnce('queued');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await launch() as { admitted: true; message: string; report: unknown };
+    expect(r.report).toEqual({
+      orgs: [
+        { orgId: a, orgName: 'Org A', outcome: 'skipped', reason: 'queue_failed' },
+        { orgId: b, orgName: 'Org B', outcome: 'queued' },
+      ],
+    });
+    expect(r.message).toBe('Queued a Wisp assessment for Org B; 1 could not be queued (Org A). Results land in this thread.');
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+      op: 'wisp.assessment.onDemandRequest', grantId: GRANT, orgId: a, requestId: REQ,
+    }));
+
+    h.requestAssessment.mockReset();
+    h.requestAssessment.mockRejectedValue(new Error('redis down'));
+    await expect(launch()).resolves.toMatchObject({ refused: 'admission_skipped', detail: 'queue_unavailable' });
+    consoleError.mockRestore();
+  });
+
+  it('names from the alerts read are one line and bounded', async () => {
+    h.orgsWithOpenAlerts.mockResolvedValue([{ orgId: ORGS[0]!, orgName: `Acme\n${'x'.repeat(200)}` }]);
+    const r = await launch() as { admitted: true; message: string };
+    expect(r.message).not.toContain('\n');
+    expect(r.message).toContain(`${`Acme ${'x'.repeat(200)}`.slice(0, 80)}…`);
   });
 });

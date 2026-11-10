@@ -8,6 +8,12 @@ import { isHosted } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import {
+  buildCustomerDomainViews,
+  customerDomainRowColumns,
+  type CustomerDomainRow,
+  type CustomerDomainView,
+} from './portalDomainVerification';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 
 /**
@@ -914,21 +920,27 @@ export async function dismissEmailInbound(partnerId: string, id: string): Promis
 // the composite FK (org_id, partner_id) -> organizations(id, partner_id).
 // ---------------------------------------------------------------------------
 
-export async function listCustomerEmailDomains(partnerId: string) {
-  return db
-    .select({
-      id: customerEmailDomains.id,
-      domain: customerEmailDomains.domain,
-      orgId: customerEmailDomains.orgId,
-      orgName: organizations.name,
-      autoCreateContact: customerEmailDomains.autoCreateContact,
-      isActive: customerEmailDomains.isActive,
-      createdAt: customerEmailDomains.createdAt,
-    })
+/**
+ * Partner-wide list (joined org name), or one org's rows with `opts.orgId`.
+ * Rows are the explicit `CustomerDomainView` projection: the verification
+ * token and evidence never leave the service.
+ */
+export async function listCustomerEmailDomains(
+  partnerId: string,
+  opts: { orgId?: string } = {},
+): Promise<Array<CustomerDomainView & { orgName: string | null }>> {
+  const where = opts.orgId
+    ? and(eq(customerEmailDomains.partnerId, partnerId), eq(customerEmailDomains.orgId, opts.orgId))
+    : eq(customerEmailDomains.partnerId, partnerId);
+  const rows = await db
+    .select({ ...customerDomainRowColumns(), orgName: organizations.name })
     .from(customerEmailDomains)
     .leftJoin(organizations, eq(customerEmailDomains.orgId, organizations.id))
-    .where(eq(customerEmailDomains.partnerId, partnerId))
+    .where(where)
     .orderBy(asc(customerEmailDomains.domain));
+  const views = await buildCustomerDomainViews(rows as unknown as CustomerDomainRow[]);
+  const orgNames = new Map(rows.map((r) => [r.id, r.orgName ?? null]));
+  return views.map((v) => ({ ...v, orgName: orgNames.get(v.id) ?? null }));
 }
 
 export async function createCustomerEmailDomain(
@@ -960,12 +972,13 @@ export async function createCustomerEmailDomain(
       createdBy: actor.userId,
     })
     .onConflictDoNothing()
-    .returning();
+    .returning(customerDomainRowColumns());
   const row = rows[0];
   if (!row) {
     throw new TicketConfigServiceError('That domain is already mapped', 409, 'DOMAIN_ALREADY_MAPPED');
   }
-  return row;
+  const [view] = await buildCustomerDomainViews([row as CustomerDomainRow]);
+  return view!;
 }
 
 export async function updateCustomerEmailDomain(
@@ -985,11 +998,19 @@ export async function updateCustomerEmailDomain(
 
   const [updated] = await db
     .update(customerEmailDomains)
-    .set({ ...input, updatedAt: new Date() })
+    // Explicit picks: verification columns are written only by the verification
+    // service, never through a CRUD body (plan inv. 2).
+    .set({
+      ...(input.orgId !== undefined ? { orgId: input.orgId } : {}),
+      ...(input.autoCreateContact !== undefined ? { autoCreateContact: input.autoCreateContact } : {}),
+      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+      updatedAt: new Date(),
+    })
     .where(and(eq(customerEmailDomains.id, id), eq(customerEmailDomains.partnerId, partnerId)))
-    .returning();
+    .returning(customerDomainRowColumns());
   if (!updated) throw new TicketConfigServiceError('Domain mapping not found', 404, 'DOMAIN_MAPPING_NOT_FOUND');
-  return updated;
+  const [view] = await buildCustomerDomainViews([updated as CustomerDomainRow]);
+  return view!;
 }
 
 export async function deleteCustomerEmailDomain(partnerId: string, id: string) {

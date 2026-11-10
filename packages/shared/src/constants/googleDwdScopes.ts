@@ -15,6 +15,14 @@ export const DIRECTORY_SCOPES = [
   'https://www.googleapis.com/auth/admin.directory.device.mobile.action', // selective account-wipe / stolen-device wipe
 ] as const;
 
+// Portal registration domain verification: read-only list of the customer's
+// verified domains. Deliberately NOT part of DIRECTORY_SCOPES so the existing
+// directory client keeps its six scopes; the dedicated domains client requests
+// only this one (plan D8). It is in the DWD grant CSV below.
+export const DIRECTORY_DOMAIN_SCOPES = [
+  'https://www.googleapis.com/auth/admin.directory.domain.readonly',
+] as const;
+
 export const GMAIL_USER_SCOPES = [
   'https://www.googleapis.com/auth/gmail.settings.basic', // vacation responder
   'https://www.googleapis.com/auth/gmail.settings.sharing', // forwarding addresses + auto-forwarding
@@ -73,4 +81,5 @@ export const GOOGLE_DWD_SCOPES_CSV = [
   ...GMAIL_INBOUND_SCOPES,
   ...CALENDAR_SCOPES,
   ...LICENSING_SCOPES,
+  ...DIRECTORY_DOMAIN_SCOPES,
 ].join(',');

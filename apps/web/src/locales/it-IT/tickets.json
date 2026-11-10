@@ -137,9 +137,14 @@
       "remove": "Rimuovi file",
       "tooMany": "Puoi allegare al massimo {{max}} file a un commento.",
       "tooLarge": "{{name}} supera i 10 MB.",
-      "sentWithoutAttachment_one": "Nota pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
-      "sentWithoutAttachment_other": "Nota pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili."
-    }
+      "rejectedType": "{{name}} non è stato allegato: sono supportati solo immagini JPEG, PNG e WebP e file PDF.",
+      "rejectedEmpty": "{{name}} non è stato allegato: il file è vuoto.",
+      "sentWithoutAttachmentReply_one": "Risposta pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
+      "sentWithoutAttachmentNote_one": "Nota pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
+      "sentWithoutAttachmentReply_other": "Risposta pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili.",
+      "sentWithoutAttachmentNote_other": "Nota pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili."
+    },
+    "modeLabel": "Visibilità del commento"
   },
   "ticketFeed": {
     "empty": "Ancora nessuna attività.",
@@ -416,7 +421,18 @@
     },
     "filterByType": "Filtra per tipo",
     "allTypes": "Tutti i tipi",
-    "showMerged": "Mostra uniti"
+    "showMerged": "Mostra uniti",
+    "shortcutsButton": "Scorciatoie",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, priorità {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, priorità {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA: {{relative}} rimanenti",
+        "atRisk": "SLA a rischio, {{relative}} rimanenti",
+        "paused": "SLA in pausa, {{relative}} rimanenti",
+        "breached": "SLA violato"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "Ticket non trovato. Potrebbe essere stato eliminato oppure potresti non avere accesso.",

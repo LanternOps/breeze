@@ -57,6 +57,7 @@ import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 import type { WispSessionGrant } from './wisp/chatCeiling';
+import { appendWispAssistantText, beginWispTurn, type WispCurrentTurn } from './wisp/turnRecord';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { exitPreStreamTiming, timePreStreamPhase } from './aiPreStreamTiming';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
@@ -81,9 +82,9 @@ import {
   type RoundTripTally,
 } from './aiToolSearchPolicy';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
+import { finalizeWispSummaries, sessionExpiryReason } from './aiSessionExpiry';
 
-const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
+// Idle / age limits: aiAgentSessionLimits.ts, applied through sessionExpiryReason (#11430).
 const EVICTION_INTERVAL_MS = 60 * 1000; // Check every 60s
 const MAX_ACTIVE_SESSIONS = 200;
 /**
@@ -181,33 +182,6 @@ export function turnTimeoutMsFor(approvalWaitBudgetMs: number): number {
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
-const WISP_SUMMARY_FINALIZE_CONCURRENCY = 4;
-
-/**
- * Wisp W04 Task 5: recompute the thread summary of each session just retired.
- * Lazy import keeps wisp code out of this hot module's eager graph (as for
- * chatCeiling). Never rejects: failures go to Sentry only.
- *
- * #10390: finalizing can include a model call of up to a minute, so sessions run
- * a few at a time rather than one by one: one session's slow call must not hold
- * back the digest another thread's next chat is seeded with.
- */
-async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
-  if (sessionIds.length === 0) return;
-  try {
-    const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
-    for (let i = 0; i < sessionIds.length; i += WISP_SUMMARY_FINALIZE_CONCURRENCY) {
-      await Promise.all(sessionIds.slice(i, i + WISP_SUMMARY_FINALIZE_CONCURRENCY).map((id) =>
-        finalizeWispSessionSummary(id).catch((err) => {
-          console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
-          captureException(err);
-        })));
-    }
-  } catch (err) {
-    console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for ${sessionIds.length} session(s) (${sessionIds.join(', ')}):`, err);
-    captureException(err);
-  }
-}
 
 // The SDK child env builders moved to aiModels/sdkChildEnv.ts (W06 Task 9);
 // re-exported so existing importers (scripts, tests) keep working.
@@ -499,6 +473,13 @@ export interface ActiveSession {
    * after the insert and before the turn is pushed. Null until then.
    */
   turnUserMessageId: string | null;
+  /**
+   * #10428 (W05): what the Wisp turn in flight said and did, for the turn-end
+   * hooks (wisp/turnEnd.ts). Set by `tryTransitionToProcessing` for a Wisp
+   * session whose caller passed the technician's text, cleared for any other
+   * turn; tool outcomes are appended by `createSessionPostToolUse`.
+   */
+  currentTurn?: WispCurrentTurn;
   state: SessionState;
   lastActivityAt: number;
   readonly createdAt: number;
@@ -884,7 +865,13 @@ export class StreamingSessionManager {
   tryTransitionToProcessing(
     session: ActiveSession,
     budgetReservationId?: string,
-    turn?: { topologyInvestigation?: TopologyTurnRuntime; turnBinding?: TurnBinding; turnDisplay?: TurnDisplay },
+    turn?: {
+      topologyInvestigation?: TopologyTurnRuntime;
+      turnBinding?: TurnBinding;
+      turnDisplay?: TurnDisplay;
+      /** #10428: the technician's own text for this turn (Wisp sessions record it for the turn-end hooks). */
+      userMessage?: string;
+    },
   ): boolean {
     if (session.state === 'processing' || session.state === 'closing' || session.state === 'closed') {
       return false;
@@ -910,6 +897,11 @@ export class StreamingSessionManager {
     if (turn?.turnDisplay) {
       session.turnDisplay = turn.turnDisplay;
     }
+    // #10428: only the winner records its turn; a previous turn's record never
+    // carries over, and only a Wisp session keeps one.
+    session.currentTurn = session.wispGrant && typeof turn?.userMessage === 'string'
+      ? beginWispTurn(turn.userMessage)
+      : undefined;
     session.refusalObservation = newSdkTurnObservation();
     // A note left by an earlier turn that ended with no result must not name this turn's failure.
     takeGatewayFailureNote(session.breezeSessionId);
@@ -1534,7 +1526,13 @@ export class StreamingSessionManager {
     }
   }
 
-  /** Shutdown: clean up all sessions and stop eviction timer */
+  /**
+   * Shutdown: clean up all sessions and stop eviction timer. The rows stay
+   * 'active' on purpose (#11430): a live conversation resumes after a restart
+   * from its stored sdkSessionId (the LRU path keeps rows resumable for the
+   * same reason), and one that then idles out is retired by the idle sweep
+   * (jobs/aiChatSessionExpirySweep.ts), summary included.
+   */
   shutdown(): void {
     if (this.evictionTimer) {
       clearInterval(this.evictionTimer);
@@ -1749,6 +1747,9 @@ export class StreamingSessionManager {
               // through tool_use blocks and emit no text delta at all, so the
               // message boundary is the only keepalive some turns ever get.
               session.lastActivityAt = Date.now();
+              // #10427: a Wisp turn keeps its reply for the promise linter;
+              // each assistant message starts on its own line.
+              if (session.currentTurn?.assistantText) appendWispAssistantText(session.currentTurn, '\n');
               session.eventBus.publish({ type: 'message_start', messageId: currentMessageId });
             } else if (event.type === 'content_block_delta') {
               if ('delta' in event && (event.delta.type === 'thinking_delta' || event.delta.type === 'signature_delta')) {
@@ -1760,7 +1761,11 @@ export class StreamingSessionManager {
                 // Topology M4: raw provider text goes to the server-only output
                 // gate at THIS publish point — never onto the bus/replay ring.
                 if (session.topologyInvestigation) session.topologyInvestigation.append(event.delta.text);
-                else session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                else {
+                  session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                  // #10427: only a Wisp turn has a record (W05), so ordinary chat buffers nothing.
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, event.delta.text);
+                }
               }
             } else if (event.type === 'content_block_start') {
               if ('content_block' in event
@@ -1790,6 +1795,7 @@ export class StreamingSessionManager {
                   session.topologyInvestigation.startBlock();
                 } else if (sawTextBlockThisMessage) {
                   session.eventBus.publish({ type: 'content_delta', delta: '\n\n' });
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, '\n\n');
                 }
                 sawTextBlockThisMessage = true;
               } else if (
@@ -2131,6 +2137,24 @@ export class StreamingSessionManager {
               await this.publishTurnModel(session, turnBinding, turnDisplay, turn.outcome);
             }
 
+            // #10428 (W05): the Wisp turn-end hooks (wisp/turnEnd.ts). The cheap
+            // half runs before `done` (#10427's promise correction, then the
+            // standing-instruction prefilter; a hit puts a capture id on
+            // `done`); the rest runs after it and is never
+            // awaited: the #10414 grant spend notice
+            // (budget.chatNeverBlocks.contract.test.ts) and the extraction.
+            let wispTurnEnd: typeof import('./wisp/turnEnd') | null = null;
+            let wispDone: import('./wisp/turnEnd').WispDoneExtras = {};
+            if (session.wispGrant) {
+              try {
+                wispTurnEnd = await import('./wisp/turnEnd');
+                wispDone = await wispTurnEnd.runWispTurnEndBeforeDone(session);
+              } catch (err) {
+                console.warn('[StreamingSessionManager] Wisp turn-end hooks unavailable:', safeErrorMessage(err));
+                captureException(reportableError(err));
+              }
+            }
+
             // Signal this turn is done, but DON'T close the event bus —
             // session stays alive for follow-up messages. Carries usage so
             // client surfaces can render turn cost (turn_complete).
@@ -2141,8 +2165,14 @@ export class StreamingSessionManager {
                 outputTokens: turn.outputTokens,
                 costCents: turn.costCents,
               },
+              ...wispDone,
             });
             session.state = 'idle';
+            try {
+              wispTurnEnd?.scheduleWispTurnEndAfterDone(session, wispDone);
+            } catch (err) {
+              captureException(reportableError(err));
+            }
             break;
           }
 
@@ -2677,7 +2707,10 @@ export class StreamingSessionManager {
         const idle = now - session.lastActivityAt;
         const age = now - session.createdAt;
 
-        if (idle <= SESSION_IDLE_TIMEOUT_MS && age <= SESSION_MAX_AGE_MS) continue;
+        // #11430: the one expiry rule (24h cap, then 2h idle), shared with the
+        // send pre-flight, the session read and the idle sweep.
+        const reason = sessionExpiryReason(session, now);
+        if (!reason) continue;
 
         // Applies to the 24h hard cap too: a session that reaches it mid-stream
         // is evicted on the first tick after its turn ends (bounded by
@@ -2692,7 +2725,7 @@ export class StreamingSessionManager {
         // Notify connected SSE clients before removing
         session.eventBus.publish({
           type: 'error',
-          message: age > SESSION_MAX_AGE_MS
+          message: reason === 'max_age'
             ? 'Session expired (24h limit). Please start a new session.'
             : 'Session expired due to inactivity. Please start a new session.',
         });
@@ -2702,7 +2735,8 @@ export class StreamingSessionManager {
 
         // BOTH staleness paths retire the row, not just the 24h one. An
         // idle-evicted session is as dead to the client as an aged-out one, and
-        // preflight would have stamped it 'expired' on the next request anyway.
+        // preflight, the session read or the idle sweep would have stamped it
+        // 'expired' anyway.
         const forOrg = expiredByOrg.get(session.orgId);
         if (forOrg) forOrg.push(sessionId);
         else expiredByOrg.set(session.orgId, [sessionId]);
@@ -2767,8 +2801,9 @@ export class StreamingSessionManager {
     // careful not to expire. Stamping 'expired' here would turn a transient
     // server condition into a hard 410 for a conversation minutes old, since
     // runPreFlightChecks rejects on status before getOrCreate ever runs. The
-    // row stays truthful: 'active' means resumable, and preflight still expires
-    // it lazily once it genuinely goes idle or ages out.
+    // row stays truthful: 'active' means resumable, and the shared rule
+    // (aiSessionExpiry.ts: preflight, the session read, the idle sweep) still
+    // expires it once it genuinely goes idle or ages out.
   }
 }
 

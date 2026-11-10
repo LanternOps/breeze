@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { Dialog } from '@/components/shared/Dialog';
 import { showToast } from '@/components/shared/Toast';
 import { useJwtClaims } from '@/lib/authScope';
@@ -288,7 +288,13 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
             {scope === 'partner' ? t('wisp.modal.alreadyOnPartner') : t('wisp.modal.alreadyOnOrg')}
           </p>
         ) : tier === 'password' ? (
-          <p role="alert" className="text-sm text-destructive">{t('wisp.modal.noFactor')}</p>
+          <p role="alert" className="text-sm text-destructive">
+            <Trans
+              i18nKey="wisp.modal.noFactor"
+              t={t}
+              components={{ profileLink: <a href="/settings/profile" className="underline" /> }}
+            />
+          </p>
         ) : tier === 'totp' ? (
           <label className="block text-sm font-medium">
             {t('wisp.modal.code')}

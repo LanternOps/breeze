@@ -15,6 +15,7 @@ const at = (h: number, m: number, dayOffset = 0) => {
 };
 const checkIn = (id: string, status: WispCheckIn['status'], due: Date): WispCheckIn => ({
   id, threadId: 'th-1', status, dueAt: due.toISOString(), instruction: `do ${id}`, subject: null, firedAt: null, createdAt: new Date().toISOString(),
+  trigger: null, fireReason: null, cancelReason: null, mode: 'notify', runId: null,
 });
 const localTime = (d: Date) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(d);
 

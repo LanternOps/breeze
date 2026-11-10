@@ -21,7 +21,7 @@ import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
 import AiChatInput from "./AiChatInput";
 import AiModelPicker from "./AiModelPicker";
-import AiThinkingIndicator from "./AiThinkingIndicator";
+import AiThinkingIndicator, { approvalWaitFromPending } from "./AiThinkingIndicator";
 import AiTurnModelBadge from "./AiTurnModelBadge";
 import AiContinuationPrompt from "./AiContinuationPrompt";
 import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerStore";
@@ -577,7 +577,7 @@ export default function AiChatSidebar() {
             {/* Continuation prompt, what ran, thinking, model menu (W05) */}
             <AiContinuationPrompt />
             <AiTurnModelBadge turnModel={turnModel} />
-            <AiThinkingIndicator thinking={isStreaming && !!thinking} />
+            <AiThinkingIndicator thinking={isStreaming && !!thinking} approvalWait={isStreaming ? approvalWaitFromPending(pendingApproval) : null} />
             <AiModelPicker disabled={isStreaming} />
 
             {/* Input */}

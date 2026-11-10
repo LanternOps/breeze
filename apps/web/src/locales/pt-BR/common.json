@@ -903,7 +903,19 @@
       },
       "charKeysOn": "Os atalhos de tecla única estão ativados.",
       "charKeysOff": "Os atalhos de tecla única estão desativados. Apenas atalhos com Ctrl/Cmd funcionam.",
-      "charKeysManage": "Alterar nas configurações do perfil"
+      "charKeysManage": "Alterar nas configurações do perfil",
+      "queueTitle": "Fila de chamados",
+      "queueHint": "Na página de chamados, fora de um campo de texto.",
+      "queue": {
+        "next": "Próximo chamado",
+        "previous": "Chamado anterior",
+        "open": "Abrir o chamado em página completa",
+        "toggleBulk": "Adicionar à seleção em massa ou remover dela",
+        "assignMe": "Atribuir a mim",
+        "reply": "Escrever uma resposta",
+        "internal": "Escrever uma nota interna",
+        "resolve": "Resolver com uma nota"
+      }
     }
   },
   "migrationBanner": {
@@ -2939,5 +2951,8 @@
   "featureLock": {
     "lockedLabel": "Bloqueado",
     "upgrade": "Ver planos"
+  },
+  "inheritChoice": {
+    "inherit": "Herdar — {{value}} ({{source}})"
   }
 }

@@ -6,7 +6,11 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  registerOrgIdProvider: vi.fn(), useAuthStore: { getState: () => ({ tokens: null }) }
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: Object.assign(
+    (selector: (s: unknown) => unknown) => selector({ tokens: null, user: undefined }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 
 const showToast = vi.fn();

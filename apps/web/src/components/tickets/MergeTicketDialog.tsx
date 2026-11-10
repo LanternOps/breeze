@@ -313,7 +313,7 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
               </ul>
             )}
             {suggestedNumber && (
-              <p className="text-xs text-warning" data-testid="ticket-merge-suggested">{t('ticketWorkbench.merge.suggested', { number: suggestedNumber })}</p>
+              <p className="text-xs text-warning-ink" data-testid="ticket-merge-suggested">{t('ticketWorkbench.merge.suggested', { number: suggestedNumber })}</p>
             )}
             <div>
               <p className="font-medium">{t('ticketWorkbench.merge.movesTo', { number: targetNumber })}</p>

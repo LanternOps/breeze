@@ -5,7 +5,7 @@
  * (its behaviour is pinned in wisp/chatCeiling.test.ts and the integration
  * suite wispChatCeiling.integration.test.ts).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const wisp = vi.hoisted(() => ({
   enforceWispCeiling: vi.fn(),
@@ -24,6 +24,15 @@ vi.mock('./wisp/autoLink', () => ({
 vi.mock('./wisp/grantAuthority', async (importOriginal) => ({
   ...await importOriginal<typeof import('./wisp/grantAuthority')>(),
   resolveGrantCeiling: (...args: unknown[]) => wisp.resolveGrantCeiling(...args),
+}));
+// #10428 W06: the standing-instruction gate, a collaborator here (its rules
+// are pinned in wisp/standingInstructionGate.test.ts). Default: no match.
+const standing = vi.hoisted(() => ({ check: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ action: 'none' })) }));
+vi.mock('./wisp/standingInstructionGate', () => ({
+  STANDING_CHECK_UNAVAILABLE_MESSAGE: "Couldn't check remembered instructions; try again.",
+  checkStandingInstructionsForCall: (...args: unknown[]) => standing.check(...args),
+  standingConflictDescription: (text: string, description: string) =>
+    `Conflicts with a remembered instruction: '${text}'. ${description}`,
 }));
 vi.mock('./wisp/chatCeiling', () => ({
   enforceWispCeiling: (...args: unknown[]) => wisp.enforceWispCeiling(...args),
@@ -53,6 +62,8 @@ import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { aiTools as toolRegistry } from './aiToolNames';
+import type { AiTool } from './aiTools';
 
 const mockResolveLiveSessionToolAuthority = vi.fn(async (session: any): Promise<any> => ({
   ok: true,
@@ -210,6 +221,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     schedule_check_in: 2,
     list_check_ins: 1,
     cancel_check_in: 2,
+    // #11432: a tool with a pre-filing check (block below).
+    manage_configuration_policy: 1,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -679,7 +692,7 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
 
     const result = await createSessionPreToolUse(session)('get_device_details', { deviceId: 'd-1' });
 
-    expect(wisp.narrowAuthToCeiling).toHaveBeenCalledWith(sharedBefore, CEILING, 'session-1', ['devices:read']);
+    expect(wisp.narrowAuthToCeiling).toHaveBeenCalledWith(sharedBefore, CEILING, 'session-1', ['devices:read'], null);
     expect(result).toEqual({
       allowed: true,
       onSuccess: expect.any(Function),
@@ -861,11 +874,97 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-wisp', 'executing', 'failed', { errorCode: 'wisp_ceiling_refused' });
     });
 
+    it('#10428 W06 Review Focus 3: a standing instruction confirmed during the wait refuses the release with its copy', async () => {
+      const reason = 'Refused: this now conflicts with a standing instruction. Ask the user to lift it, or act from the device page.';
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+        ok: false, errorCode: 'standing_instruction_denied', details: { reason, instructionId: 'i-1', text: 't' },
+      } as IntentReleaseRevalidation);
+
+      const result = await createSessionPreToolUse(wispSession())('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({ allowed: false, error: reason });
+    });
+
     it('an approved release still inside the ceiling runs under the narrowed auth', async () => {
       const result = await createSessionPreToolUse(wispSession())('execute_command', { command: 'whoami' });
       expect(wisp.enforceWispCeiling).toHaveBeenCalledTimes(2);
       expect(result).toMatchObject({ allowed: true, intentId: 'intent-wisp', toolAuth: { narrowedFor: 'session-1' } });
     });
+  });
+});
+
+// #11432: a Tier-3 manage_configuration_policy create with no orgId was filed,
+// approved with step-up, and only then refused by its handler as ambiguous. A
+// tool's own deterministic refusal (`validateBeforeFiling`) now runs before any
+// card, under the auth the handler would run with.
+describe('createSessionPreToolUse — a tool\'s pre-filing check (#11432)', () => {
+  const TOOL = 'manage_configuration_policy';
+  const CREATE = { action: 'create', name: 'Baseline Monitoring' };
+  const REFUSAL = 'orgId is required: name the owner';
+  const validateBeforeFiling = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: { gate: true }, ceiling: CEILING, permissionKeys: ['devices:write'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'x' } as any);
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-cp', actionName: TOOL }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    toolRegistry.set(TOOL, { validateBeforeFiling } as unknown as AiTool);
+  });
+  afterEach(() => {
+    toolRegistry.delete(TOOL);
+  });
+
+  it('a call its tool will refuse is refused before any card or intent, under the call\'s narrowed auth', async () => {
+    validateBeforeFiling.mockReturnValue({ ok: false, error: REFUSAL });
+    const session = wispSession();
+
+    const result = await createSessionPreToolUse(session)(TOOL, CREATE);
+
+    expect(result).toEqual({ allowed: false, error: REFUSAL });
+    expect(validateBeforeFiling).toHaveBeenCalledWith(CREATE, expect.objectContaining({ narrowedFrom: 'unmarked', narrowedFor: 'session-1' }));
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    expect(session.eventBus.publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'approval_required' }));
+    expectOnlyTheRefusalRow(REFUSAL);
+  });
+
+  it('runs after RBAC and the rate limit: their refusals win and the check is never asked', async () => {
+    validateBeforeFiling.mockReturnValue({ ok: false, error: REFUSAL });
+    vi.mocked(checkToolPermission).mockResolvedValueOnce('Permission denied: devices.write');
+    expect(await createSessionPreToolUse(wispSession())(TOOL, CREATE)).toEqual({ allowed: false, error: 'Permission denied: devices.write' });
+    vi.mocked(checkToolRateLimit).mockResolvedValueOnce('Rate limit exceeded');
+    expect(await createSessionPreToolUse(wispSession())(TOOL, CREATE)).toEqual({ allowed: false, error: 'Rate limit exceeded' });
+    expect(validateBeforeFiling).not.toHaveBeenCalled();
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('a call the check passes goes on to its approval as before', async () => {
+    validateBeforeFiling.mockReturnValue({ ok: true });
+    await createSessionPreToolUse(wispSession())(TOOL, { ...CREATE, ownerScope: 'partner' });
+    expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+    expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: TOOL });
+  });
+
+  it('an ordinary session runs the check under its own tool auth', async () => {
+    validateBeforeFiling.mockReturnValue({ ok: false, error: REFUSAL });
+    const toolAuth = { ...makeAuth({ scope: 'partner', orgId: null }), marker: 'plain' };
+    const result = await createSessionPreToolUse(makeActiveSession({ toolAuth }))(TOOL, CREATE);
+    expect(result).toEqual({ allowed: false, error: REFUSAL });
+    expect(validateBeforeFiling).toHaveBeenCalledWith(CREATE, toolAuth);
+    expect(wisp.enforceWispCeiling).not.toHaveBeenCalled();
+  });
+
+  it('narrows with the write default the ceiling gate resolved from the thread focus', async () => {
+    validateBeforeFiling.mockReturnValue({ ok: true });
+    wisp.enforceWispCeiling.mockResolvedValue({
+      ok: true, toolAuth: { gate: true }, ceiling: CEILING, permissionKeys: ['devices:write'], writeDefaultOrgId: 'org-1',
+    });
+    const session = wispSession();
+    await createSessionPreToolUse(session)(TOOL, CREATE);
+    expect(wisp.narrowAuthToCeiling).toHaveBeenCalledWith(session.toolAuth, CEILING, 'session-1', ['devices:write'], 'org-1');
   });
 });
 
@@ -1104,6 +1203,22 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
   ] as const)('%s (adds a row, never overwrites or hides anyone\'s state) runs with no card', async (toolName, input) => {
     await expectNoCard(toolName, input as Record<string, unknown>);
     expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
+  });
+
+  // W07 (#11496, #10410): a run check-in spends grant budget unattended when it
+  // fires, so it asks once on a card; a notify one (explicit or default) does not.
+  it('schedule_check_in mode notify runs with no card; mode run (or an unknown mode) keeps the per_step card', async () => {
+    await expectNoCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'notify' });
+    vi.clearAllMocks();
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: CEILING, permissionKeys: ['ai_sessions:use'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 2, requiresApproval: false, description: 'x' } as any);
+    await expectCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'run' });
+  });
+
+  it('schedule_check_in with an unrecognised mode keeps the card (any doubt asks)', async () => {
+    await expectCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'RUN' });
   });
 
   it('cancel_check_in (only ever this grant\'s own check-ins: the handler keys the cancel on the grant) runs with no card', async () => {
@@ -1516,5 +1631,324 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
     mockGetSession.mockResolvedValue(makeSession());
     await expect(runPreFlightChecks('session-1', 'hello', auth, { type: 'device', id: 'd-1' } as any)).resolves.toMatchObject({ systemPrompt: 'rebuilt prompt' });
     expect(wisp.lookupWispGrant).not.toHaveBeenCalled();
+  });
+});
+
+// #10416: a Wisp step that waited on an approval tells the handler how long,
+// so the tool result (aiAgentSdkTools withApprovalWait) can tell the model.
+describe('createSessionPreToolUse — approval wait duration (#10416)', () => {
+  let now = 0;
+  let dateNow: { mockRestore: () => void };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    now = Date.now();
+    dateNow = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: CEILING, permissionKeys: ['devices:read'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    mockInsertReturning({ id: 'exec-wait' });
+  });
+  afterEach(() => dateNow.mockRestore());
+
+  /** The tier-2 card is approved after `ms` of (mocked) wall-clock time. */
+  function approveTier2After(ms: number) {
+    allowTier(2);
+    vi.mocked(waitForApproval).mockImplementation(async () => {
+      now += ms;
+      return true;
+    });
+  }
+
+  it('a Wisp tier-2 call approved after 290 s carries approvalWaitMs on the allowed result', async () => {
+    approveTier2After(290_000);
+    const result = await createSessionPreToolUse(wispSession())('take_screenshot', { deviceId: 'd-1' });
+    expect(result).toMatchObject({ allowed: true, approvalWaitMs: 290_000, toolAuth: { narrowedFor: 'session-1' } });
+  });
+
+  it('a Wisp tier-3 intent released after 290 s carries approvalWaitMs beside its intent id', async () => {
+    allowTier(3);
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} } as IntentReleaseRevalidation);
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-wait', approvalRequestIds: ['appr-w'] }));
+    mockWaitForIntentDecision.mockImplementation(async () => {
+      now += 290_000;
+      return 'approved';
+    });
+    mockTransitionIntent.mockResolvedValue(true);
+
+    const result = await createSessionPreToolUse(wispSession())('execute_command', { command: 'whoami' });
+
+    expect(result).toMatchObject({ allowed: true, intentId: 'intent-wait', approvalWaitMs: 290_000 });
+  });
+
+  it('an ordinary (non-Wisp) session never carries approvalWaitMs, however long it waited', async () => {
+    approveTier2After(290_000);
+    const result = await createSessionPreToolUse(makeActiveSession())('take_screenshot', { deviceId: 'd-1' });
+    expect(result.allowed).toBe(true);
+    expect(result).not.toHaveProperty('approvalWaitMs');
+  });
+
+  it('a Wisp call that never waited on a card carries no approvalWaitMs', async () => {
+    allowTier(1);
+    const read = await createSessionPreToolUse(wispSession())('get_device_details', { deviceId: 'd-1' });
+    expect(read).not.toHaveProperty('approvalWaitMs');
+
+    allowTier(2);
+    mockInsertValues();
+    const autoApproved = await createSessionPreToolUse(wispSession({ approvalMode: 'auto_approve' }))('take_screenshot', { deviceId: 'd-1' });
+    expect(autoApproved.allowed).toBe(true);
+    expect(autoApproved).not.toHaveProperty('approvalWaitMs');
+    expect(waitForApproval).not.toHaveBeenCalled();
+  });
+});
+
+describe('createSessionPreToolUse — standing instructions (#10428 W06 Task 3)', () => {
+  const PC01 = '00000000-0000-4000-8000-0000000000e1';
+  const STOP = { commandType: 'stop_service', deviceId: PC01, payload: { name: 'Spooler' } };
+  const REFUSAL = "Refused: matches a standing instruction ('don't reboot PC-01'). Ask the user to lift it.";
+  const approvalCards = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
+    session.eventBus.publish.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'approval_required');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: CEILING, permissionKeys: ['devices:execute'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    standing.check.mockResolvedValue({ action: 'none' });
+    allowTier(2);
+  });
+
+  it('a confirmed deny refuses the call before any card, with the instruction text', async () => {
+    standing.check.mockResolvedValue({ action: 'refuse', error: REFUSAL });
+    mockInsertValues();
+    const session = wispSession();
+
+    const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+    expect(result).toEqual({ allowed: false, error: REFUSAL });
+    expect(standing.check).toHaveBeenCalledWith({
+      ceiling: CEILING, toolName: 'execute_command', input: STOP, auth: expect.objectContaining({ narrowedFor: 'session-1' }),
+    });
+    expect(approvalCards(session)).toHaveLength(0);
+    expect(waitForApproval).not.toHaveBeenCalled();
+    expectOnlyTheRefusalRow(REFUSAL);
+  });
+
+  it('a failed check refuses with the retry text (fails closed)', async () => {
+    standing.check.mockRejectedValue(new Error('module unavailable'));
+    mockInsertValues();
+    const session = wispSession();
+
+    const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+    expect(result).toEqual({ allowed: false, error: "Couldn't check remembered instructions; try again." });
+    expect(approvalCards(session)).toHaveLength(0);
+  });
+
+  it('a session without a Wisp grant runs no lookup', async () => {
+    mockInsertReturning({ id: 'exec-plain' });
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', STOP);
+
+    expect(standing.check).not.toHaveBeenCalled();
+  });
+
+  it('a Tier-1 call runs no lookup', async () => {
+    allowTier(1);
+    const session = wispSession();
+
+    await createSessionPreToolUse(session)('execute_command', { commandType: 'list_services', deviceId: PC01 });
+
+    expect(standing.check).not.toHaveBeenCalled();
+  });
+
+  it('a warning raises the card with the banner field and the description prefix', async () => {
+    standing.check.mockResolvedValue({ action: 'warn', text: "don't reboot PC-01" });
+    mockInsertReturning({ id: 'exec-warn' });
+    const session = wispSession({ approvalMode: 'per_step' });
+
+    await createSessionPreToolUse(session)('execute_command', STOP);
+
+    const [card] = approvalCards(session);
+    expect(card).toMatchObject({
+      standingInstructionConflict: { text: "don't reboot PC-01" },
+      description: "Conflicts with a remembered instruction: 'don't reboot PC-01'. x",
+    });
+  });
+
+  it('a warning forces the card even when the grant would auto-approve the Tier-2 call', async () => {
+    standing.check.mockResolvedValue({ action: 'warn', text: "don't reboot PC-01" });
+    mockInsertReturning({ id: 'exec-auto' });
+    const session = wispSession({ approvalMode: 'auto_approve' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+    expect(waitForApproval).toHaveBeenCalled();
+    expect(approvalCards(session)).toHaveLength(1);
+    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+  });
+
+  it('with no match, auto-approve still runs the call without a card', async () => {
+    mockInsertValues();
+    const session = wispSession({ approvalMode: 'auto_approve' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+    expect(result).toMatchObject({ allowed: true });
+    expect(approvalCards(session)).toHaveLength(0);
+  });
+
+  it('Review Focus 3 (Tier 2): confirmed while the card waits, then approved → refused, never run', async () => {
+    standing.check
+      .mockResolvedValueOnce({ action: 'warn', text: "don't reboot PC-01" })
+      .mockResolvedValueOnce({ action: 'refuse', error: REFUSAL });
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    mockInsertReturning({ id: 'exec-rf3' });
+    const set = vi.fn((..._args: unknown[]) => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    const session = wispSession({ approvalMode: 'per_step' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+    expect(result).toEqual({ allowed: false, error: REFUSAL });
+    expect(standing.check).toHaveBeenCalledTimes(2);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected', errorMessage: REFUSAL }));
+    expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+  });
+
+  it('a Tier-3 warning prefixes the durable intent reason and the card', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, approvalScope: 'four_eyes', description: 'x' } as any);
+    standing.check.mockResolvedValue({ action: 'warn', text: "don't reboot PC-01" });
+    mockInsertReturning({ id: 'exec-t3' });
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-t3' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = wispSession({ approvalMode: 'per_step' });
+
+    await createSessionPreToolUse(session)('run_script', { deviceIds: [PC01], scriptId: 's-1' });
+
+    expect(mockCreateActionIntent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reason: "Conflicts with a remembered instruction: 'don't reboot PC-01'. x",
+    }));
+    expect(approvalCards(session)[0]).toMatchObject({ standingInstructionConflict: { text: "don't reboot PC-01" } });
+  });
+});
+
+describe('createSessionPreToolUse — standing instructions: after-wait re-check and plans (#10428 W06 review)', () => {
+  const PC01 = '00000000-0000-4000-8000-0000000000e1';
+  const STOP = { commandType: 'stop_service', deviceId: PC01, payload: { name: 'Spooler' } };
+  const REFUSAL = "Refused: matches a standing instruction ('don't reboot PC-01'). Ask the user to lift it.";
+  const approvalCards = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
+    session.eventBus.publish.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'approval_required');
+  let set: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: CEILING, permissionKeys: ['devices:execute'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    set = vi.fn((..._args: unknown[]) => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    standing.check.mockResolvedValue({ action: 'none' });
+    allowTier(2);
+  });
+
+  it('Review Focus 3: no match when the card was raised, confirmed during the wait → refused, never run', async () => {
+    standing.check
+      .mockResolvedValueOnce({ action: 'none' })
+      .mockResolvedValueOnce({ action: 'refuse', error: REFUSAL });
+    mockInsertReturning({ id: 'exec-none-then-refuse' });
+    const session = wispSession({ approvalMode: 'per_step' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+    expect(result).toEqual({ allowed: false, error: REFUSAL });
+    expect(approvalCards(session)).toHaveLength(1);
+    expect(approvalCards(session)[0]).not.toHaveProperty('standingInstructionConflict');
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected', errorMessage: REFUSAL }));
+    expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+  });
+
+  it('a re-check that fails after approval refuses with the retry text, never runs', async () => {
+    standing.check
+      .mockResolvedValueOnce({ action: 'none' })
+      .mockRejectedValueOnce(new Error('db down'));
+    mockInsertReturning({ id: 'exec-recheck-throw' });
+    const session = wispSession({ approvalMode: 'per_step' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+    expect(result).toEqual({ allowed: false, error: "Couldn't check remembered instructions; try again." });
+    expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+  });
+
+  describe('a plan-matched step', () => {
+    const planSession = () => wispSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: STOP }]]),
+    });
+
+    it('with no match takes the plan shortcut (control)', async () => {
+      mockInsertValues();
+      const session = planSession();
+
+      const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+      expect(result).toMatchObject({ allowed: true });
+      expect(waitForApproval).not.toHaveBeenCalled();
+      expect(session.currentPlanStepIndex).toBe(1);
+    });
+
+    it('with a warning declines the shortcut, raises the card, and advances only once approved', async () => {
+      standing.check.mockResolvedValue({ action: 'warn', text: "don't reboot PC-01" });
+      mockInsertReturning({ id: 'exec-plan-warn' });
+      const session = planSession();
+
+      const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+      expect(result).toMatchObject({ allowed: true });
+      expect(approvalCards(session)).toHaveLength(1);
+      expect(approvalCards(session)[0]).toMatchObject({ standingInstructionConflict: { text: "don't reboot PC-01" } });
+      expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'plan_step_start', planId: 'plan-1', stepIndex: 0 }));
+      expect(session.currentPlanStepIndex).toBe(1);
+    });
+
+    it('with a warning, then a refusal after the wait, stops the plan', async () => {
+      standing.check
+        .mockResolvedValueOnce({ action: 'warn', text: "don't reboot PC-01" })
+        .mockResolvedValueOnce({ action: 'refuse', error: REFUSAL });
+      mockInsertReturning({ id: 'exec-plan-refuse' });
+      const session = planSession();
+
+      const result = await createSessionPreToolUse(session)('execute_command', STOP);
+
+      expect(result).toEqual({ allowed: false, error: `${REFUSAL} The plan has been stopped.` });
+      expect(session.activePlanId).toBeNull();
+      expect(session.currentPlanStepIndex).toBe(0);
+    });
   });
 });

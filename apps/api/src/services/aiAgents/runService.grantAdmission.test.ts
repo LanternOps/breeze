@@ -207,6 +207,17 @@ describe('admission step 1d — grant ceiling', () => {
     expect(snap.effective.toolAllowlist).toEqual(['get_device', 'manage_services:restart', 'list_alerts']);
   });
 
+  // #11433: manage_fleet_designs left the whole-tool floor (a human's Wisp turn may call some of its actions), so
+  // a new ceiling no longer lists it in deniedTools. An agent run never passes an action and can call none of
+  // them, so its entries stay out of the run's allowlist exactly as before.
+  it('drops an action-floored tool\'s entries even when the ceiling\'s deniedTools does not list it (#11433)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot(['get_device', 'manage_fleet_designs', 'manage_fleet_designs:run']));
+    resolveGrantCeiling.mockResolvedValue(ceiling({ deniedTools: new Set() }));
+    await createAndEnqueueAgentRun(input({ grant: GRANT }));
+    const snap = dbMockState.insertValues[0]!.policySnapshot as AiAgentPolicySnapshot;
+    expect(snap.effective.toolAllowlist).toEqual(['get_device']);
+  });
+
   it('stamps grantId + grantRevisionId on the inserted row', async () => {
     await createAndEnqueueAgentRun(input({ grant: GRANT }));
     expect(dbMockState.insertValues[0]).toMatchObject({ grantId: 'g1', grantRevisionId: 'r1' });

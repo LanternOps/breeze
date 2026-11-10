@@ -6,9 +6,10 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 import { after, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as gate from './ci-gate.mjs';
+import * as thin from './ci-gate-thin.mjs';
 import { evaluateIf, policyDigest } from './queue-selection.mjs';
 import * as queueSelection from './queue-selection.mjs';
 
@@ -447,7 +448,7 @@ const applyHeadEdit = (ci, edit) => {
   return out;
 };
 const contextOf = (f, over = {}) => ({
-  flags: f.flags, mobile: f.mobile, event: 'merge_group',
+  flags: f.flags, mobile: f.mobile, event: 'merge_group', thinSkip: f.thin_skip ?? [],
   aggregator: gate.extractAggregator(snapshot(f.base_ci)), headCi: applyHeadEdit(snapshot(f.head_ci), f.head_ci_edit), ...over });
 const judgeIo = gate.createGateIO({ cwd: REPO_ROOT, env: { PATH: process.env.PATH } });
 const judge = (f, jobs = f.jobs, over = {}) => gate.judge(judgeIo, contextOf(f, over), jobs);
@@ -543,16 +544,42 @@ test('verdict: a gate error is a fail with its reason, never a throw', () => {
 const GREEN = fixtures['path-gated-rust-false'];
 const RED = fixtures['failed-shard'];
 const sha = n => n.toString(16).padStart(40, 'a');
-function fakeReplay(samples, { unfetchable = new Set(), oracle = {}, apiDown = new Set(), seen = [] } = {}) {
+// A W05 gate run for sample i has id GATE_RUN_BASE + i, under an unlisted workflow id
+// unless the sample says otherwise; its selection binds to that sample's shas.
+const GATE_RUN_BASE = 5000;
+const LISTED_REPLAY_GATE_ID = 11;
+function fakeReplay(samples, { unfetchable = new Set(), oracle = {}, apiDown = new Set(), seen = [], gates = {} } = {}) {
   const runs = samples.map((s, i) => ({ id: 1000 + i, event: 'merge_group', path: '.github/workflows/ci.yml', status: 'completed',
     conclusion: s.cancelled ? 'cancelled' : s.fixture.ci_success, run_attempt: 1, head_sha: sha(2 * i + 1),
     head_branch: `gh-readonly-queue/main/pr-${500 + i}-${sha(2 * i + 2)}` }));
+  const gateSelection = i => ({ schema: 1, repository: 'o/r', head_sha: runs[i].head_sha, base_sha: sha(2 * i + 2),
+    head_ref: `refs/heads/${runs[i].head_branch}`, policy_digest: null, gate_run: GATE_RUN_BASE + i, gate_attempt: 1, source_attempt: 1,
+    mode: 'thin', reason: '', thin_skip: ['test-web'], would_skip: ['test-web'], thin_queue: 'enforce', ...gates[i].selection });
   const calls = [];
   const io = {
     gh: args => {
       calls.push(args.join(' '));
       const endpoint = args[1];
       let match;
+      if (/^repos\/o\/r\/actions\/workflows\?/.test(endpoint)) {
+        return JSON.stringify([{ workflows: [{ id: LISTED_REPLAY_GATE_ID, path: '.github/workflows/ci-gate.yml' }, { id: 12, path: '.github/workflows/ci.yml' }] }]);
+      }
+      if ((match = endpoint.match(/^repos\/o\/r\/actions\/runs\?event=merge_group&head_sha=([a-f\d]{40})&/))) {
+        const i = runs.findIndex(run => run.head_sha === match[1]);
+        const g = gates[i];
+        return JSON.stringify({ workflow_runs: g ? [{ id: GATE_RUN_BASE + i, path: '.github/workflows/ci-gate.yml', event: 'merge_group',
+          head_sha: match[1], workflow_id: g.workflowId ?? 99 }] : [] });
+      }
+      if ((match = endpoint.match(/runs\/(\d+)\/artifacts/)) && Number(match[1]) >= GATE_RUN_BASE) {
+        const g = gates[Number(match[1]) - GATE_RUN_BASE];
+        return JSON.stringify([{ artifacts: g?.selection ? [{ name: 'ci-gate-selection-attempt-1', expired: !!g.expired }] : [] }]);
+      }
+      if (args[0] === 'run' && args[1] === 'download' && Number(args[2]) >= GATE_RUN_BASE) {
+        const i = Number(args[2]) - GATE_RUN_BASE;
+        writeFileSync(join(args[args.indexOf('--dir') + 1], 'ci-gate-selection.json'), gates[i].corrupt ? '{"truncated":' : JSON.stringify(gateSelection(i)));
+        return '';
+      }
+      if ((match = endpoint.match(/^repos\/o\/r\/actions\/runs\/(\d+)$/))) return JSON.stringify(runs[Number(match[1]) - 1000]);
       if ((match = endpoint.match(/workflows\/ci\.yml\/runs\?.*page=(\d+)/))) {
         const page = Number(match[1]);
         return JSON.stringify({ total_count: runs.length, workflow_runs: runs.slice((page - 1) * 100, page * 100) });
@@ -593,7 +620,7 @@ function fakeReplay(samples, { unfetchable = new Set(), oracle = {}, apiDown = n
     if (s.throws) throw new gate.GateError(s.throws);
     return { ...contextOf(s.fixture), ...s.over };
   };
-  return { io, calls, runs, run: opts => gate.replay(io, { repository: 'o/r', limit: 50, minEvaluated: 15, widenTo: 200, prepare, ...opts }) };
+  return { io, calls, runs, prepare, run: opts => gate.replay(io, { repository: 'o/r', limit: 50, minEvaluated: 15, widenTo: 200, prepare, ...opts }) };
 }
 const sample = (fixture, over = {}) => ({ fixture, jobs: fixture.jobs, ...over });
 
@@ -731,7 +758,8 @@ test('verdict: end to end, a candidate that drops a job from its own ci-success 
   const base = gate.verdict(r.io, { baseSha: r.base, headSha: r.head, apiJobs: jobs, event: 'merge_group' });
   assert.equal(base.flags.api, 'true');
   assert.deepEqual(base.policyPaths, ['.github/workflows/ci.yml']);
-  assert.deepEqual([base.verdict, base.reason], ['fail', 'required_jobs_failed:test-shared']);
+  // A skipped thinnable job nothing listed: a selection fault, not a test failure (W05a).
+  assert.deepEqual([base.verdict, base.reason], ['fail', 'thin_skip_unjustified:test-shared']);
   // Control: the same jobs with test-shared run pass.
   const ran = jobs.map(job => job.name === 'Test Shared' ? { ...job, conclusion: 'success' } : job);
   assert.equal(gate.verdict(r.io, { baseSha: r.base, headSha: r.head, apiJobs: ran, event: 'merge_group' }).verdict, 'pass');
@@ -1012,7 +1040,7 @@ test('verify: exactly one ci-gate line, with every field in order, and exit 0 on
   const io = verifyIo();
   assert.equal(runVerify(io), 0);
   assert.deepEqual(gateLines(io), [`ci-gate: verdict=pass reason=required_jobs_passed event=merge_group base=${BASE_SHA} head=${HEAD_SHA} ` +
-    'ci_run=77 attempt=3 policy_paths=[] flags={"code":"true","rust":"false"} oracle=absent']);
+    'ci_run=77 attempt=3 policy_paths=[] flags={"code":"true","rust":"false"} oracle=absent thin=0']);
 });
 
 test('verify: exits non-zero on every verdict other than pass', () => {
@@ -1081,7 +1109,7 @@ test('verify: an unfetchable candidate commit logs which one and why', () => {
   } });
   assert.equal(runVerify(io), 1);
   assert.match(gateLines(io)[0], /reason=base_unreadable /);
-  const detail = io.all().find(line => line.startsWith('ci-gate-detail:'));
+  const detail = io.all().find(line => line.startsWith('ci-gate-detail:') && !line.includes('selection unusable'));
   assert.ok(detail.includes(`head ${HEAD_SHA}`), detail);
   assert.match(detail, /upload-pack: not our ref/);
 });
@@ -1152,24 +1180,24 @@ test('verify: text the candidate controls cannot forge a line or a workflow comm
 test('verify: oracle disagreement is a warning and never changes the verdict', () => {
   const io = verifyIo({ oracle: { lint: { result: 'failure', outputs: {} } } });
   assert.equal(runVerify(io), 0);
-  assert.match(gateLines(io)[0], /verdict=pass .* oracle=disagree:1$/);
+  assert.match(gateLines(io)[0], /verdict=pass .* oracle=disagree:1 thin=0$/);
   const warnings = io.all().filter(line => line.startsWith('::warning'));
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /"job":"lint"/);
 
   const red = verifyIo({ oracle: { lint: { result: 'failure', outputs: {} } } });
   assert.equal(runVerify(red, { decide: () => passing({ verdict: 'fail', reason: 'required_jobs_failed:lint', results: { lint: 'failure' } }) }), 1);
-  assert.match(gateLines(red)[0], /verdict=fail .* oracle=agree$/);
+  assert.match(gateLines(red)[0], /verdict=fail .* oracle=agree thin=0$/);
 
   const agree = verifyIo({ oracle: { lint: { result: 'success', outputs: {} } } });
   assert.equal(runVerify(agree), 0);
-  assert.match(gateLines(agree)[0], /oracle=agree$/);
+  assert.match(gateLines(agree)[0], /oracle=agree thin=0$/);
 });
 
 test('verify: an unreadable oracle is a warning and never changes the verdict', () => {
   const io = verifyIo({ oracle: Error('download failed') });
   assert.equal(runVerify(io), 0);
-  assert.match(gateLines(io)[0], /verdict=pass .* oracle=unreadable$/);
+  assert.match(gateLines(io)[0], /verdict=pass .* oracle=unreadable thin=0$/);
   assert.ok(io.all().some(line => line.startsWith('::warning')));
 });
 
@@ -1342,7 +1370,7 @@ test('anchor: on a real merge commit, every field is right and the commit was fe
   assert.equal(a.policy_digest, policyDigest(r.io, r.baseSha));
   assert.match(a.policy_digest, /^[a-f\d]{64}$/);
   assert.equal(lineOf(r).length, 1);
-  assert.match(lineOf(r)[0], new RegExp(`^ci-gate: verdict=pass reason=anchor_written event=pull_request base=${r.baseSha} head=${r.headSha} ci_run=none attempt=none policy_paths=\\[\\] flags=null oracle=none$`));
+  assert.match(lineOf(r)[0], new RegExp(`^ci-gate: verdict=pass reason=anchor_written event=pull_request base=${r.baseSha} head=${r.headSha} ci_run=none attempt=none policy_paths=\\[\\] flags=null oracle=none thin=none$`));
   assert.ok(r.lines.some(line => line.startsWith('ci-gate-identity:') && line.includes('workflow_ref=LanternOps/breeze/.github/workflows/ci-gate.yml@refs/heads/main ')));
 });
 
@@ -1449,20 +1477,23 @@ const GATE_YML_PATH = join(REPO_ROOT, '.github/workflows/ci-gate.yml');
 const gateYml = () => readFileSync(GATE_YML_PATH, 'utf8');
 const gateStep = name => gateYml().split(/^      - (?=name: )/m).find(step => step.startsWith(`name: ${name}\n`)) ?? assert.fail(`no ${name} step`);
 
-test('ci-gate.yml: every env name verify and anchor read is set by its step, from event data', () => {
-  const verifyStep = gateStep('Judge the queue entry');
-  for (const [name, value] of Object.entries({ BASE_SHA: 'merge_group.base_sha', HEAD_SHA: 'merge_group.head_sha', HEAD_REF: 'merge_group.head_ref' })) {
-    assert.match(verifyStep, new RegExp(`^          ${name}: \\$\\{\\{ github\\.event\\.${value.replace('.', '\\.')} \\}\\}$`, 'm'), name);
+test('ci-gate.yml: every env name select, verify and anchor read is set by its step, from event data or the kill switch', () => {
+  for (const step of ['Judge the queue entry', "Select the queue entry's jobs"].map(gateStep)) {
+    for (const [name, value] of Object.entries({ BASE_SHA: 'merge_group.base_sha', HEAD_SHA: 'merge_group.head_sha', HEAD_REF: 'merge_group.head_ref' })) {
+      assert.match(step, new RegExp(`^          ${name}: \\$\\{\\{ github\\.event\\.${value.replace('.', '\\.')} \\}\\}$`, 'm'), name);
+    }
   }
+  assert.match(gateStep("Select the queue entry's jobs"), /^          THIN_QUEUE: \$\{\{ vars\.CI_THIN_QUEUE \}\}$/m);
+  assert.doesNotMatch(gateStep('Judge the queue entry'), /THIN_QUEUE/, 'verify judges by the file, never by the switch');
   const anchorStep = gateStep('Record the PR anchor');
   assert.match(anchorStep, /^          PR_HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}$/m);
   assert.match(anchorStep, /^          PR_NUMBER: \$\{\{ github\.event\.pull_request\.number \}\}$/m);
   // The rest are the runner's own variables, which a step cannot be denied.
-  const source = readFileSync(join(REPO_ROOT, '.github/scripts/ci-gate.mjs'), 'utf8');
+  const source = ['ci-gate.mjs', 'ci-gate-thin.mjs'].map(file => readFileSync(join(REPO_ROOT, '.github/scripts', file), 'utf8')).join('\n');
   const read = new Set([...source.matchAll(/env\.([A-Z_]+)/g)].map(match => match[1]));
   const set = new Set([...gateYml().matchAll(/^          ([A-Z_]+): /gm)].map(match => match[1]));
   for (const name of read) assert.ok(set.has(name) || name === 'PATH' || name.startsWith('GITHUB_'), `${name} is read but never set`);
-  assert.ok(read.has('BASE_SHA') && read.has('PR_HEAD_SHA'), 'the scan must see the event names');
+  assert.ok(read.has('BASE_SHA') && read.has('PR_HEAD_SHA') && read.has('THIN_QUEUE'), 'the scan must see the event names and the switch');
 });
 
 test('ci-gate.yml: uploads exactly the file anchor writes, per attempt, for 7 days, never failing when absent', () => {
@@ -1471,6 +1502,20 @@ test('ci-gate.yml: uploads exactly the file anchor writes, per attempt, for 7 da
   assert.match(upload, /^          name: ci-gate-anchor-attempt-\$\{\{ github\.run_attempt \}\}$/m);
   assert.match(upload, /^          retention-days: 7$/m);
   assert.match(upload, /^          if-no-files-found: ignore$/m);
+});
+
+test('ci-gate.yml: uploads exactly the file select writes, per attempt, for 7 days, as the one soft step, before the verdict', () => {
+  const upload = gateStep('Upload the queue selection');
+  assert.match(upload, new RegExp(`^          path: ${thin.SELECTION_FILE.replace('.', '\\.')}$`, 'm'));
+  assert.ok(upload.includes(`          name: ${thin.selectionArtifact('${{ github.run_attempt }}')}\n`), 'the name W05b and a re-run look for');
+  assert.match(upload, /^          retention-days: 7$/m);
+  assert.match(upload, /^          if-no-files-found: ignore$/m);
+  assert.match(upload, /^        continue-on-error: true\n        timeout-minutes: 2\n/m);
+  assert.match(upload, /^        if: github\.event_name == 'merge_group'$/m);
+  const names = [...gateYml().matchAll(/^      - name: (.*)$/gm)].map(match => match[1]);
+  const at = name => names.indexOf(name);
+  assert.ok(at("Select the queue entry's jobs") < at('Upload the queue selection') && at('Upload the queue selection') < at('Judge the queue entry'), names.join(' | '));
+  assert.match(gateStep("Select the queue entry's jobs"), /^        run: node \.github\/scripts\/ci-gate\.mjs select$/m);
 });
 
 test('ci-gate.yml: pinned actions match the ones ci.yml uses', () => {
@@ -1504,6 +1549,11 @@ test('docs: both agent docs describe CI Gate, and the rollback order is pinned',
   assert.ok(ruleset >= 0, 'the owner turns the ruleset off');
   assert.ok(confirm > ruleset, 'then confirms it');
   assert.ok(code > confirm, 'and only then touches the workflow');
+  // W05a: the thin queue goes off before enforcement does. In Evaluate the gate still
+  // runs and publishes, so CI would skip jobs while nothing enforces the verdict.
+  const killSwitch = rollback.indexOf('gh variable set CI_THIN_QUEUE --body off');
+  assert.ok(killSwitch >= 0 && killSwitch < ruleset, 'the kill switch comes before the ruleset step');
+  assert.ok(rollback.indexOf('gh variable get CI_THIN_QUEUE') > killSwitch, 'and is confirmed');
 
   for (const claim of [/does not prove tests ran honestly/i, /drop it from `ci-success`/i, /later PR/i, /green replay run/i, /blocks its own fix/i]) {
     assert.match(merge, claim);
@@ -1518,22 +1568,29 @@ test('docs: both agent docs describe CI Gate, and the rollback order is pinned',
 test('docs: every reason the gate can log is in the runbook table', () => {
   const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
   const table = merge.slice(merge.indexOf('**Reading a run.**'), merge.indexOf('**Changing the gate.**'));
-  const source = readFileSync(join(REPO_ROOT, '.github/scripts/ci-gate.mjs'), 'utf8');
-  const emitted = new Set([...source.matchAll(/reason: '(\w+)'/g), ...source.matchAll(/GateError\('(\w+)'/g), ...source.matchAll(/ciAt\(\w+, '(\w+)'\)/g)].map(match => match[1]));
+  const source = ['ci-gate.mjs', 'ci-gate-thin.mjs'].map(file => readFileSync(join(REPO_ROOT, '.github/scripts', file), 'utf8')).join('\n');
+  // Every way the two files name a reason: as a field, an assignment, a full selection, an error, or the blame prefix.
+  const emitted = new Set([...source.matchAll(/reason: '(\w+)'/g), ...source.matchAll(/reason = '(\w+)'/g), ...source.matchAll(/fullSelection\(env, '(\w+)'/g),
+    ...source.matchAll(/GateError\('(\w+)'/g), ...source.matchAll(/ciAt\(\w+, '(\w+)'\)/g), ...source.matchAll(/unjustified \? '(\w+)'/g)].map(match => match[1]));
   for (const cliOnly of ['usage', 'not_recordable']) emitted.delete(cliOnly); // record-fixture only; never in a gate run
   assert.ok(emitted.has('not_pinned') && emitted.has('anchor_written') && emitted.has('head_unreadable'), 'the scan must see the reasons');
-  for (const reason of emitted) assert.ok(table.includes(`\`${reason}\``), `${reason} is not in the runbook`);
+  for (const reason of ['thin_disabled', 'attempt1_selection_missing', 'audit_sample', 'thin_skip_unjustified']) assert.ok(emitted.has(reason), `the scan must see ${reason}`);
+  // thin_skip_unjustified always names its jobs, so its row is the `:<jobs>` form.
+  for (const reason of emitted) assert.ok(table.includes(`\`${reason}\``) || table.includes(`\`${reason}:<jobs>\``), `${reason} is not in the runbook`);
   assert.ok(table.includes('`required_jobs_failed`'), 'the bare form, when no job can be blamed');
 });
 
-test('runCLI: verify and anchor are subcommands, and an unknown one is still a usage error', () => {
+test('runCLI: select, verify and anchor are subcommands, and an unknown one is still a usage error', () => {
   const io = verifyIo({ git: args => { if (args[0] === 'merge-base') throw Error('no'); return ''; } });
   assert.equal(gate.runCLI(io, ['verify'], verifyEnv()), 1);
   assert.match(gateLines(io)[0], /reason=not_pinned/);
   const a = verifyIo();
   assert.equal(gate.runCLI(a, ['anchor'], { GITHUB_EVENT_NAME: 'pull_request' }), 0);
   assert.match(gateLines(a)[0], /verdict=pass reason=anchor_invalid_input/);
-  assert.throws(() => gate.runCLI(verifyIo(), ['nope'], {}), /verify.*anchor/s);
+  const s = verifyIo({ git: args => { if (args[0] === 'merge-base') throw Error('no'); return ''; } });
+  assert.equal(gate.runCLI(s, ['select'], verifyEnv({ GITHUB_RUN_ATTEMPT: '1', THIN_QUEUE: 'enforce' })), 0);
+  assert.match(s.out.find(line => /^ci-gate-selection:/.test(line)), /mode=full reason=not_pinned/);
+  assert.throws(() => gate.runCLI(verifyIo(), ['nope'], {}), /verify.*anchor.*select/s);
 });
 
 // ── W02d: trusted PR evidence, in shadow ─────────────────────────────────
@@ -2049,98 +2106,606 @@ test('baseRevisionIO: the PR head comes from refs/pull, which needs no pull-requ
 
 // ── The shadow line in verify ────────────────────────────────────────────
 
-const selectionLines = io => io.all().filter(line => /^ci-gate-selection:/.test(line));
-const SHADOW_OUT = { mode: 'shadow', reason: '', pr: 7, head: HEAD_SHA, B: BASE_SHA, p: ['a.ts'], thin_jobs: ['lint'], full_jobs: ['lint', 'test-api'], would_skip: ['test-api'] };
+// ── W05a (#10749): select publishes the trusted selection ────────────────
 
-test('verify: logs one ci-gate-selection line, asked about the queue shas with the verdict\'s own flags', () => {
+const selectionLines = io => io.all().filter(line => /^ci-gate-selection:/.test(line));
+const resultVar = job => `${job.toUpperCase().replaceAll('-', '_')}_RESULT`;
+// W05b put the block in the real ci.yml. These fixtures model a base with it and one
+// without, so both start from the real tree with the block (and THIN_SKIP) taken out.
+function withoutThinBlock(ci) {
+  const start = ci.indexOf('          # W05 (#10749): a job the thin queue selection skipped counts as satisfied.\n');
+  const end = ci.indexOf('\n          done\n', start) + '\n          done\n'.length;
+  const env = '          THIN_SKIP: ${{ needs.changes.outputs.thin_skip }}\n';
+  assert.ok(start > 0 && end > start && ci.includes(env), 'the W05 block is in ci.yml');
+  return (ci.slice(0, start) + ci.slice(end)).replace(env, '');
+}
+const preW05Ci = withoutThinBlock(realCi);
+// The ci-success normalization W05b adds, in the plan's shape, for the jobs given
+// (default: every THINNABLE job the aggregator has a result variable for).
+function withThinBlock(ci, jobs) {
+  if (ci.includes('for thin_job in ')) ci = withoutThinBlock(ci);
+  const { env } = gate.extractAggregator(ci);
+  const arms = (jobs ?? thin.THINNABLE.filter(job => env[resultVar(job)]?.job === job))
+    .map(job => `              ${job}) [[ "\${${resultVar(job)}}" != "skipped" ]] || ${resultVar(job)}=success ;;`);
+  const isPr = "          IS_PR: ${{ github.event_name == 'pull_request' }}\n";
+  const stack = '            *" true "*) STACK_CHANGED=true ;;\n          esac\n';
+  const block = ['          # W05 (#10749): a job the thin queue selection skipped counts as satisfied.',
+    '          for thin_job in ${THIN_SKIP//,/ }; do', '            case "${thin_job}" in', ...arms,
+    '            esac', '          done', ''].join('\n');
+  assert.ok(ci.includes(isPr) && ci.includes(stack), 'the W05 block has somewhere to go');
+  return ci.replace(isPr, () => `          THIN_SKIP: \${{ needs.changes.outputs.thin_skip }}\n${isPr}`).replace(stack, () => `${stack}${block}`);
+}
+const thinCi = withThinBlock(realCi);
+const thinAggregator = gate.extractAggregator(thinCi);
+const blockOf = script => script.slice(script.indexOf('for thin_job'), script.indexOf('\ndone', script.indexOf('for thin_job')) + '\ndone'.length);
+
+test('THINNABLE: the W04 build, unit, integration and reader jobs, 27 of them; nothing always-run or never thinned', () => {
+  const { JOB_CLASSES } = queueSelection;
+  assert.equal(thin.THINNABLE.length, 27);
+  assert.deepEqual([...thin.THINNABLE].sort(), [...Object.keys(JOB_CLASSES.build), ...Object.keys(JOB_CLASSES.unit),
+    ...JOB_CLASSES.integration, ...JOB_CLASSES.readers].sort());
+  for (const job of [...JOB_CLASSES.always, ...JOB_CLASSES.self_gated, ...JOB_CLASSES.never_thinned]) assert.ok(!thin.THINNABLE.includes(job), job);
+  assert.ok(Object.isFrozen(thin.THINNABLE));
+  // Each is a ci-success need, so a base aggregator can name it.
+  const { needs } = gate.extractAggregator(realCi);
+  for (const job of thin.THINNABLE) assert.ok(needs.includes(job), job);
+});
+
+test('thinSkipValue: empty is empty; otherwise sorted, unique and comma-fenced; a malformed id throws', () => {
+  assert.equal(thin.thinSkipValue([]), '');
+  assert.equal(thin.thinSkipValue(['test-web', 'build-api', 'test-web']), ',build-api,test-web,');
+  for (const bad of ['test web', 'a,b', '', 'Test-Web', '$(x)', 7]) assert.throws(() => thin.thinSkipValue([bad]), /job id/, String(bad));
+});
+
+test('thinnableAtBase: a ci-success without the W05 block can thin nothing; the real one lists every THINNABLE job', () => {
+  const before = gate.extractAggregator(preW05Ci);
+  assert.deepEqual(thin.thinnableAtBase(before), []);
+  assert.equal(thin.readsThinSkip(before), false);
+  const tree = gate.extractAggregator(realCi);
+  assert.deepEqual(thin.thinnableAtBase(tree), [...thin.THINNABLE]);
+  // The fixture is the real block, comments aside.
+  const code = script => script.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+  assert.equal(code(thinAggregator.script), code(tree.script));
+  assert.deepEqual(thinAggregator.env, tree.env);
+});
+
+test('thinnableAtBase: the W05 block gives its case labels, in order', () => {
+  assert.equal(thin.readsThinSkip(thinAggregator), true);
+  assert.deepEqual(thin.thinnableAtBase(thinAggregator), [...thin.THINNABLE]);
+  assert.deepEqual(thin.thinnableAtBase(gate.extractAggregator(withThinBlock(realCi, ['test-web', 'build-api']))), ['test-web', 'build-api']);
+});
+
+test('thinnableAtBase: a block it cannot read exactly counts as no block, which runs everything', () => {
+  const two = gate.extractAggregator(withThinBlock(realCi, ['test-web', 'build-api']));
+  assert.deepEqual(thin.thinnableAtBase(two), ['test-web', 'build-api']);
+  const block = blockOf(two.script);
+  const script = edit => ({ ...two, script: edit(two.script) });
+  const variants = [
+    ['no THIN_SKIP env', { ...two, env: Object.fromEntries(Object.entries(two.env).filter(([name]) => name !== 'THIN_SKIP')) }],
+    ['THIN_SKIP from another output', { ...two, env: { ...two.env, THIN_SKIP: { kind: 'changes', key: 'code' } } }],
+    ['an arm that sets another job', script(s => s.replace('|| BUILD_API_RESULT=success', '|| TEST_WEB_RESULT=success'))],
+    ['an arm reading another job', script(s => s.replace('build-api) [[ "${BUILD_API_RESULT}" != "skipped" ]] || BUILD_API_RESULT=success',
+      'build-api) [[ "${BUILD_WEB_RESULT}" != "skipped" ]] || BUILD_WEB_RESULT=success'))],
+    ['an arm with a second command', script(s => s.replace('|| BUILD_API_RESULT=success ;;', '|| BUILD_API_RESULT=success; true ;;'))],
+    ['a catch-all arm', script(s => s.replace('  esac\ndone', '    *) TEST_API_RESULT=success ;;\n  esac\ndone'))],
+    ['a duplicate arm', script(s => s.replace('  esac\ndone', '    test-web) [[ "${TEST_WEB_RESULT}" != "skipped" ]] || TEST_WEB_RESULT=success ;;\n  esac\ndone'))],
+    ['another loop', script(s => s.replace('for thin_job in ${THIN_SKIP//,/ }; do', 'for thin_job in ${THIN_SKIP}; do'))],
+    ['no done', script(s => s.replace('  esac\ndone', '  esac'))],
+    ['the block after the blocking condition', script(s => `${s.replace(block, '')}\n${block}`)],
+    ['two blocks', script(s => s.replace(block, `${block}\n${block}`))],
+  ];
+  for (const [name, aggregator] of variants) {
+    assert.notDeepEqual(aggregator, two, `${name}: the mutation must apply`);
+    assert.deepEqual(thin.thinnableAtBase(aggregator), [], name);
+  }
+});
+
+test('inAuditSample: one head in AUDIT_MODULUS, by the last eight hex digits', () => {
+  assert.equal(thin.AUDIT_MODULUS, 5);
+  assert.equal(thin.inAuditSample(`${'c'.repeat(32)}0000000a`), true);
+  assert.equal(thin.inAuditSample(`${'c'.repeat(32)}0000000b`), false);
+  assert.equal(thin.inAuditSample(HEAD_SHA), false);
+  assert.equal(thin.inAuditSample('not a sha'), false);
+});
+
+const SHADOW_THIN = { mode: 'shadow', reason: '', pr: 7, head: 'e'.repeat(40), B: BASE_SHA, p: ['apps/web/src/a.ts'], thin_jobs: ['lint'],
+  full_jobs: ['lint', 'test-web', 'smoke-test'], would_skip: ['test-web', 'smoke-test'], would_add: [], policy_digest: 'd'.repeat(64) };
+const AUDIT_HEAD = `${'c'.repeat(32)}0000000a`;
+const SELECTION_KEYS = ['schema', 'repository', 'head_sha', 'base_sha', 'head_ref', 'policy_digest', 'gate_run', 'gate_attempt',
+  'source_attempt', 'mode', 'reason', 'thin_skip', 'would_skip', 'thin_queue'];
+const selectEnv = over => verifyEnv({ GITHUB_RUN_ATTEMPT: '1', THIN_QUEUE: 'enforce', ...over });
+const selectDeps = over => ({ flagsAt: () => ({ code: 'true' }), queueSelection: () => SHADOW_THIN, aggregatorAt: () => thinAggregator, ...over });
+const runSelect = (io, { env, ...deps } = {}) => gate.select(io, selectEnv(env), selectDeps(deps));
+const publishedBy = io => JSON.parse(io.files.get(thin.SELECTION_FILE));
+
+test('select: every condition holding under enforce publishes mode=thin with the thinnable part of would_skip', () => {
+  const io = verifyIo();
+  assert.equal(runSelect(io), 0);
+  assert.deepEqual(publishedBy(io), { schema: 1, repository: REPO, head_sha: HEAD_SHA, base_sha: BASE_SHA, head_ref: QUEUE_REF,
+    policy_digest: 'd'.repeat(64), gate_run: 500, gate_attempt: 1, source_attempt: 1, mode: 'thin', reason: '',
+    thin_skip: ['test-web'], would_skip: ['test-web', 'smoke-test'], thin_queue: 'enforce' });
+  assert.deepEqual(Object.keys(publishedBy(io)), SELECTION_KEYS);
+  assert.equal(io.files.get(thin.SELECTION_FILE), `${JSON.stringify(publishedBy(io), null, 2)}\n`);
+});
+
+test('select: under shadow the real list is published as mode=shadow, which means run everything', () => {
+  const io = verifyIo();
+  assert.equal(runSelect(io, { env: { THIN_QUEUE: 'shadow' } }), 0);
+  const out = publishedBy(io);
+  assert.deepEqual([out.mode, out.reason, out.thin_skip, out.thin_queue], ['shadow', '', ['test-web'], 'shadow']);
+});
+
+test('select: the kill switch unset, off or anything but enforce or shadow is thin_disabled; the lists are still computed', () => {
+  for (const value of [undefined, '', 'off', 'ENFORCE', ' enforce', 'on', 'true']) {
+    const io = verifyIo();
+    const env = selectEnv();
+    if (value === undefined) delete env.THIN_QUEUE; else env.THIN_QUEUE = value;
+    assert.equal(gate.select(io, env, selectDeps()), 0);
+    const out = publishedBy(io);
+    assert.deepEqual([out.mode, out.reason, out.thin_queue], ['full', 'thin_disabled', value ?? ''], String(value));
+    assert.deepEqual(out.thin_skip, [], 'a full file lists nothing, so no reader can skip while the switch is off');
+    assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=full reason=thin_disabled thin_queue=/);
+    assert.match(selectionLines(io)[0], / would_reason="" would_thin_skip=\["test-web"\] /, 'what enforce would have done, logged only');
+  }
+});
+
+const SELECT_FALLBACKS = [
+  ['not_pinned', { io: { git: args => { if (args[0] === 'merge-base') throw Object.assign(Error('exit 1'), { status: 1 }); return ''; } } }],
+  ['base_unreadable', { io: { git: args => { if (args[0] === 'cat-file') throw Error('missing'); return ''; } } }],
+  ['base_unreadable', { env: { BASE_SHA: 'not-a-sha' } }],
+  ['no_base_flags', { deps: { flagsAt: () => null } }],
+  ['stale_base', { deps: { queueSelection: () => ({ ...SHADOW_THIN, mode: 'full', reason: 'stale_base' }) } }],
+  ['entry_not_single_commit', { deps: { queueSelection: () => ({ ...SHADOW_THIN, mode: 'full', reason: 'entry_not_single_commit' }) } }],
+  ['thin_unsupported_at_base', { deps: { aggregatorAt: () => gate.extractAggregator(preW05Ci) } }],
+  ['thin_unsupported_at_base', { deps: { aggregatorAt: () => null } }],
+  ['nothing_to_skip', { deps: { queueSelection: () => ({ ...SHADOW_THIN, would_skip: ['smoke-test'] }) } }],
+  ['audit_sample', { env: { HEAD_SHA: AUDIT_HEAD } }],
+];
+for (const [index, [reason, { io: ioOver, env, deps }]] of SELECT_FALLBACKS.entries()) {
+  test(`select: ${reason} under enforce is mode=full reason=${reason} (case ${index})`, () => {
+    const io = verifyIo(ioOver);
+    assert.equal(runSelect(io, { env, ...deps }), 0);
+    const out = publishedBy(io);
+    assert.deepEqual([out.mode, out.reason], ['full', reason]);
+    assert.deepEqual(out.thin_skip, [], 'a full file lists nothing');
+    assert.match(selectionLines(io)[0], new RegExp(`^ci-gate-selection: mode=full reason=${reason} .* would_reason="${reason}" `));
+    if (reason === 'audit_sample') assert.match(selectionLines(io)[0], / would_thin_skip=\["test-web"\] /, 'the audit sample logs the list it would have skipped');
+  });
+}
+
+test('select: the first failing condition wins, and later ones are not computed', () => {
+  const never = () => { throw Error('must not be asked'); };
+  const unpinned = verifyIo(SELECT_FALLBACKS[0][1].io);
+  runSelect(unpinned, { flagsAt: never, queueSelection: never, aggregatorAt: never });
+  assert.equal(publishedBy(unpinned).reason, 'not_pinned');
+  const stale = verifyIo();
+  runSelect(stale, { queueSelection: () => ({ ...SHADOW_THIN, mode: 'full', reason: 'stale_base' }), aggregatorAt: never });
+  assert.equal(publishedBy(stale).reason, 'stale_base');
+  // The kill switch is reported first, and what enforce would say is still on the line.
+  const off = verifyIo();
+  runSelect(off, { env: { THIN_QUEUE: 'off' }, queueSelection: () => ({ ...SHADOW_THIN, mode: 'full', reason: 'stale_base' }) });
+  assert.equal(publishedBy(off).reason, 'thin_disabled');
+  assert.match(selectionLines(off)[0], / would_reason="stale_base" /);
+});
+
+test('select: the audit sample runs full under enforce only; under shadow it publishes its list as usual', () => {
+  const shadow = verifyIo();
+  runSelect(shadow, { env: { HEAD_SHA: AUDIT_HEAD, THIN_QUEUE: 'shadow' } });
+  assert.deepEqual([publishedBy(shadow).mode, publishedBy(shadow).thin_skip], ['shadow', ['test-web']]);
+  const enforce = verifyIo();
+  runSelect(enforce, { env: { HEAD_SHA: AUDIT_HEAD } });
+  assert.deepEqual([publishedBy(enforce).mode, publishedBy(enforce).reason, publishedBy(enforce).would_skip],
+    ['full', 'audit_sample', ['test-web', 'smoke-test']]);
+});
+
+test('select: thin_skip is only ever THINNABLE jobs the base ci-success has a label for', () => {
+  const wide = { ...SHADOW_THIN, would_skip: ['smoke-test', 'test-web', 'build-api', 'lint', 'guided-setup-smoke'] };
+  const narrow = verifyIo();
+  runSelect(narrow, { queueSelection: () => wide, aggregatorAt: () => gate.extractAggregator(withThinBlock(realCi, ['build-api'])) });
+  assert.deepEqual(publishedBy(narrow).thin_skip, ['build-api']);
+  // A base whose case table names a never-thinned job still cannot thin it.
+  const forged = verifyIo();
+  runSelect(forged, { queueSelection: () => wide, aggregatorAt: () => gate.extractAggregator(withThinBlock(realCi, ['smoke-test', 'test-web', 'lint'])) });
+  assert.deepEqual(publishedBy(forged).thin_skip, ['test-web']);
+});
+
+test('select: asks about the queue shas, the base flags and the base aggregator, never the head\'s', () => {
   const io = verifyIo();
   const asked = [];
-  const code = gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: (_, env, flags) => { asked.push([env.BASE_SHA, env.HEAD_SHA, flags]); return SHADOW_OUT; } });
-  assert.equal(code, 0);
-  assert.deepEqual(asked, [[BASE_SHA, HEAD_SHA, { code: 'true', rust: 'false' }]]);
-  assert.equal(gateLines(io).length, 1);
+  runSelect(io, {
+    flagsAt: (_, base, head) => { asked.push(['flags', base, head]); return { code: 'true', web: 'true' }; },
+    queueSelection: (_, env, flags) => { asked.push(['selection', env.BASE_SHA, env.HEAD_SHA, env.HEAD_REF, flags]); return SHADOW_THIN; },
+    aggregatorAt: (_, revision) => { asked.push(['aggregator', revision]); return thinAggregator; },
+  });
+  assert.deepEqual(asked, [['flags', BASE_SHA, HEAD_SHA], ['selection', BASE_SHA, HEAD_SHA, QUEUE_REF, { code: 'true', web: 'true' }], ['aggregator', BASE_SHA]]);
+});
+
+const attempt1Of = io => { runSelect(io); return io.files.get(thin.SELECTION_FILE); };
+
+test('select: a re-run re-publishes attempt 1\'s file unchanged but for gate_attempt, and never recomputes', () => {
+  const attempt1 = attempt1Of(verifyIo());
+  const io = verifyIo();
+  const asked = [];
+  const never = () => { throw Error('a re-run must not recompute'); };
+  // The kill switch flipped meanwhile: the entry drains under the list CI already acted on.
+  assert.equal(runSelect(io, { env: { GITHUB_RUN_ATTEMPT: '3', THIN_QUEUE: 'off' }, flagsAt: never, queueSelection: never, aggregatorAt: never,
+    readArtifact: (_, repository, runId, name, file) => { asked.push([repository, runId, name, file]); return JSON.parse(attempt1); } }), 0);
+  assert.deepEqual(asked, [[REPO, 500, 'ci-gate-selection-attempt-1', 'ci-gate-selection.json']]);
+  assert.equal(io.files.get(thin.SELECTION_FILE), attempt1.replace('"gate_attempt": 1,', '"gate_attempt": 3,'));
+  assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=thin reason= thin_queue="enforce" thin_skip=\["test-web"\] source_attempt=1 /);
+});
+
+test('select: a re-run with no usable attempt 1 selection is attempt1_selection_missing, which runs everything', () => {
+  const good = JSON.parse(attempt1Of(verifyIo()));
+  for (const [name, readArtifact] of [
+    ['absent', () => null],
+    ['unreadable', () => { throw Error('HTTP 502'); }],
+    ['another head', () => ({ ...good, head_sha: 'd'.repeat(40) })],
+    ['another run', () => ({ ...good, gate_run: 501 })],
+    ['not attempt 1', () => ({ ...good, gate_attempt: 2 })],
+    ['a re-published copy', () => ({ ...good, source_attempt: 2 })],
+    ['a malformed list', () => ({ ...good, thin_skip: ['test web'] })],
+    ['an unknown mode', () => ({ ...good, mode: 'thinner' })],
+    ['an extra key', () => ({ ...good, extra: true })],
+    ['not an object', () => ['thin']],
+  ]) {
+    const io = verifyIo();
+    assert.equal(runSelect(io, { env: { GITHUB_RUN_ATTEMPT: '2' }, readArtifact }), 0, name);
+    const out = publishedBy(io);
+    assert.deepEqual([out.mode, out.reason, out.thin_skip, out.gate_attempt, out.source_attempt], ['full', 'attempt1_selection_missing', [], 2, 2], name);
+    assert.ok(io.err.some(line => /^ci-gate-detail: /.test(line)), `${name}: says why`);
+  }
+});
+
+test('select: an exception anywhere is mode=full reason=error, still written and logged, and exits 0', () => {
+  for (const [name, deps] of [
+    ['selection', { queueSelection() { throw Error('boom in selection\nsecond line'); } }],
+    ['flags', { flagsAt() { throw TypeError('boom in flags'); } }],
+    ['a selection that is not one', { queueSelection: () => undefined }],
+    ['a would_skip that is not a list of names', { queueSelection: () => ({ ...SHADOW_THIN, would_skip: [1] }) }],
+    ['no run attempt', { env: { GITHUB_RUN_ATTEMPT: '' } }],
+  ]) {
+    const io = verifyIo();
+    assert.equal(runSelect(io, deps), 0, name);
+    const out = publishedBy(io);
+    assert.deepEqual([out.mode, out.reason, out.thin_skip], ['full', 'error', []], name);
+    assert.equal(selectionLines(io).length, 1, name);
+    assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=full reason=error /, name);
+    assert.ok(io.all().every(line => !line.includes('\n')), `${name}: one line each`);
+  }
+  assert.match(selectionLines((() => { const io = verifyIo(); runSelect(io, { queueSelection() { throw Error('boom in selection'); } }); return io; })())[0], /boom in selection/);
+});
+
+test('select: a selection result that cannot be formatted still leaves one line and a full file', () => {
+  const io = verifyIo();
+  assert.equal(runSelect(io, { queueSelection: () => ({ ...SHADOW_THIN, p: 1n }) }), 0);
+  assert.equal(selectionLines(io).length, 1);
+  assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=full reason=error /);
+  assert.equal(publishedBy(io).mode, 'full');
+});
+
+test('select: a previous attempt\'s file is removed first, so a failed write leaves none to upload', () => {
+  const io = verifyIo();
+  io.files.set(thin.SELECTION_FILE, '{"stale":true}');
+  io.write = () => { throw Error('ENOSPC'); };
+  assert.equal(runSelect(io), 0);
+  assert.equal(io.files.has(thin.SELECTION_FILE), false);
+  assert.equal(selectionLines(io).length, 1, 'still logged');
+  assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=full reason=error .*selection not written: ENOSPC/, 'and the line does not claim a list that was never written');
+  assert.ok(io.err.some(line => /^ci-gate-detail: selection not written: .*ENOSPC/.test(line)));
+});
+
+test('select: a failing stdout or stderr does not change the exit code', () => {
+  const io = verifyIo();
+  io.stdout = () => { throw Error('EPIPE'); };
+  io.stderr = () => { throw Error('EPIPE'); };
+  assert.equal(runSelect(io, { env: { BASE_SHA: 'not-a-sha' } }), 0);
+  assert.equal(io.files.has(thin.SELECTION_FILE), true);
+});
+
+test('select: one ci-gate-selection line, its fields in order, and the shadow fields W04 logs', () => {
+  const io = verifyIo();
+  runSelect(io);
   const lines = selectionLines(io);
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /^ci-gate-selection: mode=shadow reason= pr=7 /);
-  assert.match(lines[0], /would_skip=\["test-api"\]/);
-  assert.ok(io.out.indexOf(gateLines(io)[0]) < io.out.indexOf(lines[0]), 'the verdict line lands first');
+  const keys = [...lines[0].matchAll(/ (\w+)=/g)].map(match => match[1]);
+  assert.deepEqual(keys, ['mode', 'reason', 'thin_queue', 'thin_skip', 'source_attempt', 'would_reason', 'would_thin_skip', ...queueSelection.SHADOW_FIELDS]);
+  assert.match(lines[0], /^ci-gate-selection: mode=thin reason= thin_queue="enforce" thin_skip=\["test-web"\] source_attempt=1 would_reason="" would_thin_skip=\["test-web"\] pr=7 /);
+  assert.match(lines[0], /would_skip=\["test-web","smoke-test"\]/);
 });
 
-test('verify: the selection line carries the same fields as the candidate-side queue-selection line', () => {
+test('select: text in the selection cannot start a line or carry a workflow command', () => {
   const io = verifyIo();
-  gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => SHADOW_OUT });
-  const keys = [...selectionLines(io)[0].matchAll(/ (\w+)=/g)].map(match => match[1]);
-  assert.deepEqual(keys, ['mode', 'reason', ...queueSelection.SHADOW_FIELDS]);
-});
-
-test('verify: an exception in the selection leaves the verdict untouched, both ways', () => {
-  const boom = () => { throw Error('selection blew up'); };
-  const pass = verifyIo();
-  assert.equal(gate.verify(pass, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: boom }), 0);
-  assert.match(gateLines(pass)[0], /verdict=pass reason=required_jobs_passed/);
-  assert.equal(gateLines(pass).length, 1);
-  assert.match(selectionLines(pass)[0], /^ci-gate-selection: mode=full reason=error /);
-  assert.match(selectionLines(pass)[0], /selection blew up/);
-
-  const fail = verifyIo();
-  const red = () => passing({ verdict: 'fail', reason: 'required_jobs_failed:lint' });
-  assert.equal(gate.verify(fail, verifyEnv(), { waitForCi: finished, verdict: red, selection: boom }), 1);
-  assert.match(gateLines(fail)[0], /verdict=fail reason=required_jobs_failed:lint/);
-});
-
-test('verify: a selection that says thin cannot make a red entry green, nor full a green one red', () => {
-  const red = verifyIo();
-  assert.equal(gate.verify(red, verifyEnv(), { waitForCi: finished, verdict: () => passing({ verdict: 'fail', reason: 'required_jobs_failed:lint' }), selection: () => SHADOW_OUT }), 1);
-  const green = verifyIo();
-  assert.equal(gate.verify(green, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => ({ mode: 'full', reason: 'no_anchor' }) }), 0);
-  assert.match(selectionLines(green)[0], /mode=full reason=no_anchor/);
-});
-
-test('verify: a failing stdout for the selection line does not change the exit code', () => {
-  const io = verifyIo();
-  const stdout = io.stdout;
-  io.stdout = text => { if (/^ci-gate-selection:/.test(text)) throw Error('EPIPE'); stdout(text); };
-  assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => SHADOW_OUT }), 0);
-});
-
-test('verify: no flags means no selection is computed, and the line says so', () => {
-  const noVerdict = verifyIo();
-  const called = [];
-  const selection = () => { called.push(1); return SHADOW_OUT; };
-  assert.equal(gate.verify(noVerdict, verifyEnv(), { waitForCi: () => ({ reason: 'ci_cancelled' }), verdict: () => passing(), selection }), 1);
-  assert.match(selectionLines(noVerdict)[0], /^ci-gate-selection: mode=full reason=no_base_flags /);
-  const noFlags = verifyIo();
-  assert.equal(gate.verify(noFlags, verifyEnv(), { waitForCi: finished, verdict: () => ({ verdict: 'fail', reason: 'base_unreadable', flags: null }), selection }), 1);
-  assert.match(selectionLines(noFlags)[0], /reason=no_base_flags/);
-  assert.deepEqual(called, []);
-});
-
-test('verify: paths in the selection line cannot start a line or carry a workflow command', () => {
-  const io = verifyIo();
-  gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => ({ ...SHADOW_OUT, p: ['a\n::error::forged', '##[error]forged'], error: 'x\n::warning::y' }) });
+  runSelect(io, { env: { THIN_QUEUE: 'x\n::error::forged' }, queueSelection: () => ({ ...SHADOW_THIN, p: ['a\n::error::forged', '##[error]forged'], error: 'x\n::warning::y' }) });
   assert.equal(selectionLines(io).length, 1);
   assert.deepEqual(io.all().filter(line => /^(::|##\[)/.test(line)), []);
   assert.ok(!selectionLines(io)[0].includes('##['));
-  assert.ok(!selectionLines(io)[0].includes('\n'));
+  assert.ok(io.all().every(line => !line.includes('\n')));
 });
 
-test('verify: the selection is given a time limit that ends before the job timeout, and it is lifted after', () => {
+test('select: its children and sleeps get three minutes, and the limit is lifted after', () => {
   const io = verifyIo();
   const limits = [];
   io.limitTime = at => limits.push(at);
   const start = io.now();
-  gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => SHADOW_OUT });
-  assert.equal(limits[0] - start, 3 * MIN, 'three minutes, from a verify that had plenty left');
-  assert.equal(limits.at(-1), Infinity);
-
-  const late = verifyIo();
-  const lateLimits = [];
-  late.limitTime = at => lateLimits.push(at);
-  const lateStart = late.now();
-  const slowWait = () => { late.sleep(139 * MIN); return finished(); };
-  gate.verify(late, verifyEnv(), { waitForCi: slowWait, verdict: () => passing(), selection: () => SHADOW_OUT });
-  assert.equal(lateLimits[0] - lateStart, 141 * MIN, 'never near the job timeout, which also covers the steps before verify');
+  runSelect(io);
+  assert.deepEqual([limits[0] - start, limits.at(-1)], [3 * MIN, Infinity]);
 });
+
+test('select: the CLI exits 0 and leaves a full selection, even with no usable environment', () => {
+  const cwd = tempDir();
+  const script = join(REPO_ROOT, '.github/scripts/ci-gate.mjs');
+  const out = execFileSync(process.execPath, [script, 'select'], { cwd, env: { PATH: process.env.PATH }, encoding: 'utf8' });
+  assert.match(out, /^ci-gate-selection: mode=full /m);
+  const value = JSON.parse(readFileSync(join(cwd, thin.SELECTION_FILE), 'utf8'));
+  assert.equal(value.mode, 'full');
+  assert.deepEqual(gate.runCLI(verifyIo(), ['select'], { PATH: process.env.PATH }), 0);
+});
+
+test('verify: no longer logs a selection line itself', () => {
+  const io = verifyIo();
+  assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing() }), 0);
+  assert.deepEqual(selectionLines(io), []);
+});
+
+// ── W05a (#10749): verify judges against the published selection ─────────
+
+const selectionOf = over => ({ schema: 1, repository: REPO, head_sha: HEAD_SHA, base_sha: BASE_SHA, head_ref: QUEUE_REF, policy_digest: null,
+  gate_run: 500, gate_attempt: 2, source_attempt: 1, mode: 'thin', reason: '', thin_skip: ['test-web'], would_skip: ['test-web'],
+  thin_queue: 'enforce', ...over });
+// GREEN is a web entry. Under a W05 base it may skip test-web only when the list says so.
+const thinGreen = { aggregator: gate.extractAggregator(withThinBlock(snapshot(GREEN.base_ci))) };
+const skipJob = (jobs, headCi, id) => {
+  const { template, expected } = gate.jobInstances(headCi, id);
+  const names = new Set([template, ...expected]);
+  return [...jobs.filter(job => !names.has(job.name)), { name: template, conclusion: 'skipped', status: 'completed' }];
+};
+const webSkipped = skipJob(GREEN.jobs, snapshot(GREEN.head_ci), 'test-web');
+
+test('judge: a W05 base passes a thinnable job the list skipped, and only that job', () => {
+  assert.equal(GREEN.flags.web, 'true');
+  const listed = judge(GREEN, webSkipped, { ...thinGreen, thinSkip: ['test-web'] });
+  assert.equal(listed.verdict, 'pass', listed.reason);
+  for (const thinSkip of [[], ['build-api']]) {
+    const out = judge(GREEN, webSkipped, { ...thinGreen, thinSkip });
+    assert.deepEqual([out.verdict, out.reason], ['fail', 'thin_skip_unjustified:test-web'], JSON.stringify(thinSkip));
+  }
+});
+
+test('judge: running a job the list allowed skipping is never punished, and a red job is still red', () => {
+  const ran = judge(GREEN, GREEN.jobs, { ...thinGreen, thinSkip: ['test-web'] });
+  assert.equal(ran.verdict, 'pass', ran.reason);
+  const red = judge(GREEN, setJobs(GREEN.jobs, /^Test Web \(shard 2\/4\)$/, 'failure'), { ...thinGreen, thinSkip: ['test-web'] });
+  assert.deepEqual([red.verdict, red.reason], ['fail', 'required_jobs_failed:test-web']);
+});
+
+test('judge: a list naming a job the base case table has no label for leaves that job required', () => {
+  const job = 'smoke-test';
+  assert.ok(thinGreen.aggregator.needs.includes(job) && !thin.THINNABLE.includes(job));
+  const out = judge(GREEN, skipJob(GREEN.jobs, snapshot(GREEN.head_ci), job), { ...thinGreen, thinSkip: [job] });
+  assert.deepEqual([out.verdict, out.reason], ['fail', `required_jobs_failed:${job}`]);
+});
+
+test('judge: a base without THIN_SKIP gives today\'s verdict on every fixture, whatever list it is handed', () => {
+  for (const [name, f] of Object.entries(fixtures)) {
+    assert.equal(judge(f, f.jobs, { thinSkip: [...thin.THINNABLE] }).verdict, judge(f).verdict, name);
+  }
+  assert.equal(judge(GREEN, webSkipped, { thinSkip: ['test-web'] }).verdict, 'fail', 'today\'s base never excuses a skip');
+});
+
+test('judge: blame that is only skipped thinnable jobs is thin_skip_unjustified; any other blame is required_jobs_failed', () => {
+  assert.equal(judge(fixtures['doctored-needs']).reason, 'thin_skip_unjustified:test-shared', 'a skipped test-shared');
+  assert.equal(judge(fixtures['required-job-deleted']).reason, 'required_jobs_failed:test-shared', 'a missing job is not a skip');
+  assert.match(judge(RED).reason, /^required_jobs_failed:/);
+  const alongside = judge(GREEN, setJobs(webSkipped, /^Lint$/, 'failure'), { ...thinGreen, thinSkip: [] });
+  assert.match(alongside.reason, /^required_jobs_failed:.*lint/, 'a failure beside the skip is a test failure first');
+  const neverThinned = judge(GREEN, skipJob(GREEN.jobs, snapshot(GREEN.head_ci), 'lint'), { ...thinGreen, thinSkip: [] });
+  assert.equal(neverThinned.reason, 'required_jobs_failed:lint');
+});
+
+test('verify: the verdict gets the published list only for this entry, this run and attempt, and mode=thin', () => {
+  for (const [name, file, expected] of [
+    ['thin', selectionOf(), ['test-web']],
+    ['shadow', selectionOf({ mode: 'shadow' }), []],
+    ['full', selectionOf({ mode: 'full', reason: 'thin_disabled' }), []],
+    ['another head', selectionOf({ head_sha: 'd'.repeat(40) }), []],
+    ['another base', selectionOf({ base_sha: 'd'.repeat(40) }), []],
+    ['another head ref', selectionOf({ head_ref: 'refs/heads/main' }), []],
+    ['another attempt', selectionOf({ gate_attempt: 1 }), []],
+    ['another run', selectionOf({ gate_run: 499 }), []],
+    ['another repository', selectionOf({ repository: 'someone/else' }), []],
+    ['a malformed list', selectionOf({ thin_skip: ['test web'] }), []],
+    ['another schema', selectionOf({ schema: 2 }), []],
+    ['not JSON', '{"mode":', []],
+    ['missing', null, []],
+  ]) {
+    const io = verifyIo();
+    if (file !== null) io.files.set(thin.SELECTION_FILE, typeof file === 'string' ? file : JSON.stringify(file));
+    const asked = [];
+    assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: (_, args) => { asked.push(args.thinSkip); return passing(); } }), 0, name);
+    assert.deepEqual(asked, [expected], name);
+    assert.match(gateLines(io)[0], new RegExp(` thin=${expected.length}$`), name);
+    const unusable = io.err.some(line => /^ci-gate-detail: selection unusable: /.test(line));
+    assert.equal(unusable, !['thin', 'shadow', 'full'].includes(name), `${name}: says why only when unusable`);
+  }
+});
+
+test('verify: a thin selection cannot turn a red verdict green', () => {
+  const io = verifyIo();
+  io.files.set(thin.SELECTION_FILE, JSON.stringify(selectionOf()));
+  assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing({ verdict: 'fail', reason: 'required_jobs_failed:lint' }) }), 1);
+  assert.match(gateLines(io)[0], /verdict=fail reason=required_jobs_failed:lint .* thin=1$/);
+});
+
+test('verify: end to end in one job, it judges with exactly what select published; a failed select judges as today', () => {
+  const env = verifyEnv({ GITHUB_RUN_ATTEMPT: '1' });
+  const judgedWith = io => {
+    const asked = [];
+    gate.verify(io, env, { waitForCi: finished, verdict: (_, args) => { asked.push(args.thinSkip); return passing(); } });
+    return asked;
+  };
+  const io = verifyIo();
+  runSelect(io);
+  assert.deepEqual(judgedWith(io), [['test-web']]);
+  const failed = verifyIo();
+  runSelect(failed, { queueSelection() { throw Error('boom'); } });
+  assert.deepEqual(judgedWith(failed), [[]]);
+  assert.ok(!failed.err.some(line => /selection unusable/.test(line)), 'a full selection is a usable one');
+});
+
+const thinSample = (fixture, jobs) => sample(fixture, { jobs, over: thinGreen });
+const replayGates = gates => ({ gates });
+
+test('replay: a W05 base is judged with its gate run\'s published list; one whose list is unknown is excluded and counted', () => {
+  const samples = [...Array.from({ length: 27 }, () => sample(GREEN)), sample(RED), ...Array.from({ length: 4 }, () => thinSample(GREEN, webSkipped))];
+  const out = fakeReplay(samples, replayGates({
+    28: { selection: {} },
+    29: { run: true },
+    30: { selection: {}, expired: true },
+    31: { selection: {}, workflowId: LISTED_REPLAY_GATE_ID },
+  })).run();
+  assert.equal(out.ok, true, JSON.stringify(out.problems));
+  assert.equal(out.evaluated, 29);
+  assert.equal(out.thinUnknown, 3, 'no artifact, an expired one, and a run under a listed workflow id');
+  assert.equal(out.disagreements.length, 0);
+});
+
+test('replay: under a W05 base, a list that does not cover a skip is red and agrees with a red CI Success', () => {
+  const red = { ...GREEN, ci_success: 'failure' };
+  const samples = [...Array.from({ length: 15 }, () => sample(GREEN)), thinSample(red, webSkipped), thinSample(red, webSkipped)];
+  const out = fakeReplay(samples, replayGates({
+    15: { selection: { mode: 'full', reason: 'thin_disabled' } },
+    16: { selection: { mode: 'shadow' } },
+  })).run();
+  assert.equal(out.red, 2);
+  assert.deepEqual(out.disagreements, []);
+  assert.equal(out.ok, true, JSON.stringify(out.problems));
+});
+
+test('replay: a gate run bound to another base is not that entry\'s selection', () => {
+  const samples = [...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED), thinSample(GREEN, webSkipped)];
+  const out = fakeReplay(samples, replayGates({ 16: { selection: { base_sha: 'd'.repeat(40) } } })).run();
+  assert.equal(out.thinUnknown, 1);
+});
+
+test('replay: today\'s bases never look for a gate run', () => {
+  const { run, calls } = fakeReplay([...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED)]);
+  assert.equal(run().ok, true);
+  assert.ok(!calls.some(call => /actions\/runs\?event=merge_group|actions\/workflows\?/.test(call)), calls.join('\n'));
+});
+
+// ── W05a review: the gaps the PR review found ────────────────────────────
+
+const HIST_HEAD = sha(101), HIST_BASE = sha(102);
+const HIST_WORKFLOWS = [{ id: 11, path: '.github/workflows/ci-gate.yml' }, { id: 12, path: '.github/workflows/ci.yml' }];
+const HIST_ARTIFACT = [{ name: 'ci-gate-selection-attempt-1', expired: false }];
+const gateRunOf = over => ({ id: 7001, path: '.github/workflows/ci-gate.yml', event: 'merge_group', head_sha: HIST_HEAD, workflow_id: 99, ...over });
+const boundSelection = over => ({ schema: 1, repository: 'o/r', head_sha: HIST_HEAD, base_sha: HIST_BASE, head_ref: 'refs/heads/gh-readonly-queue/main/pr-1-x',
+  policy_digest: null, gate_run: 7001, gate_attempt: 1, source_attempt: 1, mode: 'thin', reason: '', thin_skip: ['test-web'], would_skip: ['test-web'],
+  thin_queue: 'enforce', ...over });
+const history = ({ runs, artifacts = {}, files = {} }, workflows = HIST_WORKFLOWS) => {
+  const io = {
+    gh(args) {
+      if (args[0] === 'run') {
+        const body = files[args[2]];
+        writeFileSync(join(args[args.indexOf('--dir') + 1], thin.SELECTION_FILE), typeof body === 'string' ? body : JSON.stringify(body));
+        return '';
+      }
+      if (/actions\/runs\?event=merge_group&head_sha=/.test(args[1])) return JSON.stringify({ workflow_runs: runs });
+      return JSON.stringify([{ artifacts: artifacts[args[1].match(/runs\/(\d+)\/artifacts/)?.[1]] ?? [] }]);
+    },
+    temp: () => tempDir(), remove: () => {}, read: path => readFileSync(path, 'utf8'), sleep: () => {},
+  };
+  return gate.historicalThinSkip(io, 'o/r', { headSha: HIST_HEAD, baseSha: HIST_BASE }, workflows);
+};
+
+test('historicalThinSkip: the newest pinned gate run for the head, its attempt-1 file, and only a thin list', () => {
+  const runs = [gateRunOf({ id: 7000 }), gateRunOf()];
+  const files = { 7000: boundSelection({ gate_run: 7000, mode: 'full', thin_skip: [] }), 7001: boundSelection() };
+  assert.deepEqual(history({ runs, artifacts: { 7000: HIST_ARTIFACT, 7001: HIST_ARTIFACT }, files }), ['test-web'], 'the newest run governs');
+  assert.deepEqual(history({ runs: [gateRunOf()], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: boundSelection({ mode: 'shadow' }) } }), [], 'shadow hands over nothing');
+});
+
+test('historicalThinSkip: a run that is not the pinned gate for this entry is never read', () => {
+  const read = run => history({ runs: [gateRunOf(run)], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: boundSelection() } });
+  for (const [name, run] of [['another path', { path: CI_PATH }], ['another event', { event: 'pull_request' }],
+    ['another head', { head_sha: sha(103) }], ['a listed workflow id', { workflow_id: 11 }], ['no workflow id', { workflow_id: undefined }]]) {
+    assert.equal(read(run), null, name);
+  }
+  assert.equal(history({ runs: [gateRunOf()], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: boundSelection() } }, [HIST_WORKFLOWS[1]]), null,
+    'with no listed gate workflow an unlisted id proves nothing');
+});
+
+test('historicalThinSkip: a file not bound to its run and entry is unknown; one that will not parse is an error, not unknown', () => {
+  for (const [name, over] of [['another run', { gate_run: 7002 }], ['attempt 2', { gate_attempt: 2 }], ['another head', { head_sha: sha(103) }],
+    ['another base', { base_sha: sha(104) }], ['another repository', { repository: 'x/y' }]]) {
+    assert.equal(history({ runs: [gateRunOf()], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: boundSelection(over) } }), null, name);
+  }
+  assert.equal(history({ runs: [gateRunOf()], artifacts: { 7001: [{ ...HIST_ARTIFACT[0], expired: true }] } }), null, 'expired');
+  assert.throws(() => history({ runs: [gateRunOf()], artifacts: { 7001: HIST_ARTIFACT }, files: { 7001: '{"truncated":' } }), SyntaxError);
+});
+
+test('replay: a gate selection that exists but cannot be read fails the replay, and so does one missing for many runs', () => {
+  const base = [...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED)];
+  const corrupt = fakeReplay([...base, thinSample(GREEN, webSkipped)], replayGates({ 16: { selection: {}, corrupt: true } })).run();
+  assert.equal(corrupt.thinUnreadable, 1);
+  assert.equal(corrupt.ok, false);
+  assert.match(corrupt.problems.join(), /1 gate selection\(s\) unreadable/);
+  const missing = fakeReplay([...base, thinSample(GREEN, webSkipped), thinSample(GREEN, webSkipped)]).run();
+  assert.equal(missing.thinUnknown, 2);
+  assert.equal(missing.ok, false);
+  assert.match(missing.problems.join(), /no gate selection for 2 of 18 runs/);
+});
+
+test('recordFixture: a W05 base records the list its entry was judged with; an unknown list is not recordable', () => {
+  const { io, prepare } = fakeReplay([thinSample(GREEN, webSkipped), thinSample(GREEN, webSkipped), sample(GREEN)], replayGates({ 0: { selection: {} } }));
+  assert.deepEqual(gate.recordFixture(io, { repository: 'o/r', runId: '1000', prepare }).fixture.thin_skip, ['test-web']);
+  assert.throws(() => gate.recordFixture(io, { repository: 'o/r', runId: '1001', prepare }), /not_recordable/);
+  assert.deepEqual(gate.recordFixture(io, { repository: 'o/r', runId: '1002', prepare }).fixture.thin_skip, [], 'a base without THIN_SKIP saw no list');
+});
+
+test('select: a re-run checks every field of attempt 1\'s file before it carries the list over', () => {
+  const good = JSON.parse(attempt1Of(verifyIo()));
+  const missingKey = { ...good };
+  delete missingKey.thin_queue;
+  for (const [name, body] of [['another base', { ...good, base_sha: 'd'.repeat(40) }], ['another head ref', { ...good, head_ref: 'refs/heads/main' }],
+    ['another repository', { ...good, repository: 'x/y' }], ['another schema', { ...good, schema: 2 }], ['a bad digest', { ...good, policy_digest: 'zz' }],
+    ['a would_skip that is not a list', { ...good, would_skip: 'test-web' }], ['a reason with spaces', { ...good, reason: 'a b' }],
+    ['a switch that is not text', { ...good, thin_queue: 1 }], ['run 0', { ...good, gate_run: 0 }], ['a fractional source attempt', { ...good, source_attempt: 1.5 }],
+    ['a missing key', missingKey]]) {
+    const io = verifyIo();
+    runSelect(io, { env: { GITHUB_RUN_ATTEMPT: '2' }, readArtifact: () => body });
+    assert.equal(publishedBy(io).reason, 'attempt1_selection_missing', name);
+  }
+});
+
+test('select: the CLI prints a full selection line and exits 0 even when the gate cannot start; verify exits 1', () => {
+  const dir = tempDir();
+  const preload = join(dir, 'break-cwd.mjs');
+  writeFileSync(preload, "process.cwd = () => { throw new Error('no working directory'); };\n");
+  const run = subcommand => {
+    try {
+      const out = execFileSync(process.execPath, ['--import', pathToFileURL(preload).href, join(REPO_ROOT, '.github/scripts/ci-gate.mjs'), subcommand],
+        { cwd: dir, env: { PATH: process.env.PATH }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return { status: 0, out };
+    } catch (error) { return { status: error.status, out: String(error.stdout ?? ''), err: String(error.stderr ?? '') }; }
+  };
+  const selected = run('select');
+  assert.equal(selected.status, 0, JSON.stringify(selected));
+  assert.match(selected.out, /^ci-gate-selection: mode=full reason=error$/m);
+  assert.equal(run('verify').status, 1);
+});
+
+test('verify: through the real judge, a skip under a shadow selection is red and under thin it passes', () => {
+  for (const [mode, code] of [['thin', 0], ['shadow', 1]]) {
+    const io = verifyIo();
+    io.files.set(thin.SELECTION_FILE, JSON.stringify(selectionOf({ mode })));
+    const decide = (_, args) => ({ ...gate.judge(judgeIo, contextOf(GREEN, { ...thinGreen, thinSkip: args.thinSkip }), webSkipped), flags: GREEN.flags, policyPaths: [] });
+    assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: decide }), code, mode);
+    if (mode === 'shadow') assert.match(gateLines(io)[0], /reason=thin_skip_unjustified:test-web /);
+  }
+});
+
 
 test('limitTime: bounds every child and sleep on the gate io, and an unlimited io is unchanged', () => {
   const cwd = tempDir();
@@ -2188,30 +2753,77 @@ const selectionPolicyFiles = () => {
 };
 const fieldOf = (line, key) => JSON.parse(line.match(new RegExp(` ${key}=(.*?)(?= \\w+=|$)`))[1]);
 
-test('verify: end to end, real commits and a pinned anchor give a thin selection in shadow', () => {
-  const r = queueEntryRig();
+const selectOf = r => over => r.verifyEnv({ GITHUB_RUN_ATTEMPT: '1', ...over });
+const publishedIn = r => JSON.parse(readFileSync(join(r.clone, thin.SELECTION_FILE), 'utf8'));
+
+test('select: end to end, real commits and a pinned anchor give the W04 selection, which a pre-W05 base cannot thin', () => {
+  const r = queueEntryRig({ baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: preW05Ci } });
   const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
   r.addAnchor({ anchor: { files: ['docs/guide.md'], policy_digest: digest } });
   r.addCi({ attempts: [docsOnlyJobs()] });
-  assert.equal(gate.verify(r.io, r.verifyEnv()), 0, r.lines.join('\n'));
-  assert.match(lineOf(r)[0], /verdict=pass reason=required_jobs_passed/);
+  assert.equal(gate.select(r.io, selectOf(r)()), 0);
   const lines = r.lines.filter(line => /^ci-gate-selection:/.test(line));
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /^ci-gate-selection: mode=shadow reason= /, lines[0]);
+  assert.match(lines[0], /^ci-gate-selection: mode=full reason=thin_disabled thin_queue="" thin_skip=\[\] source_attempt=1 would_reason="thin_unsupported_at_base" /, lines[0]);
   assert.equal(fieldOf(lines[0], 'head'), r.headSha);
   assert.equal(fieldOf(lines[0], 'B'), r.baseSha);
   assert.deepEqual(fieldOf(lines[0], 'p'), ['docs/guide.md']);
+  const value = publishedIn(r);
+  assert.deepEqual([value.mode, value.reason, value.head_sha, value.base_sha, value.gate_attempt], ['full', 'thin_disabled', r.entry, r.baseSha, 1]);
+  assert.equal(value.policy_digest, digest);
+  // verify, the next step, judges it as full: exactly today's verdict.
+  assert.equal(gate.verify(r.io, selectOf(r)()), 0, r.lines.join('\n'));
+  assert.match(lineOf(r)[0], /verdict=pass reason=required_jobs_passed .* thin=0$/);
 });
 
-test('verify: end to end, the reads are the base revision\'s, though the checkout is the gate\'s own', () => {
-  const r = queueEntryRig();
+test('select: end to end, the base revision\'s ci-success decides whether thin is supported, not the gate\'s checkout', () => {
+  const r = queueEntryRig({ baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: thinCi } });
+  const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
+  r.addAnchor({ anchor: { files: ['docs/guide.md'], policy_digest: digest } });
+  r.addCi({ attempts: [docsOnlyJobs()] });
+  gate.select(r.io, selectOf(r)({ THIN_QUEUE: 'enforce' }));
+  // A docs entry runs no thinnable job in full, so there is nothing to skip; the block itself was read.
+  assert.deepEqual([publishedIn(r).mode, publishedIn(r).reason], ['full', 'nothing_to_skip'], r.lines.join('\n'));
+});
+
+test('select: end to end, the reads are the base revision\'s, though the checkout is the gate\'s own', () => {
+  const r = queueEntryRig({ baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: preW05Ci } });
   const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
   r.addAnchor({ anchor: { files: ['docs/guide.md'], policy_digest: digest } });
   r.addCi({ attempts: [docsOnlyJobs()] });
   // The clone is checked out at the pinned workflow sha, with no policy files at all.
   assert.throws(() => readFileSync(join(r.clone, CI_PATH)));
-  gate.verify(r.io, r.verifyEnv());
-  assert.match(r.lines.find(line => /^ci-gate-selection:/.test(line)), /mode=shadow/);
+  gate.select(r.io, selectOf(r)());
+  assert.match(r.lines.find(line => /^ci-gate-selection:/.test(line)), /would_reason="thin_unsupported_at_base"/);
+});
+
+// The PR's own CI run, as the real classifier says it ran for these files.
+const prRunJobs = files => {
+  const flags = Object.fromEntries(execFileSync('bash', [join(REPO_ROOT, SCRIPTS, 'classify-pr-paths.sh'), '--pull-request'],
+    { input: `${files.join('\n')}\n`, encoding: 'utf8' }).trim().split('\n').map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+  return gate.extractAggregator(realCi).needs.flatMap(id => {
+    const { template, expected } = gate.jobInstances(realCi, id);
+    const condition = gate.workflowJobsOf(realCi)[id].condition;
+    let runs;
+    try { runs = !condition || evaluateIf(condition, flags); } catch { runs = true; }
+    // Native iOS follows mobile-native-changes, which says no for a path outside apps/mobile.
+    if (id === 'build-mobile-ios') runs = files.some(path => path.startsWith('apps/mobile/'));
+    return runs ? expected.map(name => ({ name, conclusion: 'success', status: 'completed' })) : [{ name: template, conclusion: 'skipped', status: 'completed' }];
+  });
+};
+
+test('select: end to end, a web entry on a W05 base publishes the real W04 selection\'s thinnable part', () => {
+  const files = ['apps/web/src/thin-e2e.ts'];
+  const r = queueEntryRig({ headFiles: { [files[0]]: 'export {};\n' }, baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: thinCi } });
+  const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
+  r.addAnchor({ anchor: { files, policy_digest: digest } });
+  r.addCi({ attempts: [prRunJobs(files)] });
+  // shadow, not enforce: the entry sha is random, and enforce would run one in five as the audit sample.
+  assert.equal(gate.select(r.io, selectOf(r)({ THIN_QUEUE: 'shadow' })), 0);
+  const value = publishedIn(r);
+  assert.deepEqual([value.mode, value.reason], ['shadow', ''], r.lines.filter(line => /ci-gate-(selection|detail)/.test(line)).join('\n'));
+  assert.ok(value.thin_skip.includes('test-web'), JSON.stringify(value.thin_skip));
+  for (const job of value.thin_skip) assert.ok(thin.THINNABLE.includes(job) && value.would_skip.includes(job), job);
 });
 
 for (const [reason, setup] of [
@@ -2220,47 +2832,39 @@ for (const [reason, setup] of [
   ['anchor_policy_in_p', r => { r.addAnchor({ anchor: { policy_in_files: true, policy_digest: null, files: [CI_PATH] } }); r.addCi({ attempts: [docsOnlyJobs()] }); }],
   ['no_verified_pr_run', r => r.addAnchor({ anchor: { files: ['docs/guide.md'] } })],
 ]) {
-  test(`verify: end to end, ${reason} is mode=full, thin equals full, and the verdict stands`, () => {
+  test(`select: end to end, ${reason} is mode=full, thin equals full, and the verdict stands`, () => {
     const r = queueEntryRig();
     setup(r);
-    assert.equal(gate.verify(r.io, r.verifyEnv()), 0, r.lines.join('\n'));
+    assert.equal(gate.select(r.io, selectOf(r)({ THIN_QUEUE: 'enforce' })), 0);
     const line = r.lines.find(text => /^ci-gate-selection:/.test(text));
     assert.match(line, new RegExp(`^ci-gate-selection: mode=full reason=${reason} `));
     assert.deepEqual(fieldOf(line, 'thin_jobs'), fieldOf(line, 'full_jobs'));
+    assert.equal(gate.verify(r.io, selectOf(r)()), 0, r.lines.join('\n'));
     assert.match(lineOf(r)[0], /verdict=pass reason=required_jobs_passed/);
   });
 }
 
-test('verify: end to end, the Actions API failing in the selection leaves the verdict, and logs error', () => {
+test('select: end to end, the Actions API failing in the selection is reason=error, and the verdict stands', () => {
   const r = queueEntryRig();
   r.io.sleep = () => {};
   const gh = r.io.gh;
   r.io.gh = args => { if (args.some(arg => /\/actions\/workflows\?/.test(arg))) throw Error('HTTP 502'); return gh(args); };
-  assert.equal(gate.verify(r.io, r.verifyEnv()), 0, r.lines.join('\n'));
+  assert.equal(gate.select(r.io, selectOf(r)({ THIN_QUEUE: 'enforce' })), 0);
   assert.match(r.lines.find(text => /^ci-gate-selection:/.test(text)), /mode=full reason=error /);
+  assert.equal(gate.verify(r.io, selectOf(r)()), 0, r.lines.join('\n'));
 });
 
-// ── The candidate-side shadow is untouched ───────────────────────────────
+// ── The candidate side reads the gate's selection (W05b) ────────────────
 
-test('queue_shadow in ci.yml is byte-identical', () => {
-  const start = realCi.indexOf('      - name: Queue selection shadow\n');
-  const end = realCi.indexOf('\n  # ─── Docs check', start);
-  assert.ok(start > 0 && end > start);
-  assert.equal(realCi.slice(start, end), `      - name: Queue selection shadow
-        id: queue_shadow
-        if: github.event_name == 'merge_group'
-        continue-on-error: true
-        timeout-minutes: 5
-        run: |
-          node .github/scripts/queue-selection.mjs shadow
-        env:
-          GH_TOKEN: \${{ github.token }}
-          EVENT_NAME: \${{ github.event_name }}
-          HEAD_REF: \${{ github.event.merge_group.head_ref }}
-          BASE_SHA: \${{ github.event.merge_group.base_sha }}
-          HEAD_SHA: \${{ github.event.merge_group.head_sha }}
-          FULL_SELECTION: \${{ toJSON(steps.classify.outputs) }}
-`);
+// W05b replaced the candidate-side shadow step: the gate logs that line itself.
+// The consume step's exact shape is pinned in queue-selection.test.mjs.
+test('ci.yml: the W04 candidate-side shadow is gone; changes reads this gate\'s artifact', () => {
+  assert.ok(!realCi.includes('queue_shadow') && !realCi.includes('queue-selection.mjs shadow'));
+  const changes = ciJob('changes');
+  assert.ok(changes.includes('          node .github/scripts/queue-selection.mjs consume\n'));
+  assert.ok(changes.includes(`          GATE_WORKFLOW: ${gate.GATE_WORKFLOW}\n`));
+  assert.ok(changes.includes(`          GATE_SELECTION_ARTIFACT: ${thin.selectionArtifact(1)}\n`));
+  assert.ok(changes.includes(`          GATE_SELECTION_FILE: ${thin.SELECTION_FILE}\n`));
 });
 
 test('verify: no trust code runs in the candidate-side shadow CLI', () => {
@@ -2269,13 +2873,29 @@ test('verify: no trust code runs in the candidate-side shadow CLI', () => {
   assert.ok(!/ci-gate/.test(source), 'and it does not import the gate');
 });
 
-test('docs: the runbook explains the selection line and that it never changes a verdict', () => {
+test('docs: the runbook explains the published selection, what verify does with it, and that off changes nothing', () => {
   const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
-  assert.match(merge, /`ci-gate-selection: /);
-  assert.match(merge, /never changes? a verdict/);
-  for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'no_verified_pr_run', 'no_base_flags']) {
+  assert.match(merge, /`ci-gate-selection: mode=… reason=… thin_queue=… thin_skip=… source_attempt=… would_reason=… /);
+  assert.ok(merge.includes(`\`${thin.SELECTION_FILE}\``) && merge.includes('`ci-gate-selection-attempt-<n>`'));
+  assert.match(merge, /only `mode=thin` hands its `thin_skip` list/);
+  assert.match(merge, /re-publishes attempt 1's file/);
+  assert.match(merge, /unset or `off`, every selection is `mode=full reason=thin_disabled`, so the selection changes nothing/);
+  assert.match(merge, /`thin=…`/, 'the ci-gate line field');
+  for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'no_verified_pr_run', 'no_base_flags', 'thin_disabled',
+    'thin_unsupported_at_base', 'nothing_to_skip', 'audit_sample', 'attempt1_selection_missing', 'thin_skip_unjustified:<jobs>']) {
     assert.ok(merge.includes(`\`${reason}\``), `${reason} is not in the runbook`);
   }
+});
+
+test('docs: the thin queue kill switch section says what each value does and how a flip lands', () => {
+  const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
+  assert.match(merge, /^### Thin queue kill switch$/m);
+  const section = merge.slice(merge.indexOf('### Thin queue kill switch')).split(/^#{2,3} /m)[1];
+  for (const claim of [/`CI_THIN_QUEUE`/, /`enforce`/, /`shadow`/, /`off`/, /next queue entry/, /finish under the list their gate published/,
+    /gh variable set CI_THIN_QUEUE --body off/, /gh variable get CI_THIN_QUEUE/, /Never set the ruleset to \*\*Evaluate\*\* while `CI_THIN_QUEUE` is `enforce`/]) {
+    assert.match(section, claim);
+  }
+  assert.ok(merge.indexOf('### Thin queue kill switch') < merge.indexOf('### CI Gate rollback'), 'read before the rollback that points at it');
 });
 
 // ── W02d: what review found ──────────────────────────────────────────────
@@ -2369,13 +2989,4 @@ test('trustedRecord: an ancestry check that could not run is an error, not a cla
   const git = r.io.git;
   r.io.git = args => { if (args[0] === 'merge-base') throw Object.assign(Error('no origin/main'), { status: 128 }); return git(args); };
   assert.throws(() => r.trust(), /ancestry check/);
-});
-
-test('verify: a selection result that cannot be formatted still leaves one line and the verdict', () => {
-  for (const bad of [undefined, { mode: 'shadow', reason: '', p: 1n }]) {
-    const io = verifyIo();
-    assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => bad }), 0);
-    assert.equal(selectionLines(io).length, 1);
-    assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=full reason=error /);
-  }
 });

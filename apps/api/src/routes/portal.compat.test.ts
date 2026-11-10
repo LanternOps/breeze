@@ -2,11 +2,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { portalRoutes } from './portal';
 
+// Portal registration W3 (#11380): portalAuthMiddleware re-checks the portal
+// access policy on every request. Not under test here, so it resolves like an
+// org with no policy rows: password allowed, today's behaviour (the gate itself
+// is covered in authOrgStatusGate.test.ts and auth.logout.test.ts).
+vi.mock('../services/portalAccessPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/portalAccessPolicy')>();
+  return {
+    ...actual,
+    resolvePortalAccessPolicy: async (orgId: string) => ({
+      orgId, partnerId: 'partner-1', entraTenant: null,
+      ...actual.pickEffectivePortalAccessPolicy(null, null, actual.getPortalSignInCapabilities(), { entraTenantProven: false }),
+    }),
+  };
+});
 vi.mock('nanoid', () => ({
   nanoid: vi.fn(() => 'portal-session-token')
 }));
 
 vi.mock('../services/password', () => ({
+  getDummyPasswordHash: vi.fn(async () => 'dummy-hash'),
   hashPassword: vi.fn().mockResolvedValue('hashed-password'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
   verifyPassword: vi.fn()
@@ -115,6 +130,7 @@ vi.mock('../db/schema', () => ({
     name: 'portalUsers.name',
     passwordHash: 'portalUsers.passwordHash',
     authMethod: 'portalUsers.authMethod',
+    browserAccess: 'portalUsers.browserAccess',
     receiveNotifications: 'portalUsers.receiveNotifications',
     status: 'portalUsers.status',
     lastLoginAt: 'portalUsers.lastLoginAt',
@@ -137,8 +153,10 @@ const portalUser = {
   name: 'Portal User',
   passwordHash: 'hash',
   authMethod: 'password',
+  browserAccess: 'granted',
   receiveNotifications: true,
-  status: 'active'
+  status: 'active',
+  authEpoch: 1,
 };
 
 function mockSelectLimit(result: unknown) {

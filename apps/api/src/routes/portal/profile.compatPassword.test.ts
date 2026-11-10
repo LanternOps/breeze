@@ -16,6 +16,7 @@ vi.mock('../../db', async (importOriginal) => {
 });
 
 vi.mock('../../services/password', () => ({
+  getDummyPasswordHash: vi.fn(async () => 'dummy-hash'),
   hashPassword: mocks.hashPassword,
   verifyPassword: vi.fn(),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),

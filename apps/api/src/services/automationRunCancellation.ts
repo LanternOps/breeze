@@ -10,9 +10,9 @@ import { reconcileAutomationRun } from './automationActionResults';
 import { captureException } from './sentry';
 import type { RunCancelTally } from './scriptCancellation';
 
-// `scriptCancellation` reaches agentWs → commandQueue → configurationPolicy at
-// module load. Importing it eagerly here would drag that chain into every
-// partial-mock unit suite that imports the automation runtime (which imports
+// `scriptCancellation` pulls the command-queue / relay-facade graph (hundreds
+// of modules) in at module load. Importing it eagerly here would drag that
+// graph into every partial-mock unit suite that imports the automation runtime (which imports
 // this module for the fence), so the VALUE import is deferred to the one
 // function that needs it — the same lazy-import pattern automationRuntime.ts
 // already uses for softwareDeployment.

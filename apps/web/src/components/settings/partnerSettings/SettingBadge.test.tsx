@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import '@/lib/i18n';
+import { i18n } from '@/lib/i18n';
+import { CATALOG_BY_ID } from '@breeze/shared';
+import { formatInheritanceValue } from './formatInheritanceValue';
 import SettingBadge from './SettingBadge';
 import BadgeLegend from './BadgeLegend';
 import { PartnerInheritanceContext, type PartnerInheritanceUi } from './inheritanceContext';
@@ -42,6 +44,52 @@ describe('SettingBadge: text per kind and qualifier (spec §5.3)', () => {
   it('overridable + cap falls back to the platform ceiling when the cap is not saved', () => {
     render(<SettingBadge fieldId="defaults.defaultEnrollmentTtlMinutes" />);
     expect(badgeText('defaults.defaultEnrollmentTtlMinutes')).toBe('Org can override, up to 365 days');
+  });
+
+  describe('locks is value-aware once the inheritance context is present (#11411)', () => {
+    const id = 'aiBudgets.monthlyBudgetCents';
+    const field = (saved: Record<string, unknown>) => (
+      <PartnerInheritanceContext.Provider value={ui(saved)}>
+        <SettingBadge fieldId={id} />
+      </PartnerInheritanceContext.Provider>
+    );
+
+    it('unset says "Locks orgs when set", not "Locks orgs"', () => {
+      render(field({}));
+      expect(badgeText(id)).toBe('Locks orgs when set');
+    });
+
+    it('a saved value says "Locks orgs"', () => {
+      render(field({ aiBudgets: { monthlyBudgetCents: 5000 } }));
+      expect(badgeText(id)).toBe('Locks orgs');
+    });
+
+    it('a saved zero counts as set', () => {
+      render(field({ aiBudgets: { monthlyBudgetCents: 0 } }));
+      expect(badgeText(id)).toBe('Locks orgs');
+    });
+
+    it('an explicit null counts as unset', () => {
+      render(field({ aiBudgets: { monthlyBudgetCents: null } }));
+      expect(badgeText(id)).toBe('Locks orgs when set');
+    });
+
+    it('a locksConditional field is unaffected by being unset', () => {
+      render(
+        <PartnerInheritanceContext.Provider value={ui({})}>
+          <SettingBadge fieldId="eventLogs" />
+        </PartnerInheritanceContext.Provider>,
+      );
+      expect(badgeText('eventLogs')).toBe('Locks orgs when enabled');
+    });
+
+    it('AI Enabled platform default uses the org card vocabulary', () => {
+      const t = i18n.getFixedT('en', 'settings');
+      const entry = CATALOG_BY_ID['aiBudgets.enabled']!;
+      expect(formatInheritanceValue(entry, true, t)).toBe('Enabled');
+      expect(formatInheritanceValue(entry, false, t)).toBe('Disabled');
+      expect(formatInheritanceValue(CATALOG_BY_ID['security.requireMfa']!, true, t)).toBe('On');
+    });
   });
 
   it('unclassified renders no badge', () => {

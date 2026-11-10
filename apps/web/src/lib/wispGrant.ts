@@ -106,6 +106,12 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
   if (typeof grant?.spentTodayCents === 'number' && Number.isFinite(grant.spentTodayCents) && typeof grant?.budgetResetsAt === 'string') {
     optional.spentTodayCents = grant.spentTodayCents;
     optional.budgetResetsAt = grant.budgetResetsAt;
+    // #10414: the breakdown rides along only when both halves are numbers; otherwise the total meter shows alone.
+    if (Number.isFinite(grant.backgroundCents) && Number.isFinite(grant.chatCents)
+      && typeof grant.backgroundCents === 'number' && typeof grant.chatCents === 'number') {
+      optional.backgroundCents = grant.backgroundCents;
+      optional.chatCents = grant.chatCents;
+    }
   } else if (grant && ('spentTodayCents' in grant || 'budgetResetsAt' in grant)) {
     console.error('[wispGrant] spend meter fields malformed; hiding the meter', { spentTodayCents: grant.spentTodayCents, budgetResetsAt: grant.budgetResetsAt });
   }

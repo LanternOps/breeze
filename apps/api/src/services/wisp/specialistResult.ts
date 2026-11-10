@@ -98,8 +98,11 @@ function capChars(text: string, max: number): string {
   return chars.length <= max ? text : `${chars.slice(0, Math.max(0, max - 1)).join('')}…`;
 }
 
-/** Device- or model-written text, made safe to show: filtered, single spaces kept, capped. */
-function cleanText(value: string, max: number): string {
+/**
+ * Device- or model-written text, made safe to show: filtered, single spaces
+ * kept, capped. Also the run check-in result's body (checkInRuns.ts, W07).
+ */
+export function cleanText(value: string, max: number): string {
   return capChars(sanitizeUntrustedToolText(value).trim(), max);
 }
 

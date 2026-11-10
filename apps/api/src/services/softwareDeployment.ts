@@ -40,7 +40,7 @@ import {
 } from './managedSoftwareDispatchPolicy';
 import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
 import { captureException } from './sentry';
-import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
+import type { AgentCommand } from '../routes/agentWs';
 import {
   fingerprintSoftwareInstallMethodDependency,
   fingerprintSoftwareVersionDependency,

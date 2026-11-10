@@ -877,6 +877,7 @@ export const securityProviderValues = [
   'webroot',
   'withsecure',
   'cylance',
+  'trend_micro',
   'other',
   'unknown'
 ] as const;

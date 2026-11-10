@@ -1340,8 +1340,59 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '403': { description: 'Organization or partner policy still requires MFA for this user.' },
-          '409': { description: 'Another authentication issuance is in flight, or MFA was disabled concurrently. No factor was removed.' },
+          '409': { description: 'Another authentication issuance is in flight, or MFA was disabled concurrently. No factor was removed. Also returned with `code: "factor_removal_required"` while the account has active passkeys: remove the passkeys first, or remove the authenticator app on its own with POST /auth/mfa/totp/remove.' },
           '428': { description: 'The client auth binding must be rotated before a session can be issued. Retry after re-bootstrapping the binding.' }
+        }
+      }
+    },
+    '/auth/mfa/totp/remove': {
+      post: {
+        operationId: 'removeTotpFactor',
+        tags: ['Auth'],
+        summary: 'Remove the authenticator app',
+        description: 'Remove the caller\'s authenticator app without switching MFA off, leaving the passkeys as the MFA method. Requires an MFA-assured session, a re-verified password (or `ssoReauthGrantId` for a passwordless account) and a single-use existing-factor step-up grant minted by POST /auth/mfa/step-up for operation `remove_totp` (SMS cannot mint it). When the authenticator app is the only factor, use POST /auth/mfa/disable instead.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  currentPassword: { type: 'string', description: 'The account password. Omit for a passwordless account and send ssoReauthGrantId instead.' },
+                  ssoReauthGrantId: { type: 'string', format: 'uuid', description: 'Single-use SSO re-authentication grant for an account without a password.' },
+                  stepUpGrantId: { type: 'string', description: 'Step-up grant id from POST /auth/mfa/step-up (operation remove_totp).' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Authenticator app removed; the account now uses its passkeys',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    mfaMethod: { type: 'string', enum: ['passkey'] },
+                    tokens: {
+                      type: 'object',
+                      description: 'Replacement session for the caller when one was issued. Install it before the next request.',
+                      properties: {
+                        accessToken: { type: 'string' },
+                        expiresInSeconds: { type: 'integer' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          '400': { description: 'Invalid request. `code: "totp_not_enrolled"` when there is no authenticator app to remove, or `code: "use_mfa_disable"` when it is the only factor.' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { description: 'The session is not MFA-assured, `code: "last_mfa_factor_required"`, or `error: "existing_factor_step_up_required"` when the step-up grant is missing or invalid.' },
+          '409': { description: 'Factor state changed concurrently (`code: "factor_state_changed"`). The step-up grant was spent (`stepUpGrantConsumed: true`); mint a new one and retry.' }
         }
       }
     },
@@ -1532,7 +1583,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'enableMfa',
         tags: ['Auth'],
         summary: 'Enable MFA (confirm setup)',
-        description: 'Confirm TOTP MFA setup by providing the 6-digit code from the authenticator app. Requires a prior call to /auth/mfa/setup.',
+        description: 'Confirm TOTP MFA setup by providing the 6-digit code from the authenticator app. Requires a prior call to /auth/mfa/setup. When the account has a primary passkey and no authenticator app yet, this adds the authenticator app as a backup instead: the response carries `backup: true` and no recovery codes.',
         requestBody: {
           required: true,
           content: {
@@ -1556,15 +1607,25 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   type: 'object',
                   properties: {
                     success: { type: 'boolean' },
-                    recoveryCodes: { type: 'array', items: { type: 'string' } },
-                    message: { type: 'string' }
+                    recoveryCodes: { type: 'array', items: { type: 'string' }, description: 'Present on initial enrollment only; absent when the authenticator app was added as a backup beside a passkey.' },
+                    backup: { type: 'boolean', description: 'True when the authenticator app was added as a backup beside a primary passkey.' },
+                    message: { type: 'string' },
+                    tokens: {
+                      type: 'object',
+                      description: 'Replacement session for the caller when one was issued.',
+                      properties: {
+                        accessToken: { type: 'string' },
+                        expiresInSeconds: { type: 'integer' }
+                      }
+                    }
                   }
                 }
               }
             }
           },
           '400': { $ref: '#/components/responses/BadRequest' },
-          '401': { $ref: '#/components/responses/Unauthorized' }
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '409': { description: 'Factor state changed concurrently (`code: "factor_state_changed"`); the write lost a race. `stepUpGrantConsumed` says whether the step-up grant was spent.' }
         }
       }
     },

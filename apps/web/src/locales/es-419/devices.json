@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Envío de registros con fallas",
       "networkIsolation": {
         "active": "Aislado"
+      },
+      "helperVersion": "Versión del asistente",
+      "deviceFunction": "Función del dispositivo",
+      "hostsWorkloads": "Aloja cargas de trabajo",
+      "workloadRuntimes": "Entornos de ejecución de cargas de trabajo",
+      "warranty": {
+        "status": "Estado de la garantía"
       }
     }
   },

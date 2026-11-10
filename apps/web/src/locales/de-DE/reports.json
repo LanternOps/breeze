@@ -1350,8 +1350,7 @@
         "series": "Ein Bericht pro Organisation",
         "seriesHint": "Eine Definition mit einer eigenen Kopie für jede abgedeckte Organisation, die jeweils an die Kontakte dieser Organisation gesendet wird.",
         "combined": "Alle Organisationen zusammengefasst",
-        "combinedHint": "Ein zusammengefasster Bericht über alle Ihre Organisationen für Ihr eigenes Team.",
-        "seriesUnavailableType": "Dieser Berichtstyp kann nicht als ein Bericht pro Organisation gesendet werden."
+        "combinedHint": "Ein zusammengefasster Bericht über alle Ihre Organisationen für Ihr eigenes Team."
       },
       "schedule": {
         "label": "Wie oft die Kopie jeder Organisation gesendet wird",

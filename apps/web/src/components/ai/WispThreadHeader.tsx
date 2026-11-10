@@ -11,7 +11,7 @@ import { useOrgStore } from '@/stores/orgStore';
 import WispGrantStepUpModal from './WispGrantStepUpModal';
 import WispGrantPauseControl from '../wisp/WispGrantPauseControl';
 import WispSpendMeter from '../wisp/WispSpendMeter';
-import { spendMeterState } from '../wisp/wispSpend';
+import { spendMeterState, utcClockTime } from '../wisp/wispSpend';
 import type { CurrentActivity } from '@breeze/shared';
 
 export type WispThreadHeaderProps = {
@@ -340,10 +340,20 @@ export default function WispThreadHeader({
         <WispSpendMeter
           spentCents={wisp.spentTodayCents}
           budgetCents={wisp.budgetCentsPerDay}
+          backgroundCents={wisp.backgroundCents}
+          chatCents={wisp.chatCents}
           resetsAt={wisp.budgetResetsAt}
           budgetMax={budgetMax}
           onRaise={wisp.pausedReason === 'partner_disabled' ? undefined : () => openSettings(true)}
         />
+      )}
+      {budgetReached && (
+        <p className="text-amber-600 dark:text-amber-400" data-testid="wisp-budget-warning">
+          {(() => {
+            const time = utcClockTime(wisp.budgetResetsAt);
+            return time === null ? t('wisp.paused.system.budgetExhaustedNoTime') : t('wisp.paused.system.budgetExhausted', { time });
+          })()}
+        </p>
       )}
 
       <WispGrantPauseControl wisp={wisp} onChange={updateWisp} />
@@ -381,6 +391,7 @@ export default function WispThreadHeader({
               className="w-24 rounded border bg-background px-2 py-1"
             />
           </label>
+          <p className="text-[11px] text-muted-foreground" data-testid="wisp-settings-budget-help">{t('wisp.settings.budgetHelp')}</p>
           <label className="flex items-center justify-between gap-2">
             {t('wisp.settings.tick')}
             <input
