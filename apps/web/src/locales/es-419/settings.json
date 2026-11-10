@@ -7774,7 +7774,8 @@
         "already_has_access": "Ya tienen acceso: {{count}}",
         "no_email": "Sin correo electrónico: {{count}}",
         "email_bound_to_other_contact": "Correo usado por otro contacto: {{count}}",
-        "duplicate_email_in_batch": "Correo duplicado en la selección: {{count}}"
+        "duplicate_email_in_batch": "Correo duplicado en la selección: {{count}}",
+        "emailNotSent": "Correos de invitación no enviados: {{count}}"
       },
       "errors": {
         "invite": "No se pudo dar acceso al portal.",

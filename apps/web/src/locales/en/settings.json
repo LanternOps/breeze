@@ -7865,7 +7865,8 @@
         "already_has_access": "Already has access: {{count}}",
         "no_email": "No email address: {{count}}",
         "email_bound_to_other_contact": "Email used by another contact: {{count}}",
-        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}"
+        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}",
+        "emailNotSent": "Invite emails not sent: {{count}}"
       },
       "errors": {
         "invite": "Could not give portal access.",

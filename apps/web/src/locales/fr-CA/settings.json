@@ -7774,7 +7774,8 @@
         "already_has_access": "Ont déjà accès : {{count}}",
         "no_email": "Sans adresse courriel : {{count}}",
         "email_bound_to_other_contact": "Courriel utilisé par un autre contact : {{count}}",
-        "duplicate_email_in_batch": "Courriel en double dans la sélection : {{count}}"
+        "duplicate_email_in_batch": "Courriel en double dans la sélection : {{count}}",
+        "emailNotSent": "Courriels d’invitation non envoyés : {{count}}"
       },
       "errors": {
         "invite": "Impossible de donner accès au portail.",

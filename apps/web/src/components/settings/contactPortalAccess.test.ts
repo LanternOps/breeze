@@ -222,4 +222,29 @@ describe('giveContactsPortalAccess', () => {
     await giveContactsPortalAccess(ORG, ['c1'], t);
     expect(showToastMock.mock.calls[0][0].type).toBe('warning');
   });
+
+  it('states how many invite emails were not sent', async () => {
+    fetchWithAuthMock.mockImplementation(() => json({ data: {
+      results: [
+        { contactId: 'c1', outcome: 'invited', emailSent: false },
+        { contactId: 'c2', outcome: 'invited', emailSent: true },
+        { contactId: 'c3', outcome: 'invited', emailSent: false },
+      ],
+      counts: { ...counts, invited: 3, no_email: 0 },
+    } }));
+    await giveContactsPortalAccess(ORG, ['c1', 'c2', 'c3'], t);
+    const toast = showToastMock.mock.calls[0][0];
+    expect(toast.type).toBe('warning');
+    expect(toast.message).toContain('contactsCard.portal.outcomes.emailNotSent');
+    expect(toast.message).toContain('{\\"count\\":2}');
+  });
+
+  it('omits the not-sent part when every invite email was sent', async () => {
+    fetchWithAuthMock.mockImplementation(() => json({ data: {
+      results: [{ contactId: 'c1', outcome: 'invited', emailSent: true }],
+      counts: { ...counts, no_email: 0 },
+    } }));
+    await giveContactsPortalAccess(ORG, ['c1'], t);
+    expect(showToastMock.mock.calls[0][0].message).not.toContain('emailNotSent');
+  });
 });
