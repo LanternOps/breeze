@@ -1,6 +1,14 @@
 #!/usr/bin/env node
-// CI shepherd CLI (W06, #10744 / #10750). Read-only in W06a: no subcommand
-// here calls a mutation.
+// CI shepherd CLI (W06, #10744 / #10750). classify, replay and
+// record-fixture only read. `tick` is the single writer, and writes only when
+// the repo variable CI_SHEPHERD_MODE is exactly `act` (unset or anything else
+// = shadow: it records what it would do in decisions.jsonl). `probe` refuses
+// outside act mode.
+//
+//   shepherd.mjs tick [--state-dir <dir>]
+//       One tick (tick.mjs). Default state dir: $HOME/.local/state/breeze-ci-shepherd.
+//   shepherd.mjs probe --pr <n>
+//       G-act: hold then resume a PR labelled ci-shepherd:probe, in act mode only.
 //
 //   shepherd.mjs classify --run <id> --pr <n> [--history <sightings.jsonl>]
 //       Prints the RunVerdict for one merge_group CI run as JSON.
@@ -16,6 +24,7 @@
 // or `gh auth token`.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,6 +32,9 @@ import { classifyRun } from './classify.mjs';
 import { History, ingestRun, readSightings } from './evidence.mjs';
 import { groupRunFor, prSnapshot, recentRemovals, requiredJobIds, runFacts } from './facts.mjs';
 import { createGitHub } from './github.mjs';
+import { probe } from './probe.mjs';
+import { tick } from './tick.mjs';
+import { ghCli } from './writer.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, '../..');
@@ -165,16 +177,19 @@ export function renderReplay({ rows, counts, complete = true }) {
   return `${lines.join('\n')}\n`;
 }
 
-const USAGE = 'usage: shepherd.mjs classify --run <id> --pr <n> | replay --since <YYYY-MM-DD> [--until <date>] [--json] | record-fixture --run <id> --pr <n> --name <slug>';
+const USAGE =
+  'usage: shepherd.mjs classify --run <id> --pr <n> | replay --since <YYYY-MM-DD> [--until <date>] [--json] | record-fixture --run <id> --pr <n> --name <slug> | tick [--state-dir <dir>] | probe --pr <n>';
+export const DEFAULT_STATE_DIR = join(homedir(), '.local/state/breeze-ci-shepherd');
 
-export async function main(argv, { makeGitHub = (budget) => createGitHub({ token: token(), budget }) } = {}) {
+export async function main(argv, { makeGitHub = (budget) => createGitHub({ token: token(), budget }), exec = ghCli, now = () => Date.now(), log } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
-    if (!['classify', 'replay', 'record-fixture'].includes(opts.command)) throw new UsageError(`unknown command ${opts.command ?? ''}`);
+    if (!['classify', 'replay', 'record-fixture', 'tick', 'probe'].includes(opts.command)) throw new UsageError(`unknown command ${opts.command ?? ''}`);
     const badDate = (d) => d !== undefined && (!/^\d{4}-\d{2}-\d{2}/.test(d) || Number.isNaN(Date.parse(d)));
     if (opts.command === 'replay' && (opts.since === undefined || badDate(opts.since) || badDate(opts.until))) throw new UsageError('replay needs --since YYYY-MM-DD (and --until, if given, a real date)');
-    if (opts.command !== 'replay' && (!opts.run || !opts.pr)) throw new UsageError(`${opts.command} needs --run and --pr`);
+    if (opts.command === 'probe' && !opts.pr) throw new UsageError('probe needs --pr');
+    if (['classify', 'record-fixture'].includes(opts.command) && (!opts.run || !opts.pr)) throw new UsageError(`${opts.command} needs --run and --pr`);
     if (opts.command === 'record-fixture' && !SLUG.test(opts.name ?? '')) throw new UsageError('record-fixture needs --name <slug> ([a-z0-9-])');
   } catch (e) {
     if (!(e instanceof UsageError)) throw e;
@@ -182,6 +197,15 @@ export async function main(argv, { makeGitHub = (budget) => createGitHub({ token
     return 2;
   }
   const gh = makeGitHub(opts.budget);
+  if (opts.command === 'tick') {
+    const summary = await tick({ gh, repo: opts.repo, stateDir: opts.stateDir ?? DEFAULT_STATE_DIR, now: now(), clock: now, exec, repoRoot: REPO_ROOT, ...(log ? { log } : {}) });
+    return summary.status === 'ok' || summary.status === 'locked' || summary.status === 'off' || summary.status === 'hourly_budget_spent' ? 0 : 1;
+  }
+  if (opts.command === 'probe') {
+    const res = await probe({ gh, repo: opts.repo, pr: opts.pr, exec, now: now(), clock: now });
+    (log ?? ((l) => process.stdout.write(`${l}\n`)))(`ci-shepherd probe ${JSON.stringify(res)}`);
+    return res.status === 'applied' ? 0 : res.status === 'refused' ? 2 : 1;
+  }
   if (opts.command === 'record-fixture') await recordFixture(gh, opts);
   else if (opts.command === 'classify') await classifyOne(gh, opts);
   else {

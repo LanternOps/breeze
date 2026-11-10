@@ -116,6 +116,9 @@ test('noop: a later manual removal, a moved head, a merged or closed PR, the ign
   assert.deepEqual(noop(snap({ events: base, isFork: true })).reasons, ['fork']);
   assert.deepEqual(noop(snap({ events: base }), removal('R1', r.at, { reason: 'manual' })).reasons, ['not_failed_checks']);
   assert.deepEqual(staleReasons(r, snap({ events: base }), {}), []);
+  // Six hours on, a removal is history: the runner was off or behind.
+  assert.deepEqual(decide({ removal: r, snapshot: snap({ events: base }), verdict: verdict('unknown'), now: Date.parse(r.at) + 6 * 3600_000 }).kind, 'requeue');
+  assert.deepEqual(decide({ removal: r, snapshot: snap({ events: base }), verdict: verdict('unknown'), now: Date.parse(r.at) + 6 * 3600_000 + 1 }).reasons, ['removal_too_old']);
 });
 
 test('unknown re-queues once, then holds', () => {

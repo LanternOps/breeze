@@ -93,7 +93,7 @@ export const latestMarker = (markers, action) => markers.find((m) => m.action ==
 const neutral = (s) => String(s).replace(/@/g, '').replace(/#(?=\d)/g, 'no. ').slice(0, 300);
 
 const LINES = {
-  record: (d) => `The merge queue removed this PR after a ${d.className} failure${d.sig}. GitHub is re-adding it through auto-merge; this removal counts ${d.count} against this head's retry budget.`,
+  record: (d) => `The merge queue removed this PR after a ${d.className} failure${d.sig}. It is back in the queue, or auto-merge is re-adding it; ${d.count} for this head.`,
   requeue: (d) => `The merge queue removed this PR after a ${d.className} failure${d.sig}. Re-queued (${d.count} of this head's retry budget).`,
   hold: (d) =>
     `The merge queue removed this PR and the shepherd is holding it (${d.holdReason}): ${d.className} failure${d.sig}, ${d.count}. Auto-merge is off. Push a fix, or add the label \`ci-shepherd:resume\` to re-queue as is.`,

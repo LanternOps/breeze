@@ -2,9 +2,9 @@
 // injected and nothing here reads or writes GitHub.
 //
 // Rules, first match wins:
-//   1. noop    — not a failed_checks removal; the PR is not open; the head
-//                moved since; a human removed it by hand afterwards; the
-//                `ci-shepherd:ignore` label; a fork.
+//   1. noop    — not a failed_checks removal; older than 6 h; the PR is not
+//                open; the head moved since; a human removed it by hand
+//                afterwards; the `ci-shepherd:ignore` label; a fork.
 //   2. backoff / wait_main — the removal matches an open breaker (breakers.mjs).
 //   3. hold    — class real or gate_fault; or retry_exhausted: this head's
 //                failed_checks removals (GitHub's own auto-merge re-adds
@@ -29,6 +29,10 @@ export const READD_GRACE_MS = 10 * 60_000;
 // A `manual` removal by the operator login within this long after the
 // shepherd recorded its own dequeue is that dequeue, not human intent.
 export const SELF_OP_WINDOW_MS = 5 * 60_000;
+// A removal older than this is history, not a queue event to act on (the
+// runner was off, or the cursor fell behind): re-queuing it could revive a PR
+// its author has since abandoned.
+export const MAX_REMOVAL_AGE_MS = 6 * 3600_000;
 
 export const LABELS = Object.freeze({
   hold: 'ci-shepherd:hold',
@@ -86,9 +90,10 @@ export function removalsOfHead(snapshot, removal) {
 }
 
 // Rule 1. Also used by apply.mjs to re-check a decision against fresh state.
-export function staleReasons(removal, snapshot, { selfOps = [] } = {}) {
+export function staleReasons(removal, snapshot, { selfOps = [], now = null } = {}) {
   const out = [];
   if (removal.reason !== 'failed_checks') out.push('not_failed_checks');
+  if (now !== null && now - ms(removal.at) > MAX_REMOVAL_AGE_MS) out.push('removal_too_old');
   if (snapshot.state !== 'OPEN') out.push(`pr_${String(snapshot.state).toLowerCase()}`);
   if (snapshot.headPushedAt && ms(snapshot.headPushedAt) > ms(removal.at)) out.push('head_moved');
   if (snapshot.events.some((e) => e.type === 'removed' && e.reason === 'manual' && ms(e.at) > ms(removal.at) && !isSelfRemoval(e, snapshot.pr, selfOps))) {
@@ -130,7 +135,7 @@ export function decide({ removal, snapshot, verdict, priorVerdicts = [], breaker
   const make = (kind, reasons, mutations = [], extra = {}) => ({ ...base, kind, reasons, mutations, ...extra });
   const notes = snapshot.headPushedAt ? [] : ['head_push_time_unknown'];
 
-  const stale = staleReasons(removal, snapshot, { selfOps });
+  const stale = staleReasons(removal, snapshot, { selfOps, now });
   if (stale.length) return make('noop', stale);
 
   // 2. Breakers.
@@ -204,5 +209,83 @@ export function restoreDecision(entry, snapshot, breaker, now) {
       { op: 'label_remove', args: { name: label } },
       { op: 'comment', args: {} },
     ],
+  };
+}
+
+// ── Sweep decisions (tick.mjs) ───────────────────────────────────────────
+
+const sweepBase = (snapshot, actionIdValue, now, extra = {}) => ({
+  actionId: actionIdValue,
+  pr: snapshot.pr,
+  head: snapshot.headSha,
+  class: null,
+  signature: null,
+  at: iso(now),
+  expect: { state: 'OPEN', head: snapshot.headSha },
+  ...extra,
+});
+
+const headRemovals = (snapshot, now) => removalsOfHead(snapshot, { id: '__now__', at: iso(now), reason: 'failed_checks' }).filter((e) => e.id !== '__now__').length;
+
+// A queue entry whose CI run completed with no `CI Success` job waits for the
+// queue timeout. Dequeue and enqueue it, under the infra budget: this head's
+// failed_checks removals plus earlier stuck re-queues plus this one.
+export function stuckDecision({ snapshot, run, priorStuck = 0, now }) {
+  const n = headRemovals(snapshot, now) + priorStuck + 1;
+  const limit = Math.min(LIMITS.infra, MAX_REMOVALS);
+  const base = sweepBase(snapshot, actionId({ pr: snapshot.pr, headSha: snapshot.headSha, runId: run.id, runAttempt: run.attempt }), now, {
+    run: run.id,
+    attempt: run.attempt,
+    class: 'infra',
+    signature: 'ci_success_missing',
+    n,
+    limit,
+  });
+  if (snapshot.state !== 'OPEN' || snapshot.isFork || snapshot.labels.includes(LABELS.ignore)) {
+    const why = snapshot.isFork ? 'fork' : snapshot.state !== 'OPEN' ? `pr_${String(snapshot.state).toLowerCase()}` : 'ignore_label';
+    return { ...base, kind: 'noop', reasons: [why], mutations: [] };
+  }
+  if (n > limit) {
+    return { ...base, kind: 'hold', holdReason: 'retry_exhausted', reasons: [`stuck entry: ${n} of this head; infra allows ${limit}`], mutations: parkOps(snapshot, LABELS.hold) };
+  }
+  return {
+    ...base,
+    kind: 'requeue_stuck',
+    reasons: [`run ${run.id} completed without CI Success`, `${n} of ${limit} allowed for infra`],
+    expect: { ...base.expect, queued: true },
+    mutations: [
+      { op: 'dequeue', args: {} },
+      { op: 'enqueue', args: {} },
+      { op: 'comment', args: {} },
+    ],
+  };
+}
+
+// The `ci-shepherd:resume` label releases a hold. The budget is unchanged, so
+// the next failed_checks removal of this head is held again.
+export function resumeDecision(snapshot, now) {
+  const n = headRemovals(snapshot, now);
+  return {
+    ...sweepBase(snapshot, `${snapshot.pr}:${snapshot.headSha.slice(0, 12)}:resume:n${n}`, now),
+    kind: 'resume',
+    reasons: ['ci-shepherd:resume label'],
+    mutations: [
+      ...PARK_LABELS.filter((l) => snapshot.labels.includes(l)).map((name) => ({ op: 'label_remove', args: { name } })),
+      { op: 'label_remove', args: { name: LABELS.resume } },
+      { op: 'enable_auto_merge', args: {} },
+      { op: 'comment', args: {} },
+    ],
+  };
+}
+
+// A parked PR got a new head: its shepherd labels go; the new head starts a
+// new budget and auto-merge is the author's call.
+export function newHeadDecision(parked, snapshot, now) {
+  const labels = new Set([parked.label, ...PARK_LABELS.filter((l) => snapshot.labels.includes(l))].filter(Boolean));
+  return {
+    ...sweepBase(snapshot, `${snapshot.pr}:${snapshot.headSha.slice(0, 12)}:resume_new_head`, now),
+    kind: 'resume_new_head',
+    reasons: [`head moved from ${String(parked.head).slice(0, 12)}`],
+    mutations: [...[...labels].map((name) => ({ op: 'label_remove', args: { name } })), { op: 'comment', args: {} }],
   };
 }
