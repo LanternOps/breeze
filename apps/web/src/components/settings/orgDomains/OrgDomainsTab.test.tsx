@@ -89,6 +89,20 @@ describe('OrgDomainsTab', () => {
     expect(await screen.findByTestId('org-domains-row-d1')).toBeInTheDocument();
   });
 
+  it('renders the verification panel outside the horizontally scrolling table, titled with the domain (#11597)', async () => {
+    baseRoutes([domainView()]);
+    render(<OrgDomainsTab orgId={ORG} />);
+    const verify = await screen.findByTestId('org-domains-verify-d1');
+    fireEvent.click(verify);
+    const panelWrap = await screen.findByTestId('org-domains-panel-row-d1');
+    // A phone-width table scrolls sideways; a panel inside it is cut off at the left edge.
+    expect(panelWrap.closest('table')).toBeNull();
+    expect(panelWrap.closest('.overflow-x-auto')).toBeNull();
+    expect(panelWrap.contains(screen.getByTestId('domain-verification-panel'))).toBe(true);
+    expect(panelWrap.getAttribute('id')).toBe(verify.getAttribute('aria-controls'));
+    expect(panelWrap.textContent).toContain('contoso.com');
+  });
+
   it('Microsoft is disabled with a link to #portal when the org has no proven tenant', async () => {
     baseRoutes([domainView()]);
     render(<OrgDomainsTab orgId={ORG} />);

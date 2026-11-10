@@ -7166,6 +7166,7 @@
     },
     "verify": {
       "methodLegend": "Método de verificación",
+      "panelTitle": "Verificar {{domain}}",
       "methodLocked": "Para cambiar de método, quite primero la verificación actual.",
       "openPortalTab": "Compruebe el inquilino en Portal del cliente › Inicio de sesión y registro.",
       "dnsStartHint": "Obtenga un registro TXT para que el administrador de DNS del cliente lo publique.",

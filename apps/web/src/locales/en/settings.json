@@ -7214,6 +7214,7 @@
     },
     "verify": {
       "methodLegend": "Verification method",
+      "panelTitle": "Verify {{domain}}",
       "methodLocked": "To switch methods, remove the current verification first.",
       "openPortalTab": "Prove the tenant under Portal › Sign-in & registration.",
       "dnsStartHint": "Get a TXT record for the customer's DNS admin to publish.",
