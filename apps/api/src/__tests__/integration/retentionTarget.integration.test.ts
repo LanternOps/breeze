@@ -189,6 +189,27 @@ describe('runRetentionTarget (real Postgres, breeze_app pool)', () => {
     expect(await survivingOutboxIds(old)).toHaveLength(2);
   });
 
+  // Review Focus 5, discriminating: under a non-UTC session TimeZone the naive
+  // comparison of a tz-less UTC value against `::timestamptz` flips, and
+  // utcWallTime does not. The naive control proves the session TZ took effect.
+  it('utcWallTime keeps a tz-less comparison correct under a non-UTC session TimeZone', async () => {
+    const cutoffIso = '2026-06-01T12:00:00.000Z';
+    const out = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL TIME ZONE 'America/New_York'`);
+      const [row] = await tx.execute<{ before_wall: boolean; after_wall: boolean; before_naive: boolean }>(sql`
+        SELECT
+          (TIMESTAMP '2026-06-01 11:00:00' < ${utcWallTime(cutoffIso)}) AS before_wall,
+          (TIMESTAMP '2026-06-01 13:00:00' < ${utcWallTime(cutoffIso)}) AS after_wall,
+          (TIMESTAMP '2026-06-01 11:00:00' < ${cutoffIso}::timestamptz) AS before_naive
+      `);
+      return row!;
+    });
+    expect(out.before_wall).toBe(true);
+    expect(out.after_wall).toBe(false);
+    // Read as New York local time, 11:00 is 15:00 UTC: after the cutoff.
+    expect(out.before_naive).toBe(false);
+  });
+
   it('compares a timestamp-without-time-zone column against the UTC wall-time cutoff', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

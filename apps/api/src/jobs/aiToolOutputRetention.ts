@@ -134,9 +134,10 @@ export interface OrgScrubResult {
 const inFreshSystemContext = <T>(label: string, fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 
-// `created_at` on both tool tables is `timestamp WITHOUT time zone` holding
-// UTC wall time, so every cutoff below goes through `utcWallTime`
-// (`retentionBatch.ts`) and does not depend on the connection's `TimeZone`.
+// `created_at` on both tool tables (`ai_messages`, `ai_tool_executions`) is
+// `timestamp WITHOUT time zone` holding UTC wall time, so their cutoffs go
+// through `utcWallTime` (`retentionBatch.ts`) and do not depend on the
+// connection's `TimeZone`.
 
 type ToolTable = 'ai_messages' | 'ai_tool_executions';
 

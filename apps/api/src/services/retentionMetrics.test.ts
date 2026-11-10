@@ -146,13 +146,34 @@ describe('retention/rollup job metrics', () => {
     expect(valueFor(lastRun, { job_name: 'webhook_delivery_retention' })).toBeGreaterThan(0);
   });
 
-  it('sets (does not accumulate) rows-eligible, and leaves it untouched by a run without it', async () => {
+  it('sets (does not accumulate) rows-eligible', async () => {
     recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
     recordRetentionRun('webhook_delivery_retention', { rowsEligible: 5 });
-    recordRetentionRun('webhook_delivery_retention', { rowsDeleted: 3, incomplete: false });
 
     const eligible = await samplesFor(registry, 'breeze_retention_rows_eligible');
     expect(valueFor(eligible, { job_name: 'webhook_delivery_retention' })).toBe(5);
+  });
+
+  // A job flipped between report and enforce must not leave the OTHER mode's
+  // gauge frozen: a stale backlog=1 keeps an alert firing on a report-only job,
+  // and a stale eligible count reads as current on an enforcing one.
+  it('clears the other mode\'s gauge when a job flips between report and enforce', async () => {
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
+    recordRetentionRun('webhook_delivery_retention', { rowsDeleted: 500, incomplete: true });
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'webhook_delivery_retention' })).toBeUndefined();
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_backlog_incomplete'), { job_name: 'webhook_delivery_retention' })).toBe(1);
+
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 7 });
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_backlog_incomplete'), { job_name: 'webhook_delivery_retention' })).toBeUndefined();
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'webhook_delivery_retention' })).toBe(7);
+  });
+
+  // A failed target reports { incomplete: true } with no rowsDeleted: that is
+  // not an enforce run, so it must not erase the last report evidence.
+  it('keeps the eligible gauge when an outcome carries neither count', async () => {
+    recordRetentionRun('webhook_delivery_retention', { rowsEligible: 12 });
+    recordRetentionRun('webhook_delivery_retention', { incomplete: true });
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'webhook_delivery_retention' })).toBe(12);
   });
 
   it('publishes no rows-eligible series until a report run supplies one', async () => {

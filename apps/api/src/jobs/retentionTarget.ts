@@ -19,8 +19,8 @@
  * -------------
  * So a target has exactly one predicate builder, `where(cutoffIso, nowIso)`,
  * and both modes call it here, once per run, with the same arguments, and pass
- * the result on unchanged. No job builds its own count query or its own delete
- * predicate. `retentionTarget.test.ts` pins the rendered SQL of the count's
+ * the result on unchanged. A job using this runner never builds its own count
+ * query or its own delete predicate. `retentionTarget.test.ts` pins the rendered SQL of the count's
  * `where` to the rendered SQL of the delete's, byte for byte.
  *
  * NO AMBIENT CONTEXT
@@ -89,8 +89,12 @@ export async function runRetentionTarget(
   // Callers resolve the window through `resolveRetentionDays`, so this never
   // fires in practice. It stops a hand-built knob of 0 or NaN from reaching
   // `toISOString()` (RangeError) or a cutoff of "now" (every row eligible).
-  if (!Number.isInteger(retentionDays) || retentionDays < 1) {
-    throw new Error(`[retentionTarget] Refusing ${target.table}: retentionDays must be a positive integer, got ${retentionDays}`);
+  // Both modes check every knob, so report evidence is never produced from
+  // knobs an enforcing run would reject.
+  for (const [name, value] of [['retentionDays', retentionDays], ['batchSize', batchSize], ['maxBatches', maxBatches]] as const) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`[retentionTarget] Refusing ${target.table}: ${name} must be a positive integer, got ${value}`);
+    }
   }
 
   const startedAt = Date.now();
@@ -142,8 +146,13 @@ export async function runRetentionTarget(
 
 /**
  * Run targets one after another with a shared run instant. A target that throws
- * is logged and captured, and the rest still run: one table's failure must not
- * leave every later table unswept. Returns per-target results in input order.
+ * is logged, captured, and recorded as `incomplete` on its own metric, and the
+ * rest still run: one table's failure must not leave every later table
+ * unswept. Returns per-target results in input order.
+ *
+ * Throws before running anything if two targets share a `metricName`: the
+ * gauges are `.set()` per name, so the second would overwrite the first one's
+ * report evidence (plan correction 19).
  *
  * The caller decides whether a returned `{ table, error }` fails its job.
  */
@@ -151,6 +160,14 @@ export async function runRetentionTargets(
   targets: ReadonlyArray<{ target: RetentionTarget; knobs: RetentionKnobs }>,
   o: RetentionRunOptions,
 ): Promise<Array<RetentionTargetResult | { table: string; error: string }>> {
+  const seen = new Set<RetentionJobName>();
+  for (const { target } of targets) {
+    if (seen.has(target.metricName)) {
+      throw new Error(`[retentionTarget] Two targets share metricName ${target.metricName}; each target needs its own`);
+    }
+    seen.add(target.metricName);
+  }
+
   const now = o.now ?? new Date();
   const results: Array<RetentionTargetResult | { table: string; error: string }> = [];
   for (const { target, knobs } of targets) {
@@ -161,6 +178,9 @@ export async function runRetentionTargets(
       console.error(`${o.logPrefix} Retention target ${target.table} failed:`, err);
       // Only the bounded literal table name is tagged (allowlisted in sentry.ts).
       captureException(err, undefined, { retentionTarget: target.table });
+      // Otherwise the backlog gauge keeps its last value (often 0, "cleared")
+      // and an install without Sentry has nothing but a log line.
+      recordRetentionRun(target.metricName, { incomplete: true });
       results.push({ table: target.table, error: message });
     }
   }

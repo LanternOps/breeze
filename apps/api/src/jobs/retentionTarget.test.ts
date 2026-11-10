@@ -206,11 +206,30 @@ describe('runRetentionTarget', () => {
     expect(m.recordRetentionRun).not.toHaveBeenCalled();
   });
 
-  it('refuses an unusable window instead of computing an invalid cutoff', async () => {
-    for (const retentionDays of [0, -1, Number.NaN, 1.5]) {
-      await expect(runRetentionTarget(target(), knobs({ retentionDays }), opts)).rejects.toThrow(/retentionDays/);
+  it('refuses an unusable window instead of computing an invalid cutoff, in either mode', async () => {
+    for (const enforce of [false, true]) {
+      for (const retentionDays of [0, -1, Number.NaN, 1.5]) {
+        await expect(runRetentionTarget(target(), knobs({ retentionDays, enforce }), opts)).rejects.toThrow(/retentionDays/);
+      }
     }
+    // A window of 0 under enforce would make every row eligible.
     expect(m.countEligibleRows).not.toHaveBeenCalled();
+    expect(m.pruneInCtidBatches).not.toHaveBeenCalled();
+    expect(m.updateInCtidBatches).not.toHaveBeenCalled();
+  });
+
+  // Report evidence must not be produced from knobs that enforce would reject.
+  it('rejects non-integer batch knobs in report mode too', async () => {
+    await expect(runRetentionTarget(target(), knobs({ batchSize: 2.5 }), opts)).rejects.toThrow(/batchSize/);
+    await expect(runRetentionTarget(target(), knobs({ maxBatches: 0 }), opts)).rejects.toThrow(/maxBatches/);
+    expect(m.countEligibleRows).not.toHaveBeenCalled();
+  });
+
+  it('a scrub renders the identical predicate in report and enforce', async () => {
+    const scrub = target({ table: 'script_executions', action: { kind: 'scrub', set: sql`stdout = NULL` } });
+    await runRetentionTarget(scrub, knobs({ enforce: false }), opts);
+    await runRetentionTarget(scrub, knobs({ enforce: true }), opts);
+    expect(render(m.countEligibleRows.mock.calls[0]?.[0].where)).toEqual(render(m.updateInCtidBatches.mock.calls[0]?.[0].where));
   });
 });
 
@@ -229,8 +248,8 @@ describe('runRetentionTargets', () => {
 
     const results = await runRetentionTargets(
       [
-        { target: target({ table: 't1' }), knobs: knobs() },
-        { target: target({ table: 't2' }), knobs: knobs() },
+        { target: target({ table: 't1', metricName: 'audit_retention' }), knobs: knobs() },
+        { target: target({ table: 't2', metricName: 'snmp_retention' }), knobs: knobs() },
       ],
       opts,
     );
@@ -244,6 +263,37 @@ describe('runRetentionTargets', () => {
     expect(m.captureException.mock.calls[0]?.[2]).toEqual({ retentionTarget: 't1' });
   });
 
+  // Without a metric, a failed target's backlog gauge keeps its last value
+  // (often 0, "fully cleared") and only Sentry — absent on many self-hosted
+  // installs — knows anything went wrong.
+  it('marks a failed target incomplete on its own metric', async () => {
+    m.countEligibleRows.mockRejectedValueOnce(new Error('boom'));
+
+    await runRetentionTargets(
+      [
+        { target: target({ table: 't1', metricName: 'audit_retention' }), knobs: knobs() },
+        { target: target({ table: 't2', metricName: 'snmp_retention' }), knobs: knobs() },
+      ],
+      opts,
+    );
+
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('audit_retention', { incomplete: true });
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('snmp_retention', { rowsEligible: 3 });
+  });
+
+  // Plan correction 19: the gauges are .set() per job_name, so two targets on
+  // one name would overwrite each other's Gate G1 evidence.
+  it('refuses two targets sharing a metric name before running any', async () => {
+    await expect(runRetentionTargets(
+      [
+        { target: target({ table: 'a', metricName: 'audit_retention' }), knobs: knobs() },
+        { target: target({ table: 'b', metricName: 'audit_retention' }), knobs: knobs() },
+      ],
+      opts,
+    )).rejects.toThrow(/audit_retention/);
+    expect(m.countEligibleRows).not.toHaveBeenCalled();
+  });
+
   it('runs targets sequentially, never overlapping', async () => {
     let inFlight = 0;
     let maxInFlight = 0;
@@ -255,8 +305,9 @@ describe('runRetentionTargets', () => {
       return { eligible: 1, capped: false };
     });
 
+    const names = ['audit_retention', 'snmp_retention', 'flow_run_retention'] as const;
     await runRetentionTargets(
-      ['a', 'b', 'c'].map((t) => ({ target: target({ table: t }), knobs: knobs() })),
+      names.map((metricName, i) => ({ target: target({ table: `t${i}`, metricName }), knobs: knobs() })),
       opts,
     );
 
@@ -272,8 +323,8 @@ describe('runRetentionTargets', () => {
 
     await runRetentionTargets(
       [
-        { target: target({ table: 'a', where: spy }), knobs: knobs() },
-        { target: target({ table: 'b', where: spy }), knobs: knobs() },
+        { target: target({ table: 'a', where: spy, metricName: 'audit_retention' }), knobs: knobs() },
+        { target: target({ table: 'b', where: spy, metricName: 'snmp_retention' }), knobs: knobs() },
       ],
       { logPrefix: '[T]', label: 't' },
     );

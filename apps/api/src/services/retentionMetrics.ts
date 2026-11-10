@@ -294,6 +294,12 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
       }
       if (outcome.rowsEligible !== undefined) {
         rowsEligible.labels(jobName).set(safeCount(outcome.rowsEligible));
+        // A report run deleted nothing, so a backlog flag left by an earlier
+        // enforce run (before the flag was turned off) is stale; clear it.
+        backlogIncomplete.remove(jobName);
+      } else if (outcome.rowsDeleted !== undefined) {
+        // An enforcing run: the last report count no longer describes anything.
+        rowsEligible.remove(jobName);
       }
     },
     onRollupRun: (status, durationSeconds) => {

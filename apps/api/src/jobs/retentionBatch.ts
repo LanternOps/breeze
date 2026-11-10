@@ -45,7 +45,7 @@
  * (`SELECT count(*) FROM (SELECT 1 … LIMIT cap + 1)`), so a multi-year backlog
  * never turns a nightly report into a full-table count; the caller passes the
  * same `batchSize * maxBatches` an enforce run could remove, so "capped" means
- * exactly "one enforce run would not drain this". `retentionEnforceFromEnv`
+ * "one enforce run would not drain this". `retentionEnforceFromEnv`
  * reads the flag, and only an explicit `true`/`1` enforces.
  */
 
@@ -137,11 +137,13 @@ export function resolveRetentionDays(
  * `(${iso}::timestamptz AT TIME ZONE 'UTC')` — the cutoff as UTC wall time,
  * for comparing against a `timestamp WITHOUT time zone` column that holds UTC.
  *
- * A bare `${iso}::timestamp` cast discards the offset, and a comparison of a
- * tz-less column against a `timestamptz` converts the COLUMN using the
- * connection's `TimeZone`; either way a non-UTC session shifts the cutoff by
- * hours. (Rows written by `defaultNow()` are stored in the session `TimeZone`,
- * which is UTC on every Breeze deployment — the same assumption as
+ * Comparing a tz-less column directly against `${iso}::timestamptz` converts
+ * the COLUMN using the connection's `TimeZone`, so a non-UTC session shifts the
+ * cutoff by hours. A bare `${iso}::timestamp` cast is correct only while every
+ * caller passes a `Z`-suffixed string (it drops any offset rather than
+ * honouring it); this helper honours the offset and needs no such convention.
+ * (Rows written by `defaultNow()` are stored in the session `TimeZone`, which
+ * is UTC on every Breeze deployment — the same assumption as
  * `jobs/scheduleRegistry.ts`.)
  */
 export function utcWallTime(iso: string): SQL {
@@ -213,7 +215,7 @@ export async function pruneInCtidBatches(options: {
   const { table, where, batchSize, label } = options;
   assertBatchArgs('prune', options);
   const target = sql.raw(table);
-  return runCtidBatches(options.maxBatches, batchSize, () =>
+  return runCtidBatches(`prune ${table}`, options.maxBatches, batchSize, () =>
     inFreshSystemContext(label, () => db.execute(sql`
       DELETE FROM ${target}
       WHERE ctid IN (
@@ -249,7 +251,7 @@ export async function updateInCtidBatches(options: {
   const { table, set, where, batchSize, label } = options;
   assertBatchArgs('update', options);
   const target = sql.raw(table);
-  return runCtidBatches(options.maxBatches, batchSize, () =>
+  return runCtidBatches(`update ${table}`, options.maxBatches, batchSize, () =>
     inFreshSystemContext(label, () => db.execute(sql`
       UPDATE ${target}
       SET ${set}
@@ -329,8 +331,13 @@ function assertBatchArgs(
  * `maxBatches`. A rejected batch propagates immediately — it is never retried
  * here, so a persistent failure cannot spin the loop; the next scheduled run is
  * the retry.
+ *
+ * Earlier batches have already committed by then, and the thrown error carries
+ * no count, so the loop logs what it had already affected before rethrowing:
+ * a mid-sweep failure must not delete rows with no record of how many.
  */
 async function runCtidBatches(
+  what: string,
   maxBatches: number,
   batchSize: number,
   runBatch: () => Promise<unknown>,
@@ -341,7 +348,16 @@ async function runCtidBatches(
 
   while (batches < maxBatches) {
     // One transaction per batch — see the LOCK DURATION note in the header.
-    const result = await runBatch();
+    let result: unknown;
+    try {
+      result = await runBatch();
+    } catch (err) {
+      console.error(
+        `[retentionBatch] ${what}: batch ${batches + 1} failed after ${batches} committed batch(es) ` +
+        `affecting ${deleted} rows; stopping, the remainder is left for the next run`,
+      );
+      throw err;
+    }
     // extractRowCount throws on a null/undefined driver result rather than
     // reading it as "0 rows", which would end the loop early and silently leave
     // old rows behind. (An object carrying neither `count` nor `rowCount` still

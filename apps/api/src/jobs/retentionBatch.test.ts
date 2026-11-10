@@ -647,4 +647,24 @@ describe('pruneInCtidBatches failure', () => {
     await expect(basePrune()).rejects.toThrow('statement timeout');
     expect(dbExecuteMock).toHaveBeenCalledTimes(1);
   });
+
+  // Earlier batches have already committed when a later one fails. The error
+  // carries no count, so the loop must say what it already removed — otherwise
+  // a mid-sweep failure deletes tenant rows with no record of how many.
+  it('stops on a later failing batch and logs what earlier batches already committed', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockRejectedValueOnce(new Error('lock timeout'));
+
+    await expect(basePrune({ batchSize: 100 })).rejects.toThrow('lock timeout');
+
+    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledTimes(1);
+    const message = String(error.mock.calls[0]?.[0]);
+    expect(message).toContain('agent_logs');
+    expect(message).toContain('100 rows');
+    expect(message).toContain('batch 2');
+    error.mockRestore();
+  });
 });
