@@ -39,6 +39,7 @@ beforeEach(() => {
     id: 'conn-1',
     orgId: 'org-1',
     adminEmail: 'admin@acme.com',
+    serviceAccountEmail: 'sa@project.iam.gserviceaccount.com',
     customerDomain: 'something.test',
   });
   decryptConnectionKey.mockReturnValue('{"k":1}');
@@ -53,7 +54,7 @@ describe('googleDirectoryChecker', () => {
     ]);
     expect(await googleDirectoryChecker.check(target)).toEqual({
       status: 'pass',
-      evidence: { via: 'google_directory', connectionId: 'conn-1' },
+      evidence: { via: 'google_directory', connectionId: 'conn-1', binding: expect.stringMatching(/^[0-9a-f]{64}$/) },
     });
     expect(getDirectoryDomainsClient).toHaveBeenCalledWith('{"k":1}', 'admin@acme.com');
     expect(domainsList.mock.calls[0]![0]).toEqual({ customer: 'my_customer' });
@@ -104,6 +105,7 @@ describe('googleDirectoryChecker', () => {
       id: 'conn-1',
       orgId: 'org-1',
       adminEmail: 'admin@acme.com',
+      serviceAccountEmail: 'sa@project.iam.gserviceaccount.com',
       customerDomain: 'acme.com',
     });
     listing([{ domainName: 'unrelated.com', verified: true }]);

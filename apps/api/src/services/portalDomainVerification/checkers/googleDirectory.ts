@@ -5,6 +5,7 @@
  * domain-alias list counts; the connection's `customer_domain` is never read
  * (it is operator-typed, not proof). Never throws; never logs key or token.
  */
+import { createHash } from 'node:crypto';
 import { hasDbAccessContext, withSystemDbAccessContext } from '../../../db';
 import { getDirectoryDomainsClient } from '../../googleClient';
 import { decryptConnectionKey, loadGoogleConnection } from '../../googleHelpers';
@@ -16,6 +17,18 @@ import type {
 } from '../types';
 
 const GOOGLE_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Binds google_directory evidence to the Workspace the connection reaches, not
+ * only its row id: the connection upsert (routes/google.ts) replaces the admin
+ * and service account in place, keeping the id. A hash, so evidence carries no
+ * address. Evidence-at-use (D6) and the worker compare it with the live row.
+ */
+export function googleConnectionBinding(conn: { adminEmail: string; serviceAccountEmail: string }): string {
+  return createHash('sha256')
+    .update(`${conn.adminEmail.trim().toLowerCase()}\n${conn.serviceAccountEmail.trim().toLowerCase()}`)
+    .digest('hex');
+}
 
 interface ErrorShape {
   code?: number | string;
@@ -67,11 +80,11 @@ export const googleDirectoryChecker: DomainVerificationChecker = {
       const wanted = target.domain.toLowerCase();
       for (const d of res.data?.domains ?? []) {
         if (d.verified === true && d.domainName?.toLowerCase() === wanted) {
-          return { status: 'pass', evidence: { via: 'google_directory', connectionId: conn.id } };
+          return { status: 'pass', evidence: { via: 'google_directory', connectionId: conn.id, binding: googleConnectionBinding(conn) } };
         }
         for (const alias of d.domainAliases ?? []) {
           if (alias.verified === true && alias.domainAliasName?.toLowerCase() === wanted) {
-            return { status: 'pass', evidence: { via: 'google_directory', connectionId: conn.id } };
+            return { status: 'pass', evidence: { via: 'google_directory', connectionId: conn.id, binding: googleConnectionBinding(conn) } };
           }
         }
       }

@@ -32,7 +32,7 @@ export { DOMAIN_VERIFICATION_METHODS } from '@breeze/shared/types/customerDomain
 export type DomainVerificationEvidence =
   | { via: 'dns_txt'; recordName: string }
   | { via: 'entra_tenant'; tenantId: string; connectionId: string }
-  | { via: 'google_directory'; connectionId: string };
+  | { via: 'google_directory'; connectionId: string; /** googleConnectionBinding(): admin + service account hash. */ binding: string };
 
 export type DomainCheckResult =
   | { status: 'pass'; evidence: DomainVerificationEvidence }

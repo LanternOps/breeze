@@ -23,7 +23,7 @@ import { listActivePartnerAdmins } from '../partnerAdminRecipients';
 import { captureException } from '../sentry';
 import { dnsTxtChecker, portalDomainTxtRecord } from './checkers/dnsTxt';
 import { entraTenantChecker } from './checkers/entraTenant';
-import { googleDirectoryChecker } from './checkers/googleDirectory';
+import { googleConnectionBinding, googleDirectoryChecker } from './checkers/googleDirectory';
 import {
   STRUCTURAL_FAIL_REASONS,
   type CustomerDomainView,
@@ -155,7 +155,8 @@ export const customerDomainRowColumns = rowColumns;
 /** Per-org evidence sources the method checks at use read (D6). */
 export interface DomainEvidenceFacts {
   provenTenantId: string | null;
-  googleConnectionId: string | null;
+  /** The org's Google connection: id + googleConnectionBinding (admin + service account). */
+  googleConnection: { id: string; binding: string } | null;
 }
 
 /**
@@ -165,7 +166,7 @@ export interface DomainEvidenceFacts {
 async function loadEvidenceFactsInContext(orgIds: readonly string[]): Promise<Map<string, DomainEvidenceFacts>> {
   const unique = [...new Set(orgIds)];
   const facts = new Map<string, DomainEvidenceFacts>(
-    unique.map((id) => [id, { provenTenantId: null, googleConnectionId: null }]),
+    unique.map((id) => [id, { provenTenantId: null, googleConnection: null }]),
   );
   if (unique.length === 0) return facts;
   const proven = await db
@@ -174,10 +175,15 @@ async function loadEvidenceFactsInContext(orgIds: readonly string[]): Promise<Ma
     .where(and(inArray(clientAiTenantMappings.orgId, unique), isNotNull(clientAiTenantMappings.provenAt)));
   for (const row of proven) facts.get(row.orgId)!.provenTenantId = row.tenantId.toLowerCase();
   const google = await db
-    .select({ orgId: googleWorkspaceConnections.orgId, id: googleWorkspaceConnections.id })
+    .select({
+      orgId: googleWorkspaceConnections.orgId,
+      id: googleWorkspaceConnections.id,
+      adminEmail: googleWorkspaceConnections.adminEmail,
+      serviceAccountEmail: googleWorkspaceConnections.serviceAccountEmail,
+    })
     .from(googleWorkspaceConnections)
     .where(inArray(googleWorkspaceConnections.orgId, unique));
-  for (const row of google) facts.get(row.orgId)!.googleConnectionId = row.id;
+  for (const row of google) facts.get(row.orgId)!.googleConnection = { id: row.id, binding: googleConnectionBinding(row) };
   return facts;
 }
 
@@ -196,15 +202,53 @@ function evidenceStructurallyCurrent(
     case 'entra_tenant':
       return !!facts?.provenTenantId && facts.provenTenantId === evidence.tenantId.toLowerCase();
     case 'google_directory':
-      return !!facts?.googleConnectionId && facts.googleConnectionId === evidence.connectionId;
+      // Same row AND same Workspace: the connection upsert replaces the admin
+      // and service account in place, keeping the id.
+      return !!facts?.googleConnection
+        && facts.googleConnection.id === evidence.connectionId
+        && facts.googleConnection.binding === evidence.binding;
     default:
       return false;
   }
 }
 
-/** Verified, active (OD5) and the method's evidence is still current (D6). */
-export function isVerificationCurrent(row: CustomerDomainRow, facts: DomainEvidenceFacts | undefined): boolean {
-  return row.verifiedAt !== null && row.isActive && evidenceStructurallyCurrent(row.verifiedEvidence, facts);
+/**
+ * Verified, active (OD5), the method's evidence is still current (D6) and it
+ * passed a live check within the last PORTAL_DOMAIN_STALE_DAYS days, so a
+ * stopped worker or an un-checkable source can never keep a domain trusted.
+ */
+export function isVerificationCurrent(
+  row: CustomerDomainRow,
+  facts: DomainEvidenceFacts | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (row.verifiedAt === null || !row.isActive) return false;
+  const lastPassed = row.lastPassedAt ?? row.verifiedAt;
+  if (now.getTime() - lastPassed.getTime() >= PORTAL_DOMAIN_STALE_DAYS * DAY_MS) return false;
+  return evidenceStructurallyCurrent(row.verifiedEvidence, facts);
+}
+
+/**
+ * The same verification as when it was checked: a write fences on this after
+ * re-reading the row FOR UPDATE, so a check result is never applied to a row
+ * that was re-verified, refreshed with new evidence, repointed or renamed
+ * while the (unlocked) network check ran.
+ */
+function sameVerification(a: CustomerDomainRow, b: CustomerDomainRow): boolean {
+  return a.id === b.id
+    && a.orgId === b.orgId
+    && a.partnerId === b.partnerId
+    && normalizeDomain(a.domain) === normalizeDomain(b.domain)
+    && a.verifiedMethod === b.verifiedMethod
+    && (a.verifiedAt?.getTime() ?? null) === (b.verifiedAt?.getTime() ?? null)
+    && stableJson(a.verifiedEvidence) === stableJson(b.verifiedEvidence);
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableJson(obj[k])}`).join(',')}}`;
 }
 
 export function toCustomerDomainView(row: CustomerDomainRow, facts: DomainEvidenceFacts | undefined): CustomerDomainView {
@@ -561,6 +605,8 @@ async function refreshVerifiedRow(
   }
   const updated = await systemRead('verify.refresh', async () => {
     await lockDomain(row.domain);
+    const current = await selectRowById(row.id, true);
+    if (!current || !sameVerification(current, row)) return undefined;
     const [r] = await db
       .update(customerEmailDomains)
       .set({
@@ -637,6 +683,7 @@ async function commitVerification(
     || !current.isActive
     || current.verifiedAt !== null
     || current.verificationToken !== row.verificationToken
+    || normalizeDomain(current.domain) !== normalizeDomain(row.domain)
   ) {
     throw conflictRetry();
   }
@@ -644,11 +691,7 @@ async function commitVerification(
   const incumbentNow = await selectVerifiedIncumbent(row.domain, row.id, true);
   if (!incumbentAtCheck && incumbentNow) throw conflictRetry();
   if (incumbentAtCheck) {
-    if (
-      !incumbentNow
-      || incumbentNow.id !== incumbentAtCheck.id
-      || incumbentNow.verifiedAt?.getTime() !== incumbentAtCheck.verifiedAt?.getTime()
-    ) {
+    if (!incumbentNow || !sameVerification(incumbentNow, incumbentAtCheck)) {
       throw conflictRetry();
     }
     if (incumbentResult?.status !== 'fail') throw verifiedElsewhere();
@@ -724,12 +767,7 @@ export async function recheckCustomerDomain(
   const outcome = await systemRead('recheck.write', async (): Promise<{ out: RecheckOutcome; notice: LossNotice | null }> => {
     await lockDomain(row.domain);
     const current = await selectRowById(row.id, true);
-    if (
-      !current?.verifiedAt
-      || current.verifiedAt.getTime() !== row.verifiedAt!.getTime()
-      || current.orgId !== row.orgId
-      || current.verifiedMethod !== row.verifiedMethod
-    ) {
+    if (!current?.verifiedAt || !sameVerification(current, row)) {
       return { out: { status: 'skipped', cleared: null }, notice: null };
     }
 
@@ -783,15 +821,25 @@ export async function recheckCustomerDomain(
   return outcome.out;
 }
 
-/** Worker selection: verified rows last checked before `olderThan`, oldest first. */
-export async function listCustomerDomainsDueForRecheck(olderThan: Date, limit: number): Promise<string[]> {
+/**
+ * Worker selection: verified rows last checked before `olderThan`, plus rows
+ * with no pass since `staleBefore` (a manual "Check now" that keeps failing
+ * advances last_checked_at and must not postpone the D10 stale clear), oldest
+ * first.
+ */
+export async function listCustomerDomainsDueForRecheck(
+  olderThan: Date,
+  limit: number,
+  staleBefore: Date = new Date(Date.now() - PORTAL_DOMAIN_STALE_DAYS * DAY_MS),
+): Promise<string[]> {
   return inSystemContext('listDueForRecheck', async () => {
     const rows = await db
       .select({ id: customerEmailDomains.id })
       .from(customerEmailDomains)
       .where(and(
         isNotNull(customerEmailDomains.verifiedAt),
-        sql`COALESCE(${customerEmailDomains.lastCheckedAt}, ${customerEmailDomains.verifiedAt}) < ${olderThan}`,
+        sql`(COALESCE(${customerEmailDomains.lastCheckedAt}, ${customerEmailDomains.verifiedAt}) < ${olderThan.toISOString()}::timestamptz
+             OR COALESCE(${customerEmailDomains.lastPassedAt}, ${customerEmailDomains.verifiedAt}) < ${staleBefore.toISOString()}::timestamptz)`,
       ))
       .orderBy(sql`COALESCE(${customerEmailDomains.lastCheckedAt}, ${customerEmailDomains.verifiedAt}) ASC`, asc(customerEmailDomains.id))
       .limit(limit);

@@ -11,9 +11,13 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('../email', () => ({ getEmailService: () => null }));
 vi.mock('./checkers/entraTenant', () => ({ entraTenantChecker: { method: 'entra_tenant', check: vi.fn() } }));
-vi.mock('./checkers/googleDirectory', () => ({ googleDirectoryChecker: { method: 'google_directory', check: vi.fn() } }));
+vi.mock('./checkers/googleDirectory', async (orig) => ({
+  ...(await orig<typeof import('./checkers/googleDirectory')>()),
+  googleDirectoryChecker: { method: 'google_directory', check: vi.fn() },
+}));
 
 import { isVerificationCurrent, toCustomerDomainView, type CustomerDomainRow } from './service';
+import { googleConnectionBinding } from './checkers/googleDirectory';
 
 /**
  * Unit coverage for the pure parts of the service (portal registration W5,
@@ -23,6 +27,8 @@ import { isVerificationCurrent, toCustomerDomainView, type CustomerDomainRow } f
  */
 const TENANT = '11111111-1111-4111-8111-111111111111';
 const CONN = '22222222-2222-4222-8222-222222222222';
+const BINDING = googleConnectionBinding({ adminEmail: 'admin@contoso.com', serviceAccountEmail: 'sa@project.iam.gserviceaccount.com' });
+const NOW = new Date('2027-01-03T00:00:00Z');
 
 function row(overrides: Partial<CustomerDomainRow> = {}): CustomerDomainRow {
   return {
@@ -59,29 +65,38 @@ const verified = (evidence: CustomerDomainRow['verifiedEvidence'], extra: Partia
   });
 
 describe('isVerificationCurrent (D6)', () => {
-  const facts = { provenTenantId: TENANT, googleConnectionId: CONN };
+  const facts = { provenTenantId: TENANT, googleConnection: { id: CONN, binding: BINDING } };
 
   it('a declared row is never current', () => {
-    expect(isVerificationCurrent(row({ verificationToken: 'tok' }), facts)).toBe(false);
+    expect(isVerificationCurrent(row({ verificationToken: 'tok' }), facts, NOW)).toBe(false);
   });
 
   it('an inactive verified row is not current (OD5)', () => {
-    expect(isVerificationCurrent(verified({ via: 'dns_txt', recordName: 'r' }, { isActive: false }), facts)).toBe(false);
-    expect(isVerificationCurrent(verified({ via: 'dns_txt', recordName: 'r' }), facts)).toBe(true);
+    expect(isVerificationCurrent(verified({ via: 'dns_txt', recordName: 'r' }, { isActive: false }), facts, NOW)).toBe(false);
+    expect(isVerificationCurrent(verified({ via: 'dns_txt', recordName: 'r' }), facts, NOW)).toBe(true);
   });
 
   it('entra_tenant is current only while the org proves the same tenant', () => {
     const r = verified({ via: 'entra_tenant', tenantId: TENANT.toUpperCase(), connectionId: CONN });
-    expect(isVerificationCurrent(r, facts)).toBe(true);
+    expect(isVerificationCurrent(r, facts, NOW)).toBe(true);
     expect(isVerificationCurrent(r, { ...facts, provenTenantId: null })).toBe(false);
     expect(isVerificationCurrent(r, { ...facts, provenTenantId: '33333333-3333-4333-8333-333333333333' })).toBe(false);
   });
 
   it('google_directory is current only while the same connection exists', () => {
-    const r = verified({ via: 'google_directory', connectionId: CONN });
-    expect(isVerificationCurrent(r, facts)).toBe(true);
-    expect(isVerificationCurrent(r, { ...facts, googleConnectionId: null })).toBe(false);
-    expect(isVerificationCurrent(r, { ...facts, googleConnectionId: '44444444-4444-4444-8444-444444444444' })).toBe(false);
+    const r = verified({ via: 'google_directory', connectionId: CONN, binding: BINDING });
+    expect(isVerificationCurrent(r, facts, NOW)).toBe(true);
+    expect(isVerificationCurrent(r, { ...facts, googleConnection: null }, NOW)).toBe(false);
+    expect(isVerificationCurrent(r, { ...facts, googleConnection: { id: '44444444-4444-4444-8444-444444444444', binding: BINDING } }, NOW)).toBe(false);
+    // The connection upsert replaced the admin / service account in place (same id, other Workspace).
+    const otherWorkspace = googleConnectionBinding({ adminEmail: 'admin@fabrikam.com', serviceAccountEmail: 'sa@other.iam.gserviceaccount.com' });
+    expect(isVerificationCurrent(r, { ...facts, googleConnection: { id: CONN, binding: otherWorkspace } }, NOW)).toBe(false);
+  });
+
+  it('a verification with no pass for 7 days is not current, whatever its method', () => {
+    const r = verified({ via: 'dns_txt', recordName: 'r' });
+    expect(isVerificationCurrent(r, facts, new Date('2027-01-08T23:59:59Z'))).toBe(true);
+    expect(isVerificationCurrent(r, facts, new Date('2027-01-09T00:00:00Z'))).toBe(false);
   });
 });
 
@@ -98,15 +113,16 @@ describe('toCustomerDomainView', () => {
   });
 
   it('never exposes the evidence, the raw token or the check counter', () => {
-    const v = toCustomerDomainView(verified({ via: 'google_directory', connectionId: CONN }, { verificationToken: 'secret-token' }), {
+    const v = toCustomerDomainView(verified({ via: 'google_directory', connectionId: CONN, binding: BINDING }, { verificationToken: 'secret-token', lastPassedAt: new Date() }), {
       provenTenantId: null,
-      googleConnectionId: CONN,
+      googleConnection: { id: CONN, binding: BINDING },
     });
     expect(v).toMatchObject({ state: 'verified', method: 'google_directory', usableForSignIn: true });
     expect(Object.keys(v)).not.toEqual(expect.arrayContaining(['verifiedEvidence']));
     expect(Object.keys(v)).not.toContain('verificationToken');
     expect(Object.keys(v)).not.toContain('checkFailures');
     expect(JSON.stringify(v)).not.toContain(CONN);
+    expect(JSON.stringify(v)).not.toContain(BINDING);
   });
 });
 

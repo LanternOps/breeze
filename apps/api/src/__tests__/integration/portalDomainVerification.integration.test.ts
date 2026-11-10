@@ -42,6 +42,7 @@ import {
   googleWorkspaceConnections,
 } from '../../db/schema';
 import { withSystemDbAccessContext } from '../../db';
+import { googleConnectionBinding } from '../../services/portalDomainVerification/checkers/googleDirectory';
 import {
   DomainVerificationError,
   findOrgByVerifiedDomain,
@@ -117,7 +118,8 @@ async function seedDomain(
   } = {},
 ) {
   const domain = opts.domain ?? domainName();
-  const at = opts.verified?.at ?? new Date('2027-01-01T00:00:00Z');
+  // Recent: the read API treats a verification with no pass for 7 days as not current.
+  const at = opts.verified?.at ?? new Date(Date.now() - 60 * 60_000);
   const [row] = await admin().insert(customerEmailDomains).values({
     partnerId: org.partnerId,
     orgId: org.orgId,
@@ -234,6 +236,20 @@ describe('verifyCustomerDomain', () => {
     expect(after.verifiedAt).not.toBeNull();
     expect(after.checkFailures).toBe(0);
     expect(after.lastPassedAt?.toISOString()).toBe(now.toISOString());
+  });
+
+  it('Check now: a pass checked against a verification that changed meanwhile is not applied (CONFLICT_RETRY)', async () => {
+    const org = await newOrg();
+    const row = await seedDomain(org, { verified: { method: 'dns_txt', evidence: { via: 'dns_txt', recordName: 'r' } } });
+    const removedAndReverifiedAt = new Date(Date.now() - 1000);
+    const { checkers } = fakeCheckers(new Map<string, Verdict>([[row.id, async () => {
+      await admin().update(customerEmailDomains)
+        .set({ verifiedAt: removedAndReverifiedAt, lastPassedAt: removedAndReverifiedAt })
+        .where(eq(customerEmailDomains.id, row.id));
+      return dnsPass(row.domain);
+    }]]));
+    await expectRefusal(verifyCustomerDomain(verifyInput(org, row.id), { checkers }), 'DOMAIN_VERIFICATION_CONFLICT_RETRY', 409);
+    expect((await rowOf(row.id)).lastPassedAt?.getTime()).toBe(removedAndReverifiedAt.getTime());
   });
 
   it('DOMAIN_DNS_NOT_STARTED for dns_txt without a token; DOMAIN_INACTIVE for an inactive row; DOMAIN_ALREADY_VERIFIED for another method', async () => {
@@ -390,6 +406,40 @@ describe('transfer rule (D5, Review Focus 1)', () => {
     expect(verified).toHaveLength(1);
   });
 
+  it('an incumbent re-proved while its check ran is not displaced (CONFLICT_RETRY, nothing written)', async () => {
+    const { domain, b, incumbent, challenger } = await incumbentAndChallenger();
+    const { checkers } = fakeCheckers(new Map<string, Verdict>([
+      [challenger.id, dnsPass(domain)],
+      [incumbent.id, async () => {
+        // The incumbent's MSP clicks Check now with fresh evidence meanwhile.
+        await admin().update(customerEmailDomains)
+          .set({ verifiedEvidence: { via: 'dns_txt', recordName: `_breeze-verify.${domain}.fresh` } })
+          .where(eq(customerEmailDomains.id, incumbent.id));
+        return dnsMissing;
+      }],
+    ]));
+    await expectRefusal(verifyCustomerDomain(verifyInput(b, challenger.id), { checkers }), 'DOMAIN_VERIFICATION_CONFLICT_RETRY', 409);
+    expect((await rowOf(incumbent.id)).verifiedAt).not.toBeNull();
+    expect((await rowOf(challenger.id)).verifiedAt).toBeNull();
+    expect(mail.sent).toEqual([]);
+  });
+
+  it('a challenger row renamed while its check ran is not verified for either name (CONFLICT_RETRY)', async () => {
+    const org = await newOrg();
+    const row = await seedDomain(org, { token: null });
+    const renamed = domainName();
+    const { checkers } = fakeCheckers(new Map<string, Verdict>([[row.id, async () => {
+      await admin().update(customerEmailDomains).set({ domain: renamed }).where(eq(customerEmailDomains.id, row.id));
+      return { status: 'pass', evidence: { via: 'google_directory', connectionId: randomUUID(), binding: 'b' } };
+    }]]));
+    await expectRefusal(
+      verifyCustomerDomain(verifyInput(org, row.id, 'google_directory'), { checkers }),
+      'DOMAIN_VERIFICATION_CONFLICT_RETRY',
+      409,
+    );
+    expect((await rowOf(row.id)).verifiedAt).toBeNull();
+  });
+
   it('an email failure after displacement keeps both writes', async () => {
     const { domain, a, b, incumbent, challenger } = await incumbentAndChallenger();
     mail.fail = true;
@@ -492,12 +542,40 @@ describe('read API (D6)', () => {
     };
     const conn = await seedConnection();
     const row = await seedDomain(org, {
-      verified: { method: 'google_directory', evidence: { via: 'google_directory', connectionId: conn.id } },
+      verified: { method: 'google_directory', evidence: { via: 'google_directory', connectionId: conn.id, binding: googleConnectionBinding(conn) } },
     });
     expect(await isDomainVerifiedForOrg(row.domain, org.orgId)).toBe(true);
     await admin().delete(googleWorkspaceConnections).where(eq(googleWorkspaceConnections.id, conn.id));
     await seedConnection();
     expect(await isDomainVerifiedForOrg(row.domain, org.orgId)).toBe(false);
+  });
+
+  it('google_directory verification is not current after the connection is replaced in place (same id, other Workspace)', async () => {
+    const org = await newOrg();
+    const [conn] = await admin().insert(googleWorkspaceConnections).values({
+      orgId: org.orgId,
+      customerDomain: 'irrelevant.example.com',
+      adminEmail: 'admin@first.example.com',
+      serviceAccountEmail: 'sa@first.iam.gserviceaccount.com',
+      serviceAccountKey: 'not-a-real-key',
+    }).returning();
+    const row = await seedDomain(org, {
+      verified: { method: 'google_directory', evidence: { via: 'google_directory', connectionId: conn!.id, binding: googleConnectionBinding(conn!) } },
+    });
+    expect(await isDomainVerifiedForOrg(row.domain, org.orgId)).toBe(true);
+    // The routes/google.ts upsert shape: new admin + service account, same row id.
+    await admin().update(googleWorkspaceConnections)
+      .set({ adminEmail: 'admin@second.example.com', serviceAccountEmail: 'sa@second.iam.gserviceaccount.com' })
+      .where(eq(googleWorkspaceConnections.id, conn!.id));
+    expect(await isDomainVerifiedForOrg(row.domain, org.orgId)).toBe(false);
+  });
+
+  it('a verification with no pass for 7 days is not current (the worker being down never extends trust)', async () => {
+    const org = await newOrg();
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    const row = await seedDomain(org, { verified: { method: 'dns_txt', evidence: { via: 'dns_txt', recordName: 'r' }, at: eightDaysAgo } });
+    expect(await isDomainVerifiedForOrg(row.domain, org.orgId)).toBe(false);
+    expect(await findOrgByVerifiedDomain(row.domain)).toBeNull();
   });
 
   it('listVerifiedDomainsForOrg returns only current verifications', async () => {
@@ -506,7 +584,7 @@ describe('read API (D6)', () => {
     await seedDomain(org);
     await seedDomain(org, { isActive: false, verified: { method: 'dns_txt', evidence: { via: 'dns_txt', recordName: 'r' } } });
     await seedDomain(org, {
-      verified: { method: 'google_directory', evidence: { via: 'google_directory', connectionId: randomUUID() } },
+      verified: { method: 'google_directory', evidence: { via: 'google_directory', connectionId: randomUUID(), binding: 'x' } },
     });
     const facts = await listVerifiedDomainsForOrg(org.orgId);
     expect(facts.map((f) => f.domain)).toEqual([current.domain]);
