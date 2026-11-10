@@ -320,8 +320,8 @@ describe('2027-01-22-233700-portal-domain-verification.sql', () => {
       await client.begin(async (tx) => {
         await tx`SELECT set_config('breeze.org_merge', 'on', true)`;
       });
-      const [{ v }] = await client<{ v: string | null }[]>`SELECT current_setting('breeze.org_merge', true) AS v`;
-      expect(v ?? '').not.toBe('on');
+      const [setting] = await client<{ v: string | null }[]>`SELECT current_setting('breeze.org_merge', true) AS v`;
+      expect(setting?.v ?? '').not.toBe('on');
       // A repoint on the same connection after that transaction is NOT exempt.
       await inRolledBackTx(async (tx) => {
         const id = await seedVerified(tx, a, domain);
