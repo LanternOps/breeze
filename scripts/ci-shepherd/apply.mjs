@@ -50,7 +50,8 @@ export function precheck(decision, snapshot, { selfOps = [], now = null } = {}) 
   if (e.head && snapshot.headSha !== e.head) return 'head_moved';
   // A stuck re-queue dequeues first; once its own dequeue is recorded, a
   // resumed attempt must go on to the enqueue, not stop at "not queued".
-  const dequeuedBySelf = selfOps.some((o) => o.pr === decision.pr && o.op === 'dequeue' && Date.parse(o.at) >= Date.parse(decision.at));
+  // Only this decision's own dequeue counts, not another decision's on the same PR.
+  const dequeuedBySelf = selfOps.some((o) => o.pr === decision.pr && o.op === 'dequeue' && o.action === decision.actionId);
   if (e.queued === true && !snapshot.queue && !dequeuedBySelf) return 'not_queued';
   if (e.removalId) {
     const removal = { id: e.removalId, at: decision.removalAt, reason: 'failed_checks', pr: decision.pr };
@@ -154,7 +155,7 @@ export async function apply(gh, decision, ctx) {
         if (state.queued) {
           // Recorded before the call: the queue logs this as a `manual`
           // removal by the operator login, which must not read as human intent.
-          await ctx.onSelfOp?.({ pr: decision.pr, op: 'dequeue', at: new Date(ctx.clock()).toISOString() });
+          await ctx.onSelfOp?.({ pr: decision.pr, op: 'dequeue', at: new Date(ctx.clock()).toISOString(), action: decision.actionId });
           await w.dequeue(snap.id);
         }
         state.queued = false;

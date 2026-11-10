@@ -131,12 +131,13 @@ export function breakerFor(breakers, { kind, key }) {
 }
 
 // Record a parked PR so the breaker restores it when it clears.
-export function parkInBreaker(prev, decision) {
+// `act`: parked by an act-mode write (a shadow tick must not use up its restore).
+export function parkInBreaker(prev, decision, { act = false } = {}) {
   const state = clone(prev);
   const b = decision.breaker && breakerFor(state.breakers, decision.breaker);
   if (!b) return state;
   const label = decision.mutations.find((m) => m.op === 'label_add')?.args.name ?? null;
-  if (!b.restore.some((e) => e.pr === decision.pr && e.head === decision.head)) b.restore.push({ pr: decision.pr, head: decision.head, label });
+  if (!b.restore.some((e) => e.pr === decision.pr && e.head === decision.head)) b.restore.push({ pr: decision.pr, head: decision.head, label, act });
   return state;
 }
 

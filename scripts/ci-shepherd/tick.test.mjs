@@ -556,6 +556,34 @@ test('act: a stuck re-queue whose enqueue failed after the dequeue is completed 
   await env.run();
   assert.equal(env.writesOf('enqueue', 107).length, 1);
   assert.equal(env.writesOf('comment_post', 107).length, 1);
+  // Counted against the infra budget when it landed, in the later tick.
+  assert.equal(env.state().stuckCount[`107:${env.world.prs.get(107).headSha}`], 1);
+});
+
+test('precheck: only the decision\'s own dequeue lets a stuck re-queue go on without a queue entry', async () => {
+  const { precheck } = await import('./apply.mjs');
+  const d = { actionId: '107:aaaa:7007:1', kind: 'requeue_stuck', pr: 107, at: iso(T0), expect: { state: 'OPEN', head: 'h', queued: true } };
+  const snap = { pr: 107, state: 'OPEN', headSha: 'h', queue: null, labels: [], events: [], isFork: false };
+  assert.equal(precheck(d, snap, { selfOps: [{ pr: 107, op: 'dequeue', at: iso(T0 + MIN), action: '107:aaaa:other' }] }), 'not_queued');
+  assert.equal(precheck(d, snap, { selfOps: [{ pr: 107, op: 'dequeue', at: iso(T0 + MIN), action: d.actionId }] }), null);
+});
+
+test('act, then shadow, then act: a shadow tick does not use up an act hold\'s new-head cleanup', async () => {
+  const env = setup({ mode: 'act' });
+  holdWorld(env);
+  await env.run();
+  const pr = env.world.prs.get(101);
+  Object.assign(pr, { headSha: 'e'.repeat(40), headPushedAt: iso(T0 + MIN) });
+  env.world.mode = 'shadow';
+  env.world.clock = T0 + 5 * MIN;
+  await env.run();
+  assert.ok(env.decisions().some((l) => l.kind === 'resume_new_head' && l.status === 'shadow'));
+  assert.equal(env.state().parked.length, 1, 'kept for act');
+  env.world.mode = 'act';
+  env.world.clock = T0 + 10 * MIN;
+  await env.run();
+  assert.deepEqual(pr.labels, []);
+  assert.equal(env.state().parked.length, 0);
 });
 
 test('act: a held PR that gets a new head loses its shepherd labels', async () => {

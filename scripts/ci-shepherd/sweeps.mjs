@@ -30,6 +30,9 @@ export const INGEST_RUN_RESERVE = 12;
 
 // The decision reached a final state for this mode.
 export const settled = (res) => res.status === 'applied' || res.status === 'skipped' || res.status === 'shadow';
+// …and the entry that asked for it can go: work an act tick queued up is not
+// used up by a shadow tick (the operator switched modes in between).
+const finished = (res, entry) => settled(res) && !(res.status === 'shadow' && entry.act);
 const doneKey = (t, id) => `${t.mode}:${id}`;
 
 const dropPark = (t, pr) => {
@@ -87,7 +90,7 @@ export async function restoreCleared(t) {
     try {
       const left = await sweepList(t, `restore after ${b.kind} ${b.key}`, b.restore, async (entry) => {
         const res = await t.act(restoreDecision(entry, await t.snapshot(entry.pr), b, t.now), 'sweep:restore');
-        if (!settled(res)) return true;
+        if (!finished(res, entry)) return true;
         if (t.mode === 'act') dropPark(t, entry.pr);
         return false;
       });
@@ -138,11 +141,7 @@ export async function sweepStuck(t) {
     const res = await t.act(d, 'sweep:ci_success_missing');
     if (!settled(res)) return;
     t.state.stuck[key] = iso(t.now);
-    // Shadow keeps no counts: what it would have done did not happen.
-    if (res.status === 'applied') {
-      if (d.kind === 'requeue_stuck') t.state.stuckCount[countKey] = (t.state.stuckCount[countKey] ?? 0) + 1;
-      if (d.kind === 'hold') t.state.stuckHolds[countKey] = (t.state.stuckHolds[countKey] ?? 0) + 1;
-    }
+    // Counts are kept by t.act when the write lands (tick.mjs).
     if (d.kind === 'hold') t.track(d);
   });
 }
@@ -161,7 +160,7 @@ export async function sweepReadds(t) {
       const d = decide({ removal, snapshot: snap, verdict: rec.summary, priorVerdicts, breakers: t.state.breakers.breakers, now: t.now, selfOps: t.state.selfOps });
       if (d.kind === 'record') return true;
       t.track(d);
-      return !settled(await t.act(d, 'sweep:readd'));
+      return !finished(await t.act(d, 'sweep:readd'), rec);
     }),
     (kept) => {
       t.state.records = kept;
@@ -178,7 +177,7 @@ export async function sweepParked(t) {
       const snap = await t.snapshot(p.pr);
       if (snap.state !== 'OPEN') return false;
       if (snap.headSha === p.head) return true;
-      return !settled(await t.act(newHeadDecision(p, snap, t.now), 'sweep:new_head'));
+      return !finished(await t.act(newHeadDecision(p, snap, t.now), 'sweep:new_head'), p);
     }),
     (kept) => {
       t.state.parked = kept;

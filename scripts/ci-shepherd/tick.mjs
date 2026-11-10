@@ -79,13 +79,13 @@ async function decideRemoval(t, removal) {
 // Book-keeping a decision needs whatever the mode: re-add checks, parked PRs.
 function track(t, d) {
   if (d.kind === 'record') {
-    t.state.records.push({ actionId: d.actionId, pr: d.pr, head: d.head, removalId: d.removalId, removalAt: d.removalAt, summary: t.lastSummary });
+    t.state.records.push({ actionId: d.actionId, pr: d.pr, head: d.head, removalId: d.removalId, removalAt: d.removalAt, summary: t.lastSummary, act: t.mode === 'act' });
   }
   if (d.kind === 'hold' || d.kind === 'backoff' || d.kind === 'wait_main') {
     const label = d.mutations.find((m) => m.op === 'label_add')?.args.name ?? LABELS.hold;
     t.state.parked = t.state.parked.filter((p) => p.pr !== d.pr);
-    t.state.parked.push({ pr: d.pr, head: d.head, label, at: iso(t.now) });
-    if (d.breaker) t.state.breakers = parkInBreaker(t.state.breakers, d);
+    t.state.parked.push({ pr: d.pr, head: d.head, label, at: iso(t.now), act: t.mode === 'act' });
+    if (d.breaker) t.state.breakers = parkInBreaker(t.state.breakers, d, { act: t.mode === 'act' });
   }
 }
 
@@ -219,6 +219,12 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
       if (res.status === 'partial') summary.status = 'partial';
       if (decision.pr === null && settled(res)) state.done[`${t.mode}:${decision.actionId}`] = iso(now);
       if (res.issue && decision.breaker) state.breakers = setBreakerIssue(state.breakers, decision.breaker.key, res.issue);
+      // Stuck-entry budget: counted when the write lands, whichever tick lands it.
+      if (res.status === 'applied' && decision.signature === 'ci_success_missing' && decision.pr !== null) {
+        const k = `${decision.pr}:${decision.head}`;
+        if (decision.kind === 'requeue_stuck') state.stuckCount[k] = (state.stuckCount[k] ?? 0) + 1;
+        if (decision.kind === 'hold') state.stuckHolds[k] = (state.stuckHolds[k] ?? 0) + 1;
+      }
       return res;
     };
 
@@ -251,6 +257,11 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
       }
       try {
         const { decision, summary: s } = await decideRemoval(t, removal);
+        // A breaker write inside decideRemoval can be where act ended.
+        if (acting && t.mode !== 'act') {
+          firstUnfinished ??= removal;
+          break;
+        }
         t.lastSummary = s;
         if (s) state.verdicts.push(s);
         track(t, decision);
