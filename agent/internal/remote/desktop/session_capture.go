@@ -855,9 +855,11 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 	if img == nil {
 		// DXGI: no new frame available (AccumulatedFrames==0)
-		resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
-		if !resent {
-			s.maybeResendCachedFrameOnIdle(frameDuration)
+		if !s.catchUpIdleEncoder(enc, frameDuration) {
+			resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+			if !resent {
+				s.maybeResendCachedFrameOnIdle(frameDuration)
+			}
 		}
 		s.metrics.RecordSkip()
 		return
@@ -921,9 +923,11 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 			// frames indefinitely. Mirrors the DXGI "no new frame" path above.
 			// maybeResendCachedFrameOnIdle only bumps when the last write is older
 			// than staticDesktopResendInterval, so it can't mask a dead capture.
-			resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
-			if !resent {
-				s.maybeResendCachedFrameOnIdle(frameDuration)
+			if !s.catchUpIdleEncoder(enc, frameDuration) {
+				resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+				if !resent {
+					s.maybeResendCachedFrameOnIdle(frameDuration)
+				}
 			}
 			s.metrics.RecordSkip()
 			return
@@ -964,6 +968,13 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		return
 	}
 
+	s.deliverEncodedFrame(enc, h264Data, encodeTime, frameDuration)
+}
+
+// deliverEncodedFrame records and sends one CPU-path encoder output: the
+// encoder-output signal, metrics, the oversized P-frame guard, the WebRTC
+// write and the cached-frame copy. It reports whether the sample was written.
+func (s *Session) deliverEncodedFrame(enc *VideoEncoder, h264Data []byte, encodeTime, frameDuration time.Duration) bool {
 	s.lastEncodeOutputUnixNano.Store(time.Now().UnixNano())
 	if !s.hwRestore.hardwareProducedOutput && enc.BackendIsHardware() {
 		s.hwRestore.noteHardwareOutput()
@@ -980,7 +991,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		s.metrics.RecordDrop()
 		// Force a keyframe so the encoder produces a fresh IDR for decoder recovery.
 		_ = enc.ForceKeyframe()
-		return
+		return false
 	}
 
 	// 5. Write as pion media.Sample
@@ -991,13 +1002,32 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	if err := s.videoTrack.WriteSample(sample); err != nil {
 		slog.Debug("Failed to write H264 sample", "session", s.id, "error", err.Error())
 		s.metrics.RecordDrop()
-		return
+		return false
 	}
 
 	s.cacheEncodedFrame(h264Data)
 	s.noteVideoWrite()
 	s.noteSampleWrite()
 	s.metrics.RecordSend(len(h264Data))
+	return true
+}
+
+// catchUpIdleEncoder runs on a capture iteration that had no new frame. An
+// encoder that holds input frames (#11622) re-submits its last frame while the
+// newest screen change is still inside it, and the output that comes out is
+// sent like any other frame. Encoders that do not hold frames return nothing,
+// so this is a no-op for them. It reports whether a frame was sent.
+func (s *Session) catchUpIdleEncoder(enc *VideoEncoder, frameDuration time.Duration) bool {
+	t0 := time.Now()
+	h264Data, err := enc.CatchUpIdle()
+	if err != nil {
+		slog.Debug("Idle encoder catch-up failed", "session", s.id, "error", err.Error())
+		return false
+	}
+	if h264Data == nil {
+		return false
+	}
+	return s.deliverEncodedFrame(enc, h264Data, time.Since(t0), frameDuration)
 }
 
 // captureAndSendFrameGPU captures a GPU texture and encodes via the zero-copy pipeline.
@@ -1025,10 +1055,14 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		return false, true, false
 	}
 	if texture == 0 {
-		s.mu.RLock()
-		cap := s.capturer
-		s.mu.RUnlock()
-		_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+		// A frame pushed out by the idle catch-up is still an idle iteration
+		// (sent=false), so it does not reset the loop's idle tracking.
+		if !s.catchUpIdleEncoder(enc, frameDuration) {
+			s.mu.RLock()
+			cap := s.capturer
+			s.mu.RUnlock()
+			_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+		}
 		s.metrics.RecordSkip()
 		return true, false, false
 	}

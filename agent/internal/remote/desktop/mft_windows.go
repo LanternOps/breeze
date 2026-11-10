@@ -107,6 +107,21 @@ type mftEncoder struct {
 	stallFlushCount    int
 	outputSinceFlush   bool
 	permanentlyStalled bool
+
+	// Idle catch-up (#11622), synchronous MFTs only. catchUp counts the
+	// inputs and outputs of the current stream; retainedNV12 is the NV12 of
+	// the last frame submitted, kept (instead of returned to the pool) so
+	// CatchUpIdle can re-submit it while the screen is static.
+	catchUp       idleCatchUp
+	retainedNV12  []byte
+	catchUpLogged bool
+	// lastSubmitOK is set when the current Encode/EncodeTexture call's frame
+	// was accepted by ProcessInput; only such a frame is retained.
+	lastSubmitOK bool
+	// lateLowLatency is a test hook: when set, CODECAPI_AVLowLatencyMode is
+	// not applied before media-type negotiation, reproducing the pre-#11622
+	// encoder that holds 5 frames. Production code never sets it.
+	lateLowLatency bool
 }
 
 func init() {
@@ -251,6 +266,9 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		m.tryInitGPUPipeline(transform)
 	}
 
+	if !isHW {
+		m.setLowLatencyBeforeNegotiation(transform)
+	}
 	// Configure output type (H264) — must be set BEFORE input
 	if err := m.setOutputType(transform, width, height); err != nil {
 		comRelease(transform)
@@ -277,6 +295,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 				return fmt.Errorf("software MFT fallback failed: %w", err)
 			}
 			isHW = false
+			m.setLowLatencyBeforeNegotiation(transform)
 			if err := m.setOutputType(transform, width, height); err != nil {
 				comRelease(transform)
 				procMFShutdown.Call()
@@ -742,6 +761,41 @@ func (m *mftEncoder) setInputType(transform uintptr, width, height int) error {
 	return nil
 }
 
+// setLowLatencyBeforeNegotiation turns on CODECAPI_AVLowLatencyMode on a
+// software H264 MFT before its media types are set. Microsoft's software
+// encoder only honours the property at that point: set later (as the general
+// ICodecAPI block in initialize does for every MFT) it reads back TRUE but the
+// encoder still keeps its first 5 inputs before emitting, whatever the time
+// between them (measured on a Windows 11 21H2 VM, #11622). Set here, it emits
+// one output per input from the first frame. Screen capture only submits a
+// frame when the screen changes, so a 5-frame hold leaves the last changes
+// inside the encoder and the viewer minutes behind on a quiet desktop.
+// Non-fatal: if the property is refused, the idle catch-up still pushes held
+// frames out (CatchUpIdle).
+func (m *mftEncoder) setLowLatencyBeforeNegotiation(transform uintptr) {
+	if m.lateLowLatency {
+		return
+	}
+	var codecAPI uintptr
+	if _, err := comCall(transform, vtblQueryInterface,
+		uintptr(unsafe.Pointer(&iidICodecAPI)),
+		uintptr(unsafe.Pointer(&codecAPI)),
+	); err != nil || codecAPI == 0 {
+		slog.Warn("Software H264 MFT has no ICodecAPI; low-latency mode not set before negotiation, it may hold frames",
+			"error", fmt.Sprintf("%v", err))
+		return
+	}
+	defer comRelease(codecAPI)
+	llv := comVariant{vt: vtBool, val: uint64(0xFFFF)} // VARIANT_TRUE
+	if _, err := comCall(codecAPI, vtblCodecAPISetValue,
+		uintptr(unsafe.Pointer(&codecAPIAVLowLatencyMode)),
+		uintptr(unsafe.Pointer(&llv)),
+	); err != nil {
+		slog.Warn("Software H264 MFT refused low-latency mode before negotiation; it may hold frames",
+			"error", err.Error())
+	}
+}
+
 func (m *mftEncoder) setLowLatency(transform uintptr) {
 	var attrs uintptr
 	_, err := comCall(transform, vtblGetAttributes, uintptr(unsafe.Pointer(&attrs)))
@@ -917,6 +971,7 @@ func (m *mftEncoder) shutdown() {
 	m.asyncMode = false
 	m.needInputCredits = 0
 	m.pendingOutput = nil
+	m.dropRetainedNV12()
 
 	// Release ICodecAPI before the transform
 	if m.codecAPI != 0 {
@@ -989,10 +1044,7 @@ func (m *mftEncoder) AdvanceStallDetection() {
 	}
 	// Use the same threshold and timing logic as trackNilOutput, but
 	// trigger based on the existing counter that froze when encoding stopped.
-	threshold := mftStallThreshold
-	if m.lastStallFlush != (time.Time{}) && time.Since(m.lastStallFlush) < 10*time.Second {
-		threshold = mftStallThreshold / 2
-	}
+	threshold, _ := m.stallThresholds()
 	if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 2*time.Second {
 		if !m.outputSinceFlush && m.stallFlushCount > 0 {
 			m.stallFlushCount++
