@@ -67,6 +67,10 @@ test('release.yml runs the report in the Linux viewer leg only', () => {
   assert.ok(step, 'build-viewer has no step calling report-viewer-linux-webrtc.sh');
   assert.match(step, /if: matrix\.platform == 'ubuntu-22\.04'/u);
   assert.match(step, /probe-webkitgtk-webrtc\.py/u);
-  // Before the build, so the answer is in the log even when the build fails.
-  assert.ok(job.indexOf('report-viewer-linux-webrtc.sh') < job.indexOf('- name: Build Tauri app'));
+  // After the last upload: the probe installs packages (GObject typelibs among
+  // them) that the AppImage bundler would otherwise copy into the artifact.
+  const lastUpload = job.lastIndexOf('actions/upload-artifact@');
+  assert.ok(lastUpload > job.indexOf('- name: Build Tauri app'));
+  assert.ok(job.indexOf('report-viewer-linux-webrtc.sh') > lastUpload, 'the report must be the last thing the job does');
+  assert.doesNotMatch(job.slice(0, lastUpload), /python3-gi|gir1\.2-/u);
 });
