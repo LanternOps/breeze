@@ -384,9 +384,12 @@ describe("M365CustomerGraphActionsCard", () => {
       `/m365/customer-graph-actions/connections/consent?orgId=${ORG_A}`,
       { method: "POST" },
     );
-    expect(navigateToMock).toHaveBeenCalledWith(
+    expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(
       "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned",
     );
+    // `navigateTo` accepts only same-origin paths and silently rewrites an
+    // absolute URL to "/", so the Microsoft hand-off must never go through it.
+    expect(navigateToMock).not.toHaveBeenCalled();
   });
 
   it("rejects a non-Microsoft consent URL returned by the server", async () => {
@@ -399,7 +402,7 @@ describe("M365CustomerGraphActionsCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft" }));
 
     await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
-    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
   });
 
   it("surfaces an error through runAction on an HTTP failure body", async () => {
@@ -412,7 +415,7 @@ describe("M365CustomerGraphActionsCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft" }));
 
     await waitFor(() => expect(state.errorMessages).toEqual(["Consent could not be started."]));
-    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
   });
 
   it("retests through runAction against the actions path and reloads", async () => {
@@ -497,7 +500,7 @@ describe("M365CustomerGraphActionsCard", () => {
       expect(trigger).toHaveAttribute("aria-expanded", "true");
       expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
       expect(runActionMock).not.toHaveBeenCalled();
-      expect(navigateToMock).not.toHaveBeenCalled();
+      expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
       const preflight = screen.getByTestId("m365-actions-preflight");
@@ -528,7 +531,7 @@ describe("M365CustomerGraphActionsCard", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Grant admin actions…" }));
       fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft" }));
 
-      await waitFor(() => expect(navigateToMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(navigateToMicrosoftLoginMock).toHaveBeenCalledTimes(1));
       expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
         2,
         `/m365/customer-graph-actions/connections/consent?orgId=${ORG_A}`,
