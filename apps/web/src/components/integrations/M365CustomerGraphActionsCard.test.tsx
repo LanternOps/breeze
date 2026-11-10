@@ -575,6 +575,25 @@ describe("M365CustomerGraphActionsCard", () => {
       );
       expect(runActionMock).not.toHaveBeenCalled();
     });
+
+    it("re-consent continues to Microsoft, not the dashboard (#11572)", async () => {
+      const consentUrl = "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned";
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+        .mockResolvedValueOnce(makeResponse({ adminConsentUrl: consentUrl }));
+      render(<M365CustomerGraphActionsCard />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Re-consent" }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft" }));
+
+      await waitFor(() => expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(consentUrl));
+      expect(navigateToMock).not.toHaveBeenCalled();
+      expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
+        2,
+        `/m365/customer-graph-actions/connections/consent?orgId=${ORG_A}`,
+        { method: "POST" },
+      );
+    });
   });
 
   it("keeps the Microsoft permission names behind a disclosure", async () => {
