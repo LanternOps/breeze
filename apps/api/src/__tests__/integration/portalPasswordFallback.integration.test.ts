@@ -75,6 +75,13 @@ async function setPolicy(values: typeof portalAccessPolicies.$inferInsert) {
   await admin().insert(portalAccessPolicies).values(values);
 }
 
+/**
+ * The AI for Office routes defer the fallback row until their request
+ * transaction commits (fire-and-forget after the response): give a deferred
+ * write time to land before asserting that none did.
+ */
+const settle = () => new Promise((r) => setTimeout(r, 250));
+
 async function mspSession() {
   const env = await setupTestEnvironment({ scope: 'partner' });
   await admin().update(partners).set({ aiForOfficeEnabled: true }).where(eq(partners.id, env.partner.id));
@@ -89,20 +96,21 @@ async function mspSession() {
   registerPortalEntraTenantRoutes(orgs);
   app.route('/', orgs);
   const headers = (body: boolean) => ({ Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) });
-  const tenantRoute = (method: string, suffix = '') =>
-    app.request(`/organizations/${env.organization.id}/portal-entra-tenant${suffix}`, { method, headers: headers(false) });
+  const call = (method: string, orgId: string, suffix = '') =>
+    app.request(`/organizations/${orgId}/portal-entra-tenant${suffix}`, { method, headers: headers(false) });
+  const tenantRoute = (method: string, suffix = '') => call(method, env.organization.id, suffix);
   const mapping = (method: 'PUT' | 'DELETE', entraTenantId?: string) =>
     app.request(`/client-ai/admin/orgs/${env.organization.id}/tenant-mapping`, {
       method,
       headers: headers(entraTenantId !== undefined),
       ...(entraTenantId !== undefined ? { body: JSON.stringify({ entraTenantId }) } : {}),
     });
-  const notice = async () => {
-    const res = await tenantRoute('GET');
+  const notice = async (orgId: string = env.organization.id) => {
+    const res = await call('GET', orgId);
     expect(res.status).toBe(200);
     return ((await res.json()) as { data: { passwordFallback: unknown } }).data.passwordFallback;
   };
-  return { env, orgId: env.organization.id, tenantRoute, mapping, notice };
+  return { env, orgId: env.organization.id, call, tenantRoute, mapping, notice };
 }
 
 describe('password fallback audit + notice through the MSP tenant routes', () => {
@@ -168,6 +176,60 @@ describe('password fallback audit + notice through the MSP tenant routes', () =>
     expect(await s.notice()).toMatchObject({ tenantId: tenant, cause: 'tenant_removed' });
   });
 
+  it('a dismissal does not swallow a later loss: lose → dismiss → re-prove → lose raises the notice again', async () => {
+    const s = await mspSession();
+    await setPolicy({ partnerId: s.env.partner.id, entraEnabled: true });
+    const tenant = newTenant();
+    await recordEntraTenantProof(proofRun(s.orgId, tenant, s.env.user.id));
+    await s.tenantRoute('DELETE');
+    expect(await (await s.tenantRoute('POST', '/password-fallback/dismiss')).json()).toEqual({ data: { dismissed: true } });
+    expect(await s.notice()).toBeNull();
+
+    await recordEntraTenantProof(proofRun(s.orgId, tenant, s.env.user.id));
+    await s.tenantRoute('DELETE');
+    const rows = await audits(s.orgId, FALLBACK);
+    expect(rows).toHaveLength(2);
+    const newest = rows.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
+    expect(await s.notice()).toEqual({ since: newest.timestamp.toISOString(), tenantId: tenant, cause: 'tenant_removed' });
+    expect(await audits(s.orgId, DISMISSED)).toHaveLength(1);
+  });
+
+  it('a re-proof ends an old notice for good: lost again with Microsoft off, then Microsoft back on → no stale notice', async () => {
+    const s = await mspSession();
+    await setPolicy({ partnerId: s.env.partner.id, entraEnabled: true });
+    const tenant = newTenant();
+    await recordEntraTenantProof(proofRun(s.orgId, tenant, s.env.user.id));
+    await s.tenantRoute('DELETE');
+    expect(await s.notice()).not.toBeNull();
+
+    await recordEntraTenantProof(proofRun(s.orgId, tenant, s.env.user.id));
+    await setPolicy({ orgId: s.orgId, entraEnabled: false });
+    await s.tenantRoute('DELETE'); // Microsoft off: no new fallback row
+    expect(await audits(s.orgId, FALLBACK)).toHaveLength(1);
+
+    await admin().update(portalAccessPolicies).set({ entraEnabled: null }).where(eq(portalAccessPolicies.orgId, s.orgId));
+    expect(await s.notice()).toBeNull();
+  });
+
+  it("one org's fallback never shows on, or is dismissed from, a sibling org or another partner's session", async () => {
+    const s = await mspSession();
+    await setPolicy({ partnerId: s.env.partner.id, entraEnabled: true });
+    const sibling = await createOrganization({ partnerId: s.env.partner.id });
+    await recordEntraTenantProof(proofRun(s.orgId, newTenant(), s.env.user.id));
+    await s.tenantRoute('DELETE');
+
+    expect(await s.notice(sibling.id)).toBeNull();
+    expect(await (await s.call('POST', sibling.id, '/password-fallback/dismiss')).json()).toEqual({ data: { dismissed: false } });
+
+    const outsider = await mspSession();
+    expect((await outsider.call('GET', s.orgId)).status).toBe(404);
+    expect((await outsider.call('POST', s.orgId, '/password-fallback/dismiss')).status).toBe(404);
+
+    expect(await audits(s.orgId, DISMISSED)).toHaveLength(0);
+    expect(await audits(sibling.id, DISMISSED)).toHaveLength(0);
+    expect(await s.notice()).toMatchObject({ cause: 'tenant_removed' });
+  });
+
   it('Microsoft off for the org: losing the proof changes nothing users see → no audit, no notice', async () => {
     const s = await mspSession();
     await setPolicy({ partnerId: s.env.partner.id, entraEnabled: true });
@@ -199,14 +261,31 @@ describe('password fallback audit through the AI for Office mapping routes', () 
     await recordEntraTenantProof(proofRun(s.orgId, tenant, s.env.user.id));
 
     expect((await s.mapping('DELETE')).status).toBe(200);
-    const rows = await audits(s.orgId, FALLBACK);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.details).toEqual({ tenantId: tenant, cause: 'ai_for_office_mapping_removed', ssoOnlyLifted: false });
+    await vi.waitFor(async () => {
+      const rows = await audits(s.orgId, FALLBACK);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.details).toEqual({ tenantId: tenant, cause: 'ai_for_office_mapping_removed', ssoOnlyLifted: false });
+    });
 
     // An unproven mapping was never a Microsoft sign-in path.
     expect((await s.mapping('PUT', newTenant())).status).toBe(200);
     expect((await s.mapping('DELETE')).status).toBe(200);
+    await settle();
     expect(await audits(s.orgId, FALLBACK)).toHaveLength(1);
+  });
+
+  it('a refused PUT (tenant mapped to another org → 409) rolls back and writes no fallback row', async () => {
+    const s = await mspSession();
+    await setPolicy({ partnerId: s.env.partner.id, entraEnabled: true });
+    await recordEntraTenantProof(proofRun(s.orgId, newTenant(), s.env.user.id));
+    const taken = newTenant();
+    const other = await createOrganization({ partnerId: (await createPartner()).id });
+    await admin().insert(clientAiTenantMappings).values({ orgId: other.id, entraTenantId: taken });
+
+    expect((await s.mapping('PUT', taken)).status).toBe(409);
+    await settle();
+    expect(await audits(s.orgId, FALLBACK)).toHaveLength(0);
+    expect(await s.notice()).toBeNull();
   });
 
   it('PUT to a different tenant (the trigger clears the proof) audits the fallback; re-saving the same tenant does not', async () => {
@@ -216,12 +295,15 @@ describe('password fallback audit through the AI for Office mapping routes', () 
     await recordEntraTenantProof(proofRun(s.orgId, tenant, s.env.user.id));
 
     expect((await s.mapping('PUT', tenant)).status).toBe(200);
+    await settle();
     expect(await audits(s.orgId, FALLBACK)).toHaveLength(0);
 
     expect((await s.mapping('PUT', newTenant())).status).toBe(200);
-    const rows = await audits(s.orgId, FALLBACK);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.details).toEqual({ tenantId: tenant, cause: 'ai_for_office_mapping_changed', ssoOnlyLifted: false });
+    await vi.waitFor(async () => {
+      const rows = await audits(s.orgId, FALLBACK);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.details).toEqual({ tenantId: tenant, cause: 'ai_for_office_mapping_changed', ssoOnlyLifted: false });
+    });
     expect(await s.notice()).toMatchObject({ tenantId: tenant, cause: 'ai_for_office_mapping_changed' });
   });
 });

@@ -101,8 +101,10 @@ export function isPortalEntraTenantView(value: unknown): value is PortalEntraTen
 
 /** The view's notice, or null; a malformed one is ignored (the notice is advisory) rather than failing the view. */
 export function passwordFallbackOf(view: PortalEntraTenantView): PortalPasswordFallbackNotice | null {
-  if (view.state === 'proven') return null;
-  return isPortalPasswordFallbackNotice(view.passwordFallback) ? view.passwordFallback : null;
+  if (view.state === 'proven' || view.passwordFallback == null) return null;
+  if (isPortalPasswordFallbackNotice(view.passwordFallback)) return view.passwordFallback;
+  console.warn('[portalAccess] ignoring a malformed passwordFallback notice');
+  return null;
 }
 
 /** `POST …/portal-entra-tenant/proof-links`. */

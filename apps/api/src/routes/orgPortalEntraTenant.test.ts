@@ -622,6 +622,17 @@ describe('#11582 password-fallback notice', () => {
     expect(serviceCalls('getPortalPasswordFallbackNotice')[0]?.args).toEqual([ORG_ID, true]);
   });
 
+  it('a failed notice read leaves GET working with no notice (the panel holds the proof controls)', async () => {
+    status(UNPROVEN);
+    h.noticeImpl.current = async () => { throw new Error('audit_logs unavailable'); };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await makeApp().request(BASE);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual({ ...UNPROVEN, consentUrl: null, passwordFallback: null });
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   it('dismiss writes one awaited dismissal row while a notice shows (no MFA needed: sign-in is unaffected)', async () => {
     h.authRef.current = NO_MFA;
     status(UNPROVEN);

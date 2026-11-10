@@ -22,6 +22,7 @@ import {
 } from '../services/portalPasswordFallback';
 import { PORTAL_ENTRA_PROOF_RUN_PATH, createPortalEntraProofRun } from '../services/portalOidc/proofRunStore';
 import { parseTenantHint, resolveEntraTenantIdFromDomain } from '../services/portalOidc/tenantHint';
+import { captureException } from '../services/sentry';
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 import { resolveAccessibleOrg } from './orgPortalSettings';
@@ -143,6 +144,22 @@ function readFallbackNotice(orgId: string, status: PortalEntraTenantStatus): Pro
   return runOutsideDbContext(() => getPortalPasswordFallbackNotice(orgId, status.state === 'proven'));
 }
 
+/**
+ * The GET's notice is advisory: a failed read shows no notice rather than
+ * taking down the panel that holds the proof controls. It runs on its own
+ * system-scope connection (runOutsideDbContext), so catching it cannot poison
+ * the request transaction.
+ */
+async function readFallbackNoticeForView(orgId: string, status: PortalEntraTenantStatus): Promise<PortalPasswordFallbackNotice | null> {
+  try {
+    return await readFallbackNotice(orgId, status);
+  } catch (err) {
+    console.error('[orgPortalEntraTenant] password-fallback notice read failed', { orgId }, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
+
 export function registerPortalEntraTenantRoutes(orgRoutes: Hono): void {
   const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
   const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
@@ -161,7 +178,7 @@ export function registerPortalEntraTenantRoutes(orgRoutes: Hono): void {
       const consentUrl = status.state === 'proven' && status.tenantId
         ? buildPortalAppAdminConsentUrl(cfg, status.tenantId)
         : null;
-      const passwordFallback = await readFallbackNotice(org.id, status);
+      const passwordFallback = await readFallbackNoticeForView(org.id, status);
       return c.json({ data: { ...status, consentUrl, passwordFallback } });
     },
   );
