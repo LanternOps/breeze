@@ -19,6 +19,7 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import {
   parsePositiveIntEnv,
@@ -78,16 +79,24 @@ export function getFilesystemSnapshotRetentionQueue(): Queue {
 export async function runFilesystemSnapshotRetention(
   job: FilesystemSnapshotRetentionJobData = {},
 ): Promise<RetentionTargetResult> {
-  return runRetentionTarget(
-    FILESYSTEM_SNAPSHOT_RETENTION_TARGET,
-    {
-      retentionDays: resolveRetentionDays(job.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS),
-      batchSize: Math.max(1, job.batchSize ?? BATCH_SIZE),
-      maxBatches: Math.max(1, job.maxBatches ?? MAX_BATCHES),
-      enforce: ENFORCE && !job.forceReport,
-    },
-    { logPrefix: LOG_PREFIX, label: 'filesystemSnapshotRetention', enforceVar: ENFORCE_VAR },
-  );
+  try {
+    return await runRetentionTarget(
+      FILESYSTEM_SNAPSHOT_RETENTION_TARGET,
+      {
+        retentionDays: resolveRetentionDays(job.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS, LOG_PREFIX),
+        batchSize: Math.max(1, job.batchSize ?? BATCH_SIZE),
+        maxBatches: Math.max(1, job.maxBatches ?? MAX_BATCHES),
+        enforce: ENFORCE && !job.forceReport,
+      },
+      { logPrefix: LOG_PREFIX, label: 'filesystemSnapshotRetention', enforceVar: ENFORCE_VAR },
+    );
+  } catch (err) {
+    // A run that throws (e.g. a statement timeout on the count) must not
+    // leave last night's gauges reading as current evidence: flag the run
+    // incomplete, as runRetentionTargets does, and let BullMQ fail the job.
+    recordRetentionRun('filesystem_snapshot_retention', { incomplete: true });
+    throw err;
+  }
 }
 
 export function createFilesystemSnapshotRetentionWorker(): Worker<FilesystemSnapshotRetentionJobData> {

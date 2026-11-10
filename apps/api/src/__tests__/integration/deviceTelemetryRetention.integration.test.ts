@@ -41,7 +41,11 @@ import { getTestDb } from './setup';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.now();
+const HOUR_MS = 60 * 60 * 1000;
 const daysAgo = (d: number) => new Date(NOW - d * DAY_MS);
+/** One hour either side of a `days`-day cutoff: the strict `<` and the UTC wall-time compare. */
+const justPast = (days: number) => new Date(NOW - days * DAY_MS - HOUR_MS);
+const justInside = (days: number) => new Date(NOW - days * DAY_MS + HOUR_MS);
 const KNOBS = { batchSize: 2, maxBatches: 50 };
 
 type CommandSeed = {
@@ -151,6 +155,15 @@ describe('device telemetry retention (#4342 W1, real Postgres)', () => {
       expect(after).toEqual(before);
     });
 
+    it('splits rows an hour either side of the cutoff', async () => {
+      const past = await command({ type: 'script', status: 'completed', createdAt: justPast(120) });
+      const inside = await command({ type: 'script', status: 'completed', createdAt: justInside(120) });
+      await runDeviceCommandRetention({ ...KNOBS, retentionDays: 120 });
+      const left = await surviving([past, inside]);
+      expect(left.has(past)).toBe(false);
+      expect(left.has(inside)).toBe(true);
+    });
+
     it('never runs below the 90-day install lookback, even when the payload asks for less', async () => {
       expect(commandKnobs.MIN_RETENTION_DAYS).toBe(90);
       const inside = await command({ type: 'install_patches', status: 'failed', createdAt: daysAgo(60) });
@@ -177,6 +190,11 @@ describe('device telemetry retention (#4342 W1, real Postgres)', () => {
       const c3 = await snapshot('C:\\', daysAgo(10));
       const cRecent = await snapshot('C:\\', daysAgo(1));
       const dOnly = await snapshot('D:\\', daysAgo(40));
+      // Another device's only C:\ scan: correlated on device_id, so this
+      // device's newer C:\ rows must not supersede it.
+      const [otherDevice] = await getTestDb().insert(deviceFilesystemSnapshots).values({
+        deviceId: otherDeviceId, orgId, scanPath: 'C:\\', capturedAt: daysAgo(40),
+      }).returning({ id: deviceFilesystemSnapshots.id });
 
       const report = await runFilesystemSnapshotRetention({ ...KNOBS, retentionDays: 7, forceReport: true });
       const enforce = await runFilesystemSnapshotRetention({ ...KNOBS, retentionDays: 7 });
@@ -186,6 +204,9 @@ describe('device telemetry retention (#4342 W1, real Postgres)', () => {
       // Old C:\ rows all have a newer row; only the recent one is newest. D:\ keeps its only scan.
       expect(new Set(rows.map((r) => r.id))).toEqual(new Set([cRecent, dOnly]));
       expect([c1, c2, c3].some((id) => rows.some((r) => r.id === id))).toBe(false);
+      const otherRows = await getTestDb().select({ id: deviceFilesystemSnapshots.id }).from(deviceFilesystemSnapshots)
+        .where(eq(deviceFilesystemSnapshots.deviceId, otherDeviceId));
+      expect(otherRows.map((r) => r.id)).toEqual([otherDevice!.id]);
       expect(affected(enforce)).toBe(3);
       expect(eligible(report)).toBe(3);
     });
@@ -251,16 +272,19 @@ describe('device telemetry retention (#4342 W1, real Postgres)', () => {
       const recentClosed = await session(false, daysAgo(100), daysAgo(99));
       // Logged in long ago, logged out inside the window: aged by logout_at.
       const lateLogout = await session(false, daysAgo(500), daysAgo(10));
+      // An hour either side of the cutoff.
+      const justPastCutoff = await session(false, daysAgo(500), justPast(365));
+      const justInsideCutoff = await session(false, daysAgo(500), justInside(365));
 
       const report = await runDeviceSessionRetention({ ...KNOBS, retentionDays: 365, forceReport: true });
       const enforce = await runDeviceSessionRetention({ ...KNOBS, retentionDays: 365 });
 
       const rows = await getTestDb().select({ id: deviceSessions.id }).from(deviceSessions)
         .where(eq(deviceSessions.deviceId, deviceId));
-      expect(new Set(rows.map((r) => r.id))).toEqual(new Set([oldActive, recentClosed, lateLogout]));
-      expect([oldClosed, oldClosedNoLogout].some((id) => rows.some((r) => r.id === id))).toBe(false);
-      expect(affected(enforce)).toBe(2);
-      expect(eligible(report)).toBe(2);
+      expect(new Set(rows.map((r) => r.id))).toEqual(new Set([oldActive, recentClosed, lateLogout, justInsideCutoff]));
+      expect([oldClosed, oldClosedNoLogout, justPastCutoff].some((id) => rows.some((r) => r.id === id))).toBe(false);
+      expect(affected(enforce)).toBe(3);
+      expect(eligible(report)).toBe(3);
     });
   });
 });

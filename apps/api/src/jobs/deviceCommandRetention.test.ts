@@ -1,11 +1,12 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { upsertJobSchedulerMock, runTargetMock } = vi.hoisted(() => ({
+const { upsertJobSchedulerMock, runTargetMock, recordRunMock } = vi.hoisted(() => ({
   upsertJobSchedulerMock: vi.fn(),
   runTargetMock: vi.fn(),
+  recordRunMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -23,6 +24,7 @@ vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }))
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./retentionTarget', () => ({ runRetentionTarget: runTargetMock }));
+vi.mock('../services/retentionMetrics', () => ({ recordRetentionRun: recordRunMock }));
 vi.mock('../db', () => ({
   db: { execute: vi.fn(), select: vi.fn() },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -38,6 +40,10 @@ async function load() {
 }
 
 describe('device_commands retention (#4342 W1)', () => {
+  // Each test re-imports after vi.resetModules(); transform the module graph
+  // once up front so the first test does not pay it against the 5 s timeout.
+  beforeAll(async () => { await load(); }, 60_000);
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
@@ -158,5 +164,18 @@ describe('device_commands retention (#4342 W1)', () => {
       { pattern: jobSchedule('device-command-retention') },
       expect.objectContaining({ data: { retentionDays: 120, batchSize: 1000, maxBatches: 100 } }),
     );
+  });
+
+  it('flags the run incomplete and rethrows when the sweep throws, so stale report evidence is visible', async () => {
+    const { runDeviceCommandRetention } = await load();
+    runTargetMock.mockRejectedValueOnce(new Error('statement timeout'));
+    await expect(runDeviceCommandRetention()).rejects.toThrow('statement timeout');
+    expect(recordRunMock).toHaveBeenCalledWith('device_command_retention', { incomplete: true });
+  });
+
+  it('records nothing itself on a successful run (the runner owns the success metrics)', async () => {
+    const { runDeviceCommandRetention } = await load();
+    await runDeviceCommandRetention();
+    expect(recordRunMock).not.toHaveBeenCalled();
   });
 });
