@@ -527,7 +527,7 @@ export default function AiChatSidebar() {
                 {errorCode === "credits_exhausted" && (
                   <BuyCreditsLink className="ml-2 shrink-0 text-xs font-medium text-red-300 underline underline-offset-2 hover:text-red-200" />
                 )}
-                {errorCode === "session_closed" && (
+                {errorCode === "session_closed" && !wisp && (
                   <button
                     type="button"
                     data-testid="ai-session-closed-new-session"

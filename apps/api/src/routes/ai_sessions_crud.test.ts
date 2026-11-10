@@ -713,7 +713,7 @@ describe('AI routes', () => {
     });
 
     it('#11609: a session closed elsewhere is a coded 410 (session_closed), not a bare 400', async () => {
-      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'This conversation was closed. Please start a new session.' });
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'This conversation was closed. Please start a new session.', sessionRefusal: 'session_closed' });
 
       const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
         method: 'POST',

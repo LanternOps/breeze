@@ -620,6 +620,33 @@ describe('aiStore — a session closed elsewhere never loses the typed message (
     expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(1);
   });
 
+  it('a second closed refusal on the fresh session is not retried forever; the text goes back to the composer', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/messages')) return closed410();
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+
+    expect(messagePosts()).toHaveLength(2);
+    const s = useAiStore.getState();
+    expect(s.composerDraft).toBe('hello');
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(0);
+  });
+
+  it('a Wisp roll whose session create fails gives the text back and re-sends nothing', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/messages')) return closed410();
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ error: 'Wisp is paused for this organization' }, 403);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+
+    expect(messagePosts()).toHaveLength(1);
+    expect(useAiStore.getState().composerDraft).toBe('hello');
+    expect(useAiStore.getState().error).toBeTruthy();
+  });
+
   it('a plain chat keeps the text in the composer and shows a plain-words, coded error (no raw "Session is not active")', async () => {
     useAiStore.setState({ wisp: null });
     fetchMock.mockImplementation(async (url: string) => {
@@ -631,7 +658,8 @@ describe('aiStore — a session closed elsewhere never loses the typed message (
     const s = useAiStore.getState();
     expect(s.composerDraft).toBe('hello');
     expect(s.errorCode).toBe('session_closed');
-    expect(s.error).toBeTruthy();
+    expect(s.error).toBe(i18n.t('ai:sessionClosed.message'));
+    expect(s.error).not.toBe('ai:sessionClosed.message');
     expect(s.error).not.toMatch(/not active/i);
     expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(0);
     expect(s.isStreaming).toBe(false);

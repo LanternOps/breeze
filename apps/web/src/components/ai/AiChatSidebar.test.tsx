@@ -188,6 +188,16 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
       expect(createSession).toHaveBeenCalledTimes(1);
     });
 
+    it('does not offer a plain session while Wisp is bound (the thread rolls on its own grant)', () => {
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true,
+        wisp: { grantId: 'grant-1' },
+        error: 'This conversation was closed somewhere else.', errorCode: 'session_closed',
+      });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-session-closed-new-session')).toBeNull();
+    });
+
     it('does not offer it for other errors', () => {
       vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, error: 'Rate limit exceeded', errorCode: null });
       render(<AiChatSidebar />);

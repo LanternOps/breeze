@@ -1165,7 +1165,7 @@ export const useAiStore = create<AiState>()(
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           if (!ownsStream()) return;
           if (await rollWispSession(get, model, { closeOld: false })) {
-            console.info(`[AiStore] Wisp session ${currentSessionId} had expired; continuing the thread on a fresh session`);
+            console.info(`[AiStore] Wisp session ${currentSessionId} was ${refusal === 'closed' ? 'closed elsewhere' : 'expired'}; continuing the thread on a fresh session`);
             resendingAfterRoll = true;
             try {
               await get().sendMessage(trimmedContent);
