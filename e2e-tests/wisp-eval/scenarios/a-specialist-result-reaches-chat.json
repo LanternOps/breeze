@@ -20,7 +20,7 @@
     { "kind": "reply_not_matches", "step": "verdict", "flags": "i",
       "pattern": "(do(n'?t| not) have (a|the) (verdict|result)|nothing has come back|has(n'?t| not) (come back|reported|finished)|not (back|finished|done) yet|still (running|working|waiting))",
       "note": "#11671: Wisp says the specialist has not reported although its report is in the thread" },
-    { "kind": "max_tool_calls", "step": "verdict", "max": 0,
+    { "kind": "max_tool_calls", "step": "verdict", "max": 0, "origin": "chat",
       "note": "#11671 acceptance: the verdict comes from the delivered result with no tool call. Without delivery Wisp either re-reads the device (2026-11-10: get_device_details, wrong answer) or fetches the run itself (get_ai_agent_run)" }
   ]
 }

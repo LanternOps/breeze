@@ -17,7 +17,9 @@ const WATCH = [
 // Error banners above the composer: /wisp has a test id; the pane banner does not, so match its classes.
 const BANNERS = ['[data-testid="wisp-home-thread-error"]', '[data-testid="ai-chat-sidebar"] div.border-red-800\\/50'];
 // Exact text: has-text("Approve") also matches the "Approved" buttons of decided cards and loops forever.
-const APPROVE = (root) => `${root} button:text-is("Approve"):not([disabled])`;
+// Buttons already on the page before the turn (an earlier run's card still awaiting approval in the
+// thread history) are tagged data-wisp-eval-old and ignored: this turn acts only on its own cards.
+const APPROVE = (root) => `${root} button:text-is("Approve"):not([disabled]):not([data-wisp-eval-old])`;
 
 const threadSelector = (door) => (door === 'pane' ? '[data-testid="ai-chat-sidebar"]' : '[data-testid="wisp-home-thread"]');
 
@@ -70,15 +72,24 @@ async function fillAndSend(p, text) {
   await p.click('[data-testid="ai-chat-send"]');
 }
 
+async function tagOldButtons(p) {
+  await p.evaluate(() => {
+    for (const b of document.querySelectorAll('button')) if (['Approve', 'Deny'].includes(b.innerText.trim())) b.setAttribute('data-wisp-eval-old', '1');
+  });
+}
+
+// Text of the first new card, which is also tagged data-wisp-eval-card so Deny can be scoped to it.
 async function cardText(p) {
   return p.evaluate(() => {
-    const b = [...document.querySelectorAll('button')].find((x) => x.innerText.trim() === 'Approve' && !x.disabled);
+    const b = [...document.querySelectorAll('button')].find((x) => x.innerText.trim() === 'Approve' && !x.disabled && !x.hasAttribute('data-wisp-eval-old'));
     if (!b) return null;
     let n = b;
     for (let i = 0; i < 8 && n.parentElement; i++) {
       n = n.parentElement;
       if (/Approval/i.test(n.innerText) && n.innerText.length > 60) break;
     }
+    document.querySelectorAll('[data-wisp-eval-card]').forEach((e) => e.removeAttribute('data-wisp-eval-card'));
+    n.setAttribute('data-wisp-eval-card', '1');
     return n.innerText.replace(/\n+/g, ' | ').slice(0, 1500);
   });
 }
@@ -107,6 +118,7 @@ async function sendTurn(s, opts) {
   const netStart = s.net.length;
   const errStart = s.errs.length;
   await installWatchers(p);
+  await tagOldButtons(p);
   const startedAt = new Date();
   const t0 = Date.now();
   await fillAndSend(p, text);
@@ -139,7 +151,8 @@ async function sendTurn(s, opts) {
         await ab.first().click();
         handled++;
       } else if (approve === 'deny') {
-        await p.locator('button:text-is("Deny")').first().click();
+        const scoped = p.locator('[data-wisp-eval-card] button:text-is("Deny")');
+        await ((await scoped.count()) ? scoped : p.locator('button:text-is("Deny"):not([data-wisp-eval-old])')).first().click();
         handled++;
         await p.waitForTimeout(800);
         const c = p.locator('button:has-text("Confirm"), button:has-text("Deny action")');

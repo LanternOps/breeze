@@ -52,8 +52,23 @@ for _ in $(seq 1 60); do
 done
 
 n=0
+last=""
 for sid in $(q "select s.id from ai_sessions s where s.status = 'active' and s.wisp_grant_id is not null"); do
   api DELETE "/ai/sessions/$sid" >/dev/null 2>&1 || q "update ai_sessions set status = 'closed', updated_at = now() where id = '$sid'" >/dev/null
   n=$((n + 1))
+  last="$sid"
 done
 say "reset: closed $n Wisp chat sessions"
+
+# Closing a session writes its summary onto the thread in the background (a model step), and the
+# next session of the thread is handed that summary. Wait for it, then clear it: otherwise the
+# previous scenario's conversation leaks into the next one (seen: the attention answer citing a
+# ticket that only the injection scenario had discussed).
+if [ -n "$last" ]; then
+  for _ in $(seq 1 15); do
+    [ "$(q "select count(*) from wisp_threads where summary_session_id = '$last'")" != "0" ] && break
+    sleep 2
+  done
+fi
+qsys "update wisp_threads set summary = '', summary_session_id = null, summary_updated_at = null where summary <> ''" >/dev/null
+say "reset: cleared the thread summary"

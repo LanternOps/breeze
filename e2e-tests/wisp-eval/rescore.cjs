@@ -6,6 +6,8 @@
 // Use it to tune a check against real observations, and to prove a guard can fail:
 // doctor one expectation in a scenario file, re-score, see it go red, restore the file.
 // Only checks are re-evaluated; steps are not replayed, so a changed step list needs a real run.
+// An sql_equals check whose SQL text changed shows "query was not run": SQL results are
+// stored per query text, so a new query needs a real run too.
 const fs = require('fs');
 const path = require('path');
 const { scoreScenario, bucketFor, summarize, markdownTable, validateScenario } = require('./score.cjs');
@@ -35,7 +37,9 @@ for (const r of report.results) {
 const summary = summarize(results);
 console.log(markdownTable({ results, summary }));
 for (const r of results) {
-  if (r.bucket !== r.was) console.log(`\n${r.id}: ${r.was} -> ${r.bucket}`);
-  for (const c of r.checks.filter((x) => !x.ok)) console.log(`  FAIL ${c.precondition ? '[pre] ' : ''}${c.kind}${c.step ? ' @' + c.step : ''}: expected ${c.expected}; observed ${String(c.observed).slice(0, 200)}${c.detail ? ` (${c.detail})` : ''}`);
+  const failed = r.checks.filter((x) => !x.ok);
+  if (r.bucket === r.was && !failed.length) continue;
+  console.log(`\n${r.id}: ${r.was === r.bucket ? r.bucket : `${r.was} -> ${r.bucket}`}`);
+  for (const c of failed) console.log(`  FAIL ${c.precondition ? '[pre] ' : ''}${c.kind}${c.step ? ' @' + c.step : ''}: expected ${c.expected}; observed ${String(c.observed).slice(0, 200)}${c.detail ? ` (${c.detail})` : ''}`);
 }
 process.exit(summary.exitCode);

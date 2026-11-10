@@ -241,6 +241,21 @@ test('a failed precondition makes the run inconclusive, which is never hidden as
   assert.equal(met.passed, true);
 });
 
+test('origin filter separates the chat model\'s own tool calls from a specialist run\'s', () => {
+  const obs = {
+    ...observed,
+    tools: [
+      { step: 'ask', tool: 'get_ai_agent_run', status: 'completed', input: '{}', origin: 'chat' },
+      { step: 'ask', tool: 'execute_command', status: 'completed', input: '{}', origin: 'run' },
+    ],
+  };
+  assert.equal(evaluateCheck({ kind: 'max_tool_calls', step: 'ask', max: 1, origin: 'chat' }, obs).ok, true);
+  assert.equal(evaluateCheck({ kind: 'max_tool_calls', step: 'ask', max: 1 }, obs).ok, false);
+  assert.equal(evaluateCheck({ kind: 'tool_not_called', tool: 'execute_command', origin: 'chat' }, obs).ok, true);
+  assert.equal(evaluateCheck({ kind: 'tool_called', tool: 'execute_command', origin: 'chat' }, obs).ok, false);
+  assert.match(validateScenario({ id: 'o', title: 't', expect: 'pass', door: 'wisp', steps: [{ name: 'a', type: 'say', text: 'x' }], checks: [{ kind: 'max_tool_calls', max: 1, origin: 'agent' }] }).join('\n'), /origin/);
+});
+
 test('validateScenario resolves {{templates}} only in known places and rejects unknown template names', () => {
   const s = {
     id: 't', title: 't', expect: 'pass', door: 'pane', panePath: '/devices/{{device:NW-FS-01}}',

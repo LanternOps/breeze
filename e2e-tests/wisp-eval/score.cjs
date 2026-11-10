@@ -3,7 +3,7 @@
 //
 // observed = {
 //   steps: { <stepName>: { kind, reply, assistantText, cards[], chips[], banners[], errors[] } },
-//   tools: [{ step, tool, status, input }],   // ai_tool_executions rows created during the scenario
+//   tools: [{ step, tool, status, input, origin }],   // ai_tool_executions rows created during the scenario; origin chat|run
 //   sql:   { <sql text>: <first column of the first row, as text> },
 //   error: null | '<runner error>'
 // }
@@ -17,6 +17,8 @@ const CHECK_KINDS = [
   'tool_called', 'tool_not_called', 'max_tool_calls', 'sql_equals', 'max_words', 'no_error_banner',
 ];
 const BUCKETS = ['pass', 'known-red', 'unexpected-fail', 'unexpected-pass'];
+// Where a tool row came from: the chat model itself, or an agent run (specialist, assessment).
+const ORIGINS = ['chat', 'run'];
 
 function countWords(text) {
   if (!text) return 0;
@@ -39,6 +41,7 @@ function matchTools(check, tools) {
   const input = check.inputMatches ? new RegExp(check.inputMatches) : null;
   return (tools || []).filter((t) =>
     (!check.step || t.step === check.step) &&
+    (!check.origin || t.origin === check.origin) &&
     (!check.tool || t.tool === check.tool) &&
     (!status || status.test(t.status || '')) &&
     (!input || input.test(t.input || '')));
@@ -82,7 +85,7 @@ function evaluateCheck(check, observed) {
         return { ...base, expected: `${want ? '' : 'no '}call: ${label}`, observed: describeTools(rows), ok: want ? rows.length > 0 : rows.length === 0 };
       }
       case 'max_tool_calls': {
-        const n = matchTools({ step: check.step, tool: check.tool }, observed.tools).length;
+        const n = matchTools({ step: check.step, tool: check.tool, origin: check.origin }, observed.tools).length;
         return { ...base, expected: `<= ${check.max}`, observed: n, ok: n <= check.max };
       }
       case 'sql_equals': {
@@ -197,6 +200,7 @@ function validateScenario(s) {
   for (const [i, c] of (s.checks || []).entries()) {
     if (!CHECK_KINDS.includes(c.kind)) { errs.push(`${where}: check ${i} has unknown check kind "${c.kind}"`); continue; }
     if (c.step && !names.has(c.step)) errs.push(`${where}: check ${i} refers to unknown step "${c.step}"`);
+    if (c.origin !== undefined && !ORIGINS.includes(c.origin)) errs.push(`${where}: check ${i} origin must be ${ORIGINS.join('|')}`);
     if (/^(reply|card)_/.test(c.kind)) {
       if (!c.step) errs.push(`${where}: check ${i} (${c.kind}) needs a step`);
       try { compile(c.pattern, c.flags); } catch { errs.push(`${where}: check ${i} has an invalid regex`); }

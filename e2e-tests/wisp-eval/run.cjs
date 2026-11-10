@@ -141,9 +141,11 @@ async function runScenario(sc) {
 
   // What the model really did: tool rows and assistant text, attributed to the step whose window holds them.
   const stepOf = (at) => (windows.find((w) => at >= w.from && at <= w.to) || {}).name || null;
-  const toolRows = rows(`select to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at, tool_name, status::text as status, tool_input::text as input
-                         from ai_tool_executions where created_at >= ${lit(ctx.since)}::timestamptz order by created_at`);
-  observed.tools = toolRows.map((t) => ({ step: stepOf(t.at), tool: t.tool_name, status: t.status, input: t.input }));
+  const toolRows = rows(`select to_char(e.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at, e.tool_name, e.status::text as status, e.tool_input::text as input,
+                                case when exists (select 1 from ai_agent_runs r where r.session_id = e.session_id) or s.agent_id is not null then 'run' else 'chat' end as origin
+                         from ai_tool_executions e left join ai_sessions s on s.id = e.session_id
+                         where e.created_at >= ${lit(ctx.since)}::timestamptz order by e.created_at`);
+  observed.tools = toolRows.map((t) => ({ step: stepOf(t.at), tool: t.tool_name, status: t.status, input: t.input, origin: t.origin }));
   const msgRows = rows(`select to_char(m.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at, m.role::text as role, coalesce(m.content, '') as content
                         from ai_messages m where m.created_at >= ${lit(ctx.since)}::timestamptz and m.role in ('assistant', 'user') order by m.created_at`);
   for (const w of windows.filter((x) => x.say)) {
@@ -162,7 +164,7 @@ async function runScenario(sc) {
     id: sc.id, title: sc.title, issue: sc.issue || null, expect: sc.expect, bucket, passed: score.passed,
     error: runError, checks: score.checks, notes,
     toolCalls: observed.tools.length,
-    tools: observed.tools.map((t) => `${t.step || '-'}:${t.tool}:${t.status}`),
+    tools: observed.tools.map((t) => `${t.step || '-'}:${t.origin}:${t.tool}:${t.status}`),
     words: Object.values(observed.steps).reduce((a, st) => a + countWords(st.assistantText), 0),
     userTurns: msgRows.filter((m) => m.role === 'user').length,
     agentRuns: runs,
