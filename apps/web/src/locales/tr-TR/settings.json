@@ -7767,7 +7767,8 @@
       "toasts": {
         "invited": "Portal daveti gönderildi",
         "inviteEmailFailed": "Portal girişi oluşturuldu ancak davet e-postası gönderilemedi. Daveti yeniden gönder seçeneğini kullanın.",
-        "bulkSummary": "Portal erişimi: {{details}}"
+        "bulkSummary": "Portal erişimi: {{details}}",
+        "resendEmailFailed": "Davet e-postası gönderilemedi. Daha sonra Daveti yeniden gönder seçeneğini tekrar deneyin."
       },
       "outcomes": {
         "invited": "Davet edilen: {{count}}",

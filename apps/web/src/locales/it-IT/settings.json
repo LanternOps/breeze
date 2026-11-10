@@ -7767,7 +7767,8 @@
       "toasts": {
         "invited": "Invito al portale inviato",
         "inviteEmailFailed": "Accesso al portale creato, ma non è stato possibile inviare l’e-mail di invito. Usa Reinvia invito.",
-        "bulkSummary": "Accesso al portale: {{details}}"
+        "bulkSummary": "Accesso al portale: {{details}}",
+        "resendEmailFailed": "Non è stato possibile inviare l’e-mail di invito. Riprova più tardi con Reinvia invito."
       },
       "outcomes": {
         "invited": "Invitati: {{count}}",

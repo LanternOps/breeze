@@ -180,6 +180,17 @@ describe('giveContactPortalAccess', () => {
   });
 });
 
+describe('giveContactPortalAccess resend', () => {
+  it('uses its own warning copy when a resend email could not be sent', async () => {
+    fetchWithAuthMock.mockImplementation(() => json({ data: { id: 'p1' }, emailSent: false }));
+    await giveContactPortalAccess(ORG, { id: 'c1', email: 'ada@acme.test', name: null }, t, { resend: true });
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'warning',
+      message: 'settings:contactsCard.portal.toasts.resendEmailFailed',
+    }));
+  });
+});
+
 describe('giveContactsPortalAccess', () => {
   const results = [
     { contactId: 'c1', outcome: 'invited', portalUserId: 'p1', emailSent: true },

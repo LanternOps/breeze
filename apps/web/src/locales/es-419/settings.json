@@ -7767,7 +7767,8 @@
       "toasts": {
         "invited": "Invitación al portal enviada",
         "inviteEmailFailed": "Se creó el acceso al portal, pero no se pudo enviar el correo de invitación. Usa Reenviar invitación.",
-        "bulkSummary": "Acceso al portal: {{details}}"
+        "bulkSummary": "Acceso al portal: {{details}}",
+        "resendEmailFailed": "No se pudo enviar el correo de invitación. Vuelve a intentar con Reenviar invitación más tarde."
       },
       "outcomes": {
         "invited": "Invitados: {{count}}",

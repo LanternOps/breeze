@@ -7767,7 +7767,8 @@
       "toasts": {
         "invited": "Invitation au portail envoyée",
         "inviteEmailFailed": "Identifiant de portail créé, mais l’e-mail d’invitation n’a pas pu être envoyé. Utilisez Renvoyer l’invitation.",
-        "bulkSummary": "Accès au portail : {{details}}"
+        "bulkSummary": "Accès au portail : {{details}}",
+        "resendEmailFailed": "L’e-mail d’invitation n’a pas pu être envoyé. Réessayez plus tard avec Renvoyer l’invitation."
       },
       "outcomes": {
         "invited": "Invités : {{count}}",

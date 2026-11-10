@@ -7858,7 +7858,8 @@
       "toasts": {
         "invited": "Portal invite sent",
         "inviteEmailFailed": "Portal login created, but the invite email could not be sent. Use Resend invite.",
-        "bulkSummary": "Portal access: {{details}}"
+        "bulkSummary": "Portal access: {{details}}",
+        "resendEmailFailed": "The invite email could not be sent. Try Resend invite again later."
       },
       "outcomes": {
         "invited": "Invited: {{count}}",

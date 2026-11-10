@@ -169,6 +169,7 @@ export async function giveContactPortalAccess(
   orgId: string,
   contact: { id: string; email: string; name: string | null },
   t: TFunction,
+  opts: { resend?: boolean } = {},
 ): Promise<void> {
   const result = await runAction<{ emailSent?: boolean }>({
     request: () => fetchWithAuth(`${base(orgId)}/invite`, {
@@ -183,7 +184,12 @@ export async function giveContactPortalAccess(
     onUnauthorized: unauthorized,
   });
   if (result?.emailSent === false) {
-    showToast({ type: 'warning', message: t('settings:contactsCard.portal.toasts.inviteEmailFailed') });
+    showToast({
+      type: 'warning',
+      message: opts.resend
+        ? t('settings:contactsCard.portal.toasts.resendEmailFailed')
+        : t('settings:contactsCard.portal.toasts.inviteEmailFailed'),
+    });
   } else {
     showToast({ type: 'success', message: t('settings:contactsCard.portal.toasts.invited') });
   }
