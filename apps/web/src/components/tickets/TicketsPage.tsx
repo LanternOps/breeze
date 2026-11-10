@@ -25,6 +25,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { pushUrl, replaceUrl, URL_CHANGE_EVENT } from '../../lib/replaceUrl';
+import { claimSamePageHistory } from '../../lib/samePageHistory';
 import { TICKET_FOCUS_SUBJECT_ID } from './TicketFocusHeader';
 import type { TicketType } from './ticketType';
 import { showBulkOutcomeToast, type BulkResult } from './ticketBulkOutcome';
@@ -66,6 +67,13 @@ function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus
 }
 
 const isClosedStatus = (status: TicketStatus): boolean => status === 'resolved' || status === 'closed';
+
+/** Marks, in history.state, the entry openFocus pushed when it opened a ticket
+ *  from the board: the entry before it is that board. Kept in the entry
+ *  itself so it survives Back / Forward, a remount and a reload. */
+const FOCUS_ENTRY_MARK = 'breezeTicketsFocus';
+const onFocusEntryFromBoard = (): boolean =>
+  (window.history.state as Record<string, unknown> | null)?.[FOCUS_ENTRY_MARK] === true;
 
 /** The open ticket the next-ticket offer names after `id` closes: the next one
  *  below it in the list, else the first open one above. */
@@ -178,9 +186,6 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   const fetchSeq = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const savedScroll = useRef(0);
-  // Whether the current history entry is the one openFocus pushed from the
-  // board, so leaving focus can step back through it (see backToTriage).
-  const focusEntryPushed = useRef(false);
   // This page's own path + query, kept current by writeHash: a popstate that
   // stays on it is a step between the board and a ticket opened from it.
   const pagePath = useRef<string | null>(null);
@@ -203,7 +208,7 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
     const hash = hashFor(selection, sortValue, typeValue || null, mergedValue);
     // From /tickets/[id] the first move lands on the canonical /tickets URL.
     const url = routeTicketId ? `/tickets${window.location.search}${hash}` : (hash || window.location.pathname + window.location.search);
-    if (opts?.push) pushUrl(url);
+    if (opts?.push) pushUrl(url, { [FOCUS_ENTRY_MARK]: true });
     else replaceUrl(url);
     pagePath.current = window.location.pathname + window.location.search;
   }, [setQueueHash, showMerged, routeTicketId]);
@@ -519,10 +524,9 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
     // now, outside the board that is about to be hidden.
     pendingIntent.current = { id: ticket.id, kind };
     setAnnouncement(queueAnnouncement(ticket, config, t));
-    // From the board, a new history entry: Back returns to the board instead
-    // of leaving /tickets. Inside focus (j/k, the next-ticket offer) it is
-    // replaced, so Back never walks through every ticket seen.
-    if (fromBoard) focusEntryPushed.current = true;
+    // From the board, a new (marked) history entry: Back returns to the board
+    // instead of leaving /tickets. Inside focus (j/k, the next-ticket offer)
+    // it is replaced, mark and all, so Back never walks through every ticket seen.
     writeHash(ticket.internalNumber ?? ticket.id, sort, typeFilter, showMerged, { push: fromBoard });
   }, [inFocus, sort, typeFilter, showMerged, writeHash, config, t]);
   const openFocus = useCallback((ticket: TicketSummary) => openFocusWith(ticket, 'heading'), [openFocusWith]);
@@ -530,43 +534,33 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   const backToTriage = useCallback(() => {
     if (focusTicketId) setActiveId(focusTicketId);
     setNextOffer(null);
-    if (focusEntryPushed.current) {
-      // Step back through the entry openFocus pushed (the popstate handler
-      // below shows the board), so Esc, Back and Forward agree.
-      focusEntryPushed.current = false;
+    if (onFocusEntryFromBoard()) {
+      // Step back through the entry openFocus pushed (the popstate claim
+      // below shows the board), so Esc, Back and Forward agree. The mark is
+      // read from the entry, so it holds after Back then Forward too.
       window.history.back();
       return;
     }
     writeHash(null, sort, typeFilter);
   }, [focusTicketId, sort, typeFilter, writeHash]);
 
-  // Back / Forward between the board and a ticket opened from it.
-  const inFocusRef = useRef(inFocus);
-  inFocusRef.current = inFocus;
-  useEffect(() => {
-    const onPopState = (e: PopStateEvent) => {
-      // Leaving this page (another path or query) is the router's job.
-      if (window.location.pathname + window.location.search !== pagePath.current) return;
-      // A step between two of this page's own entries. Astro's router would
-      // take it for a navigation and, unless the location it last moved to
-      // happens to carry a hash, re-fetch and swap this same page
-      // (dist/transitions/router.js transition(): the same-page shortcut needs
-      // `direction === 'back' && from.hash`), remounting the board without
-      // its row, scroll or filters. This capture listener runs before the
-      // router's and keeps the step to itself. Null-state entries are left
-      // alone: the router ignores those already.
-      if (e.state !== null) e.stopImmediatePropagation();
-      const next = parseQueueHash(window.location.hash.replace(/^#/, ''));
-      // Forward from the board onto a ticket lands on an entry openFocus pushed.
-      focusEntryPushed.current = next.selection !== null && !inFocusRef.current;
-      setRouteFocus(null);
-      setQueueHash(next);
-      // The sidebar mirrors the URL; its own popstate listener was skipped.
-      window.dispatchEvent(new CustomEvent(URL_CHANGE_EVENT));
-    };
-    window.addEventListener('popstate', onPopState, true);
-    return () => window.removeEventListener('popstate', onPopState, true);
-  }, [setQueueHash]);
+  // Back / Forward between the board and a ticket opened from it. Astro's
+  // router would take the step for a navigation and, unless the location it
+  // last moved to carries a hash, re-fetch and swap this page, remounting the
+  // board without its row, scroll or filters. Its listener runs before any an
+  // island adds (Chromium: registration order), so the step is claimed
+  // through the hook that runs before the router (lib/samePageHistory.ts).
+  useEffect(() => claimSamePageHistory((e) => {
+    // Leaving this page (another path or query) is the router's job.
+    if (window.location.pathname + window.location.search !== pagePath.current) return false;
+    setRouteFocus(null);
+    setQueueHash(parseQueueHash(window.location.hash.replace(/^#/, '')));
+    // The sidebar mirrors the URL; its own popstate listener is skipped.
+    window.dispatchEvent(new CustomEvent(URL_CHANGE_EVENT));
+    // Entries without state (a plain hash assignment) the router ignores
+    // anyway; leave those to every other listener.
+    return e.state !== null;
+  }), [setQueueHash]);
 
   // Back on the board (Esc, the back button, browser Back): put the scroll
   // offset and the keyboard focus back on the row the tech left from.
@@ -575,7 +569,6 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
     const left = wasInFocus.current && !inFocus;
     wasInFocus.current = inFocus;
     if (!left) return;
-    focusEntryPushed.current = false;
     if (scrollRef.current) scrollRef.current.scrollTop = savedScroll.current;
     const row = activeId ? document.getElementById(queueOptionId(activeId)) : null;
     if (!row) return;

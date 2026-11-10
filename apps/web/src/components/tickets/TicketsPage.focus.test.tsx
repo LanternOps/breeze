@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import TicketsPage from './TicketsPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -378,7 +380,38 @@ describe('TicketsPage resolve toast', () => {
 });
 
 describe('TicketsPage browser history', () => {
-  it('opening a ticket from the board pushes one entry, keeping the router state; j/k in focus replace it', async () => {
+  // public/same-page-history.js, as every ClientRouter layout loads it: a
+  // classic script, so its popstate listener is installed before the router's.
+  beforeAll(() => {
+    // Our own committed file read from disk: executes the shipped script under test.
+    // eslint-disable-next-line no-new-func -- executes the trusted file under test
+    new Function(readFileSync(join(process.cwd(), 'public/same-page-history.js'), 'utf8'))();
+  });
+
+  // Stands in for Astro's <ClientRouter /> popstate listener. Chromium runs
+  // window listeners in registration order, capture or not, and the router's
+  // is registered at module load, before any island's. Registering this one as
+  // a capture listener before render gives that order under jsdom (which runs
+  // capture listeners first). Like the router on a same-page step whose last
+  // location carried no hash, it re-fetches and swaps the page: the island
+  // remounts with fresh state.
+  function renderWithRouter() {
+    let generation = 0;
+    let view: ReturnType<typeof render> | null = null;
+    const pops: unknown[] = [];
+    const router = (e: PopStateEvent) => {
+      if (e.state === null) return; // the router ignores state-less entries
+      pops.push(e.state);
+      generation += 1;
+      view?.rerender(<TicketsPage key={generation} />);
+    };
+    // Registered before the island renders, as the router is.
+    window.addEventListener('popstate', router, true);
+    view = render(<TicketsPage key={generation} />);
+    return { pops, uninstall: () => window.removeEventListener('popstate', router, true) };
+  }
+
+  it('opening a ticket from the board pushes one entry, marked as the ticket opened from the board; j/k in focus replace it', async () => {
     history.replaceState({ index: 7, scrollX: 0, scrollY: 0 }, '', '/tickets');
     mockApi();
     render(<TicketsPage />);
@@ -390,48 +423,82 @@ describe('TicketsPage browser history', () => {
       await waitFor(() => expect(window.location.hash).toBe('#T-1001'));
       expect(push).toHaveBeenCalledTimes(1);
       expect(window.history.length).toBe(before + 1);
-      // Astro's view-transition router reads its index from history.state.
-      expect(window.history.state).toEqual({ index: 7, scrollX: 0, scrollY: 0 });
+      // Astro's router fields survive; the mark travels with the entry itself,
+      // so Back / Forward / a remount cannot lose it.
+      expect(window.history.state).toEqual({ index: 7, scrollX: 0, scrollY: 0, breezeTicketsFocus: true });
 
       press('j');
       await waitFor(() => expect(window.location.hash).toBe('#T-1002'));
       expect(push).toHaveBeenCalledTimes(1);
       expect(window.history.length).toBe(before + 1);
+      expect(window.history.state).toEqual({ index: 7, scrollX: 0, scrollY: 0, breezeTicketsFocus: true });
     } finally {
       push.mockRestore();
     }
   });
 
-  it('browser Back from focus returns to the board with the active row restored, and the router never sees it', async () => {
-    // Stands in for Astro's popstate listener, registered at module load
-    // (before any island). For a same-page traversal it would re-fetch and
-    // swap this page unless its stale location carries a hash.
-    const routerPops: unknown[] = [];
-    const router = (e: PopStateEvent) => { routerPops.push(e.state); };
-    window.addEventListener('popstate', router);
+  it('browser Back from focus restores the active row\'s keyboard focus and scroll position, as Esc does, without the router re-rendering the page', async () => {
+    history.replaceState({ index: 3, scrollX: 0, scrollY: 0 }, '', '/tickets');
+    mockApi();
+    const router = renderWithRouter();
     try {
-      history.replaceState({ index: 3, scrollX: 0, scrollY: 0 }, '', '/tickets');
-      mockApi();
-      render(<TicketsPage />);
-      fireEvent.click(await screen.findByTestId('ticket-row-tk-2'));
+      await screen.findByTestId('ticket-row-tk-1');
+      screen.getByTestId('tickets-queue-scroll').scrollTop = 240;
+      fireEvent.click(screen.getByTestId('ticket-row-tk-2'));
       await screen.findByTestId('tickets-focus');
       press('j');
       await waitFor(() => expect(window.location.hash).toBe('#T-1003'));
+      screen.getByTestId('tickets-queue-scroll').scrollTop = 0; // a hidden scroller can lose its offset
 
       history.back();
 
       await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
       expect(window.location.pathname + window.location.hash).toBe('/tickets');
-      expect(screen.getByTestId('ticket-row-tk-3')).toHaveAttribute('aria-selected', 'true');
       await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('ticket-row-tk-3')));
-      expect(routerPops).toEqual([]);
+      expect(screen.getByTestId('ticket-row-tk-3')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('tickets-queue-scroll').scrollTop).toBe(240);
+      expect(router.pops).toEqual([]);
+    } finally {
+      router.uninstall();
+    }
+  });
 
-      // Forward opens it again.
+  // The browser repro: open → j → Back → Forward → Esc → Back must leave
+  // /tickets, so Esc after a Forward has to step back, not write the board
+  // over the ticket's entry.
+  it('after Back then Forward, Esc steps back through the pushed entry instead of replacing it', async () => {
+    history.replaceState({ index: 3, scrollX: 0, scrollY: 0 }, '', '/tickets');
+    mockApi();
+    const router = renderWithRouter();
+    try {
+      fireEvent.click(await screen.findByTestId('ticket-row-tk-1'));
+      await screen.findByTestId('tickets-focus');
+      press('j');
+      press('j');
+      await waitFor(() => expect(window.location.hash).toBe('#T-1003'));
+
+      history.back();
+      await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
       history.forward();
       await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-3'));
-      expect(routerPops).toEqual([]);
+      const length = window.history.length;
+
+      const back = vi.spyOn(window.history, 'back');
+      const replace = vi.spyOn(window.history, 'replaceState');
+      try {
+        press('Escape');
+        expect(back).toHaveBeenCalledTimes(1);
+        expect(replace).not.toHaveBeenCalled();
+        await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+        expect(window.location.pathname + window.location.hash).toBe('/tickets');
+        expect(window.history.length).toBe(length);
+        expect(router.pops).toEqual([]);
+      } finally {
+        back.mockRestore();
+        replace.mockRestore();
+      }
     } finally {
-      window.removeEventListener('popstate', router);
+      router.uninstall();
     }
   });
 
@@ -449,6 +516,22 @@ describe('TicketsPage browser history', () => {
 
     history.forward();
     await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-1'));
+  });
+
+  it('Esc on a ticket that was not opened from the board (a deep link) writes the board in place', async () => {
+    window.location.hash = '#T-1001';
+    mockApi();
+    render(<TicketsPage />);
+    await screen.findByTestId('tickets-focus');
+    const back = vi.spyOn(window.history, 'back');
+    try {
+      press('Escape');
+      await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+      expect(back).not.toHaveBeenCalled();
+      expect(window.location.hash).toBe('');
+    } finally {
+      back.mockRestore();
+    }
   });
 });
 

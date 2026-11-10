@@ -27,12 +27,15 @@ export function replaceUrl(url: string): void {
 /**
  * Add a history entry for `url` (Back returns to the current URL), carrying
  * `history.state` over so the router's index and scroll fields survive on the
- * new entry. Like `replaceUrl` it fires neither `hashchange` nor `popstate`,
- * so it announces the move with URL_CHANGE_EVENT.
+ * new entry. `marks` are added beside them: they travel with the entry through
+ * Back / Forward, a remount or a reload (the router and `replaceUrl` keep
+ * unknown fields). Like `replaceUrl` it fires neither `hashchange` nor
+ * `popstate`, so it announces the move with URL_CHANGE_EVENT.
  */
-export function pushUrl(url: string): void {
+export function pushUrl(url: string, marks?: Record<string, unknown>): void {
   if (typeof window === 'undefined') return;
-  window.history.pushState(window.history.state, '', url);
+  const state = marks ? { ...(window.history.state ?? {}), ...marks } : window.history.state;
+  window.history.pushState(state, '', url);
   window.dispatchEvent(new CustomEvent(URL_CHANGE_EVENT));
 }
 
