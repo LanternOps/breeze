@@ -1002,6 +1002,7 @@
       "contract_document": "Sözleşme belgesi",
       "contract_template": "Sözleşme şablonu",
       "custom_field": "Özel alan",
+      "customer_email_domain": "Müşteri e-posta alan adı",
       "deployment": "Dağıtım",
       "deployment_invite": "Dağıtım daveti",
       "deployment_target": "Dağıtım hedefi",

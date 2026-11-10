@@ -45,6 +45,34 @@ export function generateOwnershipToken(): string {
   return randomBytes(24).toString('hex');
 }
 
+export type TxtLookup =
+  | { kind: 'answer'; values: string[] }
+  | { kind: 'absent' }
+  | { kind: 'unavailable'; reason: 'dns_error' | 'timeout' };
+
+/**
+ * Resolves TXT values at `host` (each record's chunks joined, outer-trimmed),
+ * distinguishing "name has no TXT" (absent) from "could not ask" (unavailable).
+ * Never throws.
+ */
+export async function lookupTxtValues(host: string, timeoutMs = 5000): Promise<TxtLookup> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+  try {
+    const result = await Promise.race([getResolver().resolveTxt(host), timeout]);
+    if (result === 'timeout') return { kind: 'unavailable', reason: 'timeout' };
+    return { kind: 'answer', values: result.map((chunks) => chunks.join('').trim()) };
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code;
+    if (code === 'ENOTFOUND' || code === 'ENODATA') return { kind: 'absent' };
+    return { kind: 'unavailable', reason: 'dns_error' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * True iff a TXT record at `_breeze-verify.<domain>` equals `token` exactly.
  * Never throws: NXDOMAIN, no records, a resolver timeout, or any other DNS

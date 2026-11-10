@@ -8,6 +8,7 @@ import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m3
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
 import { getPortalEntraConfig } from './portalEntra';
+import { warnOnTrustedProxyCidrMismatch } from './proxyTrustBootCheck';
 import {
   OFFICIAL_RELEASE_REPOSITORY,
   RELEASE_SOURCE_REPOSITORY_SHAPE,
@@ -3267,6 +3268,10 @@ export function validateConfig(): AppConfig {
   // in the schema superRefine on declared keys — see #3374.)
 
   _config = result.data;
+
+  // #2987: advisory only — warn when TRUSTED_PROXY_CIDRS overlaps none of the
+  // subnets this process is attached to (stale pinned proxy address). Never throws.
+  warnOnTrustedProxyCidrMismatch(env);
 
   // #1412: surface an off-default AI route at boot so there is an audit trail
   // (and a self-hoster sees confirmation their backend is active). Reaching

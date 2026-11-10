@@ -184,12 +184,24 @@ vi.mock('./ticketService', async () => {
   return { ...actual, createTicket: createTicketMock };
 });
 
+// The domain views are built by the verification service (its own suite covers
+// them); here they are a marker so the tests prove WHICH columns the CRUD paths
+// select and that every returned row passes through the view builder.
+const { viewSpy } = vi.hoisted(() => ({ viewSpy: vi.fn() }));
+vi.mock('./portalDomainVerification', () => ({
+  customerDomainRowColumns: () => ({ id: 'id', domain: 'domain', orgId: 'orgId' }),
+  buildCustomerDomainViews: async (rows: Array<Record<string, unknown>>) => {
+    viewSpy(rows);
+    return rows.map((r) => ({ ...r, viewed: true }));
+  },
+}));
+
 import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
   upsertPrioritySettings, upsertOrgTicketSettings, getOrgTicketSettings,
   TicketConfigServiceError, findStatusByName, listActiveStatusNames,
   listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
-  createCustomerEmailDomain,
+  createCustomerEmailDomain, updateCustomerEmailDomain, listCustomerEmailDomains,
 } from './ticketConfigService';
 
 const PARTNER = 'p-1';
@@ -839,7 +851,9 @@ describe('createCustomerEmailDomain', () => {
       { orgId: 'o-1', domain: 'acme.com', autoCreateContact: true },
       DOMAIN_ACTOR,
     );
-    expect(row).toEqual({ id: 'd-1', domain: 'acme.com', orgId: 'o-1' });
+    // returned through the explicit projection + view builder, never the raw row
+    expect(row).toEqual({ id: 'd-1', domain: 'acme.com', orgId: 'o-1', viewed: true });
+    expect(viewSpy).toHaveBeenCalledTimes(1);
   });
 
   it('throws ORG_NOT_ACCESSIBLE when the org is not under the partner', async () => {
@@ -858,5 +872,48 @@ describe('createCustomerEmailDomain', () => {
     await expect(
       createCustomerEmailDomain(PARTNER, { orgId: 'o-1', domain: 'acme.com', autoCreateContact: true }, DOMAIN_ACTOR),
     ).rejects.toMatchObject({ status: 409, code: 'DOMAIN_ALREADY_MAPPED' });
+  });
+});
+
+// ── updateCustomerEmailDomain / listCustomerEmailDomains ──────────────────
+
+describe('updateCustomerEmailDomain', () => {
+  it('writes only orgId / autoCreateContact / isActive, even if the input carries verification columns', async () => {
+    dbMocks.updateResult = [{ id: 'd-1', domain: 'acme.com', orgId: 'o-1' }];
+    const hostile = {
+      isActive: false,
+      verifiedAt: new Date(), verifiedMethod: 'dns_txt', verificationToken: 'x', verifiedEvidence: { via: 'x' },
+    } as unknown as Parameters<typeof updateCustomerEmailDomain>[2];
+    const row = await updateCustomerEmailDomain(PARTNER, 'd-1', hostile);
+    expect(Object.keys(dbMocks.updateSetArgs[0]!).sort()).toEqual(['isActive', 'updatedAt']);
+    expect(row).toMatchObject({ id: 'd-1', viewed: true });
+  });
+
+  it('picks orgId (the repoint) and autoCreateContact when given', async () => {
+    dbMocks.selectResults.push([{ id: 'o-2' }]); // org guard
+    dbMocks.updateResult = [{ id: 'd-1', domain: 'acme.com', orgId: 'o-2' }];
+    await updateCustomerEmailDomain(PARTNER, 'd-1', { orgId: 'o-2', autoCreateContact: false });
+    expect(Object.keys(dbMocks.updateSetArgs[0]!).sort()).toEqual(['autoCreateContact', 'orgId', 'updatedAt']);
+  });
+
+  it('still throws DOMAIN_MAPPING_NOT_FOUND 404 when no row matches', async () => {
+    dbMocks.updateResult = [];
+    await expect(updateCustomerEmailDomain(PARTNER, 'd-x', { isActive: true })).rejects.toMatchObject({ status: 404, code: 'DOMAIN_MAPPING_NOT_FOUND' });
+  });
+});
+
+describe('listCustomerEmailDomains', () => {
+  it('returns viewed rows carrying the org name (additive over the old list shape)', async () => {
+    dbMocks.selectResults.push([{ id: 'd-1', domain: 'acme.com', orgId: 'o-1', orgName: 'ACME' }]);
+    const rows = await listCustomerEmailDomains(PARTNER);
+    expect(rows).toEqual([{ id: 'd-1', domain: 'acme.com', orgId: 'o-1', orgName: 'ACME', viewed: true }]);
+  });
+
+  it('adds an org filter for the org-scoped list', async () => {
+    dbMocks.selectResults.push([]);
+    await listCustomerEmailDomains(PARTNER, { orgId: 'o-1' });
+    const predicate = JSON.stringify(dbMocks.whereArgs.at(-1));
+    expect(predicate).toContain('o-1');
+    expect(predicate).toContain(PARTNER);
   });
 });
