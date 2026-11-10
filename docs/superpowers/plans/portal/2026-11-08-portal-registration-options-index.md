@@ -30,9 +30,9 @@ tracking_issue: LanternOps/breeze#11377
 ## Review Focus (feature-wide; each wave plan pins the ones it owns)
 
 1. **An email that exists in two orgs.** Login, self-registration, invites and SSO must each resolve to the right org or fail generically, never pick the "first" match. Owned by W2 (login) and W6 (self-registration).
-2. **A tenant or domain that changes hands** (repointed domain row, org merge, a new proof from another partner). Dependent features stop on the next request, and nobody lands in the old org. Owned by W4 and W5.
+2. **A tenant or domain that changes hands** (repointed domain row, org merge, a new proof from another partner). Dependent features stop on the next request, and nobody lands in the old org. Owned by W4 and W5 (W6 for self-registration links and pending requests).
 3. **An add-in user who opens the browser portal.** They get the new-person policy, not silent access. Owned by W4.
-4. **A policy change that happens while sessions and tokens are outstanding** (method turned off, `sso_only` turned on, inherited partner change). Takes effect on the next request or token use. Owned by W3 and W4.
+4. **A policy change that happens while sessions and tokens are outstanding** (method turned off, `sso_only` turned on, inherited partner change). Takes effect on the next request or token use. Owned by W3 and W4 (W6 for self-registration tokens).
 5. **A partial or failed directory sync.** It never disables anyone. Owned by W8.
 
 ## Waves
