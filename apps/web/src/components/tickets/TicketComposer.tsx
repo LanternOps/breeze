@@ -95,8 +95,14 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
         // The server refused the file itself, so a Retry could never succeed:
         // drop the chip and say why.
         setChips((cs) => cs.filter((c) => c.key !== chip.key));
-        const reason = { type: 'rejectedType', size: 'tooLarge', empty: 'rejectedEmpty' }[rejection];
-        showToast({ type: 'error', message: t(`ticketComposer.attachments.${reason}`, { name: chip.file.name }) });
+        const name = chip.file.name;
+        const message =
+          rejection === 'type'
+            ? t('ticketComposer.attachments.rejectedType', { name })
+            : rejection === 'size'
+              ? t('ticketComposer.attachments.tooLarge', { name })
+              : t('ticketComposer.attachments.rejectedEmpty', { name });
+        showToast({ type: 'error', message });
         return;
       }
       // Transient: the uploader already toasted through runAction; the chip is
@@ -154,12 +160,9 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
       if (failedChips.length > 0) {
         showToast({
           type: 'warning',
-          message: t(
-            isPublic
-              ? 'ticketComposer.attachments.sentWithoutAttachmentReply'
-              : 'ticketComposer.attachments.sentWithoutAttachmentNote',
-            { count: failedChips.length },
-          ),
+          message: isPublic
+            ? t('ticketComposer.attachments.sentWithoutAttachmentReply', { count: failedChips.length })
+            : t('ticketComposer.attachments.sentWithoutAttachmentNote', { count: failedChips.length }),
         });
       }
       setContent('');
