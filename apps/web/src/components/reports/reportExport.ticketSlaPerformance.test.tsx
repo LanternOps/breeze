@@ -38,7 +38,10 @@ describe('exportReport: ticket_sla_performance', () => {
     const s = summary();
     await exportReport(s.rows, { format: 'excel', reportType: 'ticket_sla_performance', timezone: 'UTC', summary: s });
     expect(sheets().map((sheet) => sheet.name)).toEqual(['Priorities', 'Breaches', 'Notes']);
-    expect(sheets()[0]!.rows).toEqual(s.rows);
+    // The Priorities sheet carries the same column labels as the CSV export, not raw keys.
+    expect(sheets()[0]!.rows).toHaveLength(s.rows.length);
+    expect(Object.keys(sheets()[0]!.rows[0]!)).toContain('Tickets opened');
+    expect(Object.keys(sheets()[0]!.rows[0]!)).not.toContain('ticketsOpened');
     expect(sheets()[1]!.rows).toHaveLength(1);
     expect(sheets()[1]!.rows[0]).toMatchObject({ ticketNumber: 'T-1', overByMinutes: 60 });
     expect(blobs).toHaveLength(1);

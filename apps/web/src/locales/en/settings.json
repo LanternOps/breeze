@@ -7858,14 +7858,16 @@
       "toasts": {
         "invited": "Portal invite sent",
         "inviteEmailFailed": "Portal login created, but the invite email could not be sent. Use Resend invite.",
-        "bulkSummary": "Portal access: {{details}}"
+        "bulkSummary": "Portal access: {{details}}",
+        "resendEmailFailed": "The invite email could not be sent. Try Resend invite again later."
       },
       "outcomes": {
         "invited": "Invited: {{count}}",
         "already_has_access": "Already has access: {{count}}",
         "no_email": "No email address: {{count}}",
         "email_bound_to_other_contact": "Email used by another contact: {{count}}",
-        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}"
+        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}",
+        "emailNotSent": "Invite emails not sent: {{count}}"
       },
       "errors": {
         "invite": "Could not give portal access.",

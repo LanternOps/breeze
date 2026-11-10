@@ -33,6 +33,15 @@ describe('AddDomainForm', () => {
     expect(screen.getByTestId('org-domains-add-input')).toHaveValue('');
   });
 
+  it('toasts the domain as the server stored it, not as typed', async () => {
+    routeFetch(fetchWithAuthMock, { [`POST ${DOMAINS}`]: () => json({ data: domainView({ domain: 'contoso.com' }) }, 201) });
+    render(<AddDomainForm orgId={ORG} onAdded={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('org-domains-add-input'), { target: { value: 'Contoso.COM' } });
+    fireEvent.click(screen.getByTestId('org-domains-add-submit'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'contoso.com added' });
+  });
+
   it('a DOMAIN_ALREADY_MAPPED refusal keeps the input and toasts the friendly message', async () => {
     routeFetch(fetchWithAuthMock, {
       [`POST ${DOMAINS}`]: () => json({ error: 'Domain already mapped', code: 'DOMAIN_ALREADY_MAPPED' }, 409),

@@ -7767,14 +7767,16 @@
       "toasts": {
         "invited": "Portaleinladung gesendet",
         "inviteEmailFailed": "Portal-Login erstellt, aber die Einladungs-E-Mail konnte nicht gesendet werden. Verwenden Sie „Einladung erneut senden“.",
-        "bulkSummary": "Portalzugang: {{details}}"
+        "bulkSummary": "Portalzugang: {{details}}",
+        "resendEmailFailed": "Die Einladungs-E-Mail konnte nicht gesendet werden. Versuchen Sie es später erneut mit „Einladung erneut senden“."
       },
       "outcomes": {
         "invited": "Eingeladen: {{count}}",
         "already_has_access": "Hat bereits Zugang: {{count}}",
         "no_email": "Keine E-Mail-Adresse: {{count}}",
         "email_bound_to_other_contact": "E-Mail von anderem Kontakt verwendet: {{count}}",
-        "duplicate_email_in_batch": "Doppelte E-Mail in der Auswahl: {{count}}"
+        "duplicate_email_in_batch": "Doppelte E-Mail in der Auswahl: {{count}}",
+        "emailNotSent": "Einladungs-E-Mails nicht gesendet: {{count}}"
       },
       "errors": {
         "invite": "Portalzugang konnte nicht gegeben werden.",
