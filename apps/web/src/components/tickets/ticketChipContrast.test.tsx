@@ -243,6 +243,35 @@ describe('other queue and pane labels clear 4.5:1 in both themes', () => {
   });
 });
 
+// Status colour only for status: red means a breach, amber means pending or
+// at risk. Priority and type chips are neutral, and every chip is on tokens.
+describe('ticket chips use tokens, and colour only for status', () => {
+  const RAW_PALETTE = /(^|[\s'"`:])(text|bg|border|ring)-(red|orange|amber|yellow|green|emerald|sky|blue|violet|purple|pink|rose|lime|teal|cyan|indigo|fuchsia|slate|gray|zinc|neutral|stone)-\d{2,3}/;
+
+  it('no tickets component paints with a raw Tailwind palette colour', () => {
+    const offenders: string[] = [];
+    for (const file of readdirSync(import.meta.dirname)) {
+      if (!/\.(tsx|ts)$/.test(file) || file.includes('.test.')) continue;
+      const source = readFileSync(join(import.meta.dirname, file), 'utf8');
+      source.split('\n').forEach((line, i) => { if (RAW_PALETTE.test(line)) offenders.push(`${file}:${i + 1}`); });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it.each(Object.entries(priorityConfig))('priority %s carries no status colour', (_priority, { color }) => {
+    expect(color).not.toMatch(/(warning|destructive|success|primary)/);
+  });
+
+  it.each(Object.entries(TICKET_TYPE_CHIP_CLASS))('type %s is neutral', (_type, classes) => {
+    expect(classes).not.toMatch(/(warning|destructive|success|primary|info)/);
+  });
+
+  it('urgent stands out from high, and high from low, without colour', () => {
+    expect(priorityConfig.urgent.color).toContain('bg-foreground');
+    expect(priorityConfig.high.color).not.toBe(priorityConfig.low.color);
+  });
+});
+
 // The fills --warning and --success are 2.2:1 and 3.4–3.7:1 as text on light
 // surfaces. Tickets text uses the *-ink tokens (or -foreground on a fill).
 describe('tickets components never paint text with a bright fill token', () => {

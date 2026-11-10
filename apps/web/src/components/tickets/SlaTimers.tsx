@@ -40,7 +40,7 @@ function TimerRow({ label, state, testId }: { label: string; state: TimerState; 
     : state.kind === 'paused' ? t('slaTimers.state.pausedLeft', { relative: formatRelative(state.minutesLeft) })
     : t('slaTimers.state.left', { relative: formatRelative(state.minutesLeft) });
   const tone =
-    (state.kind === 'breached' || state.kind === 'metLate') ? 'text-red-700 dark:text-red-400'
+    (state.kind === 'breached' || state.kind === 'metLate') ? 'text-destructive-ink'
     : state.kind === 'met' ? 'text-success-ink'
     : 'text-muted-foreground';
   return (

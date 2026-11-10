@@ -394,6 +394,8 @@ ticketsRoutes.get(
         deviceHostname: devices.hostname,
         assignedTo: tickets.assignedTo,
         assigneeName: users.name,
+        // Triage rows show the requester beside org and device.
+        submitterName: tickets.submitterName,
         categoryId: tickets.categoryId,
         dueDate: tickets.dueDate,
         slaBreachedAt: tickets.slaBreachedAt,

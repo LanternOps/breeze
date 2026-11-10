@@ -35,8 +35,12 @@ describe('KeyboardShortcutsHelp', () => {
   it('documents the single-key and modifier shortcuts', () => {
     render(<KeyboardShortcutsHelp />);
     act(() => { useUiStore.getState().openShortcutsHelp(); });
+    // The ticket-queue section lists Esc too (back to the queue); this checks
+    // the global list, outside that section.
     for (const key of ['/', '[', '?', 'Esc', 'Ctrl+K', 'Ctrl+Shift+H']) {
-      expect(screen.getByText(key, { selector: 'kbd' })).toBeInTheDocument();
+      const global = screen.getAllByText(key, { selector: 'kbd' })
+        .filter((el) => !el.closest('section[aria-labelledby="keyboard-shortcuts-queue"]'));
+      expect(global).toHaveLength(1);
     }
   });
 

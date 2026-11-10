@@ -909,12 +909,13 @@
       "queue": {
         "next": "Próximo chamado",
         "previous": "Chamado anterior",
-        "open": "Abrir o chamado em página completa",
+        "open": "Abrir o chamado (após resolver: o próximo sugerido)",
         "toggleBulk": "Adicionar à seleção em massa ou remover dela",
         "assignMe": "Atribuir a mim",
         "reply": "Escrever uma resposta",
         "internal": "Escrever uma nota interna",
-        "resolve": "Resolver com uma nota"
+        "resolve": "Resolver com uma nota",
+        "back": "Voltar para a fila"
       }
     }
   },
