@@ -239,6 +239,26 @@ function linkTokenFor(email: string): string {
   return decodeURIComponent(url.slice(url.indexOf('#token=') + '#token='.length));
 }
 
+/** Every verify-link token mailed to `email`, in send order. */
+function linkTokensFor(email: string): string[] {
+  return mail.sent
+    .filter((m) => m.kind === 'verify_link' && m.to === email)
+    .map((m) => {
+      const url = String(m.params.verifyUrl);
+      return decodeURIComponent(url.slice(url.indexOf('#token=') + '#token='.length));
+    });
+}
+
+/** Submit `n` times on the shared host (one job each), run the jobs, and return the `n` distinct link tokens. */
+async function requestLinks(email: string, n: number): Promise<string[]> {
+  for (let i = 0; i < n; i++) await submit(email);
+  expect(await runJobs()).toEqual(Array.from({ length: n }, () => 'link_sent'));
+  const tokens = linkTokensFor(email);
+  expect(tokens).toHaveLength(n);
+  expect(new Set(tokens).size).toBe(n);
+  return tokens;
+}
+
 /** Submit on the shared host, run the job, and return the link token. */
 async function requestLink(email: string): Promise<string> {
   await submit(email);
@@ -678,6 +698,179 @@ describe('portal self-registration (real DB, real routes, worker run directly)',
     expect(mail.sent.map((m) => ({ kind: m.kind, to: m.to, orgName: m.params.orgName })))
       .toEqual([{ kind: 'verify_link', to: email, orgName: orgY.name }]);
     expect(await selfRegisterAudits(orgX.id)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Concurrency and single use (D10, Review Focus 4)
+  // -------------------------------------------------------------------------
+
+  async function verifyAll(tokens: string[]) {
+    const responses = await Promise.all(tokens.map((t) => verify(t)));
+    return Promise.all(responses.map(async (r) => ({ status: r.status, body: await r.json() as Record<string, unknown> })));
+  }
+
+  async function contactsFor(orgId: string, email: string) {
+    return admin().select().from(contacts)
+      .where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${email.toLowerCase()}`));
+  }
+
+  it('concurrent verifies of two links for one address create exactly one account (instant)', async () => {
+    const { org } = await seedOrg({ mode: 'instant' });
+    const { domain } = await verifyDomain(org);
+    const email = `race-${randomUUID().slice(0, 8)}@${domain}`;
+    const tokens = await requestLinks(email, 2);
+
+    const answers = await verifyAll(tokens);
+    expect(answers.map((a) => a.status)).toEqual([200, 200]);
+    expect(answers.map((a) => a.body.outcome).sort()).toEqual(['account_created', 'existing_account']);
+
+    const logins = await loginsFor(email);
+    expect(logins).toHaveLength(1);
+    expect(logins[0]).toMatchObject({ orgId: org.id, email, status: 'invited', browserAccess: 'granted' });
+    // The loser wrote nothing: one contact, no queue row.
+    expect(await contactsFor(org.id, email)).toHaveLength(1);
+    expect(await requestsFor(email)).toEqual([]);
+
+    const verifies = await awaitAuditRows(async () => (await selfRegisterAudits(org.id))
+      .filter((a) => a.action === 'portal.auth.self_register.verify'), 2);
+    expect(verifies.map((a) => (a.details as { outcome: string }).outcome).sort()).toEqual(['account_created', 'existing_account']);
+  });
+
+  it('concurrent verifies of two links for one address create exactly one pending request (approval)', async () => {
+    const { org } = await seedOrg({ mode: 'approval' });
+    const { domain } = await verifyDomain(org);
+    const email = `race-${randomUUID().slice(0, 8)}@${domain}`;
+    const tokens = await requestLinks(email, 2);
+
+    const answers = await verifyAll(tokens);
+    expect(answers).toEqual([
+      { status: 200, body: { outcome: 'request_sent' } },
+      { status: 200, body: { outcome: 'request_sent' } },
+    ]);
+
+    const rows = await requestsFor(email);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ orgId: org.id, email, source: 'self', status: 'pending', portalUserId: null });
+    expect(await loginsFor(email)).toEqual([]);
+
+    // Both answers name the one row; exactly one of them created it.
+    const verifies = await awaitAuditRows(async () => (await selfRegisterAudits(org.id))
+      .filter((a) => a.action === 'portal.auth.self_register.verify'), 2);
+    expect(verifies.map((a) => a.resourceId)).toEqual([rows[0]!.id, rows[0]!.id]);
+    expect(verifies.map((a) => (a.details as { created: boolean }).created).sort()).toEqual([false, true]);
+  });
+
+  it('a link used once is refused on reuse (generic 400, no extra row)', async () => {
+    const { org } = await seedOrg({ mode: 'instant' });
+    const { domain } = await verifyDomain(org);
+    const email = `reuse-${randomUUID().slice(0, 8)}@${domain}`;
+    const token = await requestLink(email);
+
+    await inviteTokenFrom(await verify(token));
+    const [account] = await loginsFor(email);
+    expect(account).toMatchObject({ orgId: org.id, status: 'invited' });
+
+    await expectInvalidLink(await verify(token));
+    // Unchanged: still the one account, untouched; no queue row; one contact.
+    expect(await loginsFor(email)).toEqual([account]);
+    expect(await requestsFor(email)).toEqual([]);
+    expect(await contactsFor(org.id, email)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // A real policy change between email and click (D8, Review Focus 5)
+  // -------------------------------------------------------------------------
+
+  /** The verify audit a refused link writes against its org. */
+  async function expectPolicyRefusal(orgId: string) {
+    const denied = await awaitAuditRows(async () => (await selfRegisterAudits(orgId))
+      .filter((a) => a.action === 'portal.auth.self_register.verify'), 1);
+    expect(denied).toEqual([expect.objectContaining({
+      result: 'denied', details: expect.objectContaining({ outcome: 'refused', reason: 'policy_changed' }),
+    })]);
+  }
+
+  async function setOrgPolicy(orgId: string, values: Partial<typeof portalAccessPolicies.$inferInsert>) {
+    const updated = await admin().update(portalAccessPolicies).set({ ...values, updatedAt: new Date() })
+      .where(eq(portalAccessPolicies.orgId, orgId)).returning({ id: portalAccessPolicies.id });
+    expect(updated).toHaveLength(1);
+  }
+
+  async function setPartnerPolicy(partnerId: string, values: Partial<typeof portalAccessPolicies.$inferInsert>) {
+    const updated = await admin().update(portalAccessPolicies).set({ ...values, updatedAt: new Date() })
+      .where(and(eq(portalAccessPolicies.partnerId, partnerId), sql`${portalAccessPolicies.orgId} IS NULL`))
+      .returning({ id: portalAccessPolicies.id });
+    expect(updated).toHaveLength(1);
+  }
+
+  it('consume refuses after the org turns self-registration off (Review Focus 5a)', async () => {
+    const { org } = await seedOrg({ mode: 'approval' });
+    const { domain } = await verifyDomain(org);
+    const email = `off-${randomUUID().slice(0, 8)}@${domain}`;
+    const token = await requestLink(email);
+
+    await setOrgPolicy(org.id, { selfRegistrationMode: 'off' });
+
+    await expectInvalidLink(await verify(token));
+    expect(await requestsFor(email)).toEqual([]);
+    expect(await loginsFor(email)).toEqual([]);
+    await expectPolicyRefusal(org.id);
+  });
+
+  it('consume refuses after the org changes approval → instant (Review Focus 5b)', async () => {
+    const { org } = await seedOrg({ mode: 'approval' });
+    const { domain } = await verifyDomain(org);
+    const email = `toinstant-${randomUUID().slice(0, 8)}@${domain}`;
+    const token = await requestLink(email);
+
+    await setOrgPolicy(org.id, { selfRegistrationMode: 'instant' });
+
+    await expectInvalidLink(await verify(token));
+    // Neither the approval-era row nor an instant-mode account.
+    expect(await requestsFor(email)).toEqual([]);
+    expect(await loginsFor(email)).toEqual([]);
+    expect(await contactsFor(org.id, email)).toEqual([]);
+    await expectPolicyRefusal(org.id);
+  });
+
+  it('consume refuses after a partner-default change the org inherits (Review Focus 5c)', async () => {
+    // The org row pins only the mode; the session cap is inherited from the
+    // partner default, so changing the partner row changes the org's
+    // effective values.
+    const { org, partnerId } = await seedOrg({ mode: 'approval' });
+    await admin().insert(portalAccessPolicies).values({ partnerId, ssoSessionMaxHours: 12 });
+    const { domain } = await verifyDomain(org);
+    const email = `partner-${randomUUID().slice(0, 8)}@${domain}`;
+    const token = await requestLink(email);
+
+    await setPartnerPolicy(partnerId, { ssoSessionMaxHours: 4 });
+
+    await expectInvalidLink(await verify(token));
+    expect(await requestsFor(email)).toEqual([]);
+    expect(await loginsFor(email)).toEqual([]);
+    await expectPolicyRefusal(org.id);
+  });
+
+  it('CONTROL: a policy change elsewhere (an unrelated org; a partner value the org overrides) leaves the link working', async () => {
+    const { org, partnerId } = await seedOrg({ mode: 'approval' });
+    await admin().insert(portalAccessPolicies).values({ partnerId, selfRegistrationMode: 'approval' });
+    // A sibling org under the same partner, and an org under another partner.
+    const { org: sibling } = await seedOrg({ mode: 'approval', partnerId });
+    const { org: stranger } = await seedOrg({ mode: 'approval' });
+    const { domain } = await verifyDomain(org);
+    const email = `control-${randomUUID().slice(0, 8)}@${domain}`;
+    const token = await requestLink(email);
+
+    await setOrgPolicy(sibling.id, { selfRegistrationMode: 'off', ssoSessionMaxHours: 2 });
+    await setOrgPolicy(stranger.id, { selfRegistrationMode: 'instant' });
+    // The org's own row overrides the mode, so this partner change is not one
+    // of its effective values.
+    await setPartnerPolicy(partnerId, { selfRegistrationMode: 'instant' });
+
+    const res = await verify(token);
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toEqual({ outcome: 'request_sent' });
+    expect((await requestsFor(email)).map((r) => ({ orgId: r.orgId, status: r.status }))).toEqual([{ orgId: org.id, status: 'pending' }]);
   });
 });
 
