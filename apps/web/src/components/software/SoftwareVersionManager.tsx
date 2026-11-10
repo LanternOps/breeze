@@ -368,6 +368,13 @@ export default function SoftwareVersionManager({
     () => versions.find((item) => item.id === selectedVersionId) ?? versions[0],
     [versions, selectedVersionId],
   );
+  // Built-in integration packages (SentinelOne, Huntress) take their server
+  // default template when the field is blank; the generic msiexec prefill
+  // would fail server validation (e.g. missing {s1_site_token}).
+  const prefillSilentArgs = (
+    current: { silentInstallArgs: string; silentUninstallArgs: string },
+    nextFileType: SoftwareFileType | null,
+  ) => (integrationProvider ? {} : applySilentArgsPrefill(current, nextFileType));
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -376,7 +383,7 @@ export default function SoftwareVersionManager({
       file,
       fileName: file.name,
       // Auto-populate MSI silent args (retractable — see applySilentArgsPrefill).
-      ...applySilentArgsPrefill(prev, deriveSoftwareFileTypeFromUrl(file.name)),
+      ...prefillSilentArgs(prev, deriveSoftwareFileTypeFromUrl(file.name)),
       ...applyOsHint(prev, file.name),
     }));
   };
@@ -388,7 +395,7 @@ export default function SoftwareVersionManager({
     setFormState((prev) => ({
       ...prev,
       downloadUrl: value,
-      ...applySilentArgsPrefill(
+      ...prefillSilentArgs(
         prev,
         prev.fileType || deriveSoftwareFileTypeFromUrl(value),
       ),
@@ -402,7 +409,7 @@ export default function SoftwareVersionManager({
     setFormState((prev) => ({
       ...prev,
       fileType: value,
-      ...applySilentArgsPrefill(
+      ...prefillSilentArgs(
         prev,
         value || deriveSoftwareFileTypeFromUrl(prev.downloadUrl),
       ),
@@ -812,7 +819,9 @@ export default function SoftwareVersionManager({
       </div>
     );
   }
-  if (error && versions.length === 0) {
+  // LOAD failures only: a rejected create/save keeps the form (and the typed
+  // input) mounted and shows the error inline below.
+  if (error && versions.length === 0 && !isFormOpen) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
@@ -968,7 +977,7 @@ export default function SoftwareVersionManager({
               )}{" "}
               <code className="font-mono">
                 {'{{org.name}}'}
-              </code>
+              </code>{" "}
               {i18n.t(
                 "policies:software.softwareVersionManager.resolvePerOrganizationAtDeployTime",
               )}

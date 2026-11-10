@@ -175,6 +175,17 @@ describe('ContactsCard portal access', () => {
     expect(postsTo('/invite')[0].body).toEqual({ email: 'ivy@acme.test', name: 'Ivy Invited', contactId: 'c-inv' });
   });
 
+  it('Resend invite that cannot send the email warns with resend-specific copy', async () => {
+    mockApi({ invite: () => jsonResponse({ data: { id: 'p-inv' }, emailSent: false }) });
+    await renderCard();
+    fireEvent.click(await screen.findByTestId('org-contacts-portal-resend-c-inv'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    const toast = showToastMock.mock.calls[0][0];
+    expect(toast.type).toBe('warning');
+    expect(toast.message).not.toMatch(/login created/i);
+    expect(toast.message).toMatch(/resend/i);
+  });
+
   it('offers no portal action for active or disabled contacts, or for a contact without email', async () => {
     mockApi();
     await renderCard();

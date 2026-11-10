@@ -1074,7 +1074,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Falha ao salvar mapeamentos de sites.",
     "siteMappingsSaved": "Mapeamentos de sites salvos",
-    "pickTheSiteThisControllerServesACollector": "Escolha o site que este controlador atende, um agente coletor e insira a URL do controlador e a chave de API local.",
+    "pickTheSiteThisControllerServesACollector": "Escolha o local do agente coletor e um agente coletor e insira a URL do controlador e a chave de API local.",
     "failedToRegisterTheController": "Falha ao registrar o controlador.",
     "controllerRegistered": "Controlador registrado",
     "pickABreezeSiteACollectorAgentAnd": "Escolha um site Breeze, um agente coletor e insira o URL do controlador e a chave de API local.",

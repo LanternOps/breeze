@@ -32,7 +32,21 @@
  * both column flavours in use here. Postgres discards the offset coercing to
  * `timestamp without time zone` and honours it for `timestamptz`. Callers
  * against a `timestamptz` column still cast explicitly (`${cutoff}::timestamptz`)
- * to keep the intent readable.
+ * to keep the intent readable. Against a `timestamp WITHOUT time zone` column
+ * holding UTC wall time, compare with `utcWallTime(cutoff)` so the comparison
+ * does not depend on the connection's `TimeZone`.
+ *
+ * REPORT FIRST
+ * ------------
+ * A new retention target ships counting, not deleting (#4342): its
+ * `<NAME>_RETENTION_ENFORCE` flag defaults to false, so the job publishes how
+ * many rows it WOULD remove and an operator reads that before turning deletion
+ * on. `countEligibleRows` is that count. It is capped at `cap + 1` rows
+ * (`SELECT count(*) FROM (SELECT 1 … LIMIT cap + 1)`), so a multi-year backlog
+ * never turns a nightly report into a full-table count; the caller passes the
+ * same `batchSize * maxBatches` an enforce run could remove, so "capped" means
+ * "one enforce run would not drain this". `retentionEnforceFromEnv`
+ * reads the flag, and only an explicit `true`/`1` enforces.
  */
 
 import { SQL, sql } from 'drizzle-orm';
@@ -120,6 +134,51 @@ export function resolveRetentionDays(
 }
 
 /**
+ * `(${iso}::timestamptz AT TIME ZONE 'UTC')` — the cutoff as UTC wall time,
+ * for comparing against a `timestamp WITHOUT time zone` column that holds UTC.
+ *
+ * Comparing a tz-less column directly against `${iso}::timestamptz` converts
+ * the COLUMN using the connection's `TimeZone`, so a non-UTC session shifts the
+ * cutoff by hours. A bare `${iso}::timestamp` cast is correct only while every
+ * caller passes a `Z`-suffixed string (it drops any offset rather than
+ * honouring it); this helper honours the offset and needs no such convention.
+ * (Rows written by `defaultNow()` are stored in the session `TimeZone`, which
+ * is UTC on every Breeze deployment — the same assumption as
+ * `jobs/scheduleRegistry.ts`.)
+ */
+export function utcWallTime(iso: string): SQL {
+  return sql`(${iso}::timestamptz AT TIME ZONE 'UTC')`;
+}
+
+/**
+ * Read a retention job's `<NAME>_RETENTION_ENFORCE` flag.
+ *
+ * `true`/`1` → true and `false`/`0` → false (trimmed, case-insensitive). Unset
+ * or empty → `codeDefault`: compose maps every knob as `${VAR:-}`, so an
+ * unconfigured deployment hands the process an empty string, and that must mean
+ * "not configured", never "enforce".
+ *
+ * Anything else (`yes`, `on`, `enforce`, a typo) warns and returns FALSE,
+ * regardless of `codeDefault`. Deletion cannot be undone, so an ambiguous value
+ * fails toward counting: an operator who wrote `ENFORCE=no` against a default of
+ * `true` meant off, and one who wrote `ENFORCE=yes` against `false` loses one
+ * night of deletion and a warning tells them why.
+ */
+export function retentionEnforceFromEnv(logPrefix: string, name: string, codeDefault: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined) return codeDefault;
+  const value = raw.trim().toLowerCase();
+  if (value === '') return codeDefault;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  console.warn(
+    `${logPrefix} Unrecognised ${name}="${raw}" (expected true/1 or false/0); ` +
+    'running REPORT-ONLY — nothing will be deleted.',
+  );
+  return false;
+}
+
+/**
  * Run `fn` in a FRESH system DB access context, escaping any ambient one.
  *
  * The escape is not optional: `withDbAccessContext` early-returns when a
@@ -153,26 +212,11 @@ export async function pruneInCtidBatches(options: {
   maxBatches: number;
   label: string;
 }): Promise<BatchedPruneResult> {
-  const { table, where, batchSize, maxBatches, label } = options;
-
-  if (!BARE_IDENTIFIER.test(table)) {
-    throw new Error(`[retentionBatch] Refusing to prune "${table}": table must be a bare SQL identifier`);
-  }
-  if (!Number.isInteger(batchSize) || batchSize < 1) {
-    throw new Error(`[retentionBatch] Refusing to prune "${table}": batchSize must be a positive integer, got ${batchSize}`);
-  }
-  if (!Number.isInteger(maxBatches) || maxBatches < 1) {
-    throw new Error(`[retentionBatch] Refusing to prune "${table}": maxBatches must be a positive integer, got ${maxBatches}`);
-  }
-
+  const { table, where, batchSize, label } = options;
+  assertBatchArgs('prune', options);
   const target = sql.raw(table);
-  let deleted = 0;
-  let batches = 0;
-  let lastBatchDeleted = 0;
-
-  while (batches < maxBatches) {
-    // One transaction per batch — see the LOCK DURATION note in the header.
-    const result = await inFreshSystemContext(label, () => db.execute(sql`
+  return runCtidBatches(`prune ${table}`, options.maxBatches, batchSize, () =>
+    inFreshSystemContext(label, () => db.execute(sql`
       DELETE FROM ${target}
       WHERE ctid IN (
         SELECT ctid
@@ -180,21 +224,154 @@ export async function pruneInCtidBatches(options: {
         WHERE ${where}
         LIMIT ${batchSize}
       )
-    `));
+    `)),
+  );
+}
+
+/**
+ * `pruneInCtidBatches`' twin for a scrub: `UPDATE <table> SET <set>` over
+ * bounded `ctid` batches, each in its own fresh system transaction.
+ *
+ * `where` MUST exclude rows this sweep has already updated (e.g. `AND
+ * output_purged_at IS NULL`). Otherwise every batch re-selects the same rows,
+ * every batch comes back full, and the sweep spins to `maxBatches` rewriting
+ * them — reporting a backlog forever. `deleted` in the result counts rows
+ * updated.
+ *
+ * Do NOT call this inside a `withSystemDbAccessContext`. See the module header.
+ */
+export async function updateInCtidBatches(options: {
+  table: string;
+  set: SQL;
+  where: SQL;
+  batchSize: number;
+  maxBatches: number;
+  label: string;
+}): Promise<BatchedPruneResult> {
+  const { table, set, where, batchSize, label } = options;
+  assertBatchArgs('update', options);
+  const target = sql.raw(table);
+  return runCtidBatches(`update ${table}`, options.maxBatches, batchSize, () =>
+    inFreshSystemContext(label, () => db.execute(sql`
+      UPDATE ${target}
+      SET ${set}
+      WHERE ctid IN (
+        SELECT ctid
+        FROM ${target}
+        WHERE ${where}
+        LIMIT ${batchSize}
+      )
+    `)),
+  );
+}
+
+/**
+ * Count the rows `where` selects in `table`, bounded at `cap`, in one fresh
+ * system context. The report half of REPORT FIRST (module header).
+ *
+ * Scans at most `cap + 1` matching rows: `capped` is true when more than `cap`
+ * are eligible, and `eligible` is then `cap` (the caller logs it as `cap+`).
+ * Throws on a missing or non-numeric count rather than reading it as 0 — a
+ * report that says "nothing eligible" because the driver returned nothing is
+ * evidence for an enforce decision that nobody actually saw.
+ */
+export async function countEligibleRows(options: {
+  table: string;
+  where: SQL;
+  cap: number;
+  label: string;
+}): Promise<{ eligible: number; capped: boolean }> {
+  const { table, where, cap, label } = options;
+  if (!BARE_IDENTIFIER.test(table)) {
+    throw new Error(`[retentionBatch] Refusing to count "${table}": table must be a bare SQL identifier`);
+  }
+  if (!Number.isInteger(cap) || cap < 1) {
+    throw new Error(`[retentionBatch] Refusing to count "${table}": cap must be a positive integer, got ${cap}`);
+  }
+
+  const target = sql.raw(table);
+  const result = await inFreshSystemContext(label, () => db.execute(sql`
+    SELECT count(*)::int AS n
+    FROM (
+      SELECT 1
+      FROM ${target}
+      WHERE ${where}
+      LIMIT ${cap + 1}
+    ) s
+  `));
+
+  const rows: unknown = Array.isArray(result)
+    ? result
+    : (result as { rows?: unknown } | null | undefined)?.rows;
+  const raw = Array.isArray(rows) ? (rows[0] as { n?: unknown } | undefined)?.n : undefined;
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`[retentionBatch] Eligible-row count for "${table}" came back unreadable (${JSON.stringify(raw)})`);
+  }
+  return { eligible: Math.min(n, cap), capped: n > cap };
+}
+
+function assertBatchArgs(
+  verb: 'prune' | 'update',
+  { table, batchSize, maxBatches }: { table: string; batchSize: number; maxBatches: number },
+): void {
+  if (!BARE_IDENTIFIER.test(table)) {
+    throw new Error(`[retentionBatch] Refusing to ${verb} "${table}": table must be a bare SQL identifier`);
+  }
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new Error(`[retentionBatch] Refusing to ${verb} "${table}": batchSize must be a positive integer, got ${batchSize}`);
+  }
+  if (!Number.isInteger(maxBatches) || maxBatches < 1) {
+    throw new Error(`[retentionBatch] Refusing to ${verb} "${table}": maxBatches must be a positive integer, got ${maxBatches}`);
+  }
+}
+
+/**
+ * The shared loop: run one batch statement at a time until a short batch or
+ * `maxBatches`. A rejected batch propagates immediately — it is never retried
+ * here, so a persistent failure cannot spin the loop; the next scheduled run is
+ * the retry.
+ *
+ * Earlier batches have already committed by then, and the thrown error carries
+ * no count, so the loop logs what it had already affected before rethrowing:
+ * a mid-sweep failure must not delete rows with no record of how many.
+ */
+async function runCtidBatches(
+  what: string,
+  maxBatches: number,
+  batchSize: number,
+  runBatch: () => Promise<unknown>,
+): Promise<BatchedPruneResult> {
+  let deleted = 0;
+  let batches = 0;
+  let lastBatchAffected = 0;
+
+  while (batches < maxBatches) {
+    // One transaction per batch — see the LOCK DURATION note in the header.
+    let result: unknown;
+    try {
+      result = await runBatch();
+    } catch (err) {
+      console.error(
+        `[retentionBatch] ${what}: batch ${batches + 1} failed after ${batches} committed batch(es) ` +
+        `affecting ${deleted} rows; stopping, the remainder is left for the next run`,
+      );
+      throw err;
+    }
     // extractRowCount throws on a null/undefined driver result rather than
     // reading it as "0 rows", which would end the loop early and silently leave
     // old rows behind. (An object carrying neither `count` nor `rowCount` still
     // yields 0 — the guard covers a broken driver, not every broken mock.)
-    lastBatchDeleted = extractRowCount(result);
-    deleted += lastBatchDeleted;
+    lastBatchAffected = extractRowCount(result);
+    deleted += lastBatchAffected;
     batches += 1;
-    if (lastBatchDeleted < batchSize) break;
+    if (lastBatchAffected < batchSize) break;
   }
 
   return {
     deleted,
     batches,
-    hasMore: batches >= maxBatches && lastBatchDeleted >= batchSize,
+    hasMore: batches >= maxBatches && lastBatchAffected >= batchSize,
   };
 }
 

@@ -662,7 +662,7 @@
       "explain": "Wisp opera entro i limiti delle tue autorizzazioni. Conferma la tua identità per continuare.",
       "code": "Codice di autenticazione",
       "passkey": "Confermerai con la tua passkey.",
-      "noFactor": "Wisp richiede una passkey o un'app di autenticazione. Configurane una prima nel tuo profilo.",
+      "noFactor": "Wisp richiede una passkey o un'app di autenticazione. Configurane una prima nel <profileLink>tuo profilo</profileLink>.",
       "noOrg": "Seleziona prima un'organizzazione nell'intestazione.",
       "confirm": "Conferma",
       "cancel": "Annulla",

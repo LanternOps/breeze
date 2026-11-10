@@ -138,8 +138,12 @@
       "remove": "Remove file",
       "tooMany": "You can attach at most {{max}} files to one comment.",
       "tooLarge": "{{name}} is larger than 10 MB.",
-      "sentWithoutAttachment_one": "Note posted, but the attachment could not be added. Retry or remove it.",
-      "sentWithoutAttachment_other": "Note posted, but {{count}} attachments could not be added. Retry or remove them."
+      "rejectedType": "{{name}} was not attached: only JPEG, PNG, WebP images and PDFs are supported.",
+      "rejectedEmpty": "{{name}} was not attached: the file is empty.",
+      "sentWithoutAttachmentReply_one": "Reply posted, but the attachment could not be added. Retry or remove it.",
+      "sentWithoutAttachmentNote_one": "Note posted, but the attachment could not be added. Retry or remove it.",
+      "sentWithoutAttachmentReply_other": "Reply posted, but {{count}} attachments could not be added. Retry or remove them.",
+      "sentWithoutAttachmentNote_other": "Note posted, but {{count}} attachments could not be added. Retry or remove them."
     },
     "modeLabel": "Comment visibility",
     "recipient": {

@@ -138,8 +138,12 @@
       "remove": "Remover arquivo",
       "tooMany": "Você pode anexar no máximo {{max}} arquivos a um comentário.",
       "tooLarge": "{{name}} é maior que 10 MB.",
-      "sentWithoutAttachment_one": "Nota publicada, mas não foi possível adicionar o anexo. Tente novamente ou remova-o.",
-      "sentWithoutAttachment_other": "Nota publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os."
+      "rejectedType": "{{name}} não foi anexado: apenas imagens JPEG, PNG e WebP e arquivos PDF são aceitos.",
+      "rejectedEmpty": "{{name}} não foi anexado: o arquivo está vazio.",
+      "sentWithoutAttachmentReply_one": "Resposta publicada, mas não foi possível adicionar o anexo. Tente novamente ou remova-o.",
+      "sentWithoutAttachmentNote_one": "Nota publicada, mas não foi possível adicionar o anexo. Tente novamente ou remova-o.",
+      "sentWithoutAttachmentReply_other": "Resposta publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os.",
+      "sentWithoutAttachmentNote_other": "Nota publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os."
     },
     "modeLabel": "Visibilidade do comentário",
     "recipient": {

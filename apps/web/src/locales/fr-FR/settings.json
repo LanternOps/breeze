@@ -7767,14 +7767,16 @@
       "toasts": {
         "invited": "Invitation au portail envoyée",
         "inviteEmailFailed": "Identifiant de portail créé, mais l’e-mail d’invitation n’a pas pu être envoyé. Utilisez Renvoyer l’invitation.",
-        "bulkSummary": "Accès au portail : {{details}}"
+        "bulkSummary": "Accès au portail : {{details}}",
+        "resendEmailFailed": "L’e-mail d’invitation n’a pas pu être envoyé. Réessayez plus tard avec Renvoyer l’invitation."
       },
       "outcomes": {
         "invited": "Invités : {{count}}",
         "already_has_access": "Ont déjà accès : {{count}}",
         "no_email": "Sans adresse e-mail : {{count}}",
         "email_bound_to_other_contact": "E-mail utilisé par un autre contact : {{count}}",
-        "duplicate_email_in_batch": "E-mail en double dans la sélection : {{count}}"
+        "duplicate_email_in_batch": "E-mail en double dans la sélection : {{count}}",
+        "emailNotSent": "E-mails d’invitation non envoyés : {{count}}"
       },
       "errors": {
         "invite": "Impossible de donner accès au portail.",

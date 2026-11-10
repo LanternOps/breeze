@@ -138,8 +138,12 @@
       "remove": "Retirer le fichier",
       "tooMany": "Vous pouvez joindre au plus {{max}} fichiers à un commentaire.",
       "tooLarge": "{{name}} dépasse 10 Mo.",
-      "sentWithoutAttachment_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
-      "sentWithoutAttachment_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
+      "rejectedType": "{{name}} n'a pas été joint : seuls les images JPEG, PNG et WebP et les PDF sont pris en charge.",
+      "rejectedEmpty": "{{name}} n'a pas été joint : le fichier est vide.",
+      "sentWithoutAttachmentReply_one": "Réponse publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
+      "sentWithoutAttachmentNote_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
+      "sentWithoutAttachmentReply_other": "Réponse publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les.",
+      "sentWithoutAttachmentNote_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
     },
     "modeLabel": "Visibilité du commentaire",
     "recipient": {

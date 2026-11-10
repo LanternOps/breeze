@@ -31,14 +31,15 @@ export function AddDomainForm({ orgId, onAdded }: Props) {
     if (!trimmed || saving) return;
     setSaving(true);
     try {
-      await runAction({
+      await runAction<{ data?: { domain?: string } }>({
         request: () => fetchWithAuth(customerDomainsUrl(orgId), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ domain: trimmed, autoCreateContact }),
         }),
         errorFallback: t('orgDomains.errors.add'),
-        successMessage: t('orgDomains.toasts.added', { domain: trimmed }),
+        // The server stores the normalised form; echo that, not what was typed.
+        successMessage: (body) => t('orgDomains.toasts.added', { domain: body?.data?.domain ?? trimmed }),
         friendly: (code) => (code === 'DOMAIN_ALREADY_MAPPED' ? t('orgDomains.errors.alreadyMapped') : undefined),
         onUnauthorized: toLogin,
       });

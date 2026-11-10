@@ -8,6 +8,7 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { listCannedResponses, type CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 import { runAction, ActionError } from '../../lib/runAction';
+import { permanentAttachmentRejection } from './ticketAttachmentErrors';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
@@ -593,6 +594,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     const res = await runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/attachments`, { method: 'POST', body: form }),
       errorFallback: t('ticketWorkbench.toast.attachmentFailed'),
+      // The composer explains a permanent refusal itself (localized, names the file).
+      suppressErrorToast: (status, code) => permanentAttachmentRejection(status, code) !== null,
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     });
     const id = (res as { data?: { id?: string } } | undefined)?.data?.id;

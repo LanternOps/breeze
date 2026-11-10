@@ -7767,14 +7767,16 @@
       "toasts": {
         "invited": "Invito al portale inviato",
         "inviteEmailFailed": "Accesso al portale creato, ma non è stato possibile inviare l’e-mail di invito. Usa Reinvia invito.",
-        "bulkSummary": "Accesso al portale: {{details}}"
+        "bulkSummary": "Accesso al portale: {{details}}",
+        "resendEmailFailed": "Non è stato possibile inviare l’e-mail di invito. Riprova più tardi con Reinvia invito."
       },
       "outcomes": {
         "invited": "Invitati: {{count}}",
         "already_has_access": "Hanno già accesso: {{count}}",
         "no_email": "Senza indirizzo e-mail: {{count}}",
         "email_bound_to_other_contact": "E-mail usata da un altro contatto: {{count}}",
-        "duplicate_email_in_batch": "E-mail duplicata nella selezione: {{count}}"
+        "duplicate_email_in_batch": "E-mail duplicata nella selezione: {{count}}",
+        "emailNotSent": "E-mail di invito non inviate: {{count}}"
       },
       "errors": {
         "invite": "Impossibile concedere l’accesso al portale.",

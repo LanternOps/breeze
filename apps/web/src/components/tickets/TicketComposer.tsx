@@ -10,6 +10,8 @@ import {
   setTicketComposerDraft,
   type TicketComposerMode,
 } from '@/lib/ticketComposerDrafts';
+import { ActionError } from '../../lib/runAction';
+import { permanentAttachmentRejection } from './ticketAttachmentErrors';
 import CannedResponsePicker from './CannedResponsePicker';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 
@@ -131,12 +133,27 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
     try {
       const { id } = await onUploadAttachment(chip.file);
       setChips((cs) => cs.map((c) => (c.key === chip.key ? { ...c, status: 'done', id } : c)));
-    } catch {
-      // The uploader already toasted through runAction; the chip is the
-      // persistent, retryable record of the failure.
+    } catch (err) {
+      const rejection = err instanceof ActionError ? permanentAttachmentRejection(err.status, err.code) : null;
+      if (rejection) {
+        // The server refused the file itself, so a Retry could never succeed:
+        // drop the chip and say why.
+        setChips((cs) => cs.filter((c) => c.key !== chip.key));
+        const name = chip.file.name;
+        const message =
+          rejection === 'type'
+            ? t('ticketComposer.attachments.rejectedType', { name })
+            : rejection === 'size'
+              ? t('ticketComposer.attachments.tooLarge', { name })
+              : t('ticketComposer.attachments.rejectedEmpty', { name });
+        showToast({ type: 'error', message });
+        return;
+      }
+      // Transient: the uploader already toasted through runAction; the chip is
+      // the persistent, retryable record of the failure.
       setChips((cs) => cs.map((c) => (c.key === chip.key ? { ...c, status: 'error', id: undefined } : c)));
     }
-  }, [onUploadAttachment]);
+  }, [onUploadAttachment, t]);
 
   const addFiles = useCallback((picked: FileList | null) => {
     if (!picked || picked.length === 0 || !onUploadAttachment) return;
@@ -192,7 +209,9 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
       if (failedChips.length > 0) {
         showToast({
           type: 'warning',
-          message: t('ticketComposer.attachments.sentWithoutAttachment', { count: failedChips.length }),
+          message: isPublic
+            ? t('ticketComposer.attachments.sentWithoutAttachmentReply', { count: failedChips.length })
+            : t('ticketComposer.attachments.sentWithoutAttachmentNote', { count: failedChips.length }),
         });
       }
       setContent('');

@@ -104,6 +104,9 @@ export default defineConfig({
       // glob above — so the no-DB unit runner would fail it on connect. Belongs
       // to vitest.integration.config.ts (already in its include list).
       'src/routes/agents/enrollmentCollision.integration.test.ts',
+      // Enrollment deadlock real-DB test (#9521): same shape (real pool + real
+      // triggers); belongs to vitest.integration.config.ts.
+      'src/routes/agents/enrollmentDeadlock.integration.test.ts',
       // Software-report re-link real-DB test (BREEZE-3): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate), so the
       // no-DB unit runner would fail it on connect. Belongs to

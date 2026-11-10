@@ -180,6 +180,17 @@ describe('giveContactPortalAccess', () => {
   });
 });
 
+describe('giveContactPortalAccess resend', () => {
+  it('uses its own warning copy when a resend email could not be sent', async () => {
+    fetchWithAuthMock.mockImplementation(() => json({ data: { id: 'p1' }, emailSent: false }));
+    await giveContactPortalAccess(ORG, { id: 'c1', email: 'ada@acme.test', name: null }, t, { resend: true });
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'warning',
+      message: 'settings:contactsCard.portal.toasts.resendEmailFailed',
+    }));
+  });
+});
+
 describe('giveContactsPortalAccess', () => {
   const results = [
     { contactId: 'c1', outcome: 'invited', portalUserId: 'p1', emailSent: true },
@@ -221,5 +232,30 @@ describe('giveContactsPortalAccess', () => {
     } }));
     await giveContactsPortalAccess(ORG, ['c1'], t);
     expect(showToastMock.mock.calls[0][0].type).toBe('warning');
+  });
+
+  it('states how many invite emails were not sent', async () => {
+    fetchWithAuthMock.mockImplementation(() => json({ data: {
+      results: [
+        { contactId: 'c1', outcome: 'invited', emailSent: false },
+        { contactId: 'c2', outcome: 'invited', emailSent: true },
+        { contactId: 'c3', outcome: 'invited', emailSent: false },
+      ],
+      counts: { ...counts, invited: 3, no_email: 0 },
+    } }));
+    await giveContactsPortalAccess(ORG, ['c1', 'c2', 'c3'], t);
+    const toast = showToastMock.mock.calls[0][0];
+    expect(toast.type).toBe('warning');
+    expect(toast.message).toContain('contactsCard.portal.outcomes.emailNotSent');
+    expect(toast.message).toContain('{\\"count\\":2}');
+  });
+
+  it('omits the not-sent part when every invite email was sent', async () => {
+    fetchWithAuthMock.mockImplementation(() => json({ data: {
+      results: [{ contactId: 'c1', outcome: 'invited', emailSent: true }],
+      counts: { ...counts, no_email: 0 },
+    } }));
+    await giveContactsPortalAccess(ORG, ['c1'], t);
+    expect(showToastMock.mock.calls[0][0].message).not.toContain('emailNotSent');
   });
 });

@@ -1053,7 +1053,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Failed to save site mappings.",
     "siteMappingsSaved": "Site mappings saved",
-    "pickTheSiteThisControllerServesACollector": "Pick the site this controller serves, a collector agent, and enter the controller URL and local API key.",
+    "pickTheSiteThisControllerServesACollector": "Pick the collector agent location and a collector agent, and enter the controller URL and local API key.",
     "failedToRegisterTheController": "Failed to register the controller.",
     "controllerRegistered": "Controller registered",
     "pickABreezeSiteACollectorAgentAnd": "Pick a Breeze site, a collector agent, and enter the controller URL and local API key.",
