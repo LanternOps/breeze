@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// The bridge returns NSEvent.doubleClickInterval converted from seconds. The
-// System Settings slider spans roughly 0.15 s to 5 s, so a value outside that
+// The C bridge returns NSEvent.doubleClickInterval in seconds and the Go
+// wrapper converts it to a Duration. A value outside a plausible 100 ms to 5 s
 // band means the unit conversion is wrong, not that the user chose it.
 func TestSystemDoubleClickIntervalIsInSeconds(t *testing.T) {
 	d := systemDoubleClickInterval()

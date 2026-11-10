@@ -75,6 +75,38 @@ func TestClickCounter_IntervalBoundaryIsInclusive(t *testing.T) {
 	}
 }
 
+// In a longer sequence each press is timed from the press before it, not from
+// the first: presses 400ms apart count 1, 2, 3 (the third is 800ms after the
+// first), and a fourth press past the interval from the third starts over.
+func TestClickCounter_ChainTimedFromPreviousPress(t *testing.T) {
+	clk := &clickClock{t: time.Unix(1000, 0)}
+	c := newTestCounter(clk)
+	for want := 1; want <= 3; want++ {
+		if want > 1 {
+			clk.advance(400 * time.Millisecond)
+		}
+		if d, _ := click(c, 0, 100, 100); d != want {
+			t.Fatalf("press %d = %d, want %d", want, d, want)
+		}
+	}
+	clk.advance(testInterval + time.Millisecond)
+	if d := c.down(0, 100, 100); d != 1 {
+		t.Fatalf("press %v after the third = %d, want 1", testInterval+time.Millisecond, d)
+	}
+}
+
+// A second release of the same button does not reuse the press's count.
+func TestClickCounter_SecondUpIsOne(t *testing.T) {
+	clk := &clickClock{t: time.Unix(1000, 0)}
+	c := newTestCounter(clk)
+	click(c, 0, 100, 100)
+	clk.advance(100 * time.Millisecond)
+	click(c, 0, 100, 100)
+	if u := c.up(0); u != 1 {
+		t.Fatalf("release with no press after a double-click = %d, want 1", u)
+	}
+}
+
 // A long press between two presses still times from press to press.
 func TestClickCounter_IntervalMeasuredPressToPress(t *testing.T) {
 	clk := &clickClock{t: time.Unix(1000, 0)}

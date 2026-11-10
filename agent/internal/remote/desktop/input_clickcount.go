@@ -8,13 +8,13 @@ import (
 // Click-count tracking for synthesized mouse events (issue #11549), untagged so
 // it is unit-tested on every OS. Only the macOS handler uses it today.
 //
-// macOS does not work out the click count of a synthesized CGEvent: the event's
-// kCGMouseEventClickState field is what AppKit reports as NSEvent.clickCount,
-// and CGEventCreateMouseEvent leaves it at 1. Without this every remote
-// double-click arrives as two single clicks, and Finder treats the second one
-// as a click on an already-selected item and starts a rename.
+// CGEventCreateMouseEvent leaves the event's kCGMouseEventClickState field at 1,
+// and macOS does not appear to work out the click count of a posted event: in
+// #11549 every remote double-click arrived as two single clicks (AppKit's
+// NSEvent.clickCount is read from that field), so Finder treated the second
+// one as a click on an already-selected item and started a rename.
 //
-// The rules follow what the HID system does for a real mouse: a press of the
+// The rules are modelled on what the HID system does for a real mouse: a press of the
 // same button, within the system double-click interval of the previous press
 // and within a few points of where the sequence started, continues the
 // sequence (2, 3, 4, ...); anything else starts a new one at 1. A release
@@ -31,8 +31,9 @@ const (
 	// used when the system value cannot be read or is out of range.
 	defaultDoubleClickInterval = 500 * time.Millisecond
 
-	// maxDoubleClickInterval bounds what is accepted from the system. The
-	// System Settings slider tops out at 5 s; anything larger is a bad read.
+	// maxDoubleClickInterval is a sanity cap on the value read from the
+	// system. The System Settings slider goes up to about 5 s; a larger value
+	// (a bad read, or one set by hand) falls back to the default.
 	maxDoubleClickInterval = 5 * time.Second
 )
 

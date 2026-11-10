@@ -162,8 +162,8 @@ static CGEventType mouseTypeFor(int button, CGEventType left, CGEventType right,
 // behaviour before W2c); 1 sets them to `flags`, the modifiers the agent holds.
 //
 // clickState > 0 is written to kCGMouseEventClickState, which AppKit reports as
-// NSEvent.clickCount. macOS does not work it out for a posted event, so without
-// it every double-click arrives as two single clicks (issue #11549). 0 leaves
+// NSEvent.clickCount. Left alone it stays 1, so every double-click arrived as
+// two single clicks (issue #11549). 0 leaves
 // the field as CoreGraphics creates it (moves and drags).
 static void postMouse(int tap, CGEventType type, int x, int y, int button, int flags, int setFlags, int clickState) {
     CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
@@ -225,8 +225,8 @@ static void cgFlagsChanged(int tap, int keycode, int flags) {
 }
 
 // The user's double-click interval in seconds (System Settings > Mouse /
-// Trackpad > Double-click speed), read on every press so a change applies at
-// once. Go falls back to the 0.5 s default for an out-of-range value.
+// Trackpad > Double-click speed). Go asks for it on every press rather than
+// caching it, and falls back to 0.5 s for an out-of-range value.
 static double systemDoubleClickInterval(void) {
     @autoreleasepool {
         return [NSEvent doubleClickInterval];
@@ -348,7 +348,7 @@ static void sessionTypeUnicode(const UniChar *chars, int len) {
     postUnicodeString(kCGSessionEventTap, chars, len);
 }
 */
-// #cgo LDFLAGS: -framework IOKit
+// #cgo LDFLAGS: -framework IOKit -framework AppKit
 import "C"
 
 import (
