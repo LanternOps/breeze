@@ -812,7 +812,9 @@ export default function SoftwareVersionManager({
       </div>
     );
   }
-  if (error && versions.length === 0) {
+  // LOAD failures only: a rejected create/save keeps the form (and the typed
+  // input) mounted and shows the error inline below.
+  if (error && versions.length === 0 && !isFormOpen) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
