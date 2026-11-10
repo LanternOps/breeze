@@ -38,15 +38,9 @@ func (p *closeTrackingPlaceholder) Close() error { p.closes.Add(1); return nil }
 // helpers mutate package globals: tests using them must not call t.Parallel.
 func swapPlaceholderFallbackFactory(t *testing.T, fn backendFactory) {
 	t.Helper()
-	placeholderFallbackMu.Lock()
-	prevFn, prevLabel := placeholderFallbackFactory, placeholderFallbackLabel
-	placeholderFallbackFactory, placeholderFallbackLabel = fn, "Test"
-	placeholderFallbackMu.Unlock()
-	t.Cleanup(func() {
-		placeholderFallbackMu.Lock()
-		placeholderFallbackFactory, placeholderFallbackLabel = prevFn, prevLabel
-		placeholderFallbackMu.Unlock()
-	})
+	prevLabel, prevFn := placeholderFallback()
+	registerPlaceholderFallbackFactory("Test", fn)
+	t.Cleanup(func() { registerPlaceholderFallbackFactory(prevLabel, prevFn) })
 }
 
 // swapOpenH264LoadErr sets the cached OpenH264 load failure for the test.

@@ -1333,6 +1333,16 @@ func (s *Session) restoreHardwareEncoder(tp TextureProvider) {
 // encoder; a var so tests can stand in a placeholder (OpenH264 missing).
 var newSoftwareSwapCandidate = NewVideoEncoder
 
+// discardSwapCandidate closes a software-swap candidate encoder that will not
+// be installed. A Close failure cannot change the outcome (the current encoder
+// stays), so it is logged rather than returned.
+func (s *Session) discardSwapCandidate(enc *VideoEncoder) {
+	if err := enc.Close(); err != nil {
+		slog.Warn("Failed to close discarded software encoder candidate",
+			"session", s.id, "backend", enc.BackendName(), "error", err.Error())
+	}
+}
+
 // softwareSwapRetryBackoff is how long swapToSoftwareEncoder waits after
 // finding no usable software encoder before it builds another candidate.
 const softwareSwapRetryBackoff = 30 * time.Second
@@ -1400,7 +1410,7 @@ func (s *Session) swapToSoftwareEncoder() {
 	usedPlaceholderFallback := false
 	if newEnc.BackendIsPlaceholder() {
 		if err := newEnc.ReplacePlaceholderBackend(); err != nil {
-			newEnc.Close()
+			s.discardSwapCandidate(newEnc)
 			s.backOffSoftwareSwap(enc, err)
 			return
 		}
@@ -1411,7 +1421,7 @@ func (s *Session) swapToSoftwareEncoder() {
 		if err := newEnc.SetDimensions(w, h); err != nil {
 			slog.Error("Failed to set dimensions on software encoder",
 				"session", s.id, "error", err.Error())
-			newEnc.Close()
+			s.discardSwapCandidate(newEnc)
 			return
 		}
 	}
@@ -1431,7 +1441,7 @@ func (s *Session) swapToSoftwareEncoder() {
 				ErrNoH264Encoder, openH264Cause(), newEnc.BackendName())
 		}
 		if reason != nil {
-			newEnc.Close()
+			s.discardSwapCandidate(newEnc)
 			s.backOffSoftwareSwap(enc, reason)
 			return
 		}
