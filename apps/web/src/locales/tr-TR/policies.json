@@ -2048,7 +2048,9 @@
       "builtinVersionsReadOnly": "Breeze tarafından yönetilir. Dahili paketlerin sürümleri burada eklenemez veya değiştirilemez.",
       "installScriptsReadOnlyOnEdit": "Mevcut bir sürümün yükleme betikleri değiştirilemez ve hedef işletim sistemini sabitler. Değiştirmek için yeni bir sürüm ekleyin: yeni sürüm bu betiklerle başlar.",
       "partnerWideRequiresFullAccess": "İş ortağı genelindeki paketler yalnızca tam erişimli bir iş ortağı yöneticisi tarafından değiştirilebilir.",
-      "builtinArgsDefault": "Paketin varsayılan bağımsız değişkenlerini (kuruluş başına anahtarı dahil) kullanmak için boş bırakın."
+      "builtinArgsDefault": "Paketin varsayılan bağımsız değişkenlerini (kuruluş başına anahtarı dahil) kullanmak için boş bırakın.",
+      "versionRequired": "Sürüm gereklidir",
+      "downloadUrlInvalid": "Geçerli bir http(s) URL'si girin, örneğin https://example.com/package.msi"
     },
     "variableInput": {
       "insertADeployTimeVariable": "Dağıtım zamanı değişkeni ekleyin",

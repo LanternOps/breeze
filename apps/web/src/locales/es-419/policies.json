@@ -2048,7 +2048,9 @@
       "builtinVersionsReadOnly": "Administrado por Breeze. Las versiones de los paquetes incorporados no se pueden agregar ni modificar aquí.",
       "installScriptsReadOnlyOnEdit": "Los scripts de instalación de una versión existente no se pueden cambiar y fijan su sistema operativo de destino. Para cambiarlos, agregue una versión nueva: comienza con estos scripts.",
       "partnerWideRequiresFullAccess": "Los paquetes para todo el socio solo pueden ser modificados por un administrador de socio con acceso completo.",
-      "builtinArgsDefault": "Déjalo en blanco para usar los argumentos predeterminados del paquete, incluida su clave por organización."
+      "builtinArgsDefault": "Déjalo en blanco para usar los argumentos predeterminados del paquete, incluida su clave por organización.",
+      "versionRequired": "La versión es obligatoria",
+      "downloadUrlInvalid": "Ingresa una URL http(s) válida, por ejemplo https://example.com/package.msi"
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insertar una variable de tiempo de implementación",
