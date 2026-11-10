@@ -22,7 +22,7 @@ import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
-import { compactToolResultForChat } from './aiToolOutput';
+import { compactToolResultForChat, MAX_TOOL_RESULT_CHARS } from './aiToolOutput';
 import { bareToolName, normaliseDispatchResult } from './wisp/dispatchEvidence';
 import { incWispDispatchUnverified } from './wispMetrics';
 import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
@@ -937,6 +937,7 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
 function preToolUseDenialResult(
   toolName: string,
   check: { error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  maxChars: number = MAX_TOOL_RESULT_CHARS,
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
@@ -949,9 +950,22 @@ function preToolUseDenialResult(
           : {}),
       };
   return {
-    text: compactToolResultForChat(toolName, JSON.stringify(payload)),
+    text: compactToolResultForChat(toolName, JSON.stringify(payload), maxChars),
     isError: check.handoff ? handoffIsError(check.handoff) : true,
   };
+}
+
+/**
+ * The chat result budget for the live session (#11394): a constrained tool
+ * profile gets smaller results; `full`, no `toolExposure`, no session, or a
+ * throwing accessor all stay at the 8000 default.
+ */
+export function sessionResultCharBudget(getActiveSession?: () => ActiveSession | undefined): number {
+  try {
+    return getActiveSession?.()?.toolExposure?.resultCharBudget ?? MAX_TOOL_RESULT_CHARS;
+  } catch {
+    return MAX_TOOL_RESULT_CHARS;
+  }
 }
 
 async function safePostToolUse(
@@ -1216,7 +1230,7 @@ function makeToolHandler(
         approvalWaitMs = check.approvalWaitMs;
       }
       if (!check.allowed) {
-        const denial = preToolUseDenialResult(toolName, check);
+        const denial = preToolUseDenialResult(toolName, check, sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
@@ -1226,7 +1240,7 @@ function makeToolHandler(
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, getActiveSession?.(), callToolAuth);
     if (missingWispAuth) {
-      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      const denial = preToolUseDenialResult(toolName, missingWispAuth, sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
       return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
@@ -1317,7 +1331,7 @@ function makeToolHandler(
       const modelResult = captureSession?.wispGrant && wispEnabled()
         ? wispDispatchResult(toolName, args, result)
         : result;
-      const compactResult = withApprovalWait(compactToolResultForChat(toolName, modelResult), approvalWaitMs);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, modelResult, sessionResultCharBudget(getActiveSession)), approvalWaitMs);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
       // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
@@ -1385,7 +1399,7 @@ function makeToolHandler(
       const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = refusal
         ? JSON.stringify(refusal)
-        : compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+        : compactToolResultForChat(toolName, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
@@ -1464,7 +1478,7 @@ function makeSessionAwareHandler(
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
-        const denial = preToolUseDenialResult(toolName, check);
+        const denial = preToolUseDenialResult(toolName, check, sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
@@ -1478,7 +1492,7 @@ function makeSessionAwareHandler(
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
     if (missingWispAuth) {
-      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      const denial = preToolUseDenialResult(toolName, missingWispAuth, sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
       return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
@@ -1498,6 +1512,7 @@ function makeSessionAwareHandler(
       const refusalText = compactToolResultForChat(
         toolName,
         JSON.stringify({ error: 'no_action_intent', message: SECRET_ACTION_REFUSED_TEXT }),
+        sessionResultCharBudget(getActiveSession),
       );
       await safePostToolUse(postToolUse, toolName, args, refusalText, true, 0);
       return {
@@ -1559,7 +1574,7 @@ function makeSessionAwareHandler(
         sealed = { intentId, sealedResult: split.sealedResult };
       }
 
-      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result), approvalWaitMs);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result, sessionResultCharBudget(getActiveSession)), approvalWaitMs);
 
       // Detect error responses returned as JSON strings by tool handlers
       let isToolError = false;
@@ -1592,7 +1607,7 @@ function makeSessionAwareHandler(
       const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = refusal
         ? JSON.stringify(refusal)
-        : compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+        : compactToolResultForChat(toolName, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
@@ -2386,6 +2401,7 @@ export function wrapExtraToolWithHooks(
   extraTool: SdkTool,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
+  getActiveSession?: () => ActiveSession | undefined,
 ): SdkTool {
   const { name, handler } = extraTool;
   const toolTimeout = getToolTimeout(name);
@@ -2409,7 +2425,7 @@ export function wrapExtraToolWithHooks(
           check = { allowed: false, error: `Guardrails check failed: ${reason}` };
         }
         if (!check.allowed) {
-          const denial = preToolUseDenialResult(name, check);
+          const denial = preToolUseDenialResult(name, check, sessionResultCharBudget(getActiveSession));
           await safePostToolUse(postToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
           return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
@@ -2425,7 +2441,7 @@ export function wrapExtraToolWithHooks(
       } catch (err) {
         const durationMs = Date.now() - startTime;
         const message = sanitizeThrownToolError(name, err, { durationMs });
-        const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }));
+        const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, name, args, safeError, true, durationMs);
         return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
@@ -6161,7 +6177,7 @@ export function createBreezeMcpServer(
   // Every extra tool is wrapped so onPreToolUse/onPostToolUse fire for it —
   // see wrapExtraToolWithHooks's own docstring for why this is required, not
   // optional plumbing.
-  const wrappedExtraTools = extraTools.map((extra) => wrapExtraToolWithHooks(extra, onPreToolUse, onPostToolUse));
+  const wrappedExtraTools = extraTools.map((extra) => wrapExtraToolWithHooks(extra, onPreToolUse, onPostToolUse, getActiveSession));
 
   // F2 fix: filter the registry down to the pinned subset BEFORE
   // createSdkMcpServer, so those ~200 definitions never ride along on a

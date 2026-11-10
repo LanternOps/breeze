@@ -27,7 +27,7 @@ import type { SdkTool } from '../aiAgents/outcomeTools';
 import type { AuthContext } from '../../middleware/auth';
 import type { TenantToolDescriptor } from './resolver';
 import { executeTenantToolDetailed } from './execute';
-import { compactToolResultForChat } from '../aiToolOutput';
+import { compactToolResultForChat, MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
 
 /**
  * A vendor's JSON-Schema `inputSchema` is arbitrary — `z.fromJSONSchema` can
@@ -71,6 +71,7 @@ export function buildTenantSdkTools(
   descriptors: TenantToolDescriptor[],
   getAuth: () => AuthContext,
   getOrgId: () => string,
+  getResultCharBudget?: () => number,
 ): SdkTool[] {
   return descriptors.map((d) =>
     tool(
@@ -86,7 +87,7 @@ export function buildTenantSdkTools(
           content: [
             {
               type: 'text' as const,
-              text: compactToolResultForChat(d.qualifiedName, text),
+              text: compactToolResultForChat(d.qualifiedName, text, getResultCharBudget?.() ?? MAX_TOOL_RESULT_CHARS),
             },
           ],
           ...(isError ? { isError: true } : {}),
