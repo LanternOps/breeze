@@ -38,7 +38,8 @@ import { sendQuote, type DeferredQuoteEmail, type SendQuoteEmailOptions } from '
 import { requestLikeFromSnapshot } from '../services/auditEvents';
 import { writeAuditEvent } from '../services/auditEvents';
 import { supersededAuditEvent } from '../services/quoteSupersedeAudit';
-import { QuoteServiceError, type QuoteActor } from '../services/quoteTypes';
+import { QuoteServiceError, type QuoteActor, type QuoteServiceErrorCode } from '../services/quoteTypes';
+import { assertBillingEnabledForOrg, isBillingDisabledError } from '../services/billingEnabled';
 import { attachWorkerObservability } from './workerObservability';
 
 const QUOTE_SEND_QUEUE = 'quote-send';
@@ -188,8 +189,14 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
     const claimed = await db.update(quotes)
       .set({ sendJobId: null })
       .where(and(eq(quotes.id, quoteId), eq(quotes.status, 'draft'), eq(quotes.sendJobId, jobId)))
-      .returning({ id: quotes.id });
+      .returning({ id: quotes.id, orgId: quotes.orgId });
     if (claimed.length === 0) return false;
+    // BRZ-8807 D3: recheck at fire time (billing may have been switched off
+    // during the undo window). Throwing rolls back the claim and takes the
+    // existing failure path below (schedule_failed, no email). The gate on
+    // sendQuote / schedule-send itself is a separate change.
+    await assertBillingEnabledForOrg(claimed[0]!.orgId, (m, s, c) =>
+      new QuoteServiceError(m, s, c as QuoteServiceErrorCode));
     // The real send: same pipeline, same actor-scoped app-layer checks. Its
     // draft→sent claim also clears the schedule columns atomically with the
     // flip. The email itself comes back as a deferred, run after this
@@ -257,6 +264,9 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
       .set({ sendScheduledAt: null, sendJobId: null, sendEmailReason: 'schedule_failed' })
       .where(and(eq(quotes.id, quoteId), eq(quotes.status, 'draft'), eq(quotes.sendJobId, jobId)))
   ).catch((persistErr) => captureException(persistErr));
+  // Billing switched off during the window is an expected outcome, not a
+  // failure: the marker above already tells the user; skip the Sentry trail.
+  if (isBillingDisabledError(sendError)) return;
   throw sendError; // → worker 'failed' handler: log + Sentry
 }
 
@@ -274,6 +284,7 @@ export function initializeQuoteSendWorker(): void {
     captureException(error);
   });
   worker.on('failed', (job, error) => {
+    if (isBillingDisabledError(error)) return;
     // The quote stays a draft (schedule cleared in processQuoteSendJob's
     // finally); this log + Sentry event is the operator-side trail.
     console.error(`[quote-send] Job ${job?.id} failed:`, error);
