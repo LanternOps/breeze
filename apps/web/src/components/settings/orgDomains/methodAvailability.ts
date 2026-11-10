@@ -33,6 +33,11 @@ export function entraAvailability(tenant: PortalEntraTenantView): MethodAvailabi
 async function loadEntra(orgId: string): Promise<MethodAvailability> {
   try {
     const res = await fetchWithAuth(`/orgs/organizations/${orgId}/portal-entra-tenant`);
+    if (res.status === 404) {
+      // No portal Entra app on this deployment: no tenant can be proven here (W4).
+      const body = (await res.json().catch(() => ({}))) as { code?: unknown };
+      return body.code === 'PORTAL_ENTRA_NOT_CONFIGURED' ? { available: false, reason: 'not_enabled' } : AVAILABLE;
+    }
     if (!res.ok) return AVAILABLE;
     const body = (await res.json()) as { data?: unknown };
     return isPortalEntraTenantView(body.data) ? entraAvailability(body.data) : AVAILABLE;

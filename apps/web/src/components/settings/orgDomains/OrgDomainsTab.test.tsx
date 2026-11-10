@@ -116,6 +116,28 @@ describe('OrgDomainsTab', () => {
     await waitFor(() => expect(screen.getByTestId('domain-method-unavailable-entra_tenant')).toHaveTextContent(/Microsoft 365 connection/i));
   });
 
+  it('Microsoft is unavailable when the deployment has no portal Entra app; Google when Workspace is off', async () => {
+    baseRoutes([domainView()], {
+      [`GET ${ENTRA}`]: () => json({ error: 'not configured', code: 'PORTAL_ENTRA_NOT_CONFIGURED' }, 404),
+      [`GET ${GOOGLE}`]: () => json({ error: 'Google Workspace integration is not enabled' }, 404),
+    });
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-verify-d1'));
+    await waitFor(() => expect(screen.getByTestId('domain-method-entra_tenant')).toBeDisabled());
+    expect(screen.getByTestId('domain-method-unavailable-entra_tenant')).toHaveTextContent(/not available on this server/i);
+    expect(screen.getByTestId('domain-method-google_directory')).toBeDisabled();
+    expect(screen.getByTestId('domain-method-unavailable-google_directory')).toHaveTextContent(/not enabled/i);
+  });
+
+  it('a tenant-status load failure leaves Microsoft enabled (the server check decides)', async () => {
+    baseRoutes([domainView()], { [`GET ${ENTRA}`]: () => json({ error: 'boom' }, 500) });
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-verify-d1'));
+    await screen.findByTestId('domain-verification-panel');
+    await waitFor(() => expect(callsTo(fetchWithAuthMock, 'GET', ENTRA)).toHaveLength(1));
+    expect(screen.getByTestId('domain-method-entra_tenant')).toBeEnabled();
+  });
+
   it('toggling active PATCHes isActive through the org route', async () => {
     baseRoutes([domainView()], {
       [`PATCH ${DOMAINS}/d1`]: () => json({ data: domainView({ isActive: false }) }),

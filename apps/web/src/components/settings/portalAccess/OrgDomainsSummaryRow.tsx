@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
+import HashLink from '../../shared/HashLink';
 import { stateLabel } from '../orgDomains/labels';
 import { customerDomainsUrl, isCustomerDomainView, type CustomerDomainView } from '../orgDomains/types';
 
@@ -60,9 +61,9 @@ export function OrgDomainsSummaryRow({ orgId }: Props) {
           ))
         )}
       </span>
-      <a href="#domains" className="text-primary hover:underline" data-testid="org-sign-in-domains-link">
+      <HashLink hash="domains" className="text-primary hover:underline" data-testid="org-sign-in-domains-link">
         {t('portalAccessPolicy.domains.manage')}
-      </a>
+      </HashLink>
     </div>
   );
 }

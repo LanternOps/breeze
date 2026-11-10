@@ -6,6 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
+import HashLink from '../../shared/HashLink';
 import type { DomainMethodAvailability } from './methodAvailability';
 import { checkReasonLabel, methodLabel, methodUnavailableLabel, verifyErrorLabel } from './labels';
 import {
@@ -222,7 +223,7 @@ export function DomainVerificationPanel({ orgId, domain, availability, onChanged
                   {m === 'entra_tenant' && reason === 'tenant_not_proven' && (
                     <>
                       {' '}
-                      <a href="#portal" className="underline hover:text-foreground">{t('orgDomains.verify.openPortalTab')}</a>
+                      <HashLink hash="portal" className="underline hover:text-foreground">{t('orgDomains.verify.openPortalTab')}</HashLink>
                     </>
                   )}
                 </p>
