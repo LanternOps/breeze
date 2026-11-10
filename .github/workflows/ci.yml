@@ -98,7 +98,7 @@ jobs:
       # CI_THIN_QUEUE repository variable is unset or `off`, and whenever the gate's
       # published selection is not `mode=thin` (the gate publishes that only under
       # `enforce`; an entry already running when the variable flips keeps its list).
-      thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}
+      thin_skip: ',test-shared,'
       code: ${{ steps.classify.outputs.code }}
       docs: ${{ steps.classify.outputs.docs }}
       agent: ${{ steps.classify.outputs.agent }}
