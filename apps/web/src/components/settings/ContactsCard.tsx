@@ -402,7 +402,9 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
       handleActionError(err, t('contactsCard.portal.errors.invite'));
     } finally {
       setPortalBusyId(null);
-      await portal.reload();
+      // The API stamps the `portal` role on the contact, so the Roles cell needs
+      // the contacts list too, not just the portal status (#11599).
+      await Promise.all([portal.reload(), loadContacts()]);
     }
   }
 
@@ -416,7 +418,7 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
       handleActionError(err, t('contactsCard.portal.errors.bulkInvite'));
     } finally {
       setBulkBusy(false);
-      await portal.reload();
+      await Promise.all([portal.reload(), loadContacts()]);
     }
   }
 

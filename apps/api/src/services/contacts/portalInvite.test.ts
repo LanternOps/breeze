@@ -22,6 +22,7 @@ import {
   planContactInvite,
   portalLoginEmailEquals,
   bindContactLoginForInvite,
+  dropPortalRoleForRemovedLogin,
   loadOrgContactsForPortalInvite,
   lockPortalInviteAddresses,
   ContactGoneError,
@@ -464,5 +465,34 @@ describe("portalLoginEmailEquals (#11529)", () => {
     const q = compile(portalLoginEmailEquals("  Ada@X.Test "));
     expect(q.sql).toContain("lower(\"portal_users\".\"email\") = $1");
     expect(q.params).toEqual(["ada@x.test"]);
+  });
+});
+
+describe('dropPortalRoleForRemovedLogin (#11599)', () => {
+  const input = { orgId: ORG, contactId: C, actor: { userId: 'tech-1' } };
+
+  it('removes only the portal role when no other login remains on the contact', async () => {
+    const r = recorder([[{ roles: ['billing', 'portal'] }], []]);
+    await dropPortalRoleForRemovedLogin(r.exec, input);
+    expect(updateContactMock).toHaveBeenCalledWith(r.exec, C, ORG, { roles: ['billing'] }, input.actor);
+  });
+
+  it('scopes both reads to the organization', async () => {
+    const r = recorder([[{ roles: ['portal'] }], []]);
+    await dropPortalRoleForRemovedLogin(r.exec, input);
+    expect(r.wheres).toHaveLength(2);
+    for (const w of r.wheres) expect(compile(w).params).toContain(ORG);
+  });
+
+  it('keeps the role while another login is still bound to the contact', async () => {
+    const r = recorder([[{ roles: ['portal'] }], [{ id: 'pu-other' }]]);
+    await dropPortalRoleForRemovedLogin(r.exec, input);
+    expect(updateContactMock).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when the contact has no portal role or is gone', async () => {
+    await dropPortalRoleForRemovedLogin(recorder([[{ roles: ['billing'] }]]).exec, input);
+    await dropPortalRoleForRemovedLogin(recorder([[]]).exec, input);
+    expect(updateContactMock).not.toHaveBeenCalled();
   });
 });
