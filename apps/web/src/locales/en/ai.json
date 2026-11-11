@@ -20,6 +20,27 @@
     "urgentWarning": "Less than 30 seconds remaining. This request will be denied automatically.",
     "progressLabel": "Time left before this is denied automatically",
     "showParameters": "Show parameters",
+    "ticketComment": {
+      "publicTo": "Customer-visible reply to {{recipient}}",
+      "publicNoRecipient": "Customer-visible reply (emails the requester)",
+      "internal": "Internal note (not visible to the customer)"
+    },
+    "memory": {
+      "heading": "Wisp will remember",
+      "scope": {
+        "user": "Only you",
+        "org": "This customer",
+        "partner": "Your whole MSP"
+      },
+      "types": {
+        "preference": "Preference",
+        "standing_instruction": "Standing instruction",
+        "fact": "Fact",
+        "decision": "Decision",
+        "concern_outcome": "Concern outcome",
+        "work_summary": "Work summary"
+      }
+    },
     "approve": "Approve",
     "reject": "Deny",
     "approveVerify": "Verify & Approve",

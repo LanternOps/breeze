@@ -80,6 +80,7 @@ import {
   type ActionIntentTransitionPatch,
 } from './actionIntents/intentService';
 import { buildActionLabel } from './actionIntents/actionLabel';
+import { argumentTicketId, nameApprovalCardTargets, resolveApprovalTicketContext } from './actionIntents/approvalCardContext';
 import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import {
@@ -2330,6 +2331,20 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       const description = standingConflict
         ? standingConflictDescription(standingConflict.text, contextDescription)
         : contextDescription;
+      // #11674: what the chat card shows. The guardrail headline names a
+      // ticket or a device by an id stub; the card names them by ticket number
+      // and device name (the intent service does the device half for the
+      // stored label, so `description` itself — the intent's reason — is left
+      // as is). The ticket's subject and requester ride as `ticketContext` for
+      // the card body, never in a headline. Both reads are non-fatal.
+      const cardTicketId = argumentTicketId(toolName, input as Record<string, unknown>);
+      const ticketContext = cardTicketId ? await resolveApprovalTicketContext(cardTicketId, intentOrgId) : null;
+      const cardDescription = nameApprovalCardTargets(description, {
+        deviceId: deviceId ?? null,
+        deviceName: deviceContext?.displayName ?? deviceContext?.hostname ?? null,
+        ticketId: cardTicketId,
+        ticketNumber: ticketContext?.ticketNumber ?? null,
+      });
 
       if (guardrailCheck.tier >= 3) {
         // Hoisted above the try below (unlike `intent`, which stays
@@ -2469,7 +2484,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               executionId: approvalExec.id,
               intentId: intent.id,
               toolName,
-              description,
+              description: cardDescription,
               deviceContext,
               scriptRunContext,
               ...(scriptProposal ? { scriptProposal } : {}),
@@ -2531,8 +2546,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             approvalWindowMs: session.approvalWaitBudgetMs,
             toolName,
             input: pinnedCard ? pinnedCard.input : input,
-            description: pinnedCard ? pinnedCard.description : description,
+            description: pinnedCard ? pinnedCard.description : cardDescription,
             deviceContext,
+            ...(ticketContext ? { ticketContext } : {}),
             ...(standingConflict ? { standingInstructionConflict: standingConflict } : {}),
             intentBacked: true,
             // #10416: the requester can decide only an intent that fanned a
@@ -3209,8 +3225,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             approvalWindowMs: session.approvalWaitBudgetMs,
             toolName,
             input,
-            description,
+            description: cardDescription,
             deviceContext,
+            ...(ticketContext ? { ticketContext } : {}),
             scriptRunContext,
             ...(scriptProposal ? { scriptProposal } : {}),
             ...(standingConflict ? { standingInstructionConflict: standingConflict } : {}),

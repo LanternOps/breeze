@@ -20,6 +20,27 @@
     "urgentWarning": "Quedan menos de 30 segundos. Esta solicitud será rechazada automáticamente.",
     "progressLabel": "Tiempo restante antes de que se deniegue automáticamente",
     "showParameters": "Mostrar parámetros",
+    "ticketComment": {
+      "publicTo": "Respuesta visible para el cliente a {{recipient}}",
+      "publicNoRecipient": "Respuesta visible para el cliente (se envía por correo al solicitante)",
+      "internal": "Nota interna (no visible para el cliente)"
+    },
+    "memory": {
+      "heading": "Wisp recordará",
+      "scope": {
+        "user": "Solo tú",
+        "org": "Este cliente",
+        "partner": "Todo tu MSP"
+      },
+      "types": {
+        "preference": "Preferencia",
+        "standing_instruction": "Instrucción permanente",
+        "fact": "Dato",
+        "decision": "Decisión",
+        "concern_outcome": "Resultado de inquietud",
+        "work_summary": "Resumen de trabajo"
+      }
+    },
     "approve": "Aprobar",
     "reject": "Denegar",
     "approveVerify": "Verificar y aprobar",

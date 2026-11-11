@@ -20,6 +20,27 @@
     "urgentWarning": "Weniger als 30 Sekunden verbleiben. Diese Anfrage wird automatisch abgelehnt.",
     "progressLabel": "Verbleibende Zeit, bevor dies automatisch abgelehnt wird",
     "showParameters": "Parameter anzeigen",
+    "ticketComment": {
+      "publicTo": "Für den Kunden sichtbare Antwort an {{recipient}}",
+      "publicNoRecipient": "Für den Kunden sichtbare Antwort (per E-Mail an den Anfragenden)",
+      "internal": "Interne Notiz (für den Kunden nicht sichtbar)"
+    },
+    "memory": {
+      "heading": "Wisp merkt sich",
+      "scope": {
+        "user": "Nur Sie",
+        "org": "Dieser Kunde",
+        "partner": "Ihr gesamter MSP"
+      },
+      "types": {
+        "preference": "Präferenz",
+        "standing_instruction": "Dauerhafte Anweisung",
+        "fact": "Fakt",
+        "decision": "Entscheidung",
+        "concern_outcome": "Ergebnis eines Anliegens",
+        "work_summary": "Arbeitszusammenfassung"
+      }
+    },
     "approve": "Genehmigen",
     "reject": "Ablehnen",
     "approveVerify": "Bestätigen & genehmigen",

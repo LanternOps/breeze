@@ -20,6 +20,27 @@
     "urgentWarning": "30 saniyeden az kaldı. Bu istek otomatik olarak reddedilecek.",
     "progressLabel": "Otomatik reddedilmeden önce kalan süre",
     "showParameters": "Parametreleri göster",
+    "ticketComment": {
+      "publicTo": "{{recipient}} için müşterinin görebileceği yanıt",
+      "publicNoRecipient": "Müşterinin görebileceği yanıt (talep sahibine e-postayla gönderilir)",
+      "internal": "Dahili not (müşteri göremez)"
+    },
+    "memory": {
+      "heading": "Wisp hatırlayacak",
+      "scope": {
+        "user": "Yalnızca siz",
+        "org": "Bu müşteri",
+        "partner": "Tüm MSP'niz"
+      },
+      "types": {
+        "preference": "Tercih",
+        "standing_instruction": "Kalıcı talimat",
+        "fact": "Bilgi",
+        "decision": "Karar",
+        "concern_outcome": "Endişe sonucu",
+        "work_summary": "İş özeti"
+      }
+    },
     "approve": "Onayla",
     "reject": "Reddet",
     "approveVerify": "Doğrula ve Onayla",
