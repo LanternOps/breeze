@@ -371,7 +371,7 @@ import {
   attributeExtensionError,
   extensionRootsSnapshot,
 } from './extensions/faultAttribution';
-import { syncBinaries } from './services/binarySync';
+import { isBinarySyncDeferred, stopDeferredBinarySyncRetry, syncBinaries } from './services/binarySync';
 import { syncBuiltinYaraPack } from './services/yaraBuiltinPack';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
@@ -459,6 +459,7 @@ let warnedWorkersNeverStarted = false;
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
   checkDbReadOnly: () => checkDatabaseReadOnly(),
+  binarySyncPending: () => isBinarySyncDeferred(),
   checkRedis: () => checkRedisConnectivity(),
   workerRegistry: workerReadinessRegistry,
   workersInitialized: () => {
@@ -1505,6 +1506,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   stopDbPoolHealthMonitor();
   stopWedgedBackendMonitor();
   stopRedisMemoryMonitor();
+  // #11731: a deferred binary registration must not start against a pool
+  // that is draining.
+  stopDeferredBinarySyncRetry();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;

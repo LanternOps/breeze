@@ -62,6 +62,12 @@ export interface ReadinessSnapshot {
   dbReadOnly: boolean;
   redis: boolean;
   workers: boolean;
+  /**
+   * Agent binary registration is waiting for the database to accept writes
+   * (#11731). Informational: it does not close admission, because agents are
+   * still offered the versions already registered.
+   */
+  binarySyncPending: boolean;
   reason: ReadinessFailureReason | null;
   checkedAt: string;
   consumers: Readonly<Record<string, ConsumerReadinessState>>;
@@ -90,6 +96,8 @@ export interface ReadinessEvaluatorOptions {
    * read-only answers this probe as reliably as `select 1`.
    */
   checkDbReadOnly?: () => Promise<boolean>;
+  /** Whether binary registration is deferred (api role only). Default false. */
+  binarySyncPending?: () => boolean;
   /** Live Redis probe. */
   checkRedis: () => Promise<boolean>;
   /** Process-local view of every declared queue consumer. */
@@ -202,6 +210,7 @@ export function createReadinessEvaluator(
       dbReadOnly,
       redis,
       workers,
+      binarySyncPending: options.binarySyncPending?.() ?? false,
       reason,
       checkedAt: new Date(now()).toISOString(),
       consumers,
@@ -221,6 +230,7 @@ export function createReadinessEvaluator(
           dbReadOnly: false,
           redis: false,
           workers: false,
+          binarySyncPending: false,
           reason: 'shutting-down',
           checkedAt: new Date(now()).toISOString(),
           consumers: options.workerRegistry.snapshot(),

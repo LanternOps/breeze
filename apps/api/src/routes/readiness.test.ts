@@ -22,6 +22,7 @@ const snapshot = (overrides: Partial<ReadinessSnapshot> = {}): ReadinessSnapshot
   dbReadOnly: false,
   redis: true,
   workers: true,
+  binarySyncPending: false,
   reason: null,
   checkedAt: '2026-07-31T18:23:48.511Z',
   consumers: { secretWorker: internalConsumer },
@@ -50,6 +51,7 @@ describe('GET /ready', () => {
       dbReadOnly: false,
       redis: true,
       workers: true,
+      binarySyncPending: false,
       checkedAt: '2026-07-31T18:23:48.511Z',
       consumerSummary: {
         required: 1,
@@ -75,6 +77,13 @@ describe('GET /ready', () => {
         dbReadOnly: true,
       });
     }
+  });
+
+  it('surfaces a deferred binary registration on a ready 200 (#11731)', async () => {
+    const { app } = mount({ get: async () => snapshot({ binarySyncPending: true }), invalidate: vi.fn() });
+    const res = await app.request('/health/ready');
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ ready: true, binarySyncPending: true });
   });
 
   it('carries no reason on a ready 200', async () => {
@@ -141,6 +150,7 @@ describe('GET /ready', () => {
 
     expect(body.db).toBeNull();
     expect(body.dbReadOnly).toBeNull();
+    expect(body.binarySyncPending).toBeNull();
     expect(body.redis).toBeNull();
     expect(body.workers).toBeNull();
   });
@@ -197,6 +207,7 @@ describe('GET /ready', () => {
       dbReadOnly: false,
       redis: true,
       workers: true,
+      binarySyncPending: false,
       checkedAt: '2026-07-31T18:23:48.511Z',
       consumerSummary: {
         required: 1,

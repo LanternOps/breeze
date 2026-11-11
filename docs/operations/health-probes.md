@@ -73,6 +73,15 @@ fresh database, or an unseeded one, it exits with a `ReadOnlyDatabaseError`
 that names the read-only condition and what startup needed to write, instead
 of the raw `cannot execute CREATE TABLE in a read-only transaction`.
 
+With `BINARY_SOURCE=local` (where a binary-sync failure is fatal at boot),
+binary sync on a read-only database only reads. It compares the binaries
+volume with `agent_versions`. When everything is registered it writes nothing.
+When a row would change, it logs one warning, sets `"binarySyncPending": true`
+on `/health/ready` (informational; `ready` is unaffected) and re-checks every
+60 s. The first check that finds the database writable runs the normal sync and
+clears the flag. Sessions opened while the database was read-only keep that
+default until they reconnect, so recovery can wait on pool recycling.
+
 The maximum supported readiness failure and recovery visibility threshold is
 10 seconds. `READINESS_CACHE_TTL_MS` defaults to 5,000 ms and
 `READINESS_PROBE_TIMEOUT_MS` defaults to 3,000 ms. The API constrains the probe

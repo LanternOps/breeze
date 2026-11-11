@@ -14,6 +14,7 @@ export type PublicReadinessResponse =
       dbReadOnly: boolean;
       redis: boolean;
       workers: boolean;
+      binarySyncPending: boolean;
       checkedAt: string;
       consumerSummary: PublicConsumerReadinessSummary;
     }
@@ -23,6 +24,7 @@ export type PublicReadinessResponse =
       dbReadOnly: null;
       redis: null;
       workers: null;
+      binarySyncPending: null;
       checkedAt: string;
       consumerSummary: null;
       error: 'readiness evaluation failed';
@@ -65,6 +67,7 @@ export function createReadinessHandler({ evaluator, onEvaluationError }: Readine
           dbReadOnly: null,
           redis: null,
           workers: null,
+          binarySyncPending: null,
           checkedAt: new Date().toISOString(),
           consumerSummary: null,
           error: 'readiness evaluation failed'
@@ -79,6 +82,7 @@ export function createReadinessHandler({ evaluator, onEvaluationError }: Readine
       dbReadOnly: snapshot.dbReadOnly,
       redis: snapshot.redis,
       workers: snapshot.workers,
+      binarySyncPending: snapshot.binarySyncPending,
       checkedAt: snapshot.checkedAt,
       consumerSummary: summarizeConsumerReadiness(snapshot.consumers),
     };

@@ -280,6 +280,24 @@ describe('createReadinessEvaluator', () => {
     });
   });
 
+  describe('deferred binary registration (#11731)', () => {
+    it('reports a deferred binary registration without closing admission', async () => {
+      const { evaluator } = harness({ binarySyncPending: () => true });
+      expect(await evaluator.get()).toMatchObject({ ready: true, binarySyncPending: true, reason: null });
+    });
+
+    it('defaults to false when the process does not sync binaries', async () => {
+      const { evaluator } = harness();
+      expect(await evaluator.get()).toMatchObject({ binarySyncPending: false });
+    });
+
+    it('is false while draining', async () => {
+      const { state, evaluator } = harness({ binarySyncPending: () => true });
+      state.shuttingDown = true;
+      expect(await evaluator.get()).toMatchObject({ binarySyncPending: false });
+    });
+  });
+
   describe('failure reason', () => {
     it('names the database first when it is unreachable', async () => {
       const { state, evaluator } = harness();

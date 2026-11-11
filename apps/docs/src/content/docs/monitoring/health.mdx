@@ -98,6 +98,7 @@ If the evaluator itself fails, the body is `{ "ready": false, "db": null, "dbRea
 | `ready` | Overall admission verdict; the status code follows it |
 | `reason` | Present only on a 503: the single most fundamental cause, one of `shutting-down`, `db`, `db-read-only`, `redis`, `workers-pending` |
 | `db` / `redis` | Live dependency probes (bounded by the probe timeout) |
+| `binarySyncPending` | API only. `true` while agent binary registration waits for a read-only database to accept writes. Informational: it does not change `ready`, because agents are still offered the versions already registered. It clears on its own once the database is writable |
 | `dbReadOnly` | `true` when the database answers but rejects writes (`transaction_read_only = on`): a provider set `default_transaction_read_only`, often on a full disk, or `DATABASE_URL` points at a standby. Readiness is 503 with `reason: "db-read-only"`; `/health` stays 200 and reads keep working |
 | `workers` | `true` when worker initialization has completed and every required queue consumer is running with a connected Redis client |
 | `checkedAt` | When this verdict was computed (it may be cached for up to the cache TTL) |

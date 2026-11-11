@@ -3,9 +3,10 @@ import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { db, withSystemDbAccessContext } from "../db";
 import { agentVersions } from "../db/schema";
+import { isReadOnlyProbeResult, isReadOnlySqlError, TRANSACTION_READ_ONLY_PROBE_SQL } from "../db/readOnlyDatabase";
 import { isS3Configured, syncDirectory } from "./s3Storage";
 import { binaryStoreDir, s3SyncTargets } from "./binaryStores";
 import {
@@ -1072,6 +1073,170 @@ async function syncBinaryDirsToS3(): Promise<void> {
   }
 }
 
+// ─── Read-only database (#11731) ────────────────────────────────────────────
+//
+// Hosted runs BINARY_SOURCE=local, where a syncBinaries() failure is fatal at
+// boot (index.ts). Local registration used to rewrite every agent_versions row
+// for the volume on every boot (a demote UPDATE plus an upsert), so a database
+// the provider had switched to read-only crash-looped the API even when
+// nothing had changed. On a read-only database the local path now only reads:
+// it compares the volume with what is registered, writes nothing, and when a
+// write is genuinely needed it defers the whole registration to a retry that
+// runs once the database accepts writes again. The writable path is unchanged.
+
+/** How often a deferred registration checks whether the database is writable. */
+const DEFERRED_SYNC_RETRY_MS = 60_000;
+
+let binarySyncDeferred = false;
+let deferredRetryTimer: NodeJS.Timeout | null = null;
+let deferredRetryInFlight: Promise<void> | null = null;
+
+/** True while a registration is waiting for the database to accept writes. */
+export function isBinarySyncDeferred(): boolean {
+  return binarySyncDeferred;
+}
+
+/** Stops the retry timer (shutdown, tests). Leaves the deferred flag as is. */
+export function stopDeferredBinarySyncRetry(): void {
+  if (deferredRetryTimer) clearInterval(deferredRetryTimer);
+  deferredRetryTimer = null;
+}
+
+/**
+ * Whether the database is read-only. An unanswerable probe reads as writable,
+ * so the normal path runs and fails (or not) exactly as it did before.
+ */
+async function databaseIsReadOnly(): Promise<boolean> {
+  try {
+    return await withSystemDbAccessContext(async () =>
+      isReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
+    );
+  } catch (err) {
+    console.warn(
+      `[binarySync] Could not check whether the database is read-only; running the normal registration: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+}
+
+function deferBinarySyncForReadOnly(detail: string): void {
+  if (!binarySyncDeferred) {
+    console.warn(
+      `[binarySync] Database is read-only (SQLSTATE 25006); binary registration deferred: ${detail}. ` +
+        "Agents are offered the versions already registered. Registration runs automatically " +
+        `once the database accepts writes (checked every ${DEFERRED_SYNC_RETRY_MS / 1000}s).`,
+    );
+  }
+  binarySyncDeferred = true;
+  if (!deferredRetryTimer) {
+    deferredRetryTimer = setInterval(() => {
+      void retryDeferredBinarySync();
+    }, DEFERRED_SYNC_RETRY_MS);
+    deferredRetryTimer.unref?.();
+  }
+}
+
+/**
+ * One retry of a deferred registration. Quiet while the database is still
+ * read-only. Once it is writable, runs the full syncBinaries(): success clears
+ * the deferral; any other failure is reported and stops the retries (the
+ * deferral stays visible on /health/ready until a restart).
+ */
+export async function retryDeferredBinarySync(): Promise<void> {
+  if (!binarySyncDeferred) return;
+  if (deferredRetryInFlight) return deferredRetryInFlight;
+  deferredRetryInFlight = (async () => {
+    try {
+      if (await databaseIsReadOnly()) return;
+      binarySyncDeferred = false;
+      await syncBinaries();
+      if (!binarySyncDeferred) {
+        stopDeferredBinarySyncRetry();
+        console.log("[binarySync] Deferred binary registration completed; the database accepts writes again");
+      }
+    } catch (err) {
+      if (isReadOnlySqlError(err) || isReadOnlySqlError((err as { cause?: unknown } | null)?.cause)) {
+        // Flipped back to read-only between the check and the writes.
+        binarySyncDeferred = true;
+        return;
+      }
+      binarySyncDeferred = true;
+      stopDeferredBinarySyncRetry();
+      console.error(
+        "[binarySync] Deferred binary registration failed after the database became writable; restart the API to retry:",
+        err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        area: "binary_sync_deferred_retry",
+      });
+    } finally {
+      deferredRetryInFlight = null;
+    }
+  })();
+  return deferredRetryInFlight;
+}
+
+/**
+ * Read-only counterpart of the local registration below: no writes and no
+ * GitHub fallback (both would write). A scanned binary counts as registered
+ * when agent_versions holds a row for this version with the same component,
+ * platform, architecture and checksum, which is what the writable path would
+ * (re)write for it.
+ */
+async function syncLocalBinariesReadOnly(args: {
+  agentBinaryDir: string;
+  version: string;
+  expectedVersion: string | undefined;
+}): Promise<void> {
+  const { agentBinaryDir, version, expectedVersion } = args;
+  if (expectedVersion && expectedVersion !== "latest" && version !== "unknown" && version !== expectedVersion) {
+    deferBinarySyncForReadOnly(`the binaries volume has v${version} but BREEZE_VERSION=${expectedVersion}`);
+    return;
+  }
+
+  const scanned: Array<{ component: string; binaries: BinaryInfo[] }> = [
+    { component: "agent", binaries: await scanBinaryDir(agentBinaryDir) },
+    { component: "user-helper", binaries: await scanBinaryDir(agentBinaryDir, "user-helper") },
+    { component: "watchdog", binaries: await scanBinaryDir(agentBinaryDir, "watchdog") },
+    { component: "backup", binaries: await scanBinaryDir(agentBinaryDir, "backup") },
+    { component: "helper", binaries: await scanHelperInstallerDir(binaryStoreDir("helper")) },
+  ];
+  if (scanned[0]!.binaries.length === 0) {
+    // The writable path would fall back to a GitHub sync here (refused for a
+    // hosted edition, which throws exactly as it does when writable).
+    assertLocalGithubFallbackAllowed(`no local agent binaries found in ${agentBinaryDir}`);
+    deferBinarySyncForReadOnly(`no local agent binaries found in ${agentBinaryDir}`);
+    return;
+  }
+
+  const registered = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        component: agentVersions.component,
+        platform: agentVersions.platform,
+        architecture: agentVersions.architecture,
+        checksum: agentVersions.checksum,
+      })
+      .from(agentVersions)
+      .where(eq(agentVersions.version, version)),
+  );
+  const have = new Set(registered.map((r) => `${r.component}|${r.platform}|${r.architecture}|${r.checksum}`));
+  const all = scanned.flatMap(({ component, binaries }) =>
+    binaries.map((b) => ({ component, key: `${component}|${b.platform}|${b.architecture}|${b.checksum}`, filename: b.filename })),
+  );
+  const missing = all.filter((b) => !have.has(b.key));
+  if (missing.length > 0) {
+    const shown = missing.slice(0, 5).map((b) => b.filename).join(", ");
+    deferBinarySyncForReadOnly(
+      `${missing.length} of ${all.length} binaries in the volume are not registered for version ${version} (${shown}${missing.length > 5 ? ", ..." : ""})`,
+    );
+    return;
+  }
+  console.log(
+    `[binarySync] Database is read-only; all ${all.length} binaries in the volume are already registered for version ${version}. Nothing to write.`,
+  );
+}
+
 export async function syncBinaries(): Promise<void> {
   // Set only in server-only release images (see getPairedBinariesVersion);
   // undefined for every full-release image, which leaves this function's
@@ -1129,6 +1294,14 @@ export async function syncBinaries(): Promise<void> {
     console.warn(
       '[binarySync] BINARY_VERSION_FILE not set, using "unknown" as version',
     );
+  }
+
+  // #11731: on a read-only database, compare instead of re-registering. The
+  // server-only (paired) path below writes nothing, so it is left alone.
+  if (!pairedBinariesVersion && (await databaseIsReadOnly())) {
+    await syncLocalBinariesReadOnly({ agentBinaryDir, version, expectedVersion });
+    await syncBinaryDirsToS3();
+    return;
   }
 
   // Detect stale binaries volume: if BREEZE_VERSION is set but doesn't match
