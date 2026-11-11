@@ -4,8 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import RemoveDeviceDialog from './RemoveDeviceDialog';
+import ReattachDeviceDialog from './ReattachDeviceDialog';
+import { useReinstallCandidates } from './useReinstallCandidates';
+import type { ReattachCandidate, ReinstallCandidatesView } from '../../lib/deviceReattach';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -25,6 +29,14 @@ type PossibleReplacementBannerProps = {
    * banner must be completely inert then.
    */
   possibleReplacementOfDeviceId?: string | null;
+  /**
+   * The device being viewed and its org (#8318). With both set, the banner
+   * reads the reattach candidates and offers **Reattach** when the flagged
+   * old record is a candidate in the same org. Without them it is the
+   * review-and-remove banner of #2764 only.
+   */
+  sourceDeviceId?: string;
+  sourceOrgId?: string;
 };
 
 /**
@@ -55,9 +67,20 @@ type PossibleReplacementBannerProps = {
  */
 export default function PossibleReplacementBanner({
   possibleReplacementOfDeviceId,
+  sourceDeviceId,
+  sourceOrgId,
 }: PossibleReplacementBannerProps) {
   const { t } = useTranslation('devices');
   const oldDeviceId = possibleReplacementOfDeviceId ?? null;
+  // #8318: the reattach read runs only where the banner shows and the caller
+  // named the source. A refused or failed read just leaves the action out.
+  const reattach = useReinstallCandidates(oldDeviceId && sourceDeviceId ? sourceDeviceId : null);
+  // The rows the dialog was opened with, held so the re-read after the
+  // request (which brings the open intent) never swaps or unmounts it.
+  const [reattachTarget, setReattachTarget] = useState<{
+    source: ReinstallCandidatesView['source'];
+    candidate: ReattachCandidate;
+  } | null>(null);
 
   const [oldDevice, setOldDevice] = useState<OldDeviceSummary | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -101,6 +124,7 @@ export default function PossibleReplacementBanner({
     setUnavailable(false);
     setBusy(false);
     setConfirmOpen(false);
+    setReattachTarget(null);
     void fetchOldDevice();
   }, [fetchOldDevice]);
 
@@ -112,6 +136,16 @@ export default function PossibleReplacementBanner({
     t('possibleReplacementBanner.unknownDevice');
   const alreadyDecommissioned = oldDevice?.status === 'decommissioned';
   const canDecommission = !unavailable && oldDevice != null && !alreadyDecommissioned;
+
+  // Reattach (#8318 §8 "Web"): the same-org case only. The flagged old record
+  // must be one of the candidates this viewer is shown (partner users, in
+  // orgs and sites they reach), in the org of the device being viewed.
+  const reattachView = reattach.view;
+  const reattachCandidate = reattachView && !reattachView.source.parked && sourceOrgId
+    ? reattachView.candidates.find((c) => c.deviceId === oldDeviceId && c.orgId === sourceOrgId) ?? null
+    : null;
+  const reattachPending = reattachView?.openIntent ?? null;
+  const reviewPending = reattachView !== null && reattachCandidate === null && reattachView.reviewPending;
 
   const handleDecommission = async (choice: { uninstallAgent: boolean }) => {
     setBusy(true);
@@ -185,6 +219,16 @@ export default function PossibleReplacementBanner({
               {t('possibleReplacementBanner.decommissionOldDevice')}
             </button>
           )}
+          {reattachView && reattachCandidate && !reattachPending && (
+            <button
+              type="button"
+              data-testid="possible-replacement-reattach"
+              onClick={() => setReattachTarget({ source: reattachView.source, candidate: reattachCandidate })}
+              className="rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 text-sm font-medium text-primary hover:bg-primary/20"
+            >
+              {t('possibleReplacementBanner.reattach')}
+            </button>
+          )}
           {alreadyDecommissioned && (
             <span
               data-testid="possible-replacement-resolved"
@@ -202,7 +246,29 @@ export default function PossibleReplacementBanner({
             </span>
           )}
         </div>
+        {reattachPending && (
+          <p data-testid="possible-replacement-reattach-pending" className="mt-2 text-sm text-muted-foreground">
+            {t('possibleReplacementBanner.reattachPending', { expiresAt: formatDateTime(reattachPending.expiresAt) })}
+          </p>
+        )}
+        {reviewPending && (
+          <p data-testid="possible-replacement-review-pending" className="mt-2 text-sm text-muted-foreground">
+            {t('possibleReplacementBanner.reviewPending')}
+          </p>
+        )}
       </div>
+      {reattachTarget && (
+        <ReattachDeviceDialog
+          open
+          source={reattachTarget.source}
+          candidate={reattachTarget.candidate}
+          onClose={() => setReattachTarget(null)}
+          onRequested={() => { void reattach.reload(); }}
+          // The record changed since it was shown (already toasted): close and
+          // re-read, so the next attempt binds the current install.
+          onTargetChanged={() => { setReattachTarget(null); void reattach.reload(); }}
+        />
+      )}
       {confirmOpen && (
         // Same dialog as every other Remove trigger (DeviceActions.tsx,
         // DevicesPage.tsx). Reused rather than paraphrased so the surfaces can
