@@ -646,6 +646,10 @@
   "buyCredits": {
     "link": "Kredi satın al"
   },
+  "sessionClosed": {
+    "message": "Bu görüşme başka bir yerde kapatıldı, bu yüzden mesajınız gönderilmedi. Mesaj aşağıdaki kutuda duruyor. Devam etmek için yeni bir oturum başlatın.",
+    "startNew": "Yeni oturum başlat"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Bu görüşme tur sınırına ulaştı, bu nedenle Wisp bu konu başlığında yeni bir oturum açtı. Mesajınızı yeniden gönderin.",
@@ -662,7 +666,7 @@
       "explain": "Wisp, sizin yapmaya yetkili olduğunuz işlemler kapsamında çalışır. Devam etmek için kimliğinizi doğrulayın.",
       "code": "Kimlik doğrulayıcı kodu",
       "passkey": "Geçiş anahtarınızla onaylayacaksınız.",
-      "noFactor": "Wisp için bir geçiş anahtarı veya kimlik doğrulayıcı uygulaması gerekir. Önce profilinizde birini kurun.",
+      "noFactor": "Wisp için bir geçiş anahtarı veya kimlik doğrulayıcı uygulaması gerekir. Önce <profileLink>profilinizde</profileLink> birini kurun.",
       "noOrg": "Önce üst bölümden bir kuruluş seçin.",
       "confirm": "Onayla",
       "cancel": "İptal",
@@ -982,6 +986,27 @@
       "newDescription": "Erişiminiz olan tüm araçlarla Breeze AI. Wisp değil.",
       "wispDescription": "Wisp, yetkiniz kapsamında",
       "label": "Breeze AI · Wisp değil"
+    },
+    "instruction": {
+      "remembered": "Hatırlandı: {{text}}",
+      "conflictBanner": "Hatırlanan bir talimatla çelişiyor: “{{text}}”",
+      "enforcedForm": "Wisp şunu önermeyecek: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "bitiş tarihi yok",
+      "keep": "Sakla",
+      "keepForOrg": "{{org}} içindeki herkes için sakla",
+      "forget": "Unut",
+      "unmatched": "Not olarak kaydedildi: Tüm cihaz adlarını eşleştiremedim.",
+      "kept": "Saklandı",
+      "keptForOrg": "{{org}} içindeki herkes için saklandı",
+      "crossOrg": "Bu cihazlar birden fazla kuruluşta olduğundan bu yalnızca sizin için saklanabilir.",
+      "actionFailed": "Bu işe yaramadı. Tekrar deneyin.",
+      "verb": {
+        "reboot": "yeniden başlatma",
+        "shutdown": "kapatma",
+        "run_script": "betik çalıştırma",
+        "patch_install": "yama yükleme",
+        "any_change": "herhangi bir değişiklik yapma"
+      }
     }
   },
   "wispConcerns": {

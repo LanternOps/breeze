@@ -6,6 +6,13 @@ import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import HelperBrandingFields, {
+  cleanBranding,
+  readBranding,
+  validateBranding,
+  type BrandingField,
+  type BrandingValues,
+} from "./HelperBrandingFields";
 type HelperSettings = {
   enabled: boolean;
   showOpenPortal: boolean;
@@ -17,6 +24,8 @@ type HelperSettings = {
   // `allowUserReply` (#8743) lets the user answer a technician-started chat;
   // absent means on.
   endpointMessaging: { enabled: boolean; allowUserReply: boolean };
+  // Runtime Helper branding (#7567): text and colours only; absent field = inherit.
+  branding?: BrandingValues;
 };
 const defaults: HelperSettings = {
   endpointMessaging: { enabled: false, allowUserReply: true },
@@ -40,6 +49,7 @@ function storedSettings(raw: unknown): Partial<HelperSettings> {
       allowUserReply: rest.endpointMessaging?.allowUserReply !== false,
     };
   }
+  if (rest.branding !== undefined) rest.branding = readBranding(rest.branding);
   return rest;
 }
 export default function HelperTab({
@@ -77,11 +87,27 @@ export default function HelperTab({
     key: K,
     value: HelperSettings[K],
   ) => setSettings((prev) => ({ ...prev, [key]: value }));
-  const handleSave = async () => {
-    clearError();
+  const brandingErrors = validateBranding(settings.branding ?? {});
+  const brandingInvalid = Object.keys(brandingErrors).length > 0;
+  // Only an own override inherits from the parent policy; an inherited view
+  // already shows the parent's values as the values.
+  const inheritedBranding = existingLink ? readBranding(parentLink?.inlineSettings?.branding) : {};
+  const updateBranding = (field: BrandingField, value: string) =>
+    setSettings((prev) => ({ ...prev, branding: { ...prev.branding, [field]: value } }));
+  const buildPayload = (): HelperSettings | null => {
+    if (brandingInvalid) return null; // errors are already shown inline
     const payload: HelperSettings = { ...settings };
     if (!payload.portalUrl) delete payload.portalUrl;
     if (payload.lifecycleMode === "auto") delete payload.lifecycleMode;
+    const branding = cleanBranding(settings.branding ?? {});
+    if (Object.keys(branding).length > 0) payload.branding = branding;
+    else delete payload.branding;
+    return payload;
+  };
+  const handleSave = async () => {
+    clearError();
+    const payload = buildPayload();
+    if (!payload) return;
     const result = await save(existingLink?.id ?? null, {
       featureType: "helper",
       featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
@@ -96,9 +122,8 @@ export default function HelperTab({
   };
   const handleOverride = async () => {
     clearError();
-    const payload: HelperSettings = { ...settings };
-    if (!payload.portalUrl) delete payload.portalUrl;
-    if (payload.lifecycleMode === "auto") delete payload.lifecycleMode;
+    const payload = buildPayload();
+    if (!payload) return;
     const result = await save(null, {
       featureType: "helper",
       featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
@@ -389,6 +414,14 @@ export default function HelperTab({
             </div>
           </div>
         </div>
+
+        <HelperBrandingFields
+          values={settings.branding ?? {}}
+          inherited={inheritedBranding}
+          errors={brandingErrors}
+          disabled={!settings.enabled}
+          onChange={updateBranding}
+        />
       </div>
     </FeatureTabShell>
   );

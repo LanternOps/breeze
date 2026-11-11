@@ -309,6 +309,10 @@ export const JOB_SCHEDULES = {
   // each enqueued group head adds up to 15 min of its own jitter. :24 on
   // hours 5,11,17,23 is unused in this lane and outside the ≡0 (mod 5) ticks.
   'partner-group-evaluation-sweep': '24 5,11,17,23 * * *',
+  // Portal registration W5 (#11382) — hourly re-check of verified customer
+  // domains; each row is only re-checked once ~23 h old, so the tick bounds how
+  // late a daily re-check runs. :39 is free in every hour.
+  'portal-domain-recheck': '39 * * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

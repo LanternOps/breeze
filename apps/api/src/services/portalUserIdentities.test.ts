@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { PgDialect, QueryBuilder } from 'drizzle-orm/pg-core';
-import { portalUsers } from '../db/schema/portal';
+import { portalUserIdentities, portalUsers } from '../db/schema/portal';
 
 const state = vi.hoisted(() => ({
   held: false,
   systemCalls: 0,
-  inserts: [] as Array<{ values: Record<string, unknown>; onConflict: boolean }>,
-  updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
-  selects: [] as Array<{ cols: unknown; where: unknown; limited: boolean }>,
+  inserts: [] as Array<{ table?: unknown; values: Record<string, unknown>; onConflict: boolean }>,
+  updates: [] as Array<{ table?: unknown; set: Record<string, unknown>; where: unknown }>,
+  selects: [] as Array<{ cols: unknown; from?: unknown; where: unknown; limited: boolean }>,
   insertReturns: [] as unknown[][],
   updateReturns: [] as unknown[][],
   selectReturns: [] as unknown[][],
@@ -25,6 +25,7 @@ import {
   entraIssuer,
   findPortalUserIdByEntraIdentity,
   insertEntraIdentity,
+  linkPortalUserIdentity,
   listIdentityProvidersByUser,
   portalUserHasIdentitySql,
   reconcilePortalUserIdentities,
@@ -40,8 +41,8 @@ const NOW = new Date('2026-11-08T12:00:00Z');
 /** A minimal Drizzle-shaped executor that records insert/update calls. */
 function fakeExec(): IdentityExecutor {
   return {
-    insert: () => {
-      const rec = { values: {} as Record<string, unknown>, onConflict: false };
+    insert: (table: unknown) => {
+      const rec = { table, values: {} as Record<string, unknown>, onConflict: false };
       state.inserts.push(rec);
       const chain: Record<string, unknown> = {
         values: (v: Record<string, unknown>) => { rec.values = v; return chain; },
@@ -51,8 +52,8 @@ function fakeExec(): IdentityExecutor {
       };
       return chain;
     },
-    update: () => {
-      const rec = { set: {} as Record<string, unknown>, where: undefined as unknown };
+    update: (table: unknown) => {
+      const rec = { table, set: {} as Record<string, unknown>, where: undefined as unknown };
       state.updates.push(rec);
       const chain: Record<string, unknown> = {
         set: (s: Record<string, unknown>) => { rec.set = s; return chain; },
@@ -62,10 +63,10 @@ function fakeExec(): IdentityExecutor {
       return chain;
     },
     select: (cols: unknown) => {
-      const rec = { cols, where: undefined as unknown, limited: false };
+      const rec = { cols, from: undefined as unknown, where: undefined as unknown, limited: false };
       state.selects.push(rec);
       const chain: Record<string, unknown> = {
-        from: () => chain,
+        from: (table: unknown) => { rec.from = table; return chain; },
         where: (w: unknown) => { rec.where = w; return chain; },
         orderBy: () => chain,
         limit: () => { rec.limited = true; return chain; },
@@ -214,6 +215,78 @@ describe('ensureEntraIdentity', () => {
     state.insertReturns.push([]);
     state.updateReturns.push([]);
     await expect(ensureEntraIdentity(fakeExec(), input)).resolves.toBe('conflict');
+  });
+});
+
+describe('linkPortalUserIdentity (W4: invite / self_link / jit, W3 D4 writer fence)', () => {
+  const input = {
+    orgId: ORG, portalUserId: USER, provider: 'entra' as const, tid: TID, oid: OID,
+    linkedVia: 'invite' as const, clearPasswordHash: false, now: NOW,
+  };
+
+  it('linkPortalUserIdentity writes the identity and entra_* columns together; conflict writes neither', async () => {
+    // Legacy key free, identity inserted, login row updated.
+    state.selectReturns.push([]);
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'linked' });
+
+    expect(state.inserts).toHaveLength(1);
+    expect(state.inserts[0]!.table).toBe(portalUserIdentities);
+    expect(state.inserts[0]!.onConflict).toBe(true); // ON CONFLICT DO NOTHING: never 23505 in the caller's transaction
+    expect(state.inserts[0]!.values).toEqual({
+      orgId: ORG, portalUserId: USER, provider: 'entra', issuer: entraIssuer(TID), subject: OID,
+      entraTenantId: TID, linkedVia: 'invite', lastUsedAt: NOW,
+    });
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]!.table).toBe(portalUsers);
+    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, updatedAt: NOW });
+    const where = new PgDialect().sqlToQuery(state.updates[0]!.where as never);
+    expect(where.sql).toContain('"portal_users"."id"');
+    expect(where.sql).toContain('"portal_users"."org_id"');
+    expect(where.params).toEqual(expect.arrayContaining([USER, ORG]));
+
+    // (issuer, subject) or (user, provider) taken: the insert returns nothing → no login write.
+    state.inserts.length = 0;
+    state.updates.length = 0;
+    state.selectReturns.push([]);
+    state.insertReturns.push([]);
+    await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'conflict' });
+    expect(state.inserts).toHaveLength(1);
+    expect(state.updates).toHaveLength(0);
+
+    // The legacy (entra_tenant_id, entra_oid) key held by ANOTHER login (drift):
+    // refused before any write, so the login update can never raise 23505.
+    state.inserts.length = 0;
+    state.updates.length = 0;
+    state.selects.length = 0;
+    state.selectReturns.push([{ id: 'someone-else' }]);
+    await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'conflict' });
+    expect(state.inserts).toHaveLength(0);
+    expect(state.updates).toHaveLength(0);
+    expect(state.selects[0]!.from).toBe(portalUsers);
+    const legacy = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(legacy.sql).toContain('"portal_users"."entra_tenant_id"');
+    expect(legacy.sql).toContain('"portal_users"."entra_oid"');
+    expect(legacy.sql).toContain('<>');
+    expect(legacy.params).toEqual(expect.arrayContaining([TID, OID, USER]));
+  });
+
+  it('clearPasswordHash nulls password_hash in the same statement set', async () => {
+    state.selectReturns.push([]);
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await linkPortalUserIdentity(fakeExec(), { ...input, linkedVia: 'self_link', clearPasswordHash: true });
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, passwordHash: null, updatedAt: NOW });
+    expect(state.inserts[0]!.values).toMatchObject({ linkedVia: 'self_link' });
+  });
+
+  it('throws (the caller rolls back) when the login is not in the org it was linked under', async () => {
+    state.selectReturns.push([]);
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([]);
+    await expect(linkPortalUserIdentity(fakeExec(), input)).rejects.toThrow(/not in this org/);
   });
 });
 

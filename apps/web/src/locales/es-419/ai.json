@@ -646,6 +646,10 @@
   "buyCredits": {
     "link": "Comprar créditos"
   },
+  "sessionClosed": {
+    "message": "Esta conversación se cerró en otro lugar, así que tu mensaje no se envió. Sigue en el cuadro de abajo. Inicia una sesión nueva para continuar.",
+    "startNew": "Iniciar una sesión nueva"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Esta conversación alcanzó su límite de turnos, así que Wisp abrió una nueva sesión en este hilo. Envía tu mensaje de nuevo.",
@@ -662,7 +666,7 @@
       "explain": "Wisp trabaja dentro de lo que tú tienes permitido hacer. Confirma que eres tú para continuar.",
       "code": "Código del autenticador",
       "passkey": "Confirmarás con tu passkey.",
-      "noFactor": "Wisp necesita una passkey o una app de autenticación. Configura una primero en tu perfil.",
+      "noFactor": "Wisp necesita una passkey o una app de autenticación. Configura una primero en <profileLink>tu perfil</profileLink>.",
       "noOrg": "Primero selecciona una organización en el encabezado.",
       "confirm": "Confirmar",
       "cancel": "Cancelar",
@@ -982,6 +986,27 @@
       "newDescription": "Breeze AI con todas las herramientas a las que tienes acceso. No es Wisp.",
       "wispDescription": "Wisp, con tu permiso",
       "label": "Breeze AI · no es Wisp"
+    },
+    "instruction": {
+      "remembered": "Recordado: {{text}}",
+      "conflictBanner": "Entra en conflicto con una instrucción recordada: «{{text}}»",
+      "enforcedForm": "Wisp no propondrá: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "sin fecha de fin",
+      "keep": "Conservar",
+      "keepForOrg": "Conservar para todos en {{org}}",
+      "forget": "Olvidar",
+      "unmatched": "Guardado como nota: no pude identificar todos los nombres de dispositivos.",
+      "kept": "Conservado",
+      "keptForOrg": "Conservado para todos en {{org}}",
+      "crossOrg": "Estos dispositivos están en más de una organización, así que solo se puede conservar para ti.",
+      "actionFailed": "Eso no funcionó. Inténtalo de nuevo.",
+      "verb": {
+        "reboot": "reiniciar",
+        "shutdown": "apagar",
+        "run_script": "ejecutar un script",
+        "patch_install": "instalar parches",
+        "any_change": "hacer cualquier cambio"
+      }
     }
   },
   "wispConcerns": {

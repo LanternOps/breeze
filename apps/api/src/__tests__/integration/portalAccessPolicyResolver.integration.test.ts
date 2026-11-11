@@ -13,9 +13,10 @@
  * portalAccessPoliciesPartnerRls.integration.test.ts (Task 2).
  */
 import { getTestDb } from './setup';
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { hasDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
-import { portalAccessPolicies } from '../../db/schema';
+import { clientAiTenantMappings, portalAccessPolicies } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { portalOrgDbAccessContext } from '../../routes/portal/portalDbContext';
 import {
@@ -53,6 +54,11 @@ describe('resolvePortalAccessPolicy (real DB)', () => {
   it('resolves the partner default under portalOrgDbAccessContext', async () => {
     const { partnerP, partnerQ, orgA, orgB } = await setup();
     __testOnly.setCapabilities({ entra: true, google: false, selfRegistration: false });
+    // W4 (#11381) D2: Microsoft is effective only for an org with a proven Entra tenant.
+    await getTestDb().insert(clientAiTenantMappings).values({
+      orgId: orgA.id, entraTenantId: randomUUID(), provenAt: new Date(), provenVia: 'proof_run',
+      provenEvidence: { via: 'proof_run', adminOid: randomUUID(), runId: randomUUID() },
+    });
     await seedPolicy({ partnerId: partnerP.id, entraEnabled: true, ssoSessionMaxHours: 24, ssoNewPersonMode: 'instant' });
     // Noise the resolver must ignore: another partner's default and a sibling org's override.
     await seedPolicy({ partnerId: partnerQ.id, ssoSessionMaxHours: 99, passwordMode: 'sso_only', entraEnabled: true });

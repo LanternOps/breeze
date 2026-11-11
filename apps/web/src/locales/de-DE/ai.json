@@ -646,6 +646,10 @@
   "buyCredits": {
     "link": "Credits kaufen"
   },
+  "sessionClosed": {
+    "message": "Diese Unterhaltung wurde an anderer Stelle beendet, daher wurde deine Nachricht nicht gesendet. Sie steht weiterhin im Eingabefeld. Starte eine neue Sitzung, um fortzufahren.",
+    "startNew": "Neue Sitzung starten"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Diese Unterhaltung hat ihr Zuglimit erreicht, deshalb hat Wisp eine neue Sitzung in diesem Thread geöffnet. Senden Sie Ihre Nachricht erneut.",
@@ -662,7 +666,7 @@
       "explain": "Wisp arbeitet im Rahmen Ihrer eigenen Berechtigungen. Bestätigen Sie Ihre Identität, um fortzufahren.",
       "code": "Authentifizierungscode",
       "passkey": "Sie bestätigen mit Ihrem Passkey.",
-      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in Ihrem Profil ein.",
+      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in <profileLink>Ihrem Profil</profileLink> ein.",
       "noOrg": "Wählen Sie zuerst oben eine Organisation aus.",
       "confirm": "Bestätigen",
       "cancel": "Abbrechen",
@@ -982,6 +986,27 @@
       "newDescription": "Breeze AI mit allen Tools, auf die Sie Zugriff haben. Nicht Wisp.",
       "wispDescription": "Wisp, mit Ihrer Berechtigung",
       "label": "Breeze AI · nicht Wisp"
+    },
+    "instruction": {
+      "remembered": "Gemerkt: {{text}}",
+      "conflictBanner": "Widerspricht einer gemerkten Anweisung: „{{text}}“",
+      "enforcedForm": "Wisp wird nicht vorschlagen: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "kein Enddatum",
+      "keep": "Behalten",
+      "keepForOrg": "Für alle bei {{org}} behalten",
+      "forget": "Vergessen",
+      "unmatched": "Als Notiz gespeichert: Ich konnte nicht jeden Gerätenamen zuordnen.",
+      "kept": "Behalten",
+      "keptForOrg": "Für alle bei {{org}} behalten",
+      "crossOrg": "Diese Geräte gehören zu mehr als einer Organisation, daher kann dies nur für Sie behalten werden.",
+      "actionFailed": "Das hat nicht funktioniert. Versuchen Sie es erneut.",
+      "verb": {
+        "reboot": "neu zu starten",
+        "shutdown": "herunterzufahren",
+        "run_script": "ein Skript auszuführen",
+        "patch_install": "Patches zu installieren",
+        "any_change": "irgendeine Änderung vorzunehmen"
+      }
     }
   },
   "wispConcerns": {

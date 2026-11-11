@@ -18,7 +18,8 @@
  *    grant-budget refusal cannot appear on a chat path unreviewed);
  *  - the chat request and turn path never reads grant spend at all; the only
  *    chat-side reader is the turn-end notice (`chatSpendCheck.ts`), fired with
- *    `void` and never awaited.
+ *    `void` from the Wisp turn-end hooks (`wisp/turnEnd.ts`, #10428) after
+ *    `done`, and never awaited.
  *
  * Plain unit test — reads the source tree only.
  */
@@ -53,6 +54,7 @@ const BACKGROUND_ADMISSIONS: Record<string, string> = {
   'services/wisp/coordinator.ts': 'specialist launches, including one requested from chat via launch_specialist (the launch is refused; the chat turn is not)',
   'services/wisp/threadSummaryRefine.ts': 'model-written session summaries (sessionless overhead)',
   'services/wisp/specialists/assessmentLaunch.ts': 'the on-demand Wisp assessment launch (#10406): N orgs x the per-run estimate, requested from chat via launch_specialist (the launch is refused budget_exhausted; the chat turn is not)',
+  'services/wisp/instructionExtractor.ts': 'turn-end standing-instruction extraction (#10428): sessionless overhead, run after `done` and never awaited by the turn; a refusal skips the capture, never the chat turn',
 };
 
 /** The chat request and turn path: the route, the SDK session wiring, the turn loop, and the Wisp chat gate. */
@@ -61,6 +63,8 @@ const CHAT_PATH_FILES = [
   'services/aiAgentSdk.ts',
   'services/streamingSessionManager.ts',
   'services/wisp/chatCeiling.ts',
+  // #10428: the Wisp turn-end hooks the turn loop calls.
+  'services/wisp/turnEnd.ts',
 ];
 
 const GRANT_BUDGET_GATE = /\bchargeableUnderGrant\b/;
@@ -87,12 +91,23 @@ describe('contract: the Wisp grant budget never blocks a chat turn (#10414)', ()
     expect(src).not.toMatch(GRANT_BUDGET_GATE);
   });
 
-  it('the turn loop fires the notice and never awaits it (off the response path)', () => {
-    const src = code('services/streamingSessionManager.ts');
-    // Loaded lazily like the other Wisp modules here, and the whole chain is discarded with `void`.
-    expect(src.match(/\bvoid\s+import\(\s*'\.\/wisp\/chatSpendCheck'\s*\)/g) ?? []).toHaveLength(1);
-    expect(src.match(/'\.\/wisp\/chatSpendCheck'/g) ?? []).toHaveLength(1);
+  it('the turn-end hooks fire the notice once and never await it (off the response path)', () => {
+    // #10428 moved the notice from the turn loop into the Wisp turn-end hooks,
+    // which the turn loop calls after publishing `done`.
+    expect(code('services/streamingSessionManager.ts')).not.toMatch(/chatSpendCheck|maybeNotifyChatCrossedBudget/);
+    const src = code('services/wisp/turnEnd.ts');
+    expect(src.match(/'\.\/chatSpendCheck'/g) ?? []).toHaveLength(1);
     expect(src.match(/\bmaybeNotifyChatCrossedBudget\(/g) ?? []).toHaveLength(1);
-    expect(src).not.toMatch(/\bawait\s+(?:maybeNotifyChatCrossedBudget\(|import\(\s*'\.\/wisp\/chatSpendCheck')/);
+    expect(src.match(/\bvoid\s+maybeNotifyChatCrossedBudget\(/g) ?? []).toHaveLength(1);
+    expect(src).not.toMatch(/\bawait\s+maybeNotifyChatCrossedBudget\(/);
+  });
+
+  it('the turn loop publishes `done` before it schedules the after-done hooks, and never awaits them', () => {
+    const src = code('services/streamingSessionManager.ts');
+    const done = src.search(/\.\.\.wispDone,/);
+    const after = src.search(/\bscheduleWispTurnEndAfterDone\(/);
+    expect(done).toBeGreaterThan(0);
+    expect(after).toBeGreaterThan(done);
+    expect(src).not.toMatch(/\bawait\s+\S*scheduleWispTurnEndAfterDone\(/);
   });
 });

@@ -844,6 +844,8 @@ aiRoutes.post(
       if (preflight.status === 503) return c.json({ error: err }, 503);
       // The credit / plan gate (and spend caps): 402, with a code the client can act on.
       if (preflight.status === 402) return c.json(preflight.billingCode ? { error: err, code: preflight.billingCode } : { error: err }, 402);
+      // #11609: closed elsewhere (typed, not a message match). Nothing ran, so the client keeps the text and can continue in a new session.
+      if (preflight.sessionRefusal === 'session_closed') return c.json({ error: err, code: 'session_closed' }, 410);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
@@ -1139,7 +1141,11 @@ aiRoutes.post(
 
       // The topology runtime is bound by the transition itself, and only when
       // this request wins the slot (PR #7147 F1).
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model) })) {
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, {
+        topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model),
+        // #10428: the technician's own text, for a Wisp session's turn-end instruction capture.
+        ...(topology ? {} : { userMessage: sanitizedContent }),
+      })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session', code: 'turn_in_progress' }, 409) };
       }
 

@@ -1,5 +1,5 @@
 import { withBase } from '@/lib/basePath';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -9,6 +9,8 @@ import { cn } from '@/lib/utils';
 import { usePortalAuth } from '@/lib/auth';
 import { navigateTo } from '@/lib/navigation';
 import { safeNextPath } from '@/lib/nextPath';
+import { getInviteMethods, startMicrosoftSignIn, type SignInMethods } from '@/lib/oidc';
+import { MicrosoftSignInButton } from './MicrosoftSignInButton';
 import { BTN_PRIMARY, INPUT } from './ui';
 
 const acceptInviteSchema = z
@@ -50,6 +52,49 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   useEffect(() => {
     setHydrated(true);
   }, []);
+
+  // null = still asking the API which options this invite offers.
+  const [methods, setMethods] = useState<SignInMethods | null>(null);
+  const [inviteInvalid, setInviteInvalid] = useState(false);
+  const [msBusy, setMsBusy] = useState(false);
+  const autoStarted = useRef(false);
+
+  const startMicrosoft = async () => {
+    setMsBusy(true);
+    setError(null);
+    const next = safeNextPath(nextParam);
+    const result = await startMicrosoftSignIn({
+      purpose: 'invite',
+      inviteToken: token,
+      ...(next ? { next } : {})
+    });
+    if (!result.ok) {
+      setError(result.error);
+      setMsBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    void getInviteMethods(token).then((result) => {
+      if (cancelled) return;
+      if (result.status === 'invalid') setInviteInvalid(true);
+      // Any other failure: fall back to today's password form so nothing regresses.
+      else setMethods(result.status === 'ok' ? result.methods : { password: true, microsoft: false });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!methods?.microsoft || autoStarted.current) return;
+    if (new URLSearchParams(window.location.search).get('method') !== 'microsoft') return;
+    autoStarted.current = true;
+    void startMicrosoft();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [methods]);
 
   const {
     register,
@@ -102,7 +147,12 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
     }
   };
 
-  if (!token) {
+  // Until the API answers (and on SSR) show today's password form: the pre-hydration
+  // safety net must exist in the server HTML, and a failed lookup must not regress.
+  const showMicrosoft = methods?.microsoft === true;
+  const showPassword = methods?.password !== false;
+
+  if (!token || inviteInvalid) {
     return (
       <div className="border-y border-border/70 py-12 text-center">
         <h3 className="font-display text-lg font-semibold text-foreground">This invite has expired</h3>
@@ -135,6 +185,28 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   }
 
   return (
+    <div className="space-y-6">
+      {showMicrosoft && (
+        <MicrosoftSignInButton
+          onClick={startMicrosoft}
+          busy={msBusy}
+          label="Continue with Microsoft"
+          testId="portal-accept-invite-microsoft"
+        />
+      )}
+
+      {!showPassword && error && (
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
+          <AlertCircle className="h-4 w-4" />
+          {error}
+        </div>
+      )}
+
+      {showMicrosoft && showPassword && (
+        <p className="text-center text-xs uppercase tracking-[0.08em] text-muted-foreground">or set a password</p>
+      )}
+
+      {showPassword && (
     // method="post" is a pre-hydration safety net: if the island fails to
     // hydrate, a native submit must never be a GET that puts the password in
     // the URL / browser history / access logs (#2868). Once hydrated,
@@ -214,5 +286,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
         )}
       </button>
     </form>
+      )}
+    </div>
   );
 }

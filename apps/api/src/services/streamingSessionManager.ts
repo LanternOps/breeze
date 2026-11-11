@@ -57,6 +57,7 @@ import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 import type { WispSessionGrant } from './wisp/chatCeiling';
+import { appendWispAssistantText, beginWispTurn, type WispCurrentTurn } from './wisp/turnRecord';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { exitPreStreamTiming, timePreStreamPhase } from './aiPreStreamTiming';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
@@ -472,6 +473,13 @@ export interface ActiveSession {
    * after the insert and before the turn is pushed. Null until then.
    */
   turnUserMessageId: string | null;
+  /**
+   * #10428 (W05): what the Wisp turn in flight said and did, for the turn-end
+   * hooks (wisp/turnEnd.ts). Set by `tryTransitionToProcessing` for a Wisp
+   * session whose caller passed the technician's text, cleared for any other
+   * turn; tool outcomes are appended by `createSessionPostToolUse`.
+   */
+  currentTurn?: WispCurrentTurn;
   state: SessionState;
   lastActivityAt: number;
   readonly createdAt: number;
@@ -857,7 +865,13 @@ export class StreamingSessionManager {
   tryTransitionToProcessing(
     session: ActiveSession,
     budgetReservationId?: string,
-    turn?: { topologyInvestigation?: TopologyTurnRuntime; turnBinding?: TurnBinding; turnDisplay?: TurnDisplay },
+    turn?: {
+      topologyInvestigation?: TopologyTurnRuntime;
+      turnBinding?: TurnBinding;
+      turnDisplay?: TurnDisplay;
+      /** #10428: the technician's own text for this turn (Wisp sessions record it for the turn-end hooks). */
+      userMessage?: string;
+    },
   ): boolean {
     if (session.state === 'processing' || session.state === 'closing' || session.state === 'closed') {
       return false;
@@ -883,6 +897,11 @@ export class StreamingSessionManager {
     if (turn?.turnDisplay) {
       session.turnDisplay = turn.turnDisplay;
     }
+    // #10428: only the winner records its turn; a previous turn's record never
+    // carries over, and only a Wisp session keeps one.
+    session.currentTurn = session.wispGrant && typeof turn?.userMessage === 'string'
+      ? beginWispTurn(turn.userMessage)
+      : undefined;
     session.refusalObservation = newSdkTurnObservation();
     // A note left by an earlier turn that ended with no result must not name this turn's failure.
     takeGatewayFailureNote(session.breezeSessionId);
@@ -1728,6 +1747,9 @@ export class StreamingSessionManager {
               // through tool_use blocks and emit no text delta at all, so the
               // message boundary is the only keepalive some turns ever get.
               session.lastActivityAt = Date.now();
+              // #10427: a Wisp turn keeps its reply for the promise linter;
+              // each assistant message starts on its own line.
+              if (session.currentTurn?.assistantText) appendWispAssistantText(session.currentTurn, '\n');
               session.eventBus.publish({ type: 'message_start', messageId: currentMessageId });
             } else if (event.type === 'content_block_delta') {
               if ('delta' in event && (event.delta.type === 'thinking_delta' || event.delta.type === 'signature_delta')) {
@@ -1739,7 +1761,11 @@ export class StreamingSessionManager {
                 // Topology M4: raw provider text goes to the server-only output
                 // gate at THIS publish point — never onto the bus/replay ring.
                 if (session.topologyInvestigation) session.topologyInvestigation.append(event.delta.text);
-                else session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                else {
+                  session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                  // #10427: only a Wisp turn has a record (W05), so ordinary chat buffers nothing.
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, event.delta.text);
+                }
               }
             } else if (event.type === 'content_block_start') {
               if ('content_block' in event
@@ -1769,6 +1795,7 @@ export class StreamingSessionManager {
                   session.topologyInvestigation.startBlock();
                 } else if (sawTextBlockThisMessage) {
                   session.eventBus.publish({ type: 'content_delta', delta: '\n\n' });
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, '\n\n');
                 }
                 sawTextBlockThisMessage = true;
               } else if (
@@ -2110,18 +2137,22 @@ export class StreamingSessionManager {
               await this.publishTurnModel(session, turnBinding, turnDisplay, turn.outcome);
             }
 
-            // #10414: a Wisp chat turn counts toward the grant's daily budget and is
-            // never refused by it. Once the turn is settled, tell the grantor (once
-            // per window) if spend has reached the budget. Fire-and-forget: never
-            // delays `done` (budget.chatNeverBlocks.contract.test.ts).
+            // #10428 (W05): the Wisp turn-end hooks (wisp/turnEnd.ts). The cheap
+            // half runs before `done` (#10427's promise correction, then the
+            // standing-instruction prefilter; a hit puts a capture id on
+            // `done`); the rest runs after it and is never
+            // awaited: the #10414 grant spend notice
+            // (budget.chatNeverBlocks.contract.test.ts) and the extraction.
+            let wispTurnEnd: typeof import('./wisp/turnEnd') | null = null;
+            let wispDone: import('./wisp/turnEnd').WispDoneExtras = {};
             if (session.wispGrant) {
-              const { grantId } = session.wispGrant;
-              void import('./wisp/chatSpendCheck')
-                .then(({ maybeNotifyChatCrossedBudget }) => maybeNotifyChatCrossedBudget(grantId))
-                .catch((err) => {
-                  console.warn('[StreamingSessionManager] Wisp chat spend check failed:', safeErrorMessage(err));
-                  captureException(reportableError(err));
-                });
+              try {
+                wispTurnEnd = await import('./wisp/turnEnd');
+                wispDone = await wispTurnEnd.runWispTurnEndBeforeDone(session);
+              } catch (err) {
+                console.warn('[StreamingSessionManager] Wisp turn-end hooks unavailable:', safeErrorMessage(err));
+                captureException(reportableError(err));
+              }
             }
 
             // Signal this turn is done, but DON'T close the event bus —
@@ -2134,8 +2165,14 @@ export class StreamingSessionManager {
                 outputTokens: turn.outputTokens,
                 costCents: turn.costCents,
               },
+              ...wispDone,
             });
             session.state = 'idle';
+            try {
+              wispTurnEnd?.scheduleWispTurnEndAfterDone(session, wispDone);
+            } catch (err) {
+              captureException(reportableError(err));
+            }
             break;
           }
 

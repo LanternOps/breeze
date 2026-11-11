@@ -465,6 +465,7 @@ import {
   createAgentWsRoutes,
   validateAgentToken,
   disconnectAgent,
+  disconnectAgentConnection,
   isAgentConnected,
   sendCommandToAgent,
   handleTrustChanged,
@@ -4475,6 +4476,51 @@ describe('presence lifecycle (wave 3.5b #4084)', () => {
     handlers.onError({}, ws as any);
 
     expect(clearAgentPresence).toHaveBeenCalledWith('agent-p7', token);
+  });
+  // #4142 W2: the relay-evict consumer closes a socket only when it is the
+  // exact connection the producer's presence lease named.
+  describe('disconnectAgentConnection (fenced close)', () => {
+    it('closes only when the token matches the live connection', async () => {
+      const handlers = createAgentWsHandlers('agent-f1', { agentId: 'agent-f1', siteId: 'site-test', installIncarnation: 1, deviceId: 'device-f1', orgId: 'org-f1', partnerId: 'partner-f1' });
+      const ws = wsMock();
+      await handlers.onOpen({}, ws as any);
+      const token = connectionTokenFromSetCall();
+
+      expect(disconnectAgentConnection('agent-f1', token, 4041, 'quick support session ended')).toBe('closed');
+      expect(ws.close).toHaveBeenCalledWith(4041, 'quick support session ended');
+    });
+
+    it('returns token_mismatch and leaves a replacement socket open', async () => {
+      const handlers = createAgentWsHandlers('agent-f2', { agentId: 'agent-f2', siteId: 'site-test', installIncarnation: 1, deviceId: 'device-f2', orgId: 'org-f2', partnerId: 'partner-f2' });
+      const first = wsMock();
+      const replacement = wsMock();
+      await handlers.onOpen({}, first as any);
+      const staleToken = connectionTokenFromSetCall(0);
+      // A second handler set is a new connection with its own token.
+      const replacementHandlers = createAgentWsHandlers('agent-f2', { agentId: 'agent-f2', siteId: 'site-test', installIncarnation: 1, deviceId: 'device-f2', orgId: 'org-f2', partnerId: 'partner-f2' });
+      await replacementHandlers.onOpen({}, replacement as any);
+      expect(connectionTokenFromSetCall(1)).not.toBe(staleToken);
+
+      expect(disconnectAgentConnection('agent-f2', staleToken, 4001, 'Tenant suspended')).toBe('token_mismatch');
+      expect(replacement.close).not.toHaveBeenCalled();
+      expect(isAgentConnected('agent-f2')).toBe(true);
+    });
+
+    it('returns not-connected when no socket is held', () => {
+      expect(disconnectAgentConnection('agent-never-connected', 'any-token', 4001, 'Tenant suspended')).toBe('not-connected');
+    });
+
+    it('returns close-failed when close() throws on the matching connection', async () => {
+      const handlers = createAgentWsHandlers('agent-f3', { agentId: 'agent-f3', siteId: 'site-test', installIncarnation: 1, deviceId: 'device-f3', orgId: 'org-f3', partnerId: 'partner-f3' });
+      const ws = wsMock();
+      ws.close.mockImplementation(() => { throw new Error('socket gone'); });
+      await handlers.onOpen({}, ws as any);
+      const token = connectionTokenFromSetCall();
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(disconnectAgentConnection('agent-f3', token, 4040, 'orgId changed')).toBe('close-failed');
+      error.mockRestore();
+    });
   });
 });
 

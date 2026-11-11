@@ -2184,9 +2184,9 @@
       "disk": "Disk",
       "download": "Download",
       "ram": "RAM",
-      "readThroughput": "Read Throughput",
+      "readThroughput": "Read throughput",
       "upload": "Upload",
-      "writeThroughput": "Write Throughput"
+      "writeThroughput": "Write throughput"
     },
     "networkBandwidth": "Network Bandwidth",
     "title": "Performance Graphs",
@@ -2531,9 +2531,9 @@
       "couldNotQueue": "{{action}} could not be queued",
       "updateVersionQueued": "Update to {{version}} queued for \"{{name}}\""
     },
-    "uninstallTitle": "Uninstall Title",
+    "uninstallTitle": "Uninstall this package",
     "unknownSoftware": "Unknown software",
-    "updateTitle": "Update Title",
+    "updateTitle": "Queue an update for this package",
     "updatesAvailable": "{{count}} updates available",
     "updatesAvailable_one": "{{count}} update available",
     "updatesAvailable_other": "{{count}} updates available"
@@ -2565,7 +2565,7 @@
       "load": "Load",
       "mitigate": "Mitigate",
       "reopen": "Reopen",
-      "scheduleRemediation": "Schedule Remediation"
+      "scheduleRemediation": "Failed to schedule remediation"
     },
     "groupSummary": "{{cves}} CVEs · {{findings}} findings · {{patchReady}} patch-ready",
     "hideFindings": "Hide Findings",
@@ -2713,7 +2713,7 @@
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
       "agentOnlyActionManual": "This action applies to agent devices only. Manual assets have no agent.",
       "alreadyPendingTail": "Already Pending Tail",
-      "bulkActionFailed": "Bulk Action Failed",
+      "bulkActionFailed": "Failed bulk {{action}}",
       "bulkMaintenanceSuccess": "{{count}} devices {{verb}} maintenance mode",
       "bulkMaintenanceSuccess_one": "{{count}} device {{verb}} maintenance mode",
       "bulkMaintenanceSuccess_other": "{{count}} devices {{verb}} maintenance mode",
@@ -2734,18 +2734,18 @@
       "decommissionFailed": "Remove Failed",
       "decommissioned": "Removed",
       "decommissioning": "Removing",
-      "deleteFailed": "Delete Failed",
+      "deleteFailed": "Failed to delete {{hostname}}",
       "deviceError": "Device Error",
-      "deviceOnline": "Device Online",
-      "inventoryRefreshRequested": "Inventory Refresh Requested",
+      "deviceOnline": "{{hostname}} is now online.",
+      "inventoryRefreshRequested": "Inventory refresh requested for {{hostname}}. Fresh data in 1–2 minutes.",
       "listTruncated": "List Truncated",
       "maintenanceOff": "Maintenance Off",
       "maintenanceOn": "Maintenance On",
-      "multibootLinked": "Multiboot Linked",
+      "multibootLinked": "Linked {{count}} devices as multi-boot profiles.",
       "networkSkipped_one": "1 network device skipped — this action applies to agent devices only.",
       "networkSkipped_other": "{{count}} network devices skipped — this action applies to agent devices only.",
       "networkSkipped": "{{count}} network devices skipped — this action applies to agent devices only.",
-      "permanentDeleteCancelled": "Permanent Delete Cancelled",
+      "permanentDeleteCancelled": "Permanent delete cancelled",
       "permanentDeleting": "Permanently deleting {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} permanently deleted",
       "queuedOfflineTail": ", {{count}} queued for offline devices",
@@ -2753,15 +2753,15 @@
       "restored": "Restored",
       "runsWhenOnline": "Runs when the device is online — expires {{date}}",
       "runsWhenOnlineNoExpiry": "Runs when the device is online",
-      "scriptQueueFailed": "Script Queue Failed",
-      "scriptQueuedMany": "Script Queued Many",
-      "scriptQueuedOne": "Script Queued One",
-      "selectDeviceForScript": "Select Device For Script",
-      "selectTwoForMultiboot": "Select Two For Multiboot",
-      "unknownAction": "Unknown Action",
-      "unknownBulkAction": "Unknown Bulk Action",
+      "scriptQueueFailed": "Failed to queue script",
+      "scriptQueuedMany": "Script \"{{script}}\" queued for {{count}} devices",
+      "scriptQueuedOne": "Script \"{{script}}\" queued for {{hostname}}",
+      "selectDeviceForScript": "Select at least one device to run a script",
+      "selectTwoForMultiboot": "Select at least two devices to link as multi-boot profiles.",
+      "unknownAction": "Unknown action: {{action}}",
+      "unknownBulkAction": "Unknown bulk action: {{action}}",
       "wakeSentWatching": "Wake Sent Watching",
-      "wakeTimeout": "Wake Timeout",
+      "wakeTimeout": "{{hostname}} did not come online within 4 minutes. Check ethernet + BIOS WoL.",
       "deleteManualFailed": "Failed to delete {{hostname}}.",
       "mfaRequired": "This action requires multi-factor authentication. Please sign in again.",
       "manualDeleted": "Deleted {{hostname}}.",
@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Log Shipping Failing",
       "networkIsolation": {
         "active": "Isolated"
+      },
+      "helperVersion": "Helper Version",
+      "deviceFunction": "Device Function",
+      "hostsWorkloads": "Hosts Workloads",
+      "workloadRuntimes": "Workload Runtimes",
+      "warranty": {
+        "status": "Warranty Status"
       }
     }
   },
@@ -3729,9 +3736,9 @@
       "noneRecorded": "No process samples have been recorded for this device yet. The agent collects them periodically — check back once it has reported."
     },
     "errors": {
-      "liveProcesses": "Live Processes",
-      "loadProcesses": "Load Processes",
-      "processSample": "Process Sample"
+      "liveProcesses": "Failed to fetch live processes",
+      "loadProcesses": "Failed to load processes",
+      "processSample": "Failed to fetch process sample"
     },
     "live": "Live",
     "subtitle": {

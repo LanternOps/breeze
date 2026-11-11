@@ -53,6 +53,7 @@ describe('Wisp delivery funnel (w00 A18)', () => {
       'services/wisp/nudgeDigest.ts', // the 15-minute digest
       'services/wisp/brief.ts', // the morning brief (A28)
       'services/wisp/checkIns.ts', // a fired check-in timer (#10991)
+      'services/wisp/checkInRuns.ts', // a run check-in's result, or why it could not run (W07 #11496)
       'services/wisp/specialistResult.ts', // a device-troubleshooting run's report / approved step (#11085)
       'services/wisp/firstLook.ts', // the onboarding batch's one "first look" post per grant (#10402)
       'services/wisp/nudgeResolved.ts', // the follow-up when a nudged concern is resolved (#11427)

@@ -40,6 +40,17 @@ import {
 } from '../portalAccountState';
 import { portalUserHasIdentitySql } from '../portalUserIdentities';
 import { normalizeContactEmail, updateContact, type ContactExecutor } from './crud';
+import { portalLoginEmailEquals } from '../portalLoginEmail';
+
+/**
+ * The ONE comparison every portal-invite path uses to find an existing login
+ * for an address (#11529). An exact `eq(email, ...)` treats `Ada@X` and
+ * `ada@x` as two people, so the plain-email invite and the contact invite
+ * could each mint a login for the same person. Defined in
+ * `services/portalLoginEmail.ts` and shared with login, password reset,
+ * inbound email and the add-in (#11541); re-exported here for the invite paths.
+ */
+export { portalLoginEmailEquals };
 
 export interface InviteableContact {
   id: string;
@@ -278,7 +289,7 @@ export async function bindContactLoginForInvite(
     .from(portalUsers)
     .where(and(
       eq(portalUsers.orgId, orgId),
-      or(eq(portalUsers.contactId, contact.id), sql`lower(${portalUsers.email}) = ${normalizedEmail}`),
+      or(eq(portalUsers.contactId, contact.id), portalLoginEmailEquals(normalizedEmail)),
     ));
 
   const plan = planContactInvite(contact.id, normalizedEmail, candidates);

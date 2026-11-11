@@ -150,3 +150,24 @@ describe('MessageCardWindow', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('MessageCard static copy (BRZ-7567 W3)', () => {
+  it('is localized by the locale Rust puts in the view; message text and sender stay verbatim', () => {
+    render(<MessageCard view={{ ...view, locale: 'pt-BR' }} onAcknowledge={() => {}} onClose={() => {}} />);
+    expect(screen.getByTestId('message-sender')).toHaveTextContent('De Acme IT');
+    expect(screen.getByText('Reboot tonight')).toBeInTheDocument();
+    expect(screen.getByText('Enviada pelo seu provedor de TI')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmar leitura' })).toBeInTheDocument();
+  });
+
+  it('a locale without a catalog is English', () => {
+    render(<MessageCard view={{ ...view, locale: 'de-DE' }} onAcknowledge={() => {}} onClose={() => {}} />);
+    expect(screen.getByText('Sent by your IT provider')).toBeInTheDocument();
+  });
+
+  it('the generic sender is localized too', () => {
+    const v = { ...view, locale: 'pt-BR', branding: { companyName: '', displayName: '', accent: null } };
+    render(<MessageCard view={v} onAcknowledge={() => {}} onClose={() => {}} />);
+    expect(screen.getByTestId('message-sender')).toHaveTextContent('De seu provedor de TI');
+  });
+});

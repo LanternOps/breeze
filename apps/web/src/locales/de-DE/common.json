@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Einzeltasten-Kürzel sind aktiviert.",
       "charKeysOff": "Einzeltasten-Kürzel sind deaktiviert. Nur Strg/Cmd-Kürzel funktionieren.",
-      "charKeysManage": "In den Profileinstellungen ändern"
+      "charKeysManage": "In den Profileinstellungen ändern",
+      "queueTitle": "Ticketwarteschlange",
+      "queueHint": "Auf der Ticketseite, außerhalb eines Textfelds.",
+      "queue": {
+        "next": "Nächstes Ticket",
+        "previous": "Vorheriges Ticket",
+        "open": "Ticket öffnen (nach dem Lösen: das angebotene nächste)",
+        "toggleBulk": "Zur Mehrfachauswahl hinzufügen oder daraus entfernen",
+        "assignMe": "Mir zuweisen",
+        "reply": "Antwort schreiben",
+        "internal": "Internen Hinweis schreiben",
+        "resolve": "Mit Notiz lösen",
+        "back": "Zurück zur Liste"
+      }
     }
   },
   "migrationBanner": {
@@ -2935,5 +2948,8 @@
   "featureLock": {
     "lockedLabel": "Gesperrt",
     "upgrade": "Tarife ansehen"
+  },
+  "inheritChoice": {
+    "inherit": "Erben — {{value}} ({{source}})"
   }
 }

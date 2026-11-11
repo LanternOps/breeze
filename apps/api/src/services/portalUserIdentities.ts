@@ -19,9 +19,9 @@
  * backfill; the daily job (jobs/portalIdentityReconcile.ts) REPORTS drift and
  * never repairs it (plan D10). Release C drops the columns.
  */
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
-import { portalUserIdentities, type PortalIdentityProvider } from '../db/schema/portal';
+import { portalUserIdentities, portalUsers, type PortalIdentityProvider } from '../db/schema/portal';
 
 /** `db` or a transaction handle (same shape as `ContactExecutor`, services/contacts/compat.ts). */
 export type IdentityExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -30,6 +30,9 @@ export type IdentityExecutor = typeof db | Parameters<Parameters<typeof db.trans
 export function entraIssuer(tid: string): string {
   return `https://login.microsoftonline.com/${tid}/v2.0`;
 }
+
+/** The `iss` of a Google ID token; the issuer stored for a Google request and identity. */
+export const PORTAL_GOOGLE_ISSUER = 'https://accounts.google.com';
 
 // ---------------------------------------------------------------------------
 // Readers (identities release B)
@@ -180,6 +183,85 @@ export async function ensureEntraIdentity(
     ))
     .returning({ id: portalUserIdentities.id });
   return touched.length > 0 ? 'present' : 'conflict';
+}
+
+export type LinkIdentityResult = { kind: 'linked' } | { kind: 'conflict' };
+
+/**
+ * Link an external identity to an EXISTING account (portal registration W4:
+ * an invitation-bound or a session-bound Microsoft sign-in, spec §5.6 steps
+ * 2–3). Never called on an email match (inv. 5): the caller has already proven
+ * continuity through the invite or the signed-in session.
+ *
+ * Runs on the caller's transaction, sequentially, and never raises a unique
+ * violation, so it cannot poison that transaction:
+ *  1. the legacy `(entra_tenant_id, entra_oid)` key (`portal_users_entra_identity_uniq`)
+ *     held by ANOTHER login is drift the daily reconcile reports; refuse here
+ *     rather than hit 23505 in step 3. Nothing is written;
+ *  2. ONE `INSERT … ON CONFLICT DO NOTHING RETURNING` (no target: both unique
+ *     keys, `(issuer, subject)` and `(portal_user_id, provider)`). No row →
+ *     `conflict`, nothing written;
+ *  3. on success, the W3 D4 writer fence: `portal_users.entra_tenant_id` /
+ *     `entra_oid` in the same transaction (a release-A reader still finds the
+ *     account) and, when `clearPasswordHash`, `password_hash = NULL` in that
+ *     same statement (plan D12: linking while the org is effectively
+ *     `sso_only`). No epoch bump.
+ *
+ * Throws when the login is not in `orgId` after the identity was written; the
+ * caller's transaction must roll back.
+ */
+export async function linkPortalUserIdentity(
+  tx: IdentityExecutor,
+  input: {
+    orgId: string;
+    portalUserId: string;
+    provider: 'entra';
+    tid: string;
+    oid: string;
+    linkedVia: 'invite' | 'self_link' | 'jit';
+    clearPasswordHash: boolean;
+    now: Date;
+  },
+): Promise<LinkIdentityResult> {
+  const [legacyHolder] = await tx
+    .select({ id: portalUsers.id })
+    .from(portalUsers)
+    .where(and(
+      eq(portalUsers.entraTenantId, input.tid),
+      eq(portalUsers.entraOid, input.oid),
+      ne(portalUsers.id, input.portalUserId),
+    ))
+    .limit(1);
+  if (legacyHolder) return { kind: 'conflict' };
+
+  const inserted = await tx
+    .insert(portalUserIdentities)
+    .values({
+      orgId: input.orgId,
+      portalUserId: input.portalUserId,
+      provider: input.provider,
+      issuer: entraIssuer(input.tid),
+      subject: input.oid,
+      entraTenantId: input.tid,
+      linkedVia: input.linkedVia,
+      lastUsedAt: input.now,
+    })
+    .onConflictDoNothing()
+    .returning({ id: portalUserIdentities.id });
+  if (inserted.length === 0) return { kind: 'conflict' };
+
+  const updated = await tx
+    .update(portalUsers)
+    .set({
+      entraTenantId: input.tid,
+      entraOid: input.oid,
+      ...(input.clearPasswordHash ? { passwordHash: null } : {}),
+      updatedAt: input.now,
+    })
+    .where(and(eq(portalUsers.id, input.portalUserId), eq(portalUsers.orgId, input.orgId)))
+    .returning({ id: portalUsers.id });
+  if (updated.length === 0) throw new Error('linkPortalUserIdentity: the portal account is not in this org');
+  return { kind: 'linked' };
 }
 
 // ---------------------------------------------------------------------------

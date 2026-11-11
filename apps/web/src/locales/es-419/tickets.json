@@ -85,7 +85,8 @@
     },
     "checklistProgress": "{{done}}/{{total}} pasos",
     "checklistTitle": "Lista de verificación: {{done}} de {{total}} pasos completados",
-    "merged": "Fusionado"
+    "merged": "Fusionado",
+    "ageTitle": "Abierto {{created}} · Actualizado {{updated}}"
   },
   "ticketArchivedList": {
     "emptyTitle": "No hay tickets archivados.",
@@ -137,8 +138,17 @@
       "remove": "Quitar archivo",
       "tooMany": "Puedes adjuntar como máximo {{max}} archivos a un comentario.",
       "tooLarge": "{{name}} supera los 10 MB.",
-      "sentWithoutAttachment_one": "Nota publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
-      "sentWithoutAttachment_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos."
+      "rejectedType": "No se adjuntó {{name}}: solo se admiten imágenes JPEG, PNG y WebP, y archivos PDF.",
+      "rejectedEmpty": "No se adjuntó {{name}}: el archivo está vacío.",
+      "sentWithoutAttachmentReply_one": "Respuesta publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
+      "sentWithoutAttachmentNote_one": "Nota publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
+      "sentWithoutAttachmentReply_other": "Respuesta publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos.",
+      "sentWithoutAttachmentNote_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos."
+    },
+    "modeLabel": "Visibilidad del comentario",
+    "recipient": {
+      "emails": "Se envía por correo a {{recipient}}",
+      "none": "No hay correo del solicitante registrado. La respuesta se guarda en el ticket y no se envía ningún correo."
     }
   },
   "ticketFeed": {
@@ -416,7 +426,18 @@
     },
     "filterByType": "Filtrar por tipo",
     "allTypes": "Todos los tipos",
-    "showMerged": "Mostrar fusionados"
+    "showMerged": "Mostrar fusionados",
+    "shortcutsButton": "Atajos",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, prioridad {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, prioridad {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA: quedan {{relative}}",
+        "atRisk": "SLA en riesgo, quedan {{relative}}",
+        "paused": "SLA en pausa, quedan {{relative}}",
+        "breached": "SLA violado"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "No se encontró el ticket. Es posible que se haya eliminado o que usted no tenga acceso.",
@@ -842,6 +863,64 @@
       "SELF_LINK": "Un ticket no se puede vincular consigo mismo.",
       "NOT_FOUND": "No se encontró ese ticket o ya no está disponible.",
       "LINK_GONE": "Ese vínculo ya fue eliminado."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Navegación de tickets",
+    "backTo": "Volver a {{tab}}",
+    "position": "{{index}} de {{total}}",
+    "previous": "Ticket anterior",
+    "next": "Ticket siguiente",
+    "more": "Más acciones",
+    "sections": "Secciones del ticket",
+    "tabs": {
+      "conversation": "Conversación",
+      "details": "Detalles"
+    },
+    "descriptionAria": "Solicitud de {{author}}",
+    "invoiceDialogTitle": "Parte del trabajo no se facturó",
+    "nextOffer": {
+      "label": "Siguiente",
+      "open": "Abrir",
+      "openAria": "Abrir {{number}} {{subject}}",
+      "atRisk": "En riesgo · quedan {{relative}}",
+      "noSla": "Sin SLA"
+    },
+    "requester": {
+      "noEmail": "Sin correo registrado"
+    },
+    "endpoint": {
+      "noDevice": "Ningún equipo vinculado",
+      "lastSeen": "visto por última vez {{ago}}",
+      "loading": "Cargando el equipo",
+      "loadFailed": "No se pudo cargar el estado en vivo del equipo.",
+      "os": "Sistema operativo",
+      "signedIn": "Sesión de",
+      "nobodySignedIn": "Nadie con sesión iniciada",
+      "lastUser": "Último usuario {{user}}",
+      "activeAlerts": "Alertas activas",
+      "noAlerts": "Sin alertas activas",
+      "alertsFailed": "No se pudieron cargar las alertas.",
+      "untitledAlert": "Alerta sin título",
+      "userSignedIn": "{{user}} con sesión iniciada",
+      "alertCount": "{{count}} alertas",
+      "alertCount_one": "{{count}} alerta",
+      "alertCount_other": "{{count}} alertas",
+      "openDetails": "{{device}}: abrir los detalles del equipo"
+    },
+    "details": {
+      "properties": "Propiedades",
+      "logged": "{{time}} registrado",
+      "partCount": "{{count}} partes",
+      "partCount_one": "{{count}} parte",
+      "partCount_other": "{{count}} partes",
+      "pendingApprovals": "{{count}} pendientes",
+      "pendingApprovals_one": "{{count}} pendiente",
+      "pendingApprovals_other": "{{count}} pendientes",
+      "linkCount": "{{count}} vinculados",
+      "linkCount_one": "{{count}} vinculado",
+      "linkCount_other": "{{count}} vinculados",
+      "approvals": "Aprobaciones"
     }
   }
 }

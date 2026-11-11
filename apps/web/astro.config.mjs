@@ -5,6 +5,7 @@ import node from '@astrojs/node';
 import sentry from '@sentry/astro';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { zodJitlessAlias } from '../../packages/shared/zodJitlessAlias.mjs';
 
 // monaco-editor >=0.56's package.json `exports` map only publishes
 // `"./*.js"` / `"./*"` -> `esm/vs/*.js` — it no longer exposes the AMD
@@ -122,9 +123,11 @@ export default defineConfig({
     plugins: [tailwindcss()],
     resolve: {
       dedupe: ['react', 'react-dom'],
-      alias: {
-        'monaco-editor/min/vs/editor/editor.main.css': monacoEditorMainCss
-      }
+      alias: [
+        { find: 'monaco-editor/min/vs/editor/editor.main.css', replacement: monacoEditorMainCss },
+        // Bare `zod` -> jitless shim so no browser entry probes `new Function` (#9972).
+        zodJitlessAlias
+      ]
     },
     optimizeDeps: {
       include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'zustand', 'zustand/middleware']

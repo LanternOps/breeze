@@ -38,6 +38,23 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // login (planPortalAccountTransition, epoch-guarded).
   'apps/api/src/services/portalAccessRequests.ts': { kind: 'state-module' },
   'apps/api/src/routes/portal/profile.ts': { kind: 'no-state', reason: 'name / receiveNotifications / passwordHash only' },
+  // Portal registration W4 (#11381, plan D7): a tenant proof that displaces
+  // another org's mapping bumps auth_epoch (+ updated_at) on that org's
+  // accounts with an Entra identity in the tenant. Never status / browserAccess.
+  'apps/api/src/services/portalEntraTenantProof.ts': { kind: 'no-state', reason: 'authEpoch / updatedAt bump on displacement only' },
+  // Portal registration W4 (#11381) Microsoft sign-in: the identity-only
+  // account writer shared by W3 approval and instant mode
+  // (initialPortalAccountState), and OIDC account resolution (invite
+  // activation, instant browser grant — planPortalAccountTransition,
+  // epoch-guarded).
+  'apps/api/src/services/portalIdentityAccounts.ts': { kind: 'state-module' },
+  'apps/api/src/services/portalOidc/accountResolution.ts': { kind: 'state-module' },
+  // W4 linkPortalUserIdentity: the W3 D4 writer fence (entra_tenant_id /
+  // entra_oid) and the D12 password_hash clear when linking under sso_only.
+  'apps/api/src/services/portalUserIdentities.ts': { kind: 'no-state', reason: 'entraTenantId / entraOid / passwordHash / updatedAt on identity link only' },
+  // W4 (#11381) plan D12: an acknowledged sso_only save clears the hash and
+  // bumps the epoch of the flipped orgs' accounts that have an identity.
+  'apps/api/src/services/portalSsoOnly.ts': { kind: 'no-state', reason: 'passwordHash / authEpoch / updatedAt on an sso_only save only' },
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');

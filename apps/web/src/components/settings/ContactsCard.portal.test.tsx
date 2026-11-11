@@ -39,7 +39,7 @@ const CONTACTS = [
 
 function login(id: string, contactId: string, email: string, effectiveStatus: string) {
   return { id, email, name: null, status: 'active', effectiveStatus, receiveNotifications: true,
-    lastLoginAt: null, invitedAt: null, contactId, authMethod: 'password' };
+    lastLoginAt: null, invitedAt: null, contactId, authMethod: 'password', browserAccess: 'granted' };
 }
 
 const LOGINS = [
@@ -61,6 +61,7 @@ type Opts = {
   invite?: () => Promise<Response>;
   bulk?: () => Promise<Response>;
   createdContact?: unknown;
+  requests?: unknown[];
 };
 
 function mockApi(o: Opts = {}) {
@@ -82,6 +83,9 @@ function mockApi(o: Opts = {}) {
       return (o.invite ?? (() => jsonResponse({
         data: { id: 'p-new', email: 'x', status: 'invited', contactLink: 'linked' }, emailSent: true,
       })))();
+    }
+    if (url.startsWith(`/orgs/organizations/${ORG}/portal-access-requests`)) {
+      return jsonResponse({ data: o.requests ?? [], hasMore: false });
     }
     if (url.startsWith(PORTAL)) {
       return o.portalStatus && o.portalStatus !== 200
@@ -130,6 +134,14 @@ describe('ContactsCard portal access', () => {
     expect(screen.getByTestId('org-contacts-portal-status-c-dis')).toHaveTextContent('Disabled');
   });
 
+  it('shows Requested (and no give/resend) for a contact with a pending access request', async () => {
+    mockApi({ requests: [{ id: 'r1', email: 'NORA@acme.test', status: 'pending' }] });
+    await renderCard();
+    await waitFor(() => expect(screen.getByTestId('org-contacts-portal-status-c-none')).toHaveTextContent('Requested'));
+    expect(screen.queryByTestId('org-contacts-portal-give-c-none')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-contacts-portal-resend-c-none')).not.toBeInTheDocument();
+  });
+
   it('hides the Portal column, checkboxes and create checkbox when portal-users returns 403, with no toast', async () => {
     mockApi({ portalStatus: 403 });
     await renderCard();
@@ -161,6 +173,17 @@ describe('ContactsCard portal access', () => {
     fireEvent.click(await screen.findByTestId('org-contacts-portal-resend-c-inv'));
     await waitFor(() => expect(postsTo('/invite')).toHaveLength(1));
     expect(postsTo('/invite')[0].body).toEqual({ email: 'ivy@acme.test', name: 'Ivy Invited', contactId: 'c-inv' });
+  });
+
+  it('Resend invite that cannot send the email warns with resend-specific copy', async () => {
+    mockApi({ invite: () => jsonResponse({ data: { id: 'p-inv' }, emailSent: false }) });
+    await renderCard();
+    fireEvent.click(await screen.findByTestId('org-contacts-portal-resend-c-inv'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    const toast = showToastMock.mock.calls[0][0];
+    expect(toast.type).toBe('warning');
+    expect(toast.message).not.toMatch(/login created/i);
+    expect(toast.message).toMatch(/resend/i);
   });
 
   it('offers no portal action for active or disabled contacts, or for a contact without email', async () => {

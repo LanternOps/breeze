@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Systembereiche",
         "connections": "Verbindungen",
-        "deprecations": "Abkündigungen"
+        "deprecations": "Abkündigungen",
+        "health": "Zustand"
       },
       "connections": {
         "enabledMeaning": "Aktiviert bedeutet konfiguriert. Breeze kontaktiert den Dienst nicht, um zu prüfen, ob er antwortet.",
@@ -720,6 +721,57 @@
           "load": "Jobstatus konnte nicht geladen werden."
         },
         "retry": "Erneut versuchen"
+      },
+      "health": {
+        "coverage": "Nur gemeinsam genutzte Hintergrundaufgaben: Warteschlangen-Zähler und Heartbeats geplanter Jobs, gelesen aus Redis. Dieser Tab zeigt kein Gesamturteil. Der Zustand je Prozess und Host steht unter /health/ready und im Monitoring-Overlay.",
+        "loading": "Status der Hintergrundaufgaben wird geladen…",
+        "refresh": "Aktualisieren",
+        "never": "nie",
+        "errors": {
+          "load": "Der Status der Hintergrundaufgaben konnte nicht geladen werden."
+        },
+        "status": {
+          "operational": "Betriebsbereit",
+          "degraded": "Beeinträchtigt",
+          "unavailable": "Nicht verfügbar",
+          "unknown": "Unbekannt",
+          "disabled": "Deaktiviert"
+        },
+        "detail": {
+          "redis_unavailable": "Redis ist nicht verfügbar, daher konnte nicht gelesen werden.",
+          "read_failed": "Das Lesen ist fehlgeschlagen.",
+          "timeout": "Das Lesen hat das Zeitlimit überschritten.",
+          "stale": "Der letzte Heartbeat ist älter als erwartet.",
+          "missing": "Es wurde kein Heartbeat erfasst.",
+          "no_threshold": "Nur Zähler. Für diese Warteschlange ist noch kein Gesundheitsschwellenwert definiert."
+        },
+        "queues": {
+          "title": "Warteschlangen",
+          "description": "Ausstehende Arbeit in jeder gemeinsam genutzten Warteschlange. Zähler sind kein Gesundheitsurteil.",
+          "items": {
+            "connection-health-reconcile": "Abgleich der Verbindungsgesundheit",
+            "connection-health-digest": "Zusammenfassung der Verbindungsgesundheit",
+            "alerts": "Warnungen",
+            "event-dispatch": "Ereignisversand"
+          },
+          "counts": {
+            "waiting": "Wartend",
+            "prioritized": "Priorisiert",
+            "delayed": "Verzögert",
+            "active": "Aktiv"
+          }
+        },
+        "jobs": {
+          "title": "Geplante Jobs",
+          "description": "Letzter erfasster Lauf jedes Jobs der Verbindungsgesundheit.",
+          "items": {
+            "reconcile": "Abgleich der Verbindungsgesundheit",
+            "digest": "Zusammenfassung der Verbindungsgesundheit"
+          },
+          "kind": "Verbindungsprüfung: {{kind}}",
+          "lastRun": "Letzter Lauf: {{when}}",
+          "failureStreak": "Fehlerserie: {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -1002,6 +1054,7 @@
       "contract_document": "Vertragsdokument",
       "contract_template": "Vertragsvorlage",
       "custom_field": "Benutzerdefiniertes Feld",
+      "customer_email_domain": "Kunden-E-Mail-Domain",
       "deployment": "Bereitstellung",
       "deployment_invite": "Bereitstellungseinladung",
       "deployment_target": "Bereitstellungsziel",

@@ -148,6 +148,7 @@ import type { WsSetupSlot } from '../services/admission/wsUpgradeGate';
 import { breezeRole } from '../config/env';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
+import type { AgentEvictCloseCode } from '../services/agentCommandRelayEvict';
 import {
   evaluateCapability,
   isLifecycleCommand,
@@ -307,6 +308,13 @@ interface ActiveAgentConnection {
    * should that admission ever change.
    */
   parked: boolean;
+  /**
+   * The fencing token this connection wrote into its presence lease. A
+   * relay-evict job carries the token the producer read from the lease, and
+   * disconnectAgentConnection closes this socket only when they match, so an
+   * eviction can never close a newer connection (#4142).
+   */
+  connectionToken: string;
 }
 
 // Store active WebSocket connections and their connect-time trust snapshot by agentId.
@@ -3209,6 +3217,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
         credentialTokenHash: agentDb.credentialTokenHash,
         credentialRevoked: false,
         parked: agentDb.parked === true,
+        connectionToken,
       });
       socketEpoch = installAgentSocketEpoch(agentId);
       void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
@@ -5321,7 +5330,7 @@ export function __resetCrossTenantDropsForTest() {
 export function registerConnection(
   agentId: string,
   ws: { send(data: string): void },
-  trust: { partnerId: string; trustState: PartnerTrustState; parked?: boolean } = {
+  trust: { partnerId: string; trustState: PartnerTrustState; parked?: boolean; connectionToken?: string } = {
     partnerId: 'test-partner',
     trustState: 'trusted',
   },
@@ -5335,6 +5344,7 @@ export function registerConnection(
     trustState: trust.trustState,
     credentialRevoked: false,
     parked: trust.parked === true,
+    connectionToken: trust.connectionToken ?? randomUUID(),
   });
   installAgentSocketEpoch(agentId);
 }
@@ -5538,6 +5548,35 @@ export function disconnectAgent(agentId: string, code: number = 4040, reason: st
   }
   // Don't delete from map here — the WS onClose handler does that itself
   // (lines ~1905-1907) and we don't want to race with reconnect logic.
+  return 'closed';
+}
+
+/**
+ * Fenced close for the relay-evict consumer (#4142): close the agent's socket
+ * only when it is the exact connection whose presence lease the producer read,
+ * i.e. its `connectionToken` matches. A replacement socket (a reconnect after
+ * the producer's read) answers `token_mismatch` and stays open. Synchronous by
+ * design: nothing awaits between the compare and `close()`, so no reconnect can
+ * slip in between them on this process. Outcomes otherwise match
+ * {@link disconnectAgent}; the map entry is left to onClose the same way. A
+ * throwing `close()` is logged here and reported to Sentry by the relay
+ * consumer, once per job, so a fleet sever cannot raise one event per socket.
+ */
+export function disconnectAgentConnection(
+  agentId: string,
+  connectionToken: string,
+  code: AgentEvictCloseCode,
+  reason: string,
+): AgentWsDisconnectResult | 'token_mismatch' {
+  const conn = activeConnections.get(agentId);
+  if (!conn) return 'not-connected';
+  if (conn.connectionToken !== connectionToken) return 'token_mismatch';
+  try {
+    conn.ws.close(code, reason);
+  } catch (error) {
+    console.error(`disconnectAgentConnection(${agentId.slice(0, 12)}) close threw:`, error);
+    return 'close-failed';
+  }
   return 'closed';
 }
 

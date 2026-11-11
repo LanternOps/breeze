@@ -73,6 +73,7 @@ import {
 import { mobileDeepLink } from '../wisp/nudgeLinks';
 import { notifyUser } from '../wisp/notifyUser';
 import { renderReadinessSummary, type ReadinessCheck } from '../wisp/readiness';
+import { evaluateStandingInstructions, standingConflictDescription } from '../wisp/standingInstructionGate';
 import { isAssessmentProfile } from './assessmentProfile';
 import type { AssessmentRunContext, LoopResult, RunContext } from './runLoopTypes';
 
@@ -302,13 +303,36 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
         }
         throw error;
       }
+      // #10428 W06: the grantor's standing instructions. A confirmed exact
+      // deny drops the proposal; any other match rides on the card's reason.
+      // A check that cannot run drops it too (fails closed).
+      let standingText: string | null = null;
+      try {
+        const standing = await evaluateStandingInstructions({
+          ceiling: ap.ceiling,
+          toolName: proposal.toolName,
+          input: proposal.input,
+          auth: ap.result.agentAuth,
+        });
+        if (standing.action === 'refuse') {
+          ap.skipped.push('propose_standing_instruction');
+          return;
+        }
+        if (standing.action === 'warn') standingText = standing.text;
+      } catch (error) {
+        console.error('[assessmentFinalizer] standing-instruction check failed; proposal dropped', { runId: run.id, toolName: proposal.toolName, error });
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        ap.skipped.push('propose_standing_instruction_unverified');
+        return;
+      }
       attempted += 1;
+      const reason = `Proposed by Wisp assessment ${run.id}: ${proposal.reason}`;
       const intent = await createActionIntent(ap.result.agentAuth, {
         toolName: proposal.toolName,
         input: proposal.input,
         source: 'ai_agent',
         orgId: run.orgId,
-        reason: `Proposed by Wisp assessment ${run.id}: ${proposal.reason}`,
+        reason: standingText ? standingConflictDescription(standingText, reason) : reason,
       });
       if (intent.status === 'pending_approval') {
         ap.result.intentIds.push(intent.id);

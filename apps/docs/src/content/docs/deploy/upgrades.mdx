@@ -150,7 +150,7 @@ The report never blocks the API from starting. If the deployment has no recorded
 
 ### In the web UI
 
-Platform administrators can see the same information at **Administration → System** (`/admin/system`, v0.117.0+). The **Deprecations** tab lists every retirement the running image knows about with its status for this deployment (crossed, possibly crossed, in effect, or upcoming), along with the running version, the last version recorded, the applied and pending migration counts, and the deployment's version history. The **Connections** tab shows each integration the API container is configured for, grouped by area, as enabled, disabled, misconfigured, or required but missing. It reads the API container's environment only, never shows secret values, and does not contact the services themselves, so "enabled" means configured, not reachable. Both tabs are read-only.
+Platform administrators can see the same information at **Administration → System** (`/admin/system`, v0.117.0+). The **Deprecations** tab lists every retirement the running image knows about with its status for this deployment (crossed, possibly crossed, in effect, or upcoming), along with the running version, the last version recorded, the applied and pending migration counts, and the deployment's version history. The **Connections** tab shows each integration the API container is configured for, grouped by area, as enabled, disabled, misconfigured, or required but missing. It reads the API container's environment only, never shows secret values, and does not contact the services themselves, so "enabled" means configured, not reachable. The **Health** tab shows the connection-health reconciler and digest, each per-kind heartbeat, and the queue counts for connection health, alerts and event dispatch. It reads Redis only, so it works without the monitoring overlay. Queue counts are not a health verdict. All three tabs are read-only.
 
 ## Compose file changes
 
@@ -177,6 +177,18 @@ docker compose config --quiet
 ```
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
+
+### v0.128.0 — portal Microsoft sign-in, migration lock wait, worker container name, monitoring images pinned
+
+The [v0.128.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.128.0/docker-compose.yml) change the `api` and `web` environments, the optional `worker` service and `docker-compose.monitoring.yml`. Both Compose files gain the same lines. Every new mapping is optional; leaving it out of `.env` keeps the built-in default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings `PORTAL_ENTRA_CLIENT_ID`, `PORTAL_ENTRA_CLIENT_SECRET` and `PORTAL_ENTRA_CALLBACK_BASE_URL` (`${VAR:-}`). | Nothing unless you want customer portal **Sign in with Microsoft**: it stays off, and its settings stay hidden, until both the client ID and secret are set. See [Portal Microsoft sign-in](/features/portal-microsoft-sign-in/) and [Customer portal Microsoft sign-in](/deploy/environment/#customer-portal-microsoft-sign-in-optional). |
+| New `api` mappings `OAUTH_REFRESH_ROTATION_GRACE_MS` and `MIGRATION_LOCK_TIMEOUT_MS` (`${VAR:-}`). | Nothing for the defaults (10 seconds; 5 minutes). See [Upgrade and rollout controls](/deploy/environment/#upgrade-and-rollout-controls). |
+| New `web` mapping `TUNNEL_ORIGIN_TEMPLATE` (`${VAR:-}`). It is an existing variable that was passed only to the API. | If you use Network Proxy host mode, add the line to the `web` service, or the browser blocks the device frame. See [Dedicated tunnel origin](/deploy/network-proxy-tunnel-origin/). |
+| The optional `worker` service no longer sets `container_name: breeze-worker`, so it can be scaled with `docker compose --profile worker-split up -d --scale worker=N`. | Scripts that call `docker logs breeze-worker` or `docker exec breeze-worker` should use `docker compose logs worker` and `docker compose exec worker`. See [Worker Split](/deploy/worker-split/). |
+| `docker-compose.monitoring.yml` pins every image by digest and moves Prometheus 2 → 3, Grafana 10 → 13, Loki and Promtail 2.9 → 3.6, plus Alertmanager and both exporters. Each image can be overridden with its own `*_IMAGE_REF` variable. | Only if you run the monitoring overlay and take the new file. Read the upstream upgrade notes and back up the monitoring volumes first, or set the `*_IMAGE_REF` variables to your current images. See [Image versions](/monitoring/stack/#image-versions). |
 
 ### v0.127.0 — alert worker settings mapped, worker heap cap, new optional settings
 
@@ -328,6 +340,94 @@ Changing an existing network's IPAM/subnet requires recreating that network duri
 Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify that `TRUSTED_PROXY_CIDRS` matches the proxy that directly connects to the API. That release's TRANSPORT-001 enforcement only honors forwarded HTTPS headers from trusted peers; a stale address can cause repeated `308` redirects for the UI and agents while `/health` still returns `200`. After restarting, check public sign-in and agent check-ins as well as API logs for `[proxy-trust]` or `[force-https]` warnings (available from v0.104.0).
 
 ## Version-specific notes
+
+### v0.128.0 — customer portal sign-up options, remote access tool alerts, Wisp check-ins, partner-wide installers
+
+<Aside type="caution" title="Breaking change: breeze-agent enroll --site-id is removed">
+  The flag has been ignored since v0.123.0, because the site comes from the enrollment key. With the 0.128.0 agent, `breeze-agent enroll --site-id …` stops with `--site-id was removed: the site now comes from the enrollment key, so drop the flag from your script`. Installers and commands generated by Breeze stopped passing it in v0.123.0, so only hand-written install or deployment scripts (RMM migration scripts, GPO, Intune, shell wrappers) are affected. Remove the flag before the agents update. There is no opt-out. See [Advanced Installation](/agents/advanced-install/).
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. Back up the database, or note a point-in-time recovery point. A rollback keeps the new schema and was not tested (see Migrations below).
+2. Remove `--site-id` from any hand-written agent install script (see the caution above).
+3. If you use UniFi with a **self-hosted controller**, map every controller site you want inventoried in **Integrations → UniFi** before you upgrade (see Behaviour changes below).
+4. Upgrade the server. Check how your install pins its images with `grep '^BREEZE_API_IMAGE_REF=' .env`:
+   - **Digest-pinned** (the value ends in `@sha256:…`; every `guided-setup.sh` install since v0.112.0): fetch the current `guided-setup.sh` from `main`, then run `bash guided-setup.sh --upgrade 0.128.0`. Don't edit only `BREEZE_VERSION` on a digest-pinned install; that re-pulls the images you already run.
+   - **Tag-form** (the value ends in `:${BREEZE_VERSION}`): set `BREEZE_VERSION=0.128.0`, then run `docker compose pull api web portal && docker compose up -d`. If you run the optional `worker` container, pull and restart it too.
+
+   If you roll services one at a time, **update the API before the web and portal containers.** The new Contacts, Customer portal, Domains and Software Library screens call routes the old API does not have. If you run the optional `worker` container, update it together with the API: while one runs the old build and the other the new one, commands relayed between them fail.
+5. `--upgrade` does not change your `docker-compose.yml`. To pick up this release's new mappings, take the v0.128.0 Compose files or add the lines yourself (see [Compose file changes](#v01280--portal-microsoft-sign-in-migration-lock-wait-worker-container-name-monitoring-images-pinned)). A value only in `.env` does not reach the container.
+6. Watch the API start log for `[auto-migrate] Applied 21 migration(s)` (from v0.127.0).
+7. Let agents, Breeze Assist and Breeze Viewer update to 0.128.0. Trend Micro recognition, patch install dates, the six newly detected remote support tools and the remote desktop fixes need this release's agent.
+</Steps>
+
+#### Stricter than before
+
+Apart from `--site-id`, no change breaks an install on default settings. If you integrate with the API, check these before you upgrade:
+
+- **Portal sign-in and invites.** Portal login no longer answers `400 Multiple portal accounts found`; every failed sign-in is `401 Invalid email or password`. Accept-invite answers `400 Invalid or expired invite` for a disabled or already set-up account. Setting an **invited** portal user to `active` through `PATCH …/portal-users/:id` answers 409, because only accepting the invite activates it. Existing 409s can carry new `code` values (`PORTAL_USER_IDENTITY_MANAGED`, `PORTAL_ACCOUNT_TRANSITION_REFUSED`).
+- **`POST /orgs/organizations/:id/portal-users/invite`** accepts an optional `contactId`. The invite email must match the contact's (`PORTAL_INVITE_EMAIL_MISMATCH`), and a login bound to another contact is not re-pointed (`PORTAL_INVITE_CONTACT_CONFLICT`). New `POST …/portal-users/invite-contacts` invites up to 100 contacts and returns one outcome per contact.
+- **`/mfa/disable`** answers 409 while the account still has a passkey.
+- **Software upload sessions:** a session the caller cannot see answers 404 where a forbidden `?orgId` used to answer 403. Upload sessions on a partner-wide package ignore `?orgId`, and partner users with selected-organization access get 403.
+- **`GET /ai/sessions/:id`** can return `status: 'expired'` for an idle session. The `approval_required` stream event gains two optional fields, `pushedToPhone` and `waitingOn`.
+- **Database and VM restore** dispatch failures return a fixed message instead of the raw error text.
+- **Checkout** can answer `409 BALANCE_NOT_REPRESENTABLE` for a balance the invoice currency cannot express. `POST /invoices/:id/payments` accepts an `Idempotency-Key` header (or `idempotencyKey` in the body), so a retried manual payment lands once.
+- **Remote launch** accepts an optional `providerId`, which only selects among the providers already enabled for the device.
+
+#### Behaviour changes and feature flags
+
+- **New remote access tool alerts are on by default.** When a device's management scan finds a known remote access or RMM tool that its previous scan did not have, Breeze raises a built-in alert on the device. A device's first scan is its baseline, and a tool it has already reported raises nothing. The six tools only the 0.128.0 agent detects (UltraViewer, Zoho Assist, DWService, Supremo, Ammyy Admin and Chrome Remote Desktop) can raise an alert the first time that agent reports them, even where they were installed earlier. If you use a remote tool across your fleet, switch its rule off per organization under **Alerts → Monitors → Built-in alerts**. There is no partner-wide switch yet. See [Management Posture](/features/management-posture/).
+- **More built-in alerts send notifications:** log correlation, DNS threat, AI agent attention, automation and flow **Create alert** actions, and metric anomaly alerts. They appeared on the Alerts page but could miss channels, routing rules and escalations. Only alerts raised after the upgrade send. Review routing if you use these. See [Notifications](/features/notifications/).
+- **UniFi self-hosted controllers are mapped-only.** Devices and clients on a controller site that is not mapped to a Breeze site are no longer filed under the collector agent's organization, and rows already filed there are removed the next time the controller reports them. Unmapped sites still appear for mapping, and the worker logs `unifi.reconcile.unmapped` with the counts. Cloud-console collectors are unchanged. See [UniFi Integration](/features/unifi-integration/).
+- **Migration lock wait is bounded.** A starting API that cannot get the migration lock within `MIGRATION_LOCK_TIMEOUT_MS` (5 minutes) logs which session holds it, exits non-zero and lets the restart policy try again. It used to wait forever with nothing in the log.
+- **Proxy trust check at boot.** With `TRUST_PROXY_HEADERS` on, the API logs one `[proxy-trust]` warning when no `TRUSTED_PROXY_CIDRS` entry overlaps a network it is attached to. It never stops startup.
+- **Worker split.** The `worker` container no longer has the fixed name `breeze-worker` and can be scaled. Command relay, cache invalidation and command-result tracking now work across processes. The shipped Compose files still run one API.
+- **Monitoring overlay images** move up one to three major versions if you take the new monitoring file. See [Compose file changes](#v01280--portal-microsoft-sign-in-migration-lock-wait-worker-container-name-monitoring-images-pinned).
+- **Customer portal.** With no access policy saved, sign-in works as before. Microsoft logins created by the AI for Office add-in with no password now read **Active** instead of **Pending setup** in the portal users list, and add-in sessions end after 12 hours. Bulk invite no longer touches those logins. **Sign in with Microsoft** stays off until `PORTAL_ENTRA_CLIENT_ID` and `PORTAL_ENTRA_CLIENT_SECRET` are both set. Domain verification by DNS needs nothing extra; the Google Workspace method needs `GOOGLE_WORKSPACE_ENABLED` and a Workspace connection, and the Microsoft method needs the portal Entra app and a proven tenant. See [Customer Portal](/features/portal/) and [Domain Verification](/features/portal-domain-verification/).
+- **OAuth refresh tokens.** The same client re-presenting a refresh token within 10 seconds of rotating it gets the new token instead of having the connection revoked (`OAUTH_REFRESH_ROTATION_GRACE_MS`). A later presentation, or one by a different client, is still treated as reuse.
+- **Microsoft 365 sign-in events:** a first sync reads 1 day of history instead of 7.
+- **Backup storage cleanup** now reads snapshot manifests over 200 MiB instead of skipping them, and reads manifests more strictly: a manifest with a repeated or missing `files` key, or one naming another snapshot, stops cleanup for that destination rather than being treated as empty.
+- **AI chat sessions:** a sweep every 15 minutes marks chats idle for 2 hours, or older than 24 hours, as expired. The limits are unchanged; they used to be applied only on the next message.
+- **AI approval mode** moved to **Partner → AI Approvals** (renamed from **AI Approval Timeout**), next to the timeout.
+- **Wisp** stays Breeze Cloud only (`BREEZE_WISP_ENABLED`, default `false`). A grant's daily budget now counts chat, so a chat-heavy day can pause background checks until 00:00 UTC; chat itself is never refused by the grant budget.
+- **Vendor updates stays off.** `BREEZE_OEM_UPDATES_ENABLED` defaults to `false`; leave it unset.
+- **No flag in this release has to be turned on.**
+
+#### Environment variables
+
+**No new required variables.** The config validator refuses to boot only when one of the optional variables below is set to a malformed value. See [Compose file changes](#v01280--portal-microsoft-sign-in-migration-lock-wait-worker-container-name-monitoring-images-pinned).
+
+- `PORTAL_ENTRA_CLIENT_ID`, `PORTAL_ENTRA_CLIENT_SECRET` and `PORTAL_ENTRA_CALLBACK_BASE_URL` (api, mapped): the customer portal's own multi-tenant Entra app. With the app configured, a malformed callback base stops the API at boot.
+- `OAUTH_REFRESH_ROTATION_GRACE_MS` (api, mapped; `10000`, at most `30000`, `0` turns it off).
+- `MIGRATION_LOCK_TIMEOUT_MS` (api, mapped; `300000`). A value that is not a positive whole number of milliseconds stops the API at boot.
+- `TUNNEL_ORIGIN_TEMPLATE` is newly mapped on the `web` service.
+- Not in `.env.example` or the shipped Compose files: `BACKUP_GC_LIVE_SET_MAX_BYTES` (api, or `worker` when split) and `M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE` (Microsoft Graph read executor; `100`, from 10 to 1000). Leave both unset unless you need them.
+- Monitoring overlay only: `PROMETHEUS_IMAGE_REF`, `GRAFANA_IMAGE_REF`, `ALERTMANAGER_IMAGE_REF`, `LOKI_IMAGE_REF`, `PROMTAIL_IMAGE_REF`, `REDIS_EXPORTER_IMAGE_REF` and `POSTGRES_EXPORTER_IMAGE_REF`.
+
+See [Environment Variables](/deploy/environment/).
+
+#### Migrations
+
+21 idempotent migrations apply on boot when upgrading from v0.127.0 (`[auto-migrate] Applied 21 migration(s)`). The set was verified to apply as a role that is neither a superuser nor `BYPASSRLS`. No shipped migration was modified, renamed or removed, and none touches the large device or audit tables. Three are worth knowing about:
+
+- `2027-01-22-230200-portal-account-foundations.sql` backfills every row of `portal_users`, a small table. **A portal user whose status is not `invited`, `active` or `disabled` is set to `disabled` and their sessions are ended.** It also creates `portal_user_identities` and copies existing Microsoft identities into it.
+- `2027-01-22-233400-wisp-standing-instruction-capture.sql` replaces a CHECK constraint on the AI egress events table (`llm_egress_events`): one scan of the table under an exclusive lock. On an install with a long AI history, AI requests can wait for a moment during the upgrade.
+- `2027-01-22-231400-unifi-clients-site-identity.sql` adds a column to `unifi_clients` and builds a unique index on it without `CONCURRENTLY`, then drops the old index. Until the old API process is replaced, its UniFi client writes fail; the cost is at most one telemetry poll per collector, and the job is retried.
+
+Also:
+
+- **New tables** `portal_user_identities`, `portal_access_policies`, `portal_access_requests` and `device_oem_policy_side` enable and force row-level security in the file that creates them.
+- **Other additions** are nullable columns, columns with a constant default, CHECK constraints on small tables and ordinary indexes. Existing Wisp check-ins become time-based reminder check-ins. Every file that writes rows elects system scope first.
+- **One-way changes:** the `security_provider` enum gains `trend_micro`, and the old `unifi_clients` unique index is dropped.
+- **Ownership.** `ALTER TYPE … ADD VALUE` needs the migration role to own the type, which it does on a standard install.
+- **Rolling back.** A rollback to v0.127.0 keeps the new schema and was not tested. With the old `unifi_clients` index gone, the v0.127.0 API cannot write UniFi client rows, so restore the backup if you roll back and use UniFi.
+
+#### Known gaps
+
+- **Built-in H.264 encoder fallback:** on a Windows host with no hardware encoder where OpenH264 cannot load, the picture can stay blocky after a burst of change on an otherwise static screen, until the screen changes again ([#11639](https://github.com/LanternOps/breeze/issues/11639)). Those hosts could not start a session at all before this release.
+- **Not lab-verified:** Trend Micro recognition (no Trend Micro installation was available; unit tests only); macOS upgrade in place on Apple Silicon (Intel macOS was verified on the signed release candidate, with existing Screen Recording and Accessibility grants kept); the RDP-session preference of the sign-in screen capture (console sign-in screen capture was verified); the S3 backup transport for the new verification lane and manifest streaming (verified on local storage); portal **Sign in with Microsoft** end to end; and command relay across more than one API process.
 
 ### v0.127.0 — notifications for every alert, restore browsing for large snapshots, SLA performance report
 

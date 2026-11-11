@@ -127,6 +127,8 @@ vi.mock('drizzle-orm', () => ({
   and: (...conditions: any[]) => ({ op: 'and', conditions }),
   or: (...conditions: any[]) => ({ op: 'or', conditions }),
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
+  // #11562 — managedDeviceConditions() excludes decommissioned devices.
+  ne: (column: unknown, value: unknown) => ({ op: 'ne', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   // #3198 W02 ruling F1 — the org-scope audience exclusion.
   notInArray: (column: unknown, values: unknown[]) => ({ op: 'notInArray', column, values }),
@@ -230,7 +232,8 @@ vi.mock('../db/schema', () => ({
     lastSeenAt: 'devices.lastSeenAt',
     enrolledAt: 'devices.enrolledAt',
     tags: 'devices.tags',
-    siteId: 'devices.siteId'
+    siteId: 'devices.siteId',
+    isEphemeral: 'devices.isEphemeral'
   },
   // #4622 W03 — device_inventory unions manual assets with agent devices.
   manualAssets: {

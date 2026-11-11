@@ -622,7 +622,8 @@
       "tabs": {
         "label": "System sections",
         "connections": "Connections",
-        "deprecations": "Deprecations"
+        "deprecations": "Deprecations",
+        "health": "Health"
       },
       "connections": {
         "enabledMeaning": "Enabled means configured. Breeze does not contact the service to check that it responds.",
@@ -720,6 +721,57 @@
           "load": "Could not load job status."
         },
         "retry": "Retry"
+      },
+      "health": {
+        "coverage": "Shared background work only: queue counts and scheduled-job heartbeats, read from Redis. This tab shows no overall verdict. Per-process and per-host health is at /health/ready and in the monitoring overlay.",
+        "loading": "Loading background-work status…",
+        "refresh": "Refresh",
+        "never": "never",
+        "errors": {
+          "load": "Could not load background-work status."
+        },
+        "status": {
+          "operational": "Operational",
+          "degraded": "Degraded",
+          "unavailable": "Unavailable",
+          "unknown": "Unknown",
+          "disabled": "Disabled"
+        },
+        "detail": {
+          "redis_unavailable": "Redis is unavailable, so this could not be read.",
+          "read_failed": "The read failed.",
+          "timeout": "The read timed out.",
+          "stale": "The last heartbeat is older than expected.",
+          "missing": "No heartbeat has been recorded.",
+          "no_threshold": "Counts only. No health threshold is defined for this queue yet."
+        },
+        "queues": {
+          "title": "Queues",
+          "description": "Pending work in each shared queue. Counts are not a health verdict.",
+          "items": {
+            "connection-health-reconcile": "Connection health reconciler",
+            "connection-health-digest": "Connection health digest",
+            "alerts": "Alerts",
+            "event-dispatch": "Event dispatch"
+          },
+          "counts": {
+            "waiting": "Waiting",
+            "prioritized": "Prioritized",
+            "delayed": "Delayed",
+            "active": "Active"
+          }
+        },
+        "jobs": {
+          "title": "Scheduled jobs",
+          "description": "Last recorded run of each connection-health job.",
+          "items": {
+            "reconcile": "Connection health reconciler",
+            "digest": "Connection health digest"
+          },
+          "kind": "Connection check: {{kind}}",
+          "lastRun": "Last run: {{when}}",
+          "failureStreak": "Failure streak: {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -1002,6 +1054,7 @@
       "contract_document": "Contract document",
       "contract_template": "Contract template",
       "custom_field": "Custom field",
+      "customer_email_domain": "Customer email domain",
       "deployment": "Deployment",
       "deployment_invite": "Deployment invite",
       "deployment_target": "Deployment target",

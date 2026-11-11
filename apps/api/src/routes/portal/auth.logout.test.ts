@@ -124,8 +124,14 @@ import { pickEffectivePortalAccessPolicy } from '../../services/portalAccessPoli
 const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
 function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
   const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
-  return { orgId, partnerId: 'partner-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+  // W4: Microsoft is effective only for an org with a proven tenant (plan D2), which entra sessions pin (D9).
+  const proven = mode === 'sso_only';
+  return {
+    orgId, partnerId: 'partner-1', entraTenant: proven ? { tenantId: PROVEN_TENANT_ID, provenAt: '2026-11-01T00:00:00.000Z' } : null,
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven }),
+  };
 }
+const PROVEN_TENANT_ID = '72f988bf-86f1-41af-91ab-2d7cd011db47';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const USER_ID = '11111111-2222-4333-8444-555566667777';

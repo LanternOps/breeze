@@ -45,6 +45,7 @@ vi.mock('./stores/workspaceStore', () => {
 import App from './App';
 import { useChatStore } from './stores/chatStore';
 import { useWorkspaceStore } from './stores/workspaceStore';
+import { setUiContext } from './i18n/uiContext';
 
 function setChatState(overrides: Record<string, unknown> = {}) {
   const state = {
@@ -112,6 +113,7 @@ function setWorkspaceState(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  setUiContext(null);
   setChatState();
   setWorkspaceState();
 });
@@ -159,4 +161,51 @@ it('shows the username prompt when no username is set yet', () => {
   render(<App />);
 
   expect(screen.getByText("What's your name?")).toBeInTheDocument();
+});
+
+// BRZ-7567 W3: onboarding is the first shell surface on the i18n layer.
+it('without branding the onboarding is Breeze-branded English', () => {
+  setChatState({ connectionState: 'connected', username: null });
+  render(<App />);
+  expect(screen.getByText('Welcome to Breeze Helper')).toBeInTheDocument();
+  expect(screen.getByText("What's your name?")).toBeInTheDocument();
+});
+
+it('onboarding follows the session locale', () => {
+  setUiContext({ locale: 'pt-BR' });
+  setChatState({ connectionState: 'connected', username: null });
+  render(<App />);
+  expect(screen.getByText('Boas-vindas ao Breeze Helper')).toBeInTheDocument();
+  expect(screen.getByText('Qual é o seu nome?')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Continuar' })).toBeInTheDocument();
+});
+
+it('branding fills only identity slots; the functional prompt stays Breeze-owned', () => {
+  setUiContext({
+    locale: 'en',
+    branding: { displayName: 'Example Assist', welcomeMessage: 'Your IT team is here.', companyName: 'Example IT' },
+  });
+  setChatState({ connectionState: 'connected', username: null });
+  render(<App />);
+  expect(screen.getByText('Welcome to Example Assist')).toBeInTheDocument();
+  expect(screen.getByText('Your IT team is here.')).toBeInTheDocument();
+  expect(screen.getByText('Provided by Example IT')).toBeInTheDocument();
+  expect(screen.getByText("What's your name?")).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+});
+
+it('a welcomeTitle replaces the welcome line only', () => {
+  setUiContext({ branding: { welcomeTitle: 'Hi from Example' } });
+  setChatState({ connectionState: 'connected', username: null });
+  render(<App />);
+  expect(screen.getByText('Hi from Example')).toBeInTheDocument();
+  expect(screen.queryByText(/Welcome to/)).toBeNull();
+});
+
+it('invalid branding sent to the webview is dropped, not rendered', () => {
+  setUiContext({ branding: { displayName: 'x'.repeat(200), welcomeMessage: 'a\nb' } });
+  setChatState({ connectionState: 'connected', username: null });
+  render(<App />);
+  expect(screen.getByText('Welcome to Breeze Helper')).toBeInTheDocument();
+  expect(screen.queryByText('a\nb')).toBeNull();
 });

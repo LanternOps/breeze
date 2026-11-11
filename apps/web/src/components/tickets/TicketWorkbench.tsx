@@ -1,135 +1,38 @@
 import { useRecordPageContext } from '@/hooks/useRecordPageContext';
-import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Pencil, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TicketTemplateVars } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { listCannedResponses, type CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 import { runAction, ActionError } from '../../lib/runAction';
+import { permanentAttachmentRejection } from './ticketAttachmentErrors';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
-import { showToast } from '../shared/Toast';
-import TicketFeed from './TicketFeed';
-import TicketComposer from './TicketComposer';
-import SlaChip from './SlaChip';
-import { SlaTimers } from './SlaTimers';
-import TicketTimeBilling from './TicketTimeBilling';
-import TicketApprovalRail from './TicketApprovalRail';
-import { approvalFriendly } from '../../lib/ticketApproval';
-import TicketPartsCard from './TicketPartsCard';
-import TicketChecklistCard from './TicketChecklistCard';
-import TicketLinksCard from './TicketLinksCard';
 import MergeTicketDialog from './MergeTicketDialog';
-import TicketTypeChip from './TicketTypeChip';
-import { TICKET_TYPE_ORDER, isTicketType, ticketTypeLabelKey } from './ticketType';
-import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
-import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
-import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
-import OnboardPersonLauncher from '../aiOperator/OnboardPersonLauncher';
-import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
-import { formatMoney } from '../billing/shared/format';
-import { statusConfig, priorityConfig, slaState, ticketDisplayNumber, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
-import type { AiAgentRunTicketProposalDto } from '@breeze/shared';
-
-/** Mirrors the API's BlockedCurrencySummary (invoiceService.ts, #3776). */
-interface BlockedCurrencyGroup { currencyCode: string; count: number; amount: string }
-/** Mirrors MissingRateEntry (invoiceService.ts, #3776 review #1): a billable time
- *  entry with no hourly rate. Never billed at zero — set a rate and assemble again. */
-interface MissingRateEntry { timeEntryId: string; ticketId: string | null; description: string; hours: string }
-/** POST /tickets/:id/invoice success body. `blockedByCurrency` / `missingRate`
- *  are non-empty on a PARTIAL success: the draft exists but those rows were
- *  left out of it (review #3). */
-interface AssembleInvoiceResponse {
-  data: { invoice: { id: string }; blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[]; heldForHourBlock?: { count: number; hours: number } };
-}
-/** Mirrors MoveCurrencyGuardDetails (ticketMoveCurrencyGuard.ts, #3776). */
-interface MoveBlockedDetails {
-  sourceCurrency: string;
-  targetCurrency: string;
-  unbilledTimeEntries: number;
-  unbilledParts: number;
-  /** Real per-snapshot groups (rows whose currency ≠ target); optional for older API builds. */
-  blockedByCurrency?: Array<{ currencyCode: string; timeEntries: number; parts: number }>;
-}
-import { fetchTicketConfig, activeStatusesByCore, type TicketConfig } from '../../lib/ticketConfigApi';
+import TicketFocusHeader from './TicketFocusHeader';
+import TicketConversation from './TicketConversation';
+import TicketComposerZone from './TicketComposerZone';
+import TicketSituationColumn from './TicketSituationColumn';
+import TicketMoveOrgDialog from './TicketMoveOrgDialog';
+import TicketEndpointLine from './TicketEndpointLine';
+import { useTicketEndpoint } from './useTicketEndpoint';
+import { useTicketAiAssist } from './useTicketAiAssist';
+import { useMergedTicketRefs } from './useMergedTicketRefs';
+import type { TicketType } from './ticketType';
+import type { TicketDetail, TicketStatus, TicketPriority } from './ticketConfig';
+import type { OrgOption, UserOption } from './ticketWorkbenchTypes';
+import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
-import { EntityLink } from '@/components/shared/EntityLink';
 import WispTalkButton from '@/components/wisp/WispTalkButton';
-import { TicketDeviceEditor } from './TicketDeviceEditor';
-
-// ─── TagEditor ───────────────────────────────────────────────────────────────
-
-interface TagEditorProps {
-  value: string[];
-  max?: number;
-  onChange: (tags: string[]) => void;
-  /** Read-only: tags render without the remove buttons or the add input. */
-  disabled?: boolean;
-  'data-testid'?: string;
-}
-
-type TFunction = ReturnType<typeof useTranslation>['t'];
-
-function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPriority, t: TFunction): string {
-  return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketWorkbench.priority.${priority}`);
-}
-
-function TagEditor({ value, max = 20, onChange, disabled = false, 'data-testid': testId }: TagEditorProps) {
-  const { t } = useTranslation('tickets');
-  const [input, setInput] = useState('');
-
-  const addTag = () => {
-    const trimmed = input.trim().slice(0, 50);
-    if (!trimmed || value.includes(trimmed) || value.length >= max) return;
-    onChange([...value, trimmed]);
-    setInput('');
-  };
-
-  return (
-    <div data-testid={testId} className="flex flex-wrap gap-1">
-      {value.map((tag) => (
-        <span key={tag} className="flex items-center gap-0.5 rounded border bg-muted px-1.5 py-0.5 text-xs">
-          {tag}
-          {!disabled && <button
-            type="button"
-            data-testid={`ticket-workbench-tag-remove-${tag}`}
-            className="ml-0.5 hover:text-destructive"
-            onClick={() => onChange(value.filter((t) => t !== tag))}
-            aria-label={t('ticketWorkbench.tags.removeTag', { tag })}
-          >
-            ×
-          </button>}
-        </span>
-      ))}
-      {!disabled && value.length < max && (
-        <input
-          type="text"
-          data-testid="ticket-workbench-tag-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') { e.preventDefault(); addTag(); }
-          }}
-          onBlur={addTag}
-          placeholder={t('ticketWorkbench.tags.addTag')}
-          maxLength={50}
-          className="rounded border bg-background px-1.5 py-0.5 text-xs outline-hidden focus:ring-1 focus:ring-ring"
-          aria-label={t('ticketWorkbench.tags.addTagAria')}
-        />
-      )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 interface Props {
   ticketId: string;
@@ -141,55 +44,46 @@ interface Props {
   // Fired after a successful soft-delete, so a host holding this ticket in its
   // pane (TicketsPage's post-resolve hold, #9564) lets go of it.
   onDeleted?: (id: string) => void;
-  // Fired after this ticket is merged into another (#8972). The split pane
-  // moves its selection to the survivor; without a host (full-page view) the
-  // workbench navigates to the survivor itself.
+  // Fired after this ticket is merged into another (#8972). The queue host
+  // moves its focus to the survivor; without a host the workbench navigates
+  // to the survivor itself.
   onMerged?: (survivorId: string, survivorNumber: string | null) => void;
-  expanded?: boolean;            // full-page mode
+  // Fired once a ticket's detail has loaded (the composer is mounted), so the
+  // host can finish a shortcut that opened the ticket (r / n / e from the queue).
+  onReady?: (id: string) => void;
+  expanded?: boolean;            // standalone full page: names the page, owns the hash, leaves on delete
+  /** Names the browser tab after the ticket (the focus view). Defaults to `expanded`. */
+  namesPage?: boolean;
   resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
+  /** Increments when the page-level `r` / `n` shortcut asks for the composer
+   *  in that mode. Honoured from either tab; ignored (nothing changes) while a
+   *  resolve or pending form holds the composer's place. */
+  composeRequest?: { mode: 'reply' | 'internal'; token: number };
   refreshToken?: number;         // bumped by bulk actions in the queue after they mutate tickets
   // Host-supplied assignee list (TicketsPage already fetches /users for its
   // filter bar). When provided — including null for "picker hidden" — the
   // workbench skips its own /users fetch; undefined keeps the standalone
-  // self-fetch (full-page /tickets/[id] view).
-  assignees?: Array<{ id: string; name: string | null; email: string }> | null;
+  // self-fetch.
+  assignees?: UserOption[] | null;
   categories?: Array<{ id: string; name: string }>;
+  /** Toast "Ticket resolved" on resolve. The queue host passes a function,
+   *  asked once the resolve has landed: false when its next-ticket offer will
+   *  say so instead. */
+  resolveToast?: boolean | ((ticketId: string) => boolean);
 }
 
-const STATUS_OPTIONS: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'];
-const PRIORITY_OPTIONS: TicketPriority[] = ['urgent', 'high', 'normal', 'low'];
+type FocusTab = 'conversation' | 'details';
 
-// Sentinel for the "type a requester manually" choice in the requester editor.
-const MANUAL_REQUESTER = '__manual__';
-
-type TicketTriageSuggestion = {
-  modelVersion: string;
-  confidence: number;
-  priority: TicketPriority | null;
-  categoryId: string | null;
-  categoryName: string | null;
-  reasons: string[];
-};
-
-// P2-4 (#4191), Task 11 — mirrors ActiveTicketDraftRow (ticketService.ts).
-type TicketAiDraft = {
-  id: string;
-  kind: 'reply' | 'resolution_note';
-  content: string;
-  createdAt: string;
-  runId: string | null;
-};
-
-export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, onDeleted, onMerged, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, onDeleted, onMerged, onReady, expanded, namesPage, resolveRequestToken, composeRequest, refreshToken, assignees: assigneesProp, categories = [], resolveToast = true }: Props) {
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   // Bumped when the caller-verification modal reports a change so the header
   // badge re-reads the server's ticket freshness projection.
   const [callerRevision, setCallerRevision] = useState(0);
-  // Only the full-page /tickets/[id] view names the page: the /tickets split
-  // pane embeds this too, and naming there would relabel the list itself.
-  usePageItemName(expanded && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
+  // The focus view and the standalone page name the browser tab; an embedded
+  // preview must not relabel its host page.
+  usePageItemName((namesPage ?? expanded) && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
   useRecordPageContext(ticket ? { kind: 'ticket', id: ticket.id, orgId: ticket.orgId, label: [ticket.internalNumber ?? ticket.id.slice(0, 8), ticket.subject].filter(Boolean).join(' ') } : null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -210,34 +104,17 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     { done: number; total: number; known: boolean } | null
   >(null);
   const [checklistConfirm, setChecklistConfirm] = useState<(() => void) | null>(null);
-  const [railOpen] = useState(true);
-  const [creatingInvoice, setCreatingInvoice] = useState(false);
-  // Multi-currency (#3776): 409 ALL_BLOCKED_BY_CURRENCY groups from the last
-  // create-invoice attempt — each becomes an "assemble in <code>" shortcut.
-  const [invoiceBlocked, setInvoiceBlocked] = useState<BlockedCurrencyGroup[]>([]);
-  const [invoiceMissingRate, setInvoiceMissingRate] = useState<MissingRateEntry[]>([]);
-  // Set on a partial success: the draft that WAS created while rows were left
-  // out. We stay on the ticket so the left-out rows are visible; this links to it.
-  const [partialInvoiceId, setPartialInvoiceId] = useState<string | null>(null);
   const [moveOrgOpen, setMoveOrgOpen] = useState(false);
-  const [moveOrgTargetId, setMoveOrgTargetId] = useState('');
-  // 409 TICKET_MOVE_CURRENCY_BLOCKED details from the last move attempt; the
-  // form stays mounted so this can render, and "move anyway" is gated on an
-  // explicit checkbox (spec §7: bill first, or deliberately accept).
-  const [moveBlocked, setMoveBlocked] = useState<MoveBlockedDetails | null>(null);
-  const [acceptCurrency, setAcceptCurrency] = useState(false);
-  const [moving, setMoving] = useState(false);
+  // What the composer was last asked for (r / n), handed down once the
+  // conversation is the visible tab.
+  const [composerFocus, setComposerFocus] = useState<{ mode: 'reply' | 'internal'; token: number } | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
-  // #8972: a tombstone's survivor number, read from the survivor's own detail
-  // (the tombstone carries only its id). 'missing' = 404/403: the survivor was
-  // deleted or is outside this caller's view, so the banner has no link.
-  const [mergedInto, setMergedInto] = useState<{ id: string; state: 'pending' | 'found' | 'missing'; number?: string } | null>(null);
-  // #8972: display numbers of the tombstones this ticket's moved comments came
-  // from, keyed by mergedFromTicketId. Each id is read once per workbench.
-  const [mergedFromNumbers, setMergedFromNumbers] = useState<Record<string, string>>({});
-  const mergedFromRequested = useRef<Set<string>>(new Set());
+  // Below 1024px the conversation and the situation column are two tabs.
+  const wide = useMediaQuery('(min-width: 1024px)', true);
+  const [focusTab, setFocusTab] = useState<FocusTab>('conversation');
+  const tabRefs = useRef<Record<FocusTab, HTMLButtonElement | null>>({ conversation: null, details: null });
   // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
@@ -248,51 +125,18 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // the write gate for the controls that were tickets:write-gated already.
   const merged = Boolean(ticket?.mergedIntoTicketId);
   const canEdit = canWrite && !merged;
+  // The device's live state, read once for the Details panel and, below
+  // 1024px, the endpoint line under the header.
+  const canReadDevice = can('devices', 'read');
+  const canRemote = can('remote', 'access');
+  const endpoint = useTicketEndpoint(ticket?.deviceId ?? null, canReadDevice);
   // GET /orgs/organizations returns the full org row for partner/system scope,
   // which carries currency_code (wave 1); the parts card needs it for catalog
   // prefill (#3775). Org-scoped callers get a name-only projection → undefined.
-  const [orgs, setOrgs] = useState<Array<{ id: string; name: string; currencyCode?: string }>>([]);
+  const [orgs, setOrgs] = useState<OrgOption[]>([]);
   // Ticket configuration (custom statuses + priority labels). null = not loaded
   // or fetch failed; every render falls back to the static core config.
   const [config, setConfig] = useState<TicketConfig | null>(null);
-  const [editingDescription, setEditingDescription] = useState(false);
-  const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
-  // Subject is a heading at rest; the pencil swaps in an input. `subjectCommittedRef`
-  // makes commit idempotent: Enter commits and leaves edit mode, and the blur that
-  // follows (unmount or explicit) must not PATCH the same value a second time.
-  const [editingSubject, setEditingSubject] = useState(false);
-  const subjectCommittedRef = useRef(false);
-  // Requester editor: picker options (portal users for the org) + edit state.
-  const [requesters, setRequesters] = useState<Array<{ id: string; name: string | null; email: string }>>([]);
-  const [editingRequester, setEditingRequester] = useState(false);
-  const [reqSel, setReqSel] = useState('');
-  const [reqName, setReqName] = useState('');
-  const [reqEmail, setReqEmail] = useState('');
-  const [triageSuggestion, setTriageSuggestion] = useState<TicketTriageSuggestion | null>(null);
-  const [triageLoading, setTriageLoading] = useState(false);
-  const [applyingTriage, setApplyingTriage] = useState(false);
-  const [rejectingTriage, setRejectingTriage] = useState(false);
-
-  // P2-4 (#4191), Task 11 — active AI drafts (at most one `reply` + one
-  // `resolution_note`, per ticket_drafts_active_uq). `draftContent` holds the
-  // per-draft editable textarea value, seeded from the fetched content and
-  // diverging only when the technician edits before sending.
-  const [aiDrafts, setAiDrafts] = useState<TicketAiDraft[]>([]);
-  const [draftContent, setDraftContent] = useState<Record<string, string>>({});
-  const [sendingDraftId, setSendingDraftId] = useState<string | null>(null);
-  const [discardingDraftId, setDiscardingDraftId] = useState<string | null>(null);
-  // Read by openResolveForm via a ref (not a direct closure/dependency) so
-  // that helper's identity stays stable across ai-drafts refetches — see the
-  // comment above openResolveForm for why that stability matters.
-  const aiDraftsRef = useRef<TicketAiDraft[]>([]);
-  // Synced in a LAYOUT effect, not a passive one. openResolveForm reads this
-  // ref from a discrete event handler, and a passive effect is flushed in a
-  // later macrotask than the commit that painted the draft — so a status
-  // change fired in between (RTL's post-waitFor drain vs React's scheduler
-  // under CI load, or a fast user) saw the pre-fetch [] and opened the resolve
-  // form with an empty note. A layout effect runs inside the same commit, so
-  // there is no window in which the DOM shows the draft but the ref lacks it.
-  useLayoutEffect(() => { aiDraftsRef.current = aiDrafts; }, [aiDrafts]);
   // The resolution_note draft (if any) prefilled into the currently-open
   // resolve form; sent back as `aiDraftId` so the server consumes it in the
   // same transaction as the resolve CAS.
@@ -308,7 +152,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const canSavePartnerWideChecklist = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
 
   // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
-  const [fetchedAssignees, setFetchedAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
+  const [fetchedAssignees, setFetchedAssignees] = useState<UserOption[] | null>(null);
   const assigneesProvided = assigneesProp !== undefined;
   const assignees = assigneesProvided ? assigneesProp : fetchedAssignees;
 
@@ -345,6 +189,12 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
 
   useEffect(() => { void load(); }, [load]);
 
+  // The host finishes queue shortcuts (r / n / e) once the composer exists.
+  const loadedId = ticket?.id ?? null;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  useEffect(() => { if (loadedId) onReadyRef.current?.(loadedId); }, [loadedId]);
+
   // Load the partner's canned responses once; failure just leaves the picker hidden.
   useEffect(() => {
     listCannedResponses()
@@ -378,108 +228,22 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     return vars;
   }, [ticket, agentName]);
 
-  useEffect(() => {
-    if (!ticket || ticket.mergedIntoTicketId) {
-      setTriageSuggestion(null);
-      return;
+  // Shared post-mutation path: paint the change locally for instant feedback,
+  // tell the host to patch its queue row, then reconcile in the background. The
+  // controlled selects bind to `ticket.*`, so without the optimistic patch they
+  // snap back to the old value until the reconcile GET lands — the visible lag.
+  const afterMutation = useCallback((optimistic?: Partial<TicketDetail>) => {
+    if (optimistic) {
+      setTicket((t) => (t ? { ...t, ...optimistic } : t));
+      onTicketPatched?.(ticketId, optimistic);
     }
-    let cancelled = false;
-    setTriageLoading(true);
-    void fetchWithAuth(`/tickets/${ticketId}/triage-suggestion`)
-      .then(async (res) => (res.ok ? res.json() : null))
-      .then((body) => {
-        if (cancelled) return;
-        setTriageSuggestion(body?.enabled ? (body.suggestion ?? null) : null);
-      })
-      .catch(() => {
-        if (!cancelled) setTriageSuggestion(null);
-      })
-      .finally(() => {
-        if (!cancelled) setTriageLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [ticket, ticketId]);
+    void load({ background: true });
+    onChanged?.();
+  }, [ticketId, load, onChanged, onTicketPatched]);
 
-  // Loads the (fresh) active-draft list for `forTicketId` from the server —
-  // the shared loader behind both the mount/ticket-change effect below AND
-  // the post-conflict recovery calls in sendAiDraft/discardAiDraft/
-  // submitResolve. Guarded against a ticket switch racing an in-flight fetch
-  // via `ticketIdRef` rather than an effect-local `cancelled` flag, since
-  // this is also called imperatively outside any effect.
-  const ticketIdRef = useRef(ticketId);
-  useEffect(() => { ticketIdRef.current = ticketId; }, [ticketId]);
-
-  const refetchAiDrafts = useCallback(async (forTicketId: string) => {
-    try {
-      const res = await fetchWithAuth(`/tickets/${forTicketId}/ai-drafts`);
-      if (!res.ok) return;
-      const body = await res.json();
-      if (ticketIdRef.current !== forTicketId) return; // ticket switched mid-flight
-      const drafts: TicketAiDraft[] = Array.isArray(body?.data) ? body.data : [];
-      setAiDrafts(drafts);
-      setDraftContent((prev) => {
-        const next = { ...prev };
-        for (const draft of drafts) {
-          if (!(draft.id in next)) next[draft.id] = draft.content;
-        }
-        return next;
-      });
-    } catch {
-      // Best-effort — leave the existing (possibly stale) list rather than
-      // clearing it out from under an in-progress edit on a network blip.
-    }
-  }, []);
-
-  // P2-4 (#4191), Task 11 — active AI drafts, fetched alongside the triage
-  // suggestion above. A draft the API stops returning (sent/discarded/
-  // consumed elsewhere) simply drops out of `aiDrafts` on the next fetch,
-  // which is the only thing the card list renders from.
-  useEffect(() => {
-    if (!ticket || ticket.mergedIntoTicketId) {
-      setAiDrafts([]);
-      setDraftContent({});
-      return;
-    }
-    void refetchAiDrafts(ticketId);
-  }, [ticket, ticketId, refetchAiDrafts]);
-
-  // #4211 (W01) — the newest triage run's ticketProposal, fetched alongside
-  // the AI drafts above. Cleared to null after a successful post (the note
-  // is now on the feed; there's nothing left to "post as me").
-  const [aiProposal, setAiProposal] = useState<{ runId: string; proposal: AiAgentRunTicketProposalDto } | null>(null);
-  const [postingProposal, setPostingProposal] = useState(false);
-
-  const refetchAiProposal = useCallback(async (forTicketId: string) => {
-    // #4211 review: same "best-effort, never clear on failure" contract as
-    // refetchAiDrafts above — the guard against a stale response applies to
-    // EVERY exit path (not just the success one), and a failed fetch/parse
-    // leaves the existing (possibly stale) card rather than nulling it out.
-    // The earlier version nulled aiProposal on !res.ok and on any thrown
-    // error with NO staleness guard on either branch: a slow failing
-    // request for ticket A landing after the technician had already
-    // switched to ticket B would silently wipe B's correctly-loaded,
-    // postable card off the screen.
-    try {
-      const res = await fetchWithAuth(`/tickets/${forTicketId}/ai-proposal`);
-      if (ticketIdRef.current !== forTicketId) return; // ticket switched mid-flight
-      if (!res.ok) return;
-      const body = await res.json();
-      if (ticketIdRef.current !== forTicketId) return; // switched while awaiting .json()
-      setAiProposal(body?.data ?? null);
-    } catch {
-      // Best-effort — leave the existing (possibly stale) card rather than
-      // clearing it out from under an in-progress "post as note" action on
-      // a network blip.
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!ticket || ticket.mergedIntoTicketId) {
-      setAiProposal(null);
-      return;
-    }
-    void refetchAiProposal(ticketId);
-  }, [ticket, ticketId, refetchAiProposal]);
+  const ai = useTicketAiAssist({ ticket, ticketId, afterMutation, resolveDraftId, setResolveDraftId, t });
+  const { aiDraftsRef, setAiDrafts, refetchAiDrafts } = ai;
+  const { mergedInto, mergedFromNumbers } = useMergedTicketRefs(ticket, ticketId);
 
   // Bulk actions in the queue mutate tickets behind the pane's back; the parent
   // bumps refreshToken after a bulk apply so the detail can't go stale. The ref
@@ -497,11 +261,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Reset the inline resolve form when switching tickets — otherwise ticket B
   // could be resolved with ticket A's note (`e` on A, then `j` to B).
   // Dropping the ticket also brings back the first-load skeleton for the new
-  // ticket, unmounting the composer so its draft/mode can't leak across
-  // tickets — same-ticket refreshes keep the tree mounted (see render below).
+  // ticket, unmounting the composer so its mode can't leak across tickets
+  // (its unsent text is kept per ticket, see TicketComposer draftKey).
   useEffect(() => {
     setTicket(null);
-    setEditingSubject(false);
     setResolveOpen(false);
     setResolutionNote('');
     setPendingOpen(null);
@@ -510,80 +273,12 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setResolveDraftId(null);
     setDeleteOpen(false);
     setMergeOpen(false);
-    setMergedInto(null);
-    setMergedFromNumbers({});
-    mergedFromRequested.current = new Set();
+    setMoveOrgOpen(false);
     setChecklistCounts(null);
     setChecklistConfirm(null);
-    // I2 (#4191 final review): without this, ticket A's AI-draft cards (and
-    // any in-progress per-draft edits) stayed visible until the new
-    // ticket's `refetchAiDrafts` call resolved — a stale card could even be
-    // sent/discarded against the wrong ticket. Clear both eagerly here
-    // rather than waiting on the `[ticket, ticketId]` refetch effect.
-    setAiDrafts([]);
-    setDraftContent({});
-    // #4211 (W01) — same stale-card class the comment above describes: clear
-    // eagerly rather than waiting on the `[ticket, ticketId]` refetch effect.
-    setAiProposal(null);
+    setComposerFocus(null);
+    setFocusTab('conversation');
   }, [ticketId]);
-
-  // #8972: resolve the survivor's number for the tombstone banner. Not parsed
-  // from resolutionNote (free text a later edit could change).
-  const mergedIntoTicketId = ticket?.mergedIntoTicketId ?? null;
-  useEffect(() => {
-    if (!mergedIntoTicketId) { setMergedInto(null); return; }
-    let cancelled = false;
-    setMergedInto((prev) => (prev?.id === mergedIntoTicketId ? prev : { id: mergedIntoTicketId, state: 'pending' }));
-    void (async () => {
-      try {
-        const res = await fetchWithAuth(`/tickets/${mergedIntoTicketId}`);
-        if (cancelled) return;
-        if (res.status === 404 || res.status === 403) {
-          setMergedInto({ id: mergedIntoTicketId, state: 'missing' });
-          return;
-        }
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const body = (await res.json()) as { data?: { id: string; internalNumber?: string | null; ticketNumber?: string | null } };
-        if (cancelled) return;
-        setMergedInto({ id: mergedIntoTicketId, state: 'found', number: ticketDisplayNumber(body.data ?? { id: mergedIntoTicketId }) });
-      } catch (err) {
-        // Leave the pending banner (no number, link by id) rather than claim the survivor is gone.
-        if (!cancelled) console.warn('[TicketWorkbench] survivor lookup failed', err);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [mergedIntoTicketId]);
-
-  // #8972: comments moved here by a merge carry the tombstone's id; read each
-  // distinct tombstone once (tombstones stay readable) for the "from T-…" mark.
-  const mergedFromIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const c of ticket?.comments ?? []) if (c.mergedFromTicketId) ids.add(c.mergedFromTicketId);
-    return [...ids].sort().join(',');
-  }, [ticket?.comments]);
-  useEffect(() => {
-    if (!mergedFromIds) return;
-    const pending = mergedFromIds.split(',').filter((id) => !mergedFromRequested.current.has(id));
-    if (pending.length === 0) return;
-    for (const id of pending) mergedFromRequested.current.add(id);
-    const forTicketId = ticketId;
-    for (const id of pending) {
-      void fetchWithAuth(`/tickets/${id}`)
-        .then(async (res) => {
-          if (!res.ok) {
-            console.warn(`[TicketWorkbench] merged-from lookup ${id} answered ${res.status}`);
-            return null;
-          }
-          return (await res.json()) as { data?: { id: string; internalNumber?: string | null; ticketNumber?: string | null } };
-        })
-        .then((body) => {
-          if (!body?.data || ticketIdRef.current !== forTicketId) return;
-          const number = ticketDisplayNumber(body.data);
-          setMergedFromNumbers((prev) => ({ ...prev, [id]: number }));
-        })
-        .catch((err) => { console.warn('[TicketWorkbench] merged-from lookup failed', err); });
-    }
-  }, [mergedFromIds, ticketId]);
 
   // Opens the resolve form and, when an active `resolution_note` AI draft
   // exists, prefills the note field from it and remembers its id so
@@ -594,17 +289,48 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // effect below would re-fire and reopen the form on every refetch.
   const openResolveForm = useCallback(() => {
     setResolveOpen(true);
+    // The resolve form lives in the conversation's composer zone.
+    setFocusTab('conversation');
     const draft = aiDraftsRef.current.find((d) => d.kind === 'resolution_note');
     setResolveDraftId(draft ? draft.id : null);
     if (draft) {
       setResolutionNote((prev) => (prev.trim() ? prev : draft.content));
     }
-  }, []);
+  }, [aiDraftsRef]);
 
-  // Page-level `e` shortcut: open the inline resolve form (UI brief: `e` opens the resolution-note form)
+  // Page-level `e` shortcut: open the inline resolve form (UI brief: `e` opens
+  // the resolution-note form). The token a fresh workbench mounts with is an
+  // old press (a previous ticket's `e`), never a new request.
+  const mountResolveToken = useRef(resolveRequestToken);
   useEffect(() => {
-    if (resolveRequestToken) openResolveForm();
+    if (resolveRequestToken && resolveRequestToken !== mountResolveToken.current) openResolveForm();
   }, [resolveRequestToken, openResolveForm]);
+
+  // However the form opened (`e`, or Resolved in the status select), the note
+  // is the next thing to type: move focus there instead of leaving it on the
+  // page body. A repeat `e` while the form is open refocuses it.
+  const resolveNoteRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (resolveOpen) resolveNoteRef.current?.focus();
+  }, [resolveOpen, resolveRequestToken, loadedId]);
+
+  // Page-level `r` / `n`: the composer, in that mode, from either tab. As with
+  // `e`, the token a workbench mounts with is an old press. While a resolve or
+  // pending form holds the composer's place the key does nothing: closing the
+  // form would drop what was typed there, and flipping the hidden composer's
+  // mode behind it would surface later as a surprise.
+  const mountComposeToken = useRef(composeRequest?.token);
+  const formOpenNow = resolveOpen || pendingOpen !== null;
+  const formOpenRef = useRef(formOpenNow);
+  formOpenRef.current = formOpenNow;
+  const composeToken = composeRequest?.token;
+  const composeMode = composeRequest?.mode;
+  useEffect(() => {
+    if (!composeToken || !composeMode || composeToken === mountComposeToken.current) return;
+    if (formOpenRef.current) return;
+    setFocusTab('conversation');
+    setComposerFocus({ mode: composeMode, token: composeToken });
+  }, [composeToken, composeMode]);
 
   // Fetch assignees once; degrade gracefully if the endpoint is unavailable.
   // Skipped entirely when the host already supplies the list via the prop.
@@ -617,7 +343,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         if (cancelled || !body) return;
         const rows = Array.isArray(body) ? body : (body as { data?: unknown }).data;
         if (Array.isArray(rows))
-          setFetchedAssignees((rows as Array<{ id: string; name: string | null; email: string }>).filter((u) => u.id));
+          setFetchedAssignees((rows as UserOption[]).filter((u) => u.id));
       })
       .catch(() => { /* degraded mode keeps the unassign-only affordance */ });
     return () => { cancelled = true; };
@@ -627,8 +353,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // the picker just won't show any options (degrade to empty select).
   useEffect(() => {
     let cancelled = false;
-    type OrgRow = { id: string; name: string; currencyCode?: string };
-    void fetchAllOrganizationsFrom<OrgRow>('/orgs/organizations')
+    void fetchAllOrganizationsFrom<OrgOption>('/orgs/organizations')
       .then((rows) => {
         if (cancelled) return;
         setOrgs(rows.filter((o) => o.id && o.name));
@@ -636,23 +361,6 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       .catch(() => { /* degrade gracefully */ });
     return () => { cancelled = true; };
   }, []);
-
-  // Requester options track the ticket's org (a portal user is org-scoped).
-  // Failure degrades the editor to free-text only.
-  useEffect(() => {
-    const orgId = ticket?.orgId;
-    if (!orgId) return;
-    let cancelled = false;
-    void fetchWithAuth(`/tickets/requesters?orgId=${orgId}`)
-      .then(async (r) => (r.ok ? r.json() : null))
-      .then((body) => {
-        if (cancelled || !body) return;
-        const rows = (body as { data?: Array<{ id: string; name: string | null; email: string }> }).data;
-        if (Array.isArray(rows)) setRequesters(rows.filter((u) => u.id));
-      })
-      .catch(() => { /* free-text fallback */ });
-    return () => { cancelled = true; };
-  }, [ticket?.orgId]);
 
   // Fetch ticket config once (module-cached across islands). Failure leaves
   // config null, which keeps the six-core-status fallback select fully working.
@@ -670,45 +378,6 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     const unsubBilling = onBillingChanged(() => void load());
     return () => { unsubTimer(); unsubBilling(); };
   }, [load]);
-
-  // Shared post-mutation path: paint the change locally for instant feedback,
-  // tell the host to patch its queue row, then reconcile in the background. The
-  // controlled selects bind to `ticket.*`, so without the optimistic patch they
-  // snap back to the old value until the reconcile GET lands — the visible lag.
-  const afterMutation = useCallback((optimistic?: Partial<TicketDetail>) => {
-    if (optimistic) {
-      setTicket((t) => (t ? { ...t, ...optimistic } : t));
-      onTicketPatched?.(ticketId, optimistic);
-    }
-    void load({ background: true });
-    onChanged?.();
-  }, [ticketId, load, onChanged, onTicketPatched]);
-
-  // #4211 (W01) — "Post as private note": posts aiProposal's summary as an
-  // internal note under the calling technician's own identity, then clears
-  // the card (the note is now on the feed; nothing left to post).
-  const postAiProposalNote = useCallback(async (content: string) => {
-    if (!aiProposal || postingProposal) return;
-    setPostingProposal(true);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/tickets/${ticketId}/ai-proposal/post-note`, {
-          method: 'POST',
-          body: JSON.stringify({ runId: aiProposal.runId, content })
-        }),
-        errorFallback: t('ticketWorkbench.aiProposal.postFailed'),
-        successMessage: t('ticketWorkbench.aiProposal.posted'),
-        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-      });
-      setAiProposal(null);
-      // The post created a new private note — refresh the feed.
-      afterMutation();
-    } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
-    } finally {
-      setPostingProposal(false);
-    }
-  }, [afterMutation, aiProposal, postingProposal, ticketId, t]);
 
   // Returns true on success, false on a swallowed ActionError — callers with
   // form state (resolve/pending) must only close/clear when the POST landed.
@@ -734,106 +403,33 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     }
   }, [ticketId, afterMutation]);
 
-  // Assemble a draft invoice from this ticket's billable work, then jump to it.
-  // `currencyCode` is the explicit old-currency path (#3776): the endpoint is
-  // body-less, so the override travels as a query param.
-  const createInvoice = useCallback(async (currencyCode?: string) => {
-    if (creatingInvoice) return;
-    setCreatingInvoice(true);
-    setInvoiceBlocked([]);
-    setInvoiceMissingRate([]);
-    setPartialInvoiceId(null);
-    const path = currencyCode
-      ? `/tickets/${ticketId}/invoice?currencyCode=${encodeURIComponent(currencyCode)}`
-      : `/tickets/${ticketId}/invoice`;
-    try {
-      const result = await runAction<AssembleInvoiceResponse>({
-        request: () => fetchWithAuth(path, { method: 'POST' }),
-        errorFallback: t('ticketWorkbench.invoice.createFailed'),
-        successMessage: t('ticketWorkbench.invoice.created'),
-        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-      });
-      const newId = result?.data?.invoice?.id;
-      const blocked = result?.data?.blockedByCurrency ?? [];
-      const missing = result?.data?.missingRate ?? [];
-      // Entries inside a block-hours window are held until the block period closes (#4547).
-      const held = result?.data?.heldForHourBlock;
-      if (held && held.count > 0) {
-        showToast({ type: 'warning', message: t('ticketWorkbench.invoice.heldForHourBlock', { count: held.count, hours: Number(Number(held.hours).toFixed(2)) }) });
-      }
-      if (blocked.length === 0 && missing.length === 0) {
-        if (newId) void navigateTo(`/billing/invoices/${newId}`);
-        return;
-      }
-      // Partial success (review #3): the draft exists, but rows in another
-      // currency and/or without a rate were left out. Navigating now would hide
-      // that — stay here, show the same recovery controls as the all-blocked
-      // path, and link to the draft instead.
-      setInvoiceBlocked(blocked);
-      setInvoiceMissingRate(missing);
-      setPartialInvoiceId(newId ?? null);
-    } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
-      // Already toasted by runAction; offer the per-currency shortcuts and
-      // list the rate-less entries. ALL_BLOCKED_BY_CURRENCY details also carry
-      // missingRate; ALL_MISSING_RATE carries only missingRate.
-      if (err.code === 'ALL_BLOCKED_BY_CURRENCY' || err.code === 'ALL_MISSING_RATE') {
-        const details = (err.body as { details?: { blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[] } } | undefined)?.details;
-        setInvoiceBlocked(details?.blockedByCurrency ?? []);
-        setInvoiceMissingRate(details?.missingRate ?? []);
-      }
-      if (err.code === 'NOTHING_TO_INVOICE') {
-        // runAction already toasted the server's message; add WHY when the work is merely held for a block.
-        const held = (err.body as { details?: { heldForHourBlock?: { count: number; hours: number } } } | undefined)?.details?.heldForHourBlock;
-        if (held && held.count > 0) {
-          showToast({ type: 'warning', message: t('ticketWorkbench.invoice.heldForHourBlock', { count: held.count, hours: Number(Number(held.hours).toFixed(2)) }) });
-        }
-      }
-    } finally {
-      setCreatingInvoice(false);
-    }
-  }, [ticketId, creatingInvoice, t]);
+  // Generic field PATCH — saves any { subject } / { description } / etc. patch.
+  // afterMutation with the optimistic patch paints the change locally and
+  // reconciles in the background.
+  const patchTicket = useCallback((patch: Record<string, unknown>, errorFallback: string) => {
+    void runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+      errorFallback,
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    }).then(() => afterMutation(patch as Partial<TicketDetail>)).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  }, [ticketId, afterMutation]);
+  const handleFieldSave = useCallback((patch: Record<string, unknown>) => patchTicket(patch, t('ticketWorkbench.toast.updateFailed')), [patchTicket, t]);
+  const onPriorityChange = useCallback((priority: TicketPriority) => patchTicket({ priority }, t('ticketWorkbench.toast.priorityUpdateFailed')), [patchTicket, t]);
+  const onTypeChange = useCallback((ticketType: TicketType) => patchTicket({ ticketType }, t('ticketWorkbench.toast.typeUpdateFailed')), [patchTicket, t]);
+  const onCategoryChange = useCallback((categoryId: string | null) => patchTicket({ categoryId }, t('ticketWorkbench.toast.categoryUpdateFailed')), [patchTicket, t]);
 
-  // Returns true on success so the caller decides whether to close the form.
-  // A 409 TICKET_MOVE_CURRENCY_BLOCKED keeps it open with guidance; every other
-  // ActionError was already toasted by runAction.
-  const handleMoveOrg = useCallback(async (
-    targetOrgId: string,
-    opts: { acceptCurrencyMismatch?: boolean } = {}
-  ): Promise<boolean> => {
-    setMoving(true);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/tickets/${ticketId}/move-org`, {
-          method: 'POST',
-          body: JSON.stringify({ orgId: targetOrgId, ...(opts.acceptCurrencyMismatch ? { acceptCurrencyMismatch: true } : {}) })
-        }),
-        errorFallback: t('ticketWorkbench.move.failed'),
-        // APPROVAL_REQUEST_PENDING: a request is waiting on the customer (#8196).
-        friendly: approvalFriendly(t),
-        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-      });
-      setMoveBlocked(null);
-      setAcceptCurrency(false);
-      void load({ background: true });
-      return true;
-    } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
-      if (err.code === 'TICKET_MOVE_CURRENCY_BLOCKED') {
-        const details = (err.body as { details?: MoveBlockedDetails } | undefined)?.details;
-        if (details) setMoveBlocked(details);
-      }
-      return false;
-    } finally {
-      setMoving(false);
-    }
-  }, [ticketId, load, t]);
+  const onAssign = useCallback((next: string | null) => {
+    if (!ticket || next === (ticket.assignedTo ?? null)) return; // no-op guard: never write a bogus feed entry
+    const picked = next ? assignees?.find((u) => u.id === next) : null;
+    void mutate('/assign', { assigneeId: next }, next ? t('ticketWorkbench.toast.assigned') : t('ticketWorkbench.toast.unassigned'), t('ticketWorkbench.toast.assignFailed'), {
+      assignedTo: next,
+      assigneeName: picked ? (picked.name || picked.email) : null
+    });
+  }, [ticket, assignees, mutate, t]);
 
   // Soft-delete this ticket (tickets:manage). Confirm-gated by the ConfirmDialog
-  // below. On success the ticket leaves every queue: in full-page mode we
-  // navigate back to the queue; in the split pane we lean on onChanged (the same
-  // reconcile hook status changes use) — the list refetch drops the deleted row,
-  // and the host re-selects a live ticket.
+  // below. On success the ticket leaves every queue: the standalone page goes
+  // back to the queue; a queue host hears onDeleted and returns to its board.
   const handleDelete = useCallback(async () => {
     if (deleting) return;
     setDeleting(true);
@@ -855,127 +451,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     }
   }, [deleting, ticketId, onChanged, onDeleted, expanded, t]);
 
-  // The dialog already toasted "Merged into T-…". The split-pane host moves
-  // its selection to the survivor; standalone, go to the survivor's page.
+  // The dialog already toasted "Merged into T-…". The queue host moves its
+  // focus to the survivor; standalone, go to the survivor's page.
   const handleMerged = useCallback((survivor: { id: string; internalNumber: string | null }) => {
     setMergeOpen(false);
     if (onMerged) onMerged(survivor.id, survivor.internalNumber);
     else void navigateTo(`/tickets/${survivor.id}`);
   }, [onMerged]);
-
-  const applyTriageSuggestion = useCallback(async () => {
-    if (!triageSuggestion || applyingTriage) return;
-    const body: Partial<Pick<TicketDetail, 'categoryId' | 'priority'>> = {};
-    if (triageSuggestion.categoryId !== null) body.categoryId = triageSuggestion.categoryId;
-    if (triageSuggestion.priority !== null) body.priority = triageSuggestion.priority;
-    if (Object.keys(body).length === 0) return;
-
-    setApplyingTriage(true);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/tickets/${ticketId}/triage-suggestion/apply`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        }),
-        errorFallback: t('ticketWorkbench.triage.applyFailed'),
-        successMessage: t('ticketWorkbench.triage.applied'),
-        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-      });
-      setTriageSuggestion(null);
-      afterMutation(body);
-    } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
-    } finally {
-      setApplyingTriage(false);
-    }
-  }, [afterMutation, applyingTriage, ticketId, triageSuggestion, t]);
-
-  const rejectTriageSuggestion = useCallback(async () => {
-    if (!triageSuggestion || rejectingTriage) return;
-    setRejectingTriage(true);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/tickets/${ticketId}/triage-suggestion/reject`, {
-          method: 'POST',
-          body: JSON.stringify({}),
-        }),
-        errorFallback: t('ticketWorkbench.triage.feedbackFailed'),
-        successMessage: t('ticketWorkbench.triage.feedbackSaved'),
-        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-      });
-      setTriageSuggestion(null);
-    } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
-    } finally {
-      setRejectingTriage(false);
-    }
-  }, [rejectingTriage, ticketId, triageSuggestion, t]);
-
-  // "Send as me" — posts the (possibly technician-edited) draft content as a
-  // PUBLIC comment under the calling technician's own identity. Reply drafts
-  // only; the API 409s a resolution_note draft here (it's consumed only via
-  // the resolve flow's aiDraftId, below).
-  const sendAiDraft = useCallback(async (draft: TicketAiDraft) => {
-    // Scoped to this draft's own id — each draft card is an independent
-    // operation (#4469). Guarding on "any in-flight action" blocked acting on
-    // one card while the other was mid-request, even though the button
-    // itself wasn't visually disabled.
-    if (sendingDraftId === draft.id || discardingDraftId === draft.id) return;
-    const content = (draftContent[draft.id] ?? draft.content).trim();
-    if (!content) return;
-    setSendingDraftId(draft.id);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/tickets/${ticketId}/ai-drafts/${draft.id}/send`, {
-          method: 'POST',
-          body: JSON.stringify({ content }),
-        }),
-        errorFallback: t('ticketWorkbench.aiDraft.sendFailed'),
-        successMessage: t('ticketWorkbench.aiDraft.sent'),
-        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-      });
-      setAiDrafts((prev) => prev.filter((d) => d.id !== draft.id));
-      // The send created a new public comment — refresh the feed.
-      afterMutation();
-    } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
-      // A non-401 failure (typically a 409 — someone else already sent or
-      // discarded this exact draft) would otherwise leave the card mounted
-      // and interactive on stale local state, looping the same 409 on every
-      // retry. Refetch the real active-draft list so a now-gone draft's
-      // card actually disappears.
-      if (err.status !== 401) void refetchAiDrafts(ticketId);
-    } finally {
-      setSendingDraftId(null);
-    }
-  }, [afterMutation, discardingDraftId, draftContent, refetchAiDrafts, sendingDraftId, ticketId, t]);
-
-  // Discards a draft (either kind) without acting on it.
-  const discardAiDraft = useCallback(async (draft: TicketAiDraft) => {
-    // Scoped to this draft's own id — see sendAiDraft above (#4469).
-    if (sendingDraftId === draft.id || discardingDraftId === draft.id) return;
-    setDiscardingDraftId(draft.id);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/tickets/${ticketId}/ai-drafts/${draft.id}/discard`, { method: 'POST' }),
-        errorFallback: t('ticketWorkbench.aiDraft.discardFailed'),
-        successMessage: t('ticketWorkbench.aiDraft.discarded'),
-        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-      });
-      setAiDrafts((prev) => prev.filter((d) => d.id !== draft.id));
-      if (resolveDraftId === draft.id) setResolveDraftId(null);
-    } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
-      // Same stale-card recovery as sendAiDraft — a non-401 failure here is
-      // typically a 409 (already sent/discarded/consumed elsewhere).
-      if (err.status !== 401) {
-        void refetchAiDrafts(ticketId);
-        if (resolveDraftId === draft.id) setResolveDraftId(null);
-      }
-    } finally {
-      setDiscardingDraftId(null);
-    }
-  }, [discardingDraftId, refetchAiDrafts, resolveDraftId, sendingDraftId, ticketId, t]);
 
   // Checklist soft-confirm (#5808 W01 Task 12): a client-side NUDGE only — no
   // server-side refusal, and completion never triggers anything on its own.
@@ -996,7 +478,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const proceedStatusChange = useCallback(async (status: TicketStatus) => {
     setPendingStatusId(null);
     if (status === 'resolved') { openResolveForm(); return; }
-    if (status === 'pending' || status === 'on_hold') { setPendingOpen(status); return; }
+    if (status === 'pending' || status === 'on_hold') { setPendingOpen(status); setFocusTab('conversation'); return; }
     // Core path clears any custom-status decoration the row may have carried.
     await mutate('/status', { status }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status, statusName: null, statusColor: null });
   }, [mutate, openResolveForm, t]);
@@ -1004,6 +486,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const onStatusChange = useCallback((status: TicketStatus) => {
     if (needsChecklistConfirm(status)) {
       setChecklistConfirm(() => () => void proceedStatusChange(status));
+      setFocusTab('conversation');
       return;
     }
     void proceedStatusChange(status);
@@ -1019,6 +502,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     if (row.coreStatus === 'pending' || row.coreStatus === 'on_hold') {
       setPendingStatusId(statusId);
       setPendingOpen(row.coreStatus);
+      setFocusTab('conversation');
       return;
     }
     setPendingStatusId(null);
@@ -1029,6 +513,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     const row = config?.statuses.find((s) => s.id === statusId);
     if (row && needsChecklistConfirm(row.coreStatus)) {
       setChecklistConfirm(() => () => void proceedCustomStatusChange(statusId));
+      setFocusTab('conversation');
       return;
     }
     void proceedCustomStatusChange(statusId);
@@ -1047,7 +532,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       await runAction({
         request: () => fetchWithAuth(`/tickets/${ticketId}/status`, { method: 'POST', body: JSON.stringify(body) }),
         errorFallback: t('ticketWorkbench.toast.resolveFailed'),
-        successMessage: t('ticketWorkbench.toast.ticketResolved'),
+        // Asked once the POST has landed: the host knows by then whether its
+        // next-ticket offer will say "resolved" instead.
+        successMessage: () => ((typeof resolveToast === 'function' ? resolveToast(ticketId) : resolveToast) ? t('ticketWorkbench.toast.ticketResolved') : ''),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
     } catch (err) {
@@ -1056,10 +543,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       // resolution-note draft is no longer valid — consumed/discarded
       // elsewhere (409), OR its id is stale after a ticket switch reset it
       // out from under this submit (404, I1 #4191 final review: matches the
-      // sibling send/discard recovery condition below, not just 409, so a
-      // 404 doesn't loop forever). Drop the now-dead id (and refetch the
-      // draft list, so its card disappears too) so the technician's next
-      // submit — the typed note stays put — POSTs without it.
+      // sibling send/discard recovery condition, not just 409, so a 404
+      // doesn't loop forever). Drop the now-dead id (and refetch the draft
+      // list, so its card disappears too) so the technician's next submit —
+      // the typed note stays put — POSTs without it.
       if (err.status !== 401 && resolveDraftId) {
         setResolveDraftId(null);
         void refetchAiDrafts(ticketId);
@@ -1082,7 +569,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setResolutionNote('');
     setPendingStatusId(null);
     setResolveDraftId(null);
-  }, [afterMutation, config, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
+  }, [afterMutation, config, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, resolveToast, setAiDrafts, t, ticketId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
@@ -1098,8 +585,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   /**
    * W08 #3902 — one file per call. The body is FormData, so fetchWithAuth
    * deliberately leaves Content-Type unset and the browser supplies the
-   * multipart boundary. runAction surfaces 413/415/429/503 as a toast; the
-   * composer turns the rejection into a retryable chip.
+   * multipart boundary. A permanent refusal (415 type, 413 size, empty file)
+   * is not toasted here: the composer drops the chip and names the file. A
+   * transient failure (network, 429, 5xx) is toasted by runAction and the
+   * composer keeps it as a retryable chip.
    */
   const uploadAttachment = useCallback(async (file: File): Promise<{ id: string }> => {
     const form = new FormData();
@@ -1107,6 +596,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     const res = await runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/attachments`, { method: 'POST', body: form }),
       errorFallback: t('ticketWorkbench.toast.attachmentFailed'),
+      // The composer explains a permanent refusal itself (localized, names the file).
+      suppressErrorToast: (status, code) => permanentAttachmentRejection(status, code) !== null,
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     });
     const id = (res as { data?: { id?: string } } | undefined)?.data?.id;
@@ -1125,52 +616,6 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     afterMutation();
   }, [ticketId, afterMutation, t]);
 
-  // Generic field PATCH — saves any { subject } / { description } / etc. patch.
-  // afterMutation with the optimistic patch paints the change locally and
-  // reconciles in the background (same pattern as priority/category PATCHes).
-  const handleFieldSave = useCallback((patch: Record<string, unknown>) => {
-    void runAction({
-      request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
-      errorFallback: t('ticketWorkbench.toast.updateFailed'),
-      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-    }).then(() => afterMutation(patch as Partial<TicketDetail>)).catch((err) => { if (!(err instanceof ActionError)) throw err; });
-  }, [ticketId, afterMutation, t]);
-
-  const openRequesterEditor = useCallback(() => {
-    if (!ticket) return;
-    setReqSel(ticket.submittedBy ?? ((ticket.submitterName || ticket.submitterEmail) ? MANUAL_REQUESTER : ''));
-    setReqName(ticket.submitterName ?? '');
-    setReqEmail(ticket.submitterEmail ?? '');
-    setEditingRequester(true);
-  }, [ticket]);
-
-  const saveRequester = useCallback(() => {
-    if (!ticket) return;
-    let patch: Record<string, unknown>;
-    if (reqSel && reqSel !== MANUAL_REQUESTER) {
-      // Picked a portal user — send its name/email too so the local optimistic
-      // patch shows the new requester immediately (the API backfills the same).
-      const opt = requesters.find((r) => r.id === reqSel);
-      patch = { submittedBy: reqSel, submitterName: opt?.name ?? null, submitterEmail: opt?.email ?? null };
-    } else if (reqSel === MANUAL_REQUESTER) {
-      patch = { submittedBy: null, submitterName: reqName.trim() || null, submitterEmail: reqEmail.trim() || null };
-    } else {
-      patch = { submittedBy: null, submitterName: null, submitterEmail: null };
-    }
-    // Dirty check (#3258 W03). An emailed ticket has no portal login, so the
-    // editor opens on "someone else" with the snapshot pre-filled — opening it
-    // and saving without touching anything sent a full requester PATCH. That
-    // is not a cosmetic no-op: the API treats a requester edit as a statement
-    // about WHO the requester is, and the customer's own ticket disappeared
-    // from their portal. Send nothing when nothing changed.
-    const unchanged =
-      patch.submittedBy === (ticket.submittedBy ?? null) &&
-      patch.submitterName === (ticket.submitterName ?? null) &&
-      patch.submitterEmail === (ticket.submitterEmail ?? null);
-    if (!unchanged) handleFieldSave(patch);
-    setEditingRequester(false);
-  }, [ticket, reqSel, reqName, reqEmail, requesters, handleFieldSave]);
-
   const handleEditComment = useCallback((commentId: string, content: string) => {
     void runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
@@ -1187,9 +632,17 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
   }, [ticketId, load, t]);
 
+  const onTabKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const next: FocusTab = e.key === 'Home' ? 'conversation' : e.key === 'End' ? 'details' : focusTab === 'conversation' ? 'details' : 'conversation';
+    setFocusTab(next);
+    tabRefs.current[next]?.focus();
+  };
+
   // Skeleton only on the first load of a ticket. Refreshes (send, status
   // change, refreshToken bump) keep the tree mounted so composer state —
-  // the public/internal tab in particular — survives; aria-busy marks them.
+  // the public/internal mode in particular — survives; aria-busy marks them.
   if (loading && !ticket) {
     return <div className="p-6 animate-pulse space-y-3" data-testid="ticket-workbench-loading">
       <div className="h-5 w-2/3 rounded bg-muted" /><div className="h-4 w-1/3 rounded bg-muted/60" /><div className="h-40 rounded bg-muted/40" />
@@ -1219,32 +672,25 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // While the resolve/pending inline confirmation form is open, keep the
   // select showing the status the user just picked instead of snapping back
   // to ticket.status — otherwise the control reads as though the click did
-  // nothing (paper cut: it fired no request and visibly reverted). Reverts
-  // to the real status only when the form is cancelled (both cancel buttons
-  // clear pendingOpen/pendingStatusId).
+  // nothing. Reverts to the real status only when the form is cancelled.
   const pendingDisplayStatus: TicketStatus | null = pendingOpen ?? (resolveOpen ? 'resolved' : null);
-  const headerStatusColor = ticket.statusColor ?? config?.statuses.find((s) => s.id === selectedStatusId)?.color ?? null;
-  const suggestedCategoryName = triageSuggestion?.categoryId
-    ? (categories.find((category) => category.id === triageSuggestion.categoryId)?.name ?? triageSuggestion.categoryName ?? t('ticketWorkbench.triage.suggestedCategory'))
+  // Config path: the row the open form will post. The `e` shortcut opens the
+  // resolve form without a pendingStatusId (it posts {status:'resolved'}), so
+  // show that core state's system row rather than the ticket's old status.
+  const pendingDisplayStatusId = pendingDisplayStatus
+    ? pendingStatusId ?? config?.statuses.find((s) => s.coreStatus === pendingDisplayStatus && s.isSystem)?.id ?? null
     : null;
-  const triageReasons = triageSuggestion?.reasons.filter((reason) => reason.trim().length > 0) ?? [];
+  const statusValue = config ? (pendingDisplayStatusId ?? selectedStatusId ?? '') : (pendingDisplayStatus ?? ticket.status);
+  const headerStatusColor = ticket.statusColor ?? config?.statuses.find((s) => s.id === selectedStatusId)?.color ?? null;
   const mergedDate = ticket.mergedAt ? formatDateTime(ticket.mergedAt) : t('common:states.unknown');
-
-  const commitSubject = (raw: string) => {
-    if (subjectCommittedRef.current) return;
-    subjectCommittedRef.current = true;
-    setEditingSubject(false);
-    const next = raw.trim();
-    if (!next || next === ticket.subject) return;
-    handleFieldSave({ subject: next });
-  };
-  const cancelSubjectEdit = () => {
-    subjectCommittedRef.current = true;
-    setEditingSubject(false);
-  };
+  const closed = ticket.status === 'resolved' || ticket.status === 'closed';
+  const showTabs = !wide;
+  const askAi = <WispTalkButton kind="ticket" id={ticket.id} orgId={ticket.orgId} label={ticket.subject} size="sm" />;
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading || undefined}>
+    // Below 640px the whole view scrolls: the header goes away with the thread,
+    // while the tab bar (sticky top) and the composer (sticky bottom) stay.
+    <div className="flex h-full min-h-0 flex-col max-sm:overflow-y-auto" data-testid="ticket-workbench" aria-busy={loading || undefined}>
       {merged && ticket.mergedIntoTicketId && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-primary/30 bg-primary/10 px-4 py-2 text-sm" role="status" data-testid="ticket-merged-banner">
           <span>
@@ -1255,849 +701,169 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 : t('ticketWorkbench.mergedBanner.pending', { date: mergedDate })}
           </span>
           {mergedInto?.state !== 'missing' && (
-            <a href={`/tickets/${ticket.mergedIntoTicketId}`} className="font-medium text-primary hover:underline" data-testid="ticket-merged-banner-link">
+            <a href={`/tickets/${ticket.mergedIntoTicketId}`} className="font-medium text-primary-ink hover:underline" data-testid="ticket-merged-banner-link">
               {t('ticketWorkbench.mergedBanner.open', { number: mergedInto?.number ?? ticket.mergedIntoTicketId.slice(0, 8) })}
             </a>
           )}
+          {/* A tombstone has no composer, so Ask AI stays reachable here. */}
+          <span className="ml-auto">{askAi}</span>
         </div>
       )}
-      {/* Header */}
-      <div className="border-b px-4 py-3">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-sm text-muted-foreground" data-testid="ticket-workbench-number">{ticket.internalNumber ?? ticket.id.slice(0, 8)}</span>
-          {editingSubject ? (
-            <input
-              type="text"
-              defaultValue={ticket.subject}
-              autoFocus
-              className="-my-0.5 min-w-0 flex-1 rounded-md border bg-background px-1.5 py-0.5 text-lg font-semibold outline-hidden focus:ring-1 focus:ring-ring"
-              data-testid="ticket-workbench-subject-edit"
-              aria-label={t('ticketWorkbench.ticketSubject')}
-              onFocus={(e) => e.currentTarget.select()}
-              onBlur={(e) => commitSubject(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  commitSubject(e.currentTarget.value);
-                } else if (e.key === 'Escape') {
-                  e.preventDefault();
-                  cancelSubjectEdit();
-                }
-              }}
-            />
-          ) : (
-            <>
-              <h2 className="min-w-0 truncate text-lg font-semibold" title={ticket.subject} data-testid="ticket-workbench-subject">
-                {ticket.subject}
-              </h2>
-              {canEdit && (
-                <button
-                  type="button"
-                  onClick={() => { subjectCommittedRef.current = false; setEditingSubject(true); }}
-                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
-                  aria-label={t('ticketWorkbench.subjectEditButton')}
-                  title={t('ticketWorkbench.subjectEditButton')}
-                  data-testid="ticket-workbench-subject-edit-btn"
-                >
-                  <Pencil className="h-4 w-4" aria-hidden="true" />
-                </button>
-              )}
-            </>
+      <TicketFocusHeader
+        ticket={ticket}
+        config={config}
+        assignees={assignees}
+        merged={merged}
+        canEdit={canEdit}
+        canManage={canManage}
+        statusValue={statusValue}
+        statusColor={headerStatusColor}
+        onStatusChange={onStatusChange}
+        onCustomStatusChange={onCustomStatusChange}
+        onPriorityChange={onPriorityChange}
+        onAssign={onAssign}
+        onSubjectSave={(subject) => handleFieldSave({ subject })}
+        onOpenMove={() => setMoveOrgOpen(true)}
+        onOpenMerge={() => setMergeOpen(true)}
+        onOpenDelete={() => setDeleteOpen(true)}
+        metaExtra={showTabs && ticket.deviceId ? (
+          <TicketEndpointLine
+            deviceId={ticket.deviceId}
+            deviceHostname={ticket.deviceHostname}
+            endpoint={endpoint}
+            canRemote={canRemote}
+            onOpenDetails={() => setFocusTab('details')}
+          />
+        ) : undefined}
+      />
+      {(ticket.pendingReason || (closed && ticket.resolutionNote)) && (
+        <div className="space-y-0.5 border-b bg-muted/40 px-4 py-1.5 text-xs">
+          {ticket.pendingReason && (
+            <p data-testid="ticket-workbench-waiting-on"><span className="text-muted-foreground">{t('ticketWorkbench.waitingOn')}:</span> {ticket.pendingReason}</p>
           )}
-          {!expanded && (
-            <a href={`/tickets/${ticket.id}`} className="ml-auto rounded p-1 text-muted-foreground hover:text-foreground" title={t('ticketWorkbench.openFullPage')} data-testid="ticket-workbench-expand">
-              <ExternalLink className="h-4 w-4" />
-            </a>
+          {closed && ticket.resolutionNote && (
+            <p data-testid="ticket-workbench-resolution"><span className="text-muted-foreground">{t('ticketWorkbench.resolution')}:</span> {ticket.resolutionNote}</p>
           )}
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName ?? ''} tone="muted" />
-          {ticket.deviceHostname && (
-            <>
-              <span>·</span>
-              <EntityLink kind="device" id={ticket.deviceId ?? ''} name={ticket.deviceHostname} tone="muted" />
-            </>
-          )}
-          {ticket.requesterContactId && !merged && (
-            // Both render nothing (and fetch nothing) unless the server's
-            // caller-verification flag is on.
-            <>
-              <TicketVerificationBadge orgId={ticket.orgId} ticketId={ticket.id} revision={callerRevision} />
-              <CallerVerificationEntry
-                orgId={ticket.orgId}
-                initialContactId={ticket.requesterContactId}
-                lockContact
-                ticketId={ticket.id}
-                // Deep-linkable on the full page only: in the /tickets split
-                // pane the queue owns the hash (selected ticket, sort, type),
-                // and writing ours there made it jump to the first row.
-                hash={expanded ? 'caller-verification' : undefined}
-                onChanged={() => { setCallerRevision((r) => r + 1); void load({ background: true }); }}
-              />
-            </>
-          )}
-          {/* Renders nothing unless the Operator flag is on and the org can run offboarding. */}
-          <OffboardPersonLauncher orgId={ticket.orgId} source="ticket" contactId={ticket.requesterContactId ?? null} personHint={ticket.submitterEmail ?? null} label={ticket.submitterName ?? ticket.submitterEmail ?? null} />
-          {/* Same gate, onboarding recipe. The requester pre-fills the new hire's MANAGER, never the new hire. */}
-          <OnboardPersonLauncher orgId={ticket.orgId} source="ticket" requesterContactId={ticket.requesterContactId ?? null} requesterLabel={ticket.submitterName ?? ticket.submitterEmail ?? null} />
-          {slaState(ticket).kind !== 'none' && (
-            // SlaChip renders nothing for no-SLA tickets — the separator must follow suit.
-            <>
-              <span>·</span>
-              <SlaChip ticket={ticket} />
-            </>
-          )}
+      )}
+      {showTabs && (
+        <div role="tablist" aria-label={t('ticketFocus.sections')} className="flex shrink-0 gap-1 border-b bg-background px-4 max-sm:sticky max-sm:top-0 max-sm:z-20" data-testid="ticket-workbench-tabs">
+          {(['conversation', 'details'] as const).map((id) => (
+            <button
+              key={id}
+              ref={(el) => { tabRefs.current[id] = el; }}
+              type="button"
+              role="tab"
+              id={`ticket-tab-${id}`}
+              aria-selected={focusTab === id}
+              aria-controls={`ticket-panel-${id}`}
+              tabIndex={focusTab === id ? 0 : -1}
+              onClick={() => setFocusTab(id)}
+              onKeyDown={onTabKeyDown}
+              data-testid={`ticket-workbench-tab-${id}`}
+              className={cn(
+                '-mb-px min-h-10 border-b-2 px-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring',
+                focusTab === id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {t(/* i18n-dynamic */ `ticketFocus.tabs.${id}`)}
+            </button>
+          ))}
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          {config ? (
-            // Config path: optgroup per core state with the active custom statuses
-            // (option value = row id). The selected value is the row matching the
-            // ticket's custom status name within its core state, falling back to
-            // the system row for that core state.
-            <select
-              value={pendingDisplayStatus ? (pendingStatusId ?? selectedStatusId ?? '') : (selectedStatusId ?? '')}
-              onChange={(e) => void onCustomStatusChange(e.target.value)}
-              disabled={merged}
-              className={cn('rounded-md border border-l-4 px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
-              style={headerStatusColor ? { borderLeftColor: headerStatusColor } : undefined}
-              data-testid="ticket-workbench-status"
-              aria-label={t('common:labels.status')}
-            >
-              {activeStatusesByCore(config).map(({ coreStatus, statuses }) =>
-                statuses.length > 0 ? (
-                  <optgroup key={coreStatus} label={t(/* i18n-dynamic */ `ticketWorkbench.status.${coreStatus}`)}>
-                    {statuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </optgroup>
-                ) : null
-              )}
-            </select>
-          ) : (
-            <select
-              value={pendingDisplayStatus ?? ticket.status}
-              onChange={(e) => void onStatusChange(e.target.value as TicketStatus)}
-              disabled={merged}
-              className={cn('rounded-md border px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
-              data-testid="ticket-workbench-status"
-              aria-label={t('common:labels.status')}
-            >
-              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{t(/* i18n-dynamic */ `ticketWorkbench.status.${s}`)}</option>)}
-            </select>
-          )}
-          {canEdit ? (
-            <select
-              value={ticket.ticketType ?? 'incident'}
-              onChange={(e) => {
-                const ticketType = e.target.value;
-                if (!isTicketType(ticketType) || ticketType === (ticket.ticketType ?? 'incident')) return;
-                void runAction({
-                  request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ ticketType }) }),
-                  errorFallback: t('ticketWorkbench.toast.typeUpdateFailed'),
-                  onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-                }).then(() => afterMutation({ ticketType })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
-              }}
-              className="rounded-md border bg-background px-2 py-1 text-xs font-medium text-foreground"
-              data-testid="ticket-workbench-type"
-              aria-label={t('ticketWorkbench.typeLabel')}
-            >
-              {TICKET_TYPE_ORDER.map((type) => (
-                <option key={type} value={type}>{t(/* i18n-dynamic */ ticketTypeLabelKey(type))}</option>
-              ))}
-            </select>
-          ) : (
-            <TicketTypeChip type={ticket.ticketType} testId="ticket-workbench-type-chip" />
-          )}
-          <select
-            value={ticket.priority}
-            onChange={(e) => {
-              const priority = e.target.value as TicketPriority;
-              void runAction({
-                request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ priority }) }),
-                errorFallback: t('ticketWorkbench.toast.priorityUpdateFailed'),
-                onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-              }).then(() => afterMutation({ priority })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
-            }}
-            className={cn('rounded-md border px-2 py-1 text-xs font-medium', priorityConfig[ticket.priority].color)}
-            disabled={merged}
-            data-testid="ticket-workbench-priority"
-            aria-label={t('ticketWorkbench.priorityLabel')}
-          >
-            {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{translatedPriorityLabel(config, p, t)}</option>)}
-          </select>
-          {categories.length > 0 && (
-            <select
-              value={ticket.categoryId ?? ''}
-              onChange={(e) => {
-                const categoryId = e.target.value || null;
-                if (categoryId === (ticket.categoryId ?? null)) return;
-                void runAction({
-                  request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ categoryId }) }),
-                  errorFallback: t('ticketWorkbench.toast.categoryUpdateFailed'),
-                  onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-                }).then(() => afterMutation({ categoryId })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
-              }}
-              className="max-w-[180px] rounded-md border bg-background px-2 py-1 text-xs text-foreground"
-              disabled={merged}
-              data-testid="ticket-workbench-category"
-              aria-label={t('ticketWorkbench.categoryLabel')}
-            >
-              <option value="">{t('ticketWorkbench.noCategory')}</option>
-              {ticket.categoryId && !categories.some((category) => category.id === ticket.categoryId) && (
-                <option value={ticket.categoryId}>{t('ticketWorkbench.currentCategory')}</option>
-              )}
-              {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-            </select>
-          )}
-          {assignees !== null ? (
-            <select
-              value={ticket.assignedTo ?? ''}
-              onChange={(e) => {
-                const next = e.target.value || null;
-                if (next === (ticket.assignedTo ?? null)) return; // no-op guard: never write a bogus feed entry
-                const picked = next ? assignees?.find((u) => u.id === next) : null;
-                void mutate('/assign', { assigneeId: next }, next ? t('ticketWorkbench.toast.assigned') : t('ticketWorkbench.toast.unassigned'), t('ticketWorkbench.toast.assignFailed'), {
-                  assignedTo: next,
-                  assigneeName: picked ? (picked.name || picked.email) : null
-                });
-              }}
-              className="max-w-[180px] rounded-md border bg-background px-2 py-1 text-xs text-foreground"
-              disabled={merged}
-              data-testid="ticket-workbench-assignee"
-              aria-label={t('ticketWorkbench.assignee')}
-            >
-              <option value="">{t('ticketWorkbench.unassigned')}</option>
-              {ticket.assignedTo && !assignees.some((u) => u.id === ticket.assignedTo) && (
-                // Assignee exists but is RLS-invisible to this caller (partner staff seen
-                // from org scope) — show a redacted label instead of pretending unassigned.
-                <option value={ticket.assignedTo}>{ticket.assigneeName ?? t('ticketWorkbench.mspStaff')}</option>
-              )}
-              {assignees.map((u) => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
-            </select>
-          ) : ticket.assignedTo ? (
-            <button
-              type="button"
-              onClick={() => void mutate('/assign', { assigneeId: null }, t('ticketWorkbench.toast.unassigned'), t('ticketWorkbench.toast.assignFailed'), { assignedTo: null, assigneeName: null })}
-              className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-              disabled={merged}
-              data-testid="ticket-workbench-unassign"
-            >
-              {t('ticketWorkbench.assigneeValue', { assignee: ticket.assigneeName ?? t('ticketWorkbench.mspStaff') })}
-            </button>
-          ) : (
-            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground" data-testid="ticket-workbench-unassigned">{t('ticketWorkbench.unassigned')}</span>
-          )}
-          {!merged && (
-            <>
-              <button
-                type="button"
-                onClick={() => void createInvoice()}
-                disabled={creatingInvoice}
-                className="ml-auto rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-                data-testid="ticket-workbench-create-invoice"
-              >
-                {creatingInvoice ? t('ticketWorkbench.invoice.creating') : t('ticketWorkbench.invoice.create')}
-              </button>
-              <button
-                type="button"
-                data-testid="ticket-workbench-move-org"
-                className="text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => { setMoveOrgOpen(true); setMoveOrgTargetId(''); }}
-              >
-                {t('ticketWorkbench.move.open')}
-              </button>
-            </>
-          )}
-          {canEdit && (
-            <button
-              type="button"
-              data-testid="ticket-merge-open"
-              className="text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => setMergeOpen(true)}
-            >
-              {t('ticketWorkbench.merge.open')}
-            </button>
-          )}
-          {canManage && !merged && (
-            <button
-              type="button"
-              data-testid="ticket-delete-button"
-              className="text-xs text-destructive hover:underline"
-              onClick={() => setDeleteOpen(true)}
-            >
-              {t('common:actions.delete')}
-            </button>
-          )}
-          <WispTalkButton kind="ticket" id={ticket.id} orgId={ticket.orgId} label={ticket.subject} size="sm" />
-        </div>
-        {!merged && (invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
-          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-testid="ticket-invoice-blocked" role="status">
-            {partialInvoiceId ? (
-              <p>
-                {t('ticketWorkbench.invoice.partialLeftOut')}{' '}
-                <a href={`/billing/invoices/${partialInvoiceId}`} className="font-medium underline" data-testid="ticket-invoice-open-draft">
-                  {t('ticketWorkbench.invoice.openDraft')}
-                </a>
-              </p>
-            ) : invoiceBlocked.length > 0 ? (
-              <p>{t('ticketWorkbench.invoice.allBlockedByCurrency')}</p>
-            ) : (
-              <p>{t('ticketWorkbench.invoice.allMissingRate')}</p>
-            )}
-            {invoiceBlocked.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-2">
-                {invoiceBlocked.map((g) => (
-                  <button
-                    key={g.currencyCode}
-                    type="button"
-                    disabled={creatingInvoice}
-                    onClick={() => void createInvoice(g.currencyCode)}
-                    data-testid={`ticket-assemble-in-${g.currencyCode}`}
-                    className="rounded-md border bg-background px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-                  >
-                    {t('ticketWorkbench.invoice.assembleIn', { code: g.currencyCode, count: g.count, amount: formatMoney(g.amount, g.currencyCode) })}
-                  </button>
-                ))}
-              </div>
-            )}
-            {invoiceMissingRate.length > 0 && (
-              <div className="mt-1.5" data-testid="ticket-invoice-missing-rate">
-                <p className="font-medium">{t('ticketWorkbench.invoice.missingRateHeading')}</p>
-                <ul className="mt-1 list-disc pl-4">
-                  {invoiceMissingRate.map((m) => (
-                    <li key={m.timeEntryId} data-testid={`ticket-invoice-missing-rate-${m.timeEntryId}`}>
-                      {t('ticketWorkbench.invoice.missingRateEntry', { description: m.description, hours: m.hours })}
-                    </li>
-                  ))}
-                </ul>
-                <a href="/timesheet" className="mt-1 inline-block font-medium underline" data-testid="ticket-invoice-set-rate">
-                  {t('ticketWorkbench.invoice.setRate')}
-                </a>
-              </div>
-            )}
-          </div>
-        )}
-        {moveOrgOpen && !merged && (
-          <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-move-org-form">
-            <label className="text-xs font-medium" htmlFor="move-org-select">{t('ticketWorkbench.move.label')}</label>
-            <select
-              id="move-org-select"
-              data-testid="ticket-workbench-move-org-select"
-              value={moveOrgTargetId}
-              onChange={(e) => { setMoveOrgTargetId(e.target.value); setMoveBlocked(null); setAcceptCurrency(false); }}
-              className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-xs"
-            >
-              <option value="">{t('ticketWorkbench.move.selectOrganization')}</option>
-              {orgs.filter((o) => o.id !== ticket.orgId).map((o) => (
-                <option key={o.id} value={o.id}>{o.name}</option>
-              ))}
-            </select>
-            {moveBlocked && (
-              <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" role="status">
-                <p data-testid="ticket-move-blocked-currency">
-                  {t('ticketWorkbench.move.blockedCurrency', {
-                    timeCount: moveBlocked.unbilledTimeEntries,
-                    partCount: moveBlocked.unbilledParts,
-                    sourceCurrency: moveBlocked.sourceCurrency,
-                    targetCurrency: moveBlocked.targetCurrency,
-                    targetOrg: orgs.find((o) => o.id === moveOrgTargetId)?.name ?? moveOrgTargetId,
-                  })}
-                </p>
-                <label className="mt-1.5 flex items-start gap-2">
-                  <input
-                    type="checkbox"
-                    data-testid="ticket-move-accept-currency"
-                    checked={acceptCurrency}
-                    onChange={(e) => setAcceptCurrency(e.target.checked)}
-                    className="mt-0.5"
-                  />
-                  <span>{t('ticketWorkbench.move.acceptCurrency', { sourceCurrency: moveBlocked.sourceCurrency })}</span>
-                </label>
-              </div>
-            )}
-            <div className="mt-1.5 flex justify-end gap-2">
-              <button
-                type="button"
-                data-testid="ticket-workbench-move-org-cancel"
-                onClick={() => { setMoveOrgOpen(false); setMoveBlocked(null); setAcceptCurrency(false); }}
-                className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
-              >
-                {t('common:actions.cancel')}
-              </button>
-              <button
-                type="button"
-                data-testid="ticket-workbench-move-org-confirm"
-                disabled={!moveOrgTargetId || moving}
-                onClick={() => {
-                  if (!moveOrgTargetId) return;
-                  // Close only on success — the 409 guidance renders inside this form.
-                  void handleMoveOrg(moveOrgTargetId).then((ok) => { if (ok) setMoveOrgOpen(false); });
-                }}
-                className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-              >
-                {t('ticketWorkbench.move.confirm')}
-              </button>
-              {moveBlocked && (
-                <button
-                  type="button"
-                  data-testid="ticket-workbench-move-org-accept"
-                  disabled={!acceptCurrency || moving || !moveOrgTargetId}
-                  onClick={() => {
-                    if (!moveOrgTargetId) return;
-                    void handleMoveOrg(moveOrgTargetId, { acceptCurrencyMismatch: true }).then((ok) => { if (ok) setMoveOrgOpen(false); });
-                  }}
-                  className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-50"
-                >
-                  {t('ticketWorkbench.move.moveAnyway')}
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-        {!merged && (triageSuggestion || triageLoading) && (
-          <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-triage-suggestion">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5 text-xs font-medium">
-                  <Sparkles className="h-3.5 w-3.5 text-primary" />
-                  {t('ticketWorkbench.triage.title')}
-                </div>
-                {triageLoading ? (
-                  <p className="mt-1 text-xs text-muted-foreground">{t('ticketWorkbench.triage.checking')}</p>
-                ) : triageSuggestion ? (
-                  <>
-                    <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-                      {triageSuggestion.priority && <span>{t('ticketWorkbench.triage.priority', { priority: translatedPriorityLabel(config, triageSuggestion.priority, t) })}</span>}
-                      {suggestedCategoryName && <span>{t('ticketWorkbench.triage.category', { category: suggestedCategoryName })}</span>}
-                      <span>{t('ticketWorkbench.triage.confidence', { percent: Math.round(triageSuggestion.confidence * 100) })}</span>
-                    </div>
-                    {triageReasons.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1.5" data-testid="ticket-triage-reasons">
-                        {triageReasons.map((reason) => (
-                          <span
-                            key={reason}
-                            className="rounded border bg-background px-1.5 py-0.5 text-xs text-muted-foreground"
-                          >
-                            {reason}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                ) : null}
-              </div>
-              {triageSuggestion && (
-                <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void rejectTriageSuggestion()}
-                    disabled={applyingTriage || rejectingTriage}
-                    className="inline-flex items-center justify-center rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
-                    data-testid="ticket-triage-reject"
-                  >
-                    {rejectingTriage ? t('common:states.saving') : t('ticketWorkbench.triage.notRight')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void applyTriageSuggestion()}
-                    disabled={applyingTriage || rejectingTriage}
-                    className="inline-flex items-center justify-center rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
-                    data-testid="ticket-triage-apply"
-                  >
-                    {applyingTriage ? t('ticketWorkbench.triage.applying') : t('common:actions.apply')}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-        {!merged && aiProposal && (
-          <div className="mt-2">
-            <TicketProposalCard
-              proposal={aiProposal.proposal}
-              t={t}
-              onPostNote={postAiProposalNote}
-              posting={postingProposal}
-            />
-          </div>
-        )}
-        {!merged && aiDrafts.map((draft) => (
-          // At most one `reply` + one `resolution_note` draft can be active
-          // at once (ticket_drafts_active_uq) — testids are keyed per kind
-          // (not per draft id) so both cards are independently addressable.
-          <div key={draft.id} className="mt-2 rounded-md border bg-muted/30 p-2" data-testid={`ticket-ai-draft-${draft.kind}`}>
-            <div className="flex items-center gap-1.5 text-xs font-medium">
-              <Sparkles className="h-3.5 w-3.5 text-primary" />
-              {draft.kind === 'reply' ? t('ticketWorkbench.aiDraft.kindReply') : t('ticketWorkbench.aiDraft.kindResolutionNote')}
-            </div>
-            <textarea
-              value={draftContent[draft.id] ?? draft.content}
-              onChange={(e) => setDraftContent((prev) => ({ ...prev, [draft.id]: e.target.value }))}
-              rows={3}
-              className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
-              data-testid={`ticket-ai-draft-${draft.kind}-content`}
-            />
-            <div className="mt-1.5 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => void discardAiDraft(draft)}
-                disabled={sendingDraftId === draft.id || discardingDraftId === draft.id}
-                className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-                data-testid={`ticket-ai-draft-${draft.kind}-discard`}
-              >
-                {discardingDraftId === draft.id ? t('common:states.saving') : t('ticketWorkbench.aiDraft.discard')}
-              </button>
-              {draft.kind === 'reply' && (
-                <button
-                  type="button"
-                  onClick={() => void sendAiDraft(draft)}
-                  disabled={sendingDraftId === draft.id || discardingDraftId === draft.id || !(draftContent[draft.id] ?? draft.content).trim()}
-                  className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-                  data-testid={`ticket-ai-draft-${draft.kind}-send`}
-                >
-                  {sendingDraftId === draft.id ? t('ticketWorkbench.aiDraft.sending') : t('ticketWorkbench.aiDraft.sendAsMe')}
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-        {resolveOpen && !merged && (
-          <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-resolve-form">
-            <label className="text-xs font-medium" htmlFor="resolve-note">{t('ticketWorkbench.resolve.noteLabel')}</label>
-            <textarea
-              id="resolve-note"
-              value={resolutionNote}
-              onChange={(e) => setResolutionNote(e.target.value)}
-              rows={2}
-              className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
-              data-testid="ticket-workbench-resolve-note"
-            />
-            <div className="mt-1.5 flex justify-end gap-2">
-              <button type="button" onClick={() => { setResolveOpen(false); setPendingStatusId(null); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">{t('common:actions.cancel')}</button>
-              <button
-                type="button"
-                onClick={() => void submitResolve()}
-                disabled={!resolutionNote.trim()}
-                className="rounded-md bg-success px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-                data-testid="ticket-workbench-resolve-submit"
-              >
-                {t('ticketWorkbench.resolve.submit')}
-              </button>
-            </div>
-          </div>
-        )}
-        {pendingOpen && !merged && (
-          <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-pending-form">
-            <label className="text-xs font-medium" htmlFor="pending-reason">{t('ticketWorkbench.pending.reasonLabel')}</label>
-            <textarea
-              id="pending-reason"
-              value={pendingReason}
-              onChange={(e) => setPendingReason(e.target.value)}
-              rows={2}
-              maxLength={500}
-              className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
-              data-testid="ticket-workbench-pending-reason"
-            />
-            <div className="mt-1.5 flex justify-end gap-2">
-              <button type="button" onClick={() => { setPendingOpen(null); setPendingReason(''); setPendingStatusId(null); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">{t('common:actions.cancel')}</button>
-              <button
-                type="button"
-                onClick={() => void submitPending()}
-                className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white"
-                data-testid="ticket-workbench-pending-submit"
-              >
-                {pendingOpen === 'pending' ? t('ticketWorkbench.pending.setPending') : t('ticketWorkbench.pending.putOnHold')}
-              </button>
-            </div>
-          </div>
-        )}
-        {checklistConfirm && checklistCounts && (
-          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2" data-testid="ticket-checklist-resolve-confirm">
-            <p className="text-xs font-medium">{t('checklists:resolveConfirm.title')}</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {checklistCounts.known
-                ? t('checklists:resolveConfirm.body', {
-                    count: checklistCounts.total - checklistCounts.done,
-                    total: checklistCounts.total,
-                  })
-                : /* The counts are unknown because the checklist failed to load —
-                     say that rather than claiming "0 of 0 steps are unticked". */
-                  t('checklists:errors.loadFailed')}
-            </p>
-            <div className="mt-1.5 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setChecklistConfirm(null)}
-                className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
-                data-testid="ticket-checklist-resolve-confirm-cancel"
-              >
-                {t('checklists:resolveConfirm.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={() => { const run = checklistConfirm; setChecklistConfirm(null); run(); }}
-                className="rounded-md bg-warning px-2 py-1 text-xs font-medium text-warning-foreground"
-                data-testid="ticket-checklist-resolve-confirm-accept"
-              >
-                {t('checklists:resolveConfirm.confirm')}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      )}
 
-      {/* Body: feed + rail */}
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <div className="border-b p-4">
-              {editingDescription && !merged ? (
-                <div className="space-y-2">
-                  <textarea
-                    ref={descriptionTextareaRef}
-                    className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
-                    rows={4}
-                    defaultValue={ticket.description ?? ''}
-                    data-testid="ticket-workbench-description-textarea"
-                    autoFocus
-                  />
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setEditingDescription(false)}
-                      className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
-                      data-testid="ticket-workbench-description-cancel-btn"
-                    >
-                      {t('common:actions.cancel')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = descriptionTextareaRef.current?.value ?? '';
-                        handleFieldSave({ description: next });
-                        setEditingDescription(false);
-                      }}
-                      className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white"
-                      data-testid="ticket-workbench-description-save-btn"
-                    >
-                      {t('common:actions.save')}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="group flex items-start gap-2">
-                  {ticket.description ? (
-                    <p className="flex-1 whitespace-pre-wrap text-sm">{ticket.description}</p>
-                  ) : (
-                    <p className="flex-1 text-sm text-muted-foreground italic">{t('ticketWorkbench.description.empty')}</p>
-                  )}
-                  {!merged && <button
-                    type="button"
-                    onClick={() => { setEditingDescription(true); }}
-                    className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
-                    data-testid="ticket-workbench-description-edit-btn"
-                  >
-                    {ticket.description ? t('common:actions.edit') : t('ticketWorkbench.description.add')}
-                  </button>}
-                </div>
-              )}
-            </div>
-            <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} canSavePartnerWide={canSavePartnerWideChecklist} readOnly={merged} />
-            <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canEdit} />
-            <TicketFeed
-              ticketId={ticket.id}
-              comments={ticket.comments}
-              onEditComment={merged ? undefined : handleEditComment}
-              onDeleteComment={merged ? undefined : handleDeleteComment}
-              canManageComment={(c) => !merged && !c.portalUserId}
+      <div className="flex min-h-0 flex-1 max-sm:shrink-0 max-sm:grow max-sm:basis-auto">
+        <div
+          id="ticket-panel-conversation"
+          role={showTabs ? 'tabpanel' : undefined}
+          aria-labelledby={showTabs ? 'ticket-tab-conversation' : undefined}
+          hidden={showTabs && focusTab !== 'conversation'}
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
+          data-testid="ticket-workbench-conversation"
+        >
+          <div className="min-h-0 flex-1 overflow-y-auto max-sm:overflow-visible max-sm:basis-auto">
+            <TicketConversation
+              ticket={ticket}
+              merged={merged}
+              onSaveDescription={(description) => handleFieldSave({ description })}
+              onEditComment={handleEditComment}
+              onDeleteComment={handleDeleteComment}
+              canManageAnyComment={canManage}
               mergedFromNumbers={mergedFromNumbers}
             />
           </div>
-          {merged ? (
-            <p className="border-t bg-muted/30 px-4 py-3 text-sm text-muted-foreground" data-testid="ticket-merged-readonly">
-              {t('ticketWorkbench.mergedBanner.readOnly')}
-            </p>
-          ) : (
-            <TicketComposer
-              requesterName={ticket.submitterName}
-              onSend={sendComment}
-              onUploadAttachment={uploadAttachment}
-              templates={cannedTemplates}
-              templateVars={templateVars}
-            />
-          )}
+          <TicketComposerZone
+            ticket={ticket}
+            merged={merged}
+            config={config}
+            categories={categories}
+            ai={ai}
+            resolve={{
+              open: resolveOpen,
+              note: resolutionNote,
+              setNote: setResolutionNote,
+              noteRef: resolveNoteRef,
+              onCancel: () => { setResolveOpen(false); setPendingStatusId(null); },
+              onSubmit: () => void submitResolve(),
+            }}
+            pending={{
+              open: pendingOpen,
+              reason: pendingReason,
+              setReason: setPendingReason,
+              onCancel: () => { setPendingOpen(null); setPendingReason(''); setPendingStatusId(null); },
+              onSubmit: () => void submitPending(),
+            }}
+            checklistConfirm={checklistConfirm}
+            checklistCounts={checklistCounts}
+            onChecklistConfirmCancel={() => setChecklistConfirm(null)}
+            onChecklistConfirmAccept={() => { const run = checklistConfirm; setChecklistConfirm(null); run?.(); }}
+            onSend={sendComment}
+            onUploadAttachment={uploadAttachment}
+            templates={cannedTemplates}
+            templateVars={templateVars}
+            toolbarExtra={askAi}
+            composerFocus={composerFocus}
+          />
         </div>
-        {railOpen && (
-          <aside className="w-64 shrink-0 overflow-y-auto border-l p-3 text-sm hidden lg:block" data-testid="ticket-workbench-rail">
-            <div className="space-y-3">
-              {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
-              <SlaTimers ticket={ticket} />
-              {/* #10073: time, budget and part writes on a tombstone all answer
-                  409 TICKET_MERGED, so the cards below go read-only and this
-                  says why, pointing at the ticket that took the work. */}
-              {merged && ticket.mergedIntoTicketId && (
-                <div className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1.5 text-xs" role="note" data-testid="ticket-rail-merged-readonly">
-                  <p>{t('ticketWorkbench.mergedBanner.railReadOnly')}</p>
-                  {mergedInto?.state !== 'missing' && (
-                    <a href={`/tickets/${ticket.mergedIntoTicketId}`} className="mt-0.5 inline-block font-medium text-primary hover:underline" data-testid="ticket-rail-merged-link">
-                      {t('ticketWorkbench.mergedBanner.open', { number: mergedInto?.number ?? ticket.mergedIntoTicketId.slice(0, 8) })}
-                    </a>
-                  )}
-                </div>
-              )}
-              <TicketTimeBilling ticketId={ticket.id} readOnly={merged} />
-              <TicketApprovalRail ticketId={ticket.id} readOnly={merged} />
-              <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} readOnly={merged} />
-              <dl className="space-y-3">
-                <div>
-                  <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.requester.label')}</dt>
-                  <dd>
-                    {editingRequester && !merged ? (
-                      <div className="space-y-2">
-                        <select
-                          value={reqSel}
-                          onChange={(e) => setReqSel(e.target.value)}
-                          className="w-full rounded-md border bg-background px-2 py-1 text-xs"
-                          data-testid="ticket-workbench-requester-select"
-                          aria-label={t('ticketWorkbench.requester.label')}
-                        >
-                          <option value="">{t('common:states.unknown')}</option>
-                          {requesters.map((r) => (
-                            <option key={r.id} value={r.id}>{r.name ? `${r.name} (${r.email})` : r.email}</option>
-                          ))}
-                          <option value={MANUAL_REQUESTER}>{t('ticketWorkbench.requester.someoneElse')}</option>
-                        </select>
-                        {reqSel === MANUAL_REQUESTER && (
-                          <div className="space-y-1">
-                            <input
-                              value={reqName}
-                              onChange={(e) => setReqName(e.target.value)}
-                              maxLength={255}
-                              placeholder={t('common:labels.name')}
-                              aria-label={t('ticketWorkbench.requester.nameAria')}
-                              className="w-full rounded-md border bg-background px-2 py-1 text-xs"
-                              data-testid="ticket-workbench-requester-name"
-                            />
-                            <input
-                              type="email"
-                              value={reqEmail}
-                              onChange={(e) => setReqEmail(e.target.value)}
-                              maxLength={255}
-                              placeholder={t('ticketWorkbench.requester.emailPlaceholder')}
-                              aria-label={t('ticketWorkbench.requester.emailAria')}
-                              className="w-full rounded-md border bg-background px-2 py-1 text-xs"
-                              data-testid="ticket-workbench-requester-email"
-                            />
-                          </div>
-                        )}
-                        <div className="flex justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setEditingRequester(false)}
-                            className="rounded-md border px-2 py-0.5 text-xs hover:bg-muted"
-                            data-testid="ticket-workbench-requester-cancel"
-                          >
-                            {t('common:actions.cancel')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={saveRequester}
-                            className="rounded-md bg-primary px-2 py-0.5 text-xs font-medium text-white"
-                            data-testid="ticket-workbench-requester-save"
-                          >
-                            {t('common:actions.save')}
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="group flex items-start gap-2">
-                        <span className="flex-1" data-testid="ticket-workbench-requester">
-                          {ticket.submitterName ?? ticket.submitterEmail ?? t('common:states.unknown')}
-                        </span>
-                        {!merged && <button
-                          type="button"
-                          onClick={openRequesterEditor}
-                          className="shrink-0 rounded px-1 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
-                          data-testid="ticket-workbench-requester-edit"
-                        >
-                          {t('common:actions.edit')}
-                        </button>}
-                      </div>
-                    )}
-                  </dd>
-                </div>
-                <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.source')}</dt><dd className="capitalize">{ticket.source}</dd></div>
-                <div><dt className="text-xs text-muted-foreground">{t('common:labels.createdAt')}</dt><dd>{formatDateTime(ticket.createdAt)}</dd></div>
-                <div>
-                  <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.dueDate')}</dt>
-                  <dd>
-                    <input
-                      type="date"
-                      data-testid="ticket-workbench-due"
-                      aria-label={t('ticketWorkbench.dueDate')}
-                      value={ticket.dueDate ? ticket.dueDate.slice(0, 10) : ''}
-                      onChange={(e) => handleFieldSave({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
-                      disabled={merged}
-                      className="rounded-md border bg-background px-2 py-1 text-xs"
-                    />
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.tags.label')}</dt>
-                  <dd>
-                    <TagEditor
-                      data-testid="ticket-workbench-tags"
-                      value={ticket.tags ?? []}
-                      max={20}
-                      disabled={merged}
-                      onChange={(tags) => handleFieldSave({ tags })}
-                    />
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-muted-foreground">{t('common:labels.device')}</dt>
-                  <dd>
-                    <div data-testid="ticket-workbench-device" className="flex items-center gap-2 text-xs">
-                      {ticket.deviceId ? (
-                        <a
-                          href={`/devices/${ticket.deviceId}`}
-                          className="text-primary hover:underline"
-                          data-testid="ticket-workbench-device-link"
-                        >
-                          {ticket.deviceHostname ?? ticket.deviceId}
-                        </a>
-                      ) : (
-                        <span>{t('ticketWorkbench.device.none')}</span>
-                      )}
-                    </div>
-                    {!merged && <TicketDeviceEditor
-                      orgId={ticket.orgId}
-                      hasDevice={!!ticket.deviceId}
-                      hasAssignee={!!ticket.assignedTo}
-                      onSelect={(deviceId) => handleFieldSave({ deviceId })}
-                      onUnlink={() => handleFieldSave({ deviceId: null })}
-                    />}
-                  </dd>
-                </div>
-                {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.waitingOn')}</dt><dd>{ticket.pendingReason}</dd></div>}
-                {ticket.resolutionNote && (ticket.status === 'resolved' || ticket.status === 'closed') && (
-                  <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.resolution')}</dt><dd>{ticket.resolutionNote}</dd></div>
-                )}
-                <div>
-                  <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.linkedAlerts')}</dt>
-                  <dd className="space-y-1">
-                    {ticket.alertLinks.length === 0 && <span className="text-muted-foreground">{t('common:labels.none')}</span>}
-                    {ticket.alertLinks.map((l) => (
-                      <a key={l.id} href={`/alerts#${l.alertId}`} className="block truncate hover:underline" data-testid={`ticket-alert-link-${l.alertId}`}>
-                        {l.alertTitle ?? l.alertId}
-                      </a>
-                    ))}
-                  </dd>
-                </div>
-              </dl>
-            </div>
-          </aside>
-        )}
+        <aside
+          id="ticket-panel-details"
+          role={showTabs ? 'tabpanel' : undefined}
+          aria-labelledby={showTabs ? 'ticket-tab-details' : undefined}
+          aria-label={showTabs ? undefined : t('ticketFocus.tabs.details')}
+          hidden={showTabs && focusTab !== 'details'}
+          className={cn('min-h-0 overflow-y-auto max-sm:overflow-visible', showTabs ? 'w-full' : 'w-[360px] shrink-0 border-l')}
+          data-testid="ticket-workbench-rail"
+        >
+          <TicketSituationColumn
+            ticket={ticket}
+            merged={merged}
+            canEdit={canEdit}
+            mergedInto={mergedInto}
+            categories={categories}
+            currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode}
+            callerRevision={callerRevision}
+            // Deep-linkable on the standalone page only: in the queue host the
+            // page owns the hash (focused ticket, sort, type).
+            verificationHash={expanded ? 'caller-verification' : undefined}
+            onCallerChanged={() => { setCallerRevision((r) => r + 1); void load({ background: true }); }}
+            onFieldSave={handleFieldSave}
+            onTypeChange={onTypeChange}
+            onCategoryChange={onCategoryChange}
+            onChecklistCounts={setChecklistCounts}
+            canSavePartnerWideChecklist={canSavePartnerWideChecklist}
+            endpoint={endpoint}
+          />
+        </aside>
       </div>
 
+      <TicketMoveOrgDialog
+        open={moveOrgOpen && !merged}
+        onClose={() => setMoveOrgOpen(false)}
+        ticketId={ticket.id}
+        currentOrgId={ticket.orgId}
+        orgs={orgs}
+        onMoved={() => void load({ background: true })}
+      />
       {canEdit && mergeOpen && (
         <MergeTicketDialog
           key={ticket.id}

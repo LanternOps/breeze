@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/topologycanon"
 )
@@ -655,5 +656,144 @@ func TestLocalCaptureWirelessCountIgnoresWiredSameUplink_Spec7(t *testing.T) {
 	got, ok := WirelessClientCounts(res, []string{loadLocalCapture(t).APID})
 	if !ok || got["ap-e7-local"] != 1 {
 		t.Fatalf("counts = %v ok=%v (1 WIRELESS + 1 WIRED on the same uplink)", got, ok)
+	}
+}
+
+// ---- W4 lote A: gaps in §4.3 / §6.1-6.4 ----
+
+// §6.2: an AP with no list-level signals is only targeted when its detail
+// positively shows radios; a bare empty `radios` is not evidence.
+func TestDetailConfirmsAPForStatistics_Spec62(t *testing.T) {
+	wc := newWifiController(t, 0,
+		`{"id":"hid-yes","model":"E7","state":"ONLINE"}`,
+		`{"id":"hid-no","model":"E7","state":"ONLINE"}`)
+	wc.details["hid-yes"] = stubResp{body: `{"id":"hid-yes","features":{},"interfaces":{"radios":[{"frequencyGHz":5,"channel":36,"channelWidthMHz":80,"wlanStandard":"802.11ax"}]}}`}
+	wc.details["hid-no"] = stubResp{body: `{"id":"hid-no","features":{},"interfaces":{"radios":[]}}`}
+	wc.stats["hid-yes"], wc.stats["hid-no"] = stubResp{body: okStats}, stubResp{body: okStats}
+	ts := wc.server(t)
+	defer ts.Close()
+	poll(t, context.Background(), wc, ts, PollOptions{Wifi: true, DetailBudget: MaxDetailsPerPoll, StatisticsBudget: 16})
+	if !reflect.DeepEqual(wc.statsIDs, []string{"hid-yes"}) {
+		t.Fatalf("statistics targets = %v, want only the detail-confirmed AP", wc.statsIDs)
+	}
+}
+
+// §6.1: the per-poll detail cap is the literal 32, not whatever the constant says.
+func TestDetailRequestsCappedAt32_Spec61(t *testing.T) {
+	if MaxDetailsPerPoll != 32 {
+		t.Fatalf("MaxDetailsPerPoll = %d, spec §6.1 says 32", MaxDetailsPerPoll)
+	}
+	wc := newWifiController(t, 40)
+	ts := wc.server(t)
+	defer ts.Close()
+	d := newWifiDeps(t)
+	defer d.stop()
+	if err := RunOnce(context.Background(), d.deps, cfgFor(ts.URL, 60, 1, 2), ts.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if wc.detailHits != 32 {
+		t.Fatalf("detail requests = %d, want exactly 32 for 40 candidates", wc.detailHits)
+	}
+}
+
+// §6.3: the envelope's 60 s clamp must not inflate the statistics budget.
+func TestEnvelopeClampDoesNotInflateBudget_Spec63(t *testing.T) {
+	wc := newWifiController(t, 40)
+	ts := wc.server(t)
+	defer ts.Close()
+	d := newWifiDeps(t)
+	defer d.stop()
+	if err := RunOnce(context.Background(), d.deps, cfgFor(ts.URL, 15, 1, 2), ts.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if wc.statsHits != 4 {
+		t.Fatalf("statistics requests at 15s = %d, want 4", wc.statsHits)
+	}
+	if got := v2Of(t, d.up.bodies[0]).ExpectedIntervalSeconds; got != 60 {
+		t.Fatalf("envelope expectedIntervalSeconds = %d, want clamped 60", got)
+	}
+}
+
+// §6.3: a failed statistics request costs a token, so an immediate retry poll
+// cannot exceed the remaining balance.
+func TestFailedStatisticsStillCostTokens_Spec63(t *testing.T) {
+	for name, resp := range map[string]stubResp{"http 500": {status: 500}, "transport error": {drop: true}} {
+		t.Run(name, func(t *testing.T) {
+			wc := newWifiController(t, 20)
+			for id := range wc.stats {
+				wc.stats[id] = resp
+			}
+			ts := wc.server(t)
+			defer ts.Close()
+			d := newWifiDeps(t)
+			defer d.stop()
+			cfg := cfgFor(ts.URL, 60, 1, 2)
+			t0 := time.Now() // the bucket is drained at (about) t0; only wall-clock refill may add tokens
+			if err := RunOnce(context.Background(), d.deps, cfg, ts.Client()); err != nil {
+				t.Fatal(err)
+			}
+			first := int(atomic.LoadInt32(&wc.statsHits))
+			if first == 0 {
+				t.Fatal("first poll made no statistics requests")
+			}
+			st, err := OpenTopologyState(topologyStatePath(d.dir, "c1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tok := st.Snapshot().StatisticsTokens; tok == nil || *tok >= 1 {
+				t.Fatalf("failures were free: persisted tokens = %v", tok)
+			}
+			if err := RunOnce(context.Background(), d.deps, cfg, ts.Client()); err != nil {
+				t.Fatal(err)
+			}
+			// Slow (-race) polls let real time refill the bucket, so bound the retry by
+			// the refill that elapsed (16/min), not by zero.
+			allowed := int(time.Since(t0).Seconds() * StatisticsTokenRefillPerMinute / 60)
+			if second := int(atomic.LoadInt32(&wc.statsHits)) - first; second > allowed {
+				t.Fatalf("retry poll made %d statistics requests, only %d tokens could have refilled", second, allowed)
+			}
+		})
+	}
+}
+
+// §6.4: a persisted cursor larger than the (shrunken) AP set is normalised
+// modulo the set: no panic, no skipped or repeated AP across the rotation.
+func TestStatisticsCursorBeyondShrunkenAPSet_Spec64(t *testing.T) {
+	wc := newWifiController(t, 5)
+	ts := wc.server(t)
+	defer ts.Close()
+	s1 := poll(t, context.Background(), wc, ts, PollOptions{Wifi: true, StatisticsBudget: 3, StatisticsCursor: 12})
+	s2 := poll(t, context.Background(), wc, ts, PollOptions{Wifi: true, StatisticsBudget: 2, StatisticsCursor: s1.NextStatisticsCursor})
+	want := []string{"ap-002", "ap-003", "ap-004", "ap-000", "ap-001"} // 12 % 5 == 2
+	if !reflect.DeepEqual(wc.statsIDs, want) {
+		t.Fatalf("rotation = %v, want %v", wc.statsIDs, want)
+	}
+	if s1.NextStatisticsCursor != 0 || s2.NextStatisticsCursor != 2 {
+		t.Fatalf("next cursors = %d, %d", s1.NextStatisticsCursor, s2.NextStatisticsCursor)
+	}
+}
+
+// §4.3: v2 needs the server epoch; versions [1,2] without one degrade to
+// legacy-only, with no Wi-Fi collection at all.
+func TestV2WithoutEpochSendsNoCompanionNorStatistics_Spec43(t *testing.T) {
+	wc := newWifiController(t, 5)
+	ts := wc.server(t)
+	defer ts.Close()
+	d := newWifiDeps(t)
+	defer d.stop()
+	cfg := cfgFor(ts.URL, 60, 1, 2)
+	cfg.TopologyProducerEpoch = ""
+	if err := RunOnce(context.Background(), d.deps, cfg, ts.Client()); err != nil {
+		t.Fatal(err)
+	}
+	b := d.up.bodies[0]
+	if _, ok := b["topologyV2"]; ok {
+		t.Fatal("v2 companion sent without epoch")
+	}
+	if _, ok := b["topologyV1"]; ok {
+		t.Fatal("v1 companion sent without epoch")
+	}
+	if wc.statsHits != 0 || wc.detailHits != 0 {
+		t.Fatalf("stats=%d details=%d, want 0/0", wc.statsHits, wc.detailHits)
 	}
 }

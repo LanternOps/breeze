@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { userRow, updateSpy, updateWhereSpy, sendPasswordResetSpy, updateRows } = vi.hoisted(() => ({
+const { userRow, userRows, selectWhereSpy, selectLimitSpy, updateSpy, updateWhereSpy, sendPasswordResetSpy, updateRows } = vi.hoisted(() => ({
   userRow: { current: null as any },
+  // #11541: when set, a select returns ALL these rows (case-variant duplicates).
+  userRows: { current: null as any[] | null },
+  selectWhereSpy: vi.fn(),
+  selectLimitSpy: vi.fn(),
   updateSpy: vi.fn(),
   updateWhereSpy: vi.fn(),
   sendPasswordResetSpy: vi.fn(),
@@ -20,7 +24,7 @@ vi.mock('../../db', () => ({
   db: {
     // W04: forgot-password inner-joins organizations for the partner that owns
     // the portal user's org (spec §8.2), so the chain must accept innerJoin.
-    select: () => { const chain: any = { innerJoin: () => chain, leftJoin: () => chain, where: () => chain, limit: () => Promise.resolve(userRow.current ? [userRow.current] : []) }; return { from: () => chain }; },
+    select: () => { const chain: any = { innerJoin: () => chain, leftJoin: () => chain, where: (w: unknown) => { selectWhereSpy(w); return chain; }, limit: (n: number) => { selectLimitSpy(n); return Promise.resolve(userRows.current ?? (userRow.current ? [userRow.current] : [])); } }; return { from: () => chain }; },
     update: () => ({ set: (v: any) => ({ where: (w: unknown) => {
       updateSpy(v);
       updateWhereSpy(w);
@@ -50,6 +54,7 @@ vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
 import { createHash } from 'crypto';
 import { authRoutes } from './auth';
 import { issuePortalCapabilityToken } from './capabilityTokens';
+import { PORTAL_LOGIN_CANDIDATE_CAP } from './loginCandidates';
 import { portalInviteTokens, portalRateLimitBuckets, portalResetTokens } from './helpers';
 import { pickEffectivePortalAccessPolicy } from '../../services/portalAccessPolicy';
 
@@ -57,8 +62,14 @@ const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, se
 /** Built by the real pick with entra runnable: 'sso_only' is effective (entra on), 'allowed' is today's default. */
 function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
   const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
-  return { orgId, partnerId: 'p-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+  // W4: Microsoft is effective only for an org with a proven tenant (plan D2).
+  const proven = mode === 'sso_only';
+  return {
+    orgId, partnerId: 'p-1', entraTenant: proven ? { tenantId: PROVEN_TENANT_ID, provenAt: '2026-11-01T00:00:00.000Z' } : null,
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven }),
+  };
 }
+const PROVEN_TENANT_ID = '72f988bf-86f1-41af-91ab-2d7cd011db47';
 const ssoOnly = () => resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
@@ -91,6 +102,7 @@ beforeEach(() => {
   activeOrgMock.mockResolvedValue({ orgId: ORG_ID, partnerId: 'p-1' });
   updateRows.current = null;
   userRow.current = null;
+  userRows.current = null;
   portalInviteTokens.clear();
   portalResetTokens.clear();
   portalRateLimitBuckets.clear();
@@ -347,6 +359,82 @@ describe('POST /auth/reset-password (W2)', () => {
 });
 
 describe('POST /auth/forgot-password', () => {
+  const OTHER_ORG = '7c0a1f7e-2222-4222-8333-444455556666';
+  const activeRow = (over: Record<string, unknown> = {}) => invited({ status: 'active', passwordHash: 'old-hash', ...over });
+
+  // #11541: a login stored with mixed case must be able to reset.
+  it('matches the stored address case-insensitively and mails the stored address (#11541)', async () => {
+    userRow.current = activeRow({ email: 'Mixed.Case@Acme.Example' });
+    const res = await forgot({ email: 'mixed.case@acme.example', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const q = new PgDialect().sqlToQuery(selectWhereSpy.mock.calls[0]![0] as never);
+    const i = q.params.indexOf('email');
+    expect(q.sql).toContain(`lower($${i + 1}) = $${i + 2}`);
+    expect(q.params[i + 1]).toBe('mixed.case@acme.example');
+    // Only browser-granted password logins are candidates, so a stale row
+    // without access can neither take the token nor block it.
+    expect(q.params).toEqual(expect.arrayContaining(['authMethod', 'password', 'browserAccess', 'granted']));
+    expect(portalResetTokens.size).toBe(1);
+    expect(sendPasswordResetSpy).toHaveBeenCalledWith(expect.objectContaining({ to: 'Mixed.Case@Acme.Example' }));
+  });
+
+  // Two password logins in ONE org that differ only by case: no principled
+  // pick, so no token. The response is the uniform 200 an unknown address gets.
+  it('case-only duplicates in one org fail closed with the uniform response (#11541)', async () => {
+    const control = await (await forgot({ email: 'nobody@acme.example', orgId: ORG_ID })).text();
+    portalRateLimitBuckets.clear();
+    userRows.current = [
+      activeRow({ id: USER_ID, email: 'Cust@Acme.Example' }),
+      activeRow({ id: '11111111-2222-4333-8444-000000000002', email: 'cust@acme.example' }),
+    ];
+    const res = await forgot({ email: 'cust@acme.example' });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(control);
+    expect(portalResetTokens.size).toBe(0);
+    expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+  });
+
+  it('case-only duplicates fail closed on the orgId-scoped lookup too (#11541)', async () => {
+    const control = await (await forgot({ email: 'nobody@acme.example', orgId: ORG_ID })).text();
+    portalRateLimitBuckets.clear();
+    userRows.current = [
+      activeRow({ id: USER_ID, email: 'Cust@Acme.Example' }),
+      activeRow({ id: '11111111-2222-4333-8444-000000000002', email: 'cust@acme.example' }),
+    ];
+    const res = await forgot({ email: 'cust@acme.example', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(control);
+    expect(portalResetTokens.size).toBe(0);
+    expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+  });
+
+  it('more candidates than the cap (all in distinct orgs) fail closed with the uniform response', async () => {
+    const control = await (await forgot({ email: 'nobody@acme.example' })).text();
+    portalRateLimitBuckets.clear();
+    userRows.current = Array.from({ length: PORTAL_LOGIN_CANDIDATE_CAP + 1 }, (_, n) => activeRow({
+      id: `11111111-2222-4333-8444-${String(n).padStart(12, '0')}`,
+      orgId: `7c0a1f7e-3333-4222-8333-${String(n).padStart(12, '0')}`,
+    }));
+    const res = await forgot({ email: 'cust@acme.example' });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(control);
+    expect(portalResetTokens.size).toBe(0);
+    expect(sendPasswordResetSpy).not.toHaveBeenCalled();
+    expect(selectLimitSpy).toHaveBeenCalledWith(PORTAL_LOGIN_CANDIDATE_CAP + 1);
+  });
+
+  it('one address in two different orgs still resets one of them (unchanged)', async () => {
+    userRows.current = [
+      activeRow({ id: USER_ID, email: 'cust@acme.example' }),
+      activeRow({ id: '11111111-2222-4333-8444-000000000002', orgId: OTHER_ORG, email: 'Cust@Acme.Example' }),
+    ];
+    const res = await forgot({ email: 'cust@acme.example' });
+    expect(res.status).toBe(200);
+    expect(portalResetTokens.size).toBe(1);
+    expect(sendPasswordResetSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('does not mint or email a reset for an Entra identity', async () => {
     userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'entra@acme.example', authMethod: 'entra' };
     const res = await forgot({ email: 'entra@acme.example', orgId: ORG_ID });

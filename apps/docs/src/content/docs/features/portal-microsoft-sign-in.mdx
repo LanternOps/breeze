@@ -1,0 +1,107 @@
+---
+title: Microsoft Sign-in for the Customer Portal
+description: Prove a customer's Microsoft tenant, turn on Sign in with Microsoft for the browser portal, and set first-sign-in modes, session length and Microsoft-only sign-in.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Sign in with Microsoft lets people in a customer organization reach the [Customer Portal](/features/portal/) with their Microsoft 365 work account instead of a Breeze password. Before it can be used for an organization, Breeze needs proof that the organization really owns the Microsoft tenant. This page covers that proof, the settings that depend on it, and what the customer's Microsoft administrator sees.
+
+<Aside>
+  Microsoft sign-in is only offered when the Breeze deployment has a portal Microsoft app configured. Self-hosters: see the `PORTAL_ENTRA_*` variables in [Environment variables](/deploy/environment/).
+</Aside>
+
+## For MSPs
+
+### Prove the customer's Microsoft tenant
+
+Microsoft sign-in works for an organization only after its Microsoft tenant is **proven**. In **Settings → Organizations → [organization] → Customer Portal → Sign-in & registration**, the Microsoft row shows a tenant panel with two ways to prove it.
+
+**Use Microsoft 365 connection.** Available when the organization has a Microsoft 365 connection created by an administrator signing in (the identity-first connection) and that sign-in verified the tenant. One click records the tenant as proven.
+
+**Create proof link.** Creates a link that is valid for 72 hours.
+
+<Steps>
+1. Choose **Create proof link**. Enter the tenant as a tenant ID or as a verified domain. The field is prefilled from the organization's mapped or connected tenant when there is one.
+2. Copy the link and send it to the customer's **Global Administrator** or **Privileged Role Administrator**.
+3. The administrator signs in. Breeze checks their directory roles once and records the tenant as proven.
+</Steps>
+
+A failed sign-in does not use up the link; the administrator can try again until it expires. A completed proof is single-use. If the domain can't be looked up because Microsoft is unreachable, try again or enter the tenant ID instead.
+
+### Moving a tenant between organizations
+
+A tenant is proven for one organization at a time. Customer email domains are verified separately; see [Customer domain verification](/features/portal-domain-verification/).
+
+- A proof link completed by an administrator of the tenant **takes the tenant over** from any other organization that had it proven. The organization that lost it is no longer proven, and its partner is told by email.
+- Proving through a **Microsoft 365 connection** can't take a tenant that is proven for another organization. Use a proof link for that.
+- An organization merge is refused when the organization being merged away holds a proven tenant and the surviving organization already has a tenant link.
+
+### Remove the tenant link
+
+Removing the tenant link also removes the organization's **AI for Office** tenant mapping, because they are the same record. Breeze asks you to confirm. Microsoft sign-in turns off for the organization, and if Microsoft-only sign-in was on, password sign-in comes back (see below).
+
+### Turn Microsoft on
+
+Microsoft sign-in is a setting at two levels, like the rest of Sign-in & registration:
+
+- **Organization override.** Can be turned on only once the organization's tenant is proven.
+- **Partner default** (**Settings → Partner → Customer portal**). Applies to every organization where a tenant is proven, and has no effect on the others.
+
+### First sign-in
+
+When someone signs in with Microsoft for the first time and has no portal account, the first-sign-in setting decides what happens:
+
+| Mode | Result |
+|---|---|
+| **Invited only** | Only people you have already invited can sign in. Anyone else is turned away. |
+| **Approval** | The person lands in **Access requests** and you approve or deny them. |
+| **Instant** | Anyone in the proven tenant gets an account straight away. |
+
+Whatever the mode, an invited person who signs in with Microsoft is linked to their invitation. Breeze never links a Microsoft sign-in to an existing account just because the email address matches.
+
+### Session length
+
+**Microsoft / Google session length (hours)** sets how long a Microsoft (or, later, Google) sign-in lasts, from 1 to 168 hours. The default is 12. The session ends after that time however active the person is. If you lower the value, it takes effect on the next request, including for people who are signed in now. Password sessions are not affected: they keep their usual idle timeout.
+
+### Microsoft-only sign-in
+
+Setting **Password sign-in** to **Off — Microsoft/Google only** (SSO only) stops people using passwords.
+
+When you save it, Breeze shows a confirmation dialog listing what will change:
+
+- **Passwords removed.** People who are already connected to Microsoft. Their password is cleared, they are signed out once, and from then on they sign in with Microsoft.
+- **Can't sign in yet.** People who have not connected a Microsoft account. They keep their password but can't use it, so they can't sign in until they accept a Microsoft sign-in invite. The dialog names them.
+
+Nothing changes until you confirm. If the numbers change while the dialog is open (for example someone connects Microsoft in the meantime), Breeze shows the new numbers and asks again.
+
+To invite the people who can't sign in yet, tick **Send Microsoft sign-in invites to these accounts after saving** in the dialog, or use **Send Microsoft sign-in invite** (one person) or **Invite all** in the **Can't sign in yet** list that the card shows while password sign-in is off. The email links their Microsoft account to their existing portal login the first time they sign in. Sending it moves an active account that still has a password to *invited*.
+
+Saving the partner default shows the same confirmation, listing each organization it affects with a link to that organization's settings. Send invites from each organization's own page.
+
+If the tenant proof is lost, password sign-in comes back automatically. Passwords that were cleared are not restored.
+
+### Give browser access to add-in users
+
+People who only use the AI for Office add-in don't have browser access to the portal. On the organization's portal users list, choose **Give browser access** on their row. Their add-in sessions keep working. See [Access requests](/features/portal/#access-requests) for the approval path, which does the same for a person who asks.
+
+### AI for Office add-in sessions
+
+AI for Office add-in sessions now end after 12 hours and re-authenticate silently. People using the add-in don't need to do anything.
+
+## For the customer's admin
+
+Your MSP has sent you a link to prove that your organization owns this Microsoft tenant. It takes a minute.
+
+<Steps>
+1. Open the link. It takes you straight to Microsoft sign-in.
+2. Sign in with a **Global Administrator** or **Privileged Role Administrator** account for your tenant. A guest account works if it holds one of those roles in your tenant.
+3. Microsoft asks you to approve permissions for the **Breeze Portal** app. For the directory-read permission, **leave "Consent on behalf of your organization" unticked.** Breeze reads your directory roles once to confirm you are an administrator, and then never again.
+4. After the proof, Breeze sends you to the Microsoft admin consent page. This one grants only `openid`, `profile` and `email` for everyone in your organization, which is what lets your people sign in to the portal. Approve it.
+</Steps>
+
+Breeze uses the directory permission only during this proof, to read the role memberships of the account that signed in. It does not read your mail or files.
+
+### Control who can sign in
+
+We recommend turning on **Assignment required** on the **Breeze Portal** enterprise application in your Microsoft Entra admin center (**Enterprise applications → Breeze Portal → Properties**), then assigning the users or groups who should have portal access. Without it, anyone in your tenant who is allowed by the MSP's first-sign-in mode can try to sign in.

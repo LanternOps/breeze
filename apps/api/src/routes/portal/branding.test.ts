@@ -58,7 +58,7 @@ vi.mock('./portalCustomCss', async (importOriginal) => ({
   }),
 }));
 
-import { brandingRoutes } from './branding';
+import { brandingRoutes, resolvePortalHostOrgId } from './branding';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -572,5 +572,41 @@ describe('GET /branding/:domain (public)', () => {
     const response = await publicApp.request('/branding/unknown.example.test');
 
     expect(response.status).toBe(404);
+  });
+});
+
+// Portal registration W4 (#11381, plan D5): the org whose VERIFIED custom
+// domain is the request host binds a Microsoft sign-in to that org.
+describe('resolvePortalHostOrgId (D5 host binding)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+    dbState.where = undefined;
+  });
+
+  it('returns the org of a verified custom domain, looked up by the lowercased host', async () => {
+    dbState.rows = [{ orgId: ORG_ID, customDomain: 'portal.acme.test', domainVerified: true }];
+    expect(await resolvePortalHostOrgId('Portal.Acme.Test')).toBe(ORG_ID);
+    const query = new PgDialect().sqlToQuery(dbState.where as SQL);
+    expect(query.sql).toContain('"portal_branding"."custom_domain" = $1');
+    expect(query.params).toEqual(['portal.acme.test']);
+    // Only the org id is needed: the partner's portal defaults are never loaded.
+    expect(partnerCssMock).not.toHaveBeenCalled();
+  });
+
+  it('returns null for an unverified domain', async () => {
+    dbState.rows = [{ orgId: ORG_ID, customDomain: 'portal.acme.test', domainVerified: false }];
+    expect(await resolvePortalHostOrgId('portal.acme.test')).toBeNull();
+  });
+
+  it('returns null for an unknown host (the shared portal host)', async () => {
+    dbState.rows = [];
+    expect(await resolvePortalHostOrgId('breeze.example.test')).toBeNull();
+  });
+
+  it('returns null for an empty host without querying', async () => {
+    dbState.rows = [{ orgId: ORG_ID, customDomain: '', domainVerified: true }];
+    expect(await resolvePortalHostOrgId('   ')).toBeNull();
+    expect(dbState.where).toBeUndefined();
   });
 });
