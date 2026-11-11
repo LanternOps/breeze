@@ -1408,6 +1408,25 @@ jobs:
             apps/viewer/breeze-viewer-linux.AppImage.sig
           retention-days: 30
 
+      # Reports only, never fails the build (#9557). The AppImage bundles this
+      # host's libwebkit2gtk-4.1, and Ubuntu compiles it without WebRTC, so the
+      # viewer's enable-webrtc setting has nothing to switch on. The step says
+      # so in the run summary, and will say when that stops being true.
+      # Kept last: the probe's packages include GObject typelibs, which the
+      # AppImage bundler would copy into the artifact if they were installed
+      # before the build.
+      - name: Report WebKitGTK WebRTC support (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-webkit2-4.1 xvfb xauth \
+            || echo "::warning::Could not install the WebRTC probe's dependencies."
+          bash scripts/release/report-viewer-linux-webrtc.sh \
+            xvfb-run -a python3 scripts/release/probe-webkitgtk-webrtc.py
+
   build-helper:
     name: Build Helper
     needs: [classify-release]

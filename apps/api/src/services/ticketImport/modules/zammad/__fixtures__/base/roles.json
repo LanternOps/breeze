@@ -1,0 +1,83 @@
+[
+  {
+    "id": 1,
+    "name": "Admin",
+    "preferences": {},
+    "default_at_signup": false,
+    "active": true,
+    "note": null,
+    "updated_by_id": 1,
+    "created_by_id": 1,
+    "created_at": "2025-01-01T00:00:00.000Z",
+    "updated_at": "2025-01-01T00:00:00.000Z",
+    "permission_ids": [
+      1,
+      2
+    ],
+    "knowledge_base_permission_ids": [],
+    "group_ids": {},
+    "user_ids": [],
+    "permissions": [
+      "admin",
+      "user_preferences",
+      "report"
+    ]
+  },
+  {
+    "id": 2,
+    "name": "Agent",
+    "preferences": {},
+    "default_at_signup": false,
+    "active": true,
+    "note": null,
+    "updated_by_id": 1,
+    "created_by_id": 1,
+    "created_at": "2025-01-01T00:00:00.000Z",
+    "updated_at": "2025-01-01T00:00:00.000Z",
+    "permission_ids": [
+      3,
+      4
+    ],
+    "knowledge_base_permission_ids": [],
+    "group_ids": {},
+    "user_ids": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "permissions": [
+      "ticket.agent",
+      "chat.agent",
+      "user_preferences"
+    ]
+  },
+  {
+    "id": 3,
+    "name": "Customer",
+    "preferences": {},
+    "default_at_signup": true,
+    "active": true,
+    "note": null,
+    "updated_by_id": 1,
+    "created_by_id": 1,
+    "created_at": "2025-01-01T00:00:00.000Z",
+    "updated_at": "2025-01-01T00:00:00.000Z",
+    "permission_ids": [
+      5
+    ],
+    "knowledge_base_permission_ids": [],
+    "group_ids": {},
+    "user_ids": [
+      10,
+      11,
+      12,
+      13,
+      14
+    ],
+    "permissions": [
+      "ticket.customer",
+      "user_preferences"
+    ]
+  }
+]

@@ -662,6 +662,10 @@ The Linux build of the Breeze Viewer ships as a single AppImage, `breeze-viewer-
 
 </Steps>
 
+<Aside type="caution" title="The Linux viewer cannot connect to Windows devices yet">
+  A device whose agent runs as a service accepts remote desktop over WebRTC only, and every Windows agent runs as a service. The Linux viewer has no WebRTC: the WebKitGTK it is built with is compiled without it. Connecting to such a device ends with *"This device needs WebRTC for remote desktop (it runs as a service), but this viewer build does not support WebRTC."* Use the Windows or macOS viewer for those devices. Terminal, file transfer and scripts are not affected. Tracked in [#9557](https://github.com/LanternOps/breeze/issues/9557).
+</Aside>
+
 Keep the AppImage at a stable path. The registration records the absolute path it was run from, so moving or deleting the file after the first run leaves `breeze://` pointing at a file that no longer exists — run it again from the new location to refresh the entry.
 
 ### FUSE 2 is required
