@@ -92,6 +92,10 @@ type rebindState struct {
 	clientMu  sync.Mutex
 	client    *http.Client
 	clientKey string
+	// running counts the goroutines the flow starts (a drive from a trigger,
+	// the restart once idle). Nothing in the agent waits on it; the tests do,
+	// before they put the package seams back.
+	running sync.WaitGroup
 }
 
 // Seams for tests. rebindWriteStaged and rebindApplyIdentity are the kill
@@ -254,7 +258,7 @@ func (h *Heartbeat) handleRebindDirective(d *RebindDirective, hold bool) bool {
 	if _, over := h.rebind.ended.Load(d.IntentID); over {
 		return false
 	}
-	go h.driveRebind(d)
+	h.rebind.running.Go(func() { h.driveRebind(d) })
 	return true
 }
 
@@ -320,7 +324,7 @@ func (h *Heartbeat) noteSourceCredentialsRejected() {
 		return
 	}
 	h.rebind.sourceRejected.Store(true)
-	go h.driveRebind(nil)
+	h.rebind.running.Go(func() { h.driveRebind(nil) })
 }
 
 // tickRebind runs on every heartbeat tick, before the auth-dead skip: an
@@ -331,7 +335,7 @@ func (h *Heartbeat) tickRebind() {
 		return
 	}
 	if h.rebind.swapped.Load() || h.rebind.pendingOnDisk.Load() {
-		go h.driveRebind(nil)
+		h.rebind.running.Go(func() { h.driveRebind(nil) })
 	}
 }
 
