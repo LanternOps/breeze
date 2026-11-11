@@ -33,7 +33,37 @@ export interface ReattachDeviceFormProps {
   onRequested: (intent: ReattachRequestedIntent) => void;
   /** The target re-enrolled or changed since it was shown: the parent re-reads the candidates. */
   onTargetChanged?: () => void;
+  /**
+   * Any 409 refusal: the rows changed under the dialog (a removed target, an
+   * OS change, liveness). The parent re-reads the candidates so the form can
+   * show the confirmation the current rows need without a reload.
+   */
+  onConflict?: (code: string | undefined) => void;
+  /** The form is submitting or waiting for the second factor: the parent locks its own choices. */
+  onBusyChange?: (busy: boolean) => void;
 }
+
+/**
+ * How long a minted grant is reused for. The server keeps a `device_reattach`
+ * grant 300 s (services/mfaStepUpGrant.ts TTL_SECONDS); a margin keeps the
+ * dialog from sending one that expires in flight.
+ */
+const HELD_GRANT_MS = 270_000;
+
+interface HeldGrant {
+  grantId: string;
+  /** The bound resource it was minted for, serialised: any change drops it. */
+  key: string;
+  mintedAt: number;
+}
+
+/**
+ * Until wave T2 (TPM evidence) the route always requests `hint`
+ * (routes/devices/reattach.ts) and binds `hint` in the step-up, whatever the
+ * read says. When T2 ships, change this, the step-up resource and the name
+ * gate together with the route.
+ */
+const REQUEST_EVIDENCE_LEVEL = 'hint' as const;
 
 type Phase = 'form' | 'stepUp' | 'pending';
 
@@ -67,6 +97,8 @@ export default function ReattachDeviceForm({
   onClose,
   onRequested,
   onTargetChanged,
+  onConflict,
+  onBusyChange,
 }: ReattachDeviceFormProps) {
   const { t } = useTranslation('devices');
 
@@ -86,9 +118,19 @@ export default function ReattachDeviceForm({
   const [submitting, setSubmitting] = useState(false);
   const [discoveredTier, setDiscoveredTier] = useState<ReauthTier | null>(null);
   const [intent, setIntent] = useState<ReattachRequestedIntent | null>(null);
+  // A grant minted and not yet consumed: a refusal before the consume (a 409
+  // such as liveness_unknown) leaves it spendable, and the TOTP code it was
+  // minted with cannot be used twice, so the retry reuses it.
+  const [heldGrant, setHeldGrant] = useState<HeldGrant | null>(null);
+  // Bumped whenever the candidate changes, so an answer to a request made for
+  // the previous candidate never lands on this one.
+  const requestSeq = useRef(0);
 
   // A different candidate is a different request: start over.
   useEffect(() => {
+    requestSeq.current += 1;
+    setHeldGrant(null);
+    setSubmitting(false);
     setPossessionConfirmed(false);
     setConfirmName('');
     setAcknowledgeOsChange(false);
@@ -103,7 +145,24 @@ export default function ReattachDeviceForm({
     ? discoveredTier
     : pickReauthTier(passkeyCount, mfaMethod);
   const noUsableFactor = phase === 'stepUp' && tier === 'password';
-  const hint = candidate.evidenceLevel === 'hint';
+  const hint = REQUEST_EVIDENCE_LEVEL === 'hint';
+
+  const resource = canonicalDeviceReattachResource({
+    sourceDeviceId: source.deviceId,
+    targetDeviceId: candidate.deviceId,
+    targetVersion: candidate.targetVersion,
+    evidenceLevel: REQUEST_EVIDENCE_LEVEL,
+    restoreDecommissioned: candidate.requiresRestore && restoreDecommissioned,
+  });
+  const resourceKey = JSON.stringify(resource);
+  const usableGrant = heldGrant && heldGrant.key === resourceKey && Date.now() - heldGrant.mintedAt < HELD_GRANT_MS
+    ? heldGrant
+    : null;
+
+  useEffect(() => {
+    onBusyChange?.(submitting || phase === 'stepUp');
+  }, [submitting, phase, onBusyChange]);
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
 
   const discoverTier = useCallback(async (): Promise<boolean> => {
     if (tier !== null) return true;
@@ -133,28 +192,32 @@ export default function ReattachDeviceForm({
   }, [candidate.hostname, t]);
 
   const submit = useCallback(async () => {
-    const resource = canonicalDeviceReattachResource({
-      sourceDeviceId: source.deviceId,
-      targetDeviceId: candidate.deviceId,
-      targetVersion: candidate.targetVersion,
-      evidenceLevel: candidate.evidenceLevel,
-      restoreDecommissioned: candidate.requiresRestore && restoreDecommissioned,
-    });
+    const seq = requestSeq.current;
+    const current = () => live.current && seq === requestSeq.current;
 
     let stepUpGrant: string | undefined;
     if (phase === 'stepUp') {
-      try {
-        stepUpGrant = await mintStepUpGrant({
-          operation: 'device_reattach',
-          resource,
-          reauth: tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code },
-        });
-      } catch (err) {
-        setError(err instanceof StepUpMintError || err instanceof Error ? err.message : t('reattachDialog.genericError'));
-        return;
+      if (usableGrant) {
+        stepUpGrant = usableGrant.grantId;
+      } else {
+        try {
+          stepUpGrant = await mintStepUpGrant({
+            operation: 'device_reattach',
+            resource,
+            reauth: tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code },
+          });
+        } catch (err) {
+          if (!current()) return;
+          setError(err instanceof StepUpMintError || err instanceof Error ? err.message : t('reattachDialog.genericError'));
+          return;
+        }
+        if (!current()) return;
+        // The code is spent: a retry reuses the grant, or asks for a new code.
+        setCode('');
+        setHeldGrant({ grantId: stepUpGrant, key: resourceKey, mintedAt: Date.now() });
       }
     }
-    if (!live.current) return;
+    if (!current()) return;
 
     try {
       const data = await runAction<{ intent: ReattachRequestedIntent }>({
@@ -172,7 +235,8 @@ export default function ReattachDeviceForm({
         suppressErrorToast: (status, refusalCode) => status === 403 && refusalCode === STEP_UP_REQUIRED,
         successMessage: t('reattachDialog.requestedToast', { hostname: candidate.hostname }),
       });
-      if (!live.current) return;
+      if (!current()) return;
+      setHeldGrant(null);
       setIntent(data.intent);
       setPhase('pending');
       setError(null);
@@ -183,10 +247,11 @@ export default function ReattachDeviceForm({
         showToast({ type: 'error', message: t('reattachDialog.genericError') });
         return;
       }
-      if (!live.current) return;
+      if (!current()) return;
       if (err.status === 403 && err.code === STEP_UP_REQUIRED) {
         // A grant was sent and refused: it expired or no longer matches. Ask
         // for a fresh proof.
+        setHeldGrant(null);
         if (stepUpGrant) {
           setCode('');
           setError(t('reattachDialog.stepUpRetry'));
@@ -198,23 +263,30 @@ export default function ReattachDeviceForm({
         setError(null);
         return;
       }
-      if (err.status === 409 && err.code === 'target_changed') onTargetChanged?.();
       setError(err.message);
+      if (err.status === 409) {
+        if (err.code === 'target_changed') onTargetChanged?.();
+        onConflict?.(err.code);
+      }
     }
-  }, [source.deviceId, candidate, restoreDecommissioned, phase, tier, code, confirmName, acknowledgeOsChange, refusalMessage, onRequested, onTargetChanged, discoverTier, t]);
+  }, [source.deviceId, candidate, resource, resourceKey, usableGrant, phase, tier, code, confirmName, acknowledgeOsChange, refusalMessage, onRequested, onTargetChanged, onConflict, discoverTier, t]);
 
   const handleSubmit = useCallback(() => {
     if (submitting) return;
     setSubmitting(true);
-    void submit().finally(() => { if (live.current) setSubmitting(false); });
+    const seq = requestSeq.current;
+    void submit().finally(() => { if (live.current && seq === requestSeq.current) setSubmitting(false); });
   }, [submit, submitting]);
 
   const nameConfirmed = !hint || confirmTargetNameMatches(confirmName, candidate.hostname);
   const osGate = !candidate.osChanged || acknowledgeOsChange;
   const restoreGate = !candidate.requiresRestore || restoreDecommissioned;
   const canSubmit = source.rebindSupported && possessionConfirmed && nameConfirmed && osGate && restoreGate
-    && !submitting && (phase === 'form' || tier === 'passkey' || code.length === 6);
-  const locked = submitting || phase === 'stepUp';
+    && !submitting && (phase === 'form' || tier === 'passkey' || usableGrant !== null || code.length === 6);
+  // Only while a request is in flight. In the step-up phase the fields stay
+  // editable so a refusal (an OS change, a removed record) can be answered;
+  // a change to a bound field (the restore) drops the held grant by its key.
+  const locked = submitting;
 
   const dash = '—';
   const dateOr = (value: string | null) => (value ? formatDateTime(value) : dash);
@@ -300,6 +372,8 @@ export default function ReattachDeviceForm({
       <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
         <p data-testid="reattach-evidence">{t('reattachDialog.matchedOn', { evidence: evidenceLabel })}</p>
         <p className="text-xs font-medium text-warning" data-testid="reattach-evidence-notice">
+          {/* The TPM sentence is for TPM evidence only. Requests are `hint`
+              until wave T2 (REQUEST_EVIDENCE_LEVEL above); change both together. */}
           {candidate.evidenceLevel === 'tpm_continuity'
             ? t('reattachDialog.evidenceNoticeTpm')
             : t('reattachDialog.evidenceNoticeHint')}
@@ -384,7 +458,9 @@ export default function ReattachDeviceForm({
           <div className="space-y-2 rounded-md border p-3" data-testid="reattach-stepup">
             <p className="text-sm font-medium">{t('reattachDialog.stepUpHeading')}</p>
             <p className="text-xs text-muted-foreground">{t('reattachDialog.stepUpIntro')}</p>
-            {tier === 'passkey' ? (
+            {usableGrant ? (
+              <p className="text-xs text-muted-foreground" data-testid="reattach-stepup-held">{t('reattachDialog.stepUpHeld')}</p>
+            ) : tier === 'passkey' ? (
               <p className="text-xs text-muted-foreground" data-testid="reattach-stepup-passkey">{t('reattachDialog.stepUpPasskeyNote')}</p>
             ) : (
               <>

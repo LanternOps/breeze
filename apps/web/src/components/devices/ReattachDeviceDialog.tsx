@@ -14,6 +14,7 @@ export interface ReattachDeviceDialogProps {
   onClose: () => void;
   onRequested: (intent: ReattachRequestedIntent) => void;
   onTargetChanged?: () => void;
+  onConflict?: (code: string | undefined) => void;
 }
 
 /**
@@ -30,6 +31,7 @@ export default function ReattachDeviceDialog({
   onClose,
   onRequested,
   onTargetChanged,
+  onConflict,
 }: ReattachDeviceDialogProps) {
   const { t } = useTranslation('devices');
   const title = t('reattachDialog.title', { target: candidate.hostname });
@@ -55,6 +57,7 @@ export default function ReattachDeviceDialog({
           onClose={onClose}
           onRequested={onRequested}
           onTargetChanged={onTargetChanged}
+          onConflict={onConflict}
         />
       </div>
     </Dialog>

@@ -34,8 +34,10 @@ function renderForm(opts: {
 } = {}) {
   const onRequested = vi.fn();
   const onTargetChanged = vi.fn();
+  const onConflict = vi.fn();
+  const onBusyChange = vi.fn();
   const onClose = vi.fn();
-  render(
+  const view = render(
     <ReattachDeviceForm
       source={opts.source ?? reattachSource()}
       candidate={opts.candidate ?? reattachCandidate()}
@@ -44,9 +46,11 @@ function renderForm(opts: {
       onClose={onClose}
       onRequested={onRequested}
       onTargetChanged={onTargetChanged}
+      onConflict={onConflict}
+      onBusyChange={onBusyChange}
     />,
   );
-  return { onRequested, onTargetChanged, onClose };
+  return { onRequested, onTargetChanged, onConflict, onBusyChange, onClose, rerender: view.rerender };
 }
 
 const submitButton = () => screen.getByTestId('reattach-submit') as HTMLButtonElement;
@@ -231,11 +235,154 @@ describe('ReattachDeviceForm', () => {
   it('a target that changed since it was shown asks the parent to re-read', async () => {
     const user = userEvent.setup();
     fetchMock.mockResolvedValueOnce(json(409, { error: 'changed', code: 'target_changed' }));
-    const { onTargetChanged } = renderForm();
+    const { onTargetChanged, onConflict } = renderForm();
     await fillGates(user);
     await user.click(submitButton());
     await waitFor(() => expect(onTargetChanged).toHaveBeenCalled());
+    expect(onConflict).toHaveBeenCalledWith('target_changed');
     expect(screen.getByTestId('reattach-error').textContent).toMatch(/changed since it was shown/);
+  });
+
+  it('any 409 refusal asks the parent to re-read; a 400 does not', async () => {
+    const user = userEvent.setup();
+    fetchMock
+      .mockResolvedValueOnce(json(409, { error: 'removed', code: 'target_decommissioned' }))
+      .mockResolvedValueOnce(json(400, { error: 'mismatch', code: 'confirm_target_name_mismatch' }));
+    const { onConflict } = renderForm();
+    await fillGates(user);
+    await user.click(submitButton());
+    await waitFor(() => expect(onConflict).toHaveBeenCalledWith('target_decommissioned'));
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-error').textContent).toMatch(/does not match/));
+    expect(onConflict).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the minted grant: a retry after a 409 refusal reuses it without a new code', async () => {
+    const user = userEvent.setup();
+    fetchMock
+      .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
+      .mockResolvedValueOnce(json(409, { error: 'unknown', code: 'liveness_unknown' }))
+      .mockResolvedValueOnce(json(202, { intent: requestedIntent }));
+    const { onRequested } = renderForm();
+    await fillGates(user);
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
+    await user.type(screen.getByTestId('reattach-stepup-code'), '123456');
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-error').textContent).toMatch(/could not be checked/));
+
+    // The code was spent on the mint; the held grant is offered instead.
+    expect(screen.getByTestId('reattach-stepup-held')).toBeTruthy();
+    expect(submitButton().disabled).toBe(false);
+    await user.click(submitButton());
+    await waitFor(() => expect(onRequested).toHaveBeenCalled());
+    expect(mintMock).toHaveBeenCalledTimes(1);
+    const grant = '33333333-3333-4333-8333-333333333333';
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body).stepUpGrant).toBe(grant);
+    expect(JSON.parse(fetchMock.mock.calls[2]![1].body).stepUpGrant).toBe(grant);
+  });
+
+  it('drops the held grant when the server refuses it and mints a new one', async () => {
+    const user = userEvent.setup();
+    mintMock.mockResolvedValueOnce('44444444-4444-4444-8444-444444444444');
+    fetchMock
+      .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
+      .mockResolvedValueOnce(json(409, { error: 'unknown', code: 'liveness_unknown' }))
+      .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
+      .mockResolvedValueOnce(json(202, { intent: requestedIntent }));
+    const { onRequested } = renderForm();
+    await fillGates(user);
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
+    await user.type(screen.getByTestId('reattach-stepup-code'), '123456');
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-held')).toBeTruthy());
+    await user.click(submitButton());
+    // Refused: back to asking for a code.
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
+    expect(submitButton().disabled).toBe(true);
+    await user.type(screen.getByTestId('reattach-stepup-code'), '654321');
+    await user.click(submitButton());
+    await waitFor(() => expect(onRequested).toHaveBeenCalled());
+    expect(mintMock).toHaveBeenCalledTimes(2);
+    expect(mintMock).toHaveBeenLastCalledWith(expect.objectContaining({ reauth: { method: 'totp', code: '654321' } }));
+    expect(JSON.parse(fetchMock.mock.calls[3]![1].body).stepUpGrant).toBe('33333333-3333-4333-8333-333333333333');
+  });
+
+  it('a change to a bound field (the restore) drops the held grant', async () => {
+    const user = userEvent.setup();
+    fetchMock
+      .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
+      .mockResolvedValueOnce(json(409, { error: 'unknown', code: 'liveness_unknown' }));
+    renderForm({ candidate: reattachCandidate({ status: 'decommissioned', requiresRestore: true }) });
+    await fillGates(user);
+    await user.click(screen.getByTestId('reattach-restore'));
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
+    await user.type(screen.getByTestId('reattach-stepup-code'), '123456');
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-held')).toBeTruthy());
+    await user.click(screen.getByTestId('reattach-restore'));
+    await user.click(screen.getByTestId('reattach-restore'));
+    // Same value again, same key: still held. Untick: the grant no longer matches.
+    expect(screen.getByTestId('reattach-stepup-held')).toBeTruthy();
+    await user.click(screen.getByTestId('reattach-restore'));
+    expect(screen.queryByTestId('reattach-stepup-held')).toBeNull();
+  });
+
+  it('until wave T2 a TPM-read candidate is still requested as hint: name required, hint bound', async () => {
+    const user = userEvent.setup();
+    fetchMock
+      .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
+      .mockResolvedValueOnce(json(202, { intent: requestedIntent }));
+    renderForm({ candidate: reattachCandidate({ evidenceLevel: 'tpm_continuity' }) });
+    expect(screen.getByTestId('reattach-evidence-notice').textContent).toMatch(/endorsement key/);
+    await user.click(screen.getByTestId('reattach-possession'));
+    expect(submitButton().disabled).toBe(true);
+    await user.type(screen.getByTestId('reattach-confirm-name'), 'LAPTOP-OLD');
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
+    await user.type(screen.getByTestId('reattach-stepup-code'), '123456');
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-pending')).toBeTruthy());
+    expect(mintMock).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({ evidenceLevel: 'hint' }),
+    }));
+  });
+
+  it('reports itself busy while submitting and in the step-up', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }));
+    const { onBusyChange } = renderForm();
+    await fillGates(user);
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it('an answer for a previous candidate never lands on the current one', async () => {
+    const user = userEvent.setup();
+    let resolvePost: (r: Response) => void = () => undefined;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolvePost = resolve; }));
+    const { onRequested, rerender } = renderForm();
+    await fillGates(user);
+    await user.click(submitButton());
+    rerender(
+      <ReattachDeviceForm
+        source={reattachSource()}
+        candidate={reattachCandidate({ deviceId: '55555555-5555-4555-8555-555555555555', hostname: 'OTHER' })}
+        passkeyCount={0}
+        mfaMethod="totp"
+        onClose={vi.fn()}
+        onRequested={onRequested}
+      />,
+    );
+    resolvePost(json(202, { intent: requestedIntent }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onRequested).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('reattach-pending')).toBeNull();
+    expect(screen.getByTestId('reattach-compare-hostname-target').textContent).toBe('OTHER');
   });
 
   it('an agent without the rebind protocol cannot be reattached', async () => {
