@@ -31,6 +31,8 @@ import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext } from '../../db';
 import {
+  decodeBrowseCursor,
+  decodeSearchCursor,
   listSnapshotDirectory,
   resolveSelectedSnapshotPathsInDb,
   searchSnapshotFiles,
@@ -50,7 +52,16 @@ import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-type Entry = { sourcePath: string; backupPath: string; size: number | null; kind: 'dir' | 'symlink' | null };
+type Entry = {
+  sourcePath: string;
+  backupPath: string;
+  size: number | null;
+  modifiedAt: string | null;
+  kind: 'dir' | 'symlink' | null;
+};
+
+/** Each file version's modification time, distinct per version (keyed by its size). */
+const mtime = (size: number) => new Date(Date.UTC(2026, 10, 1) + size * 60_000).toISOString();
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const key = (snapshotId: string, name: string) => `snapshots/${snapshotId}/files/${name}`;
@@ -64,8 +75,8 @@ async function publishIndex(snapshotDbId: string, entries: Entry[], digest: stri
   const admin = getTestDb();
   for (const e of entries) {
     await admin.execute(sql`
-      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path, size, kind)
-      VALUES (${snapshotDbId}, ${e.sourcePath}, ${e.backupPath}, ${e.size}, ${e.kind})
+      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path, size, modified_at, kind)
+      VALUES (${snapshotDbId}, ${e.sourcePath}, ${e.backupPath}, ${e.size}, ${e.modifiedAt}::timestamp, ${e.kind})
     `);
   }
   await admin.execute(sql`
@@ -91,7 +102,9 @@ type Chain = {
   dbIds: string[];
   digests: string[];
   trees: Entry[][];
+  otherId: string;
   otherDbId: string;
+  otherDigest: string;
   allKeys: string[];
 };
 
@@ -105,9 +118,9 @@ async function seedChain(): Promise<Chain> {
   const run = randomBytes(6).toString('hex');
   const ids = [1, 2, 3, 4, 5].map((n) => `snapshot-20261111T00000${n}Z-${run}`);
   const [s1, s2, , s4] = ids as [string, string, string, string, string];
-  const dir = (p: string): Entry => ({ sourcePath: p, backupPath: '', size: null, kind: 'dir' });
+  const dir = (p: string): Entry => ({ sourcePath: p, backupPath: '', size: null, modifiedAt: null, kind: 'dir' });
   const file = (p: string, snapshotId: string, name: string, size: number): Entry => (
-    { sourcePath: p, backupPath: key(snapshotId, name), size, kind: null }
+    { sourcePath: p, backupPath: key(snapshotId, name), size, modifiedAt: mtime(size), kind: null }
   );
 
   const full: Entry[] = [
@@ -117,7 +130,7 @@ async function seedChain(): Promise<Chain> {
     file('/srv/data/gone.txt', s1, 'gone', 12),
     dir('/srv/data/sub'),
     file('/srv/data/sub/c.txt', s1, 'c', 13),
-    { sourcePath: '/srv/data/link', backupPath: '', size: 0, kind: 'symlink' },
+    { sourcePath: '/srv/data/link', backupPath: '', size: 0, modifiedAt: null, kind: 'symlink' },
   ];
   const steps: Step[] = [
     // S2: b replaced, gone.txt deleted, d.txt added.
@@ -159,17 +172,18 @@ async function seedChain(): Promise<Chain> {
   const otherDevice = await seedWriteDevice(t.orgId, t.siteId);
   const otherId = `snapshot-20261111T000009Z-${run}`;
   const otherDbId = await insertSnapshotRow({ ...t, deviceId: otherDevice }, otherId);
+  const otherDigest = sha(`manifest ${otherId}`);
   await publishIndex(otherDbId, [
     file('/srv/data/a.txt', otherId, 'a', 99),
     file('/srv/data/other-only.txt', otherId, 'other', 98),
-  ], sha(`manifest ${otherId}`));
+  ], otherDigest);
 
   const allKeys = [...new Set([
     ...trees.flat().map((e) => e.backupPath).filter(Boolean),
     key(otherId, 'a'),
     key(otherId, 'other'),
   ])];
-  return { t, ids, dbIds, digests, trees, otherDbId, allKeys };
+  return { t, ids, dbIds, digests, trees, otherId, otherDbId, otherDigest, allKeys };
 }
 
 const inOrg = <T>(orgId: string, fn: () => Promise<T>) => withDbAccessContext(orgContext(orgId), fn);
@@ -199,6 +213,37 @@ describe('a full snapshot and its incrementals each read as their own complete t
 
     expect(await browse(c.t.orgId, s3, ['srv', 'data', 'sub'])).toEqual([]);
     expect(await browse(c.t.orgId, s4, ['srv', 'data', 'sub'])).toEqual(['c.txt 43']);
+
+    // Each version's own modification time, not just its size. Read through
+    // search: browse returns the column through raw SQL, which the test
+    // process's local time zone would shift.
+    const modifiedAt = async (snapshotDbId: string) => (await inOrg(c.t.orgId, () =>
+      searchSnapshotFiles({ snapshotDbId, query: 'a.txt', limit: 10, after: null })))
+      .entries.map((e) => e.modifiedAt);
+    expect(await modifiedAt(s2)).toEqual([mtime(10)]);
+    expect(await modifiedAt(s4)).toEqual([mtime(40)]);
+
+    // The other device's snapshot reads as its own tree too.
+    expect(await browse(c.t.orgId, c.otherDbId, ['srv', 'data'])).toEqual(['a.txt 99', 'other-only.txt 98']);
+  });
+
+  runDb('browse pages walk each snapshot\'s tree once, with nothing repeated or skipped', async () => {
+    const c = await seedChain();
+    for (const [i, expected] of [
+      [1, ['sub', 'a.txt', 'b.txt', 'd.txt', 'link']],
+      [3, ['sub', 'a.txt', 'b.txt', 'd.txt', 'gone.txt']],
+    ] as const) {
+      const names: string[] = [];
+      let cursor: { rank: 0 | 1; name: string } | null = null;
+      for (let pages = 0; pages < 10; pages++) {
+        const page = await inOrg(c.t.orgId, () =>
+          listSnapshotDirectory({ snapshotDbId: c.dbIds[i]!, segments: ['srv', 'data'], limit: 2, cursor }));
+        names.push(...page.entries.map((e) => e.name));
+        if (!page.nextCursor) break;
+        cursor = decodeBrowseCursor(page.nextCursor);
+      }
+      expect(names, `S${i + 1}`).toEqual(expected);
+    }
   });
 
   runDb('search finds an entry only in the snapshots that hold it', async () => {
@@ -217,6 +262,18 @@ describe('a full snapshot and its incrementals each read as their own complete t
       ['/srv/data/sub -', '/srv/data/sub/c.txt 43'],
     ]);
     expect(await search(c.dbIds[0]!, 'other-only')).toEqual([]);
+    expect(await search(c.otherDbId, '.txt')).toEqual(['/srv/data/a.txt 99', '/srv/data/other-only.txt 98']);
+
+    // Keyset pages of two cover the whole result exactly once.
+    const walked: string[] = [];
+    let after: string | null = null;
+    for (let pages = 0; pages < 10; pages++) {
+      const page = await inOrg(c.t.orgId, () => searchSnapshotFiles({ snapshotDbId: c.dbIds[3]!, query: '.txt', limit: 2, after }));
+      walked.push(...page.entries.map((e) => e.path));
+      if (!page.nextCursor) break;
+      after = decodeSearchCursor(page.nextCursor);
+    }
+    expect(walked).toEqual(['/srv/data/a.txt', '/srv/data/b.txt', '/srv/data/d.txt', '/srv/data/gone.txt', '/srv/data/sub/c.txt']);
     expect(await search(c.dbIds[2]!, '.txt')).toEqual(['/srv/data/a.txt 10', '/srv/data/b.txt 21', '/srv/data/d.txt 22']);
   });
 
@@ -263,6 +320,11 @@ describe('restore authorization follows each snapshot\'s own tree (#11736)', () 
     expect(await members(3)).toEqual(s4Members);
     expect(await members(4)).toEqual(s4Members);
 
+    // The other device's snapshot authorizes its own objects only.
+    expect([...await inOrg(c.t.orgId, () =>
+      drizzleBrokeredReadStore.filterIndexedKeys(c.otherDbId, c.allKeys, c.otherDigest))].sort())
+      .toEqual([key(c.otherId, 'a'), key(c.otherId, 'other')].sort());
+
     // A key list holding only stale keys authorizes nothing.
     expect([...await inOrg(c.t.orgId, () => drizzleBrokeredReadStore.filterIndexedKeys(
       c.dbIds[3]!, [key(s1, 'a'), key(s1, 'b'), key(s1, 'c'), key(s1, 'gone')], c.digests[3]!))]).toEqual([]);
@@ -273,6 +335,7 @@ describe('restore authorization follows each snapshot\'s own tree (#11736)', () 
     const counts = await Promise.all(c.dbIds.map((id) => inOrg(c.t.orgId, () => drizzleBrokeredReadStore.countIndexedFiles(id))));
     // Directory and symlink entries name no object.
     expect(counts).toEqual([4, 4, 3, 5, 5]);
+    expect(await inOrg(c.t.orgId, () => drizzleBrokeredReadStore.countIndexedFiles(c.otherDbId))).toBe(2);
   });
 
   runDb('recovery downloads: a referenced object authorizes, the object it replaced does not', async () => {
@@ -293,5 +356,34 @@ describe('restore authorization follows each snapshot\'s own tree (#11736)', () 
     expect(await authorize(key(s1, 'c'), s1)).toEqual(notMember); // deleted in S3, re-added as a new object in S4
     expect(await authorize(key(s1, 'gone'), s1)).toEqual(notMember); // deleted in S2, re-added in S4
     expect(await authorize(key(s1, 'b'), s1)).toEqual(notMember); // replaced in S2
+
+    // An unchanged entry still authorizes its object from the oldest snapshot.
+    const s2Db = c.dbIds[1]!;
+    await recordOrigin(c.t, s2Db, s1);
+    const fromS2 = (k: string) => inOrg(c.t.orgId, () => authorizeExternalReference(db, {
+      tokenId: 'token-11736', snapshotDbId: s2Db, key: k, originSnapshotId: s1,
+      orgId: c.t.orgId, deviceId: c.t.deviceId, pinnedStorageIdentity: WRITE_IDENTITY,
+    }));
+    expect(await fromS2(key(s1, 'a'))).toEqual({ ok: true, originStoragePrefix: null });
+    expect(await fromS2(key(s1, 'gone'))).toEqual(notMember); // deleted in S2
+  });
+
+  runDb('the index-state gates still apply to the entries: nothing authorizes off a rebuilding or rebound index', async () => {
+    const c = await seedChain();
+    const s4Db = c.dbIds[3]!;
+    const grants = (digest: string) => inOrg(c.t.orgId, async () =>
+      [...await drizzleBrokeredReadStore.filterIndexedKeys(s4Db, c.allKeys, digest)]);
+
+    expect(await grants(c.digests[3]!)).toHaveLength(5);
+    // Approved against other bytes than the index was built from.
+    expect(await grants(c.digests[2]!)).toEqual([]);
+    // Being rebuilt.
+    await getTestDb().execute(sql`UPDATE backup_snapshots SET file_index_status = 'hydrating' WHERE id = ${s4Db}`);
+    expect(await grants(c.digests[3]!)).toEqual([]);
+    await recordOrigin(c.t, s4Db, c.ids[1]!);
+    expect(await inOrg(c.t.orgId, () => authorizeExternalReference(db, {
+      tokenId: 'token-11736', snapshotDbId: s4Db, key: key(c.ids[1]!, 'b'), originSnapshotId: c.ids[1]!,
+      orgId: c.t.orgId, deviceId: c.t.deviceId, pinnedStorageIdentity: WRITE_IDENTITY,
+    }))).toEqual({ ok: false, reason: 'file index not complete' });
   });
 });

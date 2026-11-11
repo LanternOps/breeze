@@ -17,8 +17,9 @@ import { backupSnapshotFiles } from '../db/schema/backup';
  * entry. backupSnapshotIndexReadPath.contract.test.ts fails on any other
  * reader of the table.
  *
- * The result is a derived table aliased `snapshot_index_entries`. One row per
- * entry, with the snapshot's id on every row so a statement can join
+ * The result is a derived table aliased `snapshot_index_entries`, so it can
+ * appear once per statement scope: two in the same FROM would collide. One
+ * row per entry, with the snapshot's id on every row so a statement can join
  * `backup_snapshots` for its index-state gate:
  *
  *  - sourcePath: the stored path (browse, search and selection key);

@@ -13,13 +13,18 @@
  * Static scan of every non-test .ts file under apps/api/src and ee/. After
  * import statements and comments are dropped, each remaining mention of the
  * Drizzle table (`backupSnapshotFiles`) must be the target of `.insert(`,
- * `.delete(` or `INSERT INTO ${…}`. Each raw-SQL mention (`backup_snapshot_files`)
- * must follow `INSERT INTO` or `DELETE FROM`. Anything else is a read.
+ * `.update(`, `.delete(` or `INSERT INTO ${…}`, or a column named inside that
+ * same write statement (its WHERE, SET, conflict target or RETURNING). Each
+ * raw-SQL mention (`backup_snapshot_files`, any case) must follow `INSERT INTO`,
+ * `UPDATE` or `DELETE FROM`. Anything else is a read. Importing the table under
+ * another name (`backupSnapshotFiles as t`) is reported at the import.
  *
  * Known limits (a heuristic, not a parser): a `//` comment is recognised only
- * at the start of a line or after whitespace, and the table reached through an
- * alias (`const t = backupSnapshotFiles`) is reported at the alias, not at each
- * use. Review still owns those shapes.
+ * at the start of a line or after whitespace; a string holding `/*` (a glob
+ * such as '**' + '/*.ts') can hide code up to the next `*` + `/`; the table
+ * reached through a local alias (`const t = backupSnapshotFiles`) is reported
+ * at the alias, not at each use; and only `.ts` files are read. Review still
+ * owns those shapes.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -73,9 +78,11 @@ export interface DirectRead {
 }
 
 const DRIZZLE_TABLE = /\bbackupSnapshotFiles\b/g;
-const RAW_TABLE = /(?<!\w)backup_snapshot_files(?!\w)/g;
-const DRIZZLE_WRITE_BEFORE = /(?:\.(?:insert|delete)\(\s*|INSERT\s+INTO\s+\$\{\s*)$/;
-const RAW_WRITE_BEFORE = /(?:INSERT\s+INTO|DELETE\s+FROM)\s+(?:public\.)?$/i;
+const RAW_TABLE = /(?<!\w)backup_snapshot_files(?!\w)/gi;
+const DRIZZLE_WRITE_BEFORE = /(?:\.(?:insert|update|delete)\(\s*|INSERT\s+INTO\s+\$\{\s*)$/;
+const RAW_WRITE_BEFORE = /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:public\.)?$/i;
+const WRITE_TARGET = /\.(?:insert|update|delete)\(\s*backupSnapshotFiles\s*\)/g;
+const IMPORT_ALIAS = /^\s*import\s[^;]*?\bbackupSnapshotFiles\s+as\s+\w+/gm;
 
 /** Every mention of the table in `source` that is not a write. */
 export function findDirectIndexReads(source: string): DirectRead[] {
@@ -98,19 +105,25 @@ export function findDirectIndexReads(source: string): DirectRead[] {
     if (RAW_WRITE_BEFORE.test(before)) continue;
     report(m.index!);
   }
+  // An import under another name escapes every check above.
+  for (const m of source.matchAll(IMPORT_ALIAS)) {
+    report(m.index! + m[0].indexOf('backupSnapshotFiles'));
+  }
   return found;
 }
 
 /**
- * Whether the column reference at `index` belongs to a `.delete(backupSnapshotFiles)`
- * statement: the nearest preceding table mention is a delete target and no
- * statement boundary (`;`) lies between them.
+ * Whether the column reference at `index` belongs to an insert, update or
+ * delete of the table: the nearest preceding write target is this table, and
+ * neither a statement boundary (`;`) nor another bare mention of the table
+ * lies between them.
  */
 function isInsideWriteStatement(code: string, index: number): boolean {
   const head = code.slice(0, index);
-  const lastDelete = head.lastIndexOf('.delete(backupSnapshotFiles)');
-  if (lastDelete < 0) return false;
-  const between = head.slice(lastDelete + '.delete(backupSnapshotFiles)'.length);
+  let last: RegExpMatchArray | null = null;
+  for (const m of head.matchAll(WRITE_TARGET)) last = m;
+  if (!last) return false;
+  const between = head.slice(last.index! + last[0].length);
   return !between.includes(';') && !/\bbackupSnapshotFiles\b(?!\.)/.test(between);
 }
 
@@ -154,6 +167,26 @@ describe('findDirectIndexReads (detector)', () => {
       "const url = 'https://example.test/x'; const n = 1;",
     ].join('\n');
     expect(findDirectIndexReads(source)).toEqual([]);
+  });
+
+  it('accepts upserts and updates of the table, and reports raw SQL in any case', () => {
+    const source = [
+      'await tx.insert(backupSnapshotFiles).values(rows)',
+      '  .onConflictDoUpdate({ target: [backupSnapshotFiles.id], set: { size: 1 } })',
+      '  .returning({ id: backupSnapshotFiles.id });',
+      'await tx.update(backupSnapshotFiles).set({ kind: null }).where(eq(backupSnapshotFiles.id, id));',
+      'await tx.execute(sql`UPDATE backup_snapshot_files SET kind = NULL`);',
+      'await db.execute(sql`SELECT 1 FROM BACKUP_SNAPSHOT_FILES`);',
+    ].join('\n');
+    expect(findDirectIndexReads(source).map((r) => r.line)).toEqual([6]);
+  });
+
+  it('reports the table imported under another name', () => {
+    const source = [
+      "import { backupSnapshots, backupSnapshotFiles as files } from '../db/schema';",
+      'const rows = await db.select().from(files);',
+    ].join('\n');
+    expect(findDirectIndexReads(source).map((r) => r.line)).toEqual([1]);
   });
 
   it('reports a column read that follows a finished delete statement', () => {
