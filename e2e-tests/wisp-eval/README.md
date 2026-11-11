@@ -205,8 +205,10 @@ Create `scenarios/<letter>-<id>.json`. Files run in name order.
 ## Cost
 
 Each scenario turn costs about 3-6¢ on the default model, and a specialist run
-costs about 7¢. A full run of the 11 scenarios is about 14 user turns plus 1-3
-agent runs, roughly **$0.50-$0.70**. Background assessments add a little.
+costs about 7¢. A full run of the 11 scenarios is 14-17 model turns and took
+8-9 minutes. The first four runs on 2026-11-10/11 measured **$0.67-$0.94**,
+including background assessments and the summary step that runs each time a
+session closes. `setup.sh` costs about 18¢ for the first look at three orgs.
 
 - **Per-scenario cost** is the change in `sum(ai_cost_usage.total_cost_cents)` for
   daily rows across the scenario. It includes agent runs and any background

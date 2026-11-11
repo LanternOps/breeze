@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Re-score a saved report against the CURRENT scenarios/*.json, with no model calls.
 //
-//   node rescore.cjs .state/reports/run-<ts>.json [--only id,id]
+//   node rescore.cjs .state/reports/run-<ts>.json [--only id,id] [--scenarios <dir>]
 //
 // Use it to tune a check against real observations, and to prove a guard can fail:
 // doctor one expectation in a scenario file, re-score, see it go red, restore the file.
@@ -17,7 +17,8 @@ if (!file) { console.error('usage: node rescore.cjs <report.json> [--only id,id]
 const report = JSON.parse(fs.readFileSync(file, 'utf8'));
 const onlyIdx = rest.indexOf('--only');
 const only = onlyIdx >= 0 ? rest[onlyIdx + 1].split(',') : null;
-const dir = path.join(__dirname, 'scenarios');
+const dirIdx = rest.indexOf('--scenarios');
+const dir = dirIdx >= 0 ? path.resolve(rest[dirIdx + 1]) : path.join(__dirname, 'scenarios');
 const byId = Object.fromEntries(fs.readdirSync(dir).filter((f) => f.endsWith('.json'))
   .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))).map((s) => [s.id, s]));
 

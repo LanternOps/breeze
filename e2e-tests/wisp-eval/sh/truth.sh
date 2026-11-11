@@ -31,6 +31,7 @@ case "${1:-state}" in
     "$0" spend ;;
   spend)
     q "select 'cost_usd_today', coalesce(round(sum(total_cost_cents)/100.0, 3), 0) from ai_cost_usage where period = 'daily' and period_key = to_char(now() at time zone 'utc','YYYY-MM-DD')"
+    q "select 'cost_usd_all_days', coalesce(round(sum(total_cost_cents)/100.0, 3), 0) from ai_cost_usage where period = 'daily'"
     q "select 'user_turns_total', count(*) from ai_messages where role = 'user'"
     q "select 'agent_runs_total', count(*) from ai_agent_runs"
     q "select 'agent_run_cost_usd', coalesce(round(sum(cost_cents)/100.0, 3), 0) from ai_agent_runs" ;;
