@@ -13,10 +13,10 @@
  * the wire.
  */
 import { Readable } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CreateMultipartUploadCommand, ListPartsCommand, type S3Client } from '@aws-sdk/client-s3';
 import { buildS3StorageClient } from './backupSnapshotStorage';
-import { dropUnparseableAbortDate } from './guardedS3Client';
+import { __resetAbortDateWarningForTests, dropUnparseableAbortDate } from './guardedS3Client';
 
 // The value from the production log, verbatim.
 const GO_TIME_STRING = '2026-11-13 18:06:18.053423249 +0000 UTC m=+754689.983094980';
@@ -89,6 +89,23 @@ describe('backup storage client: x-amz-abort-date the SDK cannot parse (#11764)'
 });
 
 describe('dropUnparseableAbortDate', () => {
+  it('warns once per process when it drops a value, not on every response', () => {
+    // Runs first in this block; the integration tests above may already have
+    // spent the once-per-process warning, so reset it through the seam.
+    __resetAbortDateWarningForTests();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      dropUnparseableAbortDate({ 'x-amz-abort-date': GO_TIME_STRING });
+      dropUnparseableAbortDate({ 'x-amz-abort-date': GO_TIME_STRING });
+      dropUnparseableAbortDate({ 'x-amz-abort-date': HTTP_DATE });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('x-amz-abort-date');
+      expect(JSON.stringify(warn.mock.calls[0])).toContain(GO_TIME_STRING);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('matches the header name case-insensitively', () => {
     const headers: Record<string, string> = { 'X-Amz-Abort-Date': GO_TIME_STRING, 'X-Amz-Abort-Rule-Id': 'r' };
     dropUnparseableAbortDate(headers);

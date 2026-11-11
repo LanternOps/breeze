@@ -109,12 +109,29 @@ function isImfFixdate(value: string): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month && date.getUTCDate() === day;
 }
 
+// Once per process: a store that sends a malformed value sends it on every
+// multipart create, so a per-response line would be noise, but the first one
+// keeps the store's non-conformance visible after the symptom is gone.
+let abortDateWarned = false;
+
+/** Test seam: re-arms the once-per-process warning. */
+export function __resetAbortDateWarningForTests(): void {
+  abortDateWarned = false;
+}
+
 /** Removes an `x-amz-abort-date` header (any case) whose value is not an IMF-fixdate. Mutates `headers`. */
 export function dropUnparseableAbortDate(headers: Record<string, string | undefined>): void {
   for (const name of Object.keys(headers)) {
     if (name.toLowerCase() !== ABORT_DATE_HEADER) continue;
     const value = headers[name];
-    if (typeof value !== 'string' || !isImfFixdate(value)) delete headers[name];
+    if (typeof value === 'string' && isImfFixdate(value)) continue;
+    delete headers[name];
+    if (!abortDateWarned) {
+      abortDateWarned = true;
+      console.warn('[guardedS3Client] dropped an x-amz-abort-date response header that is not an HTTP-date (logged once per process)', {
+        value: String(value).slice(0, 120),
+      });
+    }
   }
 }
 
