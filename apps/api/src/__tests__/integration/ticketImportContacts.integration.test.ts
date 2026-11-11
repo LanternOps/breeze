@@ -38,7 +38,21 @@ vi.mock('../../services/email', async (orig) => {
 });
 
 import { db, withDbAccessContext } from '../../db';
-import { auditLogs, contactExternalLinks, contacts, ticketExternalRefs, ticketImportRunIssues, ticketOutbox, tickets, users } from '../../db/schema';
+import {
+  auditLogs,
+  callerVerificationDestinations,
+  contactExternalLinks,
+  contactRoles,
+  contacts,
+  portalUsers,
+  ticketExternalRefs,
+  ticketImportRunIssues,
+  ticketOutbox,
+  tickets,
+  users,
+} from '../../db/schema';
+import { createTicket } from '../../services/ticketService';
+import { getSource } from '../../services/ticketImport/sourceStore';
 import { updateContact } from '../../services/contacts/crud';
 import { listCreatedContacts, removeCreatedContacts } from '../../services/ticketImport/createdContacts';
 import { importTicket } from '../../services/ticketImport/importWriter';
@@ -99,6 +113,40 @@ async function ticketsByKey(fx: ImportFx) {
     .innerJoin(ticketExternalRefs, eq(ticketExternalRefs.ticketId, tickets.id))
     .where(eq(ticketExternalRefs.partnerServicePrincipalId, fx.principal.id));
   return new Map(rows.map((r) => [r.key, r]));
+}
+
+const scopeOf = (fx: ImportFx) => ({ sourceId: fx.sourceId, principalId: fx.principal.id });
+
+/** The removal as the route runs it: the admin's context, one transaction per step. */
+function remove(fx: ImportFx, extra: Partial<Parameters<typeof removeCreatedContacts>[0]> = {}) {
+  return removeCreatedContacts({
+    partnerId: fx.partner.id,
+    sourceId: fx.sourceId,
+    actor: { userId: fx.owner.id, destinationSource: 'technician' },
+    transaction: (fn) => withDbAccessContext(fx.ownerContext(), fn),
+    ...extra,
+  });
+}
+
+/** One imported ticket per requester `keys[i]`, with the option on; returns the created contact per key. */
+async function importRequesters(fx: ImportFx, keys: string[]) {
+  await withOptions(fx, ON);
+  fx.source.tickets = fakeTickets(keys.map((k) => `t-${k}`)).map((x, i) => ({
+    ...x,
+    requesterEmail: `${keys[i]}@customer.example`,
+    requesterKey: keys[i]!,
+    requesterName: `Person ${keys[i]}`,
+  }));
+  const window = await openWindow(fx);
+  const run = await startImportRun(fx, 'import', window.id);
+  await drive(fx, run.id);
+  expect(normalizeCounters((await runRow(run.id)).counters).contactsCreated).toBe(keys.length);
+  const out = new Map<string, { id: string; orgId: string }>();
+  for (const key of keys) {
+    const [row] = await contactsWith(fx.orgA.id, `${key}@customer.example`);
+    out.set(key, row!);
+  }
+  return { window, contacts: out };
 }
 
 /** A ticket whose requester is `{ createContact }`, written through importTicket directly. */
@@ -304,12 +352,12 @@ describe('created contacts (W4b): requesters of imported tickets become contacts
     // A technician edits one (through the live service, as breeze_app).
     await withDbAccessContext(fx.ownerContext(), () => updateContact(db, edited!.id, fx.orgA.id, { title: 'Office manager' }, { userId: fx.owner.id }));
 
-    const listed = await withDbAccessContext(fx.ownerContext(), () => listCreatedContacts(fx.sourceId));
+    const listed = await withDbAccessContext(fx.ownerContext(), () => listCreatedContacts(scopeOf(fx)));
     expect(listed.contacts.map((c) => [c.contactId, c.keptBecause]).sort()).toEqual([[edited!.id, ['edited']], [plain!.id, []]].sort());
 
-    const result = await withDbAccessContext(fx.ownerContext(), () => removeCreatedContacts(fx.sourceId, { userId: fx.owner.id, destinationSource: 'technician' }));
+    const result = await remove(fx);
     expect(result.removed.map((r) => r.contactId)).toEqual([plain!.id]);
-    expect(result).toMatchObject({ skipped: 1, skippedBy: { edited: 1, portal_login: 0, role: 0, other_link: 0 }, remaining: 0 });
+    expect(result).toMatchObject({ skipped: 1, skippedBy: { edited: 1, portal_login: 0, role: 0, other_link: 0, in_use: 0 }, remaining: 0, stoppedBy: null });
 
     expect(await contactsWith(fx.orgA.id, 'plain@customer.example')).toEqual([]);
     expect(await contactsWith(fx.orgA.id, 'edited@customer.example')).toHaveLength(1);
@@ -323,7 +371,7 @@ describe('created contacts (W4b): requesters of imported tickets become contacts
     expect(t.get('r3')!.requesterContactId).toBe(edited!.id);
 
     // A second removal finds nothing more to remove.
-    const again = await withDbAccessContext(fx.ownerContext(), () => removeCreatedContacts(fx.sourceId, { userId: fx.owner.id }));
+    const again = await remove(fx);
     expect(again).toMatchObject({ removed: [], skipped: 1 });
 
     // A later pass does not recreate the removed contact for the tickets it resumes.
@@ -332,5 +380,111 @@ describe('created contacts (W4b): requesters of imported tickets become contacts
     await drive(fx, delta.id);
     expect(normalizeCounters((await runRow(delta.id)).counters)).toMatchObject({ contactsCreated: 0, tickets: { resumed: 3 } });
     expect(await contactsWith(fx.orgA.id, 'plain@customer.example')).toEqual([]);
+  }, CASE_TIMEOUT);
+
+  runDb('every skip reason against Postgres: a portal login, a role, another link, and each dependent the import did not create', async () => {
+    const fx = await seedImport();
+    const keys = ['plain', 'portal', 'role', 'link', 'live', 'dest', 'attested', 'own-dest'];
+    const { contacts: c } = await importRequesters(fx, keys);
+    const testDb = getTestDb();
+    // Written straight, as the live paths would leave them; none moves the contact's updated_at.
+    await testDb.insert(portalUsers).values({
+      orgId: fx.orgA.id, contactId: c.get('portal')!.id, email: 'portal@customer.example', name: 'Portal', passwordHash: 'x', authMethod: 'password', status: 'active',
+    });
+    await testDb.insert(contactRoles).values({ contactId: c.get('role')!.id, orgId: fx.orgA.id, role: 'billing' });
+    await testDb.insert(contactExternalLinks).values({ contactId: c.get('link')!.id, orgId: fx.orgA.id, system: 'datto_rmm', externalId: 'CT-1' });
+    // A live ticket inbound mail (or a technician) attached later.
+    const tech = { kind: 'user' as const, userId: fx.owner.id, name: 'Owner' };
+    await withDbAccessContext(fx.ownerContext(), () => createTicket({
+      orgId: fx.orgA.id, subject: 'Live', description: 'live', priority: 'normal', source: 'manual', requesterContactId: c.get('live')!.id,
+    } as Parameters<typeof createTicket>[0], tech));
+    // A caller-verification destination a technician set, one attested, and the import's own (kept removable).
+    const destination = (contactId: string, source: 'technician' | 'import', attested: boolean) => ({
+      orgId: fx.orgA.id, contactId, kind: 'mobile' as const, valueHash: 'a'.repeat(64), valueRedacted: '+1…00', source,
+      ...(attested ? { attestedAt: new Date(), attestedByUserId: fx.owner.id } : {}),
+    });
+    await testDb.insert(callerVerificationDestinations).values([
+      destination(c.get('dest')!.id, 'technician', false),
+      destination(c.get('attested')!.id, 'import', true),
+      destination(c.get('own-dest')!.id, 'import', false),
+    ]);
+
+    const listed = await withDbAccessContext(fx.ownerContext(), () => listCreatedContacts(scopeOf(fx)));
+    const kept = Object.fromEntries(listed.contacts.map((x) => [x.sourceUserKey, x.keptBecause]));
+    expect(kept).toEqual({
+      plain: [], portal: ['portal_login'], role: ['role'], link: ['other_link'], live: ['in_use'], dest: ['in_use'], attested: ['in_use'], 'own-dest': [],
+    });
+
+    const result = await remove(fx);
+    expect(result.removed.map((r) => r.contactId).sort()).toEqual([c.get('plain')!.id, c.get('own-dest')!.id].sort());
+    expect(result).toMatchObject({ skipped: 6, skippedBy: { portal_login: 1, role: 1, other_link: 1, in_use: 3, edited: 0 }, remaining: 0 });
+    for (const key of ['portal', 'role', 'link', 'live', 'dest', 'attested']) {
+      expect(await contactsWith(fx.orgA.id, `${key}@customer.example`), key).toHaveLength(1);
+    }
+    // The import's own ticket of a removed contact keeps its snapshot.
+    expect((await ticketsByKey(fx)).get('t-plain')).toMatchObject({ requesterContactId: null, submitterEmail: 'plain@customer.example' });
+  }, CASE_TIMEOUT);
+
+  runDb('a role or an edit committed after the batch is chosen, before the delete, keeps the contact', async () => {
+    const fx = await seedImport();
+    const { contacts: c } = await importRequesters(fx, ['a', 'b', 'c']);
+    const seen: string[] = [];
+    const result = await remove(fx, {
+      beforeContact: async (contactId) => {
+        seen.push(contactId);
+        // Committed on another connection, between the batch read and this contact's transaction.
+        if (contactId === c.get('a')!.id) await getTestDb().insert(contactRoles).values({ contactId, orgId: fx.orgA.id, role: 'technical' });
+        if (contactId === c.get('b')!.id) {
+          await withDbAccessContext(fx.ownerContext(), () => updateContact(db, contactId, fx.orgA.id, { title: 'Office manager' }, { userId: fx.owner.id }));
+        }
+      },
+    });
+    // All three were chosen; two became ineligible and are counted under their reason.
+    expect(seen.sort()).toEqual([c.get('a')!.id, c.get('b')!.id, c.get('c')!.id].sort());
+    expect(result.removed.map((r) => r.contactId)).toEqual([c.get('c')!.id]);
+    expect(result).toMatchObject({ skipped: 2, remaining: 0, stoppedBy: null });
+    expect(result.skippedBy.role).toBeGreaterThanOrEqual(1);
+    expect(result.skippedBy.edited).toBe(1);
+    expect(await contactsWith(fx.orgA.id, 'a@customer.example')).toHaveLength(1);
+    expect(await contactsWith(fx.orgA.id, 'b@customer.example')).toHaveLength(1);
+  }, CASE_TIMEOUT);
+
+  runDb('a run queued meanwhile stops the call; one active at the start refuses it (409)', async () => {
+    const fx = await seedImport();
+    const { window, contacts: c } = await importRequesters(fx, ['x', 'y']);
+    let started = false;
+    const result = await remove(fx, {
+      beforeContact: async () => {
+        if (started) return;
+        started = true;
+        await startImportRun(fx, 'import', window.id);
+      },
+    });
+    expect(result).toMatchObject({ removed: [], stoppedBy: 'run_active', remaining: 2 });
+    expect(await contactsWith(fx.orgA.id, 'x@customer.example')).toHaveLength(1);
+    await expect(remove(fx)).rejects.toMatchObject({ code: 'TICKET_IMPORT_RUN_ACTIVE', status: 409 });
+    expect(c.size).toBe(2);
+  }, CASE_TIMEOUT);
+
+  runDb('another partner sees none of it: its context finds no source to remove from and no link or contact to list', async () => {
+    const fx = await seedImport();
+    await importRequesters(fx, ['mine']);
+    const other = await seedImport();
+    const otherCtx = other.ownerContext;
+    // The routes 404: the source is not the other partner's.
+    expect(await withDbAccessContext(otherCtx(), () => getSource(other.partner.id, fx.sourceId))).toBeNull();
+    await expect(removeCreatedContacts({
+      partnerId: other.partner.id,
+      sourceId: fx.sourceId,
+      actor: { userId: other.owner.id },
+      transaction: (fn) => withDbAccessContext(otherCtx(), fn),
+    })).rejects.toMatchObject({ code: 'TICKET_IMPORT_SOURCE_NOT_FOUND', status: 404 });
+    // RLS: A's links and contacts are invisible to B, even asked for by A's system.
+    const listed = await withDbAccessContext(otherCtx(), () => listCreatedContacts(scopeOf(fx)));
+    expect(listed.contacts).toEqual([]);
+    const links = await withDbAccessContext(otherCtx(), () => db.select().from(contactExternalLinks).where(eq(contactExternalLinks.system, system(fx))));
+    expect(links).toEqual([]);
+    // Still there for A.
+    expect(await contactsWith(fx.orgA.id, 'mine@customer.example')).toHaveLength(1);
   }, CASE_TIMEOUT);
 });
