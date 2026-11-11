@@ -3838,7 +3838,10 @@
     "oldDeviceUnavailable": "La scheda del vecchio dispositivo non è più disponibile.",
     "title": "Possibile registrazione duplicata",
     "unknownDevice": "il dispositivo precedente",
-    "viewOldDevice": "Visualizza il vecchio dispositivo"
+    "viewOldDevice": "Visualizza il vecchio dispositivo",
+    "reattach": "Ricollega",
+    "reattachPending": "Un ricollegamento al vecchio record è in sospeso: la nuova installazione lo completa quando il suo agente si collega. La richiesta scade il {{expiresAt}}.",
+    "reviewPending": "Una possibile reinstallazione attende la revisione del partner."
   },
   "fleetPosture": {
     "securityUnavailable": "Impossibile caricare i rilievi di sicurezza sull'accesso remoto per questa vista.",
@@ -4271,7 +4274,11 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Limite di dispositivi raggiunto",
       "STEP_UP_REQUIRED": "Conferma richiesta",
       "ASSIGNMENT_FAILED": "Non riuscito"
-    }
+    },
+    "modeLegend": "Cosa fare con questo dispositivo",
+    "modeAssign": "Assegna come nuovo dispositivo",
+    "modeReattach": "Ricollega a {{hostname}} (reinstallazione di un record esistente)",
+    "reattachPending": "Un ricollegamento di questo dispositivo è in sospeso: la nuova installazione lo completa quando il suo agente si collega. La richiesta scade il {{expiresAt}}."
   },
   "timeFleet": {
     "title": "Sincronizzazione dell’ora",
@@ -5045,6 +5052,86 @@
       "range": "{{from}}-{{to}} di {{total}}",
       "previousPage": "Precedente",
       "nextPage": "Successivo"
+    }
+  },
+  "reinstalledBadge": {
+    "label": "Reinstallato il {{date}}",
+    "title": "Questo record ha preso in carico una macchina reinstallata il {{at}}. La nuova installazione ne ha ricostruito l’inventario."
+  },
+  "reattachDialog": {
+    "title": "Ricollega a {{target}}",
+    "description": "Usa il record esistente {{target}} per la nuova installazione {{source}}, mantenendone cronologia, criteri e configurazione.",
+    "newInstall": "Nuova installazione",
+    "existingRecord": "Record esistente",
+    "holdingArea": "Area di attesa",
+    "fields": {
+      "hostname": "Nome host",
+      "os": "Sistema operativo",
+      "model": "Produttore e modello",
+      "serial": "Numero di serie",
+      "systemUuid": "UUID di sistema",
+      "agentVersion": "Versione dell’agente",
+      "place": "Organizzazione / sito",
+      "enrolledAt": "Registrato il",
+      "lastSeenAt": "Ultima attività"
+    },
+    "matchedOn": "Corrispondenza su: {{evidence}}",
+    "evidence": {
+      "systemUuid": "UUID di sistema",
+      "serial": "numero di serie e produttore",
+      "hostname": "solo nome host",
+      "other": "identificatori segnalati"
+    },
+    "evidenceNoticeHint": "Identificatori hardware segnalati dal dispositivo. Non verificati.",
+    "evidenceNoticeTpm": "Stessa chiave di approvazione TPM di cui la vecchia installazione ha dimostrato il possesso. Ciò dimostra la continuità della chiave, non lo stesso TPM fisico; i TPM virtuali clonati condividono le chiavi.",
+    "consequences": "La nuova installazione ricostruisce l’inventario di {{target}}. Il lavoro in coda, le autorizzazioni e le sessioni della vecchia installazione vengono annullati e il record {{source}} viene ritirato.",
+    "possession": "Ho confermato, al di fuori di Breeze, che la nuova installazione è in esecuzione sulla macchina descritta da {{target}}.",
+    "acknowledgeOsChange": "La nuova installazione segnala {{sourceOs}} e il record esistente {{targetOs}}. Confermo che il sistema operativo è cambiato.",
+    "restoreDecommissioned": "{{target}} è stato rimosso. Ripristinalo nell’ambito di questo ricollegamento.",
+    "confirmNameLabel": "Digita {{hostname}} per confermare",
+    "stepUpHeading": "Conferma la tua identità",
+    "stepUpIntro": "Il ricollegamento ritira un record di dispositivo. Verifica con il secondo fattore per continuare.",
+    "stepUpPasskeyNote": "Il browser chiederà la tua passkey quando continui.",
+    "stepUpCodeLabel": "Codice dell’autenticatore",
+    "stepUpRetry": "Questa verifica è scaduta o non corrisponde più. Inserisci un nuovo codice.",
+    "noStepUpFactor": "Il ricollegamento richiede una passkey o un’app di autenticazione. Configurane una nel profilo, poi riprova.",
+    "genericError": "Impossibile richiedere il ricollegamento. Riprova.",
+    "cancel": "Annulla",
+    "close": "Chiudi",
+    "submit": "Ricollega a {{hostname}}",
+    "submitting": "Richiesta in corso…",
+    "submitStepUp": "Verifica e ricollega",
+    "requestedToast": "Ricollegamento a {{hostname}} richiesto",
+    "pendingTitle": "Ricollegamento richiesto",
+    "pendingMessage": "{{source}} prende il posto di {{target}} alla prossima connessione del suo agente; qui non serve altro. La richiesta scade il {{expiresAt}}.",
+    "refusals": {
+      "device_not_found": "Uno dei dispositivi non esiste più o è fuori dal tuo accesso.",
+      "not_partner_user": "Solo gli utenti del partner possono ricollegare i dispositivi.",
+      "user_inactive": "Il tuo account non è attivo.",
+      "permission_denied": "Ti serve l’autorizzazione a modificare e rimuovere i dispositivi nelle organizzazioni di entrambi i dispositivi.",
+      "org_access_denied": "Non hai accesso alle organizzazioni di entrambi i dispositivi.",
+      "full_admin_required": "Ricollegare un dispositivo dall’area di attesa in base a identificatori segnalati richiede un amministratore completo del partner.",
+      "partner_mismatch": "I dispositivi non appartengono più al tuo partner.",
+      "MFA_REQUIRED": "Il ricollegamento richiede una sessione con autenticazione a due fattori. Accedi di nuovo con il secondo fattore.",
+      "target_alive": "{{hostname}} è ancora in uso: la sua installazione si è autenticata di recente. Il ricollegamento richiede che la vecchia installazione sia inattiva.",
+      "liveness_unknown": "Impossibile verificare se {{hostname}} è ancora in uso. Riprova tra poco.",
+      "os_changed": "I sistemi operativi sono diversi. Conferma il cambio di sistema operativo e riprova.",
+      "target_changed": "{{hostname}} è cambiato da quando è stato mostrato (nuova registrazione o ricollegamento). Riapri il ricollegamento per vederne lo stato attuale.",
+      "rebind_unsupported": "L’agente della nuova installazione è troppo vecchio per il ricollegamento. Aggiorna prima l’agente.",
+      "source_decommissioned": "Il record della nuova installazione è stato rimosso.",
+      "source_ineligible": "Questo dispositivo non può essere ricollegato: i dispositivi di Supporto rapido non possono.",
+      "target_ephemeral": "{{hostname}} è un dispositivo temporaneo e non può ricevere un ricollegamento.",
+      "target_decommissioned": "{{hostname}} è stato rimosso. Scegli di ripristinarlo per ricollegarvi il dispositivo.",
+      "target_ineligible": "{{hostname}} non è un record gestito.",
+      "target_retired": "{{hostname}} è già stato ritirato da un ricollegamento precedente.",
+      "device_quarantined": "Uno dei dispositivi è in quarantena.",
+      "device_suspended": "Uno dei dispositivi ha le credenziali dell’agente sospese.",
+      "org_draining": "L’organizzazione di uno dei dispositivi non è attiva.",
+      "device_in_open_intent": "Uno dei dispositivi è già in un ricollegamento in sospeso.",
+      "confirm_target_name_required": "Digita il nome del dispositivo esistente per confermare.",
+      "confirm_target_name_mismatch": "Il nome digitato non corrisponde a {{hostname}}.",
+      "same_device": "Un dispositivo non può essere ricollegato a sé stesso.",
+      "invalid_target_version": "Manca la versione del record esistente. Riapri il ricollegamento."
     }
   }
 }

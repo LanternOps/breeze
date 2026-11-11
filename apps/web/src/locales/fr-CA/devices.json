@@ -3838,7 +3838,10 @@
     "oldDeviceUnavailable": "La fiche de l’ancien appareil n’est plus disponible.",
     "title": "Inscription potentiellement en double",
     "unknownDevice": "l’appareil précédent",
-    "viewOldDevice": "Voir l’ancien appareil"
+    "viewOldDevice": "Voir l’ancien appareil",
+    "reattach": "Rattacher",
+    "reattachPending": "Un rattachement à l’ancienne fiche est en attente : la nouvelle installation le termine lorsque son agent se connecte. La demande expire le {{expiresAt}}.",
+    "reviewPending": "Une réinstallation possible attend l’examen du partenaire."
   },
   "fleetPosture": {
     "securityUnavailable": "Impossible de charger les constats de sécurité d'accès distant pour cette vue.",
@@ -4271,7 +4274,11 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Limite d'appareils atteinte",
       "STEP_UP_REQUIRED": "Confirmation requise",
       "ASSIGNMENT_FAILED": "Échec"
-    }
+    },
+    "modeLegend": "Que faire de cet appareil",
+    "modeAssign": "Affecter comme nouvel appareil",
+    "modeReattach": "Rattacher à {{hostname}} (réinstallation d’une fiche existante)",
+    "reattachPending": "Un rattachement de cet appareil est en attente : la nouvelle installation le termine lorsque son agent se connecte. La demande expire le {{expiresAt}}."
   },
   "timeFleet": {
     "title": "Synchronisation de l’heure",
@@ -5045,6 +5052,86 @@
       "range": "{{from}}-{{to}} sur {{total}}",
       "previousPage": "Précédent",
       "nextPage": "Suivant"
+    }
+  },
+  "reinstalledBadge": {
+    "label": "Réinstallé le {{date}}",
+    "title": "Cette fiche a repris une machine réinstallée le {{at}}. La nouvelle installation a reconstruit son inventaire."
+  },
+  "reattachDialog": {
+    "title": "Rattacher à {{target}}",
+    "description": "Utiliser la fiche existante {{target}} pour la nouvelle installation {{source}}, en conservant son historique, ses politiques et sa configuration.",
+    "newInstall": "Nouvelle installation",
+    "existingRecord": "Fiche existante",
+    "holdingArea": "Zone d’attente",
+    "fields": {
+      "hostname": "Nom d’hôte",
+      "os": "Système d’exploitation",
+      "model": "Fabricant et modèle",
+      "serial": "Numéro de série",
+      "systemUuid": "UUID système",
+      "agentVersion": "Version de l’agent",
+      "place": "Organisation / site",
+      "enrolledAt": "Inscrit le",
+      "lastSeenAt": "Vu pour la dernière fois"
+    },
+    "matchedOn": "Correspondance sur : {{evidence}}",
+    "evidence": {
+      "systemUuid": "UUID système",
+      "serial": "numéro de série et fabricant",
+      "hostname": "nom d’hôte uniquement",
+      "other": "identifiants signalés"
+    },
+    "evidenceNoticeHint": "Identifiants matériels signalés par l’appareil. Non vérifiés.",
+    "evidenceNoticeTpm": "Même clé d’approbation TPM dont l’ancienne installation a prouvé la possession. Cela prouve la continuité de la clé, pas le même TPM physique ; les TPM virtuels clonés partagent leurs clés.",
+    "consequences": "La nouvelle installation reconstruit l’inventaire de {{target}}. Les tâches en file d’attente, autorisations et sessions de l’ancienne installation sont annulées, et la fiche {{source}} est retirée.",
+    "possession": "J’ai confirmé, en dehors de Breeze, que la nouvelle installation s’exécute sur la machine décrite par {{target}}.",
+    "acknowledgeOsChange": "La nouvelle installation signale {{sourceOs}} et la fiche existante {{targetOs}}. Je confirme que le système d’exploitation a changé.",
+    "restoreDecommissioned": "{{target}} a été retiré. Le restaurer dans le cadre de ce rattachement.",
+    "confirmNameLabel": "Saisissez {{hostname}} pour confirmer",
+    "stepUpHeading": "Confirmez votre identité",
+    "stepUpIntro": "Le rattachement retire une fiche d’appareil. Vérifiez avec votre second facteur pour continuer.",
+    "stepUpPasskeyNote": "Votre navigateur demandera votre clé d’accès lorsque vous continuerez.",
+    "stepUpCodeLabel": "Code de l’authentificateur",
+    "stepUpRetry": "Cette vérification a expiré ou ne correspond plus. Saisissez un nouveau code.",
+    "noStepUpFactor": "Le rattachement nécessite une clé d’accès ou une application d’authentification. Configurez-en une dans votre profil, puis réessayez.",
+    "genericError": "Le rattachement n’a pas pu être demandé. Réessayez.",
+    "cancel": "Annuler",
+    "close": "Fermer",
+    "submit": "Rattacher à {{hostname}}",
+    "submitting": "Demande en cours…",
+    "submitStepUp": "Vérifier et rattacher",
+    "requestedToast": "Rattachement à {{hostname}} demandé",
+    "pendingTitle": "Rattachement demandé",
+    "pendingMessage": "{{source}} reprend {{target}} la prochaine fois que son agent se connecte ; rien d’autre n’est nécessaire ici. La demande expire le {{expiresAt}}.",
+    "refusals": {
+      "device_not_found": "L’un des appareils n’existe plus ou est hors de votre accès.",
+      "not_partner_user": "Seuls les utilisateurs du partenaire peuvent rattacher des appareils.",
+      "user_inactive": "Votre compte n’est pas actif.",
+      "permission_denied": "Vous devez avoir l’autorisation de modifier et de retirer des appareils dans les organisations des deux appareils.",
+      "org_access_denied": "Vous n’avez pas accès aux organisations des deux appareils.",
+      "full_admin_required": "Rattacher un appareil de la zone d’attente sur la base d’identifiants signalés nécessite un administrateur complet du partenaire.",
+      "partner_mismatch": "Les appareils ne sont plus chez votre partenaire.",
+      "MFA_REQUIRED": "Le rattachement nécessite une session ouverte avec l’authentification à deux facteurs. Reconnectez-vous avec votre second facteur.",
+      "target_alive": "{{hostname}} est encore utilisé : son installation s’est authentifiée récemment. Un rattachement exige que l’ancienne installation soit silencieuse.",
+      "liveness_unknown": "Impossible de vérifier si {{hostname}} est encore utilisé. Réessayez dans un instant.",
+      "os_changed": "Les systèmes d’exploitation diffèrent. Confirmez le changement de système d’exploitation et réessayez.",
+      "target_changed": "{{hostname}} a changé depuis son affichage (réinscrit ou rattaché). Rouvrez le rattachement pour voir son état actuel.",
+      "rebind_unsupported": "L’agent de la nouvelle installation est trop ancien pour être rattaché. Mettez d’abord l’agent à jour.",
+      "source_decommissioned": "La fiche de la nouvelle installation a été retirée.",
+      "source_ineligible": "Cet appareil ne peut pas être rattaché : les appareils d’assistance rapide ne le peuvent pas.",
+      "target_ephemeral": "{{hostname}} est un appareil temporaire et ne peut pas recevoir de rattachement.",
+      "target_decommissioned": "{{hostname}} a été retiré. Choisissez de le restaurer pour y rattacher l’appareil.",
+      "target_ineligible": "{{hostname}} n’est pas une fiche gérée.",
+      "target_retired": "{{hostname}} a déjà été retiré par un rattachement antérieur.",
+      "device_quarantined": "L’un des appareils est en quarantaine.",
+      "device_suspended": "Les identifiants d’agent de l’un des appareils sont suspendus.",
+      "org_draining": "L’organisation de l’un des appareils n’est pas active.",
+      "device_in_open_intent": "L’un des appareils fait déjà l’objet d’un rattachement en attente.",
+      "confirm_target_name_required": "Saisissez le nom de l’appareil existant pour confirmer.",
+      "confirm_target_name_mismatch": "Le nom saisi ne correspond pas à {{hostname}}.",
+      "same_device": "Un appareil ne peut pas être rattaché à lui-même.",
+      "invalid_target_version": "La version de la fiche existante est manquante. Rouvrez le rattachement."
     }
   }
 }
