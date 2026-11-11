@@ -1730,9 +1730,30 @@ async function assertQuoteSiteInOrg(tx: DbExecutor, siteId: string, orgId: strin
   return row;
 }
 
+/**
+ * Resolve a catalog item scoped to the quote's OWN partner. catalog_items is
+ * partner-axis RLS, which contains a foreign item for a partner-scope caller —
+ * but under SYSTEM scope the partner predicate short-circuits, and the
+ * quote_lines FK accepts any partner's item. Without this explicit filter a
+ * line could bind a foreign catalog_item_id (and, for a catalog line, snapshot
+ * its name/price/taxable/billingType). Mirrors invoiceService → catalogService's
+ * getOwnedItemOr404(id, partnerId): a foreign item resolves to not-found
+ * regardless of read scope.
+ */
+async function getQuotePartnerCatalogItemOr404(tx: DbExecutor, catalogItemId: string, partnerId: string) {
+  const [item] = await tx.select().from(catalogItems)
+    .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, partnerId)))
+    .limit(1);
+  if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+  return item;
+}
+
 export async function addManualLine(quoteId: string, input: QuoteLineInput, actor: QuoteActor) {
   return db.transaction(async (tx) => {
     const q = await lockDraftQuote(tx, quoteId, actor);
+    // The optional reference only links the line to a catalog item (product image);
+    // nothing is snapshotted from it, but it must still be the quote partner's own.
+    if (input.catalogItemId) await getQuotePartnerCatalogItemOr404(tx, input.catalogItemId, q.partnerId);
     const unitPrice = Number(input.unitPrice).toFixed(2);
     assertRepresentable(unitPrice, q.currencyCode);
     // #3205 W05: the device-set descriptor. Resolve + stamp the references, then
@@ -1825,18 +1846,7 @@ export async function addCatalogLine(
 ) {
   return db.transaction(async (tx) => {
     const q = await lockDraftQuote(tx, quoteId, actor);
-    // Scope the catalog lookup to the quote's OWN partner. catalog_items is
-    // partner-axis RLS, which contains a foreign item for a partner-scope caller —
-    // but under SYSTEM scope the partner predicate short-circuits, so without this
-    // explicit filter a system-scope request could snapshot another partner's
-    // catalog item (name/price/taxable/billingType) into the quote line and bind a
-    // foreign catalog_item_id FK. Mirrors invoiceService → catalogService's
-    // getOwnedItemOr404(id, partnerId): a foreign item resolves to not-found
-    // regardless of read scope.
-    const [item] = await tx.select().from(catalogItems)
-      .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, q.partnerId)))
-      .limit(1);
-    if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+    const item = await getQuotePartnerCatalogItemOr404(tx, catalogItemId, q.partnerId);
     // Multi-currency wave 3 (#3775, B3): the sell price comes from the price book
     // (org override in the quote's currency → catalog_item_prices row for that
     // currency), never from another currency's price-book row and
