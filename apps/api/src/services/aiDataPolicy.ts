@@ -7,13 +7,38 @@ export type AiDataPolicySource = 'org' | 'partner' | 'default';
 export type EffectiveAiDataPolicy = {
   deviceFileReadLevel: AiDeviceFileReadLevel;
   toolOutputRetentionDays: number | null;
-  source: { deviceFileReadLevel: AiDataPolicySource; toolOutputRetentionDays: AiDataPolicySource };
+  /** Technician-AI transcript window (#4342 W4); null = keep forever. */
+  transcriptRetentionDays: number | null;
+  source: {
+    deviceFileReadLevel: AiDataPolicySource;
+    toolOutputRetentionDays: AiDataPolicySource;
+    transcriptRetentionDays: AiDataPolicySource;
+  };
 };
 
 export const AI_DATA_POLICY_DEFAULTS = {
   deviceFileReadLevel: 'no_user_profiles',
   toolOutputRetentionDays: 30,
+  transcriptRetentionDays: 365,
 } as const;
+
+type RetentionField = 'toolOutputRetentionDays' | 'transcriptRetentionDays';
+
+/**
+ * A retention window: partner row present → its value (NULL = forever); no
+ * partner row → the code default. An org value applies only when it is
+ * tighter (or the ceiling is forever). NULL on the org row inherits.
+ */
+function mergeRetentionDays(
+  partner: AiDataPolicyRow | null,
+  org: AiDataPolicyRow | null,
+  field: RetentionField,
+): { days: number | null; source: AiDataPolicySource } {
+  const ceilingDays = partner ? partner[field] : AI_DATA_POLICY_DEFAULTS[field];
+  const orgDays = org?.[field] ?? null;
+  if (orgDays !== null && (ceilingDays === null || orgDays < ceilingDays)) return { days: orgDays, source: 'org' };
+  return { days: ceilingDays, source: partner ? 'partner' : 'default' };
+}
 
 const LEVEL_RANK: Record<AiDeviceFileReadLevel, number> = { off: 0, no_user_profiles: 1, any_with_approval: 2 };
 export function levelRank(level: AiDeviceFileReadLevel): number { return LEVEL_RANK[level]; }
@@ -26,15 +51,19 @@ export function mergeAiDataPolicies(partner: AiDataPolicyRow | null, org: AiData
   const level = orgLevel && levelRank(orgLevel) < levelRank(ceilingLevel) ? orgLevel : ceilingLevel;
   const levelSource: AiDataPolicySource = level === orgLevel && orgLevel !== null && levelRank(orgLevel) < levelRank(ceilingLevel) ? 'org' : ceilingLevelSource;
 
-  // Retention: partner row present → its value (NULL = forever); no partner row → 30.
-  const ceilingDays = partner ? partner.toolOutputRetentionDays : AI_DATA_POLICY_DEFAULTS.toolOutputRetentionDays;
-  const ceilingDaysSource: AiDataPolicySource = partner ? 'partner' : 'default';
-  const orgDays = org?.toolOutputRetentionDays ?? null;
-  let days: number | null = ceilingDays;
-  let daysSource: AiDataPolicySource = ceilingDaysSource;
-  if (orgDays !== null && (ceilingDays === null || orgDays < ceilingDays)) { days = orgDays; daysSource = 'org'; }
+  const toolOutput = mergeRetentionDays(partner, org, 'toolOutputRetentionDays');
+  const transcript = mergeRetentionDays(partner, org, 'transcriptRetentionDays');
 
-  return { deviceFileReadLevel: level, toolOutputRetentionDays: days, source: { deviceFileReadLevel: levelSource, toolOutputRetentionDays: daysSource } };
+  return {
+    deviceFileReadLevel: level,
+    toolOutputRetentionDays: toolOutput.days,
+    transcriptRetentionDays: transcript.days,
+    source: {
+      deviceFileReadLevel: levelSource,
+      toolOutputRetentionDays: toolOutput.source,
+      transcriptRetentionDays: transcript.source,
+    },
+  };
 }
 
 /**

@@ -22,6 +22,12 @@ export const aiDataPolicies = pgTable(
     deviceFileReadLevel: aiDeviceFileReadLevelEnum('device_file_read_level'),
     /** NULL on a partner row = keep forever; NULL on an org row = inherit. */
     toolOutputRetentionDays: integer('tool_output_retention_days'),
+  /**
+   * Technician-AI transcript window (#4342 W4), same semantics as
+   * toolOutputRetentionDays: NULL on a partner row = keep forever; NULL on an
+   * org row = inherit. CHECK in 2027-01-23-190000.
+   */
+  transcriptRetentionDays: integer('transcript_retention_days'),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -71,6 +71,10 @@ export const aiSessions = pgTable('ai_sessions', {
   flaggedAt: timestamp('flagged_at'),
   flaggedBy: uuid('flagged_by').references(() => users.id),
   flagReason: text('flag_reason'),
+  // #4342 W4: set when transcript retention turned this session into a stub
+  // (content gone; accounting and flag metadata kept). The viewers show
+  // "removed by retention" instead of an empty conversation.
+  transcriptPurgedAt: timestamp('transcript_purged_at', { withTimezone: true }),
   delegantM365ConnectionId: uuid('delegant_m365_connection_id'),
   // AI for Office client principal (FK → portal_users). CHECKs in SQL:
   // ai_sessions_single_principal_check (never both user_id and client_user_id),
@@ -134,6 +138,8 @@ export const aiSessions = pgTable('ai_sessions', {
   idOrgIdx: uniqueIndex('ai_sessions_id_org_uidx').on(table.id, table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
   statusIdx: index('ai_sessions_status_idx').on(table.status),
+  // #4342 W4 retention scan (2027-01-23-190100).
+  retentionScanIdx: index('ai_sessions_retention_scan_idx').on(table.orgId, table.lastActivityAt).where(sql`${table.flaggedAt} IS NULL`),
   // flaggedAt partial index created via SQL migration (WHERE flagged_at IS NOT NULL)
   offeringFk: foreignKey({
     columns: [table.offeringId, table.offeringPartnerId],
@@ -407,7 +413,8 @@ export const aiBudgetAlertEvents = pgTable('ai_budget_alert_events', {
 
 export const aiActionPlans = pgTable('ai_action_plans', {
   id: uuid('id').primaryKey().defaultRandom(),
-  sessionId: uuid('session_id').notNull().references(() => aiSessions.id),
+  // ON DELETE CASCADE since #4342 W4 (2027-01-23-190000): a retention stub is hard-deleted with its plans.
+  sessionId: uuid('session_id').notNull().references(() => aiSessions.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   status: aiPlanStatusEnum('status').notNull().default('pending'),
   steps: jsonb('steps').notNull(),           // Array<ActionPlanStep>
@@ -429,7 +436,11 @@ export const aiScreenshots = pgTable('ai_screenshots', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  sessionId: uuid('session_id').references(() => aiSessions.id),
+  // ON DELETE CASCADE since #4342 W4 (2027-01-23-190000). The retention job
+  // never relies on it: it expires a session's screenshots first so
+  // helperScreenshotRetention removes the file, and deletes a stub only once
+  // none remain (a cascaded row would orphan its file).
+  sessionId: uuid('session_id').references(() => aiSessions.id, { onDelete: 'cascade' }),
   storageKey: varchar('storage_key', { length: 500 }).notNull(),
   width: integer('width').notNull(),
   height: integer('height').notNull(),
