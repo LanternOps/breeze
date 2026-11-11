@@ -214,6 +214,47 @@ describe('wisp memory tools', () => {
     expect(evidence.test(clean)).toBe(true);
   });
 
+  // The subject key is free text from the model; it is stored, matched on and
+  // rendered back into prompts. It is scrubbed in the tool, before the broker
+  // takes the per-key lock, so the lock, the supersede match and the row all
+  // use one key. Code-built keys (concern:..., device:...) never pass through
+  // this tool and are never rewritten.
+  it('remember scrubs a credential out of the subject key before the broker sees it, and says so', async () => {
+    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: false, redactedFields: [] });
+    const out = await run('remember', {
+      ownerKind: 'partner', blockType: 'fact', subjectKey: 'backup-key-AKIAIOSFODNN7EXAMPLE', content: { v: 1 },
+    });
+    expect(rememberArg(0).subjectKey).toBe('backup-key-[REDACTED]');
+    expect(out.startsWith(`Remembered as unconfirmed (ID: ${BLOCK}).`)).toBe(true);
+    expect(out).toContain('Removed before saving because they looked like credentials: subjectKey.');
+    expect(DISPATCH_EVIDENCE.remember!.text!.test(out)).toBe(true);
+  });
+
+  it('remember names the subject key ahead of the content fields the broker removed', async () => {
+    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: true, redactedFields: ['summary'] });
+    const out = await run('remember', {
+      ownerKind: 'partner', blockType: 'fact', subjectKey: 'note password: Example-Not-Real-42', content: { summary: 'x' },
+    });
+    expect(String(rememberArg(0).subjectKey)).not.toContain('Example-Not-Real-42');
+    expect(out).toContain('Removed before saving because they looked like credentials: subjectKey, summary.');
+  });
+
+  it('remember passes an ordinary subject key through unchanged and reports nothing', async () => {
+    const keys = [
+      'backup-service-account',
+      'work:2026-11-10:backup',
+      'device:00000000-0000-4000-8000-000000000001:notes',
+      'wifi/guest network',
+      'contact: Dana (office manager)',
+    ];
+    for (const [i, subjectKey] of keys.entries()) {
+      rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: false, redactedFields: [] });
+      const out = await run('remember', { ownerKind: 'partner', blockType: 'fact', subjectKey, content: { v: 1 } });
+      expect(rememberArg(i).subjectKey).toBe(subjectKey);
+      expect(out).not.toContain('credential');
+    }
+  });
+
   it('remember lists at most five removed fields, each cut to 60 safe characters', async () => {
     const base = { ownerKind: 'partner', blockType: 'fact', subjectKey: 'backup:account', content: { v: 1 } };
     const long = `a.${'b'.repeat(80)}`;
