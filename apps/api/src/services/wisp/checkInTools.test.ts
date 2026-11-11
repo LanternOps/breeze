@@ -44,6 +44,11 @@ vi.mock('./checkInTriggers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./checkInTriggers')>()),
   loadTriggerSubject,
 }));
+const { runCheckInBlocker } = vi.hoisted(() => ({ runCheckInBlocker: vi.fn() }));
+vi.mock('./checkInRunReadiness', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./checkInRunReadiness')>()),
+  runCheckInBlocker,
+}));
 vi.mock('./grantAuthority', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./grantAuthority')>()),
   resolveGrantCeiling,
@@ -165,6 +170,7 @@ function fencedBody(out: string, source = 'wisp_check_ins'): string {
 beforeEach(() => {
   vi.clearAllMocks();
   resolveGrantCeiling.mockResolvedValue(ceiling);
+  runCheckInBlocker.mockResolvedValue(null);
   svc.threadForGrant.mockResolvedValue({ id: THREAD, partnerId: PARTNER });
   svc.createCheckIn.mockImplementation(async (_c: GrantCeiling, input: { dueAt: Date }) => row({ dueAt: input.dueAt }));
 });
@@ -638,6 +644,18 @@ describe('wisp check-in tools — handlers', () => {
       expect(await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'run' })))
         .toMatchObject({ error: 'run_org_not_assessable' });
       expect(svc.createCheckIn).not.toHaveBeenCalled();
+    });
+
+    it('no Triage agent can run it → run_agent_unavailable naming the cause, nothing created; notify still schedules', async () => {
+      runCheckInBlocker.mockResolvedValueOnce('no_effective_agent');
+      const out = await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'run' }));
+      expect(out).toMatchObject({ error: 'run_agent_unavailable', reason: 'no_effective_agent' });
+      expect(out.message).toContain('Triage agent');
+      expect(runCheckInBlocker).toHaveBeenCalledWith(ORG);
+      expect(svc.createCheckIn).not.toHaveBeenCalled();
+      runCheckInBlocker.mockResolvedValue('no_effective_agent');
+      await run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, mode: 'notify' });
+      expect(svc.createCheckIn).toHaveBeenCalledTimes(1);
     });
 
     it('an unknown mode is invalid input', async () => {
