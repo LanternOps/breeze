@@ -29,6 +29,9 @@
  *    `device_vulnerabilities.resolved_observation_id` keep lineage. All of these
  *    FKs are ON DELETE SET NULL.
  *
+ * Default windows: 30 days for health (one row per device per minute, and no
+ * reader looks past the latest row), 90 days for software inventory.
+ *
  * So each predicate ages a row by `received_at` (server receipt time; the
  * agent's `observed_at` clock is not trusted for this) and never selects a row
  * another table still points at. No FK action ever fires from this job: it
@@ -126,7 +129,7 @@ const ENTRIES: ReadonlyArray<ObservationRetentionEntry> = [
     maxRetentionDays: MAX_RETENTION_DAYS,
     knobs: {
       retentionDays: resolveRetentionDays(
-        process.env.AGENT_HEALTH_OBSERVATION_RETENTION_DAYS, 90, MAX_RETENTION_DAYS, LOG_PREFIX,
+        process.env.AGENT_HEALTH_OBSERVATION_RETENTION_DAYS, 30, MAX_RETENTION_DAYS, LOG_PREFIX,
       ),
       batchSize: parsePositiveIntEnv(LOG_PREFIX, 'AGENT_HEALTH_OBSERVATION_RETENTION_BATCH_SIZE', 5000),
       maxBatches: parsePositiveIntEnv(LOG_PREFIX, 'AGENT_HEALTH_OBSERVATION_RETENTION_MAX_BATCHES', 200),

@@ -96,7 +96,7 @@ describe('observation retention (#11737)', () => {
     });
   });
 
-  it('defaults: 90 days (cap 365) for both, sized per table, report-only, hourly', async () => {
+  it('defaults: 30 days for health, 90 for software (cap 365), sized per table, report-only, hourly', async () => {
     const { __testOnly } = await load();
     expect(__testOnly.QUEUE_NAME).toBe('observation-retention');
     expect(__testOnly.ENTRIES.map((e) => ({
@@ -109,7 +109,7 @@ describe('observation retention (#11737)', () => {
         table: 'agent_health_observations',
         enforceVar: 'AGENT_HEALTH_OBSERVATION_RETENTION_ENFORCE',
         maxRetentionDays: 365,
-        knobs: { retentionDays: 90, batchSize: 5000, maxBatches: 200, enforce: false },
+        knobs: { retentionDays: 30, batchSize: 5000, maxBatches: 200, enforce: false },
       },
       {
         table: 'software_inventory_observations',
@@ -131,7 +131,7 @@ describe('observation retention (#11737)', () => {
     vi.stubEnv('AGENT_HEALTH_OBSERVATION_RETENTION_DAYS', '0');
     vi.stubEnv('SOFTWARE_INVENTORY_OBSERVATION_RETENTION_DAYS', 'nonsense');
     ({ __testOnly } = await load());
-    expect(__testOnly.ENTRIES.map((e) => e.knobs.retentionDays)).toEqual([90, 90]);
+    expect(__testOnly.ENTRIES.map((e) => e.knobs.retentionDays)).toEqual([30, 90]);
     warn.mockRestore();
   });
 
@@ -172,9 +172,11 @@ describe('observation retention (#11737)', () => {
   it('a payload can reshape batches but never set a window or turn enforcement on', async () => {
     const { runObservationRetention } = await load();
     await runObservationRetention({ batchSize: 7, maxBatches: 3, retentionDays: 1, enforce: true } as never);
-    for (const [entries] of runTargetsMock.mock.calls as [Entry[]][]) {
-      expect(entries[0]!.knobs).toEqual({ retentionDays: 90, batchSize: 7, maxBatches: 3, enforce: false });
-    }
+    const knobs = (runTargetsMock.mock.calls as [Entry[]][]).map(([entries]) => entries[0]!.knobs);
+    expect(knobs).toEqual([
+      { retentionDays: 30, batchSize: 7, maxBatches: 3, enforce: false },
+      { retentionDays: 90, batchSize: 7, maxBatches: 3, enforce: false },
+    ]);
   });
 
   it('runs the second target when the first fails, then fails the job naming the failed table', async () => {

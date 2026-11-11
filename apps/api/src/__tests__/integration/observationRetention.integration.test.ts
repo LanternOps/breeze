@@ -40,11 +40,13 @@ import { getTestDb } from './setup';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const NOW = Date.now();
-const WINDOW = 90;
+/** Default windows: health 30 d, software inventory 90 d. */
+const HEALTH_WINDOW = 30;
+const SOFTWARE_WINDOW = 90;
 const daysAgo = (d: number) => new Date(NOW - d * DAY_MS);
-/** One hour either side of the cutoff: pins the strict `<`. */
-const justPast = new Date(NOW - WINDOW * DAY_MS - HOUR_MS);
-const justInside = new Date(NOW - WINDOW * DAY_MS + HOUR_MS);
+/** One hour either side of a cutoff: pins the strict `<`. */
+const justPast = (days: number) => new Date(NOW - days * DAY_MS - HOUR_MS);
+const justInside = (days: number) => new Date(NOW - days * DAY_MS + HOUR_MS);
 
 function result(results: RetentionTargetResult[], table: string): RetentionTargetResult {
   const r = results.find((x) => x.table === table);
@@ -123,8 +125,10 @@ describe('observation retention (#11737, real Postgres)', () => {
         old200: await health(deviceId, daysAgo(200)),
         old120: await health(deviceId, daysAgo(120)),
         old95: await health(deviceId, daysAgo(95)),
-        justPast: await health(deviceId, justPast),
-        justInside: await health(deviceId, justInside),
+        // Inside the software window, past the 30-day health window.
+        old45: await health(deviceId, daysAgo(45)),
+        justPast: await health(deviceId, justPast(HEALTH_WINDOW)),
+        justInside: await health(deviceId, justInside(HEALTH_WINDOW)),
         recent: await health(deviceId, daysAgo(1)),
         // A device that went offline long ago: its only (latest) row is past the
         // window and must survive, or the health tab and the AI tool lose it.
@@ -140,12 +144,12 @@ describe('observation retention (#11737, real Postgres)', () => {
 
       const run = enforced(result(await runObservationRetention({ batchSize: 2, maxBatches: 50 }), 'agent_health_observations'));
       const left = await survivingHealth(all);
-      const deleted = ['old300', 'old200', 'old120', 'old95', 'justPast', 'offlineOlder'] as const;
+      const deleted = ['old300', 'old200', 'old120', 'old95', 'old45', 'justPast', 'offlineOlder'] as const;
       for (const k of deleted) expect(left.has(ids[k]), `${k} should be deleted`).toBe(false);
       const kept = ['justInside', 'recent', 'offlineLatest'] as const;
       for (const k of kept) expect(left.has(ids[k]), `${k} should survive`).toBe(true);
 
-      // Bounded: 6 rows at 2 per batch is 3 full batches plus the empty one that ends the loop.
+      // Bounded: 7 rows at 2 per batch is 3 full batches plus the short one that ends the loop.
       expect(run.affected).toBe(deleted.length);
       expect(run.batches).toBe(4);
       expect(run.hasMore).toBe(false);
@@ -215,8 +219,10 @@ describe('observation retention (#11737, real Postgres)', () => {
       const ids = {
         oldUnreferenced: await softwareObservation(deviceId, daysAgo(200)),
         oldUnreferenced2: await softwareObservation(deviceId, daysAgo(150)),
-        justPast: await softwareObservation(deviceId, justPast),
-        justInside: await softwareObservation(deviceId, justInside),
+        justPast: await softwareObservation(deviceId, justPast(SOFTWARE_WINDOW)),
+        justInside: await softwareObservation(deviceId, justInside(SOFTWARE_WINDOW)),
+        // Past the 30-day health window but inside software's own 90 days.
+        inside45: await softwareObservation(deviceId, daysAgo(45)),
         // Each pointer of the device's state row, on a row past the window.
         stateLatest: await softwareObservation(deviceId, daysAgo(120)),
         stateAccepted: await softwareObservation(deviceId, daysAgo(130)),
@@ -265,7 +271,7 @@ describe('observation retention (#11737, real Postgres)', () => {
       const left = await survivingSoftware(all);
       const deleted = ['oldUnreferenced', 'oldUnreferenced2', 'justPast', 'otherOld'] as const;
       for (const k of deleted) expect(left.has(ids[k]), `${k} should be deleted`).toBe(false);
-      const kept = ['justInside', 'stateLatest', 'stateAccepted', 'stateVisible', 'projectionLineage', 'vulnResolution'] as const;
+      const kept = ['justInside', 'inside45', 'stateLatest', 'stateAccepted', 'stateVisible', 'projectionLineage', 'vulnResolution'] as const;
       for (const k of kept) expect(left.has(ids[k]), `${k} should survive`).toBe(true);
       expect(run.affected).toBe(deleted.length);
       expect(eligible(report)).toBe(run.affected);

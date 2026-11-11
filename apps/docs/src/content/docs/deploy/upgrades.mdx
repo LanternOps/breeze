@@ -184,7 +184,7 @@ Both Compose files gain 8 optional `api` mappings (`${VAR:-}`). Leaving them out
 
 | Change | Required action |
 |---|---|
-| New `api` mappings for the hourly observation retention job: `AGENT_HEALTH_OBSERVATION_RETENTION_*` and `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_*`, each with `_DAYS`, `_BATCH_SIZE`, `_MAX_BATCHES` and `_ENFORCE`. | Nothing. The job only counts eligible rows and deletes nothing until you set the matching `_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+| New `api` mappings for the hourly observation retention job: `AGENT_HEALTH_OBSERVATION_RETENTION_*` and `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_*`, each with `_DAYS` (defaults: 30 for health, 90 for software inventory), `_BATCH_SIZE`, `_MAX_BATCHES` and `_ENFORCE`. | Nothing. The job only counts eligible rows and deletes nothing until you set the matching `_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
 | New index on `received_at` for `agent_health_observations` and `software_inventory_observations`, built `CONCURRENTLY` on upgrade. | Nothing. Writes continue during the build; on a large install the migration step takes longer than usual. |
 
 ### v0.128.0 — portal Microsoft sign-in, migration lock wait, worker container name, monitoring images pinned
