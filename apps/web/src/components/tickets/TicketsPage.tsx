@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
@@ -14,6 +14,9 @@ import TicketQueueList, { queueOptionId } from './TicketQueueList';
 import TicketArchivedList from './TicketArchivedList';
 import TicketWorkbench from './TicketWorkbench';
 import InboundReviewQueue from './InboundReviewQueue';
+import TicketQueueFilters from './TicketQueueFilters';
+import TicketBulkBar from './TicketBulkBar';
+import { TicketFocusStrip, TicketNextOffer } from './TicketFocusStrip';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { usePermissions } from '../../lib/permissions';
 import { useQueueKeyboard } from './useQueueKeyboard';
@@ -21,33 +24,18 @@ import { formatRelative, NEUTRAL_CHIP_TEXT, slaState, ticketDisplayNumber, type 
 import { useUiStore } from '../../stores/uiStore';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import { useStableT } from '@/lib/i18n/useStableT';
-import { replaceUrl } from '../../lib/replaceUrl';
+import { pushUrl, replaceUrl, URL_CHANGE_EVENT } from '../../lib/replaceUrl';
+import { claimSamePageHistory } from '../../lib/samePageHistory';
+import { TICKET_FOCUS_SUBJECT_ID } from './TicketFocusHeader';
+import type { TicketType } from './ticketType';
+import { showBulkOutcomeToast, type BulkResult } from './ticketBulkOutcome';
+import { useFillAvailableHeight } from './useFillAvailableHeight';
 import {
-  TICKET_TYPE_ORDER,
-  isTicketType,
-  ticketTypeFromHash,
-  ticketTypeLabelKey,
-  type TicketType,
-} from './ticketType';
-
-// Aggregate outcome of a POST /tickets/bulk call.
-interface BulkResult { updated: number; skipped: number; failed: number; total: number; skippedReasons?: Record<string, number> }
+  DEFAULT_QUEUE_HASH, TABS, hashFor, isLiveTab, isUuid, parseQueueHash, readStoredQueueTab, storeQueueTab, tabQuery,
+  type LiveTab, type QueueHash, type Tab, type TicketSort,
+} from './ticketsPageHash';
 
 type TFunction = ReturnType<typeof useTranslation>['t'];
-
-// Human-readable labels for bulk-skip reason codes returned by POST /tickets/bulk.
-function skipReasonLabel(code: string, t: TFunction): string {
-  const labels: Record<string, string> = {
-    OUT_OF_SCOPE: t('ticketsPage.bulk.reason.outOfScope'),
-    INVALID_TRANSITION: t('ticketsPage.bulk.reason.invalidTransition'),
-    ASSIGNEE_NOT_FOUND: t('ticketsPage.bulk.reason.assigneeNotFound'),
-    ASSIGNEE_WRONG_PARTNER: t('ticketsPage.bulk.reason.assigneeWrongPartner'),
-    CONCURRENT_MODIFICATION: t('ticketsPage.bulk.reason.concurrentModification'),
-    TICKET_PARTNER_UNRESOLVABLE: t('ticketsPage.bulk.reason.ticketPartnerUnresolvable'),
-    OTHER: t('ticketsPage.bulk.reason.other'),
-  };
-  return labels[code] ?? code.toLowerCase().replace(/_/g, ' ');
-}
 
 function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPriority, t: TFunction): string {
   return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketsPage.priority.${priority}`);
@@ -78,132 +66,44 @@ function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus
   return systemRow?.name ?? t(/* i18n-dynamic */ `ticketsPage.status.${status}`);
 }
 
-// Shared toast for a POST /tickets/bulk aggregate result. `verb` is the past-
-// tense action word ('updated' for status/assign, 'deleted' for delete) so the
-// message reads naturally. Failures are reported distinctly from skips: "skipped"
-// implies pre-validation, "failed" means the write itself errored.
-function showBulkOutcomeToast(result: BulkResult, verb: string, t: TFunction): void {
-  const { updated, skipped, failed, skippedReasons } = result;
-  if (skipped + failed > 0) {
-    const reasons = Object.entries(skippedReasons ?? {})
-      .map(([code, n]) => t('ticketsPage.bulk.reasonCount', { count: n, reason: skipReasonLabel(code, t) }))
-      .join(', ');
-    showToast({
-      type: 'warning',
-      message: t('ticketsPage.bulk.partialToast', {
-        updated,
-        verb,
-        skipped,
-        failedSuffix: failed ? t('ticketsPage.bulk.failedSuffix', { failed }) : '',
-        reasonsSuffix: reasons ? t('ticketsPage.bulk.reasonsSuffix', { reasons }) : '',
-      }),
-    });
-  } else {
-    showToast({ type: 'success', message: t('ticketsPage.bulk.successToast', { updated, verb }) });
-  }
-}
-
-// 'review' is the inbound email review queue — a sibling surface, not a ticket
-// query. It renders InboundReviewQueue instead of the queue/workbench split, and
-// is only present for admins (visibility gated by a 200 from the queue endpoint).
-// 'archived' is the soft-deleted queue (GET /tickets?deleted=only) — a ticket
-// query, but rendered as a restore-only list (no workbench). tickets:manage-gated.
-type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed' | 'review' | 'archived';
-type TicketSort = 'triage' | 'newest' | 'oldest' | 'due';
-
-const SORT_OPTIONS: Array<{ value: TicketSort; labelKey: string }> = [
-  { value: 'triage', labelKey: 'triage' },
-  { value: 'newest', labelKey: 'newest' },
-  { value: 'oldest', labelKey: 'oldest' },
-  { value: 'due', labelKey: 'due' }
-];
-
-const isTicketSort = (value: string): value is TicketSort =>
-  SORT_OPTIONS.some((o) => o.value === value);
-
 const isClosedStatus = (status: TicketStatus): boolean => status === 'resolved' || status === 'closed';
 
-const PRIORITY_ORDER: TicketPriority[] = ['low', 'normal', 'high', 'urgent'];
+/** Marks, in history.state, the entry openFocus pushed when it opened a ticket
+ *  from the board: the entry before it is that board. Kept in the entry
+ *  itself so it survives Back / Forward, a remount and a reload. */
+const FOCUS_ENTRY_MARK = 'breezeTicketsFocus';
+const onFocusEntryFromBoard = (): boolean =>
+  (window.history.state as Record<string, unknown> | null)?.[FOCUS_ENTRY_MARK] === true;
 
-// Bulk status options exclude 'resolved': resolving requires a per-ticket
-// resolution note, so it stays a per-ticket action (workbench).
-const BULK_STATUSES: TicketStatus[] = ['new', 'open', 'pending', 'on_hold', 'closed'];
-
-const TABS: Array<{ id: Tab; labelKey: string }> = [
-  { id: 'mine', labelKey: 'mine' },
-  { id: 'unassigned', labelKey: 'unassigned' },
-  { id: 'open', labelKey: 'open' },
-  { id: 'breaching', labelKey: 'breaching' },
-  { id: 'closed', labelKey: 'closed' }
-];
-
-function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
-  switch (tab) {
-    case 'mine': return 'statusGroup=open&assignee=me';
-    case 'unassigned': return 'statusGroup=open&assignee=unassigned';
-    case 'open': return 'statusGroup=open';
-    // Server-defined: breached ∪ at-risk (pause-aware — paused clocks are frozen, so
-    // paused tickets are intentionally excluded). Rows arrive pre-filtered.
-    case 'breaching': return 'statusGroup=open&slaState=breaching';
-    case 'closed': return 'statusGroup=closed&sort=newest';
-  }
+/** The open ticket the next-ticket offer names after `id` closes: the next one
+ *  below it in the list, else the first open one above. */
+function nextOpenAfter(list: TicketSummary[], id: string): TicketSummary | null {
+  const idx = list.findIndex((t) => t.id === id);
+  const isNext = (t: TicketSummary) => t.id !== id && !isClosedStatus(t.status);
+  return (idx >= 0 ? list.slice(idx + 1).find(isNext) : undefined) ?? list.find(isNext) ?? null;
 }
 
-// Hash layout (hash-based UI state per CLAUDE.md):
-// `#<selection>&sort=<sort>&type=<type>&merged=1`.
-// `merged=1` is the "Show merged" list toggle (#8972); absent = off.
-// The bare segment is the selected ticket key (internal number or id); the
-// `sort=` segment carries the queue sort and `type=` the ticket-type filter
-// (#7900). All are optional, and the default sort ('triage') is omitted so
-// plain `#T-2026-0001` hashes keep working. A `type=` segment is matched
-// BEFORE the selection fallback, so it can never be read as a ticket key; an
-// unknown type value is dropped, not turned into a selection.
-// Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
-function parseHash(hash: string): { selection: string | null; sort: TicketSort; type: TicketType | null; showMerged: boolean } {
-  let selection: string | null = null;
-  let sort: TicketSort = 'triage';
-  let type: TicketType | null = null;
-  let showMerged = false;
-  for (const part of hash.split('&')) {
-    if (!part) continue;
-    if (part.startsWith('sort=')) {
-      const value = part.slice('sort='.length);
-      if (isTicketSort(value)) sort = value;
-    } else if (part.startsWith('merged=')) {
-      showMerged = part.slice('merged='.length) === '1';
-    } else if (!part.startsWith('type=')) {
-      selection = part;
-    }
-  }
-  // Same helper as the sidebar, over the whole hash, so a repeated `type=`
-  // segment resolves identically in the list filter and the nav highlight.
-  return { selection, sort, type: ticketTypeFromHash(hash), showMerged };
+/** Escape inside a dialog or menu belongs to it, never to "back to the queue". */
+const OVERLAY = '[aria-modal="true"],[role="dialog"],[role="alertdialog"],[role="menu"]';
+function isEditable(el: Element | null): boolean {
+  if (!el || el === document.body) return false;
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || (el as HTMLElement).isContentEditable;
 }
 
-// The whole queue hash as ONE piece of state (#8682 sweep). Selection, sort and
-// type must move together: with one `useHashState` per field, each field had
-// its own hashchange listener. React flushes a discrete event like hashchange
-// in a microtask, which the browser runs between listener callbacks, so each
-// field's update committed (and ran effects) separately — so the auto-select
-// effect saw e.g. the new selection with
-// the OLD type and wrote that stale mix straight back over the new URL.
-type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | ''; showMerged: boolean };
-const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '', showMerged: false };
-function parseQueueHash(hash: string): QueueHash {
-  const { selection, sort, type, showMerged } = parseHash(hash);
-  return { selection, sort, type: type ?? '', showMerged };
+// SSR-safe stand-in for useLayoutEffect.
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+interface Props {
+  /** /tickets/[id]: open straight into focus on this ticket (id or number). */
+  routeTicketId?: string;
 }
 
-function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null, showMerged = false): string {
-  const parts: string[] = [];
-  if (selection) parts.push(selection);
-  if (sort !== 'triage') parts.push(`sort=${sort}`);
-  if (type) parts.push(`type=${type}`);
-  if (showMerged) parts.push('merged=1');
-  return parts.length > 0 ? `#${parts.join('&')}` : '';
-}
-
-export default function TicketsPage() {
+/**
+ * The ticket workspace: a full-width triage board, and one ticket in focus
+ * in its place. The URL hash carries the focused ticket (`#T-1001`), so the
+ * tab, filters and scroll position survive the round trip.
+ */
+export default function TicketsPage({ routeTicketId }: Props = {}) {
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // Soft-delete / restore / archived queue are all tickets:manage-gated (server
@@ -211,8 +111,28 @@ export default function TicketsPage() {
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
 
-  const [tab, setTab] = useState<Tab>('open');
+  const [tab, setTabState] = useState<Tab>('open');
+  // /tickets/[id] opens in the queue tab the tech last worked in; the first
+  // list fetch waits for that so it is not thrown away.
+  const [tabReady, setTabReady] = useState(!routeTicketId);
+  useIsomorphicLayoutEffect(() => {
+    if (!routeTicketId) return;
+    const stored = readStoredQueueTab();
+    if (stored) setTabState(stored);
+    setTabReady(true);
+  }, []);
+  const setTab = useCallback((next: Tab) => {
+    setTabState(next);
+    if (isLiveTab(next)) storeQueueTab(next);
+  }, []);
+
   const [resolveToken, setResolveToken] = useState(0);
+  // r / n for the focus view's composer, honoured by the workbench (see its
+  // composeRequest): it switches to the Conversation tab first.
+  const [composeRequest, setComposeRequest] = useState<{ mode: 'reply' | 'internal'; token: number }>({ mode: 'reply', token: 0 });
+  const requestCompose = useCallback((mode: 'reply' | 'internal') => {
+    setComposeRequest((prev) => ({ mode, token: prev.token + 1 }));
+  }, []);
   const [paneRefresh, setPaneRefresh] = useState(0);
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [stats, setStats] = useState<{ open: number; unassigned: number; mine: number; breached: number; atRisk?: number } | null>(null);
@@ -223,7 +143,11 @@ export default function TicketsPage() {
   // QueueHash). Ticket-type filter (#7900): '' = All. Hash-backed so the
   // Service Desk nav entries (`/tickets#type=<type>`) and bookmarks deep-link in.
   const [queueHash, setQueueHash] = useHashState<QueueHash>(DEFAULT_QUEUE_HASH, parseQueueHash);
-  const { selection: selectedNumber, sort, type: typeFilter, showMerged } = queueHash;
+  const { selection: hashFocus, sort, type: typeFilter, showMerged } = queueHash;
+  // The route id stands in for the hash until the first in-page move, which
+  // rewrites the URL to the canonical /tickets#<key>.
+  const [routeFocus, setRouteFocus] = useState<string | null>(routeTicketId ?? null);
+  const focusKey = hashFocus ?? routeFocus;
   const [search, setSearch] = useState('');
   // Debounced twin of `search` — only this drives the list fetch, so typing
   // doesn't fire a 100-row query per keystroke (the input itself stays instant).
@@ -238,8 +162,10 @@ export default function TicketsPage() {
   const [assignees, setAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
   // Bulk selection (UI brief §6): checkbox column + slide-up action bar.
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
+  // The board's active row (roving focus): j/k move it, Enter opens it.
+  const [activeId, setActiveId] = useState<string | null>(null);
   // Polite live-region text: set on keyboard moves and `x` toggles only, so
-  // auto-select on load and pointer clicks stay silent.
+  // pointer clicks stay silent.
   const [announcement, setAnnouncement] = useState('');
   const [bulkAssignee, setBulkAssignee] = useState(''); // '' = none; 'unassign' sentinel = null assignee
   const [bulkStatus, setBulkStatus] = useState('');
@@ -255,34 +181,50 @@ export default function TicketsPage() {
   // `reviewTotal` drives the tab's pending-count badge.
   const [reviewAvailable, setReviewAvailable] = useState(false);
   const [reviewTotal, setReviewTotal] = useState(0);
+  // After a resolve in focus: the next ticket, offered (never opened for you).
+  const [nextOffer, setNextOffer] = useState<{ fromId: string; ticket: TicketSummary } | null>(null);
   const fetchSeq = useRef(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const savedScroll = useRef(0);
+  // This page's own path + query, kept current by writeHash: a popstate that
+  // stays on it is a step between the board and a ticket opened from it.
+  const pagePath = useRef<string | null>(null);
+  useEffect(() => { pagePath.current = window.location.pathname + window.location.search; }, []);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const fillHeight = useFillAvailableHeight(rootRef);
 
   // 'mine'/'unassigned' tabs already pin the assignee param; the filter select is locked there.
   const assigneeLocked = tab === 'mine' || tab === 'unassigned';
   const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter || typeFilter);
 
-  // Single writer for the hash: state and URL always move together, so
-  // selection, sort, type and the merged toggle never clobber each other.
-  // Declared before clearFilters, which rewrites it. `mergedValue` defaults to
-  // the current toggle so the existing three-field callers keep it.
-  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '', mergedValue: boolean = showMerged) => {
+  // Single writer for the hash: state and URL always move together, so focus,
+  // sort, type and the merged toggle never clobber each other. `mergedValue`
+  // defaults to the current toggle so the three-field callers keep it.
+  // `push` adds a history entry (opening a ticket from the board); every other
+  // write replaces the current one.
+  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '', mergedValue: boolean = showMerged, opts?: { push?: boolean }) => {
+    setRouteFocus(null);
     setQueueHash({ selection, sort: sortValue, type: typeValue, showMerged: mergedValue });
-    replaceUrl(hashFor(selection, sortValue, typeValue || null, mergedValue) || window.location.pathname + window.location.search);
-  }, [setQueueHash, showMerged]);
+    const hash = hashFor(selection, sortValue, typeValue || null, mergedValue);
+    // From /tickets/[id] the first move lands on the canonical /tickets URL.
+    const url = routeTicketId ? `/tickets${window.location.search}${hash}` : (hash || window.location.pathname + window.location.search);
+    if (opts?.push) pushUrl(url, { [FOCUS_ENTRY_MARK]: true });
+    else replaceUrl(url);
+    pagePath.current = window.location.pathname + window.location.search;
+  }, [setQueueHash, showMerged, routeTicketId]);
 
   const clearFilters = useCallback(() => {
     setPriorityFilter('');
     setCategoryFilter('');
     setAssigneeFilter('');
-    if (typeFilter) writeHash(selectedNumber, sort, '');
-  }, [typeFilter, selectedNumber, sort, writeHash]);
+    if (typeFilter) writeHash(focusKey, sort, '');
+  }, [typeFilter, focusKey, sort, writeHash]);
 
   // Filter options load once; failures degrade per-select (these are filters, not critical path).
   useEffect(() => {
     let cancelled = false;
     const readJson = async (res: Response): Promise<unknown> => (res.ok ? res.json() : null);
     void (async () => {
-      // Load categories + users to populate the filter selects.
       const [catRes, userRes] = await Promise.allSettled([
         fetchWithAuth('/ticket-categories').then(readJson),
         fetchWithAuth('/users').then(readJson)
@@ -302,10 +244,9 @@ export default function TicketsPage() {
   }, []);
 
   // The /tickets query string for the current tab + filters; null on the
-  // review tab, which isn't a ticket query (InboundReviewQueue loads its own
-  // data, so tabQuery never sees 'review').
+  // review tab, which isn't a ticket query (InboundReviewQueue loads its own data).
   const ticketQuery = useMemo(() => {
-    if (tab === 'review') return null;
+    if (tab === 'review' || !tabReady) return null;
     // The archived tab is a normal ticket query with deleted=only (the server
     // gates it on tickets:manage and stamps each row with deletedAt).
     const params = tab === 'archived'
@@ -326,13 +267,13 @@ export default function TicketsPage() {
     if (showMerged) params.set('showMerged', 'true');
     params.set('limit', '100');
     return params.toString();
-  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort, showMerged]);
+  }, [tab, tabReady, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort, showMerged]);
   // The query the rows in `tickets` were fetched for (null until the first load).
   const [loadedQuery, setLoadedQuery] = useState<string | null>(null);
   const listIsCurrent = ticketQuery !== null && loadedQuery === ticketQuery;
 
   const fetchTickets = useCallback(async () => {
-    if (ticketQuery === null) { setLoading(false); return; }
+    if (ticketQuery === null) { setLoading(tab !== 'review' && !tabReady); return; }
     const seq = ++fetchSeq.current;
     setLoading(true);
     setError(undefined);
@@ -352,7 +293,7 @@ export default function TicketsPage() {
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [ticketQuery, stableT]);
+  }, [ticketQuery, stableT, tab, tabReady]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -377,31 +318,52 @@ export default function TicketsPage() {
     return () => clearTimeout(id);
   }, [search]);
 
-  // Patch a single queue row in place after a workbench mutation — instant list
+  // Patch a single queue row in place after a focus-view mutation — instant list
   // feedback without a full /tickets refetch (the heavy 100-row query that, on
   // the connection-capped US droplet, also contended for DB connections).
   const patchTicketRow = useCallback((id: string, patch: Partial<TicketSummary>) => {
     setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
 
-  // #9564: the ticket the user just changed in the workbench, held so a
-  // reconcile that drops it from the current view (resolving from "All open",
-  // reassigning out of "Mine") doesn't swap the workbench to another ticket
-  // under them. It keeps the pane until the user selects something else or
-  // switches tabs. A snapshot, not a fetch: the workbench loads its own detail.
+  // #9564: the ticket the user just changed in focus, held so a reconcile that
+  // drops it from the current view (resolving from "All open", reassigning out
+  // of "Mine") doesn't take it away from under them. It keeps its place until
+  // the user moves on or switches tabs. A snapshot, not a fetch: the focus view
+  // loads its own detail.
   const [heldTicket, setHeldTicket] = useState<TicketSummary | null>(null);
   const ticketsRef = useRef(tickets);
   ticketsRef.current = tickets;
+  const heldRef = useRef(heldTicket);
+  heldRef.current = heldTicket;
+
+  // Whether `id` was already resolved/closed before the change now landing.
+  const wasClosed = useCallback((id: string): boolean => {
+    const before = ticketsRef.current.find((t) => t.id === id) ?? (heldRef.current?.id === id ? heldRef.current : null);
+    return Boolean(before && isClosedStatus(before.status));
+  }, []);
+
   const onWorkbenchPatched = useCallback((id: string, patch: Partial<TicketSummary>) => {
+    const closing = Boolean(patch.status && isClosedStatus(patch.status)) && !wasClosed(id);
     patchTicketRow(id, patch);
     setHeldTicket((prev) => {
       const base = prev?.id === id ? prev : ticketsRef.current.find((t) => t.id === id);
       return base ? { ...base, ...patch } : prev;
     });
-  }, [patchTicketRow]);
-  const onWorkbenchDeleted = useCallback((id: string) => {
-    setHeldTicket((prev) => (prev?.id === id ? null : prev));
-  }, []);
+    // Resolving (or closing) offers the next ticket; it never opens it.
+    if (closing) {
+      const next = nextOpenAfter(ticketsRef.current, id);
+      setNextOffer(next ? { fromId: id, ticket: next } : null);
+    }
+  }, [patchTicketRow, wasClosed]);
+
+  // The workbench asks, once a resolve has landed and before the row is
+  // patched, whether to toast "Ticket resolved": not when the next-ticket
+  // offer is about to say so, otherwise (nothing left to offer, a ticket that
+  // was already closed) yes.
+  const resolveToastFor = useCallback(
+    (id: string): boolean => wasClosed(id) || nextOpenAfter(ticketsRef.current, id) === null,
+    [wasClosed]
+  );
 
   // Debounced background reconcile after a mutation: coalesces bursts (rapid
   // status/assignee changes) into one list+stats refresh instead of one per click.
@@ -448,57 +410,65 @@ export default function TicketsPage() {
     setBulkStatus('');
   }, [search, priorityFilter, categoryFilter, assigneeFilter, typeFilter]);
 
-  const heldMatchesSelection = heldTicket !== null && selectedNumber !== null
-    && (heldTicket.internalNumber === selectedNumber || heldTicket.id === selectedNumber);
-  const selectedInList = useMemo(
-    () => tickets.find((t) => t.internalNumber === selectedNumber || t.id === selectedNumber) ?? null,
-    [tickets, selectedNumber]
+  const heldMatchesFocus = heldTicket !== null && focusKey !== null
+    && (heldTicket.internalNumber === focusKey || heldTicket.id === focusKey);
+  const focusedInList = useMemo(
+    () => (focusKey === null ? null : tickets.find((t) => t.internalNumber === focusKey || t.id === focusKey) ?? null),
+    [tickets, focusKey]
   );
-  // Fall back to the held ticket when the list no longer contains it, so the
-  // auto-select effect below sees a valid selection and leaves it alone.
-  const selected = selectedInList ?? (heldMatchesSelection ? heldTicket : null);
-  const heldDroppedFromView = selectedInList === null && heldMatchesSelection;
+  // Fall back to the held ticket when the list no longer contains it.
+  const focused = focusedInList ?? (heldMatchesFocus ? heldTicket : null);
+  const heldDroppedFromView = focusedInList === null && heldMatchesFocus;
+  const inFocus = focusKey !== null && tab !== 'review' && tab !== 'archived';
+  // A route/hash id renders at once; a number waits for the list or the lookup.
+  const focusTicketId = focused?.id ?? (inFocus && focusKey && isUuid(focusKey) ? focusKey : null);
 
-  // Release the hold once the user navigates away: another selection, or a tab
-  // switch. Switching to Closed keeps a resolved/closed hold — that is where the
+  // Release the hold once the user moves on: another ticket, or a tab switch.
+  // Switching to Closed keeps a resolved/closed hold — that is where the
   // ticket now lives, and the "View in Closed" link lands there.
   useEffect(() => {
-    if (heldTicket && !heldMatchesSelection) setHeldTicket(null);
-  }, [heldTicket, heldMatchesSelection]);
+    if (heldTicket && !heldMatchesFocus) setHeldTicket(null);
+  }, [heldTicket, heldMatchesFocus]);
   const prevTab = useRef(tab);
   useEffect(() => {
     if (prevTab.current === tab) return;
     prevTab.current = tab;
     setHeldTicket((prev) => (prev && tab === 'closed' && isClosedStatus(prev.status) ? prev : null));
   }, [tab]);
-
-  // Keys of tickets that have appeared in a loaded list this session. A
-  // selection that was once listed (tab switch, filter change) keeps the
-  // original "fall back to the first row" behaviour; a selection that was
-  // NEVER listed is a deep link to a ticket outside this view and must not be
-  // silently swapped for another ticket (sweep G10).
-  const seenKeysRef = useRef<Set<string>>(new Set());
+  // The focused ticket is sticky: once its key has resolved to a listed row,
+  // that row is held for as long as the key stays, so a refetch that drops it
+  // from the view never unmounts the open workbench (assigned with `a` out of
+  // Unassigned, a first public reply out of Breaching, resolved out of an open
+  // tab, #9564). Declared after the release effects above so a fresh key's
+  // row is not released in the same pass.
   useEffect(() => {
-    if (!listIsCurrent) return;
-    for (const row of tickets) {
-      seenKeysRef.current.add(row.id);
-      if (row.internalNumber) seenKeysRef.current.add(row.internalNumber);
-    }
-  }, [listIsCurrent, tickets]);
-  const deepLinkAbsent = selectedNumber !== null && !selected && !seenKeysRef.current.has(selectedNumber);
+    if (inFocus && focusedInList) setHeldTicket(focusedInList);
+  }, [inFocus, focusedInList]);
+
+  // The board's active row follows the ticket in focus, so going back lands on it.
+  const focusedId = focused?.id;
+  useEffect(() => { if (focusedId) setActiveId(focusedId); }, [focusedId]);
+
+  // An offer belongs to the ticket that was resolved; moving on retires it.
+  useEffect(() => {
+    if (nextOffer && (!inFocus || focusTicketId !== nextOffer.fromId)) setNextOffer(null);
+  }, [nextOffer, inFocus, focusTicketId]);
+
+  // A focus key the list does not hold (a link to a ticket outside this view,
+  // or one that has since left it) is looked up directly, never swapped for
+  // another ticket (sweep G10).
+  const focusAbsent = inFocus && focusKey !== null && !focused;
   // null = nothing to look up; 'missing' = lookup finished, caller cannot see it.
   const [absentLookup, setAbsentLookup] = useState<{ key: string; status: 'pending' | 'missing' } | null>(null);
   useEffect(() => {
-    if (tab === 'review' || tab === 'archived') return;
-    if (loading || !listIsCurrent || !deepLinkAbsent || selectedNumber === null) return;
-    const key = selectedNumber;
+    if (loading || !listIsCurrent || !focusAbsent || focusKey === null) return;
+    const key = focusKey;
     let cancelled = false;
     setAbsentLookup({ key, status: 'pending' });
     void (async () => {
       let found: TicketSummary | null = null;
       try {
-        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
-        if (isUuid) {
+        if (isUuid(key)) {
           const res = await fetchWithAuth(`/tickets/${key}`);
           if (res.ok) found = ((await res.json()) as { data?: TicketSummary }).data ?? null;
         } else {
@@ -522,62 +492,121 @@ export default function TicketsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [tab, loading, listIsCurrent, deepLinkAbsent, selectedNumber]);
-  const absentNotice = deepLinkAbsent && absentLookup?.key === selectedNumber && absentLookup.status === 'missing'
-    ? selectedNumber
+  }, [loading, listIsCurrent, focusAbsent, focusKey]);
+  const absentNotice = focusAbsent && !focusTicketId && absentLookup?.key === focusKey && absentLookup.status === 'missing'
+    ? focusKey
     : null;
 
-  // Auto-select first row when nothing valid is selected (UI brief: no-selection state auto-selects)
-  useEffect(() => {
-    // The review + archived tabs have no ticket selection / workbench pane.
-    if (tab === 'review' || tab === 'archived') return;
-    // A deep link to an unlisted ticket is resolved by the lookup above, never
-    // by selecting an unrelated row.
-    if (deepLinkAbsent) return;
-    // `listIsCurrent`: never auto-select out of a list fetched for other
-    // filters — after an external hash change (sidebar entry, back/forward,
-    // bookmark) the old rows are still on screen until the refetch lands, and
-    // picking one would overwrite the selection the new URL asked for.
-    if (!loading && listIsCurrent && tickets.length > 0 && !selected) {
-      const first = tickets[0];
-      const key = first.internalNumber ?? first.id;
-      writeHash(key, sort, typeFilter);
-    }
-  }, [tab, loading, listIsCurrent, tickets, selected, sort, typeFilter, writeHash, deepLinkAbsent]);
+  // Where the focused ticket sits in the list: "3 of 9" and the j/k anchor.
+  const focusIndex = focusTicketId ? tickets.findIndex((t) => t.id === focusTicketId) : -1;
+  // Remembered while the ticket is listed, so j/k still step from its place
+  // after a reconcile drops it (resolved out of an open-only tab).
+  const lastFocusIndex = useRef(-1);
+  useEffect(() => { if (focusIndex >= 0) lastFocusIndex.current = focusIndex; }, [focusIndex]);
+  const stepTarget = (delta: 1 | -1): TicketSummary | null => {
+    if (tickets.length === 0) return null;
+    const anchor = focusIndex >= 0 ? focusIndex + delta
+      : lastFocusIndex.current >= 0 ? (delta === 1 ? lastFocusIndex.current : lastFocusIndex.current - 1)
+      : (delta === 1 ? 0 : -1);
+    const next = anchor >= 0 && anchor < tickets.length ? tickets[anchor] : null;
+    return next && next.id !== focusTicketId ? next : null;
+  };
 
-  const select = useCallback((t: TicketSummary) => {
-    // Below the split-pane breakpoint the workbench pane is hidden; navigate
-    // to the full-page ticket view instead (list-then-detail navigation).
-    if (window.innerWidth < 1100) {
-      void navigateTo(`/tickets/${t.id}`);
+  // What to do once the focus view's detail has loaded: move keyboard focus to
+  // its subject (every open), or finish a board shortcut (r / n / e).
+  const pendingIntent = useRef<{ id: string; kind: 'heading' | 'reply' | 'internal' | 'resolve' } | null>(null);
+
+  // Open a ticket in focus, in place. The board keeps its scroll offset.
+  const openFocusWith = useCallback((ticket: TicketSummary, kind: 'heading' | 'reply' | 'internal' | 'resolve') => {
+    const fromBoard = !inFocus;
+    if (fromBoard && scrollRef.current) savedScroll.current = scrollRef.current.scrollTop;
+    setActiveId(ticket.id);
+    // The row (or ticket) that had focus is going away: say where the user is
+    // now, outside the board that is about to be hidden.
+    pendingIntent.current = { id: ticket.id, kind };
+    setAnnouncement(queueAnnouncement(ticket, config, t));
+    // From the board, a new (marked) history entry: Back returns to the board
+    // instead of leaving /tickets. Inside focus (j/k, the next-ticket offer)
+    // it is replaced, mark and all, so Back never walks through every ticket seen.
+    writeHash(ticket.internalNumber ?? ticket.id, sort, typeFilter, showMerged, { push: fromBoard });
+  }, [inFocus, sort, typeFilter, showMerged, writeHash, config, t]);
+  const openFocus = useCallback((ticket: TicketSummary) => openFocusWith(ticket, 'heading'), [openFocusWith]);
+
+  const backToTriage = useCallback(() => {
+    if (focusTicketId) setActiveId(focusTicketId);
+    setNextOffer(null);
+    if (onFocusEntryFromBoard()) {
+      // Step back through the entry openFocus pushed (the popstate claim
+      // below shows the board), so Esc, Back and Forward agree. The mark is
+      // read from the entry, so it holds after Back then Forward too.
+      window.history.back();
       return;
     }
-    const key = t.internalNumber ?? t.id;
-    writeHash(key, sort, typeFilter);
-  }, [sort, typeFilter, writeHash]);
+    writeHash(null, sort, typeFilter);
+  }, [focusTicketId, sort, typeFilter, writeHash]);
+
+  // Back / Forward between the board and a ticket opened from it. Astro's
+  // router would take the step for a navigation and, unless the location it
+  // last moved to carries a hash, re-fetch and swap this page, remounting the
+  // board without its row, scroll or filters. Its listener runs before any an
+  // island adds (Chromium: registration order), so the step is claimed
+  // through the hook that runs before the router (lib/samePageHistory.ts).
+  useEffect(() => claimSamePageHistory((e) => {
+    // Leaving this page (another path or query) is the router's job.
+    if (window.location.pathname + window.location.search !== pagePath.current) return false;
+    setRouteFocus(null);
+    setQueueHash(parseQueueHash(window.location.hash.replace(/^#/, '')));
+    // The sidebar mirrors the URL; its own popstate listener is skipped.
+    window.dispatchEvent(new CustomEvent(URL_CHANGE_EVENT));
+    // Entries without state (a plain hash assignment) the router ignores
+    // anyway; leave those to every other listener.
+    return e.state !== null;
+  }), [setQueueHash]);
+
+  // Back on the board (Esc, the back button, browser Back): put the scroll
+  // offset and the keyboard focus back on the row the tech left from.
+  const wasInFocus = useRef(inFocus);
+  useIsomorphicLayoutEffect(() => {
+    const left = wasInFocus.current && !inFocus;
+    wasInFocus.current = inFocus;
+    if (!left) return;
+    if (scrollRef.current) scrollRef.current.scrollTop = savedScroll.current;
+    const row = activeId ? document.getElementById(queueOptionId(activeId)) : null;
+    if (!row) return;
+    row.focus({ preventScroll: true });
+    // After many j/k in focus the active row can sit outside the restored
+    // offset; bring it just into view (no jump when it already is). Absent in jsdom.
+    row.scrollIntoView?.({ block: 'nearest' });
+  }, [inFocus, activeId]);
 
   // #8972: after a merge the source is a closed tombstone; follow the survivor
-  // (by number when the dialog knew it, else by id — both resolve in `selected`).
+  // (by number when the dialog knew it, else by id).
   const onWorkbenchMerged = useCallback((survivorId: string, survivorNumber: string | null) => {
     writeHash(survivorNumber ?? survivorId, sort, typeFilter);
     scheduleReconcile();
   }, [sort, typeFilter, writeHash, scheduleReconcile]);
 
-  const move = useCallback((delta: 1 | -1) => {
+  const onWorkbenchDeleted = useCallback((id: string) => {
+    setHeldTicket((prev) => (prev?.id === id ? null : prev));
+    backToTriage();
+  }, [backToTriage]);
+
+  const activeTicket = useMemo(() => tickets.find((tk) => tk.id === activeId) ?? null, [tickets, activeId]);
+
+  // Triage j/k: move the active row (and DOM focus with it — roving tab stop),
+  // announce it, never open it.
+  const moveActive = useCallback((delta: 1 | -1) => {
     if (tickets.length === 0) return;
-    const idx = selected ? tickets.findIndex((t) => t.id === selected.id) : -1;
-    const next = tickets[Math.min(tickets.length - 1, Math.max(0, idx + delta))];
+    const idx = activeTicket ? tickets.findIndex((tk) => tk.id === activeTicket.id) : -1;
+    const next = tickets[idx < 0 ? 0 : Math.min(tickets.length - 1, Math.max(0, idx + delta))];
     if (!next) return;
-    select(next);
-    // DOM focus follows the selection (roving tab stop) so Tab leaves from
-    // the right row and the row scrolls into view; the live region gives a
-    // short summary instead of the row's full text.
+    setActiveId(next.id);
     document.getElementById(queueOptionId(next.id))?.focus();
     setAnnouncement(queueAnnouncement(next, config, t));
-  }, [tickets, selected, select, config, t]);
+  }, [tickets, activeTicket, config, t]);
 
-  const assignMe = useCallback(async () => {
-    if (!selected) return;
+  const assignMe = useCallback(async (target: TicketSummary | null) => {
+    if (!target) return;
     const me = useAuthStore.getState().user;
     const userId = me?.id;
     if (!userId) {
@@ -586,18 +615,20 @@ export default function TicketsPage() {
     }
     try {
       await runAction({
-        request: () => fetchWithAuth(`/tickets/${selected.id}/assign`, { method: 'POST', body: JSON.stringify({ assigneeId: userId }) }),
+        request: () => fetchWithAuth(`/tickets/${target.id}/assign`, { method: 'POST', body: JSON.stringify({ assigneeId: userId }) }),
         errorFallback: t('ticketsPage.assignFailed'),
         successMessage: t('ticketsPage.assignedToYou'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
-      patchTicketRow(selected.id, { assignedTo: userId, assigneeName: me?.name ?? me?.email ?? null });
+      patchTicketRow(target.id, { assignedTo: userId, assigneeName: me?.name ?? me?.email ?? null });
       scheduleReconcile();
+      // The focus view reads its own detail; a page-level assign must reach it.
+      if (inFocus) setPaneRefresh((n) => n + 1);
     } catch (err) {
       // ActionError is already toasted by runAction; surface anything else too.
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketsPage.assignFailed') });
     }
-  }, [selected, patchTicketRow, scheduleReconcile, t]);
+  }, [patchTicketRow, scheduleReconcile, inFocus, t]);
 
   const toggleBulkSelect = useCallback((id: string) => {
     setBulkSelectedIds((prev) => {
@@ -610,11 +641,11 @@ export default function TicketsPage() {
 
   // `x`: the keyboard path to bulk selection (row checkboxes are pointer-only).
   const toggleActiveBulk = useCallback(() => {
-    if (!selected) return;
-    const count = bulkSelectedIds.size + (bulkSelectedIds.has(selected.id) ? -1 : 1);
-    toggleBulkSelect(selected.id);
+    if (!activeTicket) return;
+    const count = bulkSelectedIds.size + (bulkSelectedIds.has(activeTicket.id) ? -1 : 1);
+    toggleBulkSelect(activeTicket.id);
     setAnnouncement(t('ticketsPage.selectedCount', { count }));
-  }, [selected, bulkSelectedIds, toggleBulkSelect, t]);
+  }, [activeTicket, bulkSelectedIds, toggleBulkSelect, t]);
 
   const clearBulkSelection = useCallback(() => {
     setBulkSelectedIds(new Set());
@@ -635,10 +666,10 @@ export default function TicketsPage() {
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       showBulkOutcomeToast(result.data, t('ticketsPage.bulk.updatedPast'), t);
-      // The snapshot may now be stale (or deleted); let the queue re-select.
+      // The snapshot may now be stale (or deleted).
       setHeldTicket(null);
       clearBulkSelection();
-      setPaneRefresh((t) => t + 1);
+      setPaneRefresh((n) => n + 1);
       void fetchTickets();
       void fetchStats();
     } catch (err) {
@@ -662,7 +693,7 @@ export default function TicketsPage() {
       showBulkOutcomeToast(result.data, t('ticketsPage.bulk.deletedPast'), t);
       setHeldTicket(null);
       clearBulkSelection();
-      setPaneRefresh((t) => t + 1);
+      setPaneRefresh((n) => n + 1);
       void fetchTickets();
       void fetchStats();
     } catch (err) {
@@ -689,24 +720,49 @@ export default function TicketsPage() {
     }
   }, [fetchTickets, fetchStats, t]);
 
-  const focusComposer = useCallback((internal: boolean) => {
-    const tabBtn = document.querySelector<HTMLButtonElement>(
-      internal ? '[data-testid="ticket-composer-tab-internal"]' : '[data-testid="ticket-composer-tab-reply"]'
-    );
-    tabBtn?.click();
-    document.querySelector<HTMLTextAreaElement>('[data-testid="ticket-composer-input"]')?.focus();
-  }, []);
+  // r / n / e from the board open the active ticket first; the focus view
+  // finishes the action once its detail (and composer) has loaded.
+  const actFromBoard = useCallback((kind: 'reply' | 'internal' | 'resolve') => {
+    if (!activeTicket) return;
+    openFocusWith(activeTicket, kind);
+  }, [activeTicket, openFocusWith]);
+  const onWorkbenchReady = useCallback((id: string) => {
+    const intent = pendingIntent.current;
+    if (!intent || intent.id !== id) return;
+    pendingIntent.current = null;
+    if (intent.kind === 'heading') document.getElementById(TICKET_FOCUS_SUBJECT_ID)?.focus();
+    else if (intent.kind === 'resolve') setResolveToken((n) => n + 1);
+    else requestCompose(intent.kind);
+  }, [requestCompose]);
 
+  const onEscape = useCallback((e: KeyboardEvent) => {
+    if (e.defaultPrevented) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (target?.closest(OVERLAY) || document.querySelector('[aria-modal="true"]')) return;
+    const active = document.activeElement;
+    // First Escape leaves the text field; only a second one leaves the ticket.
+    if (isEditable(active) || isEditable(target)) { (active as HTMLElement | null)?.blur(); return; }
+    if (inFocus) { backToTriage(); return; }
+    (active as HTMLElement | null)?.blur();
+  }, [inFocus, backToTriage]);
+
+  const onPrevious = () => { const next = stepTarget(-1); if (next) openFocus(next); };
+  const onNext = () => { const next = stepTarget(1); if (next) openFocus(next); };
+
+  const liveTab = tab !== 'review' && tab !== 'archived';
   useQueueKeyboard({
-    onMove: move,
-    onOpen: () => { if (selected) void navigateTo(`/tickets/${selected.id}`); },
-    onAssignMe: () => void assignMe(),
-    onFocusReply: () => focusComposer(false),
-    onFocusInternal: () => focusComposer(true),
-    onResolve: () => { if (selected) setResolveToken((t) => t + 1); },
-    // Bulk selection lives on the live queue tabs only (review/archived have none).
-    onToggleBulk: tab === 'review' || tab === 'archived' ? undefined : toggleActiveBulk,
-    onEscape: () => (document.activeElement as HTMLElement | null)?.blur()
+    onMove: (delta) => (inFocus ? (delta === 1 ? onNext() : onPrevious()) : moveActive(delta)),
+    onOpen: () => {
+      if (inFocus) { if (nextOffer) openFocus(nextOffer.ticket); return; }
+      if (activeTicket && liveTab) openFocus(activeTicket);
+    },
+    onAssignMe: () => void assignMe(inFocus ? focused : activeTicket),
+    onFocusReply: () => (inFocus ? focusTicketId && requestCompose('reply') : liveTab && actFromBoard('reply')),
+    onFocusInternal: () => (inFocus ? focusTicketId && requestCompose('internal') : liveTab && actFromBoard('internal')),
+    onResolve: () => (inFocus ? (focusTicketId && setResolveToken((n) => n + 1)) : liveTab && actFromBoard('resolve')),
+    // Bulk selection lives on the board of the live queue tabs only.
+    onToggleBulk: inFocus || !liveTab ? undefined : toggleActiveBulk,
+    onEscape,
   });
 
   const tabCount = (id: Tab): number | null => {
@@ -723,213 +779,140 @@ export default function TicketsPage() {
   };
 
   const trueEmpty = !loading && tickets.length === 0 && tab === 'open' && !search && !filtersActive && !error;
-
-  const filterSelectClass = (active: boolean) =>
-    cn(
-      // py-1 + leading-tight overrides the @tailwindcss/forms base padding
-      // (0.5rem) + 1.5rem line-height that otherwise overflow the fixed h-8
-      // box and clip descenders on the displayed value (e.g. "All categories").
-      'h-8 max-w-[180px] rounded-md border bg-background px-2 py-1 text-sm leading-tight focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50',
-      active ? 'text-foreground' : 'text-muted-foreground'
-    );
+  const tabLabel = (id: LiveTab) => t(/* i18n-dynamic */ `ticketsPage.tabs.${id}`);
+  const prevTarget = inFocus ? stepTarget(-1) : null;
+  const nextTarget = inFocus ? stepTarget(1) : null;
+  const movedNotice = inFocus && focused && heldDroppedFromView && tab !== 'closed' && isClosedStatus(focused.status);
+  // Held but no longer in this view for another reason (assigned out of
+  // Unassigned, replied out of Breaching): say so instead of leaving "N of M"
+  // to vanish silently. Only once the list is the current view's.
+  const leftViewNotice = inFocus && focused && heldDroppedFromView && listIsCurrent && !movedNotice
+    ? ticketDisplayNumber(focused)
+    : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="tickets-page">
-      <div className="mb-3 flex items-center justify-between">
-        <h1 className="text-xl font-semibold" data-testid="tickets-heading">{t('ticketsPage.title')}</h1>
-        <a
-          href="/tickets/new"
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90"
-          data-testid="tickets-create-button"
-        >
-          <Plus className="h-4 w-4" /> {t('ticketsPage.createTicket')}
-        </a>
-      </div>
-
-      <div className="mb-3 space-y-2">
-        <OverflowTabs
-          tabs={[
-            // These five are plain informational counts (rendered as muted
-            // text, including "0", before this fix) — not the "needs
-            // attention" signal `OverflowTab.count`/`CountBadge` renders
-            // (amber pill, and it hides on a falsy count). Appending the
-            // number onto the label keeps that plain-text meaning instead of
-            // relabeling every count as an alert. Only Review queue (below)
-            // is a genuine "needs attention" count and uses the real prop.
-            ...TABS.map((tabItem): OverflowTab => {
-              const label = t(/* i18n-dynamic */ `ticketsPage.tabs.${tabItem.labelKey}`);
-              const count = tabCount(tabItem.id);
-              return { id: tabItem.id, label: count !== null ? `${label} ${count}` : label, icon: null };
-            }),
-            ...(reviewAvailable
-              ? [{ id: 'review', label: t('ticketsPage.reviewQueue'), icon: null, count: tabCount('review') ?? undefined } satisfies OverflowTab]
-              : []),
-            // Soft-deleted queue. tickets:manage only (server re-enforces via
-            // deleted=only → 403 for non-managers), so the tab stays hidden otherwise.
-            ...(canManage
-              ? [{ id: 'archived', label: t('ticketsPage.archived'), icon: null } satisfies OverflowTab]
-              : []),
-          ]}
-          activeTab={tab}
-          onTabChange={(id) => setTab(id as Tab)}
-          testIdPrefix="tickets-tab-"
-        />
-        {/* Below `lg` this drops to its own line under the tabs (#7148 —
-            a fixed w-56 box in the same row as the tabs overflowed by 94px
-            at 1024px); at `lg` and up it sits at the end of its own row,
-            right-aligned. */}
-        <div className="flex lg:justify-end">
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('ticketsPage.searchPlaceholder')}
-            data-testid="tickets-search-input"
-            className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm lg:w-56"
-          />
-        </div>
-      </div>
-
-      {tab !== 'review' && (
-      <div className="mb-3 flex flex-wrap items-center gap-2" data-testid="tickets-filter-bar">
-        <select
-          value={priorityFilter}
-          onChange={(e) => setPriorityFilter(e.target.value)}
-          aria-label={t('ticketsPage.filterByPriority')}
-          data-testid="tickets-filter-priority"
-          className={filterSelectClass(!!priorityFilter)}
-        >
-          <option value="">{t('ticketsPage.allPriorities')}</option>
-          {PRIORITY_ORDER.map((p) => (
-            <option key={p} value={p}>{translatedPriorityLabel(config, p, t)}</option>
-          ))}
-        </select>
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          aria-label={t('ticketsPage.filterByCategory')}
-          data-testid="tickets-filter-category"
-          className={filterSelectClass(!!categoryFilter)}
-        >
-          <option value="">{t('ticketsPage.allCategories')}</option>
-          {categories.map((cat) => (
-            <option key={cat.id} value={cat.id}>{cat.name}</option>
-          ))}
-        </select>
-        <select
-          value={typeFilter}
-          onChange={(e) => {
-            const value = e.target.value;
-            const next: TicketType | '' = isTicketType(value) ? value : '';
-            writeHash(selectedNumber, sort, next);
-          }}
-          aria-label={t('ticketsPage.filterByType')}
-          data-testid="tickets-filter-type"
-          className={filterSelectClass(!!typeFilter)}
-        >
-          <option value="">{t('ticketsPage.allTypes')}</option>
-          {TICKET_TYPE_ORDER.map((type) => (
-            <option key={type} value={type}>{t(/* i18n-dynamic */ ticketTypeLabelKey(type))}</option>
-          ))}
-        </select>
-        {assignees !== null && (
-          <select
-            value={assigneeFilter}
-            onChange={(e) => setAssigneeFilter(e.target.value)}
-            disabled={assigneeLocked}
-            title={assigneeLocked ? t('ticketsPage.assigneeLockedTitle') : undefined}
-            aria-label={t('ticketsPage.filterByAssignee')}
-            data-testid="tickets-filter-assignee"
-            className={filterSelectClass(!!assigneeFilter)}
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col" style={fillHeight ? { height: fillHeight } : undefined} data-testid="tickets-page">
+      {/* Outside the board, which is hidden in focus: j/k on the board and
+          every ticket opened (from the board, j/k in focus, the next-ticket
+          offer) are announced here. */}
+      <p role="status" className="sr-only" data-testid="tickets-queue-announcer">{announcement}</p>
+      <div hidden={inFocus} className="flex min-h-0 flex-1 flex-col" data-testid="tickets-triage">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h1 className="text-xl font-semibold" data-testid="tickets-heading">{t('ticketsPage.title')}</h1>
+          <a
+            href="/tickets/new"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90"
+            data-testid="tickets-create-button"
           >
-            <option value="">{t('ticketsPage.allAssignees')}</option>
-            {assignees.map((u) => (
-              <option key={u.id} value={u.id}>{u.name || u.email}</option>
-            ))}
-          </select>
-        )}
-        <select
-          value={sort}
-          onChange={(e) => {
-            const value = e.target.value;
-            if (!isTicketSort(value)) return;
-            writeHash(selectedNumber, value, typeFilter);
-          }}
-          aria-label={t('ticketsPage.sortTickets')}
-          data-testid="ticket-sort"
-          className={filterSelectClass(sort !== 'triage')}
-        >
-          {SORT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{t(/* i18n-dynamic */ `ticketsPage.sort.${o.labelKey}`)}</option>
-          ))}
-        </select>
-        <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={showMerged}
-            onChange={(e) => writeHash(selectedNumber, sort, typeFilter, e.target.checked)}
-            data-testid="ticket-list-show-merged"
-          />
-          {t('ticketsPage.showMerged')}
-        </label>
-      </div>
-      )}
-
-      {tab === 'review' ? (
-        <div className="min-h-0 flex-1 overflow-y-auto" data-testid="tickets-review-pane">
-          <InboundReviewQueue onTotalChange={setReviewTotal} />
+            <Plus className="h-4 w-4" aria-hidden="true" /> {t('ticketsPage.createTicket')}
+          </a>
         </div>
-      ) : tab === 'archived' ? (
-        <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border" data-testid="tickets-archived-pane">
-          {error ? (
-            <div className="flex h-full items-center justify-center" data-testid="tickets-archived-error">
-              <div className="text-center">
-                <p className="text-sm text-muted-foreground">{error}</p>
-                <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">{t('common:actions.retry')}</button>
-              </div>
-            </div>
-          ) : (
-            <TicketArchivedList
-              tickets={tickets}
-              loading={loading}
+
+        <div className="mb-3 space-y-2">
+          <OverflowTabs
+            tabs={[
+              // These five are plain informational counts (muted text,
+              // including "0") — not the "needs attention" signal
+              // `OverflowTab.count`/`CountBadge` renders (amber pill, hidden on
+              // a falsy count). Appending the number onto the label keeps that
+              // plain meaning. Only Review queue is a genuine "needs
+              // attention" count and uses the real prop.
+              ...TABS.map((tabItem): OverflowTab => {
+                const label = tabLabel(tabItem.id);
+                const count = tabCount(tabItem.id);
+                return { id: tabItem.id, label: count !== null ? `${label} ${count}` : label, icon: null };
+              }),
+              ...(reviewAvailable
+                ? [{ id: 'review', label: t('ticketsPage.reviewQueue'), icon: null, count: tabCount('review') ?? undefined } satisfies OverflowTab]
+                : []),
+              // Soft-deleted queue. tickets:manage only (server re-enforces via
+              // deleted=only → 403 for non-managers), so the tab stays hidden otherwise.
+              ...(canManage
+                ? [{ id: 'archived', label: t('ticketsPage.archived'), icon: null } satisfies OverflowTab]
+                : []),
+            ]}
+            activeTab={tab}
+            onTabChange={(id) => setTab(id as Tab)}
+            testIdPrefix="tickets-tab-"
+          />
+          {tab !== 'review' && (
+            <TicketQueueFilters
+              search={search}
+              onSearch={setSearch}
+              priority={priorityFilter}
+              onPriority={setPriorityFilter}
+              category={categoryFilter}
+              onCategory={setCategoryFilter}
+              categories={categories}
+              type={typeFilter}
+              onType={(next) => writeHash(focusKey, sort, next)}
+              assignees={assignees}
+              assignee={assigneeFilter}
+              onAssignee={setAssigneeFilter}
+              assigneeLocked={assigneeLocked}
+              sort={sort}
+              onSort={(next) => writeHash(focusKey, next, typeFilter)}
+              showMerged={showMerged}
+              onShowMerged={(next) => writeHash(focusKey, sort, typeFilter, next)}
               config={config}
-              onRestore={(t) => void restoreTicket(t.id)}
-              restoringIds={restoringIds}
             />
           )}
         </div>
-      ) : trueEmpty ? (
-        <div className="flex flex-1 flex-col items-center justify-center text-center" data-testid="tickets-empty">
-          <h2 className="text-base font-medium">{t('ticketsPage.empty.title')}</h2>
-          <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            {t('ticketsPage.empty.description')}
-          </p>
-          <div className="mt-3 flex gap-2">
-            <a href="/tickets/new" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90" data-testid="tickets-empty-create">{t('ticketsPage.createTicket')}</a>
-            <a href="/settings/ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">{t('ticketsPage.ticketingSettings')}</a>
+
+        {tab === 'review' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto" data-testid="tickets-review-pane">
+            <InboundReviewQueue onTotalChange={setReviewTotal} />
           </div>
-        </div>
-      ) : error ? (
-        <div className="flex flex-1 items-center justify-center" data-testid="tickets-error">
-          <div className="text-center">
-            <p className="text-sm text-muted-foreground">{error}</p>
-            <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-error-retry">{t('common:actions.retry')}</button>
+        ) : tab === 'archived' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border" data-testid="tickets-archived-pane">
+            {error ? (
+              <div className="flex h-full items-center justify-center" data-testid="tickets-archived-error">
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground">{error}</p>
+                  <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">{t('common:actions.retry')}</button>
+                </div>
+              </div>
+            ) : (
+              <TicketArchivedList
+                tickets={tickets}
+                loading={loading}
+                config={config}
+                onRestore={(tk) => void restoreTicket(tk.id)}
+                restoringIds={restoringIds}
+              />
+            )}
           </div>
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1 overflow-hidden rounded-lg border">
-          <div className="relative flex w-full flex-col min-[1100px]:w-2/5 min-[1100px]:min-w-[320px] min-[1100px]:max-w-[480px] min-[1100px]:border-r">
+        ) : trueEmpty ? (
+          <div className="flex flex-1 flex-col items-center justify-center text-center" data-testid="tickets-empty">
+            <h2 className="text-base font-medium">{t('ticketsPage.empty.title')}</h2>
+            <p className="mt-1 max-w-md text-sm text-muted-foreground">
+              {t('ticketsPage.empty.description')}
+            </p>
+            <div className="mt-3 flex gap-2">
+              <a href="/tickets/new" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90" data-testid="tickets-empty-create">{t('ticketsPage.createTicket')}</a>
+              <a href="/settings/ticketing" className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-empty-settings">{t('ticketsPage.ticketingSettings')}</a>
+            </div>
+          </div>
+        ) : error ? (
+          <div className="flex flex-1 items-center justify-center" data-testid="tickets-error">
+            <div className="text-center">
+              <p className="text-sm text-muted-foreground">{error}</p>
+              <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-error-retry">{t('common:actions.retry')}</button>
+            </div>
+          </div>
+        ) : (
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
             <div className="flex items-center gap-2 border-b px-3 py-1.5">
               <button
                 type="button"
-                onClick={() => setBulkSelectedIds((prev) => new Set([...prev, ...tickets.map((t) => t.id)]))}
+                onClick={() => setBulkSelectedIds((prev) => new Set([...prev, ...tickets.map((tk) => tk.id)]))}
                 data-testid="tickets-select-all-header"
                 className="text-xs text-muted-foreground hover:text-foreground hover:underline"
               >
                 {t('ticketsPage.selectAll')}
               </button>
-              {/* The queue's j/k/x/a/r/n/e keys are otherwise undiscoverable:
-                  this opens the global `?` card, which lists them. */}
+              {/* The queue's single keys are otherwise undiscoverable: this
+                  opens the global `?` card, which lists them. */}
               <button
                 type="button"
                 onClick={() => useUiStore.getState().openShortcutsHelp()}
@@ -939,15 +922,20 @@ export default function TicketsPage() {
                 className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
               >
                 {t('ticketsPage.shortcutsButton')}
-                <kbd aria-hidden="true" className={cn('inline-flex min-w-4 items-center justify-center rounded border bg-muted px-1 font-mono text-[11px] font-semibold leading-4', NEUTRAL_CHIP_TEXT)}>?</kbd>
+                <kbd aria-hidden="true" className={cn('inline-flex min-w-4 items-center justify-center rounded border bg-muted px-1 font-mono text-xs font-semibold leading-4', NEUTRAL_CHIP_TEXT)}>?</kbd>
               </button>
             </div>
-            <p role="status" className="sr-only" data-testid="tickets-queue-announcer">{announcement}</p>
-            <div className="min-h-0 flex-1 overflow-y-auto">
+            <div
+              ref={scrollRef}
+              className="min-h-0 flex-1 overflow-y-auto"
+              data-testid="tickets-queue-scroll"
+              onScroll={(e) => { if (!inFocus) savedScroll.current = e.currentTarget.scrollTop; }}
+            >
               <TicketQueueList
                 tickets={tickets}
-                selectedId={selected?.id ?? null}
-                onSelect={select}
+                selectedId={activeId}
+                onSelect={openFocus}
+                onRowFocus={(tk) => setActiveId(tk.id)}
                 loading={loading}
                 config={config}
                 onClearFilters={filtersActive ? clearFilters : undefined}
@@ -957,116 +945,98 @@ export default function TicketsPage() {
               />
             </div>
             {bulkSelectedIds.size > 0 && (
-              // Slide-up bar at the bottom of the list pane (brief §6). Reuses the
-              // global fade-up keyframes (translate-y + fade) at 180ms ease-out.
-              <div
-                className="absolute inset-x-0 bottom-0 z-10 border-t bg-background px-3 py-2 shadow-[0_-4px_12px_-6px_rgba(0,0,0,0.15)] animate-[fade-up_0.18s_ease-out_both]"
-                data-testid="tickets-bulk-bar"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium tabular-nums">{t('ticketsPage.selectedCount', { count: bulkSelectedIds.size })}</span>
-                  <button
-                    type="button"
-                    // Union, not replace: cross-tab selections off-view must survive.
-                    onClick={() => setBulkSelectedIds((prev) => new Set([...prev, ...tickets.map((t) => t.id)]))}
-                    data-testid="tickets-bulk-select-all"
-                    className="text-sm text-primary hover:underline"
-                  >
-                    {t('ticketsPage.selectAll')}
-                  </button>
-                  <select
-                    value={bulkAssignee}
-                    onChange={(e) => { setBulkAssignee(e.target.value); if (e.target.value) setBulkStatus(''); }}
-                    aria-label={t('ticketsPage.bulk.assignToAria')}
-                    data-testid="tickets-bulk-assignee"
-                    className="h-8 max-w-[150px] rounded-md border bg-background px-2 py-1 text-sm leading-tight"
-                  >
-                    <option value="">{t('ticketsPage.bulk.assignTo')}</option>
-                    <option value="unassign">{t('ticketsPage.bulk.unassign')}</option>
-                    {(assignees ?? []).map((u) => (
-                      <option key={u.id} value={u.id}>{u.name || u.email}</option>
-                    ))}
-                  </select>
-                  <select
-                    value={bulkStatus}
-                    onChange={(e) => { setBulkStatus(e.target.value); if (e.target.value) setBulkAssignee(''); }}
-                    aria-label={t('ticketsPage.bulk.setStatusAria')}
-                    data-testid="tickets-bulk-status"
-                    className="h-8 max-w-[130px] rounded-md border bg-background px-2 py-1 text-sm leading-tight"
-                  >
-                    <option value="">{t('ticketsPage.bulk.setStatus')}</option>
-                    {BULK_STATUSES.map((s) => (
-                      <option key={s} value={s}>{translatedStatusLabel(config, s, t)}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => void applyBulk()}
-                    disabled={!bulkAssignee && !bulkStatus}
-                    data-testid="tickets-bulk-apply"
-                    className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {t('common:actions.apply')}
-                  </button>
-                  {canManage && (
-                    <button
-                      type="button"
-                      onClick={() => setBulkDeleteOpen(true)}
-                      data-testid="tickets-bulk-delete"
-                      className="rounded-md border border-destructive/40 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10"
-                    >
-                      {t('common:actions.delete')}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={clearBulkSelection}
-                    data-testid="tickets-bulk-clear"
-                    className="ml-auto rounded-md border px-2.5 py-1.5 text-sm hover:bg-muted"
-                  >
-                    {t('ticketsPage.clearSelection')}
-                  </button>
-                </div>
-              </div>
+              <TicketBulkBar
+                count={bulkSelectedIds.size}
+                assignees={assignees}
+                config={config}
+                bulkAssignee={bulkAssignee}
+                bulkStatus={bulkStatus}
+                onBulkAssignee={(value) => { setBulkAssignee(value); if (value) setBulkStatus(''); }}
+                onBulkStatus={(value) => { setBulkStatus(value); if (value) setBulkAssignee(''); }}
+                onSelectAll={() => setBulkSelectedIds((prev) => new Set([...prev, ...tickets.map((tk) => tk.id)]))}
+                onApply={() => void applyBulk()}
+                onDelete={canManage ? () => setBulkDeleteOpen(true) : undefined}
+                onClear={clearBulkSelection}
+              />
             )}
           </div>
-          <div className="hidden min-w-0 flex-1 min-[1100px]:block">
-            {selected ? (
-              <div className="flex h-full min-h-0 flex-col">
-                {heldDroppedFromView && tab !== 'closed' && isClosedStatus(selected.status) && (
-                  // #9564: the ticket left this view (resolved/closed from an
-                  // open-only tab); say where it went instead of vanishing it.
-                  <div
-                    role="status"
-                    className="flex items-center gap-2 border-b bg-muted/40 px-4 py-2 text-sm"
-                    data-testid="tickets-moved-to-closed"
+        )}
+      </div>
+
+      {inFocus && (
+        <div className="flex min-h-0 flex-1 flex-col" data-testid="tickets-focus">
+          <TicketFocusStrip
+            tabLabel={isLiveTab(tab) ? tabLabel(tab) : tabLabel('open')}
+            position={focusIndex >= 0 ? { index: focusIndex + 1, total: tickets.length } : null}
+            onBack={backToTriage}
+            onPrevious={onPrevious}
+            onNext={onNext}
+            canPrevious={prevTarget !== null}
+            canNext={nextTarget !== null}
+          />
+          {(movedNotice || leftViewNotice || nextOffer) && (
+            // One ruled band on the header's gutter: where the ticket went, and what is next.
+            <div className="flex shrink-0 flex-wrap items-center gap-x-6 gap-y-2 border-b bg-muted/40 px-4 py-2" data-testid="ticket-focus-notice-band">
+              {movedNotice && focused && (
+                // #9564: the ticket left this view (resolved/closed from an
+                // open-only tab); say where it went instead of vanishing it.
+                <p role="status" className="flex items-center gap-2 text-sm" data-testid="tickets-moved-to-closed">
+                  <span>
+                    {t('ticketsPage.movedToClosed.message', {
+                      status: focused.statusName || translatedStatusLabel(config, focused.status, t),
+                      tab: t('ticketsPage.tabs.closed'),
+                    })}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setTab('closed')}
+                    className="font-medium text-primary-ink hover:underline"
+                    data-testid="tickets-moved-to-closed-view"
                   >
-                    <span>
-                      {t('ticketsPage.movedToClosed.message', {
-                        status: selected.statusName || translatedStatusLabel(config, selected.status, t),
-                        tab: t('ticketsPage.tabs.closed'),
-                      })}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setTab('closed')}
-                      className="font-medium text-primary hover:underline"
-                      data-testid="tickets-moved-to-closed-view"
-                    >
-                      {t('ticketsPage.movedToClosed.view', { tab: t('ticketsPage.tabs.closed') })}
-                    </button>
-                  </div>
-                )}
-                <div className="min-h-0 flex-1">
-                  <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={onWorkbenchPatched} onDeleted={onWorkbenchDeleted} onMerged={onWorkbenchMerged} onChanged={scheduleReconcile} />
-                </div>
-              </div>
+                    {t('ticketsPage.movedToClosed.view', { tab: t('ticketsPage.tabs.closed') })}
+                  </button>
+                </p>
+              )}
+              {leftViewNotice && (
+                <p role="status" className="text-sm" data-testid="tickets-left-view">
+                  {t('ticketsPage.ticketNotInView', { number: leftViewNotice })}
+                </p>
+              )}
+              {nextOffer && <TicketNextOffer ticket={nextOffer.ticket} onOpen={() => openFocus(nextOffer.ticket)} />}
+            </div>
+          )}
+          <div className="min-h-0 flex-1">
+            {focusTicketId ? (
+              <TicketWorkbench
+                ticketId={focusTicketId}
+                namesPage
+                resolveToast={resolveToastFor}
+                resolveRequestToken={resolveToken}
+                composeRequest={composeRequest}
+                refreshToken={paneRefresh}
+                assignees={assignees}
+                categories={categories}
+                onTicketPatched={onWorkbenchPatched}
+                onDeleted={onWorkbenchDeleted}
+                onMerged={onWorkbenchMerged}
+                onChanged={scheduleReconcile}
+                onReady={onWorkbenchReady}
+              />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
                 {absentNotice ? (
                   <p role="status" data-testid="tickets-deeplink-absent">{t('ticketsPage.ticketNotInView', { number: absentNotice })}</p>
+                ) : error && !loading ? (
+                  // The board's error pane is hidden in focus, and a ticket
+                  // number cannot resolve without the list: say so here.
+                  <div role="alert" className="text-center" data-testid="tickets-focus-error">
+                    <p>{error}</p>
+                    <button type="button" onClick={() => void fetchTickets()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="tickets-focus-error-retry">{t('common:actions.retry')}</button>
+                  </div>
                 ) : (
-                  <p>{t('ticketsPage.noSelection')}</p>
+                  <div className="w-full max-w-xl animate-pulse space-y-3 p-6" data-testid="tickets-focus-loading">
+                    <div className="h-5 w-2/3 rounded bg-muted" /><div className="h-4 w-1/3 rounded bg-muted/60" />
+                  </div>
                 )}
               </div>
             )}

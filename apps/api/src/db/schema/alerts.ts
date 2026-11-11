@@ -211,7 +211,7 @@ export const alerts = pgTable('alerts', {
   ruleDeviceSubjectClosedIdx: index('alerts_rule_device_subject_closed_idx')
     .on(table.ruleId, table.deviceId, sql`(COALESCE(${table.subjectKey}, ''))`, sql`(COALESCE(${table.resolvedAt}, ${table.dismissedAt})) DESC`)
     .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('resolved', 'dismissed')`),
-  // #4342 W3 (2027-01-23-094100, built CONCURRENTLY): closed alerts by close
+  // #4342 W3 (2027-01-23-102100, built CONCURRENTLY): closed alerts by close
   // time, for the closed-alert retention scan (jobs/alertRetention.ts).
   closedAgeIdx: index('alerts_closed_age_idx')
     .on(sql`(COALESCE(${table.resolvedAt}, ${table.dismissedAt}))`)

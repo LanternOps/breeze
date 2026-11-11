@@ -223,7 +223,7 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
                     <span className="rounded border px-1 py-0.5">{t(/* i18n-dynamic */ `inboundReviewQueue.parseStatus.${r.parseStatus}`)}</span>{' '}
                     {formatDateTime(r.createdAt)}
                     {r.parseStatus === 'failed' && r.error && (
-                      <span className="ml-2 text-red-600">{r.error}</span>
+                      <span className="ml-2 text-destructive-ink">{r.error}</span>
                     )}
                   </div>
                   {convertOpenId === r.id && (

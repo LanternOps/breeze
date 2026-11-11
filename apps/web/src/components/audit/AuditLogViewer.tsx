@@ -20,6 +20,7 @@ import AuditFilters from './AuditFilters';
 import { appendFilterParams, hasActiveFilters, type ActiveFilters } from './auditFilterParams';
 import { navigateTo } from '@/lib/navigation';
 import { formatAuditDetails, useAuditActionFormatter } from '@/lib/auditFormat';
+import { useAuditResourceTypeFormatter } from '@/lib/auditResourceType';
 import { downloadBlob } from '@/lib/downloadBlob';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
@@ -95,6 +96,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
   const { t } = useTranslation('admin');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const formatAuditAction = useAuditActionFormatter();
+  const formatResourceType = useAuditResourceTypeFormatter();
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const columnLabels: Record<SortKey, string> = {
     timestamp: t('audit.auditLogViewer.columns.timestamp'),
@@ -418,7 +420,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
                             <p className="font-medium text-foreground">
                               {formatDateTime(entry.timestamp, { timeZone: timezone })}
                             </p>
-                            <p className="text-xs text-muted-foreground">{entry.resourceType}</p>
+                            <p className="text-xs text-muted-foreground">{formatResourceType(entry.resourceType)}</p>
                           </div>
                         </div>
                       </td>

@@ -83,7 +83,7 @@ describe('DELETE /orgs/sites/:id with site-owned topology alerts (T3)', () => {
     // alert_correlations / alert_notifications left this list when
     // 2026-12-13-110200 made their alert FKs ON DELETE CASCADE;
     // psa_ticket_mappings left when 2027-01-17-210000 (#10499 W2-A) did;
-    // log_correlations / network_change_events left when 2027-01-23-094000
+    // log_correlations / network_change_events left when 2027-01-23-102000
     // (#4342 W3) made theirs ON DELETE SET NULL. None remains.
     expect([...new Set(rows.map((r) => r.tbl))].sort()).toEqual([]);
   });

@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Sections du système",
         "connections": "Connexions",
-        "deprecations": "Dépréciations"
+        "deprecations": "Dépréciations",
+        "health": "Santé"
       },
       "connections": {
         "enabledMeaning": "Activé signifie configuré. Breeze ne contacte pas le service pour vérifier qu'il répond.",
@@ -720,6 +721,57 @@
           "load": "Impossible de charger l’état des tâches."
         },
         "retry": "Réessayer"
+      },
+      "health": {
+        "coverage": "Uniquement les travaux de fond partagés : nombres de files et heartbeats des tâches planifiées, lus depuis Redis. Cet onglet n’affiche pas de verdict global. La santé par processus et par hôte se trouve dans /health/ready et la superposition de supervision.",
+        "loading": "Chargement de l’état des travaux de fond…",
+        "refresh": "Actualiser",
+        "never": "jamais",
+        "errors": {
+          "load": "Impossible de charger l’état des travaux de fond."
+        },
+        "status": {
+          "operational": "Opérationnel",
+          "degraded": "Dégradé",
+          "unavailable": "Indisponible",
+          "unknown": "Inconnu",
+          "disabled": "Désactivé"
+        },
+        "detail": {
+          "redis_unavailable": "Redis est indisponible, la lecture est impossible.",
+          "read_failed": "La lecture a échoué.",
+          "timeout": "La lecture a dépassé le délai.",
+          "stale": "Le dernier heartbeat est plus ancien que prévu.",
+          "missing": "Aucun heartbeat n’a été enregistré.",
+          "no_threshold": "Nombres seulement. Aucun seuil de santé n’est encore défini pour cette file."
+        },
+        "queues": {
+          "title": "Files",
+          "description": "Travail en attente dans chaque file partagée. Les nombres ne constituent pas un verdict de santé.",
+          "items": {
+            "connection-health-reconcile": "Réconciliateur de santé des connexions",
+            "connection-health-digest": "Synthèse de santé des connexions",
+            "alerts": "Alertes",
+            "event-dispatch": "Distribution des événements"
+          },
+          "counts": {
+            "waiting": "En attente",
+            "prioritized": "Prioritaires",
+            "delayed": "Différés",
+            "active": "Actifs"
+          }
+        },
+        "jobs": {
+          "title": "Tâches planifiées",
+          "description": "Dernière exécution enregistrée de chaque tâche de santé des connexions.",
+          "items": {
+            "reconcile": "Réconciliateur de santé des connexions",
+            "digest": "Synthèse de santé des connexions"
+          },
+          "kind": "Vérification de connexion : {{kind}}",
+          "lastRun": "Dernière exécution : {{when}}",
+          "failureStreak": "Série d’échecs : {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -915,7 +967,11 @@
       "script.delete": "Script supprimé",
       "automation.create": "Automatisation créée",
       "automation.update": "Automatisation mise à jour",
-      "automation.delete": "Automatisation supprimée"
+      "automation.delete": "Automatisation supprimée",
+      "unifi.controller.register": "Contrôleur UniFi enregistré",
+      "unifi.controller.remove": "Contrôleur UniFi supprimé",
+      "unifi.site.map": "Site UniFi associé",
+      "unifi.site.unmap": "Association du site UniFi retirée"
     },
     "resourceTypes": {
       "abuse_signal": "Signal d'abus",

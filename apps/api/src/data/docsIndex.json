@@ -4610,7 +4610,7 @@
       {
         "heading": "In the web UI",
         "anchor": "in-the-web-ui",
-        "text": "Platform administrators can see the same information at **Administration → System** (`/admin/system`, v0.117.0+). The **Deprecations** tab lists every retirement the running image knows about with its status for this deployment (crossed, possibly crossed, in effect, or upcoming), along with the running version, the last version recorded, the applied and pending migration counts, and the deployment's version history. The **Connections** tab shows each integration the API container is configured for, grouped by area, as enabled, disabled, misconfigured, or required but missing. It reads the API container's environment only, never shows secret values, and does not contact the services themselves, so \"enabled\" means configured, not reachable. Both tabs are read-only."
+        "text": "Platform administrators can see the same information at **Administration → System** (`/admin/system`, v0.117.0+). The **Deprecations** tab lists every retirement the running image knows about with its status for this deployment (crossed, possibly crossed, in effect, or upcoming), along with the running version, the last version recorded, the applied and pending migration counts, and the deployment's version history. The **Connections** tab shows each integration the API container is configured for, grouped by area, as enabled, disabled, misconfigured, or required but missing. It reads the API container's environment only, never shows secret values, and does not contact the services themselves, so \"enabled\" means configured, not reachable. The **Health** tab shows the connection-health reconciler and digest, each per-kind heartbeat, and the queue counts for connection health, alerts and event dispatch. It reads Redis only, so it works without the monitoring overlay. Queue counts are not a health verdict. All three tabs are read-only."
       },
       {
         "heading": "Compose file changes",
@@ -16026,6 +16026,7 @@
       "First sign-in",
       "Session length",
       "Microsoft-only sign-in",
+      "When the tenant proof is lost",
       "Give browser access to add-in users",
       "AI for Office add-in sessions",
       "For the customer's admin",
@@ -16077,6 +16078,11 @@
         "heading": "Microsoft-only sign-in",
         "anchor": "microsoft-only-sign-in",
         "text": "Setting **Password sign-in** to **Off — Microsoft/Google only** (SSO only) stops people using passwords.\n\nWhen you save it, Breeze shows a confirmation dialog listing what will change:\n\n- **Passwords removed.** People who are already connected to Microsoft. Their password is cleared, they are signed out once, and from then on they sign in with Microsoft.\n- **Can't sign in yet.** People who have not connected a Microsoft account. They keep their password but can't use it, so they can't sign in until they accept a Microsoft sign-in invite. The dialog names them.\n\nNothing changes until you confirm. If the numbers change while the dialog is open (for example someone connects Microsoft in the meantime), Breeze shows the new numbers and asks again.\n\nTo invite the people who can't sign in yet, tick **Send Microsoft sign-in invites to these accounts after saving** in the dialog, or use **Send Microsoft sign-in invite** (one person) or **Invite all** in the **Can't sign in yet** list that the card shows while password sign-in is off. The email links their Microsoft account to their existing portal login the first time they sign in. Sending it moves an active account that still has a password to *invited*.\n\nSaving the partner default shows the same confirmation, listing each organization it affects with a link to that organization's settings. Send invites from each organization's own page.\n\nIf the tenant proof is lost, password sign-in comes back automatically. Passwords that were cleared are not restored."
+      },
+      {
+        "heading": "When the tenant proof is lost",
+        "anchor": "when-the-tenant-proof-is-lost",
+        "text": "An organization loses its proof when its tenant link is removed, when its AI for Office tenant mapping is removed or changed to another tenant, or when another organization proves the same tenant. Microsoft sign-in then turns off for that organization's portal and its users sign in with a password, so nobody is locked out.\n\nIf Microsoft sign-in was on for the organization, Breeze records this in the audit log (`organization.portal_sign_in.password_fallback`, with the cause) and shows a notice on the **Sign-in & registration** card and on **Organization › Domains**. The notice stays until the tenant is proven again or an admin dismisses it. **Re-run the tenant proof** takes you to the proof controls."
       },
       {
         "heading": "Give browser access to add-in users",
@@ -21804,7 +21810,7 @@
       {
         "heading": "Device Events",
         "anchor": "device-events",
-        "text": "| Event | Description |\n|-------|-------------|\n| `device.enrolled` | An agent has completed enrollment (first enrollment or re-enrollment; payload `reenrollment` distinguishes them) |\n| `device.online` | A device has come online (heartbeat received) |\n| `device.offline` | A device has stopped sending heartbeats |\n| `device.updated` | Device metadata or configuration has changed |\n| `device.reinstalled` | A reinstalled machine was reattached to its existing device record: the record keeps its id, org, site and history, a new install takes it over, and the install incarnation advances. Payload: `deviceId`, `sourceDeviceId`, `orgId`, `sourceOrgId`, `siteId`, `installIncarnation`, `previousIncarnation`, `evidenceLevel`, `actorUserId`, `reattachmentId` |"
+        "text": "| Event | Description |\n|-------|-------------|\n| `device.enrolled` | An agent has completed enrollment (first enrollment or re-enrollment; payload `reenrollment` distinguishes them) |\n| `device.online` | A device has come online (heartbeat received) |\n| `device.offline` | A device has stopped sending heartbeats |\n| `device.updated` | Device metadata or configuration has changed |\n| `device.reinstalled` | A reinstalled machine was reattached to its existing device record: the record keeps its id, org, site and history, a new install takes it over, and the install incarnation advances. Payload: `deviceId`, `sourceDeviceId`, `orgId`, `sourceOrgId`, `siteId`, `installIncarnation`, `previousIncarnation`, `evidenceLevel`, `actorUserId`, `reattachmentId` |\n| `device.reinstall_suspected` | A newly enrolled device looks like a reinstall of this existing, silent device record (same SMBIOS system UUID, same serial number and manufacturer, or same hostname within the partner). Sent once when the hint is first recorded or upgraded; nothing is reattached. Published in the existing device's organization. Payload: `targetDeviceId`, `reason` (`hardware` or `hostname`), `detectedAt`, `sourceParked`, and `sourceDeviceId` / `sourceHostname` only when the new device is in the same organization |"
       },
       {
         "heading": "Alert Events",

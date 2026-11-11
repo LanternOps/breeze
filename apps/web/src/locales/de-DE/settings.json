@@ -7166,6 +7166,7 @@
     },
     "verify": {
       "methodLegend": "Verifizierungsmethode",
+      "panelTitle": "{{domain}} verifizieren",
       "methodLocked": "Um die Methode zu wechseln, entfernen Sie zuerst die aktuelle Verifizierung.",
       "openPortalTab": "Weisen Sie den Mandanten unter Kundenportal › Anmeldung & Registrierung nach.",
       "dnsStartHint": "Rufen Sie einen TXT-Eintrag ab, den der DNS-Administrator des Kunden veröffentlichen kann.",
@@ -8406,6 +8407,7 @@
       "updated": "Aktualisiert",
       "actions": "Aktionen"
     },
+    "expired": "Abgelaufen",
     "statusValue": {
       "unconfirmed": "Unbestätigt",
       "confirmed": "Bestätigt",
@@ -8555,6 +8557,26 @@
         "hintInvalid": "Das ist weder eine Microsoft-Mandanten-ID noch eine von einem Microsoft-Mandanten bestätigte Domäne.",
         "hintLookupFailed": "Microsoft konnte zur Suche dieser Domäne nicht erreicht werden. Versuchen Sie es erneut oder geben Sie die Mandanten-ID ein.",
         "protectedOrg": "Diese Organisation kann nicht mit einem Microsoft-Mandanten verknüpft werden."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "Portal-Anmeldung auf Passwort zurückgefallen",
+      "body": "Die Microsoft-Anmeldung ist für das Portal dieser Organisation deaktiviert. Benutzer melden sich mit einem Passwort an, bis der Mandant erneut nachgewiesen ist.",
+      "tenant": "(Mandant {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Die Microsoft-Mandantenverknüpfung wurde am {{date}} entfernt.",
+        "ai_for_office_mapping_removed": "Die AI-for-Office-Mandantenzuordnung, die den Nachweis enthielt, wurde am {{date}} entfernt.",
+        "ai_for_office_mapping_changed": "Die AI-for-Office-Mandantenzuordnung wurde am {{date}} auf einen anderen Mandanten geändert. Dadurch wurde der Nachweis gelöscht.",
+        "tenant_displaced": "Eine andere Organisation hat diesen Microsoft-Mandanten am {{date}} nachgewiesen.",
+        "unknown": "Der Nachweis des Microsoft-Mandanten ging am {{date}} verloren."
+      },
+      "rerun": "Mandantennachweis erneut ausführen",
+      "dismiss": "Ausblenden",
+      "toasts": {
+        "dismissed": "Hinweis ausgeblendet."
+      },
+      "errors": {
+        "dismiss": "Der Hinweis konnte nicht ausgeblendet werden."
       }
     },
     "ssoOnlyConfirm": {

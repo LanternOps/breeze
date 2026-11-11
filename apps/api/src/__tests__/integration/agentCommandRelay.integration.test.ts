@@ -63,14 +63,21 @@ import {
   getAgentCommandRelayQueue,
   markRelaySendComplete,
   openRelayCommand,
+  pollRelayAck,
   sealRelayCommand,
   shutdownAgentCommandRelayQueue,
   type RelayEnvelopeBinding,
   type RelayJobData,
+  type RelayQueueJobData,
 } from '../../services/agentCommandRelay';
+import {
+  evictAgentSockets,
+  RELAY_EVICT_JOB_NAME,
+  type RelayEvictJobData,
+} from '../../services/agentCommandRelayEvict';
 import { acquireRelayShard } from '../../services/agentCommandRelayShard';
 import { createAgentCommandRelayWorker } from '../../jobs/agentCommandRelayWorker';
-import { __installAgentSocketForTest } from '../../routes/agentWs';
+import { __installAgentSocketForTest, registerConnection } from '../../routes/agentWs';
 import type { AgentCommand } from '../../routes/agentWs';
 
 // Namespaced per invocation so a shard sharing this Redis with another
@@ -87,8 +94,8 @@ function installFakeSocket(id: string): string[] {
   return frames;
 }
 
-const activeWorkers: Worker<RelayJobData>[] = [];
-async function startConsumer(): Promise<Worker<RelayJobData>> {
+const activeWorkers: Worker<RelayQueueJobData>[] = [];
+async function startConsumer(): Promise<Worker<RelayQueueJobData>> {
   // Producers enqueue only on a shard with an owner key (#4134); the bare
   // Worker below skips initialize, so take the key the way it would.
   // setup.ts flushes Redis before every test, so this is per test.
@@ -181,7 +188,7 @@ describe('agent command relay — real Redis (wave 3.5b, #4084)', () => {
     expect(job).toBeTruthy();
     expect(JSON.stringify(job!.data)).not.toContain('sup3r-s3cret');
 
-    const opened = openRelayCommand(job!.data.sealedCommand, binding);
+    const opened = openRelayCommand((job!.data as RelayJobData).sealedCommand, binding);
     expect(opened).toEqual(command);
   });
 
@@ -278,5 +285,67 @@ describe('agent command relay — real Redis (wave 3.5b, #4084)', () => {
 
     expect(outcome).toEqual({ status: 'offline' });
     expect(await getAgentCommandRelayQueue(INSTANCE_ID).count()).toBe(0);
+  });
+
+  // #4142 W2: relay-evict over the real shard queue and BullMQ consumer.
+  describe('relay-evict', () => {
+    function installClosableSocket(id: string, connectionToken: string): Array<[number, string]> {
+      const closes: Array<[number, string]> = [];
+      const ws = { send: () => {}, close: (code: number, reason: string) => { closes.push([code, reason]); } };
+      registerConnection(id, ws, { partnerId: 'test-partner', trustState: 'trusted', connectionToken });
+      return closes;
+    }
+
+    it('the consumer closes only the connection whose token the job carries, and acks per entry', async () => {
+      const fenced = agentId('evict-fenced');
+      const replaced = agentId('evict-replaced');
+      const fencedCloses = installClosableSocket(fenced, 'tok-current');
+      const replacedCloses = installClosableSocket(replaced, 'tok-newer');
+      const relayId = randomUUID();
+      const data: RelayEvictJobData = {
+        relayId, targetInstanceId: INSTANCE_ID, expiresAt: Date.now() + 5_000, awaitAck: true,
+        entries: [
+          { agentId: fenced, connectionToken: 'tok-current', code: 4041, reason: 'quick support session ended' },
+          // The producer read a lease that a reconnect has since replaced.
+          { agentId: replaced, connectionToken: 'tok-stale', code: 4041, reason: 'quick support session ended' },
+        ],
+      };
+      await getAgentCommandRelayQueue(INSTANCE_ID).add(RELAY_EVICT_JOB_NAME, data, { jobId: `relay-${relayId}` });
+
+      await startConsumer();
+      const ack = await pollRelayAck(relayId, 5_000);
+
+      expect(ack).toEqual({
+        kind: 'evict',
+        outcomes: {
+          [fenced]: { status: 'closed', via: 'relay' },
+          [replaced]: { status: 'owner_mismatch' },
+        },
+      });
+      expect(fencedCloses).toEqual([[4041, 'quick support session ended']]);
+      expect(replacedCloses).toEqual([]);
+    }, 10_000);
+
+    it('producer to consumer: a lease naming this instance with no socket here is not_connected', async () => {
+      const id = agentId('evict-stale-lease');
+      await setAgentPresence(id, { instanceId: INSTANCE_ID, connectionToken: 'tok-gone' });
+      await startConsumer();
+
+      const outcomes = await evictAgentSockets([{ agentId: id, code: 4001, reason: 'Tenant suspended' }]);
+
+      expect(outcomes.get(id)).toEqual({ status: 'not_connected' });
+    }, 10_000);
+
+    it('a locally held socket is closed locally and nothing is enqueued', async () => {
+      const id = agentId('evict-local');
+      const closes = installClosableSocket(id, 'tok-local');
+      await setAgentPresence(id, { instanceId: INSTANCE_ID, connectionToken: 'tok-local' });
+
+      const outcomes = await evictAgentSockets([{ agentId: id, code: 4001, reason: 'Tenant suspended' }]);
+
+      expect(outcomes.get(id)).toEqual({ status: 'closed', via: 'local' });
+      expect(closes).toEqual([[4001, 'Tenant suspended']]);
+      expect(await getAgentCommandRelayQueue(INSTANCE_ID).count()).toBe(0);
+    });
   });
 });

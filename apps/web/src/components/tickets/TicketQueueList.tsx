@@ -1,10 +1,10 @@
-import { memo, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { Fragment, memo, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import SlaChip from './SlaChip';
 import TicketTypeChip from './TicketTypeChip';
-import { statusConfig, priorityConfig, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
+import { NEUTRAL_CHIP_TEXT, nameInitials, statusConfig, priorityConfig, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { type TicketConfig } from '../../lib/ticketConfigApi';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
@@ -12,6 +12,8 @@ interface Props {
   tickets: TicketSummary[];
   selectedId: string | null;
   onSelect: (t: TicketSummary) => void;
+  /** A row took keyboard or pointer focus: the host's active row follows it. */
+  onRowFocus?: (t: TicketSummary) => void;
   loading: boolean;
   /** Ticket config for custom-status names/colors and priority labels; null falls back to core config. */
   config?: TicketConfig | null;
@@ -53,7 +55,87 @@ function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus
   return systemRow?.name ?? t(/* i18n-dynamic */ `ticketQueueList.status.${status}`);
 }
 
-function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect, hideOrg = false, hostHandlesArrowKeys = false }: Props) {
+/** A row's "deviates from the default" chips: priority unless Normal, type
+ *  unless Incident, status unless Open, plus the merged and checklist marks.
+ *  Defaults carry no information on a board of mostly-default rows. */
+function RowChips({ ticket, config, t }: { ticket: TicketSummary; config: TicketConfig | null; t: TFunction }) {
+  const chip = 'inline-flex shrink-0 items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium';
+  const type = ticket.ticketType ?? 'incident';
+  return (
+    <>
+      {ticket.priority !== 'normal' && (
+        <span className={cn(chip, priorityConfig[ticket.priority].color)} data-testid={`ticket-priority-chip-${ticket.id}`}>
+          {translatedPriorityLabel(config, ticket.priority, t)}
+        </span>
+      )}
+      {ticket.status !== 'open' && (
+        <span className={cn(chip, 'gap-1', statusConfig[ticket.status].color)} data-testid={`ticket-status-chip-${ticket.id}`}>
+          {ticket.statusColor && (
+            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: ticket.statusColor }} aria-hidden="true" />
+          )}
+          {translatedStatusLabel(config, ticket.status, ticket.statusName, t)}
+        </span>
+      )}
+      {type !== 'incident' && (
+        <TicketTypeChip type={type} testId={`ticket-type-chip-${ticket.id}`} className="shrink-0 whitespace-nowrap" />
+      )}
+      {ticket.mergedIntoTicketId && (
+        // #8972: a merged tombstone, listed only under "Show merged".
+        <span className={cn(chip, 'border-primary/30 bg-primary/10 text-primary-ink')} data-testid={`ticket-row-merged-${ticket.id}`}>
+          {t('ticketQueueList.merged')}
+        </span>
+      )}
+      {ticket.checklist && ticket.checklist.total > 0 && (
+        <span
+          className={cn(chip, 'tabular-nums', ticket.checklist.done === ticket.checklist.total ? 'text-success-ink' : 'text-muted-foreground')}
+          title={t('ticketQueueList.checklistTitle', { done: ticket.checklist.done, total: ticket.checklist.total })}
+          data-testid={`ticket-checklist-chip-${ticket.id}`}
+        >
+          {t('ticketQueueList.checklistProgress', { done: ticket.checklist.done, total: ticket.checklist.total })}
+        </span>
+      )}
+    </>
+  );
+}
+
+type MetaPart = { kind: 'org' | 'requester' | 'device'; text: string; className: string };
+
+/** Line 2 parts in reading order. Flex-shrink weights decide who gives way:
+ *  the device first, then the requester; the org (the client) keeps a floor. */
+function metaParts(ticket: TicketSummary, hideOrg: boolean): MetaPart[] {
+  const parts: MetaPart[] = [];
+  if (!hideOrg && ticket.orgName) parts.push({ kind: 'org', text: ticket.orgName, className: 'min-w-[6rem] max-w-[45%] shrink' });
+  if (ticket.submitterName) parts.push({ kind: 'requester', text: ticket.submitterName, className: 'min-w-0 shrink-[3]' });
+  if (ticket.deviceHostname) parts.push({ kind: 'device', text: ticket.deviceHostname, className: 'min-w-0 shrink-[6]' });
+  return parts;
+}
+
+/** Owner: initials plus name, or a dashed empty avatar for "Unassigned". The
+ *  name folds to screen-reader text in a narrow list. */
+function OwnerBadge({ ticket, t }: { ticket: TicketSummary; t: TFunction }) {
+  const name = ticket.assignedTo ? (ticket.assigneeName ?? t('ticketWorkbench.mspStaff')) : null;
+  return (
+    <span
+      className="flex w-6 items-center gap-1.5 @xl:w-36"
+      title={name ?? t('ticketWorkbench.unassigned')}
+      data-testid={`ticket-owner-${ticket.id}`}
+      data-unassigned={name ? undefined : 'true'}
+    >
+      {name ? (
+        <span aria-hidden="true" className={cn('inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold', NEUTRAL_CHIP_TEXT)}>
+          {nameInitials(name)}
+        </span>
+      ) : (
+        <span aria-hidden="true" className="inline-flex h-6 w-6 shrink-0 rounded-full border border-dashed border-muted-foreground/60" />
+      )}
+      <span className={cn('sr-only truncate @xl:not-sr-only', name ? 'text-foreground' : 'italic text-muted-foreground')}>
+        {name ?? t('ticketWorkbench.unassigned')}
+      </span>
+    </span>
+  );
+}
+
+function TicketQueueList({ tickets, selectedId, onSelect, onRowFocus, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect, hideOrg = false, hostHandlesArrowKeys = false }: Props) {
   const { t } = useTranslation('tickets');
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const anyBulkSelected = (bulkSelectedIds?.size ?? 0) > 0;
@@ -112,7 +194,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
   }
 
   return (
-    <ul className="divide-y" role="listbox" aria-label={t('ticketQueueList.ariaLabel')} data-testid="tickets-queue">
+    <ul className="@container divide-y" role="listbox" aria-label={t('ticketQueueList.ariaLabel')} data-testid="tickets-queue">
       {tickets.map((ticket, index) => (
         // presentation: the listbox owns options only; the li is layout.
         <li key={ticket.id} role="presentation" className="group relative">
@@ -133,7 +215,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
               title={t('ticketQueueList.selectTicket', { ticket: ticket.internalNumber ?? ticket.subject })}
               data-testid={`ticket-select-${ticket.id}`}
               className={cn(
-                'absolute left-2 top-3 z-10 h-4 w-4 cursor-pointer accent-primary transition-opacity',
+                'absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 cursor-pointer accent-primary transition-opacity',
                 anyBulkSelected || bulkSelectedIds?.has(ticket.id)
                   ? 'opacity-100'
                   : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'
@@ -153,7 +235,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
             aria-selected={ticket.id === selectedId}
             aria-checked={onToggleSelect ? (bulkSelectedIds?.has(ticket.id) ?? false) : undefined}
             onClick={() => onSelect(ticket)}
-            onFocus={() => setFocusedId(ticket.id)}
+            onFocus={() => { setFocusedId(ticket.id); onRowFocus?.(ticket); }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
@@ -164,58 +246,42 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
             }}
             data-testid={`ticket-row-${ticket.id}`}
             className={cn(
-              'block w-full cursor-pointer px-3 py-2.5 text-left hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary',
-              onToggleSelect && 'pl-8', // reserve the checkbox gutter
-              ticket.id === selectedId && 'bg-primary/5 border-l-0' // selection tint; brand color reserved for selection
+              // Narrow list: the owner / SLA / age cluster drops under the two
+              // text lines so the subject keeps the row's width.
+              'flex w-full cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary @xl:flex-nowrap',
+              onToggleSelect && 'pl-9', // reserve the checkbox gutter
+              ticket.id === selectedId && 'bg-primary/10 hover:bg-primary/10' // active row; brand tint reserved for it
             )}
           >
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs text-muted-foreground shrink-0">{ticket.internalNumber ?? '·'}</span>
-              <span className="truncate text-sm font-medium">{ticket.subject}</span>
+            <div className="min-w-0 flex-1 basis-full @xl:basis-0">
+              {/* Line 1: number, subject (gives way first), then only the
+                  chips whose value is not the default; narrow, the chips
+                  wrap under the subject instead of crushing it. */}
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 @xl:flex-nowrap">
+                <span className="shrink-0 font-mono text-xs text-muted-foreground">{ticket.internalNumber ?? '·'}</span>
+                <span className="min-w-0 flex-1 basis-40 truncate text-sm font-medium @xl:flex-initial @xl:basis-auto">{ticket.subject}</span>
+                <RowChips ticket={ticket} config={config} t={t} />
+              </div>
+              {/* Line 2: client, requester, device. Device and requester
+                  give way before the org, which keeps a readable minimum. */}
+              <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-xs text-muted-foreground" data-testid={`ticket-row-meta-${ticket.id}`}>
+                {metaParts(ticket, hideOrg).map((part, i) => (
+                  <Fragment key={part.kind}>
+                    {i > 0 && <span aria-hidden="true" className="shrink-0">·</span>}
+                    <span className={cn('truncate', part.className)} data-testid={`ticket-${part.kind}-${ticket.id}`}>{part.text}</span>
+                  </Fragment>
+                ))}
+              </div>
             </div>
-            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex shrink-0 items-center gap-3 text-xs">
+              <OwnerBadge ticket={ticket} t={t} />
+              <span className="flex min-w-[4.5rem] justify-end"><SlaChip ticket={ticket} /></span>
               <span
-                className={cn('inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium', priorityConfig[ticket.priority].color)}
+                className="w-12 text-right tabular-nums text-muted-foreground"
+                title={t('ticketQueueList.ageTitle', { created: formatDateTime(ticket.createdAt), updated: formatDateTime(ticket.updatedAt) })}
+                data-testid={`ticket-age-${ticket.id}`}
               >
-                {translatedPriorityLabel(config, ticket.priority, t)}
-              </span>
-              <span
-                className={cn('inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-medium', statusConfig[ticket.status].color)}
-              >
-                {ticket.statusColor && (
-                  <span
-                    className="inline-block h-2 w-2 rounded-full"
-                    style={{ backgroundColor: ticket.statusColor }}
-                    aria-hidden="true"
-                  />
-                )}
-                {translatedStatusLabel(config, ticket.status, ticket.statusName, t)}
-              </span>
-              <TicketTypeChip type={ticket.ticketType} testId={`ticket-type-chip-${ticket.id}`} />
-              {ticket.mergedIntoTicketId && (
-                // #8972: a merged tombstone, listed only under "Show merged".
-                <span className="inline-flex items-center rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 font-medium text-primary-ink" data-testid={`ticket-row-merged-${ticket.id}`}>
-                  {t('ticketQueueList.merged')}
-                </span>
-              )}
-              {ticket.checklist && ticket.checklist.total > 0 && (
-                <span
-                  className={cn(
-                    'inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium tabular-nums',
-                    ticket.checklist.done === ticket.checklist.total && 'text-success-ink'
-                  )}
-                  title={t('ticketQueueList.checklistTitle', { done: ticket.checklist.done, total: ticket.checklist.total })}
-                  data-testid={`ticket-checklist-chip-${ticket.id}`}
-                >
-                  {t('ticketQueueList.checklistProgress', { done: ticket.checklist.done, total: ticket.checklist.total })}
-                </span>
-              )}
-              {!hideOrg && ticket.orgName && (
-                <span className="min-w-0 truncate" data-testid={`ticket-org-${ticket.id}`}>{ticket.orgName}</span>
-              )}
-              <span className="ml-auto shrink-0 flex items-center gap-2">
-                <SlaChip ticket={ticket} />
-                <span title={formatDateTime(ticket.updatedAt)}>{timeAgo(ticket.updatedAt, t)}</span>
+                {timeAgo(ticket.createdAt, t)}
               </span>
             </div>
           </div>

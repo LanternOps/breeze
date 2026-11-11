@@ -18,7 +18,7 @@ import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "../../lib/authScope";
 import { usePermissions } from "../../lib/permissions";
 import { handleActionError, runAction } from "../../lib/runAction";
-import { navigateTo, navigateToMicrosoftLogin } from "@/lib/navigation";
+import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
 import { M365ConfirmTenantPanel, M365ConsentSteps } from "./M365ConfirmTenantPanel";
@@ -500,7 +500,9 @@ export default function M365CustomerGraphActionsCard({
           parseSuccess: parseConsentUrl,
           errorFallback: t("m365CustomerGraphActions.actions.consentFailed"),
         });
-        if (isCurrent(target)) navigateTo(url);
+        // Full-page hand-off to Microsoft. `navigateTo` is same-origin only and
+        // would rewrite this URL to "/" — the dashboard (#11572).
+        if (isCurrent(target)) navigateToMicrosoftLogin(url);
       } catch (error) {
         if (isCurrent(target)) {
           handleActionError(error, t("m365CustomerGraphActions.actions.consentFailed"));

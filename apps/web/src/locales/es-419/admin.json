@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Secciones del sistema",
         "connections": "Conexiones",
-        "deprecations": "Obsolescencias"
+        "deprecations": "Obsolescencias",
+        "health": "Salud"
       },
       "connections": {
         "enabledMeaning": "Habilitado significa configurado. Breeze no contacta al servicio para comprobar que responde.",
@@ -720,6 +721,57 @@
           "load": "No se pudo cargar el estado de las tareas."
         },
         "retry": "Reintentar"
+      },
+      "health": {
+        "coverage": "Solo trabajo en segundo plano compartido: conteos de colas y heartbeats de trabajos programados, leídos desde Redis. Esta pestaña no muestra un veredicto general. La salud por proceso y por host está en /health/ready y en la superposición de monitoreo.",
+        "loading": "Cargando estado del trabajo en segundo plano…",
+        "refresh": "Actualizar",
+        "never": "nunca",
+        "errors": {
+          "load": "No se pudo cargar el estado del trabajo en segundo plano."
+        },
+        "status": {
+          "operational": "Operativo",
+          "degraded": "Degradado",
+          "unavailable": "No disponible",
+          "unknown": "Desconocido",
+          "disabled": "Desactivado"
+        },
+        "detail": {
+          "redis_unavailable": "Redis no está disponible, así que no se pudo leer.",
+          "read_failed": "La lectura falló.",
+          "timeout": "La lectura agotó el tiempo.",
+          "stale": "El último heartbeat es más antiguo de lo esperado.",
+          "missing": "No se ha registrado ningún heartbeat.",
+          "no_threshold": "Solo conteos. Todavía no hay un umbral de salud definido para esta cola."
+        },
+        "queues": {
+          "title": "Colas",
+          "description": "Trabajo pendiente en cada cola compartida. Los conteos no son un veredicto de salud.",
+          "items": {
+            "connection-health-reconcile": "Reconciliador de salud de conexiones",
+            "connection-health-digest": "Resumen de salud de conexiones",
+            "alerts": "Alertas",
+            "event-dispatch": "Despacho de eventos"
+          },
+          "counts": {
+            "waiting": "En espera",
+            "prioritized": "Priorizados",
+            "delayed": "Diferidos",
+            "active": "Activos"
+          }
+        },
+        "jobs": {
+          "title": "Trabajos programados",
+          "description": "Última ejecución registrada de cada trabajo de salud de conexiones.",
+          "items": {
+            "reconcile": "Reconciliador de salud de conexiones",
+            "digest": "Resumen de salud de conexiones"
+          },
+          "kind": "Verificación de conexión: {{kind}}",
+          "lastRun": "Última ejecución: {{when}}",
+          "failureStreak": "Racha de fallos: {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -915,7 +967,11 @@
       "script.delete": "Script eliminado",
       "automation.create": "Automatización creada",
       "automation.update": "Automatización actualizada",
-      "automation.delete": "Automatización eliminada"
+      "automation.delete": "Automatización eliminada",
+      "unifi.controller.register": "Controlador UniFi registrado",
+      "unifi.controller.remove": "Controlador UniFi eliminado",
+      "unifi.site.map": "Sitio UniFi asignado",
+      "unifi.site.unmap": "Asignación de sitio UniFi eliminada"
     },
     "resourceTypes": {
       "abuse_signal": "Señal de abuso",

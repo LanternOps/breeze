@@ -303,6 +303,7 @@ From v0.118.0 each user may request 30 TURN credentials per 10 minutes. Tune it 
 | `PROMETHEUS_PORT` | `9090` | Prometheus web UI port (monitoring stack) |
 | `ALERTMANAGER_PORT` | `9093` | Alertmanager web UI port (monitoring stack) |
 | `LOKI_PORT` | `3100` | Loki log aggregation API port (monitoring stack) |
+| `PROMETHEUS_IMAGE_REF`, `GRAFANA_IMAGE_REF`, `ALERTMANAGER_IMAGE_REF`, `LOKI_IMAGE_REF`, `PROMTAIL_IMAGE_REF`, `REDIS_EXPORTER_IMAGE_REF`, `POSTGRES_EXPORTER_IMAGE_REF` | pinned digest | **v0.128.0+, monitoring stack only.** Override one image in `docker-compose.monitoring.yml` each. Empty uses the digest-pinned default the release ships. Set one to your current image to stay on it when you take a newer monitoring file. See [Observability Stack](/monitoring/stack/). |
 | `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` | `3` | Number of 5-minute buckets a metric anomaly must span before it opens an episode; a shorter blip closes without one. The default was `2` before v0.122.1. |
 | `DEVICE_METRICS_RETENTION_DAYS` | `30` | Retention for the raw `device_metrics` series, clamped to 1–365. History charts are served from `metric_rollups` and are unaffected. **On first run after upgrading, older raw metrics are pruned — set this before starting the new version if you need more than 30 days.** |
 
@@ -345,6 +346,10 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `WEBHOOK_DELIVERY_RETENTION_DAYS` | `90` | Days to keep delivered and failed webhook delivery records, clamped to 1–365. Pending and retrying deliveries are never deleted. Runs daily at 22:13 UTC; the first run after upgrading to v0.124.0 removes every delivered or failed record older than the window |
 | `WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
 | `WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
+| `ALERT_RETENTION_DAYS` | `365` | Days to keep closed (resolved or dismissed) alerts, measured from when they closed, clamped to 1–1095. Open alerts are never deleted. The newest closed alert for each rule, device and subject is kept, and so is any alert linked to a ticket or PSA ticket. Runs daily at 13:08 UTC. **Report-only until `ALERT_RETENTION_ENFORCE=true`** (see [Report-only retention jobs](#report-only-retention-jobs)) |
+| `ALERT_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
+| `ALERT_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
+| `ALERT_RETENTION_ENFORCE` | `false` | Set to `true` (or `1`) to delete closed alerts past the window. Unset, empty, or any other value only reports what would be deleted |
 | `DNS_SECURITY_RETENTION_DAYS_DEFAULT` | `90` | Days to keep DNS security events and daily statistics for an integration that has no `retentionDays` of its own, clamped to 1–365. Runs daily at 22:18 UTC; the first run after upgrading removes every event and statistic older than the window. See [DNS Security](/features/dns-security/#data-retention) |
 | `DNS_SECURITY_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch (also used by the background integration delete) |
 | `DNS_SECURITY_RETENTION_MAX_BATCHES` | `400` | Maximum batches per table, per integration, per nightly run (and per background-delete job before it re-queues itself) |
@@ -367,10 +372,6 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `USER_RISK_RETENTION_DAYS` | `90` | Days to keep resolved user-risk signal history, floored at 30 |
 | `USER_RISK_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
 | `USER_RISK_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
-| `ALERT_RETENTION_DAYS` | `365` | Days to keep closed (resolved or dismissed) alerts, measured from when they closed, clamped to 1–1095. Open alerts are never deleted. The newest closed alert for each rule, device and subject is kept, and so is any alert linked to a ticket or PSA ticket. Runs daily at 13:08 UTC. **Report-only until `ALERT_RETENTION_ENFORCE=true`** (see [Report-only retention jobs](#report-only-retention-jobs)) |
-| `ALERT_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
-| `ALERT_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
-| `ALERT_RETENTION_ENFORCE` | `false` | Set to `true` (or `1`) to delete closed alerts past the window. Unset, empty, or any other value only reports what would be deleted |
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
 
@@ -760,6 +761,7 @@ Event-log rows per device are already limited by the event-log policy's hourly r
 | `BREEZE_LEGACY_ALERTING_SWEEP` | on | Set to `false` to skip converting and retiring leftover legacy alert rules and service/process watches at boot. The API still counts and logs what is left. See the [v0.118.0 upgrade notes](/deploy/upgrades/#v01180--legacy-alerting-retired-network-checks-become-monitors). |
 | `AGENT_ROLLBACK_DENYLISTED_VERSIONS` | unset | Comma-separated agent versions that an agent rollback may never target. Unset means no restriction. |
 | `AGENT_ROLLBACK_MIN_VERSION` | unset | Lowest agent version a rollback may target. An invalid version is ignored. Unset means no restriction. |
+| `MIGRATION_LOCK_TIMEOUT_MS` | `300000` (5 min) | **v0.128.0+.** How long a starting API waits for the migration lock while another process holds it. While it waits it logs which database session holds the lock; at the deadline it exits non-zero and the container restart policy tries again. Before v0.128.0 it waited forever. Raise it if a large migration routinely runs longer. A value that is not a positive whole number of milliseconds (for example `10m`) stops the API at boot. Mapped in both shipped Compose files from v0.128.0. |
 | `EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST` | unset | Comma-separated sending domains that may be adopted when they already exist at the email provider without the `_breeze-verify.<domain>` TXT record. Only needed for a migration. See [Custom Sender Addresses](/deploy/custom-sender-addresses/). |
 
 The four `OFFLINE_DETECTOR_REEVAL_*` variables were removed in v0.118.0. The job that read them was retired with legacy alerting, so you can delete them from `.env`.
@@ -1078,6 +1080,7 @@ These are read by the **`m365-graph-read-executor` sidecar**, not the API. They 
 | `M365_MAX_IN_FLIGHT` | `32` | Integer `1`–`1024` | Overall in-flight Graph request ceiling for the executor. **Must be greater than or equal to `M365_SYNC_MAX_IN_FLIGHT`**, or the executor refuses to start. |
 | `M365_SIGNIN_ACTIVITY_RPM` | `4` | Positive integer | Token bucket for sign-in-activity Graph requests. Microsoft's limit is **10 per minute per application across all tenants**, so divide this across every region and replica that shares one app registration. |
 | `M365_SIGNIN_PAGES_PER_CALL` | `5` | Positive integer | Pages fetched per sign-in call before returning an opaque continuation. |
+| `M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE` | `100` | Integer `10`–`1000` | **v0.128.0+.** Page size for the sign-in events sync. A smaller page makes each Graph request faster when Microsoft is slow to answer. Not in `.env.example` or the shipped Compose files. |
 | `M365_SYNC_MAX_ITEMS_USERS` | `25000` | Positive integer | Per-pull user cap. A tenant over the cap syncs as `partial` and never has vanished rows marked stale; raising the cap is the remedy. |
 | `M365_SYNC_MAX_ITEMS_DEVICES` | `25000` | Positive integer | Same, for Intune managed devices. |
 | `M365_SYNC_MAX_ITEMS_CA` | `500` | Positive integer | Same, for Conditional Access policies. |

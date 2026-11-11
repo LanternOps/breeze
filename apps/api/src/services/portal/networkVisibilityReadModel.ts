@@ -2,7 +2,10 @@ import type {
   NetworkOverviewDto,
   NetworkAssetsDto,
   NetworkAssetRowDto,
+  NetworkAssetAlertSeverity,
   NetworkSitesDto,
+  NetworkSiteHealthDto,
+  NetworkSiteHealthRowDto,
   PhysicalPlacementDto,
 } from '@breeze/shared';
 import { and, asc, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
@@ -39,42 +42,34 @@ const NO_DATA_OVERVIEW: NetworkOverviewDto = {
   monitorsDown: null,
 };
 
+interface LatestMonitorRow {
+  monitorId: string;
+  status: string;
+  timestamp: Date;
+  pollingInterval: number;
+  siteId: string | null;
+  assetId: string | null;
+}
+
 /**
- * Customer-safe, organization-scoped Network Visibility foundation (#5861).
- *
- * Asset availability is derived through the same reachability service used by
- * the technician-facing network-device surfaces. Raw discovered_assets.isOnline
- * is therefore not treated as authoritative by this read model.
- *
- * Partner-wide network_monitors rows are definitions shared across
- * organizations. Their shared lastStatus is not customer-specific.
- * `network_monitor_results.org_id` is the authoritative execution result for
- * the organization being read.
+ * Latest result per active monitor for the org. The caller supplies an
+ * organization-scoped context with currentPartnerId populated. This exposes
+ * the SELECT-only partner-wide monitor definitions while
+ * network_monitor_results remains organization-scoped by RLS.
  */
-export async function networkOverview(
-  orgId: string,
-  now: Date = new Date(),
-): Promise<NetworkOverviewDto> {
+async function loadLatestMonitorRows(orgId: string, now: Date): Promise<LatestMonitorRow[]> {
   const monitorResultLowerBound = new Date(
     now.getTime() - NETWORK_MONITOR_RESULT_LOOKBACK_MS,
   );
 
-  const assetRows = await db
-    .select({
-      id: discoveredAssets.id,
-    })
-    .from(discoveredAssets)
-    .where(eq(discoveredAssets.orgId, orgId));
-
-  // The caller supplies an organization-scoped context with currentPartnerId
-  // populated. This exposes the SELECT-only partner-wide monitor definitions
-  // while network_monitor_results remains organization-scoped by RLS.
-  const latestMonitorRows = await db
+  return db
     .selectDistinctOn([networkMonitorResults.monitorId], {
       monitorId: networkMonitorResults.monitorId,
       status: networkMonitorResults.status,
       timestamp: networkMonitorResults.timestamp,
       pollingInterval: networkMonitors.pollingInterval,
+      siteId: networkMonitors.siteId,
+      assetId: networkMonitors.assetId,
     })
     .from(networkMonitorResults)
     .innerJoin(
@@ -96,6 +91,48 @@ export async function networkOverview(
       desc(networkMonitorResults.timestamp),
       desc(networkMonitorResults.id),
     );
+}
+
+/**
+ * Keep the contract literal: degraded/unknown are not silently classified as
+ * down. An offline result also has to remain inside the same freshness rule
+ * used by network-check reachability: max(2 * polling interval, 5 minutes).
+ */
+function isMonitorDown(row: LatestMonitorRow, now: Date): boolean {
+  if (row.status !== 'offline') return false;
+
+  const freshnessMs = Math.max(
+    2 * row.pollingInterval * 1000,
+    MIN_NETWORK_CHECK_FRESHNESS_MS,
+  );
+
+  return now.getTime() - row.timestamp.getTime() <= freshnessMs;
+}
+
+/**
+ * Customer-safe, organization-scoped Network Visibility foundation (#5861).
+ *
+ * Asset availability is derived through the same reachability service used by
+ * the technician-facing network-device surfaces. Raw discovered_assets.isOnline
+ * is therefore not treated as authoritative by this read model.
+ *
+ * Partner-wide network_monitors rows are definitions shared across
+ * organizations. Their shared lastStatus is not customer-specific.
+ * `network_monitor_results.org_id` is the authoritative execution result for
+ * the organization being read.
+ */
+export async function networkOverview(
+  orgId: string,
+  now: Date = new Date(),
+): Promise<NetworkOverviewDto> {
+  const assetRows = await db
+    .select({
+      id: discoveredAssets.id,
+    })
+    .from(discoveredAssets)
+    .where(eq(discoveredAssets.orgId, orgId));
+
+  const latestMonitorRows = await loadLatestMonitorRows(orgId, now);
 
   const assetIds = assetRows.map((row) => row.id);
 
@@ -134,16 +171,7 @@ export async function networkOverview(
     // as down. An offline result also has to remain inside the same freshness
     // rule used by network-check reachability:
     // max(2 * polling interval, 5 minutes).
-    monitorsDown: latestMonitorRows.filter((row) => {
-      if (row.status !== 'offline') return false;
-
-      const freshnessMs = Math.max(
-        2 * row.pollingInterval * 1000,
-        MIN_NETWORK_CHECK_FRESHNESS_MS,
-      );
-
-      return now.getTime() - row.timestamp.getTime() <= freshnessMs;
-    }).length,
+    monitorsDown: latestMonitorRows.filter((row) => isMonitorDown(row, now)).length,
   };
 }
 
@@ -167,7 +195,7 @@ const STABLE_ASSET_ORDER = [
   asc(discoveredAssets.id),
 ];
 
-const ALERT_SEVERITY_RANK: Record<string, number> = {
+export const ALERT_SEVERITY_RANK: Record<string, number> = {
   critical: 5,
   high: 4,
   medium: 3,
@@ -360,6 +388,157 @@ export async function networkSites(orgId: string): Promise<NetworkSitesDto> {
     .orderBy(asc(sites.name), asc(sites.id));
 
   return { dataStatus: 'ok', data: rows };
+}
+
+function toAlertSeverity(severity: string): NetworkAssetAlertSeverity | null {
+  return Object.hasOwn(ALERT_SEVERITY_RANK, severity) ? (severity as NetworkAssetAlertSeverity) : null;
+}
+
+/**
+ * Per-site health (CPEV-W2). Same asset set as networkAssets()/networkSites()
+ * (non-dismissed). Monitor attribution: network_monitors.site_id, else the
+ * site of its asset_id; a monitor with neither counts only in the org total.
+ * Alerts (only when includeAlerts) come from active org-owned monitors,
+ * attributed the same way. Monitors whose asset is dismissed are excluded
+ * from monitorsDown and alerts.
+ * Source failures (reachability, monitors) propagate; they never become ok
+ * with zeros.
+ */
+export async function networkSiteHealth(
+  orgId: string,
+  includeAlerts = false,
+  now: Date = new Date(),
+): Promise<NetworkSiteHealthDto> {
+  const assetRows = await db
+    .select({
+      id: discoveredAssets.id,
+      siteId: discoveredAssets.siteId,
+      siteName: sites.name,
+      approvalStatus: discoveredAssets.approvalStatus,
+    })
+    .from(discoveredAssets)
+    .innerJoin(sites, eq(discoveredAssets.siteId, sites.id))
+    .where(eq(discoveredAssets.orgId, orgId))
+    .orderBy(asc(sites.name), asc(sites.id));
+
+  const visibleAssets = assetRows.filter((row) => row.approvalStatus !== 'dismissed');
+  if (visibleAssets.length === 0) return { dataStatus: 'no_data', data: [] };
+
+  const dismissedAssetIds = new Set(
+    assetRows.filter((row) => row.approvalStatus === 'dismissed').map((row) => row.id),
+  );
+  const siteIdByAssetId = new Map(visibleAssets.map((row) => [row.id, row.siteId]));
+
+  const reachabilityByAsset = await loadReachability(visibleAssets.map((row) => row.id), now);
+  const latestMonitorRows = await loadLatestMonitorRows(orgId, now);
+
+  interface Counters {
+    siteName: string;
+    totalAssets: number;
+    onlineAssets: number;
+    offlineAssets: number;
+    unverifiedAssets: number;
+    snmpDevicesPolling: number;
+    monitorsDown: number;
+    activeAlertCount: number;
+    highestAlertSeverity: NetworkAssetAlertSeverity | null;
+  }
+  const bySite = new Map<string, Counters>();
+  for (const asset of visibleAssets) {
+    let counters = bySite.get(asset.siteId);
+    if (!counters) {
+      counters = {
+        siteName: asset.siteName,
+        totalAssets: 0,
+        onlineAssets: 0,
+        offlineAssets: 0,
+        unverifiedAssets: 0,
+        snmpDevicesPolling: 0,
+        monitorsDown: 0,
+        activeAlertCount: 0,
+        highestAlertSeverity: null,
+      };
+      bySite.set(asset.siteId, counters);
+    }
+
+    const reachability = reachabilityByAsset.get(asset.id);
+    counters.totalAssets += 1;
+    if (reachability?.state === 'responding') counters.onlineAssets += 1;
+    else if (reachability?.state === 'not_responding') counters.offlineAssets += 1;
+    else counters.unverifiedAssets += 1;
+    if (reachability?.detail.snmp?.state === 'ok') counters.snmpDevicesPolling += 1;
+  }
+
+  const monitorSiteId = (monitor: { siteId: string | null; assetId: string | null }): string | null =>
+    monitor.siteId ?? (monitor.assetId ? (siteIdByAssetId.get(monitor.assetId) ?? null) : null);
+
+  for (const row of latestMonitorRows) {
+    if (!isMonitorDown(row, now)) continue;
+    if (row.assetId && dismissedAssetIds.has(row.assetId)) continue;
+    const counters = bySite.get(monitorSiteId(row) ?? '');
+    if (counters) counters.monitorsDown += 1;
+  }
+
+  if (includeAlerts) {
+    const monitorRows = await db
+      .select({ id: networkMonitors.id, siteId: networkMonitors.siteId, assetId: networkMonitors.assetId })
+      .from(networkMonitors)
+      .where(and(eq(networkMonitors.orgId, orgId), eq(networkMonitors.isActive, true)));
+
+    const siteIdByMonitorId = new Map<string, string>();
+    for (const monitor of monitorRows) {
+      if (monitor.assetId && dismissedAssetIds.has(monitor.assetId)) continue;
+      const siteId = monitorSiteId(monitor);
+      if (siteId) siteIdByMonitorId.set(monitor.id, siteId);
+    }
+
+    if (siteIdByMonitorId.size > 0) {
+      const alertRows = await db
+        .select({
+          severity: alerts.severity,
+          monitorId: sql<string>`${alerts.context}->>'monitorId'`,
+        })
+        .from(alerts)
+        .where(
+          and(
+            eq(alerts.orgId, orgId),
+            eq(alerts.status, 'active'),
+            sql`${alerts.context}->>'source' = 'network_monitor'`,
+            inArray(sql`${alerts.context}->>'monitorId'`, [...siteIdByMonitorId.keys()]),
+          ),
+        );
+
+      for (const alert of alertRows) {
+        const counters = bySite.get(siteIdByMonitorId.get(alert.monitorId) ?? '');
+        if (!counters) continue;
+        counters.activeAlertCount += 1;
+        const severity = toAlertSeverity(alert.severity);
+        if (
+          severity
+          && (!counters.highestAlertSeverity
+            || (ALERT_SEVERITY_RANK[severity] ?? 0) > (ALERT_SEVERITY_RANK[counters.highestAlertSeverity] ?? 0))
+        ) {
+          counters.highestAlertSeverity = severity;
+        }
+      }
+    }
+  }
+
+  const data: NetworkSiteHealthRowDto[] = [...bySite.entries()].map(([siteId, c]) => ({
+    siteId,
+    siteName: c.siteName,
+    totalAssets: c.totalAssets,
+    onlineAssets: c.onlineAssets,
+    offlineAssets: c.offlineAssets,
+    unverifiedAssets: c.unverifiedAssets,
+    snmpDevicesPolling: c.snmpDevicesPolling,
+    monitorsDown: c.monitorsDown,
+    ...(includeAlerts
+      ? { activeAlertCount: c.activeAlertCount, highestAlertSeverity: c.highestAlertSeverity }
+      : {}),
+  }));
+
+  return { dataStatus: 'ok', data };
 }
 
 export async function networkAssets(

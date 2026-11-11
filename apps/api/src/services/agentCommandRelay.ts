@@ -34,7 +34,8 @@ import { hasDbAccessContext } from '../db';
 import { createInstrumentedQueue } from './bullmqQueue';
 import { probeAgentPresence, readAgentPresence } from './agentPresence';
 import { captureException } from './sentry';
-import type { AgentCommand } from '../routes/agentWs';
+import type { AgentCommand, AgentWsDisconnectResult } from '../routes/agentWs';
+import type { AgentEvictCloseCode, RelayEvictJobData } from './agentCommandRelayEvict';
 
 // Socket-local dispatch, loaded LAZILY (#4141). The static value-import of
 // routes/agentWs.ts was the single edge pinning every facade caller
@@ -47,8 +48,25 @@ import type { AgentCommand } from '../routes/agentWs';
 async function socketLocal(): Promise<{
   isAgentConnected: (agentId: string) => boolean;
   sendCommandToAgent: (agentId: string, command: AgentCommand) => boolean;
+  disconnectAgent: (agentId: string, code?: number, reason?: string) => AgentWsDisconnectResult;
 }> {
   return import('../routes/agentWs');
+}
+
+/**
+ * Close this process's own sockets for the given agents (#4142, relay-evict
+ * local-first step). Unfenced: the local map holds at most one socket per
+ * agent and is authoritative on this process. `null` on the worker role, which
+ * holds no sockets and must never load the socket map.
+ */
+export async function closeLocalAgentSockets(
+  requests: ReadonlyArray<{ agentId: string; code: AgentEvictCloseCode; reason: string }>,
+): Promise<Map<string, AgentWsDisconnectResult> | null> {
+  if (breezeRole() !== 'worker') {
+    const local = await socketLocal();
+    return new Map(requests.map((r) => [r.agentId, local.disconnectAgent(r.agentId, r.code, r.reason)]));
+  }
+  return null;
 }
 
 /**
@@ -101,7 +119,7 @@ export function logRelayRedisFailure(operation: string, err: unknown): void {
  * outcome is unknown. Same per-minute limit as {@link logRelayRedisFailure}.
  * The caller only sees the outcome status, so this line is the evidence.
  */
-function logRelayDispatchIssue(issue: string, detail: unknown): void {
+export function logRelayDispatchIssue(issue: string, detail: unknown): void {
   warnRateLimited(`dispatch: ${issue}`, issue, detail);
 }
 
@@ -165,6 +183,8 @@ export function relayQueueOwner(name: string): RelayQueueOwner | null {
 }
 
 export const RELAY_DELIVERY_DEADLINE_MS = 5_000;
+/** BullMQ job name of a command send on a relay shard; see agentCommandRelayEvict.ts for `relay-evict`. */
+export const RELAY_SEND_JOB_NAME = 'relay-send';
 /**
  * One absolute budget for the whole relay path (presence read, shard check,
  * enqueue, ack wait) (#4142). Longer than the job's own 5 s `expiresAt`, so an
@@ -344,33 +364,50 @@ function ackKey(relayId: string): string {
 }
 
 export async function writeRelayAck(relayId: string, outcome: DispatchOutcome): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-  await redis.set(ackKey(relayId), JSON.stringify(outcome), 'PX', ACK_TTL_MS);
+  await writeRelayAckPayload(relayId, outcome);
 }
 
-// Plain GET polling on the shared connection — deliberately NOT BRPOP /
-// QueueEvents / waitUntilFinished (blocking commands on the shared connection
-// stall every enqueue, #3299; QueueEvents has no repo precedent).
-export async function awaitRelayAck(relayId: string, deadlineMs: number): Promise<DispatchOutcome> {
+/** Write any ack body (a send's outcome, or an eviction's per-entry map) under `relayId`. */
+export async function writeRelayAckPayload(relayId: string, payload: unknown): Promise<void> {
   const redis = getRedis();
-  if (!redis) return { status: 'indeterminate' };
+  if (!redis) return;
+  await redis.set(ackKey(relayId), JSON.stringify(payload), 'PX', ACK_TTL_MS);
+}
+
+/**
+ * Poll for the ack under `relayId` until `deadlineMs` passes. Answers the
+ * parsed ack body, or `undefined` when none arrived in time (or there is no
+ * Redis). An unparsable body is treated like a transient read failure.
+ *
+ * Plain GET polling on the shared connection — deliberately NOT BRPOP /
+ * QueueEvents / waitUntilFinished (blocking commands on the shared connection
+ * stall every enqueue, #3299; QueueEvents has no repo precedent).
+ */
+export async function pollRelayAck(relayId: string, deadlineMs: number): Promise<unknown> {
+  const redis = getRedis();
+  if (!redis) return undefined;
   const deadline = Date.now() + deadlineMs;
   for (;;) {
     try {
       const raw = await redis.get(ackKey(relayId));
-      if (raw) {
-        const parsed = JSON.parse(raw) as DispatchOutcome;
-        // An ack whose status this build does not know says nothing it can
-        // trust about the send: uncertain, never a not-delivered answer.
-        return KNOWN_OUTCOME_STATUSES.has(parsed?.status) ? parsed : { status: 'indeterminate' };
-      }
-    } catch {
-      // transient read failure — keep polling until the deadline
+      if (raw) return JSON.parse(raw) as unknown;
+    } catch (err) {
+      // Transient read failure or an unparsable body: keep polling until the
+      // deadline. Logged (rate-limited), or a Redis outage reads as a
+      // consumer that never answered.
+      logRelayRedisFailure('relay ack read', err);
     }
-    if (Date.now() >= deadline) return { status: 'indeterminate' };
+    if (Date.now() >= deadline) return undefined;
     await new Promise((resolve) => setTimeout(resolve, ACK_POLL_INTERVAL_MS));
   }
+}
+
+export async function awaitRelayAck(relayId: string, deadlineMs: number): Promise<DispatchOutcome> {
+  const parsed = (await pollRelayAck(relayId, deadlineMs)) as DispatchOutcome | undefined;
+  if (parsed === undefined) return { status: 'indeterminate' };
+  // An ack whose status this build does not know says nothing it can trust
+  // about the send: uncertain, never a not-delivered answer.
+  return KNOWN_OUTCOME_STATUSES.has(parsed?.status) ? parsed : { status: 'indeterminate' };
 }
 
 // Producer handles, one per target instance. They share the BullMQ connection,
@@ -381,10 +418,14 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
 // which would then answer `indeterminate`: the add had been issued, and a
 // rejected add cannot prove nothing was stored (#4142).
 const MAX_CACHED_RELAY_QUEUES = 32;
-const relayQueues = new Map<string, Queue<RelayJobData>>();
+
+/** Every job a relay shard carries: a command send, or a fenced eviction (#4142). */
+export type RelayQueueJobData = RelayJobData | RelayEvictJobData;
+
+const relayQueues = new Map<string, Queue<RelayQueueJobData>>();
 
 /** Producer handle for the shard queue consumed by `instanceId`. */
-export function getAgentCommandRelayQueue(instanceId: string): Queue<RelayJobData> {
+export function getAgentCommandRelayQueue(instanceId: string): Queue<RelayQueueJobData> {
   const name = agentCommandRelayQueueName(instanceId);
   const cached = relayQueues.get(name);
   if (cached) {
@@ -393,12 +434,12 @@ export function getAgentCommandRelayQueue(instanceId: string): Queue<RelayJobDat
     relayQueues.set(name, cached);
     return cached;
   }
-  const queue = createInstrumentedQueue<RelayJobData>(name, {
+  const queue = createInstrumentedQueue<RelayQueueJobData>(name, {
     streams: { events: { maxLen: RELAY_QUEUE_EVENTS_MAX_LEN } },
   });
   relayQueues.set(name, queue);
   if (relayQueues.size > MAX_CACHED_RELAY_QUEUES) {
-    const [oldestName, oldest] = relayQueues.entries().next().value as [string, Queue<RelayJobData>];
+    const [oldestName, oldest] = relayQueues.entries().next().value as [string, Queue<RelayQueueJobData>];
     relayQueues.delete(oldestName);
     void oldest.close().catch((err: unknown) => {
       console.warn(`[agentCommandRelay] closing evicted relay queue handle ${oldestName} failed:`, err);
@@ -435,10 +476,10 @@ export async function agentReachability(agentId: string): Promise<AgentReachabil
   return probe.present ? 'connected' : 'absent';
 }
 
-const TRANSPORT_DEADLINE = Symbol('relay transport deadline');
+export const TRANSPORT_DEADLINE = Symbol('relay transport deadline');
 
 /** `work`, or {@link TRANSPORT_DEADLINE} if it has not settled by `deadlineAt`. */
-async function beforeTransportDeadline<T>(
+export async function beforeTransportDeadline<T>(
   work: Promise<T>,
   deadlineAt: number,
 ): Promise<T | typeof TRANSPORT_DEADLINE> {
@@ -579,7 +620,7 @@ async function dispatchUnguarded(
   try {
     // The lease names the socket owner: its own shard is the only queue a
     // consumer that can deliver this command reads.
-    added = getAgentCommandRelayQueue(lease.instanceId).add('relay-send', data, {
+    added = getAgentCommandRelayQueue(lease.instanceId).add(RELAY_SEND_JOB_NAME, data, {
       jobId: `relay-${relayId}`,
       attempts: 1, // at-most-once: claims (not BullMQ retries) guard the send
       priority: opts.priority === 'probe' ? 1 : 10,

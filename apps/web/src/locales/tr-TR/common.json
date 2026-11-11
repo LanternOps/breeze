@@ -909,12 +909,13 @@
       "queue": {
         "next": "Sonraki bilet",
         "previous": "Önceki bilet",
-        "open": "Bileti tam sayfada aç",
+        "open": "Bileti aç (çözümden sonra: önerilen sonraki bilet)",
         "toggleBulk": "Toplu seçime ekle veya çıkar",
         "assignMe": "Bana ata",
         "reply": "Yanıt yaz",
         "internal": "Dahili not yaz",
-        "resolve": "Notla çöz"
+        "resolve": "Notla çöz",
+        "back": "Kuyruğa dön"
       }
     }
   },
@@ -1460,6 +1461,10 @@
           "deviceOnline": {
             "description": "Bir cihaz bağlandığında tetiklenir.",
             "label": "Cihaz Çevrimiçi"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Yeni kaydedilen bir cihaz, mevcut ve sessiz bir cihaz kaydının yeniden kurulumu gibi göründüğünde tetiklenir.",
+            "label": "Olası Cihaz Yeniden Kurulumu"
           },
           "deviceReinstalled": {
             "description": "Yeniden kurulan bir makine mevcut cihaz kaydına yeniden bağlandığında tetiklenir.",

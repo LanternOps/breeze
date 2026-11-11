@@ -228,6 +228,8 @@ x-api-env: &api-env
   PORTAL_ENTRA_CLIENT_ID: ${PORTAL_ENTRA_CLIENT_ID:-}
   PORTAL_ENTRA_CLIENT_SECRET: ${PORTAL_ENTRA_CLIENT_SECRET:-}
   PORTAL_ENTRA_CALLBACK_BASE_URL: ${PORTAL_ENTRA_CALLBACK_BASE_URL:-}
+  # Customer-portal self-registration kill switch (portal registration W6); unset = on.
+  PORTAL_SELF_REGISTRATION_ENABLED: ${PORTAL_SELF_REGISTRATION_ENABLED:-}
   # QuickBooks Online accounting integration. All optional: unset leaves the
   # integration dark. Mapped explicitly because Compose only interpolates vars
   # listed in this block — a value in .env alone is never seen by the API

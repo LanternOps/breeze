@@ -66,11 +66,111 @@ describe('TicketQueueList type chip (#7900)', () => {
     expect(screen.getByTestId('ticket-type-chip-tk-c')).toHaveTextContent('Change');
   });
 
-  it('reads a row without ticketType (older payload) as Incident', () => {
+  it('reads a row without ticketType (older payload) as Incident, the default, so it carries no type chip', () => {
     render(
       <TicketQueueList tickets={[makeTicket({ id: 'tk-old' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
     );
-    expect(screen.getByTestId('ticket-type-chip-tk-old')).toHaveAttribute('data-ticket-type', 'incident');
+    expect(screen.queryByTestId('ticket-type-chip-tk-old')).toBeNull();
+  });
+});
+
+describe('TicketQueueList non-default chips', () => {
+  it('shows no priority, type or status chip when every value is its default', () => {
+    render(
+      <TicketQueueList
+        tickets={[makeTicket({ id: 'tk-d', priority: 'normal', ticketType: 'incident', status: 'open' })]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.queryByTestId('ticket-priority-chip-tk-d')).toBeNull();
+    expect(screen.queryByTestId('ticket-type-chip-tk-d')).toBeNull();
+    expect(screen.queryByTestId('ticket-status-chip-tk-d')).toBeNull();
+  });
+
+  it('shows each chip only when its value deviates (priority not Normal, type not Incident, status not Open)', () => {
+    render(
+      <TicketQueueList
+        tickets={[makeTicket({ id: 'tk-x', priority: 'urgent', ticketType: 'change', status: 'pending' })]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId('ticket-priority-chip-tk-x')).toHaveTextContent('Urgent');
+    expect(screen.getByTestId('ticket-type-chip-tk-x')).toHaveTextContent('Change');
+    expect(screen.getByTestId('ticket-status-chip-tk-x')).toHaveTextContent('Pending');
+    for (const id of ['ticket-priority-chip-tk-x', 'ticket-type-chip-tk-x', 'ticket-status-chip-tk-x']) {
+      expect(screen.getByTestId(id).className).toContain('whitespace-nowrap');
+    }
+  });
+
+  it('treats New and On hold as signal and Low as a deviation', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-n', status: 'new', priority: 'low' }),
+          makeTicket({ id: 'tk-h', status: 'on_hold' }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId('ticket-status-chip-tk-n')).toHaveTextContent('New');
+    expect(screen.getByTestId('ticket-priority-chip-tk-n')).toHaveTextContent('Low');
+    expect(screen.getByTestId('ticket-status-chip-tk-h')).toHaveTextContent('On hold');
+  });
+});
+
+describe('TicketQueueList two-line row', () => {
+  it('second line carries org, requester and device; the right cluster carries owner, SLA and age', () => {
+    render(
+      <TicketQueueList
+        tickets={[makeTicket({
+          id: 'tk-r',
+          orgName: 'Acme',
+          submitterName: 'Jane Doe',
+          deviceHostname: 'e2e-windows.local',
+          assignedTo: 'u-1',
+          assigneeName: 'Todd Hebebrand',
+        })]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    const meta = screen.getByTestId('ticket-row-meta-tk-r');
+    expect(meta).toHaveTextContent('Acme');
+    expect(meta).toHaveTextContent('Jane Doe');
+    expect(meta).toHaveTextContent('e2e-windows.local');
+    // The org is the client: it is the last part of the line to shrink.
+    const org = screen.getByTestId('ticket-org-tk-r');
+    const device = screen.getByTestId('ticket-device-tk-r');
+    expect(org.className).toContain('truncate');
+    expect(device.className).toContain('truncate');
+    expect(org.className).toMatch(/min-w-\[/);
+    const owner = screen.getByTestId('ticket-owner-tk-r');
+    expect(owner).toHaveTextContent('TH');
+    expect(owner).toHaveTextContent('Todd Hebebrand');
+    expect(screen.getByTestId('ticket-age-tk-r')).toBeInTheDocument();
+  });
+
+  it('marks an unowned ticket "Unassigned"', () => {
+    render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-u' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
+    );
+    expect(screen.getByTestId('ticket-owner-tk-u')).toHaveTextContent('Unassigned');
+    expect(screen.getByTestId('ticket-owner-tk-u')).toHaveAttribute('data-unassigned', 'true');
+  });
+
+  it('omits the requester and device parts when the row has none', () => {
+    render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-e' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
+    );
+    expect(screen.queryByTestId('ticket-requester-tk-e')).toBeNull();
+    expect(screen.queryByTestId('ticket-device-tk-e')).toBeNull();
   });
 });
 

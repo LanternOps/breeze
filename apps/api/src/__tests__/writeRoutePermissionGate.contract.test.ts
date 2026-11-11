@@ -329,6 +329,9 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/portal/auth/oidc/entra/start': 'public: pre-login portal auth endpoint',
   'POST /api/v1/portal/auth/invite/methods': 'public: pre-login portal auth endpoint',
   'POST /api/v1/portal/auth/oidc/entra/link/start': 'portal session: portal session auth (portalAuthMiddleware)',
+  // routes/portal/selfRegistration.ts (portal registration W6, #11383)
+  'POST /api/v1/portal/auth/self-register': 'public: pre-login portal self-registration (uniform 200, rate limited, worker decides)',
+  'POST /api/v1/portal/auth/self-register/verify': 'public: pre-login portal self-registration (single-use mailbox-proof token)',
   // routes/portal/invoices.ts
   'POST /api/v1/portal/invoices/:id/autopay-confirmation': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/invoices/:id/pay': 'portal session: portal session auth (portalAuthMiddleware)',
