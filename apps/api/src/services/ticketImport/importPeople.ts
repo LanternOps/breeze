@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { contactExternalLinks, contacts } from '../../db/schema';
 import { createContact, matchContactByEmail, normalizeContactEmail } from '../contacts/crud';
+import { ticketImportLinkSystem } from '../contacts/externalLinkSystems';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../inboundEmail/resolveOrg';
 import type { ImportedContactRequest } from './importedTicket';
 
@@ -33,9 +34,9 @@ import type { ImportedContactRequest } from './importedTicket';
  * scans it). The run's audit row carries the count.
  */
 
-/** The `contact_external_links.system` of the contacts a source created. */
+/** The `contact_external_links.system` of the contacts a source created (reserved: externalLinkSystems.ts). */
 export function importContactSystem(sourceId: string): string {
-  return `ticket-import:${sourceId}`;
+  return ticketImportLinkSystem(sourceId);
 }
 
 /** What the header transaction does with a `{ createContact }` requester. */

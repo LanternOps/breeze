@@ -8,6 +8,7 @@ import {
   CONTACT_LINK_SYSTEMS,
   createTaskTarget,
   freezeTargetAccount,
+  upsertContactExternalLinks,
   targetColumnForKind,
 } from './targetService';
 
@@ -78,5 +79,16 @@ describe('targetService — kind/pointer agreement (recipe spec §5.1)', () => {
     // the Operator's own vocabulary has to be pinned in code or a typo would
     // create a second, silently-unmatched identity for the same person.
     expect([...CONTACT_LINK_SYSTEMS]).toEqual(['m365', 'google']);
+  });
+});
+
+describe('upsertContactExternalLinks — the ticket import namespace is reserved (#8313 W4b)', () => {
+  it('refuses a ticket-import: system before anything is inserted', async () => {
+    const dbh = { insert: vi.fn(), update: vi.fn(), select: vi.fn() } as never;
+    await expect(upsertContactExternalLinks(dbh, {
+      orgId: 'org-1', contactId: 'c-1',
+      links: [{ system: 'm365', externalId: 'a' }, { system: 'ticket-import:src-1' as never, externalId: 'b' }],
+    })).rejects.toThrow(/reserved for ticket imports/);
+    expect((dbh as unknown as { insert: ReturnType<typeof vi.fn> }).insert).not.toHaveBeenCalled();
   });
 });
