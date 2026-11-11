@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AI_CONNECTION_ROW_KINDS, AI_SURFACES, AI_SURFACE_ROLES, MODEL_LIFECYCLES } from '@breeze/shared';
+import { AI_CONNECTION_ROW_KINDS, AI_SURFACES, AI_SURFACE_ROLES, AI_TOOL_PROFILES, MODEL_LIFECYCLES } from '@breeze/shared';
+import { getTableConfig } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
 import { getOrgCascadeDeleteOrder, __testOnly as tenantCascadeTestOnly } from '../../services/tenantCascade';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
 import { AI_INVOCATION_LEDGER_MODES } from './aiInvocations';
-import { PARTNER_AI_CONNECTION_KINDS, PARTNER_AI_MODEL_SOURCES } from './aiModelRegistry';
+import { PARTNER_AI_CONNECTION_KINDS, PARTNER_AI_MODEL_SOURCES, partnerAiModels } from './aiModelRegistry';
 
 export function readMigration(name: string): string {
   return readFileSync(join(__dirname, '../../../migrations', name), 'utf8');
@@ -166,5 +167,75 @@ describe('ai_sessions / ai_agents offering columns (#7600 W02)', () => {
     const idx = readMigration('2026-11-14-100600-ai-sessions-offering-idx.sql');
     expect(idx.startsWith('-- @no-transaction')).toBe(true);
     expect(idx).toMatch(/CREATE INDEX CONCURRENTLY IF NOT EXISTS ai_sessions_offering_idx/);
+  });
+});
+
+describe('partner_ai_models tool profile + context window columns (#11394, feature #11393)', () => {
+  const sqlText = readMigration('2027-01-23-100000-partner-ai-models-tool-profile.sql');
+  const NEW_COLUMNS = {
+    tool_profile: 'toolProfile',
+    tool_allowlist: 'toolAllowlist',
+    context_window_override: 'contextWindowOverride',
+    context_window_discovered: 'contextWindowDiscovered',
+    context_window_observed: 'contextWindowObserved',
+    context_window_observed_at: 'contextWindowObservedAt',
+    context_window_observed_config_version: 'contextWindowObservedConfigVersion',
+  } as const;
+  const CHECK_NAMES = [
+    'partner_ai_models_tool_profile_chk',
+    'partner_ai_models_tool_allowlist_chk',
+    'partner_ai_models_context_window_override_chk',
+    'partner_ai_models_context_window_observed_chk',
+  ];
+  const constraintBody = (name: string): string => {
+    const at = sqlText.indexOf(`ADD CONSTRAINT ${name}`);
+    if (at < 0) throw new Error(`no ADD CONSTRAINT ${name}`);
+    return sqlText.slice(at, sqlText.indexOf(';', at));
+  };
+
+  it('the tool_profile CHECK lists exactly AI_TOOL_PROFILES', () => {
+    expect(checkLiterals(sqlText, 'tool_profile')).toEqual([...AI_TOOL_PROFILES]);
+  });
+
+  it('tool_allowlist is present exactly when the profile is custom', () => {
+    expect(constraintBody('partner_ai_models_tool_allowlist_chk'))
+      .toMatch(/CHECK \(\(tool_profile = 'custom'\) = \(tool_allowlist IS NOT NULL\)\)/);
+  });
+
+  it('context_window_override is NULL or 1024..100000000', () => {
+    expect(constraintBody('partner_ai_models_context_window_override_chk'))
+      .toMatch(/CHECK \(context_window_override IS NULL OR context_window_override BETWEEN 1024 AND 100000000\)/);
+  });
+
+  it('observed_at and observed_config_version are NULL exactly when observed is NULL', () => {
+    expect(constraintBody('partner_ai_models_context_window_observed_chk'))
+      .toMatch(/CHECK \(num_nulls\(context_window_observed, context_window_observed_at, context_window_observed_config_version\) IN \(0, 3\)\)/);
+  });
+
+  it('adds every Drizzle column with IF NOT EXISTS and guards each CHECK via pg_constraint', () => {
+    const { columns, checks } = getTableConfig(partnerAiModels);
+    for (const [sqlName, tsName] of Object.entries(NEW_COLUMNS)) {
+      expect(sqlText).toMatch(new RegExp(`ADD COLUMN IF NOT EXISTS ${sqlName}\\b`));
+      expect(columns.find((c) => c.name === sqlName), `Drizzle column ${sqlName}`).toBeDefined();
+      expect((partnerAiModels as unknown as Record<string, { name: string }>)[tsName]?.name).toBe(sqlName);
+    }
+    expect(columns.find((c) => c.name === 'tool_profile')).toMatchObject({ notNull: true, default: 'auto' });
+    expect(sqlText).toMatch(/ADD COLUMN IF NOT EXISTS tool_profile text NOT NULL DEFAULT 'auto'/);
+    const drizzleChecks = checks.map((c) => c.name);
+    for (const name of CHECK_NAMES) {
+      expect(sqlText).toContain(`IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${name}' AND conrelid = 'public.partner_ai_models'::regclass)`);
+      expect(drizzleChecks).toContain(name);
+    }
+  });
+
+  it('writes no rows and has no inner transaction control', () => {
+    const code = sqlText.replace(/--[^\n]*/g, '');
+    expect(code).not.toMatch(/\b(INSERT|UPDATE|DELETE|MERGE)\b/i);
+    expect(code).not.toMatch(/^\s*(BEGIN|COMMIT)\s*;/im);
+  });
+
+  it('partner_ai_models stays partner-axis: not org-cascaded, not in the export policy', () => {
+    expect(getOrgCascadeDeleteOrder()).not.toContain('partner_ai_models');
+    expect(CORE_TENANT_EXPORT_POLICY['partner_ai_models']).toBeUndefined();
   });
 });

@@ -2132,6 +2132,54 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
     },
   },
+  {
+    // #4342 W1 — report-only retention sweep (deviceCommandRetention).
+    name: 'deviceCommandRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceCommandRetention');
+      return {
+        init: m.initializeDeviceCommandRetention,
+        shutdown: m.shutdownDeviceCommandRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (filesystemSnapshotRetention).
+    name: 'filesystemSnapshotRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/filesystemSnapshotRetention');
+      return {
+        init: m.initializeFilesystemSnapshotRetention,
+        shutdown: m.shutdownFilesystemSnapshotRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (networkMonitorResultRetention).
+    name: 'networkMonitorResultRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/networkMonitorResultRetention');
+      return {
+        init: m.initializeNetworkMonitorResultRetention,
+        shutdown: m.shutdownNetworkMonitorResultRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (deviceSessionRetention).
+    name: 'deviceSessionRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceSessionRetention');
+      return {
+        init: m.initializeDeviceSessionRetention,
+        shutdown: m.shutdownDeviceSessionRetention,
+      };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

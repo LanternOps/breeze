@@ -318,6 +318,13 @@ export const JOB_SCHEDULES = {
   // domains; each row is only re-checked once ~23 h old, so the tick bounds how
   // late a daily re-check runs. :39 is free in every hour.
   'portal-domain-recheck': '39 * * * *',
+  // High-volume table retention W1 (#4342, #11588) — device telemetry tables,
+  // report-only until each job's _RETENTION_ENFORCE=true. Daily tier lane
+  // (≡ 3 mod 5), four slots in hour 11 pre-allocated by the retention plan.
+  'device-command-retention': '8 11 * * *',
+  'filesystem-snapshot-retention': '18 11 * * *',
+  'network-monitor-result-retention': '33 11 * * *',
+  'device-session-retention': '48 11 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;
