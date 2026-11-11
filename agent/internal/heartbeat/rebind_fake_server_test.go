@@ -528,7 +528,10 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 	t.Cleanup(func() {
 		// A trigger drives the flow on its own goroutine, which reads these
 		// seams; put them back only once every one has finished.
-		r.waitForFlowGoroutines()
+		if !r.waitForFlowGoroutines() {
+			// Put back anyway; -race may then report the goroutine.
+			t.Errorf("a goroutine the rebind flow started was still running 10s after the test")
+		}
 		rebindNow, restartForIdentityFn, newRebindHTTPClient = origNow, origRestart, origClient
 		rebindWriteStaged, rebindApplyIdentity, rebindConfigFile, rebindReadStaged = origWrite, origApply, origFile, origRead
 		rebindPushWatchdogToken, identityRestartPollInterval, identitySyncNow = origPush, origPoll, origIdentityNow
@@ -608,20 +611,21 @@ func (r *rebindHarness) restart() {
 }
 
 // waitForFlowGoroutines waits until no goroutine the flow started, in any
-// process this harness built, is still running.
-func (r *rebindHarness) waitForFlowGoroutines() {
+// process this harness built, is still running; false after 10s.
+func (r *rebindHarness) waitForFlowGoroutines() bool {
+	procs := append([]*Heartbeat(nil), r.procs...)
 	done := make(chan struct{})
 	go func() {
-		for _, h := range r.procs {
+		for _, h := range procs {
 			h.rebind.running.Wait()
 		}
 		close(done)
 	}()
 	select {
 	case <-done:
+		return true
 	case <-time.After(10 * time.Second):
-		// The seams are put back anyway; -race may then report the goroutine.
-		r.t.Errorf("a goroutine the rebind flow started was still running 10s after the test")
+		return false
 	}
 }
 
