@@ -5,6 +5,7 @@ import {
   standingInstructionSubjectKey,
   isEnforceableDeny,
   isStandingInstructionLapsed,
+  isMemoryBlockLapsed,
 } from './standingInstructions';
 
 const DEV = '22222222-2222-4222-8222-222222222222';
@@ -65,6 +66,21 @@ describe('isEnforceableDeny', () => {
     expect(isEnforceableDeny({ ...base, verb: null }, now)).toBe(false);
     expect(isEnforceableDeny({ ...base, deviceId: null }, now)).toBe(false);
     expect(isEnforceableDeny({ ...base, until: 'garbage' }, now)).toBe(false);
+  });
+});
+
+describe('isMemoryBlockLapsed (#11630)', () => {
+  const sb = (content: Record<string, unknown>, blockType = 'standing_instruction') => ({ blockType, content });
+  it('lapses only a standing instruction whose string until has passed', () => {
+    expect(isMemoryBlockLapsed(sb({ until: '2026-11-01T00:00:00Z' }), now)).toBe(true);
+    expect(isMemoryBlockLapsed(sb({ until: '2026-11-20T00:00:00Z' }), now)).toBe(false);
+    expect(isMemoryBlockLapsed(sb({ until: '2026-11-01T00:00:00Z' }, 'fact'), now)).toBe(false);
+  });
+  it('fails visible: missing, non-string or unparseable until is never lapsed', () => {
+    expect(isMemoryBlockLapsed(sb({}), now)).toBe(false);
+    expect(isMemoryBlockLapsed(sb({ until: null }), now)).toBe(false);
+    expect(isMemoryBlockLapsed(sb({ until: 12345 }), now)).toBe(false);
+    expect(isMemoryBlockLapsed(sb({ until: 'next friday' }), now)).toBe(false);
   });
 });
 

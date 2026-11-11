@@ -58,5 +58,7 @@ export function isMemoryBlockLapsed(
 ): boolean {
   if (block.blockType !== 'standing_instruction') return false;
   const until = block.content.until;
-  return typeof until === 'string' && isStandingInstructionLapsed({ until }, now);
+  // Fail visible: an unparseable `until` is corrupt content the gate warns on
+  // (schema failure), so it stays in the prompt and is not shown as expired.
+  return typeof until === 'string' && Number.isFinite(Date.parse(until)) && isStandingInstructionLapsed({ until }, now);
 }
