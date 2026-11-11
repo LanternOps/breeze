@@ -476,7 +476,7 @@ On `PATCH`, an explicit `null` clears a field and an omitted key leaves it alone
 
   Writing `billingContact` edits that billing contact (or creates one with the `billing` role when none exists) and never touches any other contact. Writing an empty value — or, on `PATCH /orgs/:orgId/billing-settings`, `billingContactEmail: null` — removes the `billing` role from the current billing contact; the contact itself is kept.
 
-  Changing the billing contact needs more than editing invoices. On `PATCH /orgs/:orgId/billing-settings`, a request that carries `billingContactEmail` or `billingContactName` needs `billing:manage` as well as `invoices:write`; the tax, terms, address and currency fields need only `invoices:write`, and `billingProfileId` also needs `billing_profiles:write`. The organisation and contact routes need `organizations:write`.
+  Changing the billing contact needs more than editing invoices. On `PATCH /orgs/:orgId/billing-settings`, a request that carries `billingContactEmail` or `billingContactName` needs `billing:manage` as well as `invoices:write`; the tax, terms, address and currency fields need only `invoices:write`, and `billingProfileId` also needs `billing_profiles:write`. The AI assistant's billing-settings tool (`manage_billing_settings`, action `update_org`) applies the same rule. The organisation and contact routes need `organizations:write`.
 </Aside>
 
 ### Responsible contacts

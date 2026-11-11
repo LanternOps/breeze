@@ -21,6 +21,8 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { invoiceSettingsRoutes } from '../../routes/invoices/settings';
 import { contactRoles, contacts, organizations } from '../../db/schema';
 import { PERMISSIONS } from '../../services/permissions';
+import { checkToolPermission } from '../../services/aiGuardrails';
+import type { AuthContext } from '../../middleware/auth';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -36,6 +38,8 @@ const BILLING_EMAIL = 'billing@customer.example';
 interface Fixture {
   orgId: string;
   patch: (body: unknown) => Promise<Response>;
+  /** The same user, as the AI assistant / MCP server present them to the tool permission check. */
+  toolAuth: AuthContext;
 }
 
 /** A partner user holding exactly `rolePermissions`, with an MFA-verified session. */
@@ -69,8 +73,18 @@ async function seed(rolePermissions: Array<{ resource: string; action: string }>
     .set({ billingContact: { contactId: row!.id, email: BILLING_EMAIL, name: 'Accounts Payable', phone: null } })
     .where(eq(organizations.id, orgId));
 
+  const toolAuth = {
+    principal: { kind: 'user_session' },
+    user: { id: env.user.id, email: env.user.email, name: 'Billing user', isPlatformAdmin: false },
+    token: { ...payload, type: 'access' },
+    partnerId: env.partner.id,
+    orgId: null,
+    scope: 'partner',
+  } as unknown as AuthContext;
+
   return {
     orgId,
+    toolAuth,
     patch: async (body) => app.request(`/orgs/${orgId}/billing-settings`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -156,5 +170,38 @@ describe('billing contact changes on PATCH /orgs/:orgId/billing-settings require
 
     expect((await patch({ billingContactEmail: 'new-ap@customer.example' })).status).toBe(403);
     expect((await readBlob(orgId)).billingContact).toMatchObject({ email: BILLING_EMAIL });
+  });
+});
+
+// The AI assistant and MCP server reach the same service through manage_billing_settings:update_org. Its permission
+// check (checkToolPermission: the requester's call, approver eligibility and the re-check at release all resolve the
+// same requirements) must refuse a contact change on the same condition as the route.
+describe('billing contact changes through manage_billing_settings:update_org require billing:manage', () => {
+  const updateOrg = (orgId: string, orgPatch: Record<string, unknown>) =>
+    ({ action: 'update_org', orgId, orgPatch });
+
+  runDb('an invoices:write-only user is refused a contact change', async () => {
+    const { orgId, toolAuth } = await seed([INVOICES_WRITE]);
+
+    expect(await checkToolPermission('manage_billing_settings',
+      updateOrg(orgId, { billingContactEmail: 'someone-else@example.test' }), toolAuth)).toEqual(expect.stringMatching(/billing\.manage/));
+    expect(await checkToolPermission('manage_billing_settings',
+      updateOrg(orgId, { billingContactEmail: null }), toolAuth)).toEqual(expect.stringMatching(/billing\.manage/));
+    expect(await checkToolPermission('manage_billing_settings',
+      updateOrg(orgId, { taxId: 'TAX-1', billingContactName: 'Someone Else' }), toolAuth)).toEqual(expect.stringMatching(/billing\.manage/));
+  });
+
+  runDb('an invoices:write-only user may still change the non-contact settings', async () => {
+    const { orgId, toolAuth } = await seed([INVOICES_WRITE]);
+
+    expect(await checkToolPermission('manage_billing_settings',
+      updateOrg(orgId, { taxId: 'TAX-1', invoiceTermsDays: 15 }), toolAuth)).toBeNull();
+  });
+
+  runDb('a user with billing:manage may change the contact', async () => {
+    const { orgId, toolAuth } = await seed([INVOICES_WRITE, BILLING_MANAGE]);
+
+    expect(await checkToolPermission('manage_billing_settings',
+      updateOrg(orgId, { billingContactEmail: 'new-ap@customer.example' }), toolAuth)).toBeNull();
   });
 });
