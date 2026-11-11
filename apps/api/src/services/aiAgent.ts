@@ -519,6 +519,8 @@ export async function listSessions(auth: AuthContext, options: { status?: string
       orgId: aiSessions.orgId,
       type: aiSessions.type,
       deviceId: aiSessions.deviceId,
+      // #4342 W4: set when transcript retention stubbed the session (no title, no messages).
+      transcriptPurgedAt: aiSessions.transcriptPurgedAt,
     })
     .from(aiSessions)
     .where(and(...conditions))

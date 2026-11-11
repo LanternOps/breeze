@@ -1,4 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm';
+import { z } from 'zod';
 import { db } from '../db';
 import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
 import { aiDataPolicies, organizations, type AiDataPolicyRow, type AiDeviceFileReadLevel } from '../db/schema';
@@ -21,6 +22,17 @@ export const AI_DATA_POLICY_DEFAULTS = {
   toolOutputRetentionDays: 30,
   transcriptRetentionDays: 365,
 } as const;
+
+/**
+ * `?days=N` for the three transcript-retention previews (#4342 W4): a plain
+ * positive integer string within the policy PUT bounds (1..3650). `0`, `abc`,
+ * `1.5`, `1e2`, `-5` and a missing param all fail validation (400).
+ */
+export const transcriptPreviewDaysSchema = z
+  .string()
+  .regex(/^\d{1,4}$/, 'days must be a whole number of days')
+  .transform(Number)
+  .pipe(z.number().int().min(1).max(3650));
 
 type RetentionField = 'toolOutputRetentionDays' | 'transcriptRetentionDays';
 

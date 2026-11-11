@@ -22,6 +22,9 @@ vi.mock('../db', () => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           limit: vi.fn(async () => selectQueue.shift() ?? []),
+          // The preview reads lists without a LIMIT.
+          then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+            Promise.resolve(selectQueue.shift() ?? []).then(resolve, reject),
         })),
       })),
     })),
@@ -65,6 +68,23 @@ vi.mock('../middleware/auth', async (importOriginal) => {
   };
 });
 
+// Preview counts: the predicate builders stay REAL (so the args are the job's);
+// only the bounded count is scripted per org. Keyed by org id.
+const previewCounts = new Map<string, number>();
+const countCalls: Array<{ orgId: string; cap: number }> = [];
+vi.mock('../services/aiTranscriptRetentionPredicates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/aiTranscriptRetentionPredicates')>();
+  return {
+    ...actual,
+    technicianStubPredicate: vi.fn((orgId: string, cutoffIso: string, now: Date) => ({ orgId, cutoffIso, now })),
+    countTranscriptPreview: vi.fn(async (where: { orgId: string }, cap: number = actual.TRANSCRIPT_PREVIEW_CAP) => {
+      countCalls.push({ orgId: where.orgId, cap });
+      const n = previewCounts.get(where.orgId) ?? 0;
+      return { eligible: Math.min(n, cap), capped: n > cap };
+    }),
+  };
+});
+
 let currentPerms: UserPermissions | null = null;
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
@@ -74,6 +94,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 import { PERMISSIONS } from '../services/permissions';
 import { aiDataPolicies } from '../db/schema';
 import { partnerAiDataPolicyRoutes } from './partnerAiDataPolicy';
+import { technicianStubPredicate, TRANSCRIPT_PREVIEW_CAP } from '../services/aiTranscriptRetentionPredicates';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 
@@ -102,6 +123,7 @@ function policyRow(overrides: Record<string, unknown> = {}) {
     partnerId: PARTNER,
     deviceFileReadLevel: 'no_user_profiles',
     toolOutputRetentionDays: 30,
+    transcriptRetentionDays: 365,
     createdBy: USER_ID,
     createdAt: new Date('2026-01-01T00:00:00Z'),
     updatedAt: new Date('2026-01-02T00:00:00Z'),
@@ -115,6 +137,8 @@ beforeEach(() => {
   writes = [];
   returningQueue = [];
   auditLog.length = 0;
+  previewCounts.clear();
+  countCalls.length = 0;
   currentAuth = partnerAuth();
   currentPerms = makePerms(ALL_GRANTS);
 });
@@ -144,12 +168,12 @@ describe('GET /', () => {
     expect(await res.json()).toEqual({
       policy: null,
       canManage: true,
-      defaults: { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30 },
+      defaults: { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30, transcriptRetentionDays: 365 },
     });
   });
 
   it('returns the DTO (no createdBy/createdAt) for an existing row', async () => {
-    selectQueue = [[policyRow({ deviceFileReadLevel: 'off', toolOutputRetentionDays: null })]];
+    selectQueue = [[policyRow({ deviceFileReadLevel: 'off', toolOutputRetentionDays: null, transcriptRetentionDays: 180 })]];
     const body = await (await getReq()).json();
     expect(body.policy).toEqual({
       id: 'partner-policy-1',
@@ -157,6 +181,7 @@ describe('GET /', () => {
       partnerId: PARTNER,
       deviceFileReadLevel: 'off',
       toolOutputRetentionDays: null,
+      transcriptRetentionDays: 180,
       updatedAt: '2026-01-02T00:00:00.000Z',
     });
   });
@@ -228,6 +253,8 @@ describe('PUT /', () => {
       createdBy: USER_ID,
       deviceFileReadLevel: 'any_with_approval',
       toolOutputRetentionDays: 90,
+      // Absent from the body: a first insert seeds the 365-day default.
+      transcriptRetentionDays: 365,
     });
     expect(writes[0]!.set).toMatchObject({ deviceFileReadLevel: 'any_with_approval', toolOutputRetentionDays: 90 });
     expect(writes[0]!.set.updatedAt).toBeInstanceOf(Date);
@@ -268,9 +295,35 @@ describe('PUT /', () => {
     expect(writes[0]!.set.toolOutputRetentionDays).toBeNull();
   });
 
+  it('seeds the 365-day transcript default on first insert when the body omits it, without touching it on conflict', async () => {
+    const res = await putReq({ toolOutputRetentionDays: 14 });
+    expect(res.status).toBe(200);
+    expect(writes[0]!.values).toMatchObject({ toolOutputRetentionDays: 14, transcriptRetentionDays: 365 });
+    expect(writes[0]!.set).not.toHaveProperty('transcriptRetentionDays');
+  });
+
+  it('writes an explicit transcript window to insert and conflict set, and returns it', async () => {
+    const res = await putReq({ transcriptRetentionDays: 90 });
+    expect(res.status).toBe(200);
+    expect(writes[0]!.values.transcriptRetentionDays).toBe(90);
+    expect(writes[0]!.set.transcriptRetentionDays).toBe(90);
+    expect((await res.json()).policy.transcriptRetentionDays).toBe(90);
+    expect(auditLog[0]).toMatchObject({ details: { level: 'partner', transcriptRetentionDays: 90 } });
+  });
+
+  it('an explicit null transcript window stores NULL (keep forever) in both insert and conflict set', async () => {
+    const res = await putReq({ transcriptRetentionDays: null });
+    expect(res.status).toBe(200);
+    expect(writes[0]!.values.transcriptRetentionDays).toBeNull();
+    expect(writes[0]!.set.transcriptRetentionDays).toBeNull();
+  });
+
   it.each([
     ['retention 0', { toolOutputRetentionDays: 0 }],
     ['retention above 3650', { toolOutputRetentionDays: 3651 }],
+    ['transcript retention 0', { transcriptRetentionDays: 0 }],
+    ['transcript retention above 3650', { transcriptRetentionDays: 3651 }],
+    ['fractional transcript retention', { transcriptRetentionDays: 30.5 }],
     ['fractional retention', { toolOutputRetentionDays: 1.5 }],
     ['unknown level', { deviceFileReadLevel: 'everything' }],
     ['unknown key (strict)', { somethingElse: true }],
@@ -279,5 +332,85 @@ describe('PUT /', () => {
     expect(res.status).toBe(400);
     expect(writes).toHaveLength(0);
     expect(auditLog).toHaveLength(0);
+  });
+});
+
+describe('GET /transcript-retention-preview', () => {
+  const ORG_2 = '44444444-4444-4444-8444-444444444444';
+  const ORG_3 = '55555555-5555-4555-8555-555555555555';
+  const ORG_4 = '66666666-6666-4666-8666-666666666666';
+  const previewReq = (qs: string) => partnerAiDataPolicyRoutes.request(`/transcript-retention-preview${qs}`);
+
+  it.each([
+    ['days=0', '?days=0'],
+    ['days=abc', '?days=abc'],
+    ['missing days', ''],
+    ['days above 3650', '?days=3651'],
+    ['fractional days', '?days=1.5'],
+    ['negative days', '?days=-5'],
+  ])('400s %s and counts nothing', async (_n, qs) => {
+    const res = await previewReq(qs);
+    expect(res.status).toBe(400);
+    expect(countCalls).toHaveLength(0);
+  });
+
+  it('403s an organization-scope token (partner preview is partner-only)', async () => {
+    currentAuth = { user: { id: USER_ID, email: 'o@example.com' }, scope: 'organization', orgId: ORG, partnerId: PARTNER, accessibleOrgIds: [ORG] };
+    expect((await previewReq('?days=90')).status).toBe(403);
+    expect(countCalls).toHaveLength(0);
+  });
+
+  it('400s without a partner context', async () => {
+    currentAuth = partnerAuth({ scope: 'system', partnerId: null });
+    expect((await previewReq('?days=90')).status).toBe(400);
+    expect(countCalls).toHaveLength(0);
+  });
+
+  it('sums the partner orgs that have no tighter org row, at window N, with enforced:false', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-11T12:00:00.000Z'));
+    try {
+      // 1) the partner's orgs (caller RLS), 2) their org-level policy rows.
+      selectQueue = [
+        [{ id: ORG }, { id: ORG_2 }, { id: ORG_3 }, { id: ORG_4 }],
+        [
+          { orgId: ORG_2, transcriptRetentionDays: 30 }, // tighter than 90: unaffected
+          { orgId: ORG_3, transcriptRetentionDays: 120 }, // looser: partner 90 applies
+          { orgId: ORG_4, transcriptRetentionDays: null }, // inherits
+        ],
+      ];
+      previewCounts.set(ORG, 3).set(ORG_2, 50).set(ORG_3, 4).set(ORG_4, 1);
+      const res = await previewReq('?days=90');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ eligible: 8, capped: false, enforced: false });
+      expect(countCalls.map((call) => call.orgId)).toEqual([ORG, ORG_3, ORG_4]);
+      expect(technicianStubPredicate).toHaveBeenCalledWith(ORG, '2026-08-13T12:00:00.000Z', new Date('2026-11-11T12:00:00.000Z'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an org row exactly at N is still governed by the partner value', async () => {
+    selectQueue = [[{ id: ORG }], [{ orgId: ORG, transcriptRetentionDays: 90 }]];
+    previewCounts.set(ORG, 2);
+    expect(await (await previewReq('?days=90')).json()).toEqual({ eligible: 2, capped: false, enforced: false });
+  });
+
+  it('stops summing at the preview cap and reports capped', async () => {
+    selectQueue = [[{ id: ORG }, { id: ORG_2 }, { id: ORG_3 }], []];
+    previewCounts.set(ORG, 6000).set(ORG_2, 6000).set(ORG_3, 5);
+    const body = await (await previewReq('?days=30')).json();
+    expect(body).toEqual({ eligible: TRANSCRIPT_PREVIEW_CAP, capped: true, enforced: false });
+    // Each org is counted only up to what is left of the cap; nothing after the cap.
+    expect(countCalls).toEqual([
+      { orgId: ORG, cap: TRANSCRIPT_PREVIEW_CAP },
+      { orgId: ORG_2, cap: TRANSCRIPT_PREVIEW_CAP - 6000 },
+    ]);
+  });
+
+  it('returns zero (and reads no policy rows) for a partner with no visible orgs', async () => {
+    selectQueue = [[]];
+    expect(await (await previewReq('?days=30')).json()).toEqual({ eligible: 0, capped: false, enforced: false });
+    expect(countCalls).toHaveLength(0);
   });
 });
