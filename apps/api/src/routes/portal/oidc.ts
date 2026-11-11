@@ -544,17 +544,20 @@ oidcRoutes.get(PORTAL_ENTRA_PROOF_ROUTE, (c) =>
 // ============================================
 
 /**
- * Shared host: a constant (`password` always offered, Microsoft and Request
- * access when the deployment can run them), so it reveals nothing about any
- * org (inv. 8). A verified custom domain: that org's effective policy.
+ * Shared host: a constant (`password` always offered, Microsoft when the
+ * deployment can run it, Request access never), so it reveals nothing about
+ * any org (inv. 8). A verified custom domain: that org's effective policy.
  */
 oidcRoutes.get('/auth/methods', async (c) => {
   c.header('Cache-Control', 'no-store');
   const caps = getPortalSignInCapabilities();
-  // `requestAccess` (W6): the shared host shows the Request access link
-  // whenever the deployment can run self-registration — a constant, so it says
-  // nothing about which domains or orgs are eligible (inv. 8).
-  const shared = { password: true, microsoft: caps.entra, requestAccess: caps.selfRegistration };
+  // `requestAccess` (W6, decision B of 2026-11-11, spec §5.9): never on the
+  // shared host. There it would show every customer of every MSP a link that
+  // works only for orgs that opted in. The link appears only on a verified
+  // custom portal domain whose org has the mode on (below). /request-access
+  // still answers by direct URL with the uniform 200, so no oracle either way,
+  // and there is deliberately no deployment-wide "does any org use it" read.
+  const shared = { password: true, microsoft: caps.entra, requestAccess: false };
   const orgId = await hostOrgIdFor(c);
   if (!orgId) return c.json(shared);
   try {

@@ -9,6 +9,7 @@ import {
   type PortalSignInCapabilities,
 } from '@breeze/shared';
 import { getPortalEntraConfig } from '../config/portalEntra';
+import { isPortalSelfRegistrationAvailable } from '../config/portalSelfRegistration';
 import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
 import { clientAiTenantMappings, organizations, portalAccessPolicies } from '../db/schema';
 
@@ -45,7 +46,11 @@ let capabilityOverride: PortalSignInCapabilities | null = null;
  * - `entra`: the portal Entra app is configured (config/portalEntra.ts, W4). It
  *   returns null — never throws — while the client id or secret is unset; a
  *   malformed configured value fails boot (config/validate.ts), not a request.
- * - `google` (W7) and `selfRegistration` (W6) flip their own key.
+ * - `selfRegistration`: the deployment can run self-registration (W6 plan D2):
+ *   the `PORTAL_SELF_REGISTRATION_ENABLED` kill switch AND a configured email
+ *   service (config/portalSelfRegistration.ts). Whether an org uses it is its
+ *   own policy (`self_registration_mode`, default `off`).
+ * - `google` (W7) flips its own key.
  * The NODE_ENV=test override ({@link __testOnly}) takes precedence.
  */
 export function getPortalSignInCapabilities(): PortalSignInCapabilities {
@@ -53,7 +58,7 @@ export function getPortalSignInCapabilities(): PortalSignInCapabilities {
   return {
     entra: getPortalEntraConfig() !== null,
     google: false,
-    selfRegistration: false,
+    selfRegistration: isPortalSelfRegistrationAvailable(),
   };
 }
 

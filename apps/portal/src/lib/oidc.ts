@@ -18,9 +18,16 @@ export const MICROSOFT_FAILURE_MESSAGE =
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_COOKIE_NAME = 'breeze_portal_csrf_token';
 
-export interface SignInMethods {
+/** What one invite offers (`POST /auth/invite/methods`). */
+export interface InviteMethods {
   password: boolean;
   microsoft: boolean;
+}
+
+/** What the login page offers (`GET /auth/methods`). */
+export interface SignInMethods extends InviteMethods {
+  /** Show the Request access link (W6). Anything but a literal `true` reads as false. */
+  requestAccess: boolean;
 }
 
 export interface LinkStatus {
@@ -31,7 +38,7 @@ export interface LinkStatus {
 export type StartResult = { ok: true } | { ok: false; error: string };
 
 export type InviteMethodsResult =
-  | { status: 'ok'; methods: SignInMethods }
+  | { status: 'ok'; methods: InviteMethods }
   | { status: 'invalid' }
   | { status: 'unavailable' };
 
@@ -58,9 +65,9 @@ function readCookie(name: string): string | null {
 
 function parseMethods(data: unknown): SignInMethods | null {
   if (!data || typeof data !== 'object') return null;
-  const { password, microsoft } = data as Record<string, unknown>;
+  const { password, microsoft, requestAccess } = data as Record<string, unknown>;
   if (typeof password !== 'boolean' || typeof microsoft !== 'boolean') return null;
-  return { password, microsoft };
+  return { password, microsoft, requestAccess: requestAccess === true };
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -103,7 +110,7 @@ export async function getInviteMethods(token: string): Promise<InviteMethodsResu
     if (response.status === 400) return { status: 'invalid' };
     if (!response.ok) return { status: 'unavailable' };
     const methods = parseMethods(await readJson(response));
-    return methods ? { status: 'ok', methods } : { status: 'unavailable' };
+    return methods ? { status: 'ok', methods: { password: methods.password, microsoft: methods.microsoft } } : { status: 'unavailable' };
   } catch {
     return { status: 'unavailable' };
   }
