@@ -55,6 +55,20 @@ export function clearStandingStateCache(): void {
   factsCache.clear();
 }
 
+/**
+ * Forget this process's cached facts for one grant (every revision and
+ * viewer), so the next turn reads them fresh. Called after a user acts on the
+ * grant's check-ins or concerns (#11611): without it, a question asked right
+ * after the action is answered from facts read before it. Another API
+ * process still serves its copy until the 60 s TTL ends.
+ */
+export function forgetStandingStateFacts(grantId: string): void {
+  const prefix = `${grantId}:`;
+  for (const key of factsCache.keys()) {
+    if (key.startsWith(prefix)) factsCache.delete(key);
+  }
+}
+
 /** Spend counts as changed only when it crosses one of these steps of the daily budget. */
 export const STANDING_SPEND_STEPS = 10;
 
@@ -62,6 +76,8 @@ export const STANDING_SPEND_STEPS = 10;
  * The facts' identity, minus what only says time has passed (concern ages),
  * with spend coarsened to tenths of the budget: every chat turn costs a few
  * cents, and an exact figure would re-send the block on nearly every turn.
+ * A user action (#11611) is part of the identity: a new one re-sends the block;
+ * one ageing out of the window does too, which is a change the model should see.
  * The loader builds the object in a fixed key order, and Dates serialise as
  * ISO strings, so equal facts hash equal.
  */

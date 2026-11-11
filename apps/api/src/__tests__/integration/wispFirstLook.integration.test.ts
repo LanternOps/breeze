@@ -39,6 +39,7 @@ import {
 } from '../../services/wisp/firstLook';
 import { buildBrief } from '../../services/wisp/brief';
 import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
+import { dismissConcern, resolveConcern } from '../../services/wisp/concerns';
 import { buildHomeSections } from '../../services/wisp/home';
 import { loadBriefSchedule, saveBrowserTimezone, upsertNudgePrefs } from '../../services/wisp/nudgePreferences';
 import { couldntLookDedupeKey, firstLookPostTimes, firstLookStateFrom } from '../../services/wisp/threadPosts';
@@ -593,5 +594,49 @@ describe('standing-state facts (real Postgres, #10426)', () => {
     const facts = await loadStandingStateFacts(ceiling, { user: { id: a.grantorId }, accessibleOrgIds: null } as never);
     expect(facts!.watches).toEqual({ active: 0 });
     expect(facts!.checkIns.scheduled).toBe(1);
+  });
+
+  it('the user\'s check-in cancels and concern resolves / dismissals of the last day, not Wisp\'s or Breeze\'s (#11611)', async () => {
+    const t = await seedTenant(1);
+    const org = t.orgs[0]!;
+    const thread = await getOrCreateThread(t.grantId);
+    const now = new Date();
+    const ago = (min: number) => new Date(now.getTime() - min * 60_000);
+    const checkIn = (instruction: string, cancelledBy: 'user' | 'wisp' | 'breeze', cancelledAt: Date) => {
+      const id = randomUUID();
+      return db.insert(wispCheckIns).values({
+        id, partnerId: t.partnerId, orgId: org, grantId: t.grantId, threadId: thread.id, userId: t.grantorId,
+        dueAt: new Date(now.getTime() + 3_600_000), instruction, jobId: `wisp-check-in-${id}`,
+        status: 'cancelled', cancelledAt, cancelledBy, ...(cancelledBy === 'breeze' ? { cancelReason: 'grant_inactive' } : {}),
+      });
+    };
+    await sys(async () => {
+      await checkIn('Re-check FS-01 backups', 'user', ago(5));
+      await checkIn('Wisp dropped this one', 'wisp', ago(4));
+      await checkIn('Breeze dropped this one', 'breeze', ago(3));
+      await checkIn('Cancelled two days ago', 'user', ago(48 * 60));
+    });
+    const concern = async (summary: string) => (await sys(() => db.insert(wispConcerns).values({
+      partnerId: t.partnerId, orgId: org, subjectKind: 'ticket', subjectId: randomUUID(), summary, severity: 'high',
+    }).returning({ id: wispConcerns.id })))[0]!.id;
+    const byUser = await concern('Backups failing on FS-01');
+    const dismissed = await concern('Two techs share one login');
+    const byBreeze = await concern('Alert cleared on its own');
+    await resolveConcern(byUser, { userId: t.grantorId }, 'Replaced the USB target');
+    await dismissConcern(dismissed, { grantId: t.grantId, userId: t.grantorId });
+    await resolveConcern(byBreeze, {}, 'auto_closed');
+
+    const ceiling = await resolveGrantCeiling(t.grantId, t.revisionId);
+    const facts = await loadStandingStateFacts(ceiling, { user: { id: t.grantorId }, accessibleOrgIds: null } as never, now);
+
+    expect(facts!.userActions.map(({ at: _at, ...a }) => a)).toEqual([
+      { kind: 'dismissed_concern', text: 'Two techs share one login' },
+      { kind: 'resolved_concern', text: 'Backups failing on FS-01', outcome: 'Replaced the USB target', byViewer: true },
+      { kind: 'cancelled_check_in', text: 'Re-check FS-01 backups' },
+    ]);
+    const block = renderStandingStateBlock(facts!, now);
+    expect(block).toContain('the user cancelled check-in "Re-check FS-01 backups"');
+    expect(block).toContain('the user resolved concern "Backups failing on FS-01" with outcome "Replaced the USB target"');
+    expect(block).not.toContain('dropped this one');
   });
 });

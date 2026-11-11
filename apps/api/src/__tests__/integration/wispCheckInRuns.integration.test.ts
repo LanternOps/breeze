@@ -231,7 +231,7 @@ describe('run-mode columns and the cap', () => {
     const fx = await seed();
     const { row } = await firedRunning(fx);
     expect((await listCheckIns(fx.grantId, { limit: 10 })).map((r) => r.id)).toContain(row.id);
-    expect(await cancelCheckIn(fx.grantId, row.id)).toMatchObject({ status: 'cancelled' });
+    expect(await cancelCheckIn(fx.grantId, row.id, 'user')).toMatchObject({ status: 'cancelled' });
   });
 });
 
@@ -530,7 +530,7 @@ describe('posting the settled run', () => {
   runDb('a check-in the user cancelled while its run ran never posts', async () => {
     const fx = await seed();
     const { row, runId } = await firedRunning(fx);
-    await cancelCheckIn(fx.grantId, row.id);
+    await cancelCheckIn(fx.grantId, row.id, 'user');
     await setRun(runId, { status: 'completed', summary: 'Done.', finishedAt: new Date() });
     expect(await postCheckInRunResult(runId)).toBe('already');
     expect(await postsFor(fx.thread.id)).toHaveLength(0);
