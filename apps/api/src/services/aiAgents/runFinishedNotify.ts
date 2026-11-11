@@ -24,7 +24,7 @@
  *    `agentNotifyRetryWorker`'s import closure short enough to land
  *    `placement: 'global'` in the worker registry (see
  *    `workerEntrypointClosure.contract.test.ts`) instead of inheriting
- *    `runLoop.ts`'s full SDK-tool `socket-owner` graph.
+ *    `runLoop.ts`'s full SDK-tool graph.
  *
  * Throws on ANY failure (DB read, recipient resolution, notification write)
  * — deliberately, unlike the old inline `notifyRunFinished`, which caught

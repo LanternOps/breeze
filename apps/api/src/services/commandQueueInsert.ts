@@ -2,10 +2,10 @@ import { deviceCommands } from '../db/schema';
 import { aiOriginColumns } from './aiOriginColumns';
 import { assertCommandDeliverable } from './unassignedPool/deliveryEligibility';
 import type { AiOriginRef } from '@breeze/shared';
-// TYPE-ONLY, and load-bearing that it stays that way: `commandQueue.ts`
-// statically imports `routes/agentWs.ts`, and a RUNTIME edge from this module
-// to it would re-create the worker-closure regression this file exists to
-// avoid. Type imports are erased, so this is inert at runtime — see the header
+// TYPE-ONLY, and load-bearing that it stays that way: `commandQueue.ts` is the
+// heavy command-queue hub (and re-exports this module), and a RUNTIME edge from
+// this module to it would re-create the import-closure regression this file
+// exists to avoid. Type imports are erased, so this is inert at runtime — see the header
 // below and `workerEntrypointClosure.contract.test.ts`.
 import type { CommandPayload, CommandQueueTx, CommandType, QueuedCommand } from './commandQueue';
 
@@ -15,17 +15,18 @@ import type { CommandPayload, CommandQueueTx, CommandType, QueuedCommand } from 
  * enforces (#5022 W01).
  *
  * It lives in its own leaf module rather than in `commandQueue.ts` for an
- * import-closure reason, not a stylistic one. `commandQueue.ts` statically
- * imports `routes/agentWs.ts` (the live agent-socket registry), and
+ * import-closure reason, not a stylistic one. `commandQueue.ts` is the heavy
+ * command-queue hub (it used to reach `routes/agentWs.ts`, the live
+ * agent-socket registry, before the relay facade), and
  * `services/peripheralPolicyState.ts` — which must reach this function to stop
  * hand-rolling its own `device_commands` insert — sits in the closure of
  * `jobs/peripheralJobs.ts` -> `services/groupMembership.ts` ->
  * `services/contractQuantities.ts` -> the quote and contract workers. Importing
- * `commandQueue.ts` from there drags the socket registry into two
- * `global`-placement worker processes, which
- * `workerEntrypointClosure.contract.test.ts` (#4086) forbids outright — and a
- * lazy `await import()` does not help, because that test's per-entry check
- * follows dynamic edges too.
+ * `commandQueue.ts` from there drags that whole graph into two
+ * `global`-placement worker processes, where
+ * `workerEntrypointClosure.contract.test.ts` (#4086) polices socket-local
+ * reach — and a lazy `await import()` does not help, because that test's
+ * per-entry check follows dynamic edges too.
  *
  * So the rule for this file: it may import schema, pure helpers and TYPES, and
  * nothing that reaches `routes/`.

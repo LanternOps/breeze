@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { dbState, dbAccessContexts, networkOverviewMock, networkAssetsMock, networkSitesMock } = vi.hoisted(() => ({
+const { dbState, dbAccessContexts, networkOverviewMock, networkAssetsMock, networkSitesMock, networkSiteHealthMock } = vi.hoisted(() => ({
   dbState: {
     rows: [] as unknown[],
     where: undefined as unknown,
@@ -13,6 +13,7 @@ const { dbState, dbAccessContexts, networkOverviewMock, networkAssetsMock, netwo
   networkOverviewMock: vi.fn(),
   networkAssetsMock: vi.fn(),
   networkSitesMock: vi.fn(),
+  networkSiteHealthMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => {
@@ -62,6 +63,7 @@ vi.mock('../../services/portal/networkVisibilityReadModel', () => ({
   networkOverview: networkOverviewMock,
   networkAssets: networkAssetsMock,
   networkSites: networkSitesMock,
+  networkSiteHealth: networkSiteHealthMock,
 }));
 
 import { portalNetworkRoutes } from './network';
@@ -406,5 +408,98 @@ describe('GET /network/sites (#7025)', () => {
     const response = await makeApp(false).request('/network/sites');
     expect(response.status).toBe(401);
     expect(networkSitesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /network/sites/health (CPEV-W2)', () => {
+  const HEALTH_ROW = {
+    siteId: '11111111-1111-1111-1111-111111111111',
+    siteName: 'HQ',
+    totalAssets: 3,
+    onlineAssets: 2,
+    offlineAssets: 1,
+    unverifiedAssets: 0,
+    snmpDevicesPolling: 1,
+    monitorsDown: 0,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+    dbState.contextDepth = 0;
+    dbAccessContexts.length = 0;
+    networkSiteHealthMock.mockResolvedValue({ dataStatus: 'ok', data: [HEALTH_ROW] });
+  });
+
+  it.each([
+    ['absent', []],
+    ['false', [{ enableNetworkVisibility: false, enableNetworkAlerts: true }]],
+  ])('returns not_enabled with an empty list when the flag is %s', async (_label, rows) => {
+    dbState.rows = rows;
+    const response = await makeApp().request('/network/sites/health');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ dataStatus: 'not_enabled', data: [] });
+    expect(networkSiteHealthMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the org-scoped health rows without alert fields when alerts are off', async () => {
+    dbState.rows = [{ enableNetworkVisibility: true, enableNetworkAlerts: false }];
+    const response = await makeApp().request('/network/sites/health');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ dataStatus: 'ok', data: [HEALTH_ROW] });
+    // Mock-driven: only proves the route passes the service row through; DTO key whitelisting is covered by the real-Postgres test.
+    expect(Object.keys(body.data[0]).sort()).toEqual(Object.keys(HEALTH_ROW).sort());
+    expect(networkSiteHealthMock).toHaveBeenCalledWith(ORG_ID, false);
+    expect(dbAccessContexts).toEqual([
+      expect.objectContaining({ scope: 'organization', orgId: ORG_ID, currentPartnerId: PARTNER_ID }),
+    ]);
+  });
+
+  it('forwards includeAlerts=true when enableNetworkAlerts is on', async () => {
+    dbState.rows = [{ enableNetworkVisibility: true, enableNetworkAlerts: true }];
+    const withAlerts = { ...HEALTH_ROW, activeAlertCount: 0, highestAlertSeverity: null };
+    networkSiteHealthMock.mockResolvedValue({ dataStatus: 'ok', data: [withAlerts] });
+    const response = await makeApp().request('/network/sites/health');
+    expect(await response.json()).toEqual({ dataStatus: 'ok', data: [withAlerts] });
+    expect(networkSiteHealthMock).toHaveBeenCalledWith(ORG_ID, true);
+  });
+
+  it('ignores orgId and siteId query parameters', async () => {
+    dbState.rows = [{ enableNetworkVisibility: true, enableNetworkAlerts: false }];
+    await makeApp().request('/network/sites/health?orgId=99999999-9999-9999-9999-999999999999&siteId=x');
+    expect(networkSiteHealthMock).toHaveBeenCalledWith(ORG_ID, false);
+  });
+
+  it('403s when the portal user has no partnerId', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('portalAuth', {
+        user: {
+          id: 'pu1',
+          orgId: ORG_ID,
+          email: 'customer@example.test',
+          name: 'Customer',
+          contactId: null,
+          receiveNotifications: true,
+          status: 'active',
+        },
+        token: 't',
+        authMethod: 'bearer',
+        partnerId: null,
+        timezone: 'UTC',
+      });
+      await next();
+    });
+    app.route('/', portalNetworkRoutes);
+    const response = await app.request('/network/sites/health');
+    expect(response.status).toBe(403);
+    expect(networkSiteHealthMock).not.toHaveBeenCalled();
+  });
+
+  it('401s without portal auth', async () => {
+    const response = await makeApp(false).request('/network/sites/health');
+    expect(response.status).toBe(401);
+    expect(networkSiteHealthMock).not.toHaveBeenCalled();
   });
 });

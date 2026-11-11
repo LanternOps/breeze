@@ -77,3 +77,4 @@ export * from './evidenceCursor';
 export * from './alertSubject';
 export * from './oemUpdates';
 export * from './alertLifecycle';
+export * from './orgNameMatch';

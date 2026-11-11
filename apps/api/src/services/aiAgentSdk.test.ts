@@ -725,10 +725,10 @@ describe('runPreFlightChecks', () => {
 
   // --- Session status ---
 
-  it('returns error when session is not active', async () => {
+  it('#11609: words a closed session as closed, so routes map it to a coded 410', async () => {
     mockGetSession.mockResolvedValue(makeSession({ status: 'closed' }));
     const result = await runPreFlightChecks('session-1', 'hello', auth);
-    expect(result).toEqual({ ok: false, error: 'Session is not active' });
+    expect(result).toEqual({ ok: false, error: 'This conversation was closed. Please start a new session.', sessionRefusal: 'session_closed' });
   });
 
   it('words an already-expired session as expired, so routes map it to 410', async () => {
@@ -3380,11 +3380,12 @@ describe('createSessionPreToolUse', () => {
         subjectUsername: 'HOST-01',
       });
 
-      // SSE event marks the approval as admin-side.
+      // SSE event marks the approval as admin-side, decided by someone else (#10416).
       expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
         type: 'approval_required',
         executionId: 'exec-h1',
         requiresAdminApproval: true,
+        waitingOn: 'other_approvers',
       }));
 
       expect(waitForApproval).toHaveBeenCalledWith('exec-h1', 300_000, expect.any(AbortSignal));

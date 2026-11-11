@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Sistem bölümleri",
         "connections": "Bağlantılar",
-        "deprecations": "Kullanımdan kaldırmalar"
+        "deprecations": "Kullanımdan kaldırmalar",
+        "health": "Sağlık"
       },
       "connections": {
         "enabledMeaning": "Etkin, yapılandırılmış anlamına gelir. Breeze, yanıt verip vermediğini kontrol etmek için hizmete bağlanmaz.",
@@ -720,6 +721,57 @@
           "load": "Görev durumu yüklenemedi."
         },
         "retry": "Yeniden dene"
+      },
+      "health": {
+        "coverage": "Yalnızca paylaşılan arka plan işleri: kuyruk sayıları ve zamanlanmış iş kalp atışları, Redis’ten okunur. Bu sekme genel bir karar göstermez. Süreç ve sunucu bazındaki sağlık /health/ready ve izleme katmanındadır.",
+        "loading": "Arka plan işi durumu yükleniyor…",
+        "refresh": "Yenile",
+        "never": "hiçbir zaman",
+        "errors": {
+          "load": "Arka plan işi durumu yüklenemedi."
+        },
+        "status": {
+          "operational": "Çalışıyor",
+          "degraded": "Bozulmuş",
+          "unavailable": "Kullanılamıyor",
+          "unknown": "Bilinmiyor",
+          "disabled": "Devre dışı"
+        },
+        "detail": {
+          "redis_unavailable": "Redis kullanılamıyor, bu yüzden okunamadı.",
+          "read_failed": "Okuma başarısız oldu.",
+          "timeout": "Okuma zaman aşımına uğradı.",
+          "stale": "Son kalp atışı beklenenden eski.",
+          "missing": "Kalp atışı kaydedilmedi.",
+          "no_threshold": "Yalnızca sayılar. Bu kuyruk için henüz bir sağlık eşiği tanımlanmadı."
+        },
+        "queues": {
+          "title": "Kuyruklar",
+          "description": "Paylaşılan her kuyruktaki bekleyen iş. Sayılar bir sağlık kararı değildir.",
+          "items": {
+            "connection-health-reconcile": "Bağlantı sağlığı uzlaştırıcısı",
+            "connection-health-digest": "Bağlantı sağlığı özeti",
+            "alerts": "Uyarılar",
+            "event-dispatch": "Olay gönderimi"
+          },
+          "counts": {
+            "waiting": "Bekliyor",
+            "prioritized": "Öncelikli",
+            "delayed": "Ertelenmiş",
+            "active": "Etkin"
+          }
+        },
+        "jobs": {
+          "title": "Zamanlanmış işler",
+          "description": "Bağlantı sağlığı işlerinin her birinin son kaydedilen çalışması.",
+          "items": {
+            "reconcile": "Bağlantı sağlığı uzlaştırıcısı",
+            "digest": "Bağlantı sağlığı özeti"
+          },
+          "kind": "Bağlantı denetimi: {{kind}}",
+          "lastRun": "Son çalışma: {{when}}",
+          "failureStreak": "Arka arkaya hata: {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -1002,6 +1054,7 @@
       "contract_document": "Sözleşme belgesi",
       "contract_template": "Sözleşme şablonu",
       "custom_field": "Özel alan",
+      "customer_email_domain": "Müşteri e-posta alan adı",
       "deployment": "Dağıtım",
       "deployment_invite": "Dağıtım daveti",
       "deployment_target": "Dağıtım hedefi",
@@ -1097,6 +1150,7 @@
       "platform_admin": "Platform yöneticisi",
       "plugin": "Eklenti",
       "policy": "İlke",
+      "portal_access_request": "Portal erişim isteği",
       "portal_auth": "Portal oturum açma",
       "portal_user": "Portal kullanıcısı",
       "psa_connection": "PSA bağlantısı",
@@ -1182,6 +1236,8 @@
       "trust_page_template": "Güven Merkezi şablonu",
       "tunnel_allowlist": "Tünel izin listesi",
       "tunnel_session": "Tünel oturumu",
+      "unifi_collector": "UniFi denetleyicisi",
+      "unifi_site_mapping": "UniFi site eşlemesi",
       "update_ring": "Güncelleme halkası",
       "user": "Kullanıcı",
       "user_risk_policy": "Kullanıcı risk ilkesi",

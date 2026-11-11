@@ -9,7 +9,9 @@
  *   - a grant past its first day or a paused grant posts nothing;
  *   - #11145: a batch nothing finished posts one couldn't-look post, which a later
  *     look does not block;
- *   - the browser zone lands in its own column and the resolver reads it.
+ *   - the browser zone lands in its own column and the resolver reads it;
+ *   - #11428: the brief's Overnight counts split the grant's real runs into ran
+ *     and skipped-because-nothing-changed.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -23,7 +25,8 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
-  aiAgentRuns, aiAgents, organizations, partners, userNotifications, wispConcerns, wispGrantRevisions, wispGrants, wispThreadPosts,
+  aiAgentRuns, aiAgents, organizations, partners, userNotifications, wispCheckIns, wispConcerns, wispGrantRevisions, wispGrants, wispThreadPosts,
+  wispWatches,
 } from '../../db/schema';
 import { wispNudgePreferences } from '../../db/schema/wispNudgePreferences';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
@@ -34,11 +37,13 @@ import {
   postFirstLookIfDone,
   resweepFirstLookPosts,
 } from '../../services/wisp/firstLook';
+import { buildBrief } from '../../services/wisp/brief';
 import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { buildHomeSections } from '../../services/wisp/home';
 import { loadBriefSchedule, saveBrowserTimezone, upsertNudgePrefs } from '../../services/wisp/nudgePreferences';
 import { couldntLookDedupeKey, firstLookPostTimes, firstLookStateFrom } from '../../services/wisp/threadPosts';
 import { getOrCreateThread } from '../../services/wisp/threads';
+import { STANDING_STATE_MAX_BYTES, loadStandingStateFacts, renderStandingStateBlock } from '../../services/wisp/standingLoop';
 import { onboardingBatch } from '../../services/wisp/wake';
 import {
   assignUserToPartner,
@@ -464,5 +469,129 @@ describe('brief timezone (real Postgres)', () => {
     expect(schedule).toEqual({ timeLocal: '08:00', timezone: 'Asia/Tokyo', browserTimezone: 'Europe/Berlin' });
     const [row] = await sys(() => db.select().from(wispNudgePreferences).where(eq(wispNudgePreferences.userId, t.grantorId)));
     expect(row!.briefTimezone).toBe('Asia/Tokyo');
+  });
+});
+
+describe('brief overnight assessment counts (real Postgres, #11428)', () => {
+  it('splits the grant\'s runs since the last brief into ran and skipped-because-nothing-changed', async () => {
+    const t = await seedTenant(2);
+    const since = new Date(Date.now() - 60 * 60_000);
+    await seedRun(t, t.orgs[0]!, 'completed');
+    await seedRun(t, t.orgs[1]!, 'failed', 'model_error');
+    // A skip with no error code is not #11423's nothing-changed gate (FILTER must not drop the NULL).
+    await seedRun(t, t.orgs[0]!, 'skipped');
+    await seedRun(t, t.orgs[0]!, 'skipped', 'no_changes');
+    await seedRun(t, t.orgs[1]!, 'skipped', 'no_changes');
+    await seedRun(t, t.orgs[0]!, 'queued'); // no finished_at: placed by its queued_at
+    const run = (o: Record<string, unknown>) => sys(() => db.insert(aiAgentRuns).values({
+      agentId: t.agentId, orgId: t.orgs[0]!, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
+      policySnapshot: {} as never, profile: 'assessment', status: 'skipped', errorCode: 'no_changes', finishedAt: new Date(),
+      grantId: t.grantId, grantRevisionId: t.revisionId, ...o,
+    } as never));
+    // None of these counts: before the last brief, not an assessment, an org outside the ceiling, another grant's run.
+    await run({ queuedAt: new Date(since.getTime() - 120_000), finishedAt: new Date(since.getTime() - 60_000) });
+    await run({ profile: 'full' });
+    const outside = await createOrganization({ partnerId: t.partnerId });
+    await run({ orgId: outside.id });
+    const otherGrantor = await createUser({ partnerId: t.partnerId, email: `wisp-brief-other-${randomUUID()}@wisp.test` });
+    const other = await sys(async () => {
+      const [g] = await db.insert(wispGrants).values({
+        partnerId: t.partnerId, orgId: null, grantorUserId: otherGrantor.id, status: 'active', expiresAt: new Date(Date.now() + 86_400_000),
+      }).returning({ id: wispGrants.id });
+      const [r] = await db.insert(wispGrantRevisions).values({
+        grantId: g!.id, partnerId: t.partnerId, revision: 1,
+        ceilingSnapshot: { version: 1, permissionKeys: ['ai_sessions:use'], orgIds: t.orgs, siteIds: null, toolAllowlist: null, deniedTools: [] },
+        factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
+      }).returning({ id: wispGrantRevisions.id });
+      return { grantId: g!.id, revisionId: r!.id };
+    });
+    await run({ grantId: other.grantId, grantRevisionId: other.revisionId });
+    await run({ grantId: other.grantId, grantRevisionId: other.revisionId, status: 'completed', errorCode: null });
+
+    const brief = await buildBrief(t.grantId, new Date(), { since });
+    expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines).toEqual([
+      '4 assessments run',
+      '2 assessments skipped — nothing had changed',
+    ]);
+  });
+});
+
+describe('standing-state facts (real Postgres, #10426)', () => {
+  it('one read covers the grant, runs, concerns, watches, check-ins, alerts and the thread', async () => {
+    const t = await seedTenant(2);
+    await seedRun(t, t.orgs[0]!, 'completed');
+    await seedRun(t, t.orgs[1]!, 'running');
+    await seedConcern(t, t.orgs[0]!, 'high');
+    await seedConcern(t, t.orgs[1]!, 'low');
+    const thread = await getOrCreateThread(t.grantId);
+    const dueAt = new Date(Date.now() + 3_600_000);
+    await sys(async () => {
+      await db.insert(wispWatches).values({
+        partnerId: t.partnerId, orgId: t.orgs[0]!, grantId: t.grantId, ownerUserId: t.grantorId,
+        kind: 'backup_health', cadenceMinutes: 60, nextDueAt: dueAt,
+      });
+      const checkInId = randomUUID();
+      await db.insert(wispCheckIns).values({
+        id: checkInId, partnerId: t.partnerId, orgId: null, grantId: t.grantId, threadId: thread.id,
+        userId: t.grantorId, dueAt, instruction: 'Re-check the backups.', jobId: `wisp-check-in-${checkInId}`,
+      });
+    });
+
+    const ceiling = await resolveGrantCeiling(t.grantId, t.revisionId);
+    const facts = await loadStandingStateFacts(ceiling, { user: { id: t.grantorId }, accessibleOrgIds: null } as never);
+
+    expect(facts).toMatchObject({
+      status: 'active',
+      firstLook: { assessedOrgs: 1, inFlight: 1, totalOrgs: 2 },
+      scope: { partnerWide: ceiling.partnerWide, orgCount: 2, focusOrgName: null },
+      concerns: { high: 1, medium: 0, low: 1 },
+      watches: { active: 1 },
+      checkIns: { scheduled: 1 },
+      alerts: { critical: 0, high: 0 },
+      spend: { totalCents: 0, budgetCentsPerDay: expect.any(Number) },
+    });
+    expect(facts!.checkIns.nextDueAt).toBeInstanceOf(Date);
+    expect(Math.abs(facts!.checkIns.nextDueAt!.getTime() - dueAt.getTime())).toBeLessThan(1000);
+    expect(facts!.concerns.top.map((c) => c.severity)).toEqual(['high', 'low']);
+    expect(facts!.concerns.top[0]!.orgName).toEqual(expect.any(String));
+    expect(facts!.recentAssessments).toHaveLength(1);
+    expect(facts!.recentAssessments[0]!.at).toBeInstanceOf(Date);
+    expect(Buffer.byteLength(renderStandingStateBlock(facts!, new Date()), 'utf8')).toBeLessThanOrEqual(STANDING_STATE_MAX_BYTES);
+  });
+
+  it('another grant\'s partner-level watches and check-ins, and settled check-ins, are not counted', async () => {
+    const a = await seedTenant(1);
+    const threadA = await getOrCreateThread(a.grantId);
+    // A second grant of the SAME partner, with rows the org_id IS NULL branch would match if it were not grant-keyed.
+    const otherGrantor = await createUser({ partnerId: a.partnerId, email: `wisp-standing-other-${randomUUID()}@wisp.test` });
+    const otherGrantId = await sys(async () => {
+      const [g] = await db.insert(wispGrants).values({
+        partnerId: a.partnerId, orgId: null, grantorUserId: otherGrantor.id, status: 'active', expiresAt: new Date(Date.now() + 86_400_000),
+      }).returning({ id: wispGrants.id });
+      return g!.id;
+    });
+    const threadB = await getOrCreateThread(otherGrantId);
+    const dueAt = new Date(Date.now() + 3_600_000);
+    const checkIn = (grantId: string, threadId: string, userId: string, status: 'scheduled' | 'cancelled' = 'scheduled') => {
+      const id = randomUUID();
+      return db.insert(wispCheckIns).values({
+        id, partnerId: a.partnerId, orgId: null, grantId, threadId, userId, dueAt, instruction: 'Look again.', jobId: `wisp-check-in-${id}`,
+        status, ...(status === 'cancelled' ? { cancelledAt: new Date() } : {}),
+      });
+    };
+    await sys(async () => {
+      await db.insert(wispWatches).values({
+        partnerId: a.partnerId, orgId: null, grantId: otherGrantId, ownerUserId: otherGrantor.id,
+        kind: 'backup_health', cadenceMinutes: 60, nextDueAt: dueAt,
+      });
+      await checkIn(otherGrantId, threadB.id, otherGrantor.id);
+      await checkIn(a.grantId, threadA.id, a.grantorId, 'cancelled');
+      await checkIn(a.grantId, threadA.id, a.grantorId);
+    });
+
+    const ceiling = await resolveGrantCeiling(a.grantId, a.revisionId);
+    const facts = await loadStandingStateFacts(ceiling, { user: { id: a.grantorId }, accessibleOrgIds: null } as never);
+    expect(facts!.watches).toEqual({ active: 0 });
+    expect(facts!.checkIns.scheduled).toBe(1);
   });
 });

@@ -21,7 +21,7 @@ import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
 import AiChatInput from "./AiChatInput";
 import AiModelPicker from "./AiModelPicker";
-import AiThinkingIndicator from "./AiThinkingIndicator";
+import AiThinkingIndicator, { approvalWaitFromPending } from "./AiThinkingIndicator";
 import AiTurnModelBadge from "./AiTurnModelBadge";
 import AiContinuationPrompt from "./AiContinuationPrompt";
 import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerStore";
@@ -527,6 +527,16 @@ export default function AiChatSidebar() {
                 {errorCode === "credits_exhausted" && (
                   <BuyCreditsLink className="ml-2 shrink-0 text-xs font-medium text-red-300 underline underline-offset-2 hover:text-red-200" />
                 )}
+                {errorCode === "session_closed" && !wisp && (
+                  <button
+                    type="button"
+                    data-testid="ai-session-closed-new-session"
+                    onClick={() => void createSession()}
+                    className="ml-2 shrink-0 text-xs font-medium text-red-300 underline underline-offset-2 hover:text-red-200"
+                  >
+                    {t("sessionClosed.startNew")}
+                  </button>
+                )}
                 <button
                   onClick={clearError}
                   className="text-xs text-red-400 hover:text-red-300"
@@ -577,7 +587,7 @@ export default function AiChatSidebar() {
             {/* Continuation prompt, what ran, thinking, model menu (W05) */}
             <AiContinuationPrompt />
             <AiTurnModelBadge turnModel={turnModel} />
-            <AiThinkingIndicator thinking={isStreaming && !!thinking} />
+            <AiThinkingIndicator thinking={isStreaming && !!thinking} approvalWait={isStreaming ? approvalWaitFromPending(pendingApproval) : null} />
             <AiModelPicker disabled={isStreaming} />
 
             {/* Input */}

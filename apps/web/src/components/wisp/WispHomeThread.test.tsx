@@ -25,8 +25,12 @@ const checkInsApi = vi.hoisted(() => ({ listWispCheckIns: vi.fn(async () => [] a
 vi.mock('@/lib/wispCheckInsApi', () => checkInsApi);
 const toast = vi.hoisted(() => ({ showToast: vi.fn() }));
 vi.mock('@/components/shared/Toast', () => toast);
-const sessionRes = (status: string, wispGrantId = 'g-1') =>
-  ({ ok: true, status: 200, json: async () => ({ session: { id: 's-old', status, wispGrantId } }) }) as Response;
+const HOUR = 60 * 60 * 1000;
+/** The session read; recently active unless `activity` says otherwise (#11430). */
+const sessionRes = (status: string, wispGrantId = 'g-1', activity: { createdAt?: string; lastActivityAt?: string } = {}) => {
+  const recent = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  return ({ ok: true, status: 200, json: async () => ({ session: { id: 's-old', status, wispGrantId, createdAt: recent, lastActivityAt: recent, ...activity } }) }) as Response;
+};
 const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
 /**
  * W02b: the column reads `GET /wisp/thread/:id/timeline` once bound. `timeline`
@@ -73,7 +77,7 @@ vi.mock('./WispEntityPicker', () => ({
     ) : null;
   },
 }));
-vi.mock('../ai/AiThinkingIndicator', () => ({ default: () => null }));
+vi.mock('../ai/AiThinkingIndicator', () => ({ default: () => null, approvalWaitFromPending: () => null }));
 vi.mock('../ai/AiModelPicker', () => ({
   default: (p: { disabled?: boolean }) => <div data-testid="ai-model-picker-mock" data-disabled={String(!!p.disabled)} />,
 }));
@@ -82,6 +86,7 @@ vi.mock('../ai/BuyCreditsLink', () => ({ default: () => null }));
 
 import WispHomeThread from './WispHomeThread';
 import { ActionError } from '@/lib/runAction';
+import { useWispInstructionCaptureStore } from '@/stores/wispInstructionCaptureStore';
 
 const onLinksChange = vi.fn();
 const extra = { scopeLabel: 'All organizations', links: [] as never[], onLinksChange };
@@ -105,6 +110,7 @@ const reset = (over: Record<string, unknown> = {}) => {
 describe('WispHomeThread (W08 Task 9)', () => {
   beforeEach(() => {
     reset();
+    useWispInstructionCaptureStore.getState().reset();
     fetchMock.mockReset();
     fetchMock.mockImplementation(route());
   });
@@ -156,6 +162,21 @@ describe('WispHomeThread (W08 Task 9)', () => {
 
   it.each(['closed', 'expired'])('a %s last session is not resumed (its first send would fail): a fresh session starts', async (status) => {
     fetchMock.mockImplementation(route({ session: sessionRes(status) }));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
+    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
+    expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/s-old');
+    expect(h.state.switchSession).not.toHaveBeenCalled();
+  });
+
+  // #11430: the server's read now reports an idled-out session as expired; the
+  // column still refuses to resume one whose own timestamps say the first send
+  // would be refused (an older API, or a read that raced the expiry).
+  it.each([
+    ['idle for 3 days', { lastActivityAt: new Date(Date.now() - 72 * HOUR).toISOString() }],
+    ['idle past the 2 h window', { lastActivityAt: new Date(Date.now() - 3 * HOUR).toISOString() }],
+    ['older than 24 h though busy', { createdAt: new Date(Date.now() - 25 * HOUR).toISOString() }],
+  ])('#11430: an "active" last session %s is not resumed: a fresh session starts', async (_label, activity) => {
+    fetchMock.mockImplementation(route({ session: sessionRes('active', 'g-1', activity) }));
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
     await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
     expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/s-old');
@@ -982,5 +1003,24 @@ describe('WispHomeThread check-ins (W05 #10996)', () => {
     expect(screen.queryByTestId('wisp-post-run-now')).toBeNull();
     expect(screen.queryByTestId('wisp-check-in-chip')).toBeNull();
     expect(checkInsApi.listWispCheckIns).not.toHaveBeenCalled();
+  });
+
+  it('loads the live session’s captured instructions once and renders them as chips', async () => {
+    useWispInstructionCaptureStore.getState().reset();
+    const instruction = {
+      instructionId: 'i-1', captureId: 'c-1', capturedAt: '2026-11-08T10:00:00.000Z', text: "don't reboot PC-01",
+      status: 'unconfirmed', enforceable: false, verb: null, targetLabels: [], until: null,
+      orgId: null, orgName: null, unmatched: false, keptForOrg: false,
+    };
+    fetchMock.mockImplementation(async (url: string) => (
+      url.includes('/wisp/memory/captures?') ? json({ instructions: [instruction] }) : route()(url)
+    ));
+    reset({ wisp, sessionId: 's-live' });
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
+    expect(await screen.findByTestId('wisp-instruction-chip')).toBeInTheDocument();
+    const loads = fetchMock.mock.calls.map((c) => c[0] as string).filter((u) => u.includes('/wisp/memory/captures?'));
+    expect(loads).toEqual(['/wisp/memory/captures?sessionId=s-live']);
+    const ids = (kit.messages.at(-1)?.extras as Array<{ id: string }>).map((e) => e.id);
+    expect(ids).toContain('wisp-instruction-i-1');
   });
 });

@@ -9,7 +9,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { fetchWithAuth } from "../../stores/auth";
+import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { runAction, handleActionError } from "../../lib/runAction";
 import { useHashState } from "@/lib/useHashState";
 import { Dialog } from "../shared/Dialog";
@@ -230,6 +230,7 @@ function toSoftwareItem(item: Record<string, unknown>): SoftwareItem {
 export default function SoftwareCatalog() {
   useTranslation("policies");
   useTranslation("policies");
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [selectedSoftware, setSelectedSoftware] = useState<SoftwareItem | null>(
@@ -1020,6 +1021,9 @@ export default function SoftwareCatalog() {
                 catalogId={selectedSoftware.id}
                 embedded
                 builtinReadOnly={Boolean(selectedSoftware.builtinPackageKey)}
+                ownerScope={selectedSoftware.orgId ? "organization" : "partner"}
+                canManagePartnerWide={canManagePartnerWide}
+                integrationProvider={selectedSoftware.integrationProvider}
               />
             )}
           </div>

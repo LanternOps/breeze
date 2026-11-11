@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Secciones del sistema",
         "connections": "Conexiones",
-        "deprecations": "Obsolescencias"
+        "deprecations": "Obsolescencias",
+        "health": "Salud"
       },
       "connections": {
         "enabledMeaning": "Habilitado significa configurado. Breeze no contacta al servicio para comprobar que responde.",
@@ -720,6 +721,57 @@
           "load": "No se pudo cargar el estado de las tareas."
         },
         "retry": "Reintentar"
+      },
+      "health": {
+        "coverage": "Solo trabajo en segundo plano compartido: conteos de colas y heartbeats de trabajos programados, leídos desde Redis. Esta pestaña no muestra un veredicto general. La salud por proceso y por host está en /health/ready y en la superposición de monitoreo.",
+        "loading": "Cargando estado del trabajo en segundo plano…",
+        "refresh": "Actualizar",
+        "never": "nunca",
+        "errors": {
+          "load": "No se pudo cargar el estado del trabajo en segundo plano."
+        },
+        "status": {
+          "operational": "Operativo",
+          "degraded": "Degradado",
+          "unavailable": "No disponible",
+          "unknown": "Desconocido",
+          "disabled": "Desactivado"
+        },
+        "detail": {
+          "redis_unavailable": "Redis no está disponible, así que no se pudo leer.",
+          "read_failed": "La lectura falló.",
+          "timeout": "La lectura agotó el tiempo.",
+          "stale": "El último heartbeat es más antiguo de lo esperado.",
+          "missing": "No se ha registrado ningún heartbeat.",
+          "no_threshold": "Solo conteos. Todavía no hay un umbral de salud definido para esta cola."
+        },
+        "queues": {
+          "title": "Colas",
+          "description": "Trabajo pendiente en cada cola compartida. Los conteos no son un veredicto de salud.",
+          "items": {
+            "connection-health-reconcile": "Reconciliador de salud de conexiones",
+            "connection-health-digest": "Resumen de salud de conexiones",
+            "alerts": "Alertas",
+            "event-dispatch": "Despacho de eventos"
+          },
+          "counts": {
+            "waiting": "En espera",
+            "prioritized": "Priorizados",
+            "delayed": "Diferidos",
+            "active": "Activos"
+          }
+        },
+        "jobs": {
+          "title": "Trabajos programados",
+          "description": "Última ejecución registrada de cada trabajo de salud de conexiones.",
+          "items": {
+            "reconcile": "Reconciliador de salud de conexiones",
+            "digest": "Resumen de salud de conexiones"
+          },
+          "kind": "Verificación de conexión: {{kind}}",
+          "lastRun": "Última ejecución: {{when}}",
+          "failureStreak": "Racha de fallos: {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -1002,6 +1054,7 @@
       "contract_document": "Documento de contrato",
       "contract_template": "Plantilla de contrato",
       "custom_field": "Campo personalizado",
+      "customer_email_domain": "Dominio de correo del cliente",
       "deployment": "Implementación",
       "deployment_invite": "Invitación de implementación",
       "deployment_target": "Destino de implementación",
@@ -1097,6 +1150,7 @@
       "platform_admin": "Administrador de la plataforma",
       "plugin": "Complemento",
       "policy": "Política",
+      "portal_access_request": "Solicitud de acceso al portal",
       "portal_auth": "Inicio de sesión del portal",
       "portal_user": "Usuario del portal",
       "psa_connection": "Conexión de PSA",
@@ -1182,6 +1236,8 @@
       "trust_page_template": "Plantilla del Centro de confianza",
       "tunnel_allowlist": "Lista de permitidos del túnel",
       "tunnel_session": "Sesión de túnel",
+      "unifi_collector": "Controlador de UniFi",
+      "unifi_site_mapping": "Asignación de sitio de UniFi",
       "update_ring": "Anillo de actualización",
       "user": "Usuario",
       "user_risk_policy": "Política de riesgo de usuario",

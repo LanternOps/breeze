@@ -32,6 +32,21 @@ describe('wispStateFromThread W06 fields (A32 spend, A29 pause reason)', () => {
     const half = wispStateFromThread(body({ spentTodayCents: 42 }))!;
     expect('spentTodayCents' in half).toBe(false);
   });
+  it('#10414: carries the background/chat breakdown when both are numbers; an older server parses as before', () => {
+    const base = { spentTodayCents: 200, budgetResetsAt: '2026-10-25T00:00:00.000Z' };
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(wispStateFromThread(body({ ...base, backgroundCents: 30, chatCents: 170 })))
+      .toMatchObject({ spentTodayCents: 200, backgroundCents: 30, chatCents: 170 });
+    const old = wispStateFromThread(body(base))!;
+    expect(old.spentTodayCents).toBe(200);
+    expect('backgroundCents' in old).toBe(false);
+    const bad = wispStateFromThread(body({ ...base, backgroundCents: 30, chatCents: 'x' }))!;
+    expect(bad.spentTodayCents).toBe(200);
+    expect('backgroundCents' in bad).toBe(false);
+    expect('chatCents' in bad).toBe(false);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
   it('#10973: reads the effective unattended-reads switch, false unless literally true', () => {
     expect(wispStateFromThread(body({ unattendedReads: true }))!.unattendedReads).toBe(true);
     expect(wispStateFromThread(body({ unattendedReads: 'true' }))!.unattendedReads).toBe(false);

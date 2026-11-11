@@ -39,6 +39,7 @@
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
     "start": "node dist/index.cjs",
     "test": "vitest",
+    "worker:closure": "tsx scripts/worker-closure-report.ts",
     "test:coverage": "vitest run --coverage",
     "test:docker": "pnpm test:docker:up && pnpm test:integration; pnpm test:docker:down",
     "test:docker:down": "docker compose -f ../../docker-compose.test.yml down -v",

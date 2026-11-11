@@ -5,16 +5,18 @@ import { isPinnedLink } from '@/lib/wispLinksApi';
 import { cancelWispCheckIn, listWispCheckIns } from '@/lib/wispCheckInsApi';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
-import { WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
+import { AI_SESSION_IDLE_TIMEOUT_MS, AI_SESSION_MAX_AGE_MS, WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
 import AiChatInput from '../ai/AiChatInput';
-import AiThinkingIndicator from '../ai/AiThinkingIndicator';
+import AiThinkingIndicator, { approvalWaitFromPending } from '../ai/AiThinkingIndicator';
 import AiContinuationPrompt from '../ai/AiContinuationPrompt';
 import AiModelPicker from '../ai/AiModelPicker';
 import BuyCreditsLink from '../ai/BuyCreditsLink';
+import { useWispInstructionCaptureStore } from '@/stores/wispInstructionCaptureStore';
 import WispCheckInChip from './WispCheckInChip';
+import WispInstructionChip from './WispInstructionChip';
 import WispEntityPicker from './WispEntityPicker';
 import WispPost from './WispPost';
 import WispWelcome from './WispWelcome';
@@ -31,10 +33,22 @@ type Wisp = NonNullable<WispState>;
 type Binding = 'binding' | 'live' | 'failed' | 'not_configured';
 
 /**
+ * Past the server's chat-session lifetime (the shared AI_SESSION_* limits; a
+ * send past either is refused with 410) by the session's own timestamps. An
+ * unreadable timestamp is left to the status.
+ */
+function pastSessionLifetime(session: { createdAt?: unknown; lastActivityAt?: unknown }, now = Date.now()): boolean {
+  const ageOf = (value: unknown) => (typeof value === 'string' ? now - Date.parse(value) : Number.NaN);
+  return ageOf(session.createdAt) > AI_SESSION_MAX_AGE_MS || ageOf(session.lastActivityAt) > AI_SESSION_IDLE_TIMEOUT_MS;
+}
+
+/**
  * `thread.lastSessionId` is the last session stamped on the thread, not the
  * last live one: an idled-out (`expired`) or closed session would load its
  * transcript and then refuse the first send. Resume only an active session
- * that still runs under this grant. A failed read is "not resumable".
+ * that still runs under this grant and is within the server's lifetime: the
+ * read reports a stale session as expired (#11430), and this check covers an
+ * older API or a read that raced the expiry. A failed read is "not resumable".
  */
 async function resumable(sessionId: string, grantId: string): Promise<boolean> {
   try {
@@ -46,8 +60,8 @@ async function resumable(sessionId: string, grantId: string): Promise<boolean> {
     const body = (await res.json().catch((err: unknown) => {
       console.warn('[WispHomeThread] the last Wisp session read was not JSON; starting a new one', err);
       return null;
-    })) as { session?: { status?: unknown; wispGrantId?: unknown } } | null;
-    return body?.session?.status === 'active' && body.session.wispGrantId === grantId;
+    })) as { session?: { status?: unknown; wispGrantId?: unknown; createdAt?: unknown; lastActivityAt?: unknown } } | null;
+    return body?.session?.status === 'active' && body.session.wispGrantId === grantId && !pastSessionLifetime(body.session);
   } catch (err) {
     console.warn('[WispHomeThread] could not check the last Wisp session; starting a new one', err);
     return false;
@@ -264,8 +278,14 @@ export default function WispHomeThread({
     [checkIns],
   );
   const runNowMessage = t('wisp.checkIn.runNowMessage');
+  // Standing instructions Wisp remembered from this session's turns (chip under the reply).
+  const loadSessionCaptures = useWispInstructionCaptureStore((s) => s.loadSessionCaptures);
+  const sessionInstructions = useWispInstructionCaptureStore((s) => (storeSessionId ? s.bySession[storeSessionId] : undefined));
+  useEffect(() => {
+    if (live && storeSessionId) void loadSessionCaptures(storeSessionId);
+  }, [live, storeSessionId, loadSessionCaptures]);
   const extras = useMemo(
-    () => timeline.posts.map((post) => {
+    () => [...timeline.posts.map((post) => {
       const checkInId = post.kind === 'check_in' && live ? checkInIdFromLink(post.link) : null;
       const runnable = checkInId !== null && firedIds.has(checkInId);
       return {
@@ -280,7 +300,12 @@ export default function WispHomeThread({
         ),
       };
     }),
-    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming, isLoading],
+    ...(storeSessionId ? (sessionInstructions ?? []) : []).map((instruction) => ({
+      id: `wisp-instruction-${instruction.instructionId}`,
+      at: new Date(instruction.capturedAt),
+      render: () => <WispInstructionChip sessionId={storeSessionId as string} instruction={instruction} />,
+    }))],
+    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming, isLoading, storeSessionId, sessionInstructions],
   );
 
   // The bell's deep link (`#checkin=<id>`): bring its post into view once, the
@@ -450,7 +475,7 @@ export default function WispHomeThread({
               </div>
             )}
             <AiContinuationPrompt />
-            <AiThinkingIndicator thinking={isStreaming && !!thinking} />
+            <AiThinkingIndicator thinking={isStreaming && !!thinking} approvalWait={isStreaming ? approvalWaitFromPending(pendingApproval) : null} />
             {/* The docked panel's model menu (registry W05): the store loads it for the bound session. */}
             <AiModelPicker disabled={isStreaming} />
             <WispCheckInChip checkIns={checkIns} onCancel={(id) => void onCancelCheckIn(id)} />

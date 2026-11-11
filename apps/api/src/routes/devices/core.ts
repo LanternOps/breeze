@@ -34,6 +34,7 @@ import {
   type AuthContext,
 } from '../../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import { REMOTE_ACCESS_DENIAL } from '../remote/remoteAccessDenial';
 import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
@@ -101,6 +102,7 @@ import {
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+import { findDbSaturationError } from '../../middleware/dbSaturationResponse';
 import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
 import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
 import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
@@ -365,6 +367,9 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_ip_history', 'device_memory_modules',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
+  // #11242 — derived per-device vendor update policy side; restamped by its composite FK's ON UPDATE CASCADE
+  // (also in DEVICE_ORG_FK_CASCADE_TABLES below).
+  'device_oem_policy_side',
   // #11068 — vendor update status; restamped by its composite FK's ON UPDATE
   // CASCADE (also in DEVICE_ORG_FK_CASCADE_TABLES below).
   'device_oem_update_status',
@@ -478,6 +483,8 @@ export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'security_agent_device_status',
   // #11068 — composite (device_id, org_id) FK ON UPDATE CASCADE.
   'device_oem_update_status',
+  // #11242 — composite (device_id, org_id) FK ON UPDATE CASCADE.
+  'device_oem_policy_side',
   'device_wake_attempts',
   'device_wake_status',
 ];
@@ -735,6 +742,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // devices(id, org_id) ON DELETE CASCADE; leaf table, no children. Default
   // device_id predicate (no DEVICE_CASCADE_DELETE_PREDICATES entry).
   'device_restore_point_attempts',
+  // Vendor update policy side (#11242) — FK (device_id, org_id) -> devices(id, org_id)
+  // ON DELETE CASCADE; leaf table, no children.
+  'device_oem_policy_side',
   // Vendor update status (#11068) — FK (device_id, org_id) -> devices(id, org_id)
   // ON DELETE CASCADE; leaf table, no children.
   'device_oem_update_status',
@@ -2087,7 +2097,10 @@ coreRoutes.post(
   // Same gate as the WebRTC initiate flow (apps/api/src/routes/remote/index.ts:12).
   // This endpoint issues URLs containing substituted provider credentials, so it
   // needs to match (not loosen) the existing remote-desktop session gate.
-  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
+  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action, {
+    // #11621: name the missing grant instead of a bare "Permission denied".
+    denial: REMOTE_ACCESS_DENIAL,
+  }),
   requireMfa(),
   requireCapability('remote_control'),
   async (c) => {
@@ -2854,8 +2867,12 @@ coreRoutes.delete(
       // the transient, retryable conflict it is. The lock is the FIRST
       // statement of the purge, so a bounded lock failure rolls back having
       // mutated nothing at all and a retry is an ordinary retry.
-      if (pgCode === '55P03') {
-        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it`, err);
+      // #11627 — deadlock (40P01) / serialization failure (40001) are the same
+      // story: the purge rolled back whole and nothing was applied, so a retry
+      // is an ordinary retry. (57014 statement timeout is deliberately NOT
+      // here: a huge cascade can time out identically on every retry.)
+      if (pgCode === '55P03' || pgCode === '40P01' || pgCode === '40001') {
+        console.warn(`[devices] transient ${pgCode} during permanent delete of ${deviceId}; another writer holds it`, err);
         return c.json({
           error: 'Device is busy: another operation is currently modifying it. Try again in a moment.',
         }, 409);
@@ -2863,14 +2880,23 @@ coreRoutes.delete(
       // Anything else is a server-side cascade defect, and it STAYS a 500 —
       // #3952 was exactly this (a 23514 check violation), and mapping such a
       // failure to a 409 would advertise "retry me" for something that fails
-      // identically forever. But the status code is not the reason to lose the
-      // context: the global onError logs a bare `Error:` with no deviceId and,
-      // in production, returns a sanitized body, so without this line there is
-      // no server-side record of WHICH device failed to delete. Rethrow
-      // unchanged so the response contract and Sentry reporting stay owned by
-      // onError.
+      // identically forever. The global onError logs a bare `Error:` with no
+      // deviceId, so log which device failed here.
       console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId}`, err);
-      throw err;
+      // Non-Postgres errors (HTTPException, connect-timeout diagnostics) and
+      // pool/prologue saturation (503 + Retry-After, no Sentry) stay owned by
+      // onError.
+      if (!pgCode || findDbSaturationError(err)) throw err;
+      // #11627 — a Postgres cascade defect: still a 500, but answered here with
+      // a body the UI can show instead of onError's literal "Internal Server
+      // Error". Sentry reporting moves here with the response.
+      captureException(err, c, { route: 'devices.permanentDelete', pgCode }, {
+        fingerprint: ['devices.permanentDelete', pgCode],
+      });
+      return c.json({
+        error: `This device could not be permanently deleted because of a server-side error (database code ${pgCode}). Try again; if it keeps failing, contact support.`,
+        code: 'DEVICE_PURGE_FAILED',
+      }, 500);
     }
 
     // #8117 — the purge committed (its system context is a top-level

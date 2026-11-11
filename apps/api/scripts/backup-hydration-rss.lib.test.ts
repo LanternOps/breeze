@@ -4,6 +4,8 @@ import {
   hydrationManifestChunks,
   hydrationRunBreaches,
   largestFolderEntries,
+  LARGEST_FOLDER,
+  manifestEntryKindCounts,
   summarizeRuns,
   type HydrationRunFigures,
 } from './backup-hydration-rss.lib';
@@ -15,7 +17,31 @@ describe('hydrationManifestChunks', () => {
     expect(manifest.id).toBe('snapshot-x');
     expect(manifest.files).toHaveLength(1_100);
     expect(new Set(manifest.files.map((f) => f.sourcePath)).size).toBe(1_100);
-    expect(manifest.files[0]!.backupPath.startsWith('snapshots/snapshot-x/files/')).toBe(true);
+    expect(manifest.files[1]!.backupPath.startsWith('snapshots/snapshot-x/files/')).toBe(true);
+  });
+
+  it('carries directory and symlink entries the way the agent writes them (#11235)', () => {
+    const total = 11_000;
+    const text = Buffer.concat([...hydrationManifestChunks('snapshot-x', total)]).toString('utf8');
+    const { files } = JSON.parse(text) as { files: Array<{ sourcePath: string; backupPath: string; kind?: string }> };
+    const byKind = (kind: string | undefined) => files.filter((f) => f.kind === kind);
+
+    // The largest folder's own entry comes first, then its files.
+    expect(files[0]).toMatchObject({ sourcePath: LARGEST_FOLDER, backupPath: '', kind: 'dir' });
+    expect(files[1]!.sourcePath.startsWith(`${LARGEST_FOLDER}\\`)).toBe(true);
+    // Every content-less entry uploads nothing; every file names its object.
+    for (const f of [...byKind('dir'), ...byKind('symlink')]) expect(f.backupPath).toBe('');
+    for (const f of byKind(undefined)) expect(f.backupPath.startsWith('snapshots/snapshot-x/files/')).toBe(true);
+
+    const counts = manifestEntryKindCounts(total);
+    expect(byKind('dir')).toHaveLength(counts.dir);
+    expect(byKind('symlink')).toHaveLength(counts.symlink);
+    expect(byKind(undefined)).toHaveLength(counts.file);
+    expect(counts.file + counts.dir + counts.symlink).toBe(total);
+    // About the share a real host's manifest carried (7.6%).
+    const share = (counts.dir + counts.symlink) / total;
+    expect(share).toBeGreaterThan(0.04);
+    expect(share).toBeLessThan(0.08);
   });
 
   it('keeps the largest folder at the same share of the manifest at any size', () => {

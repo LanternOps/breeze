@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { MessageMarkdown } from '../lib/messageMarkdown';
+import { translate } from '../i18n';
 import { Card } from '../prompt/Card';
 
 /** What the Rust side hands the card window (`ipc/message.rs` `MessageView`). */
@@ -15,13 +16,19 @@ export interface MessageView {
   branding: { companyName: string; displayName: string; accent: string | null };
   /** Oversize/invalid content: render as plain text. */
   plain: boolean;
+  /** Session UI locale from Rust; null/absent falls back to the webview language. */
+  locale?: string | null;
 }
 
 const ACCENT = /^#[0-9a-f]{6}$/i;
 
 /** The sender slot: from `branding` only, never from the message text. */
 export function messageSender(view: MessageView): string {
-  return view.branding.companyName.trim() || view.branding.displayName.trim() || 'your IT provider';
+  return (
+    view.branding.companyName.trim() ||
+    view.branding.displayName.trim() ||
+    translate('message.fallbackSender', view.locale ?? navigator.language)
+  );
 }
 
 /**
@@ -41,6 +48,9 @@ export function MessageCard({
   // In-flight guard: the agent must see at most one ack. Released on failure
   // so the user can retry.
   const acked = useRef(false);
+  const locale = view.locale ?? navigator.language;
+  const t = (key: Parameters<typeof translate>[0], params?: Record<string, string>) =>
+    translate(key, locale, params);
   const [ackError, setAckError] = useState<string | null>(null);
   const ack = useCallback(async () => {
     if (acked.current) return;
@@ -50,9 +60,9 @@ export function MessageCard({
       await onAcknowledge();
     } catch (err) {
       acked.current = false;
-      setAckError(typeof err === 'string' && err ? err : "Couldn't send your acknowledgement. Please try again.");
+      setAckError(typeof err === 'string' && err ? err : translate('message.ackFailed', locale));
     }
-  }, [onAcknowledge]);
+  }, [onAcknowledge, locale]);
 
   const sender = messageSender(view);
   const accent = view.branding.accent && ACCENT.test(view.branding.accent) ? view.branding.accent : null;
@@ -70,7 +80,7 @@ export function MessageCard({
       label={view.title}
       header={
         <div className="helper-message-sender" data-testid="message-sender">
-          From {sender}
+          {t('message.from', { sender })}
         </div>
       }
       title={<h1 className="helper-message-title">{view.title}</h1>}
@@ -86,14 +96,14 @@ export function MessageCard({
         </div>
       )}
       <div className="helper-message-footer">
-        <span className="helper-message-source">Sent by your IT provider</span>
+        <span className="helper-message-source">{t('message.sentBy')}</span>
         {view.requiresAck ? (
           <button type="button" className="helper-btn helper-btn-accept" onClick={() => void ack()}>
-            Acknowledge
+            {t('message.acknowledge')}
           </button>
         ) : (
           <button type="button" className="helper-btn helper-btn-deny" onClick={onClose}>
-            Close
+            {t('message.close')}
           </button>
         )}
       </div>

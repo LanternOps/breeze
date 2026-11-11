@@ -144,6 +144,14 @@ vi.mock('../db', () => ({
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
 }));
 
+// #9521: the enrollment transaction takes the org's partner-export lock via
+// tx.execute; the transaction mock here hands over the bare db mock, which has
+// no execute. The lock's own behaviour is covered by enrollment.test.ts and
+// enrollmentDeadlock.integration.test.ts.
+vi.mock('../db/partnerExportLock', () => ({
+  lockPartnerExportOrg: vi.fn(async () => undefined),
+}));
+
 vi.mock('../db/schema', () => ({
   deviceReliability: { deviceId: 'deviceId', details: 'details', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },
   deviceReliabilityBaselines: { id: 'id', deviceId: 'deviceId', baselineAt: 'baselineAt', createdAt: 'createdAt', clearedAt: 'clearedAt', reason: 'reason', source: 'source' },

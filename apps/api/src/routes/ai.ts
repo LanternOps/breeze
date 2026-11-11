@@ -58,7 +58,7 @@ import {
   toolRateLimitMultiplierSchema,
 } from '../services/aiToolRateLimits';
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, isNotNull, isNull, ne, notExists, notInArray, or, sql as drizzleSql, type SQL } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
@@ -76,6 +76,7 @@ import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { persistAutoSessionTitle } from '../services/aiSessionTitle';
+import { expireIfStale, isExpirableChatSession } from '../services/aiSessionExpiry';
 import {
   draftTicketFromTranscript,
   ThinTranscriptError,
@@ -111,6 +112,8 @@ import type { PreparedTopologyInvestigation } from '../services/topology/aiInves
 const loadTopologyTurn = () => import('./aiTopologyTurn');
 // W05 (#7603): the continuation handler, loaded on first use for the same reason.
 const loadSessionContinuation = () => import('./aiSessionContinue');
+// #10426: the Wisp standing-state block, only for a Wisp session (it loads the Wisp graph).
+const loadStandingStateTurn = () => import('../services/wisp/standingStateTurn');
 /** Topology sessions get a fixed title: no model or evidence text ever names a session. */
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import {
@@ -347,12 +350,30 @@ aiRoutes.get(
       return c.json({ error: 'Session not found' }, 404);
     }
 
+    // #11430: a client resumes from this read, so it must not call a session
+    // 'active' that the next send refuses with 410. A chat session past the
+    // send's own age/idle rule, with no turn running, is stamped 'expired' here
+    // (Wisp summary finalized after commit) and reported as such. The stamp is
+    // housekeeping: if it fails, the read still answers (savepoint, so the
+    // request transaction survives) and the idle sweep retires the row later.
+    let session = result.session;
+    if (isExpirableChatSession(session)) {
+      try {
+        if (await withDbTransaction(() => expireIfStale(result.session, Date.now(), { unlessTurnInFlight: true }))) {
+          session = { ...session, status: 'expired' as const };
+        }
+      } catch (err) {
+        console.error(`[AI] Could not stamp stale session ${sessionId} expired on read; the idle sweep will retire it:`, err);
+        captureException(err);
+      }
+    }
+
     // W05: what ran the last turn, persisted on the (owner-bound) session row
     // — no extra query, and never a guess from ledger rows (D13). Parsed, so
     // an unrecognised stored value reads as absent; the web store reads it
     // off `session`, the plan's contract names the top-level field.
-    const lastTurnModel = lastTurnModelOf(result.session);
-    return c.json({ ...result, session: { ...result.session, lastTurnModel }, lastTurnModel });
+    const lastTurnModel = lastTurnModelOf(session);
+    return c.json({ ...result, session: { ...session, lastTurnModel }, lastTurnModel });
   }
 );
 
@@ -823,10 +844,13 @@ aiRoutes.post(
       if (preflight.status === 503) return c.json({ error: err }, 503);
       // The credit / plan gate (and spend caps): 402, with a code the client can act on.
       if (preflight.status === 402) return c.json(preflight.billingCode ? { error: err, code: preflight.billingCode } : { error: err }, 402);
+      // #11609: closed elsewhere (typed, not a message match). Nothing ran, so the client keeps the text and can continue in a new session.
+      if (preflight.sessionRefusal === 'session_closed') return c.json({ error: err, code: 'session_closed' }, 410);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
-      if (err.includes('expired')) return c.json({ error: err }, 410);
+      // #11430: coded so a client can tell a retired session (nothing ran; a fresh one can carry the message) from any other refusal.
+      if (err.includes('expired')) return c.json({ error: err, code: 'session_expired' }, 410);
       return c.json({ error: err }, 400);
     }
 
@@ -910,6 +934,32 @@ aiRoutes.post(
           orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
         });
         captureException(err, c, { wisp_check_in_phase: 'read' }, { fingerprint: ['wisp-check-in-turn', 'read'] });
+      }
+    }
+
+    // #10426: Wisp's standing state (loop cadence, first look, concerns,
+    // watches, check-ins, spend, alerts) rides on THIS turn ahead of the
+    // check-ins, so the system prompt stays cache-stable
+    // (services/wisp/standingStateTurn.ts; facts cached up to 60 s). Null
+    // when nothing changed since the last block this session was sent;
+    // recorded as sent only once the turn is dispatched (below). A failure
+    // never blocks the turn.
+    let standingState: { block: string; hash: string } | null = null;
+    // Held from this import, so nothing after dispatch can fail on loading it.
+    let markStandingStateSent: ((sessionId: string, hash: string) => Promise<void>) | null = null;
+    const wispGrantRevisionId = wispGrantId ? dbSession.wispGrantRevisionId : null;
+    if (wispGrantId && wispGrantRevisionId) {
+      try {
+        const standingStateTurn = await loadStandingStateTurn();
+        markStandingStateSent = standingStateTurn.markStandingStateSent;
+        standingState = await timePreStreamPhase('wispStandingState', () => standingStateTurn.standingStateForTurn({
+          grantId: wispGrantId, revisionId: wispGrantRevisionId, sessionId, auth,
+        }));
+      } catch (err) {
+        console.warn('[AI] failed to build the Wisp standing state; sending the turn without it', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_standing_state_phase: 'read' });
       }
     }
 
@@ -1091,7 +1141,11 @@ aiRoutes.post(
 
       // The topology runtime is bound by the transition itself, and only when
       // this request wins the slot (PR #7147 F1).
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model) })) {
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, {
+        topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model),
+        // #10428: the technician's own text, for a Wisp session's turn-end instruction capture.
+        ...(topology ? {} : { userMessage: sanitizedContent }),
+      })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session', code: 'turn_in_progress' }, 409) };
       }
 
@@ -1149,9 +1203,9 @@ aiRoutes.post(
       const baseTurn = topology
         ? topology.prompt
         : continuationSummary ? withContinuationContext(continuationSummary, sanitizedContent) : sanitizedContent;
-      // W04 (#10995): fired check-ins go between any analysis results
-      // (outermost) and the user's own text, which stays last.
-      const turnContent = checkInBlock ? `${checkInBlock}\n\n${baseTurn}` : baseTurn;
+      // W04 (#10995) / #10426: after any analysis results (outermost), the
+      // standing state, then fired check-ins; the user's own text stays last.
+      const turnContent = [standingState?.block, checkInBlock, baseTurn].filter(Boolean).join('\n\n');
       // Subscribe BEFORE the turn is pushed: the session event bus has no
       // replay, and a fast transport can publish the turn's events (even its
       // error and done) before the SSE callback below would run.
@@ -1202,6 +1256,18 @@ aiRoutes.post(
           orgId: dbSession.orgId, sessionId, grantId: wispGrantId, ids, error: err instanceof Error ? err.message : String(err),
         });
         captureException(err, c, { wisp_check_in_phase: 'consume' }, { fingerprint: ['wisp-check-in-turn', 'consume'] });
+      }
+    }
+    // #10426: the model has this standing state now; an unchanged one is not
+    // re-sent. A failure only re-sends it next turn: logged, never thrown.
+    if (standingState && markStandingStateSent) {
+      try {
+        await markStandingStateSent(sessionId, standingState.hash);
+      } catch (err) {
+        // The turn is already dispatched: never fail its response over this.
+        console.warn('[AI] failed to record the Wisp standing state as sent; it is sent again next turn', {
+          orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 

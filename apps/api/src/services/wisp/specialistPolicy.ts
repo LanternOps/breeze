@@ -4,8 +4,8 @@
  *
  * A specialist request is Wisp handing bounded work to an existing agent: a
  * sweep, a sandbox analysis, an Operator recipe, a patch plan, remediation
- * research, the pinned bulk ticket reply, or a device-troubleshooting run
- * (#11084). This table is the ONE place that says, per kind, the chat launch
+ * research, the pinned bulk ticket reply, a device-troubleshooting run
+ * (#11084), or Wisp's own assessment of an org on demand (#10406). This table is the ONE place that says, per kind, the chat launch
  * tier (Tier 2 = one ordinary card under per_step; Tier 3 = a supervised
  * approval), whether an assessment may admit it alone (spec §3 "acts alone")
  * or must raise an approval card first, which human permissions the grant's
@@ -36,7 +36,8 @@ export type SpecialistKind =
   | 'patch_plan'
   | 'remediation_research'
   | 'bulk_ticket_reply'
-  | 'device_troubleshooting';
+  | 'device_troubleshooting'
+  | 'assessment';
 
 export const SPECIALIST_KINDS: readonly SpecialistKind[] = Object.freeze([
   'sweep',
@@ -46,6 +47,7 @@ export const SPECIALIST_KINDS: readonly SpecialistKind[] = Object.freeze([
   'remediation_research',
   'bulk_ticket_reply',
   'device_troubleshooting',
+  'assessment',
 ] as const);
 
 export interface SpecialistKindPolicy {
@@ -61,6 +63,13 @@ export interface SpecialistKindPolicy {
   readonly estimateCents: number;
   /** remediation_research and device_troubleshooting: the request must name a device in the org. */
   readonly requiresDevice: boolean;
+  /**
+   * true ⇔ only a person in chat may launch it (requester `user`): the
+   * coordinator refuses the run and approval paths `unknown_kind` (#10406).
+   * `autoAdmitFromAssessment: false` alone would only turn an assessment's
+   * request into a card, so an assessment could still ask for more.
+   */
+  readonly chatOnly: boolean;
 }
 
 function entry(
@@ -82,6 +91,7 @@ export const SPECIALIST_KIND_POLICY: Readonly<Record<SpecialistKind, SpecialistK
     requiredPermissions: ['ai_agents:write'],
     estimateCents: 25,
     requiresDevice: false,
+    chatOnly: false,
   }),
   analysis: entry('analysis', {
     chatLaunchTier: 2,
@@ -89,6 +99,7 @@ export const SPECIALIST_KIND_POLICY: Readonly<Record<SpecialistKind, SpecialistK
     requiredPermissions: ['ai_agents:write', 'ai_workspace:execute'],
     estimateCents: 100,
     requiresDevice: false,
+    chatOnly: false,
   }),
   operator_recipe: entry('operator_recipe', {
     chatLaunchTier: 3,
@@ -96,6 +107,7 @@ export const SPECIALIST_KIND_POLICY: Readonly<Record<SpecialistKind, SpecialistK
     requiredPermissions: ['ai_agents:write'],
     estimateCents: 50,
     requiresDevice: false,
+    chatOnly: false,
   }),
   patch_plan: entry('patch_plan', {
     chatLaunchTier: 3,
@@ -103,6 +115,7 @@ export const SPECIALIST_KIND_POLICY: Readonly<Record<SpecialistKind, SpecialistK
     requiredPermissions: ['ai_agents:write'],
     estimateCents: 50,
     requiresDevice: false,
+    chatOnly: false,
   }),
   remediation_research: entry('remediation_research', {
     chatLaunchTier: 3,
@@ -110,6 +123,7 @@ export const SPECIALIST_KIND_POLICY: Readonly<Record<SpecialistKind, SpecialistK
     requiredPermissions: ['ai_agents:write'],
     estimateCents: 50,
     requiresDevice: true,
+    chatOnly: false,
   }),
   // w00 A30: "sending anything to a client contact" asks first (spec §3) — the
   // card shows the exact ticket list and message; one tap covers the batch.
@@ -119,6 +133,7 @@ export const SPECIALIST_KIND_POLICY: Readonly<Record<SpecialistKind, SpecialistK
     requiredPermissions: ['ai_agents:write', 'tickets:write'],
     estimateCents: 50,
     requiresDevice: false,
+    chatOnly: false,
   }),
   // #11084: a device-pinned, forced-shadow run whose every change is its own
   // approval intent. A chat hand-off is Tier 2 (the person asked for it);
@@ -129,6 +144,22 @@ export const SPECIALIST_KIND_POLICY: Readonly<Record<SpecialistKind, SpecialistK
     requiredPermissions: ['ai_agents:write', 'devices:execute'],
     estimateCents: 100,
     requiresDevice: true,
+    chatOnly: false,
+  }),
+  // #10406 (spec §3 Option C): "go through the open alerts" from chat starts
+  // Wisp's own assessment for the org, or for up to 10 ceiling orgs with open
+  // alerts. One ordinary card under per_step, as for a sweep. The estimate is
+  // ASSESSMENT_BUDGET_CENTS_PER_RUN (aiAgents/assessmentProfile.ts; this
+  // leaf imports nothing, specialistPolicy.test.ts pins the two equal) per
+  // org: the launcher pre-checks N x it. Chat-only: an assessment never
+  // starts, or asks a person to start, more assessments.
+  assessment: entry('assessment', {
+    chatLaunchTier: 2,
+    autoAdmitFromAssessment: false,
+    requiredPermissions: ['ai_agents:write', 'alerts:read'],
+    estimateCents: 25,
+    requiresDevice: false,
+    chatOnly: true,
   }),
 });
 
@@ -141,6 +172,7 @@ export const SPECIALIST_KIND_LABELS: Readonly<Record<SpecialistKind, string>> = 
   remediation_research: 'remediation research',
   bulk_ticket_reply: 'one reply to a set of tickets',
   device_troubleshooting: 'device troubleshooting',
+  assessment: 'a Wisp assessment',
 });
 
 /** Kinds by chat launch tier, derived from the table (the chat tier tables in aiGuardrails.ts read these). */

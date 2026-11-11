@@ -41,168 +41,35 @@
  * Task 5). This test is the mechanical authority: an entry marked `global`
  * whose closure reaches socket-local dispatch is a bug in the registry, not
  * in this test — fix it by flipping the entry's placement to `socket-owner`,
- * never by loosening this test.
+ * never by loosening this test. The reverse holds too: a `socket-owner` entry
+ * whose closure is clean flips to `global`, or carries a `KEEP_SOCKET_OWNER`
+ * reason below.
  */
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { WORKER_REGISTRY } from './workerRegistry';
+import {
+  AGENT_COMMAND_AWAIT,
+  AGENT_COMMAND_RELAY,
+  AGENT_WS,
+  REMOTE_SESSION_SOCKET_LOCAL,
+  ROLE_SAFE_BOUNDARY_MODULES,
+  ROUTES_DIR,
+  REGISTRY_FILE,
+  SRC_ROOT,
+  importClosure,
+  isSocketLocalClean,
+  parseFile,
+  parseRegistrySource,
+  relPath,
+  resolveRelativeSpec,
+  socketLocalOffenders,
+  stripComments,
+} from './workerClosure/closureGraph';
 
-const SRC_ROOT = path.resolve(__dirname, '..'); // apps/api/src
-const REGISTRY_FILE = path.join(SRC_ROOT, 'services', 'workerRegistry.ts');
 const WORKER_ENTRYPOINT = path.join(SRC_ROOT, 'worker.ts');
 const INDEX_TS = path.join(SRC_ROOT, 'index.ts');
-const AGENT_WS = path.join(SRC_ROOT, 'routes', 'agentWs.ts');
-const AGENT_COMMAND_AWAIT = path.join(SRC_ROOT, 'services', 'agentCommandAwait.ts');
-const ROUTES_DIR = path.join(SRC_ROOT, 'routes') + path.sep;
-
-// ---------------------------------------------------------------------------
-// Resolver
-// ---------------------------------------------------------------------------
-
-const RESOLVABLE_EXTS = ['.ts', '.tsx'];
-
-/** Resolves a relative import specifier to an on-disk file. Bare/package
- * specifiers (no leading `.`) return null — they're runtime-safe (node_modules
- * code doesn't reach our route graph) and out of scope for this walk. */
-function resolveRelativeSpec(fromFile: string, spec: string): string | null {
-  if (!spec.startsWith('.')) return null;
-  const base = path.resolve(path.dirname(fromFile), spec);
-  const candidates = [
-    ...RESOLVABLE_EXTS.map((ext) => base + ext),
-    ...RESOLVABLE_EXTS.map((ext) => path.join(base, `index${ext}`)),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
-  }
-  return null;
-}
-
-// `import ... from '<spec>'` / `export ... from '<spec>'`, excluding
-// `import type` / `export type` (pure type-only — erased at compile time).
-// Bounded by `[^;]*?` (not `[\s\S]*?`) so the non-greedy match can't cross a
-// statement-terminating semicolon and accidentally swallow unrelated code
-// between an `export function ...` keyword and some later, unrelated `from`
-// token (e.g. inside a Drizzle query) — real import/export-from statements in
-// this codebase are always semicolon-terminated, including multi-line ones.
-const STATIC_FROM_RE = /\b(?:import|export)\s+(?!type\s)[^;]*?from\s+['"]([^'"]+)['"]/g;
-
-// `import('<spec>')` / `await import('<spec>')` — dynamic loads.
-const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-
-/**
- * Blanks out `//` and `/* *\/` comments (preserving string/template literal
- * contents verbatim, so quoted specifiers inside them still parse correctly)
- * before the import regexes run. Without this, prose like a JSDoc paragraph
- * that MENTIONS `import('./index')` as an example of a pattern the code
- * DELIBERATELY AVOIDS reads as a real dynamic-import edge — which is exactly
- * what `services/sentry.ts`'s header comment does, and which turned nearly
- * every entry's closure into a false-positive hit on `services/commandQueue.ts`
- * (which really does import `routes/agentWs.ts`) via `services/index.ts`'s
- * barrel `export * from './commandQueue'` — a graph edge that exists only in
- * a code sample inside a comment, not in `services/sentry.ts`'s real imports.
- */
-function stripComments(src: string): string {
-  let out = '';
-  let i = 0;
-  const n = src.length;
-  while (i < n) {
-    const c = src[i];
-    const c2 = src[i + 1];
-    if (c === '/' && c2 === '/') {
-      while (i < n && src[i] !== '\n') i++;
-      continue;
-    }
-    if (c === '/' && c2 === '*') {
-      i += 2;
-      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
-      i += 2;
-      continue;
-    }
-    if (c === "'" || c === '"' || c === '`') {
-      const quote = c;
-      out += c;
-      i++;
-      while (i < n && src[i] !== quote) {
-        if (src[i] === '\\') {
-          out += src[i];
-          i++;
-          if (i < n) {
-            out += src[i];
-            i++;
-          }
-          continue;
-        }
-        out += src[i];
-        i++;
-      }
-      if (i < n) {
-        out += src[i];
-        i++;
-      }
-      continue;
-    }
-    out += c;
-    i++;
-  }
-  return out;
-}
-
-interface ParsedFile {
-  staticSpecs: string[];
-  dynamicSpecs: string[];
-}
-
-const parseCache = new Map<string, ParsedFile>();
-
-function parseFile(file: string): ParsedFile {
-  const cached = parseCache.get(file);
-  if (cached) return cached;
-  const content = stripComments(fs.readFileSync(file, 'utf8'));
-  const staticSpecs = [...content.matchAll(STATIC_FROM_RE)].map((m) => m[1]!);
-  const dynamicSpecs = [...content.matchAll(DYNAMIC_IMPORT_RE)].map((m) => m[1]!);
-  const parsed: ParsedFile = { staticSpecs, dynamicSpecs };
-  parseCache.set(file, parsed);
-  return parsed;
-}
-
-/**
- * Transitive closure of relative-import edges reachable from `entryFile`,
- * as absolute file paths (entryFile itself included). `followDynamic`
- * chooses whether `import('...')` edges are traversed — see the module
- * header comment for why both modes are needed.
- */
-/**
- * Role-safe boundary modules (#4141): the walk records them but does NOT
- * traverse their imports. `services/agentCommandRelay.ts` is the ONE module
- * designed to be loaded by every placement: its only socket-local access is a
- * dynamic `import('../routes/agentWs')` inside `breezeRole() !== 'worker'`
- * guards, and 3.5b's runtime assertions make any illegal call THROW rather
- * than silently report agents offline. Treating it as a leaf is what lets the
- * facade's callers (monitor/snmp/backup/discovery/networkBaseline) be
- * `global` — the entire point of the relay. Any OTHER path to agentWs still
- * classifies an entry socket-owner.
- */
-const AGENT_COMMAND_RELAY = path.join(SRC_ROOT, 'services', 'agentCommandRelay.ts');
-const ROLE_SAFE_BOUNDARY_MODULES = new Set([AGENT_COMMAND_RELAY]);
-
-function importClosure(entryFile: string, opts: { followDynamic: boolean }): Set<string> {
-  const visited = new Set<string>();
-  const stack: string[] = [entryFile];
-  while (stack.length > 0) {
-    const file = stack.pop()!;
-    if (visited.has(file)) continue;
-    visited.add(file);
-    if (file !== entryFile && ROLE_SAFE_BOUNDARY_MODULES.has(file)) continue;
-    const { staticSpecs, dynamicSpecs } = parseFile(file);
-    const specs = opts.followDynamic ? [...staticSpecs, ...dynamicSpecs] : staticSpecs;
-    for (const spec of specs) {
-      const resolved = resolveRelativeSpec(file, spec);
-      if (resolved && !visited.has(resolved)) stack.push(resolved);
-    }
-  }
-  return visited;
-}
 
 /** Worker-entrypoint check (test 1): `worker.ts` must reach NEITHER the two
  * socket-local modules NOR anything under `routes/` at all — a worker
@@ -212,56 +79,6 @@ function socketLocalOrRouteOffenders(closure: Set<string>): string[] {
   return [...closure].filter(
     (f) => f === AGENT_WS || f === AGENT_COMMAND_AWAIT || f.startsWith(ROUTES_DIR),
   );
-}
-
-/** Per-entry placement check (test 2): narrower than the entrypoint check —
- * a `global`-placement job module is allowed to transitively reach some
- * unrelated route file (e.g. a shared Zod schema module under `routes/`,
- * which is inert data, not socket dispatch code); it must only avoid the two
- * modules that actually hold live agent-socket state / dispatch. Reaching
- * `routes/agentWs.ts` or `services/agentCommandAwait.ts` is what pulls in a
- * module-scope socket registry, not merely landing under `routes/`. */
-function socketLocalOffenders(closure: Set<string>): string[] {
-  return [...closure].filter((f) => f === AGENT_WS || f === AGENT_COMMAND_AWAIT);
-}
-
-function relPath(file: string): string {
-  return path.relative(SRC_ROOT, file).split(path.sep).join('/');
-}
-
-// ---------------------------------------------------------------------------
-// Registry source parsing — (name, placement, load-target-spec) triples,
-// read straight from workerRegistry.ts's source text rather than via the
-// live `WORKER_REGISTRY` import, because the load spec (the string literal
-// argument to `await import(...)`) isn't part of the `WorkerRegistration`
-// TYPE (only the thunk function value is) and this test must never actually
-// INVOKE `load()` — doing so would run the real job module's init-adjacent
-// module-scope code. `WORKER_REGISTRY` itself IS imported below, but only
-// its plain `name`/`placement` string fields are read.
-// ---------------------------------------------------------------------------
-
-interface RegistryEntrySource {
-  name: string;
-  placement: string;
-  spec: string;
-}
-
-const ENTRY_SOURCE_RE =
-  /name:\s*'([^']+)'[\s\S]*?placement:\s*'([^']+)'[\s\S]*?await import\(\s*['"]([^'"]+)['"]\s*\)/g;
-
-function parseRegistrySource(): RegistryEntrySource[] {
-  // stripComments matters here too: one entry's placement doc-comment
-  // literally quotes `await import('../routes/agentWs')` while explaining a
-  // DIFFERENT module's runtime path (see offboardingDrainReaper's comment in
-  // workerRegistry.ts) — without stripping, a naive regex could pick up that
-  // quoted mention instead of (or alongside) the entry's own real `load()`
-  // import spec.
-  const content = stripComments(fs.readFileSync(REGISTRY_FILE, 'utf8'));
-  return [...content.matchAll(ENTRY_SOURCE_RE)].map((m) => ({
-    name: m[1]!,
-    placement: m[2]!,
-    spec: m[3]!,
-  }));
 }
 
 // The names WORKER_REGISTRY must contain, in `index.ts`'s original order plus
@@ -289,7 +106,7 @@ const EXPECTED_NAMES = [
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'hardwareHealthRetention', 'timeSyncRetention', 'logCorrelationWorker', 'agentLogRetention',
-  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention', 'wispNudgeDigest',
+  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention', 'aiChatSessionExpirySweep', 'wispNudgeDigest',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention', 'filesystemCleanupRunRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'restorePointAttemptRetention', 'wakeAttemptSweep', 'wakeAttemptRetention', 'webhookDeliveryRetention', 'dnsSecurityRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
@@ -318,12 +135,15 @@ const EXPECTED_NAMES = [
   'maintenanceRebootWorker', 'oemUpdatesWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker', 'securityScanWorker', 'peripheralJobs',
   'deviceGroupJobs', 'partnerGroupEvaluationJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
-  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
+  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker', 'portalDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
   'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'networkIsolationSweeper', 'workspaceReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker', 'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep',
   'stripeSessionRevocationSweep',
-  'ticketAttachmentReaper', 'aiArtifactSweeper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper', 'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
+  'ticketAttachmentReaper', 'aiArtifactSweeper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper',
+  // Portal registration W3 — daily portal identity drift report.
+  'portalIdentityReconcile',
+  'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'callerVerificationPublisher',
   'callerVerificationReconciliation',
   'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
@@ -539,60 +359,140 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
     }
   });
 
-  // #4141: the boundary exemption above is valid ONLY while agentCommandRelay's
-  // socket-local access stays a dynamic import behind role guards. A reverted
-  // static value-import would make every `global` facade caller load agentWs in
-  // a worker process again — so the exemption self-invalidates here.
-  describe('the role-safe boundary module holds its side of the bargain', () => {
-    it('agentCommandRelay.ts static CLOSURE reaches no socket-local module and no routes/ file', () => {
-      // A direct-spec check would be strictly narrower than the exemption it
-      // justifies: an INDIRECT static edge (e.g. importing commandQueue, which
-      // value-imports agentWs) or any other route reachability would re-pin
-      // agentWs into the worker container while a direct check stays green.
-      // importClosure skips boundary modules only when they are non-entry
-      // nodes, so walking FROM the relay traverses it fully.
-      const closure = importClosure(AGENT_COMMAND_RELAY, { followDynamic: false });
-      const offenders = [...closure].filter(
-        (f) => f === AGENT_WS || f === AGENT_COMMAND_AWAIT || f.startsWith(ROUTES_DIR),
-      );
+  // Ratchet (#4142): the check above only forbids a `global` entry from being
+  // dirty. This is the reverse: a `socket-owner` entry whose closure is clean
+  // is pinned by habit, not by need, and keeps its worker-split capacity on the
+  // api container. Placement is mechanical: flip it, or record why it stays.
+  describe('socket-owner entries are pinned only for a recorded reason', () => {
+    /** socket-owner entries that stay pinned even though their closure is clean. */
+    const KEEP_SOCKET_OWNER: ReadonlyArray<{ name: string; reason: string }> = [
+      {
+        name: 'aiTranscriptSweeper',
+        reason:
+          "#9050: sweeps disk-local AI transcript files under the api container's CLAUDE_CONFIG_DIR; " +
+          'must run where the files are written',
+      },
+    ];
+
+    const entries = parseRegistrySource();
+    const keepNames = new Set(KEEP_SOCKET_OWNER.map((k) => k.name));
+
+    it('no socket-owner entry is pinned by habit: a clean closure means global or a KEEP_SOCKET_OWNER reason', () => {
+      const pinnedByHabit = entries
+        .filter((e) => e.placement === 'socket-owner' && !keepNames.has(e.name) && isSocketLocalClean(e))
+        .map((e) => e.name);
       expect(
-        offenders,
-        offenders.length > 0
-          ? 'services/agentCommandRelay.ts statically reaches socket-local/route modules again '
-            + `(via: ${offenders.map(relPath).join(', ')}) — either restore the lazy role-guarded `
-            + 'import shape (#4141) or remove it from ROLE_SAFE_BOUNDARY_MODULES and '
-            + 're-classify every facade caller.'
+        pinnedByHabit,
+        pinnedByHabit.length > 0
+          ? `these socket-owner entries have a clean closure: flip to 'global' in workerRegistry.ts ` +
+              `(or add a KEEP_SOCKET_OWNER entry with a reason): ${pinnedByHabit.join(', ')}`
           : undefined,
       ).toEqual([]);
     });
 
-    it('socketLocal() is the only dynamic agentWs edge, hoisted nowhere, and both call sites are role-guarded', () => {
-      const src = stripComments(fs.readFileSync(AGENT_COMMAND_RELAY, 'utf8'));
-      // The dynamic import must live INSIDE the socketLocal function body —
-      // a module-scope hoist (`const p = import('../routes/agentWs')`) would
-      // load agentWs at relay-module load, i.e. in every worker process,
-      // defeating the boundary while a whole-file match stays green.
-      const fnStart = src.indexOf('async function socketLocal');
-      expect(fnStart, 'socketLocal() function not found in agentCommandRelay.ts').toBeGreaterThan(-1);
-      // The import must sit within the function (its body is tiny — the type
-      // annotation plus a single return), never hoisted above it.
-      const fnWindow = src.slice(fnStart, fnStart + 500);
-      expect(fnWindow).toMatch(/return import\('\.\.\/routes\/agentWs'\)/);
-      expect(src.slice(0, fnStart)).not.toMatch(/import\(\s*['"]\.\.\/routes\/agentWs['"]\s*\)/);
-      const dynamicAgentWsEdges = src.match(/import\(\s*['"]\.\.\/routes\/agentWs['"]\s*\)/g) ?? [];
-      expect(dynamicAgentWsEdges.length, 'exactly one dynamic agentWs edge (inside socketLocal)').toBe(1);
-      // Every socketLocal() consumer sits behind a worker-role check: each
-      // call must appear on a line/branch whose preceding 300 chars contain
-      // the guard. Coarse but comment-stripped and call-site-anchored.
-      const callSites = [...src.matchAll(/socketLocal\(\)/g)].map((m) => m.index!);
-      const consumerSites = callSites.filter((i) => !src.slice(Math.max(0, i - 40), i).includes('function '));
-      expect(consumerSites.length).toBeGreaterThanOrEqual(2);
-      for (const i of consumerSites) {
+    it('KEEP_SOCKET_OWNER has no stale entries', () => {
+      const stale = KEEP_SOCKET_OWNER.filter((k) => {
+        const e = entries.find((x) => x.name === k.name);
+        return !e || e.placement !== 'socket-owner' || !isSocketLocalClean(e);
+      }).map((k) => k.name);
+      expect(
+        stale,
+        stale.length > 0
+          ? `KEEP_SOCKET_OWNER entries that no longer exist, are not socket-owner, or are no longer ` +
+              `clean (delete them): ${stale.join(', ')}`
+          : undefined,
+      ).toEqual([]);
+    });
+  });
+
+  // #4141 / #4142: the closure walk treats every ROLE_SAFE_BOUNDARY_MODULES
+  // file as a leaf, which is valid ONLY while each one reaches its socket-local
+  // route modules through lazy, role-guarded loaders. A reverted static
+  // value-import would make every `global` caller load those routes in a worker
+  // process again, so each exemption self-invalidates here. One row per
+  // boundary module: its file, and the only dynamic imports it may hold, each
+  // as `{ loader, spec }` (the loader function whose body holds the import).
+  const BOUNDARY_MODULES: ReadonlyArray<{
+    file: string;
+    edges: ReadonlyArray<{ loader: string; spec: string }>;
+  }> = [
+    { file: AGENT_COMMAND_RELAY, edges: [{ loader: 'socketLocal', spec: '../routes/agentWs' }] },
+    {
+      file: REMOTE_SESSION_SOCKET_LOCAL,
+      edges: [
+        { loader: 'terminalWsLocal', spec: '../routes/terminalWs' },
+        { loader: 'tunnelWsLocal', spec: '../routes/tunnelWs' },
+      ],
+    },
+  ];
+  const ROLE_GUARD = /breezeRole\(\) !== 'worker'/;
+  const DYNAMIC_IMPORT = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+  describe('role-safe boundary modules hold their side of the bargain', () => {
+    it('the table covers exactly ROLE_SAFE_BOUNDARY_MODULES', () => {
+      expect(BOUNDARY_MODULES.map((m) => relPath(m.file)).sort())
+        .toEqual([...ROLE_SAFE_BOUNDARY_MODULES].map(relPath).sort());
+    });
+
+    describe.each(BOUNDARY_MODULES.map((m) => [relPath(m.file), m] as const))('%s', (name, mod) => {
+      const src = stripComments(fs.readFileSync(mod.file, 'utf8'));
+
+      it('static CLOSURE reaches no socket-local module and no routes/ file', () => {
+        // A direct-spec check would be strictly narrower than the exemption it
+        // justifies: an INDIRECT static edge (e.g. importing a hub module that
+        // value-imports agentWs) or any other route reachability would re-pin
+        // the routes into the worker container while a direct check stays
+        // green. importClosure skips boundary modules only when they are
+        // non-entry nodes, so walking FROM the module traverses it fully.
+        const closure = importClosure(mod.file, { followDynamic: false });
+        const offenders = [...closure].filter(
+          (f) => f === AGENT_WS || f === AGENT_COMMAND_AWAIT || f.startsWith(ROUTES_DIR),
+        );
         expect(
-          src.slice(Math.max(0, i - 300), i),
-          'a socketLocal() consumer lost its breezeRole() !== worker guard',
-        ).toMatch(/breezeRole\(\) !== 'worker'/);
-      }
+          offenders,
+          offenders.length > 0
+            ? `${name} statically reaches socket-local/route modules again `
+              + `(via: ${offenders.map(relPath).join(', ')}) — either restore the lazy role-guarded `
+              + 'import shape (#4141) or remove it from ROLE_SAFE_BOUNDARY_MODULES and '
+              + 're-classify every caller.'
+            : undefined,
+        ).toEqual([]);
+      });
+
+      it('holds exactly its allowed dynamic imports, each once', () => {
+        const specs = [...src.matchAll(DYNAMIC_IMPORT)].map((m) => m[1]).sort();
+        expect(specs).toEqual(mod.edges.map((e) => e.spec).sort());
+      });
+
+      it.each(mod.edges.map((e) => [e.loader, e.spec] as const))(
+        '%s() holds the import of %s inside its body, hoisted nowhere',
+        (loader, spec) => {
+          // The dynamic import must live INSIDE the loader's body — a
+          // module-scope hoist (`const p = import(...)`) would load the route
+          // at module load, i.e. in every worker process, defeating the
+          // boundary while a whole-file match stays green.
+          const fnStart = src.indexOf(`async function ${loader}(`);
+          expect(fnStart, `${loader}() not found in ${name}`).toBeGreaterThan(-1);
+          const quoted = spec.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+          // The loader body is tiny: its return type plus a single return.
+          expect(src.slice(fnStart, fnStart + 500)).toMatch(new RegExp(`return import\\('${quoted}'\\)`));
+          expect(src.slice(0, fnStart)).not.toMatch(new RegExp(`import\\(\\s*['"]${quoted}['"]\\s*\\)`));
+        },
+      );
+
+      it.each(mod.edges.map((e) => [e.loader] as const))('every %s() call site is role-guarded', (loader) => {
+        // Each call must appear on a line/branch whose preceding 300 chars
+        // contain the guard. Coarse but comment-stripped and call-site-anchored.
+        const callSites = [...src.matchAll(new RegExp(`\\b${loader}\\(\\)`, 'g'))].map((m) => m.index!);
+        const consumerSites = callSites.filter((i) => !src.slice(Math.max(0, i - 40), i).includes('function '));
+        expect(consumerSites.length, `${loader}() has no caller in ${name}`).toBeGreaterThanOrEqual(1);
+        for (const i of consumerSites) {
+          expect(
+            src.slice(Math.max(0, i - 300), i),
+            `a ${loader}() consumer in ${name} lost its breezeRole() !== worker guard`,
+          ).toMatch(ROLE_GUARD);
+        }
+      });
     });
   });
 });

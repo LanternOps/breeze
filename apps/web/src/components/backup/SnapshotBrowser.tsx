@@ -927,7 +927,10 @@ export default function SnapshotBrowser() {
                           aria-label={`Select ${hit.name}`}
                           className="h-4 w-4"
                         />
-                        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        {/* A folder hit is a directory entry, e.g. an empty folder (#11235). */}
+                        {hit.type === 'directory'
+                          ? <Folder data-testid="snapshot-search-hit-folder" className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          : <FileText data-testid="snapshot-search-hit-file" className="h-4 w-4 shrink-0 text-muted-foreground" />}
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-medium text-foreground">{hit.name}</div>
                           <div className="break-all text-xs text-muted-foreground">{hit.path}</div>
@@ -1071,7 +1074,9 @@ export default function SnapshotBrowser() {
 
             {visibleFiles.length === 0 && visibleFolders.length === 0 && !dirs[selectedFolder]?.loading && browseTimeoutDir === null && (
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                {!rootEmpty && rootLoaded
+                {snapshots.length === 0
+                  ? t('snapshotBrowser.noSnapshotsYetFilesAppearHere')
+                  : !rootEmpty && rootLoaded
                   ? 'Select a folder in the tree to view its files.'
                   : indexNoticeKind(indexView)
                     ? <SnapshotIndexNotice view={indexView} retrying={retryingIndex} onRetry={() => void retryIndex()} />

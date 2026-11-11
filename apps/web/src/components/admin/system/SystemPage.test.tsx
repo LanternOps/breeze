@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // tab shell and URL sync (and makes no network calls).
 vi.mock('./ConnectionsTab', () => ({ default: () => <div data-testid="connections-tab-stub" /> }));
 vi.mock('./DeprecationsTab', () => ({ default: () => <div data-testid="deprecations-tab-stub" /> }));
+vi.mock('./HealthTab', () => ({ default: () => <div data-testid="health-tab-stub" /> }));
 
 import SystemPage, { parseSystemTab } from './SystemPage';
 
@@ -22,6 +23,7 @@ describe('parseSystemTab', () => {
     expect(parseSystemTab(undefined)).toBe('connections');
     expect(parseSystemTab('connections')).toBe('connections');
     expect(parseSystemTab('deprecations')).toBe('deprecations');
+    expect(parseSystemTab('health')).toBe('health');
     expect(parseSystemTab('DEPRECATIONS')).toBe('connections');
     expect(parseSystemTab('<script>')).toBe('connections');
   });

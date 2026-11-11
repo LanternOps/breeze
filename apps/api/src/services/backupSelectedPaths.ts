@@ -11,6 +11,8 @@
  * before it is persisted or dispatched.
  */
 
+import type { SnapshotEntryKind } from './backupSnapshotEntryKind';
+
 /**
  * Display/lookup form of a snapshot path: backslashes become forward slashes.
  * Deliberately nothing more — no dot-segment resolution, no separator
@@ -87,11 +89,18 @@ type FolderState = {
   members: string[] | null;
   /**
    * Stored paths AT the folder (its segments, any spelling: a file `b` beside a
-   * folder `b/`). The agent's rule selects one equal to the prefix, so the
-   * prefix may only stand in for the folder when the selection also chose it.
-   * Null past a few: then the folder is expanded instead.
+   * folder `b/`) that are not the folder's own entry. The agent's rule selects
+   * one equal to the prefix, so the prefix may only stand in for the folder
+   * when the selection also chose it. Null past a few: then the folder is
+   * expanded instead.
    */
   selfPaths: string[] | null;
+  /**
+   * The folder's own directory entries (#11235: kind 'dir', any spelling):
+   * part of the folder, so selected with it, and the whole of an empty one.
+   * Null past a few spellings: then the selection is ambiguous.
+   */
+  dirSelfPaths: string[] | null;
 };
 
 const MAX_SELF_PATHS = 16;
@@ -113,12 +122,19 @@ const MAX_SELF_PATHS = 16;
  * its files, up to MAX_SELECTED_RESTORE_FILES. A selection that is neither is
  * `not_found`.
  *
+ * A stored directory entry (kind 'dir', #11235) at a selected folder's
+ * segments is the folder itself: it is selected with the folder (the prefix
+ * already names it, or it is added in its own spelling), never counts as a
+ * file beside it, and is the whole selection for an empty folder, which has
+ * nothing beneath it to resolve a prefix from. A row of unknown kind (written
+ * before kinds were recorded) is treated as a file, as it always was.
+ *
  * Every returned path is a stored path, or a prefix that selects, under the
  * agent's rule, only stored paths beneath the folder selected, so the result
  * never widens a restore beyond what the snapshot indexed.
  */
 export function createSelectionResolver(selected: readonly string[]): {
-  add(storedPath: string): void;
+  add(storedPath: string, kind?: SnapshotEntryKind | null): void;
   finish(): SelectedSnapshotPathsResolution;
 } {
   const selections = [...new Set(selected)];
@@ -129,7 +145,9 @@ export function createSelectionResolver(selected: readonly string[]): {
     byNormalized.set(normalizeSnapshotPath(selection), new Set());
     const key = segmentKey(selection);
     if (key !== '' && !folders.has(key)) {
-      folders.set(key, { segments: key.split('/').length, count: 0, prefix: null, mixed: false, members: [], selfPaths: [] });
+      folders.set(key, {
+        segments: key.split('/').length, count: 0, prefix: null, mixed: false, members: [], selfPaths: [], dirSelfPaths: [],
+      });
     }
   }
   const wanted = new Set(selections);
@@ -153,7 +171,7 @@ export function createSelectionResolver(selected: readonly string[]): {
   };
 
   return {
-    add(stored) {
+    add(stored, kind) {
       // A keyset walk over duplicate rows yields them next to each other.
       if (stored === previous) return;
       previous = stored;
@@ -168,7 +186,12 @@ export function createSelectionResolver(selected: readonly string[]): {
         if (folder) observe(folder, stored);
       }
       const self = folders.get(seg);
-      if (self && self.selfPaths !== null) {
+      if (!self) return;
+      if (kind === 'dir') {
+        if (self.dirSelfPaths === null) return;
+        if (self.dirSelfPaths.length < MAX_SELF_PATHS) self.dirSelfPaths.push(stored);
+        else self.dirSelfPaths = null;
+      } else if (self.selfPaths !== null) {
         if (self.selfPaths.length < MAX_SELF_PATHS) self.selfPaths.push(stored);
         else self.selfPaths = null;
       }
@@ -203,6 +226,8 @@ export function createSelectionResolver(selected: readonly string[]): {
         const key = segmentKey(selection);
         const folder = key === '' ? undefined : folders.get(key);
         const isFolder = folder !== undefined && folder.count > 0;
+        if (folder?.dirSelfPaths === null) return { ok: false, invalidPath: selection, reason: 'ambiguous' };
+        const ownEntries = folder?.dirSelfPaths ?? [];
 
         // A file and a folder can share a name (`b` and `b/…`): the folder's
         // contents are part of the selection too, never silently dropped.
@@ -210,17 +235,25 @@ export function createSelectionResolver(selected: readonly string[]): {
         if (isFolder) {
           // The prefix would also select a stored path at the folder itself
           // (`/docs` for a folder selected as `docs\`) that this selection did
-          // not choose: list the folder's files instead.
+          // not choose: list the folder's files instead. The folder's own
+          // directory entry is not such a path: it is the folder.
           const prefixWidens = folder.selfPaths === null
             || folder.selfPaths.some((self) => self !== fileMatch && pathSelectionMatches(self, folder.prefix!));
           if (!folder.mixed && !prefixWidens) {
             push(folder.prefix!);
             prefixes.add(folder.prefix!);
+            // The prefix already names the folder's own entry, unless that
+            // entry is spelled otherwise than the member it was cut from.
+            for (const own of ownEntries) if (!pathSelectionMatches(own, folder.prefix!)) push(own);
           } else if (folder.members === null) {
-            return tooMany(selection, resolved.length + folder.count);
+            return tooMany(selection, resolved.length + ownEntries.length + folder.count);
           } else {
+            for (const own of ownEntries) push(own);
             for (const member of folder.members) push(member);
           }
+        } else if (ownEntries.length > 0) {
+          // An empty folder: its own entry is all there is to restore.
+          for (const own of ownEntries) push(own);
         } else if (fileMatch === undefined) {
           return { ok: false, invalidPath: selection, reason: 'not_found' };
         }

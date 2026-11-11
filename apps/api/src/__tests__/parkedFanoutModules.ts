@@ -46,6 +46,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/oemUpdates/laneDelivery.ts': { guards: 1, reason: 'which update classes a vendor lane delivers on a device: a parked device has none, so its patch jobs are unchanged' },
   'services/oemUpdates/releaseSweep.ts': { guards: 1, reason: 'vendor schedule releases for devices with no enabled lane' },
   'services/oemUpdates/overdueSweep.ts': { guards: 1, reason: 'devices that are overdue for a vendor update run or restart, for their alerts' },
+  'services/oemUpdates/policySideStore.ts': { guards: 1, reason: 'the per-device vendor update policy side the fleet view counts from (#11242): every fleet device, the holding org left out' },
   'services/oemUpdates/resolver.ts': { guards: 1, reason: 'vendor updates link resolution for a device set (no partner-level assignment for a parked device)' },
   'services/oemUpdates/dispatch.ts': { guards: 2, reason: 'the one seam that queues a vendor update run or release refuses a parked device with its own code' },
   'jobs/softwareRemediationWorker.ts': { guards: 2, reason: 'software remediation per device' },

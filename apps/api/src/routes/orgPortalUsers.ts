@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, withDbTransaction } from '../db';
 import { organizations, partners, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
 import { linkLoginToContact, type LoginContactOutcome } from '../services/contacts/loginLink';
@@ -11,7 +12,18 @@ import { getEmailService } from '../services/email';
 import { partnerEmailCustomFromSettings, type PartnerEmailCustom } from '../services/emailTemplates/renderPartnerEmail';
 import { getRedis } from '../services/redis';
 import { purgeClientAiSessionsForUsers } from '../services/clientAiSessionStore';
-import { storePortalInviteToken, buildPortalUrl, purgePortalSessionsForUsers } from './portal/helpers';
+import { buildPortalUrl, purgePortalSessionsForUsers } from './portal/helpers';
+import { issuePortalCapabilityToken } from './portal/capabilityTokens';
+import {
+  PORTAL_ACCOUNT_TRANSITION_REFUSED,
+  PortalAccountTransitionError,
+  initialPortalAccountState,
+  isBulkInviteEligible,
+  planPortalAccountTransition,
+  type PortalAccountFacts,
+  type PortalAccountTarget,
+  type PortalAccountWriter,
+} from '../services/portalAccountState';
 import {
   invitePortalUserSchema,
   bulkInvitePortalUsersSchema,
@@ -25,6 +37,8 @@ import {
   type PortalInviteErrorCode,
 } from '@breeze/shared';
 import { listPortalUsersForOrg } from '../services/portalUserDirectory';
+import { portalUserHasIdentitySql } from '../services/portalUserIdentities';
+import { isSsoOnlyStranded, resolveInviteSignInMethods } from '../services/portalSsoOnly';
 import { normalizeContactEmail } from '../services/contacts/crud';
 import {
   bindContactLoginForInvite,
@@ -32,6 +46,9 @@ import {
   lockPortalInviteAddresses,
   ContactGoneError,
   ContactEmailChangedError,
+  PortalLoginChangedError,
+  inviteRefusalReason,
+  portalLoginEmailEquals,
   type ContactInviteDecision,
   type InviteableContact,
 } from '../services/contacts/portalInvite';
@@ -62,9 +79,57 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
 }
 
 async function getOrgScopedPortalUser(orgId: string, userId: string) {
-  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status })
+  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, hasExternalIdentity: portalUserHasIdentitySql() })
     .from(portalUsers).where(and(eq(portalUsers.id, userId), eq(portalUsers.orgId, orgId))).limit(1);
   return row ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Account state (portal registration W2): every status / browser_access write
+// in this file is a target computed by services/portalAccountState.ts, applied
+// with an `auth_epoch = <the epoch we read>` guard. Every transition that
+// changes the row's state bumps the epoch, so a concurrent disable, re-invite,
+// accept or password change makes a stale plan match zero rows instead of
+// overwriting the newer state.
+// ---------------------------------------------------------------------------
+
+type AccountRow = { status: string; browserAccess: string; authMethod: string; passwordHash: string | null; hasExternalIdentity: boolean };
+
+function accountFacts(row: AccountRow): PortalAccountFacts {
+  return {
+    status: row.status,
+    browserAccess: row.browserAccess,
+    authMethod: row.authMethod,
+    hasPasswordHash: Boolean(row.passwordHash),
+    // Identities release B (W3): EXISTS over portal_user_identities, selected
+    // with portalUserHasIdentitySql() by every reader in this file.
+    hasExternalIdentity: row.hasExternalIdentity,
+  };
+}
+
+/** The target, or a refusal response carrying the transition's message and code. */
+function planOrRefuse(c: any, row: AccountRow, writer: PortalAccountWriter): PortalAccountTarget | Response {
+  try {
+    return planPortalAccountTransition(accountFacts(row), writer);
+  } catch (error) {
+    if (error instanceof PortalAccountTransitionError) {
+      return c.json({ error: error.message, code: error.code }, error.httpStatus);
+    }
+    throw error;
+  }
+}
+
+function stateSet(target: PortalAccountTarget) {
+  return {
+    status: target.status,
+    browserAccess: target.browserAccess,
+    ...(target.bumpEpoch ? { authEpoch: sql`${portalUsers.authEpoch} + 1` } : {}),
+  };
+}
+
+/** The epoch guard matched nothing: the row changed between our read and our write. */
+function concurrentChange(c: any): Response {
+  return c.json({ error: 'This portal user changed while the request was in progress. Reload and try again.', code: PORTAL_ACCOUNT_TRANSITION_REFUSED }, 409);
 }
 
 async function hasPortalUserReferences(userId: string): Promise<boolean> {
@@ -76,8 +141,26 @@ async function hasPortalUserReferences(userId: string): Promise<boolean> {
   return Boolean(ck);
 }
 
-async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
-  const rawToken = await storePortalInviteToken(user.id);
+/**
+ * Issue a purpose-bound invite token (bound to the org, the address and the
+ * row's CURRENT auth_epoch — pass the epoch the write returned) and email it.
+ *
+ * The email offers what the org's effective policy allows (W4 #11381, spec
+ * §5.5): "Sign in with Microsoft" (the same invite link with
+ * `&method=microsoft`) when Microsoft is effective, and a password only while
+ * password sign-in is allowed. A policy read that fails sends nothing (false),
+ * like a missing token store: never an invite offering the wrong methods. The
+ * read runs in its own savepoint, so catching it leaves the request usable.
+ */
+export async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string; authEpoch: number }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
+  let methods: { microsoft: boolean; password: boolean };
+  try {
+    methods = await resolveInviteSignInMethods(orgId);
+  } catch (err) {
+    console.warn(`[orgPortalUsers] invite not sent (sign-in policy unavailable) portalUserId=${user.id} orgId=${orgId}:`, err instanceof Error ? err.message : err);
+    return false;
+  }
+  const rawToken = await issuePortalCapabilityToken({ purpose: 'invite', portalUserId: user.id, orgId, email: user.email, authEpoch: user.authEpoch });
   if (!rawToken) {
     // redis unavailable — do not email a dead invite link
     console.warn(`[orgPortalUsers] invite not sent (no invite token store) portalUserId=${user.id} orgId=${orgId}`);
@@ -114,6 +197,8 @@ async function issueAndSendInvite(c: any, orgId: string, user: { id: string; ema
     await emailService.sendPortalInvite({
       to: user.email,
       inviteUrl,
+      microsoftUrl: methods.microsoft ? `${inviteUrl}&method=microsoft` : undefined,
+      passwordAllowed: methods.password,
       orgName: orgName ?? undefined,
       inviterName: inviterName ?? undefined,
       message,
@@ -185,15 +270,36 @@ function inviteDecisionRefusal(decision: Exclude<ContactInviteDecision, { kind: 
 }
 
 /**
- * The binder's two in-flight failures, as responses. Anything else is
- * rethrown. Callers wrap the bind in `withDbTransaction` and catch OUTSIDE it,
- * so the savepoint has already rolled back every write when this runs (#11203).
+ * `msp_invite` through the state module for the address (no-`contactId`)
+ * invite. The invite route keeps W1's stable PORTAL_INVITE_* codes (#11378) on
+ * the module's refusals, as the contact path does; a fail-closed refusal
+ * (unknown stored state) keeps the module's own code.
+ */
+function planInviteOrRefuse(c: any, row: AccountRow): PortalAccountTarget | Response {
+  try {
+    return planPortalAccountTransition(accountFacts(row), 'msp_invite');
+  } catch (error) {
+    if (!(error instanceof PortalAccountTransitionError)) throw error;
+    const reason = inviteRefusalReason(error);
+    if (reason) return c.json(REFUSAL_BY_REASON[reason], 409);
+    return c.json({ error: error.message, code: error.code }, error.httpStatus);
+  }
+}
+
+/**
+ * The binder's in-flight failures, as responses. Anything else is rethrown.
+ * Callers wrap the bind in `withDbTransaction` and catch OUTSIDE it, so the
+ * savepoint has already rolled back every write when this runs (#11203).
  */
 function bindFailureResponse(c: any, err: unknown): Response {
   if (err instanceof ContactGoneError) return contactNotFound(c);
   if (err instanceof ContactEmailChangedError) {
     return c.json({ error: "A contact's email changed while inviting. Reload and try again.", code: CODES.PORTAL_INVITE_EMAIL_MISMATCH }, 400);
   }
+  // The reused login's epoch moved under the bind (W2 epoch guard).
+  if (err instanceof PortalLoginChangedError) return concurrentChange(c);
+  // Fail closed on an unknown stored status / browser_access (W2 state module).
+  if (err instanceof PortalAccountTransitionError) return c.json({ error: err.message, code: err.code }, err.httpStatus);
   throw err;
 }
 
@@ -206,6 +312,108 @@ async function purgeLoginSessions(userId: string): Promise<void> {
 async function readOrgName(orgId: string): Promise<string | null> {
   const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
   return orgRow?.name ?? null;
+}
+
+// ── SSO invite for stranded accounts (portal registration W4 #11381, D12) ────
+
+/** POST …/portal-users/sso-invite: Microsoft is not effective for the org, so there is nothing to invite with. */
+export const PORTAL_SSO_INVITE_UNAVAILABLE = 'PORTAL_SSO_INVITE_UNAVAILABLE';
+
+const ssoInviteSchema = z.object({
+  portalUserIds: z.array(z.string().uuid()).min(1).max(100),
+}).strict();
+
+/** Per account: invited, not stranded (absent, another org, has an identity, disabled …), or the refusal code. */
+type SsoInviteResult =
+  | { result: 'invited'; emailSent: boolean }
+  | { result: 'not_stranded' }
+  | { result: string };
+
+/**
+ * The org-scoped account under `SELECT … FOR UPDATE`, its facts (identity
+ * EXISTS included) re-read in a SEPARATE statement after the lock is held.
+ * One statement would not do: under READ COMMITTED a locking read that waited
+ * for a committing self-link re-checks the row but evaluates the identity
+ * EXISTS against its own older snapshot, and so misses the new identity. A
+ * self-link takes this row's lock first (portalOidc/accountResolution.ts), and
+ * its identity insert's FK check needs `FOR KEY SHARE` on it, so no link can
+ * land while we hold it. Held until the caller's transaction ends.
+ */
+async function lockOrgScopedPortalUser(orgId: string, userId: string) {
+  const [locked] = await db.select({ id: portalUsers.id }).from(portalUsers)
+    .where(and(eq(portalUsers.id, userId), eq(portalUsers.orgId, orgId)))
+    .for('update')
+    .limit(1);
+  if (!locked) return null;
+  return getOrgScopedPortalUser(orgId, userId);
+}
+
+/** ssoInviteOne's DB step: a final answer, or the account it moved to `invited`. */
+type SsoInviteWrite =
+  | { kind: 'done'; outcome: SsoInviteResult }
+  | { kind: 'moved'; id: string; email: string; authEpoch: number; bumpedEpoch: boolean };
+
+/**
+ * One stranded account through the `msp_sso_invite` writer (the bulk-invite
+ * shape: a state-module target written under the epoch it read, sessions
+ * purged, then the invite issued at the new epoch). The email offers Microsoft
+ * because the route has checked it is effective; issueAndSendInvite re-reads
+ * the policy.
+ *
+ * Read, plan and write run in ONE savepoint under the account's row lock
+ * ({@link lockOrgScopedPortalUser}). The epoch guard alone cannot catch a
+ * concurrent self-link, which does not bump the epoch: an account linked
+ * between an unlocked read and the write would be moved to `invited`, where
+ * normal SSO refuses its status and invite acceptance its existing identity.
+ * The purge and the invite run after the savepoint, as before.
+ *
+ * An `active` account that still holds a password is stranded only while
+ * password sign-in is off (effective sso_only): with password allowed it can
+ * sign in and connect Microsoft from its profile, and moving it to `invited`
+ * would only lock it out.
+ */
+async function ssoInviteOne(c: any, orgId: string, portalUserId: string, orgName: string | null, actor: { id: string; name?: string | null }, passwordAllowed: boolean): Promise<SsoInviteResult> {
+  const done = (outcome: SsoInviteResult): SsoInviteWrite => ({ kind: 'done', outcome });
+  const write = await withDbTransaction(async (): Promise<SsoInviteWrite> => {
+    const target = await lockOrgScopedPortalUser(orgId, portalUserId);
+    if (!target || !isSsoOnlyStranded(target)) return done({ result: 'not_stranded' });
+    if (passwordAllowed && target.status === 'active' && target.passwordHash) return done({ result: 'not_stranded' });
+    let plan: PortalAccountTarget;
+    try {
+      plan = planPortalAccountTransition(accountFacts(target), 'msp_sso_invite');
+    } catch (error) {
+      if (!(error instanceof PortalAccountTransitionError)) throw error;
+      const reason = inviteRefusalReason(error);
+      return done({ result: reason ? REFUSAL_BY_REASON[reason].code : error.code });
+    }
+    const now = new Date();
+    const [moved] = await db.update(portalUsers)
+      .set({ ...stateSet(plan), invitedBy: actor.id, invitedAt: now, updatedAt: now })
+      .where(and(eq(portalUsers.id, target.id), eq(portalUsers.orgId, orgId), eq(portalUsers.authEpoch, target.authEpoch)))
+      .returning({ authEpoch: portalUsers.authEpoch });
+    // Kept under the lock as a fail-closed guard: nothing written on a mismatch.
+    if (!moved) return done({ result: PORTAL_ACCOUNT_TRANSITION_REFUSED });
+    return { kind: 'moved', id: target.id, email: target.email, authEpoch: moved.authEpoch, bumpedEpoch: plan.bumpEpoch };
+  });
+  if (write.kind === 'done') return write.outcome;
+  // Side effects after the write, as invite-contacts does: only Redis can throw
+  // here (issueAndSendInvite's reads are savepoints), and the bumped epoch is
+  // what refuses the old sessions, so a purge failure is safe to report past.
+  if (write.bumpedEpoch) {
+    try {
+      await purgeLoginSessions(write.id);
+    } catch (err) {
+      // Its own catch: a purge failure must not also skip the invite.
+      console.error(`[orgPortalUsers] sso-invite session purge failed portalUserId=${write.id} orgId=${orgId}:`, err);
+    }
+  }
+  let emailSent = false;
+  try {
+    emailSent = await issueAndSendInvite(c, orgId, { id: write.id, email: write.email, authEpoch: write.authEpoch }, orgName, actor.name);
+  } catch (err) {
+    console.error(`[orgPortalUsers] sso-invite side effect failed portalUserId=${write.id} orgId=${orgId}:`, err);
+  }
+  return { result: 'invited', emailSent };
 }
 
 /**
@@ -288,7 +496,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       if (decision.kind !== 'invite') return c.json(inviteDecisionRefusal(decision), 409);
 
       if (!decision.created) await purgeLoginSessions(decision.portalUserId);
-      const emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email }, await readOrgName(org.id), auth.user.name, message);
+      const emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email, authEpoch: decision.authEpoch }, await readOrgName(org.id), auth.user.name, message);
       const contactLink: InviteContactLink = decision.contactLink;
       writeRouteAudit(c, {
         orgId: org.id,
@@ -300,25 +508,26 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       return c.json({ data: { id: decision.portalUserId, email: decision.email, status: 'invited', contactLink }, emailSent });
     }
 
-    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, contactId: portalUsers.contactId })
-      .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), eq(portalUsers.email, normalizedEmail))).limit(1);
+    // The per-address lock BEFORE the existing-login read (W3 Review Focus 3).
+    // Approving a self/SSO access request takes this lock, refuses when the
+    // address has an account, and inserts one; read first and this invite
+    // could act on a stale "none" and insert a second portal_users row for the
+    // address (portal_users.email is not unique). Held to the end of the
+    // request transaction; the contact resolver's re-take below is a no-op.
+    await lockPortalInviteAddresses(db, org.id, [normalizedEmail]);
+    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, contactId: portalUsers.contactId, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, hasExternalIdentity: portalUserHasIdentitySql() })
+      .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), portalLoginEmailEquals(normalizedEmail))).limit(1);
 
-    if (existing && existing.authMethod !== 'password') {
-      return c.json({ error: MSG_EXTERNAL_IDENTITY, code: CODES.PORTAL_INVITE_EXTERNAL_IDENTITY }, 409);
-    }
-
-    if (existing && existing.status === 'disabled') {
-      return c.json({ error: MSG_USER_DISABLED, code: CODES.PORTAL_INVITE_USER_DISABLED }, 409);
-    }
-
-    if (existing && existing.passwordHash && existing.status === 'active') {
-      return c.json({ error: MSG_ALREADY_ACTIVE, code: CODES.PORTAL_INVITE_ALREADY_ACTIVE }, 409);
-    }
+    // Refusals (identity-managed, disabled, already active with a password)
+    // come from the state module, BEFORE any contact is read or written.
+    const target = existing ? planInviteOrRefuse(c, existing) : null;
+    if (target instanceof Response) return target;
 
     const now = new Date();
     let userId: string;
+    let authEpoch: number;
     let contactLink: InviteContactLink;
-    if (existing) {
+    if (existing && target) {
       // An existing link is never re-derived, let alone overwritten: whoever
       // set it (the 2026-08-19 backfill, a previous invite, a tech editing the
       // contact) knew more than an email string does. Skipping the lookup also
@@ -338,20 +547,26 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
         contactLink = resolved.link;
         if (resolved.contactId) contactPatch.contactId = resolved.contactId;
       }
-      await db.update(portalUsers).set({ name: name ?? undefined, status: 'invited', authEpoch: sql`${portalUsers.authEpoch} + 1`, invitedBy: auth.user.id, invitedAt: now, updatedAt: now, ...contactPatch }).where(eq(portalUsers.id, existing.id)).returning({ id: portalUsers.id });
+      const [moved] = await db.update(portalUsers)
+        .set({ name: name ?? undefined, ...stateSet(target), invitedBy: auth.user.id, invitedAt: now, updatedAt: now, ...contactPatch })
+        .where(and(eq(portalUsers.id, existing.id), eq(portalUsers.orgId, org.id), eq(portalUsers.authEpoch, existing.authEpoch)))
+        .returning({ id: portalUsers.id, authEpoch: portalUsers.authEpoch });
+      if (!moved) return concurrentChange(c);
       await purgePortalSessionsForUsers([existing.id]);
       const redis = getRedis();
       if (redis) await purgeClientAiSessionsForUsers(redis, [existing.id]);
-      userId = existing.id;
+      userId = moved.id;
+      authEpoch = moved.authEpoch;
     } else {
       const resolved = await resolveInviteContact(org.id, normalizedEmail, name ?? null, auth.user.id);
       contactLink = resolved.link;
-      const [created] = await db.insert(portalUsers).values({ orgId: org.id, email: normalizedEmail, name: name ?? null, passwordHash: null, authMethod: 'password', status: 'invited', invitedBy: auth.user.id, invitedAt: now, contactId: resolved.contactId }).returning({ id: portalUsers.id });
+      const [created] = await db.insert(portalUsers).values({ orgId: org.id, email: normalizedEmail, name: name ?? null, passwordHash: null, authMethod: 'password', ...initialPortalAccountState('msp_invite'), invitedBy: auth.user.id, invitedAt: now, contactId: resolved.contactId }).returning({ id: portalUsers.id, authEpoch: portalUsers.authEpoch });
       userId = created!.id;
+      authEpoch = created!.authEpoch;
     }
 
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
-    const emailSent = await issueAndSendInvite(c, org.id, { id: userId, email: normalizedEmail }, orgRow?.name ?? null, auth.user.name, message);
+    const emailSent = await issueAndSendInvite(c, org.id, { id: userId, email: normalizedEmail, authEpoch }, orgRow?.name ?? null, auth.user.name, message);
 
     writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.invite', resourceType: 'portal_user', resourceId: userId, details: { email: normalizedEmail, emailSent, contactLink } });
     // `contactLink` is returned, not only audited: 'ambiguous' means the login
@@ -369,18 +584,34 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     if (Object.keys(body).length === 0) return c.json({ error: 'No updates provided' }, 400);
     const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
     if (!target) return c.json({ error: 'Portal user not found' }, 404);
+    const { status: requestedStatus, ...profileFields } = body;
+    // status 'disabled' → msp_disable; 'active' → msp_reactivate, which may
+    // land on 'invited' for an account with no credential (plan D4) and
+    // refuses an invited account (invited → active is accept-invite only).
+    let plan: PortalAccountTarget | null = null;
+    if (requestedStatus !== undefined) {
+      const planned = planOrRefuse(c, target, requestedStatus === 'disabled' ? 'msp_disable' : 'msp_reactivate');
+      if (planned instanceof Response) return planned;
+      plan = planned;
+    }
     const [updated] = await db.update(portalUsers).set({
-      ...body,
-      ...(body.status !== undefined ? { authEpoch: sql`${portalUsers.authEpoch} + 1` } : {}),
+      ...profileFields,
+      ...(plan ? stateSet(plan) : {}),
       updatedAt: new Date(),
-    }).where(eq(portalUsers.id, target.id)).returning({ id: portalUsers.id, status: portalUsers.status });
-    if (body.status !== undefined) {
+    }).where(and(
+      eq(portalUsers.id, target.id),
+      eq(portalUsers.orgId, org.id),
+      ...(plan ? [eq(portalUsers.authEpoch, target.authEpoch)] : []),
+    )).returning({ id: portalUsers.id, status: portalUsers.status });
+    if (!updated) return concurrentChange(c);
+    // Sessions end only on a real transition (a no-op reactivate keeps them).
+    if (plan?.bumpEpoch) {
       await purgePortalSessionsForUsers([target.id]);
       const redis = getRedis();
       if (redis) await purgeClientAiSessionsForUsers(redis, [target.id]);
     }
-    writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.update', resourceType: 'portal_user', resourceId: target.id, details: { changedFields: Object.keys(body) } });
-    return c.json({ data: { id: updated!.id, status: updated!.status } });
+    writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.update', resourceType: 'portal_user', resourceId: target.id, details: { changedFields: Object.keys(body), ...(plan ? { status: updated.status } : {}) } });
+    return c.json({ data: { id: updated.id, status: updated.status } });
   });
 
   orgRoutes.post('/organizations/:id/portal-users/:userId/resend-invite', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
@@ -389,11 +620,27 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const auth = c.get('auth') as AuthContext;
     const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
     if (!target) return c.json({ error: 'Portal user not found' }, 404);
-    if (target.authMethod !== 'password') return c.json({ error: 'This identity is managed by an external sign-in provider.' }, 409);
-    if (target.status === 'disabled') return c.json({ error: 'This user is disabled. Reactivate them first.' }, 409);
-    if (target.passwordHash && target.status === 'active') return c.json({ error: 'This account is already set up.' }, 409);
+    const plan = planOrRefuse(c, target, 'msp_resend_invite');
+    if (plan instanceof Response) return plan;
+    let authEpoch = target.authEpoch;
+    // A legacy credential-less ACTIVE row moves to invited first, so the
+    // token is redeemable; an invited row is resent with no write.
+    if (plan.bumpEpoch || plan.status !== target.status || plan.browserAccess !== target.browserAccess) {
+      const now = new Date();
+      const [moved] = await db.update(portalUsers)
+        .set({ ...stateSet(plan), invitedBy: auth.user.id, invitedAt: now, updatedAt: now })
+        .where(and(eq(portalUsers.id, target.id), eq(portalUsers.orgId, org.id), eq(portalUsers.authEpoch, target.authEpoch)))
+        .returning({ authEpoch: portalUsers.authEpoch });
+      if (!moved) return concurrentChange(c);
+      authEpoch = moved.authEpoch;
+      if (plan.bumpEpoch) {
+        await purgePortalSessionsForUsers([target.id]);
+        const redis = getRedis();
+        if (redis) await purgeClientAiSessionsForUsers(redis, [target.id]);
+      }
+    }
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
-    const emailSent = await issueAndSendInvite(c, org.id, { id: target.id, email: target.email }, orgRow?.name ?? null, auth.user.name);
+    const emailSent = await issueAndSendInvite(c, org.id, { id: target.id, email: target.email, authEpoch }, orgRow?.name ?? null, auth.user.name);
     writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.resend_invite', resourceType: 'portal_user', resourceId: target.id, details: { emailSent } });
     return c.json({ data: { id: target.id }, emailSent });
   });
@@ -403,23 +650,97 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     if (org instanceof Response) return org;
     const auth = c.get('auth') as AuthContext;
     const { userIds } = c.req.valid('json');
-    // "Pending setup" = no password. Invite selected, or all pending in the org.
-    const baseWhere = and(eq(portalUsers.orgId, org.id), eq(portalUsers.authMethod, 'password'), isNull(portalUsers.passwordHash), ne(portalUsers.status, 'disabled'));
-    const candidates = await db.select({ id: portalUsers.id, email: portalUsers.email }).from(portalUsers).where(baseWhere);
-    const targets = userIds && userIds.length > 0 ? candidates.filter((u) => userIds.includes(u.id)) : candidates;
+    // "Pending setup" = a password-method row with no password and no external
+    // identity, invited or (pre-#3258 inbound email) active (plan D2). Bulk
+    // invite can never touch an add-in (Entra) or identity-only account.
+    // "No external identity" = no portal_user_identities row (W3 release B).
+    const baseWhere = and(
+      eq(portalUsers.orgId, org.id),
+      eq(portalUsers.authMethod, 'password'),
+      isNull(portalUsers.passwordHash),
+      sql`not ${portalUserHasIdentitySql()}`,
+      inArray(portalUsers.status, ['invited', 'active']),
+    );
+    const candidates = await db.select({ id: portalUsers.id, email: portalUsers.email, status: portalUsers.status, browserAccess: portalUsers.browserAccess, authMethod: portalUsers.authMethod, passwordHash: portalUsers.passwordHash, hasExternalIdentity: portalUserHasIdentitySql(), authEpoch: portalUsers.authEpoch }).from(portalUsers).where(baseWhere);
+    const eligible = candidates.filter((u) => isBulkInviteEligible(accountFacts(u)));
+    const targets = userIds && userIds.length > 0 ? eligible.filter((u) => userIds.includes(u.id)) : eligible;
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
     const now = new Date();
-    const results: Array<{ id: string; emailSent: boolean }> = [];
+    // `skipped` tells the caller (and the audit) a row was NOT invited, as
+    // distinct from an invite whose email failed (`emailSent: false` alone).
+    const results: Array<{ id: string; emailSent: boolean; skipped?: 'refused' | 'concurrent_change' }> = [];
     for (const t of targets) {
-      await db.update(portalUsers).set({ status: 'invited', authEpoch: sql`${portalUsers.authEpoch} + 1`, invitedBy: auth.user.id, invitedAt: now, updatedAt: now }).where(eq(portalUsers.id, t.id));
+      let plan: PortalAccountTarget;
+      try {
+        plan = planPortalAccountTransition(accountFacts(t), 'msp_bulk_invite');
+      } catch (error) {
+        if (error instanceof PortalAccountTransitionError) { results.push({ id: t.id, emailSent: false, skipped: 'refused' }); continue; }
+        throw error;
+      }
+      const [moved] = await db.update(portalUsers)
+        .set({ ...stateSet(plan), invitedBy: auth.user.id, invitedAt: now, updatedAt: now })
+        .where(and(eq(portalUsers.id, t.id), eq(portalUsers.orgId, org.id), eq(portalUsers.authEpoch, t.authEpoch)))
+        .returning({ authEpoch: portalUsers.authEpoch });
+      // Changed since the candidate read (disabled, accepted, re-invited): skip it.
+      if (!moved) { results.push({ id: t.id, emailSent: false, skipped: 'concurrent_change' }); continue; }
       await purgePortalSessionsForUsers([t.id]);
       const redis = getRedis();
       if (redis) await purgeClientAiSessionsForUsers(redis, [t.id]);
-      const emailSent = await issueAndSendInvite(c, org.id, t, orgRow?.name ?? null, auth.user.name);
+      const emailSent = await issueAndSendInvite(c, org.id, { id: t.id, email: t.email, authEpoch: moved.authEpoch }, orgRow?.name ?? null, auth.user.name);
       results.push({ id: t.id, emailSent });
     }
-    writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.bulk_invite', resourceType: 'organization', resourceId: org.id, details: { invited: results.length } });
+    writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.bulk_invite', resourceType: 'organization', resourceId: org.id, details: { invited: results.filter((r) => !r.skipped).length, skipped: results.filter((r) => r.skipped).length } });
     return c.json({ data: results });
+  });
+
+  // W4 (#11381, spec §5.11): "Send Microsoft sign-in invite" to stranded
+  // accounts (no identity, so `sso_only` leaves them unable to sign in).
+  // Sequential, one result per unique id, in request order.
+  orgRoutes.post('/organizations/:id/portal-users/sso-invite', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', ssoInviteSchema), async (c) => {
+    const org = await resolveAccessibleOrg(c);
+    if (org instanceof Response) return org;
+    const auth = c.get('auth') as AuthContext;
+    const ids = [...new Set(c.req.valid('json').portalUserIds)];
+    const methods = await resolveInviteSignInMethods(org.id);
+    if (!methods.microsoft) {
+      return c.json({ error: 'Microsoft sign-in is not available for this organization.', code: PORTAL_SSO_INVITE_UNAVAILABLE }, 409);
+    }
+    const orgName = await readOrgName(org.id);
+    const results: Array<{ portalUserId: string } & SsoInviteResult> = [];
+    for (const portalUserId of ids) {
+      results.push({ portalUserId, ...(await ssoInviteOne(c, org.id, portalUserId, orgName, auth.user, methods.password)) });
+    }
+    const invited = results.filter((r) => r.result === 'invited').length;
+    const notStranded = results.filter((r) => r.result === 'not_stranded').length;
+    writeRouteAudit(c, {
+      orgId: org.id,
+      action: 'organization.portal_user.sso_invite',
+      resourceType: 'organization',
+      resourceId: org.id,
+      details: { requested: ids.length, invited, notStranded, refused: ids.length - invited - notStranded },
+    });
+    return c.json({ data: results });
+  });
+
+  // W4: "Give browser access" to an existing (typically add-in) account. The
+  // state module's msp_grant_browser_access writer: no epoch bump, so the
+  // person's add-in sessions keep working; disabled / invited are refused.
+  orgRoutes.post('/organizations/:id/portal-users/:userId/browser-access', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
+    const org = await resolveAccessibleOrg(c);
+    if (org instanceof Response) return org;
+    const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
+    if (!target) return c.json({ error: 'Portal user not found' }, 404);
+    const plan = planOrRefuse(c, target, 'msp_grant_browser_access');
+    if (plan instanceof Response) return plan;
+    if (plan.status !== target.status || plan.browserAccess !== target.browserAccess || plan.bumpEpoch) {
+      const [updated] = await db.update(portalUsers)
+        .set({ ...stateSet(plan), updatedAt: new Date() })
+        .where(and(eq(portalUsers.id, target.id), eq(portalUsers.orgId, org.id), eq(portalUsers.authEpoch, target.authEpoch)))
+        .returning({ id: portalUsers.id });
+      if (!updated) return concurrentChange(c);
+      writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.browser_access.grant', resourceType: 'portal_user', resourceId: target.id, details: { email: target.email } });
+    }
+    return c.json({ data: { browserAccess: 'granted' as const } });
   });
 
   // Batch "Give portal access" from the Contacts tab (W1, #11378). Always 200
@@ -504,7 +825,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       let emailSent = false;
       try {
         if (!decision.created) await purgeLoginSessions(decision.portalUserId);
-        emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email }, orgName, auth.user.name);
+        emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email, authEpoch: decision.authEpoch }, orgName, auth.user.name);
       } catch (err) {
         console.error(`[orgPortalUsers] invite-contacts side effect failed portalUserId=${decision.portalUserId} orgId=${org.id}:`, err);
       }

@@ -137,5 +137,7 @@ func (c *ChocolateyProvider) GetInstalled() ([]InstalledPatch, error) {
 		return nil, fmt.Errorf("choco list parse failed: %w", err)
 	}
 
+	// choco list has no date column; the package's Uninstall key may (#9723).
+	withUninstallInstallDates(installed, c.ID())
 	return installed, nil
 }

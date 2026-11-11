@@ -8,7 +8,7 @@ Add an entry the moment you introduce something an operator or self-hoster would
 notice — a new env var, a new log line, a new metric, a changed default, a
 behaviour change. A commit subject weeks later will not carry it.
 
-Last release: **v0.127.0** (2026-11-08).
+Last release: **v0.128.0** (2026-11-10).
 
 ---
 
@@ -21,12 +21,4 @@ Last release: **v0.127.0** (2026-11-08).
 ## Features / API
 
 
-### Portal: invite from contacts (W1)
-
-- The organization **Contacts** tab now has a **Portal** column, a **Give portal access** / **Resend invite** row action, bulk selection ("Give portal access (N)"), and a "Give portal access" checkbox on the create form (partner users only).
-- `POST /orgs/organizations/:id/portal-users/invite` accepts an optional `contactId` and binds the login to that contact. The invite email must match the contact's email (`PORTAL_INVITE_EMAIL_MISMATCH`), and a login bound to a different contact is never re-pointed (`PORTAL_INVITE_CONTACT_CONFLICT`).
-- New `POST /orgs/organizations/:id/portal-users/invite-contacts` invites up to 100 contacts and returns one outcome per contact (`invited`, `already_has_access`, `no_email`, `email_bound_to_other_contact`, `duplicate_email_in_batch`). A contact outside the organization fails the whole batch with 404 and sends nothing.
-- No migration required.
-
 ## Migrations
-

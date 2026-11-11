@@ -4,11 +4,10 @@ import { prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave, withPa
 import { assertNoActiveCollection, holdsClientMoney, lockInvoiceForCollection } from './autopay/reservation';
 import type { Tx } from './autopay/types';
 import { and, eq } from 'drizzle-orm';
-import { computeChargeNow, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
+import { computeCheckoutCharge, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceStripePayments, partners, stripeConnectAccounts } from '../db/schema';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
-import { toMinorUnits } from './stripeMoney';
 import { mapStripeCheckoutError } from './stripeCheckoutErrors';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess, requireSiteAccess } from './invoiceService';
@@ -62,6 +61,12 @@ export function checkoutSessionExpiry(anchor: Date, now: Date = new Date()): { e
 // PAYABLE set (routes/portal/invoices.ts) — drafts/paid/void are excluded.
 export const PAYABLE: ReadonlySet<string> = new Set(['sent', 'partially_paid', 'overdue']);
 
+/** The refusal both Checkout producers give for a balance the invoice currency
+ *  cannot express (#3803 item 8). Customer-safe wording: the portal returns it
+ *  verbatim. */
+export const BALANCE_NOT_REPRESENTABLE_MESSAGE =
+  'This invoice balance cannot be paid online. Contact your provider to settle it.';
+
 /** Internal publication gate shared by the portal and partner Checkout producers.
  * Caller must keep this transaction open through mapping and revocation intent.
  */
@@ -69,11 +74,16 @@ export async function checkCheckoutPublicationInTx(
   tx: Tx, inv: Pick<typeof invoices.$inferSelect, 'id' | 'currencyCode'>, chargeMinor: number,
 ): Promise<{ racedCollection: boolean; racedBalance: boolean }> {
   const collection = await lockInvoiceForCollection(tx, inv.id);
+  // Same rule the producer minted with. A locked balance the currency cannot
+  // express is a race too: rounding it could match a session that charges more,
+  // or less, than is owed.
+  const locked = computeCheckoutCharge({ depositDue: collection.invoice.depositDue, amountPaid: collection.invoice.amountPaid, balance: collection.invoice.balance }, collection.invoice.currencyCode);
   return {
     racedCollection: collection.reservedAmount !== '0.00',
     racedBalance: !PAYABLE.has(collection.invoice.status)
       || collection.invoice.currencyCode !== inv.currencyCode
-      || toMinorUnits(computeChargeNow({ depositDue: collection.invoice.depositDue, amountPaid: collection.invoice.amountPaid, balance: collection.invoice.balance }, collection.invoice.currencyCode).amount, collection.invoice.currencyCode) !== chargeMinor,
+      || locked.kind !== 'charge'
+      || locked.minor !== chargeMinor,
   };
 }
 
@@ -149,14 +159,17 @@ export async function createInvoicePayLink(
   await assertNoPendingRevocation(inv.id);
 
   // Deposit-first: charge the deposit remaining while unmet, else the full
-  // balance. computeChargeNow clamps to balance and handles every state (no
-  // deposit, deposit partially/fully paid) — never reimplement that logic here.
-  const chargeNow = computeChargeNow({
+  // balance, in currency-aware minor units (zero-decimal currencies are not
+  // ×100). computeCheckoutCharge owns the whole rule — never reimplement it here.
+  const charge = computeCheckoutCharge({
     depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
   }, inv.currencyCode);
-  // Currency-aware minor units (zero-decimal currencies must not be ×100).
-  const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
-  if (chargeMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
+  if (charge.kind === 'not_representable') {
+    throw new InvoiceServiceError(BALANCE_NOT_REPRESENTABLE_MESSAGE, 409, 'BALANCE_NOT_REPRESENTABLE');
+  }
+  if (charge.kind === 'nothing') throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
+  const chargeNow = { amount: charge.amount, isDeposit: charge.isDeposit };
+  const chargeMinor = charge.minor;
   const { expiresAt, quantum } = checkoutSessionExpiry(inv.createdAt);
   const capture = await prepareCardPayAndSave(inv.id, inv.orgId, urls,
     `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}_e${quantum}`);
