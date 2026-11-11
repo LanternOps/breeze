@@ -164,9 +164,14 @@ export function sourceChanges(
   t: ImportedTicket,
   isSourceArticleId?: (sourceId: string) => boolean,
 ): SourceChanges {
+  // A `{ createContact }` requester (W4b) is compared by its email: a ticket
+  // created with a contact stores the contact's email as its submitter
+  // snapshot (F37), and so does a display-only fallback.
   const requesterChanged = 'contactId' in t.requester
     ? stored.requesterContactId !== t.requester.contactId
-    : normalizeRequesterEmail(stored.submitterEmail) !== normalizeRequesterEmail(t.requester.email);
+    : 'createContact' in t.requester
+      ? normalizeRequesterEmail(stored.submitterEmail) !== normalizeRequesterEmail(t.requester.createContact.email)
+      : normalizeRequesterEmail(stored.submitterEmail) !== normalizeRequesterEmail(t.requester.email);
 
   const bySourceId = new Map(storedComments.filter((c) => !c.deleted).map((c) => [c.sourceId, c]));
   const commentsChangedInSource: CommentChangedInSource[] = [];
