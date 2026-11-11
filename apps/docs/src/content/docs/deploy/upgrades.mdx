@@ -178,6 +178,14 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
+### Unreleased — report-only script execution retention settings mapped
+
+Both Compose files gain 5 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings for the report-only script execution retention job: `SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_BATCH_SIZE`, `SCRIPT_EXECUTION_RETENTION_MAX_BATCHES` and `SCRIPT_EXECUTION_RETENTION_ENFORCE`. | Nothing. The job only counts eligible rows and changes nothing until you set `SCRIPT_EXECUTION_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+
 ### v0.128.0 — portal Microsoft sign-in, migration lock wait, worker container name, monitoring images pinned
 
 The [v0.128.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.128.0/docker-compose.yml) change the `api` and `web` environments, the optional `worker` service and `docker-compose.monitoring.yml`. Both Compose files gain the same lines. Every new mapping is optional; leaving it out of `.env` keeps the built-in default.

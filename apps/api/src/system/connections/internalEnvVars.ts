@@ -520,6 +520,11 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   SCREENSHOT_STORAGE_DIR: 'filesystem path',
   // SCRIPT_*
   SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES: 'timing knob',
+  SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS: 'data retention window',
+  SCRIPT_EXECUTION_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  SCRIPT_EXECUTION_RETENTION_DAYS: 'data retention window',
+  SCRIPT_EXECUTION_RETENTION_ENFORCE: 'retention enforcement switch',
+  SCRIPT_EXECUTION_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // SECURITY_*
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
