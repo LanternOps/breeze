@@ -241,7 +241,7 @@ describe('partner_ai_models tool profile + context window columns (#11394, featu
 });
 
 describe('ai_invocations tool exposure provenance (#11395 W03)', () => {
-  const sqlText = readMigration('2027-01-23-161500-ai-invocations-tool-profile.sql');
+  const sqlText = readMigration('2027-01-23-240000-ai-invocations-tool-profile.sql');
 
   it('adds two nullable text columns with IF NOT EXISTS, mirrored in Drizzle', () => {
     for (const [sqlName, tsName] of [['tool_profile', 'toolProfile'], ['tool_exposure_fingerprint', 'toolExposureFingerprint']] as const) {
