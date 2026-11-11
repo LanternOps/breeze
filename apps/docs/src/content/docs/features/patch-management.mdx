@@ -465,6 +465,10 @@ Approval comes from the [update ring](/features/update-rings/) linked to the pat
 
 #### End-user restart prompts
 
+<Aside type="note">
+  This section describes the restart dialogs every device has. When the server enables the `restart.prompt` and `restart.final` prompt kinds (opt-in; see [What End Users See](/features/end-user-experience/#restart-prompts)), a device with Breeze Assist 0.1.2 or the native fallback shows one branded restart card instead, with a **Postpone until 15:30** button that is the default, a live countdown, and your restart text in it. The schedule, the postponement budget and the deadline work the same either way.
+</Aside>
+
 When `rebootAllowDeferral` is on and a restart is scheduled while someone is signed in at a desktop, the early warnings appear as a native modal dialog instead of a passive toast: a system message box on Windows, a standard dialog on macOS, and a `zenity` dialog on Linux. The dialog offers two buttons, **Restart now** and **Postpone N minutes/hours** (the postpone label reflects `rebootDeferralMinutes`), and states how many postponements remain, e.g. "You can postpone this restart 2 more times."
 
 - **Postpone** pushes the restart out by the configured window (`rebootDeferralMinutes`), measured from the restart's currently scheduled time — not from the moment the user clicks — and is only available while postponements remain in the budget (`rebootMaxDeferrals`). Using up the full postponement budget lands the restart exactly on the deadline; it can never be pushed past it.
@@ -475,7 +479,7 @@ The deadline is an absolute cutoff, not a second budget: once it passes, the res
 
 **What the user sees.** A restart warning ladder runs from the moment the restart is scheduled until the machine goes down: a lead warning when the restart is booked, then reminders at 60, 15 and 5 minutes before the restart, then a final warning at one minute. Reminders that would land too close to the previous warning are skipped, so a short delay shows fewer rungs (a delay under two minutes collapses to the final warning alone).
 
-- **Dialog or notification.** With `rebootAllowDeferral` on, a warning that can still be postponed is a system-modal **Yes / No** message box on Windows (**Yes** is **Restart now**, **No** is the postpone button), and the equivalent native dialog on macOS and Linux. With postponing off, or once postponements are used up, every warning is a plain notification (on Windows and Linux, shown under the **Breeze** app name).
+- **Dialog or notification.** With `rebootAllowDeferral` on, a warning that can still be postponed is a system-modal **Yes / No** message box on Windows (**Yes** is **Restart now**, **No** is the postpone button, and **No** is the default button, so pressing Enter postpones rather than restarts; agents from before [#10181](https://github.com/LanternOps/breeze/issues/10181) defaulted to Yes), and the equivalent native dialog on macOS and Linux. With postponing off, or once postponements are used up, every warning is a plain notification (on Windows and Linux, shown under the **Breeze** app name).
 - **Two-minute auto-close.** A dialog closes itself after 2 minutes, or sooner if the next warning is due first, with no decision recorded. The restart then proceeds as scheduled. A rung with less than 20 seconds before the next one shows a notification instead of a dialog.
 - **Postponing re-plans the schedule.** Each **Postpone** adds the postponement window to the restart's *scheduled* time, not to the moment of the click, and the ladder is rebuilt for the new time. The lead warning of the rebuilt ladder is a notification with the new time, so the dialog you just answered doesn't reopen; the reminders that follow offer the remaining postponements. The console's **Postponed N of M** badge updates after the device's next heartbeat.
 - **The final warning never offers buttons.** At one minute before the restart (**Restarting Now**, "Save your work now") the countdown belongs to the operating system, so there is nothing left to postpone. For delays of two minutes or more Breeze starts the OS shutdown countdown with a 60-second grace (a shorter delay uses the whole delay), so on Windows the system also typically shows its own "You're about to be signed out — Windows will shut down in 1 minute" notice at that moment. That notice comes from Windows, not Breeze, and can't be customised.
@@ -499,6 +503,10 @@ This covers every restart Breeze schedules on Linux: post-patch restarts and res
 
 The settings that control all of this — `rebootAllowDeferral`, `rebootMaxDeferrals`, `rebootDeferralMinutes` — live on the Patch feature of a [Configuration Policy](#patch-scheduling-via-configuration-policies) (see [Patch settings fields](#patch-settings-fields) above) and default to **off**.
 
+**Audit.** Each answer a person gives at the device is recorded against the device as **Restart postponed at the device** (`device.reboot.user_postponed`) or **Restart now chosen at the device** (`device.reboot.user_restart_now`), once per decision, with which renderer showed the prompt (`assist`, `native` or `headless`). They appear on the device's activity feed and in the Audit Log. The rows are attributed to the device's agent, because the person at the keyboard is not a signed-in Breeze user. Doing nothing records nothing.
+
+**Preview.** The **Patch** tab of a Configuration Policy previews the restart card as your users would get it, built from the delay, postponement settings and restart text you have entered, so you can check your wording and the Postpone time before saving.
+
 #### Custom restart-prompt text
 
 By default the restart warnings are in English. To show them in your users' language, or to use your own wording, set any of **Title**, **Message** and **Restart button label** under **Restart prompt text** on the Patch feature (`rebootPromptTitle`, `rebootPromptBody`, `rebootPromptButton`). Each field is independent. A blank field keeps the built-in text for that part. Because the text lives on the patch policy, a site or organization policy can carry its own language and override a partner-wide one.
@@ -506,6 +514,7 @@ By default the restart warnings are in English. To show them in your users' lang
 - The custom title and message replace the text of **every** warning in the sequence: the first notice, the reminders and the final notice. Write `{{countdown}}` where the remaining time should appear. The agent fills it in for each warning (for example "15 minutes" or "1 minute"). No other placeholder is accepted.
 - The text is plain text. `<` and `>` are rejected, and so are line breaks in the title and button label. Text that fails these checks can't be saved. If an invalid value still reaches a device, the agent ignores that field and shows the built-in text. The restart and its warnings still go ahead.
 - The duration that replaces `{{countdown}}`, the **Postpone N minutes/hours** button and the "You can postpone this restart N more times" line stay in English.
+- On the branded restart card (the `restart.prompt` kind), `{{countdown}}` becomes a live `M:SS` countdown, the Postpone button reads "Postpone until 15:30", and the identity header, the consequence line and the postponements-left line are always Breeze's own wording in the user's language. Your text fills the title, the message and the **Restart now** button only.
 - On Windows the dialog uses fixed **Yes**/**No** buttons, so the custom button label is named in the dialog text rather than on a button.
 - The text is fixed when the restart is scheduled. An edit to the policy applies to the next restart, not to one that is already counting down.
 - Agents older than this release ignore these fields and keep the built-in text.
