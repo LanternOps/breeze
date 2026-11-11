@@ -61,6 +61,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   AI_TOOL_INDEX: 'AI chat system-prompt tool index (lazy/full)',
   // ALERT_*
+  ALERT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  ALERT_RETENTION_DAYS: 'data retention window',
+  ALERT_RETENTION_ENFORCE: 'retention enforce switch (report-only when unset)',
+  ALERT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
   ALERT_WORKER_CONCURRENCY: 'worker concurrency knob (default DB_POOL_MAX/4; DB_POOL_MAX/2 when BREEZE_ROLE=worker)',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',

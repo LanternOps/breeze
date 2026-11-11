@@ -329,6 +329,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('monitorEpisodeRetention'),
   // #8164 W02 — one Worker, unconditional, attached under its registry name.
   consumers('edrDetectionRetentionWorker'),
+  // #4342 W3. Plain Redis-required consumer, no feature flag.
+  consumers('alertRetention'),
   // #4248 W03 — one Worker, unconditional, attached under its registry name.
   consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),

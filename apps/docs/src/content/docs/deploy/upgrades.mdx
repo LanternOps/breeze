@@ -178,6 +178,14 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
+### Next release — closed-alert retention settings
+
+Both Compose files gain the same lines under the `api` environment. Every new mapping is optional; leaving it out of `.env` keeps the default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings `ALERT_RETENTION_DAYS`, `ALERT_RETENTION_BATCH_SIZE`, `ALERT_RETENTION_MAX_BATCHES` and `ALERT_RETENTION_ENFORCE` (`${VAR:-}`). | Nothing for the defaults (365 days, 1000 rows, 100 batches). The job is report-only until you set `ALERT_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+
 ### Unreleased — report-only retention settings mapped
 
 Both Compose files gain 16 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.

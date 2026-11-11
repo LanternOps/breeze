@@ -127,6 +127,8 @@ const EXPECTED_WORKER_NAMES = [
   'monitorEpisodeRetention',
   // EDR provider framework W02 (#8164) — daily prune of terminal edr_detections.
   'edrDetectionRetentionWorker',
+  // #4342 W3 — closed-alert retention.
+  'alertRetention',
   // #4248 W03 (AI Scorecard #5757) — narrative delivery reconciliation sweep.
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.

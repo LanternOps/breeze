@@ -1996,6 +1996,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W3 — daily closed-alert retention (report-only until
+    // ALERT_RETENTION_ENFORCE=true), then orphaned correlation groups.
+    name: 'alertRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/alertRetention');
+      return { init: m.initializeAlertRetention, shutdown: m.shutdownAlertRetention };
+    },
+  },
+  {
     // #4248 W03 (AI Scorecard #5757) — 15-minute sweep over unsettled
     // report_run_deliveries: re-attempts pending narrative emails the
     // finalizer never reached, marks stale claims `unknown` (never resends).
