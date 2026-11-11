@@ -42,8 +42,17 @@ const blockIdInputSchema = z.object(memoryBlockIdShape);
 type WispGrantRef = NonNullable<AuthContext['wispGrant']>;
 
 const GRANT_REQUIRED = JSON.stringify({ error: 'wisp_grant_required' });
-const CONTENT_REDACTED_NOTE =
-  'A value that looked like a credential was removed before saving. Ask the user to keep credentials in the vault, not in memory.';
+const REDACTED_FIELDS_LISTED = 5;
+const REDACTED_FIELD_MAX_CHARS = 60;
+
+/** The removed fields, for the model: field paths are model-written, so only a safe character set, cut short. */
+function redactedFieldsNote(fields: readonly string[]): string {
+  const names = fields.slice(0, REDACTED_FIELDS_LISTED)
+    .map((f) => f.replace(/[^A-Za-z0-9_.[\]-]/g, '').slice(0, REDACTED_FIELD_MAX_CHARS) || 'field');
+  const more = fields.length - names.length;
+  const listed = more > 0 ? `${names.join(', ')} and ${more} more` : names.join(', ');
+  return `Removed before saving because they looked like credentials: ${listed}. Ask the user to keep credentials in the vault, not in memory.`;
+}
 
 function inputSchemaFor(shape: z.ZodRawShape): AiTool['definition']['input_schema'] {
   const { $schema: _dropped, ...schema } = z.toJSONSchema(z.object(shape), { io: 'input' }) as Record<string, unknown>;
@@ -123,7 +132,7 @@ async function rememberHandler(input: Record<string, unknown>, auth: AuthContext
     });
     // dispatchEvidence.ts matches this prefix; keep it first.
     const result = `Remembered as unconfirmed (ID: ${saved.id}). The owner can confirm or retract it on the Wisp memory page.`;
-    return saved.contentRedacted ? `${result} ${CONTENT_REDACTED_NOTE}` : result;
+    return saved.contentRedacted ? `${result} ${redactedFieldsNote(saved.redactedFields)}` : result;
   } catch (err) {
     return mapBrokerError(err);
   }

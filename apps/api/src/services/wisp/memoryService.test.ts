@@ -362,7 +362,7 @@ describe('memoryService', () => {
       h.insertReturning.push([row({ status: 'confirmed' })]);
       const content = { useful: true, concernId: B0, summary: 'Disk nearly full on FS-01', note: null };
       await recordHumanBlock(userSession(P1, U1), input({ owner: { kind: 'user' }, content }));
-      expect(h.inserts[0]!.content).toBe(content);
+      expect(h.inserts[0]!.content).toEqual({ useful: true, concernId: B0, summary: 'Disk nearly full on FS-01', note: null });
     });
 
     it('user-owned memory needs a partner-scope session (an org token has no partner anchor)', async () => {

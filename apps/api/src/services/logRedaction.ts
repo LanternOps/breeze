@@ -1,9 +1,11 @@
 // The assignment rules live in the leaf module ./redactionPatterns (shared
 // with diagnostic-read redaction); re-exported here for existing importers.
-import { SECRET_ASSIGNMENT_PATTERNS, SECRET_KEY_PATTERN } from './redactionPatterns';
+import { SECRET_ASSIGNMENT_PATTERNS } from './redactionPatterns';
 export { SECRET_ASSIGNMENT_PATTERNS };
 
 const REDACTED = '[REDACTED]';
+
+const SECRET_KEY_PATTERN = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -99,7 +101,8 @@ function applyPolicy(
   entry: unknown,
   redactString: (text: string) => string,
   depth: number,
-  policy: FieldPolicy
+  policy: FieldPolicy,
+  maxDepth: number
 ): unknown {
   const action = policy(key, entry);
   if (action === 'redact') return REDACTED;
@@ -111,7 +114,7 @@ function applyPolicy(
       ? Object.fromEntries(Object.keys(entry).map((name) => [name, REDACTED]))
       : REDACTED;
   }
-  return redactFieldsWith(entry, redactString, depth + 1, policy, key);
+  return redactFieldsWith(entry, redactString, depth + 1, policy, key, maxDepth);
 }
 
 /**
@@ -132,15 +135,17 @@ function redactFieldsWith(
    * rule and emit the raw string. Ignored for records, whose entries carry
    * their own keys.
    */
-  arrayKey?: string
+  arrayKey?: string,
+  /** Values nested deeper than this are replaced whole (fail closed). */
+  maxDepth = 8
 ): unknown {
-  if (depth > 8) return REDACTED;
+  if (depth > maxDepth) return REDACTED;
 
   if (Array.isArray(value)) {
     return value.map((entry) =>
       arrayKey === undefined
-        ? redactFieldsWith(entry, redactString, depth + 1, policy)
-        : applyPolicy(arrayKey, entry, redactString, depth, policy)
+        ? redactFieldsWith(entry, redactString, depth + 1, policy, undefined, maxDepth)
+        : applyPolicy(arrayKey, entry, redactString, depth, policy, maxDepth)
     );
   }
 
@@ -150,7 +155,7 @@ function redactFieldsWith(
 
   const redacted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    const redactedEntry = applyPolicy(key, entry, redactString, depth, policy);
+    const redactedEntry = applyPolicy(key, entry, redactString, depth, policy, maxDepth);
 
     // `redacted[key] = …` for the literal key `__proto__` does NOT create an own
     // property — it invokes the setter inherited from Object.prototype (#3129):
@@ -258,6 +263,28 @@ export function redactToolOutputFields(
   depth = 0
 ): unknown {
   return redactFieldsWith(value, redactString, depth, toolOutputFieldPolicy);
+}
+
+const UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Wisp memory content (services/wisp/memoryBroker.ts) sits beside tool output
+ * in the model's prompt, so it takes the same policy with two differences:
+ *   * a UUID string is kept whatever its key. Blocks cite records by id
+ *     (`sessionId`, `evidence`, `deviceId`), and a UUID is a reference, not a
+ *     credential; the tool-output policy would blank one under `sessionId`.
+ *   * the depth limit is MEMORY_CONTENT_MAX_DEPTH, not 8. Content is capped
+ *     at 8 KiB, and a real block never nests that deep; past it the rest is
+ *     still replaced whole, so a pathological shape cannot exhaust the stack.
+ */
+const memoryContentFieldPolicy: FieldPolicy = (key, value) =>
+  typeof value === 'string' && UUID_VALUE.test(value) ? 'keep' : toolOutputFieldPolicy(key, value);
+
+export const MEMORY_CONTENT_MAX_DEPTH = 64;
+
+/** `redactToolOutputFields` for Wisp memory content; see memoryContentFieldPolicy. */
+export function redactMemoryContentFields(value: unknown, redactString: (text: string) => string): unknown {
+  return redactFieldsWith(value, redactString, 0, memoryContentFieldPolicy, undefined, MEMORY_CONTENT_MAX_DEPTH);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 /**
- * Memory content is redacted before it is stored, with the rules tool output
- * already gets (redactAiToolOutputText) plus the credential-named key list the
- * persisted tool input uses. Structural fields (ids, instruction fields,
- * numbers, booleans) are never touched, and a block with nothing to redact is
- * stored exactly as given. The DB is mocked: these tests pin what reaches the
+ * Memory content is redacted before it is stored, with the field policy and
+ * string rules tool output already gets (redactToolOutputFields +
+ * redactAiToolOutputText), plus two memory rules: a UUID string is never
+ * replaced, and the depth limit is high enough for any real block. Structural
+ * fields (ids, instruction fields, numbers, booleans) are never touched, and a
+ * block with nothing to redact is stored as given. The DB is mocked: these tests pin what reaches the
  * insert; owner and supersede SQL are pinned by memoryBroker.integration.test.ts.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -130,75 +131,139 @@ beforeEach(() => {
 });
 
 describe('redactMemoryContent', () => {
-  it('redacts an assignment-style secret and a bare token shape nested at any depth', () => {
-    const { content, redacted } = redactMemoryContent({
+  it('redacts an assignment-style secret and a bare token shape nested at any depth, and names each field', () => {
+    const { content, redactedPaths } = redactMemoryContent({
       setup: {
         notes: [`service account password: ${FAKE_PASSWORD}`],
         steps: [{ text: `uses key ${AWS_EXAMPLE_KEY} for the S3 bucket` }],
       },
     });
-    expect(redacted).toBe(true);
     expect(content).toEqual({
       setup: {
         notes: ['service account password: [REDACTED]'],
         steps: [{ text: 'uses key [REDACTED] for the S3 bucket' }],
       },
     });
+    expect(redactedPaths).toEqual(['setup.notes[0]', 'setup.steps[0].text']);
     expect(JSON.stringify(content)).not.toContain(FAKE_PASSWORD);
     expect(JSON.stringify(content)).not.toContain(AWS_EXAMPLE_KEY);
   });
 
-  it('replaces a string under a credential-named key whole', () => {
-    const { content, redacted } = redactMemoryContent({
+  it('replaces the value under a credential-named key whole', () => {
+    const { content, redactedPaths } = redactMemoryContent({
       vault: { password: 'correct horse battery staple', apiKey: 'plain words here', username: 'svc-backup' },
+      wifiPassword: 'hunter2',
       credentials: ['first fake value', 'second fake value'],
     });
-    expect(redacted).toBe(true);
     expect(content).toEqual({
       vault: { password: '[REDACTED]', apiKey: '[REDACTED]', username: 'svc-backup' },
-      credentials: ['[REDACTED]', '[REDACTED]'],
+      wifiPassword: '[REDACTED]',
+      credentials: '[REDACTED]',
     });
+    expect(redactedPaths).toEqual(['vault.password', 'vault.apiKey', 'wifiPassword', 'credentials']);
   });
 
-  it('keeps UUIDs, numbers, booleans and nulls under credential-named keys', () => {
-    const input = { sessionId: SESSION, tokenCount: 3, hasPassword: true, secretRotatedBy: null };
-    const { content, redacted } = redactMemoryContent(input);
-    expect(redacted).toBe(false);
-    expect(content).toBe(input);
+  it('keeps prose under keys that describe a session, and a sessions container', () => {
+    const input = {
+      sessionSummary: 'Restarted the spooler on HL-DC-01',
+      sessionNotes: 'User confirmed printing works again',
+      sessions: [
+        { date: '2026-11-01', summary: 'patched the file server', minutes: 25 },
+        { date: '2026-11-03', summary: 'replaced the backup job', minutes: 40 },
+      ],
+    };
+    const before = JSON.stringify(input);
+    const { content, redactedPaths } = redactMemoryContent(input);
+    expect(JSON.stringify(content)).toBe(before);
+    expect(redactedPaths).toEqual([]);
+  });
+
+  it('replaces a session identifier that is not a UUID, keeps one that is', () => {
+    const { content, redactedPaths } = redactMemoryContent({
+      sessionId: 'sid_abc123def456ghi789',
+      previous: { sessionId: SESSION },
+    });
+    expect(content).toEqual({ sessionId: '[REDACTED]', previous: { sessionId: SESSION } });
+    expect(redactedPaths).toEqual(['sessionId']);
+  });
+
+  it('keeps UUIDs, ISO timestamps, numbers, booleans and nulls under credential-named keys', () => {
+    const input = {
+      sessionId: SESSION,
+      tokenId: TICKET,
+      tokenExpiresAt: '2026-12-01T00:00:00.000Z',
+      tokenCount: 3,
+      hasPassword: true,
+      secretRotatedBy: null,
+    };
+    const before = JSON.stringify(input);
+    const { content, redactedPaths } = redactMemoryContent(input);
+    expect(JSON.stringify(content)).toBe(before);
+    expect(redactedPaths).toEqual([]);
+  });
+
+  it('replaces the example access key id wherever it sits', () => {
+    const { content, redactedPaths } = redactMemoryContent({
+      note: `key ${AWS_EXAMPLE_KEY}`,
+      list: ['fine', AWS_EXAMPLE_KEY],
+      sessions: [{ summary: `rotated ${AWS_EXAMPLE_KEY}` }],
+      deep: { a: { b: { c: { d: { e: { f: { g: { h: { i: { j: AWS_EXAMPLE_KEY } } } } } } } } } },
+    });
+    expect(JSON.stringify(content)).not.toContain(AWS_EXAMPLE_KEY);
+    expect(redactedPaths).toEqual(['note', 'list[1]', 'sessions[0].summary', 'deep.a.b.c.d.e.f.g.h.i.j']);
+  });
+
+  it('keeps legitimately nested content: nothing is cut at the tool-output depth limit', () => {
+    let nested: unknown = { leaf: 'still here', count: 7, ids: [TICKET] };
+    for (let i = 0; i < 30; i++) nested = i % 2 ? { [`level${i}`]: nested } : [nested];
+    const input = { nested };
+    const before = JSON.stringify(input);
+    const { content, redactedPaths } = redactMemoryContent(input);
+    expect(JSON.stringify(content)).toBe(before);
+    expect(redactedPaths).toEqual([]);
+  });
+
+  it('past the memory depth limit the deeper part is replaced whole and reported', () => {
+    let nested: unknown = { leaf: 'too deep', count: 1 };
+    for (let i = 0; i < 70; i++) nested = { n: nested };
+    const { content, redactedPaths } = redactMemoryContent({ nested });
+    expect(JSON.stringify(content)).not.toContain('too deep');
+    expect(redactedPaths).toHaveLength(1);
+    expect(redactedPaths[0]).toMatch(/^nested(\.n)+$/);
   });
 
   it('leaves a standing instruction byte-identical, deviceId and instruction fields included', () => {
     const input = standingContent();
     const before = JSON.stringify(input);
-    const { content, redacted } = redactMemoryContent(input);
-    expect(redacted).toBe(false);
-    expect(content).toBe(input);
+    const { content, redactedPaths } = redactMemoryContent(input);
     expect(JSON.stringify(content)).toBe(before);
+    expect(redactedPaths).toEqual([]);
   });
 
   it('leaves a work_summary with evidence UUIDs and nested objects and arrays byte-identical', () => {
     const input = workSummaryContent();
     const before = JSON.stringify(input);
-    const { content, redacted } = redactMemoryContent(input);
-    expect(redacted).toBe(false);
-    expect(content).toBe(input);
+    const { content, redactedPaths } = redactMemoryContent(input);
     expect(JSON.stringify(content)).toBe(before);
+    expect(redactedPaths).toEqual([]);
   });
 
   it('touches only the secret-bearing string when a structural block carries one', () => {
     const input = standingContent({ text: `Never reboot; local admin pwd=${FAKE_PASSWORD}` });
-    const { content, redacted } = redactMemoryContent(input);
-    expect(redacted).toBe(true);
+    const { content, redactedPaths } = redactMemoryContent(input);
     expect(content).toEqual({ ...standingContent(), text: 'Never reboot; local admin pwd=[REDACTED]' });
+    expect(redactedPaths).toEqual(['text']);
     // The input object is not mutated.
     expect(input.text).toContain(FAKE_PASSWORD);
   });
 
   it('is idempotent: content that was already redacted reports nothing new', () => {
-    const once = redactMemoryContent({ note: `password=${FAKE_PASSWORD}`, password: FAKE_PASSWORD });
-    expect(once.redacted).toBe(true);
+    const once = redactMemoryContent({
+      note: `password=${FAKE_PASSWORD}`, password: FAKE_PASSWORD, credentials: ['a', 'b'], sessionId: 'sid_abc123def456',
+    });
+    expect(once.redactedPaths).toHaveLength(4);
     const twice = redactMemoryContent(once.content);
-    expect(twice.redacted).toBe(false);
+    expect(twice.redactedPaths).toEqual([]);
     expect(twice.content).toEqual(once.content);
   });
 });
@@ -220,15 +285,16 @@ describe('rememberForGrant stores redacted content', () => {
     expect(JSON.stringify(stored)).not.toContain(FAKE_PASSWORD);
     expect(JSON.stringify(stored)).not.toContain(AWS_EXAMPLE_KEY);
     expect(saved.contentRedacted).toBe(true);
+    expect(saved.redactedFields).toEqual(['account.setup[0]', 'account.accessKeyId', 'summary']);
   });
 
   it('stores a block with nothing to redact exactly as given', async () => {
     const content = workSummaryContent();
     const before = JSON.stringify(content);
     const saved = await rememberForGrant(ceiling, rememberInput({ blockType: 'work_summary', subjectKey: 'work:2026-11-10:backup', content }));
-    expect(h.inserts[0]!.content).toBe(content);
     expect(JSON.stringify(h.inserts[0]!.content)).toBe(before);
     expect(saved.contentRedacted).toBe(false);
+    expect(saved.redactedFields).toEqual([]);
   });
 });
 
@@ -251,6 +317,7 @@ describe('rememberInstructionGroupForGrant stores redacted content', () => {
       }));
     }
     expect(saved.every((b) => b.contentRedacted)).toBe(true);
+    expect(saved.map((b) => b.redactedFields)).toEqual([['text'], ['text']]);
   });
 
   it('stores benign instruction blocks exactly as given', async () => {
@@ -262,7 +329,7 @@ describe('rememberInstructionGroupForGrant stores redacted content', () => {
       content,
       confidence: 'medium',
     }]);
-    expect(h.inserts[0]!.content).toBe(content);
+    expect(h.inserts[0]!.content).toEqual(standingContent());
     expect(saved[0]!.contentRedacted).toBe(false);
   });
 });

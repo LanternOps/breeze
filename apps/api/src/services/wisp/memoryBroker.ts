@@ -24,7 +24,7 @@ import { aiMemoryBlocks, type AiMemoryBlockRow } from '../../db/schema/aiMemoryB
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { sanitizeUntrustedToolText, wrapUntrustedData } from '../aiInputSanitizer';
 import { redactAiToolOutputText } from '../aiToolOutput';
-import { SECRET_KEY_PATTERN } from '../redactionPatterns';
+import { redactMemoryContentFields } from '../logRedaction';
 import { captureException } from '../sentry';
 import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
 import { isEnforceableDeny } from './standingInstructions';
@@ -60,8 +60,11 @@ export type RememberInput = Omit<
   MemoryBlock,
   'id' | 'status' | 'createdAt' | 'updatedAt' | 'authoredByGrantId' | 'authoredByGrantRevisionId' | 'tenantPartnerId' | 'supersededById' | 'sourceSessionId'
 > & { sourceSessionId?: string | null };
-/** A written block, and whether credentials were removed from its content before it was stored. */
-export type RememberedBlock = MemoryBlock & { contentRedacted: boolean };
+/**
+ * A written block, whether credentials were removed from its content before
+ * it was stored, and the dotted paths of the fields that were changed.
+ */
+export type RememberedBlock = MemoryBlock & { contentRedacted: boolean; redactedFields: string[] };
 
 /** JSON.stringify(content).length ceiling on remember. */
 export const MEMORY_CONTENT_MAX_BYTES = 8_192;
@@ -94,55 +97,42 @@ export function toMemoryBlock(row: AiMemoryBlockRow): MemoryBlock {
   };
 }
 
-const REDACTED = '[REDACTED]';
-const UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Dotted paths (`a.b[0].c`) where `after` differs from `before`; the redactor only replaces, never adds keys. */
+function changedPaths(before: unknown, after: unknown, path: string, out: string[]): void {
+  if (Array.isArray(before) && Array.isArray(after)) {
+    before.forEach((item, i) => changedPaths(item, after[i], `${path}[${i}]`, out));
+    return;
+  }
+  if (isPlainRecord(before) && isPlainRecord(after)) {
+    for (const key of Object.keys(before)) changedPaths(before[key], after[key], path ? `${path}.${key}` : key, out);
+    return;
+  }
+  if (!Object.is(before, after)) out.push(path);
+}
 
 /**
- * Memory content with credentials removed, before it is stored. Every string
- * at any depth gets the tool-output string pass (redactAiToolOutputText:
- * secret assignments plus bare token shapes). A string under a credential-named
- * key (SECRET_KEY_PATTERN, the persisted-tool-input key list) — or anywhere
- * inside a value under one — is replaced whole, unless it is a UUID.
- * Numbers, booleans, nulls and keys are never changed, so structural fields
- * (`deviceId`, `concernId`, `evidence` ids, instruction fields) survive.
- * Nothing replaced: the input object itself is returned, unchanged.
+ * Memory content with credentials removed, before it is stored: the tool-output
+ * field policy and string pass (logRedaction.redactMemoryContentFields with
+ * redactAiToolOutputText), so a secret is caught by its key name or by its
+ * shape at any depth, while UUIDs, ISO timestamps, numbers, booleans and keys
+ * are kept and structural fields (`deviceId`, `concernId`, `evidence` ids,
+ * instruction fields) survive. `redactedPaths` names each changed field; when
+ * it is empty the input object itself is returned.
  */
 export function redactMemoryContent(content: Record<string, unknown>): {
   content: Record<string, unknown>;
-  redacted: boolean;
+  redactedPaths: string[];
 } {
-  let redacted = false;
-  const walk = (value: unknown, underSecretKey: boolean): unknown => {
-    if (typeof value === 'string') {
-      const next = underSecretKey && !UUID_VALUE.test(value) ? REDACTED : redactAiToolOutputText(value);
-      if (next === value) return value;
-      redacted = true;
-      return next;
-    }
-    if (Array.isArray(value)) {
-      let changed = false;
-      const out = value.map((item) => {
-        const next = walk(item, underSecretKey);
-        if (next !== item) changed = true;
-        return next;
-      });
-      return changed ? out : value;
-    }
-    if (value !== null && typeof value === 'object') {
-      let changed = false;
-      const out: Record<string, unknown> = {};
-      for (const [key, item] of Object.entries(value)) {
-        const next = walk(item, underSecretKey || SECRET_KEY_PATTERN.test(key));
-        if (next !== item) changed = true;
-        // defineProperty: a `__proto__` key stays an own property (see logRedaction.ts).
-        Object.defineProperty(out, key, { value: next, enumerable: true, writable: true, configurable: true });
-      }
-      return changed ? out : value;
-    }
-    return value;
-  };
-  const out = walk(content, false) as Record<string, unknown>;
-  return { content: out, redacted };
+  const redacted = redactMemoryContentFields(content, redactAiToolOutputText);
+  const redactedPaths: string[] = [];
+  changedPaths(content, redacted, '', redactedPaths);
+  return redactedPaths.length > 0 && isPlainRecord(redacted)
+    ? { content: redacted, redactedPaths }
+    : { content, redactedPaths: [] };
 }
 
 /** A remember input the broker refuses on shape alone (before any ceiling or DB work). */
@@ -399,7 +389,7 @@ function lockKeyFor(ceiling: GrantCeiling, block: RememberInput): Parameters<typ
  */
 async function insertAndSupersede(ceiling: GrantCeiling, block: RememberInput): Promise<RememberedBlock> {
   const { owner } = block;
-  const { content, redacted } = redactMemoryContent(block.content);
+  const { content, redactedPaths } = redactMemoryContent(block.content);
   const ownerUserId = owner.kind === 'user' ? owner.userId : null;
   const ownerOrgId = owner.kind === 'org' ? owner.orgId : null;
   const [inserted] = await db.insert(aiMemoryBlocks).values({
@@ -431,7 +421,7 @@ async function insertAndSupersede(ceiling: GrantCeiling, block: RememberInput): 
       eq(aiMemoryBlocks.status, 'unconfirmed'),
       isNull(aiMemoryBlocks.supersededById),
     ));
-  return { ...toMemoryBlock(inserted), contentRedacted: redacted };
+  return { ...toMemoryBlock(inserted), contentRedacted: redactedPaths.length > 0, redactedFields: redactedPaths };
 }
 
 /**

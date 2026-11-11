@@ -186,23 +186,43 @@ describe('wisp memory tools', () => {
     await expect(run('remember', { ...base, ownerKind: 'partner' })).rejects.toThrow('db down');
   });
 
-  it('remember keeps the result prefix and adds the removal sentence only when the broker redacted content', async () => {
+  it('remember keeps the result prefix and names the removed fields only when the broker redacted content', async () => {
     const base = { ownerKind: 'partner', blockType: 'fact', subjectKey: 'backup:account', content: { v: 1 } };
     const prefix = `Remembered as unconfirmed (ID: ${BLOCK}).`;
-    const sentence = 'A value that looked like a credential was removed before saving. Ask the user to keep credentials in the vault, not in memory.';
+    const advice = 'Ask the user to keep credentials in the vault, not in memory.';
     const evidence = DISPATCH_EVIDENCE.remember!.text!;
 
-    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: true });
+    rememberForGrant.mockResolvedValueOnce({
+      ...block(), contentRedacted: true, redactedFields: ['storage.storageAccessKeyId', 'credentialsLocation'],
+    });
     const redacted = await run('remember', base);
     expect(redacted.startsWith(prefix)).toBe(true);
-    expect(redacted).toContain(sentence);
+    expect(redacted).toContain(
+      `Removed before saving because they looked like credentials: storage.storageAccessKeyId, credentialsLocation. ${advice}`,
+    );
     expect(evidence.test(redacted)).toBe(true);
 
-    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: false });
+    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: false, redactedFields: [] });
     const clean = await run('remember', base);
     expect(clean).toBe(`${prefix} The owner can confirm or retract it on the Wisp memory page.`);
     expect(clean).not.toContain('credential');
     expect(evidence.test(clean)).toBe(true);
+  });
+
+  it('remember lists at most five removed fields, each cut to 60 safe characters', async () => {
+    const base = { ownerKind: 'partner', blockType: 'fact', subjectKey: 'backup:account', content: { v: 1 } };
+    const long = `a.${'b'.repeat(80)}`;
+    rememberForGrant.mockResolvedValueOnce({
+      ...block(),
+      contentRedacted: true,
+      redactedFields: ['notes[0]', 'odd key<script>.pass word', long, 'd', 'e', 'f', 'g'],
+    });
+    const out = await run('remember', base);
+    const listed = /looked like credentials: (.*)\. Ask the user/.exec(out)![1]!;
+    expect(listed).toBe(`notes[0], oddkeyscript.password, ${long.slice(0, 60)}, d, e and 2 more`);
+    for (const name of listed.replace(/ and \d+ more$/, '').split(', ')) {
+      expect(name).toMatch(/^[A-Za-z0-9_.[\]-]{1,60}$/);
+    }
   });
 
   it('remember surfaces GrantInactiveError as {"error":"grant_inactive"}', async () => {
