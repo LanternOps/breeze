@@ -144,6 +144,12 @@ const ACTION_DISPLAY: Record<string, string> = {
   'automation.update': 'Updated automation',
   'automation.delete': 'Deleted automation',
 
+  // UniFi (#11605) - "Unifi" would be the prettifier's rendering.
+  'unifi.controller.register': 'Registered UniFi controller',
+  'unifi.controller.remove': 'Removed UniFi controller',
+  'unifi.site.map': 'Mapped UniFi site',
+  'unifi.site.unmap': 'Unmapped UniFi site',
+
   // Verb templates for catch-all HTTP audit rows (`api.<verb>.<path>`, #3991).
   // `{target}` is the path with ids stripped - see `formatFallbackAction`.
   'api.fallback.post': 'Submitted {target}',
@@ -287,7 +293,7 @@ function formatAgentCommandAction(
 }
 
 // Acronyms the prettifier must not render as ordinary words ("Ai session close").
-const PRETTIFY_ACRONYMS: Readonly<Record<string, string>> = { ai: 'AI', mcp: 'MCP' };
+const PRETTIFY_ACRONYMS: Readonly<Record<string, string>> = { ai: 'AI', mcp: 'MCP', unifi: 'UniFi' };
 
 // Generic prettifier for codes that aren't in the map.
 // Examples:

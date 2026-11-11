@@ -952,7 +952,7 @@
     "createNotificationChannel": "Create Notification Channel",
     "editNotificationChannel": "Edit Notification Channel",
     "createChannel": "Create Channel",
-    "deleteChannelConfirm": "Delete Channel Confirm",
+    "deleteChannelConfirm": "Delete channel “{{name}}”? Alerts routed only to it will stop being delivered.",
     "deleting": "Deleting",
     "editRoutingRule": "Edit Routing Rule",
     "newRoutingRule": "New Routing Rule",

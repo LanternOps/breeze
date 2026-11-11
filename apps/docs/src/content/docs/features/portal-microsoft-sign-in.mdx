@@ -81,6 +81,12 @@ Saving the partner default shows the same confirmation, listing each organizatio
 
 If the tenant proof is lost, password sign-in comes back automatically. Passwords that were cleared are not restored.
 
+### When the tenant proof is lost
+
+An organization loses its proof when its tenant link is removed, when its AI for Office tenant mapping is removed or changed to another tenant, or when another organization proves the same tenant. Microsoft sign-in then turns off for that organization's portal and its users sign in with a password, so nobody is locked out.
+
+If Microsoft sign-in was on for the organization, Breeze records this in the audit log (`organization.portal_sign_in.password_fallback`, with the cause) and shows a notice on the **Sign-in & registration** card and on **Organization › Domains**. The notice stays until the tenant is proven again or an admin dismisses it. **Re-run the tenant proof** takes you to the proof controls.
+
 ### Give browser access to add-in users
 
 People who only use the AI for Office add-in don't have browser access to the portal. On the organization's portal users list, choose **Give browser access** on their row. Their add-in sessions keep working. See [Access requests](/features/portal/#access-requests) for the approval path, which does the same for a person who asks.

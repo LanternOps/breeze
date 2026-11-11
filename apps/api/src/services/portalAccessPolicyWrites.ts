@@ -10,7 +10,7 @@ import {
   type PortalPolicySource,
   type PortalSignInCapabilities,
 } from '@breeze/shared';
-import { db, withDbTransaction } from '../db';
+import { db, runOutsideDbContext, withDbTransaction } from '../db';
 import { portalAccessPolicies } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
@@ -22,6 +22,7 @@ import {
   type PortalPolicyOrgFacts,
 } from './portalAccessPolicy';
 import { findProvenEntraTenantForOrg } from './portalEntraTenantProof';
+import { listVerifiedDomainsForOrg } from './portalDomainVerification';
 import {
   clearPasswordsForSsoOnly,
   lockSsoOnlyImpact,
@@ -147,16 +148,29 @@ async function isOrgEntraTenantProven(orgId: string): Promise<boolean> {
   return (await findProvenEntraTenantForOrg(orgId)) !== null;
 }
 
+/**
+ * Org owners only: how many of the org's domains are verified now (W6 OD6).
+ * W5's read API runs in system scope and throws inside a request transaction,
+ * so it runs outside the caller's context, and never inside a write savepoint.
+ */
+async function countVerifiedDomains(orgId: string): Promise<number> {
+  return (await runOutsideDbContext(() => listVerifiedDomainsForOrg(orgId))).length;
+}
+
+/** The org-only facts an org view carries (W4 D2, W6 OD6). A partner view has neither. */
+type OrgViewFacts = { entraTenantProven: boolean; verifiedDomainCount: number };
+
 function buildView(
   owner: PortalAccessPolicyView['owner'],
   ownRow: PortalAccessPolicyRowValues | null,
   partnerRow: PortalAccessPolicyRowValues | null,
   caps: PortalSignInCapabilities,
   canEdit: boolean,
-  /** Org owner: whether its tenant is proven. Partner owner: null. */
-  entraTenantProven: boolean | null,
+  /** Org owner: its tenant proof and verified-domain count. Partner owner: null. */
+  orgFacts: OrgViewFacts | null,
 ): PortalAccessPolicyView {
   const values = ownRow ?? BLANK_ROW;
+  const entraTenantProven = orgFacts?.entraTenantProven ?? null;
   const facts = factsFor(owner, entraTenantProven);
   // An org owner sits on top of its partner default; a partner owner sits on the built-in defaults.
   const resolve = (row: PortalAccessPolicyRowValues) => (owner.kind === 'org'
@@ -185,6 +199,7 @@ function buildView(
     capabilities: caps,
     canEdit,
     entraTenantProven: owner.kind === 'org' ? entraTenantProven === true : null,
+    verifiedDomainCount: owner.kind === 'org' ? orgFacts?.verifiedDomainCount ?? 0 : null,
   };
 }
 
@@ -273,7 +288,11 @@ async function clearForFlips(impact: LockedSsoOnlyImpact): Promise<PortalAccessP
 export async function getOrgPortalAccessPolicyView(org: { id: string; partnerId: string }): Promise<PortalAccessPolicyView> {
   const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
   const entraTenantProven = await isOrgEntraTenantProven(org.id);
-  return buildView({ kind: 'org', id: org.id }, rows.org, rows.partner, getPortalSignInCapabilities(), true, entraTenantProven);
+  const verifiedDomainCount = await countVerifiedDomains(org.id);
+  return buildView(
+    { kind: 'org', id: org.id }, rows.org, rows.partner, getPortalSignInCapabilities(), true,
+    { entraTenantProven, verifiedDomainCount },
+  );
 }
 
 export async function getPartnerPortalAccessPolicyView(auth: PartnerWriteAuth, partnerId: string): Promise<PortalAccessPolicyView> {
@@ -296,8 +315,11 @@ export async function updateOrgPortalAccessPolicy(
   const fields = parsePatch(patch);
   const caps = getPortalSignInCapabilities();
   assertMethodsAvailable(fields, caps);
+  // Read before the write savepoint: W5's read API cannot run inside it.
+  const verifiedDomainCount = await countVerifiedDomains(org.id);
   return withDbTransaction(async () => {
     const entraTenantProven = await isOrgEntraTenantProven(org.id);
+    const orgFacts: OrgViewFacts = { entraTenantProven, verifiedDomainCount };
     assertEntraTenantProven(fields, entraTenantProven);
     const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
     const before = rows.org ?? BLANK_ROW;
@@ -308,7 +330,7 @@ export async function updateOrgPortalAccessPolicy(
 
     const changedFields = changedFieldsOf(fields, before);
     if (changedFields.length === 0) {
-      return { view: buildView(owner, rows.org, rows.partner, caps, true, entraTenantProven), changedFields, ssoOnly: null };
+      return { view: buildView(owner, rows.org, rows.partner, caps, true, orgFacts), changedFields, ssoOnly: null };
     }
     const impact = await requireAcknowledgedSsoOnlyFlips(
       { kind: 'org', orgId: org.id, partnerId: org.partnerId }, fields, opts.acknowledgeSsoOnly,
@@ -323,7 +345,7 @@ export async function updateOrgPortalAccessPolicy(
     if (!row) throw new Error('portal access policy: org upsert returned no row');
     const ssoOnly = await clearForFlips(impact);
     return {
-      view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true, entraTenantProven),
+      view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true, orgFacts),
       changedFields,
       ssoOnly,
     };

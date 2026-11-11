@@ -143,7 +143,15 @@
       "sentWithoutAttachmentReply_one": "Réponse publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
       "sentWithoutAttachmentNote_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
       "sentWithoutAttachmentReply_other": "Réponse publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les.",
-      "sentWithoutAttachmentNote_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
+      "sentWithoutAttachmentNote_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les.",
+      "rejectedTicketDeleted": "{{name}} n’a pas été joint : ce ticket a été supprimé.",
+      "rejectedTicketMerged": "{{name}} n’a pas été joint : ce ticket a été fusionné avec un autre ticket.",
+      "rejectedNotFound": "{{name}} n’a pas été joint : le ticket est introuvable.",
+      "rejectedMalformed": "{{name}} n’a pas été joint : l’envoi était mal formé. Essayez de le joindre à nouveau.",
+      "openMergedTicket": "Ouvrir le ticket fusionné",
+      "notKept_one": "1 pièce jointe n’a pas été conservée avec ce brouillon ({{names}}). Joignez-la à nouveau ou fermez l’avis pour envoyer sans elle.",
+      "notKept_other": "{{count}} pièces jointes n’ont pas été conservées avec ce brouillon ({{names}}). Joignez-les à nouveau ou fermez l’avis pour envoyer sans elles.",
+      "notKeptDismiss": "Fermer"
     },
     "modeLabel": "Visibilité du commentaire",
     "recipient": {

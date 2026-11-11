@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransactionIf
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments, sites } from '../db/schema';
 import { isHiddenOrgType } from './unassignedPool/visibility';
 import { workTypes } from '../db/schema/workTypes';
+import { catalogItems } from '../db/schema/catalog';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { loadCardsForOrg } from './billingProfileService';
 import { resolveBillingRule, type BillingRule } from './billingRuleResolver';
@@ -47,6 +48,7 @@ export type TimeEntryServiceErrorCode =
   /** 409 — a block-of-hours period close drew this entry (#8181); as frozen as `billed`. */
   | 'ENTRY_DRAWN_BY_BLOCK'
   | 'PART_BILLED'
+  | 'CATALOG_ITEM_NOT_FOUND'
   // Wave-6 release gate (W6-G4-2/3): a rate or part price that cannot be expressed
   // in the row's stamped currency (¥100.50). Refused, never silently rounded.
   | 'PRICE_NOT_REPRESENTABLE'
@@ -1777,10 +1779,25 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
 
 // ── Parts ────────────────────────────────────────────────────────────────
 
+/**
+ * A part's catalog item must belong to the partner of the org the part lives
+ * in. The ticket_parts FK only proves the item exists, and catalog_items RLS
+ * does not apply under system scope — same rule as the quote and invoice
+ * catalog lookups (getOwnedItemOr404).
+ */
+async function assertPartCatalogItemInOrgPartner(catalogItemId: string, orgId: string): Promise<void> {
+  const [row] = await db.select({ id: catalogItems.id }).from(catalogItems)
+    .innerJoin(organizations, eq(organizations.partnerId, catalogItems.partnerId))
+    .where(and(eq(catalogItems.id, catalogItemId), eq(organizations.id, orgId)))
+    .limit(1);
+  if (!row) throw new TimeEntryServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+}
+
 export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
   assertRoutineBillingStatus(input.billingStatus);
   // Lock order tickets → ticket_parts (see lockTicketRow).
   const link = await resolveAndLockTicketLink(ticketId, actor);
+  if (input.catalogItemId) await assertPartCatalogItemInOrgPartner(input.catalogItemId, link.ticket.orgId);
   const partUnitPrice = (input.unitPrice ?? 0).toFixed(2);
   const partCostBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;
   assertRepresentable(partUnitPrice, link.currencyCode);
@@ -1857,6 +1874,7 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
   if (part.billingStatus === 'billed' && BILLED_LOCKED_PART_FIELDS.some((k) => input[k] !== undefined)) {
     throw new TimeEntryServiceError('This part has been invoiced; only its description, vendor, part number and notes can change', 409, 'PART_BILLED');
   }
+  if (input.catalogItemId) await assertPartCatalogItemInOrgPartner(input.catalogItemId, part.orgId);
   const set: Record<string, unknown> = {};
   if (input.description !== undefined) set.description = input.description;
   if (input.partNumber !== undefined) set.partNumber = input.partNumber;

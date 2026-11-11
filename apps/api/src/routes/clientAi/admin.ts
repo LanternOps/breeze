@@ -13,6 +13,7 @@ import { resolveScopedOrgId } from '../c2c/helpers';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { lockPortalEntraOrgMappings } from '../../services/portalEntraTenantProof';
+import { auditPortalPasswordFallback } from '../../services/portalPasswordFallback';
 import { putPolicySchema, putTenantMappingSchema } from './schemas';
 import { clientAiAdminOrgRoutes } from './adminOrgs';
 import { clientAiAdminSessionRoutes } from './adminSessions';
@@ -121,6 +122,7 @@ clientAiAdminRoutes.put(
     const now = new Date();
 
     let row: typeof clientAiTenantMappings.$inferSelect | undefined;
+    let before: { entraTenantId: string; provenAt: Date | null } | undefined;
     try {
       // Savepoint so the caught unique violation cannot poison the request
       // transaction and turn the 409 into a 500 at commit (#11203).
@@ -132,6 +134,13 @@ clientAiAdminRoutes.put(
         // would make keep-survivor drop the loser's proven mapping. Released
         // with the savepoint if the upsert fails, else held to request commit.
         await lockPortalEntraOrgMappings([orgId]);
+        // Under the org lock: whether this upsert repoints a PROVEN mapping,
+        // whose proof the repoint trigger then clears (#11582).
+        [before] = await db
+          .select({ entraTenantId: clientAiTenantMappings.entraTenantId, provenAt: clientAiTenantMappings.provenAt })
+          .from(clientAiTenantMappings)
+          .where(eq(clientAiTenantMappings.orgId, orgId))
+          .limit(1);
         return db
           .insert(clientAiTenantMappings)
           .values({
@@ -166,6 +175,11 @@ clientAiAdminRoutes.put(
       resourceName: row.entraTenantId,
       details: { entraTenantId: row.entraTenantId },
     });
+    // The proof was on the old tenant and the trigger cleared it: portal
+    // Microsoft sign-in falls back to password for this org (W4 D2, #11582).
+    if (before?.provenAt && !row.provenAt) {
+      await auditPortalPasswordFallback(c, { orgId, tenantId: before.entraTenantId, cause: 'ai_for_office_mapping_changed' });
+    }
 
     return c.json({ mapping: toMappingResponse(row) });
   }
@@ -193,6 +207,10 @@ clientAiAdminRoutes.delete(
         resourceId: row.id,
         resourceName: row.entraTenantId,
       });
+      // The row carried the portal tenant proof (D1): Microsoft sign-in falls back (#11582).
+      if (row.provenAt) {
+        await auditPortalPasswordFallback(c, { orgId, tenantId: row.entraTenantId, cause: 'ai_for_office_mapping_removed' });
+      }
     }
 
     return c.json({ mapping: null });

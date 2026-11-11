@@ -143,7 +143,15 @@
       "sentWithoutAttachmentReply_one": "Antwort gesendet, aber der Anhang konnte nicht hinzugefügt werden. Wiederholen oder entfernen.",
       "sentWithoutAttachmentNote_one": "Notiz gepostet, aber der Anhang konnte nicht hinzugefügt werden. Wiederholen oder entfernen.",
       "sentWithoutAttachmentReply_other": "Antwort gesendet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen.",
-      "sentWithoutAttachmentNote_other": "Notiz gepostet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen."
+      "sentWithoutAttachmentNote_other": "Notiz gepostet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen.",
+      "rejectedTicketDeleted": "{{name}} wurde nicht angehängt: Dieses Ticket wurde gelöscht.",
+      "rejectedTicketMerged": "{{name}} wurde nicht angehängt: Dieses Ticket wurde mit einem anderen Ticket zusammengeführt.",
+      "rejectedNotFound": "{{name}} wurde nicht angehängt: Das Ticket wurde nicht gefunden.",
+      "rejectedMalformed": "{{name}} wurde nicht angehängt: Der Upload war fehlerhaft. Versuchen Sie es erneut.",
+      "openMergedTicket": "Zusammengeführtes Ticket öffnen",
+      "notKept_one": "1 Anhang wurde mit diesem Entwurf nicht gespeichert ({{names}}). Hängen Sie ihn erneut an oder schließen Sie den Hinweis, um ohne ihn zu senden.",
+      "notKept_other": "{{count}} Anhänge wurden mit diesem Entwurf nicht gespeichert ({{names}}). Hängen Sie sie erneut an oder schließen Sie den Hinweis, um ohne sie zu senden.",
+      "notKeptDismiss": "Schließen"
     },
     "modeLabel": "Sichtbarkeit des Kommentars",
     "recipient": {

@@ -8407,6 +8407,7 @@
       "updated": "Actualizado",
       "actions": "Acciones"
     },
+    "expired": "Vencida",
     "statusValue": {
       "unconfirmed": "Sin confirmar",
       "confirmed": "Confirmado",
@@ -8556,6 +8557,26 @@
         "hintInvalid": "Eso no es un ID de inquilino de Microsoft ni un dominio verificado por un inquilino de Microsoft.",
         "hintLookupFailed": "No se pudo conectar con Microsoft para buscar ese dominio. Vuelva a intentarlo o ingrese el ID del inquilino.",
         "protectedOrg": "Esta organización no se puede vincular a un inquilino de Microsoft."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "El inicio de sesión del portal volvió a la contraseña",
+      "body": "El inicio de sesión con Microsoft está desactivado en el portal de esta organización, así que sus usuarios inician sesión con contraseña hasta que el inquilino se compruebe de nuevo.",
+      "tenant": "(Inquilino {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "El vínculo del inquilino de Microsoft se eliminó el {{date}}.",
+        "ai_for_office_mapping_removed": "La asignación de inquilino de AI for Office, que contenía la comprobación, se eliminó el {{date}}.",
+        "ai_for_office_mapping_changed": "La asignación de inquilino de AI for Office se cambió a otro inquilino el {{date}}, lo que borró la comprobación.",
+        "tenant_displaced": "Otra organización comprobó este inquilino de Microsoft el {{date}}.",
+        "unknown": "La comprobación del inquilino de Microsoft se perdió el {{date}}."
+      },
+      "rerun": "Volver a comprobar el inquilino",
+      "dismiss": "Descartar",
+      "toasts": {
+        "dismissed": "Aviso descartado."
+      },
+      "errors": {
+        "dismiss": "No se pudo descartar el aviso."
       }
     },
     "ssoOnlyConfirm": {

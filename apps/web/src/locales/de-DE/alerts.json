@@ -952,7 +952,7 @@
     "createNotificationChannel": "Erstellen Sie einen Benachrichtigungskanal",
     "editNotificationChannel": "Benachrichtigungskanal bearbeiten",
     "createChannel": "Kanal erstellen",
-    "deleteChannelConfirm": "Kanal löschen Bestätigen",
+    "deleteChannelConfirm": "Kanal „{{name}}“ löschen? Benachrichtigungen, die nur an diesen Kanal gehen, werden nicht mehr zugestellt.",
     "deleting": "Löschen",
     "editRoutingRule": "Routing-Regel bearbeiten",
     "newRoutingRule": "Neue Routing-Regel",
