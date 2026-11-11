@@ -1063,6 +1063,26 @@ creates a user: owners (decision 24, declined) and comment authors stay display-
   `requester_contact_id` to NULL on delete and keeps that snapshot, so the ticket ends exactly
   where answer 3 would have put it. Refusing removal while referenced would make the set
   unremovable, because every created contact is referenced by construction.
+- **Decided in W4b, where this section was open:**
+  - **The option is the module's** (Zammad: `createRequesterContacts`, and
+    `createRequesterContactsUpdatedSince`, a UTC `YYYY-MM-DD`, inclusive, compared with the
+    ticket's `updated_at`). The writer resolves any `{ createContact }` it is sent, given
+    `options.people`; `people.runId` is carried but not stored, as the link has no run column.
+  - **Cost:** the header transaction of a first import charges the 1 unit whenever the variant
+    is present, as the status steps are charged before the lock decides.
+  - **The writer reports** `contactsCreated` and `requesterResolution` (`linked`, `matched`,
+    `created`, `display_only`). A display-only fallback counts in `requestersWithoutContact`; the
+    module sends no `requester_without_contact` note with the variant.
+  - **"Edited since it was created"** is the contact's `updated_at` later than its link's. The
+    import sets the link's `updated_at` to the contact's as `createContact` left it, since
+    `createContact` stamps `updated_at` again after its insert, on the API's clock.
+  - **Removal** deletes at most 500 per call and answers `{ removed, skipped, skippedBy,
+    remaining }`; besides the per-contact `contact.delete` rows it writes one partner-level
+    `ticket_import.created_contacts_removed` row. The listing pages by contact id and says, per
+    contact, why removal would keep it (`portal_login`, `role`, `other_link`, `edited`).
+  - **The dry run** dedupes `contactsToCreate` per (org, email) across the run with 16-hex
+    digests in the run's cursor (a dry run commits only at a slice's end), at most 20,000;
+    past that, new addresses are counted without dedupe.
 - **Turn it on before the bulk run.** The requester is not re-applied on resume (§5.9), so tickets
   imported while the option was off stay display-only.
 
