@@ -9,11 +9,12 @@
 //   node run.cjs --list              validate and list the scenarios, run nothing
 //   node run.cjs --scenarios <dir>   read scenarios from another directory (a doctored copy)
 //
-// env WISP_EVAL_TURN_CAP (default 100): refuse to start a scenario once the stack has
-//   seen this many model turns (user messages + agent runs) in total.
+// env WISP_EVAL_TURN_CAP (default 60): the most model turns (user messages + agent runs)
+//   this invocation may spend. Once reached, the remaining scenarios are skipped.
 //
 // Exit code: 1 when any scenario lands in UNEXPECTED FAIL (a regression, an
-// inconclusive run, or a harness error); 0 otherwise.
+// inconclusive run, or a harness error); 3 when the turn cap skipped scenarios;
+// 2 for a bad scenario file or an --only that matches nothing; 0 otherwise.
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -37,6 +38,7 @@ function loadScenarios() {
 }
 
 const scenarios = loadScenarios();
+if (!scenarios.length) { console.error(`no scenario matches${opt('--only') ? ` --only ${opt('--only')}` : ''} (see --list)`); process.exit(2); }
 if (flag('--list')) {
   for (const s of scenarios) console.log(`${s.id.padEnd(34)} ${s.expect.padEnd(10)} ${s.issue ? '#' + s.issue : ''}  ${s.title}`);
   process.exit(0);
@@ -178,16 +180,18 @@ async function runScenario(sc) {
 }
 
 (async () => {
-  const cap = +(process.env.WISP_EVAL_TURN_CAP || 100);
+  const cap = +(process.env.WISP_EVAL_TURN_CAP || 60);
   const results = [];
+  const skipped = [];
   const startedAt = new Date().toISOString();
   const spendStart = spend();
   const turnsStart = turnsSoFar();
   for (const sc of scenarios) {
-    const used = turnsSoFar();
+    const used = turnsSoFar() - turnsStart;
     if (used >= cap) {
-      console.error(`turn cap reached (${used} >= WISP_EVAL_TURN_CAP=${cap}); stopping before ${sc.id}`);
-      break;
+      if (!skipped.length) console.error(`turn cap reached (${used} model turns this run >= WISP_EVAL_TURN_CAP=${cap}); skipping the rest`);
+      skipped.push(sc.id);
+      continue;
     }
     if (!flag('--no-reset')) {
       const r = sh(['reset.sh']);
@@ -203,7 +207,7 @@ async function runScenario(sc) {
     results.push(res);
     process.stderr.write(`${res.bucket}${res.error ? ' — ' + res.error : ''}\n`);
   }
-  const summary = summarize(results);
+  const summary = summarize(results, { skipped });
   summary.spendCentsTotal = +(spend() - spendStart).toFixed(3);
   summary.modelTurnsUsed = turnsSoFar() - turnsStart;
   const report = { startedAt, finishedAt: new Date().toISOString(), stack: lib.stack.project, baseUrl: lib.BASE, results, summary };
@@ -219,6 +223,7 @@ async function runScenario(sc) {
     for (const c of r.checks || []) console.log(`- ${c.ok ? 'ok  ' : 'FAIL'} ${c.precondition ? '[pre] ' : ''}${c.kind}${c.step ? ` @${c.step}` : ''}: expected ${c.expected ?? '-'}; observed ${typeof c.observed === 'string' ? c.observed.slice(0, 220) : c.observed}${c.detail ? ` (${c.detail})` : ''}`);
     for (const n of r.notes || []) console.log(`- note: ${n}`);
   }
+  if (skipped.length) console.log(`\nSKIPPED (turn cap ${cap}): ${skipped.join(', ')} — exit code ${summary.exitCode}`);
   console.log(`\nreport: ${file}`);
   process.exit(summary.exitCode);
 })().catch((e) => { console.error('RUNNER ERROR', e); process.exit(1); });

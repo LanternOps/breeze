@@ -6,7 +6,7 @@
 #   - delete active watches; cancel in-flight specialist runs (a pending one blocks a new launch)
 #   - clear the thread summary a closed session leaves behind (it is handed to the next session)
 #   - planted alerts back to their baseline status
-#   - world tickets back to "new" when a scenario changed them
+#   - world tickets back to "new" when a scenario changed them; tickets a scenario planted are removed
 #   - sim groups: nw, nwsrv, hl running; hlmac stopped and HL-PARTNER-MBP offline
 #   - close the Wisp thread's open chat sessions, so the next page load binds a fresh one
 #
@@ -63,6 +63,11 @@ n="$(qsys "with u as (update tickets set status = 'new', resolved_at = null, clo
             where custom_fields->>'wispEval' = 'world' and status <> 'new' and deleted_at is null returning 1)
             select count(*) from u")"
 say "reset: reopened $n world tickets"
+
+n="$(qsys "with u as (update tickets set deleted_at = now(), updated_at = now()
+            where custom_fields->>'wispEval' = 'scenario' and deleted_at is null returning 1)
+            select count(*) from u")"
+say "reset: removed $n scenario tickets"
 
 for g in nw nwsrv hl; do bash "$HERE/sim.sh" restart "$g" >/dev/null; done
 bash "$HERE/sim.sh" stop hlmac >/dev/null

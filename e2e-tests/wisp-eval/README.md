@@ -58,7 +58,7 @@ Other run modes:
 ```bash
 node e2e-tests/wisp-eval/run.cjs --list                                # validate + list, no model calls
 node e2e-tests/wisp-eval/run.cjs --only stop-is-not-an-error            # one scenario (comma-separate for more)
-WISP_EVAL_TURN_CAP=60 node e2e-tests/wisp-eval/run.cjs                  # refuse to start past 60 model turns
+WISP_EVAL_TURN_CAP=30 node e2e-tests/wisp-eval/run.cjs                  # spend at most 30 model turns this run (default 60)
 ```
 
 ### The buckets
@@ -70,6 +70,10 @@ WISP_EVAL_TURN_CAP=60 node e2e-tests/wisp-eval/run.cjs                  # refuse
 | `known-red` | any failed | **known-red** | the open defect is still there (expected) |
 | `known-red` | all ok | **UNEXPECTED PASS** | the fix landed: flip `expect` to `pass` |
 
+Exit codes: `0` clean; `1` any UNEXPECTED FAIL; `3` the turn cap skipped
+scenarios (they are listed as SKIPPED); `2` a bad scenario file, or an `--only`
+that matches nothing.
+
 A check marked `"precondition": true` guards the premise of a scenario. Examples:
 Wisp really opened the ticket, or the approval card really appeared. If a
 precondition fails, the run is **inconclusive**. An inconclusive run, a harness
@@ -77,7 +81,9 @@ error or a timed-out `required` wait all count as UNEXPECTED FAIL, including for
 known-red scenario. A broken run is never hidden as "still red".
 
 The model is not deterministic. A known-red scenario can pass by luck. Run it twice
-before you flip it.
+before you flip it. Some defects are a rate, not a constant: on 2026-11-10/11
+`back-online-uses-event-check-in` was red in 5 of 11 runs (#11685). Such a scenario says so
+in its `note`; judge it over several runs, and never on one UNEXPECTED PASS.
 
 ## Exploratory driving
 
@@ -142,6 +148,7 @@ stack.
   would carry one scenario's conversation into the next.
 - puts the planted alerts back to their baseline status and the world tickets back
   to `new`;
+- removes tickets a scenario planted (`sh/plant-ticket.sh`, tagged `wispEval=scenario`);
 - restarts the online sim groups and stops `hlmac`;
 - closes every open Wisp chat session (`DELETE /ai/sessions/:id`), so the next page
   load binds a fresh one.
@@ -210,8 +217,8 @@ Create `scenarios/<letter>-<id>.json`. Files run in name order.
 ## Cost
 
 Each scenario turn costs about 3-6¢ on the default model, and a specialist run
-costs about 7¢. A full run of the 11 scenarios is 14-17 model turns and took
-8-9 minutes. The first four runs on 2026-11-10/11 measured **$0.67-$0.94**,
+costs about 7¢. A full run of the first 11 scenarios was 14-17 model turns and took
+8-9 minutes; the twelfth adds one turn. The first four runs on 2026-11-10/11 measured **$0.67-$0.94**,
 including background assessments and the summary step that runs each time a
 session closes. `setup.sh` costs about 18¢ for the first look at three orgs.
 
@@ -220,7 +227,8 @@ session closes. `setup.sh` costs about 18¢ for the first look at three orgs.
   assessment that ran at the same time, so treat it as an upper bound.
 - **Today's spend**: run `sh/truth.sh spend`.
 - **Model turns** are `ai_messages` rows with role `user`, plus `ai_agent_runs`.
-  `WISP_EVAL_TURN_CAP` stops a run once the stack's total reaches the cap.
+  `WISP_EVAL_TURN_CAP` (default 60) is the most turns one `run.cjs` invocation
+  may spend. Scenarios it could not start are listed as SKIPPED and the run exits 3.
 
 ## Teardown
 
@@ -238,7 +246,10 @@ rm -rf e2e-tests/wisp-eval/.state  # TOTP secret, passkeys, cookies, reports
   The directory is mode 0700 and gitignored.
 - The TOTP secret and passkeys belong to a throwaway local stack. Never reuse them.
 - `common.sh` refuses any `baseUrl` that is not `http://localhost:*`.
-  `make-env.sh` blanks mail, Stripe, billing, signing, OpenAI and NVD keys.
+  `make-env.sh` blanks a fixed list (mail, Stripe, billing, signing, OpenAI, NVD)
+  and every other key whose name looks like a credential, unless it is on the
+  script's KEEP list of the local stack's own secrets. It prints the names it
+  blanked, never a value. `node --test e2e-tests/wisp-eval/` covers it.
   `.env.stack` blanks mail again.
 
 ## Not in scope (yet)

@@ -1,17 +1,46 @@
 {
   "id": "attention-includes-urgent-ticket",
-  "title": "\"What needs my attention today?\" mentions the urgent open ticket",
+  "title": "\"What needs my attention today?\" mentions an urgent ticket that arrived after the last assessment",
   "issue": 11677,
   "expect": "known-red",
   "door": "wisp",
+  "note": "the world's own urgent ticket (the invoice one) is no test: once an assessment has run, its summary carries that ticket into the answer (5 of 5 runs on 2026-11-10/11, no tool call). A ticket that arrives after the assessment is invisible until the next one, because the standing state carries no ticket counts",
   "steps": [
-    { "name": "attention", "type": "say", "approve": "none", "maxSec": 90,
-      "text": "What needs my attention today? Keep it short." }
+    {
+      "name": "new-ticket",
+      "type": "shell",
+      "argv": [
+        "plant-ticket.sh"
+      ]
+    },
+    {
+      "name": "attention",
+      "type": "say",
+      "approve": "none",
+      "maxSec": 90,
+      "text": "What needs my attention today? Keep it short."
+    }
   ],
   "checks": [
-    { "kind": "reply_matches", "step": "attention", "flags": "i", "pattern": "(invoice|T-2026-0004|urgent ticket|ticket.{0,40}urgent)",
-      "note": "#11677: the urgent Harbor Legal ticket is left out of the attention answer" },
-    { "kind": "max_tool_calls", "step": "attention", "max": 3,
-      "note": "the chip's own prompt promises at most three tool calls for 'keep it short'" }
+    {
+      "kind": "sql_equals",
+      "precondition": true,
+      "equals": "0",
+      "sql": "select count(*) from ai_agent_runs where profile = 'assessment' and queued_at > {{since}}",
+      "note": "no assessment ran after the ticket arrived, so Wisp can only know about it from the standing state or a tool call"
+    },
+    {
+      "kind": "reply_matches",
+      "step": "attention",
+      "flags": "i",
+      "pattern": "(server closet|overheat|air condition|\\bA/?C\\b)",
+      "note": "#11677: an urgent unassigned ticket is left out of the attention answer"
+    },
+    {
+      "kind": "max_tool_calls",
+      "step": "attention",
+      "max": 3,
+      "note": "the chip's own prompt promises at most three tool calls for 'keep it short'"
+    }
   ]
 }

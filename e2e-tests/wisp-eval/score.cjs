@@ -131,7 +131,10 @@ function bucketFor(expect, passed, runError) {
   return passed ? 'pass' : 'unexpected-fail';
 }
 
-function summarize(results) {
+// opts.skipped: ids the turn cap stopped the run from starting. A run that did not reach
+// every scenario is not a clean run (exit 3); an unexpected fail still wins (exit 1).
+function summarize(results, opts = {}) {
+  const skipped = opts.skipped || [];
   const counts = Object.fromEntries(BUCKETS.map((b) => [b, 0]));
   const totals = { toolCalls: 0, words: 0, wallSec: 0, costCents: 0, userTurns: 0, agentRuns: 0 };
   for (const r of results) {
@@ -140,7 +143,7 @@ function summarize(results) {
   }
   totals.wallSec = Math.round(totals.wallSec * 10) / 10;
   totals.costCents = Math.round(totals.costCents * 1000) / 1000;
-  return { counts, totals, exitCode: counts['unexpected-fail'] > 0 ? 1 : 0 };
+  return { counts, totals, skipped, exitCode: counts['unexpected-fail'] > 0 ? 1 : skipped.length > 0 ? 3 : 0 };
 }
 
 const dollars = (c) => (typeof c === 'number' ? '$' + (c / 100).toFixed(3) : 'n/a');

@@ -172,6 +172,15 @@ test('summarize counts buckets and exits non-zero only on an unexpected fail', (
   assert.equal(summarize([{ bucket: 'pass' }, { bucket: 'unexpected-fail' }]).exitCode, 1);
 });
 
+test('summarize exits 3 when the turn cap skipped scenarios; an unexpected fail still wins', () => {
+  const capped = summarize([{ bucket: 'pass' }], { skipped: ['b', 'c'] });
+  assert.deepEqual(capped.skipped, ['b', 'c']);
+  assert.equal(capped.exitCode, 3, 'a run that did not reach every scenario is not a clean run');
+  assert.equal(summarize([], { skipped: ['a'] }).exitCode, 3, 'nothing ran at all');
+  assert.equal(summarize([{ bucket: 'unexpected-fail' }], { skipped: ['b'] }).exitCode, 1);
+  assert.deepEqual(summarize([{ bucket: 'pass' }]).skipped, []);
+});
+
 test('summarize totals tool calls, words, seconds and cost', () => {
   const s = summarize([
     { bucket: 'pass', toolCalls: 2, words: 100, wallSec: 10, costCents: 3.5, userTurns: 1 },

@@ -21,10 +21,12 @@ rules.
 
 ## 0. Before you start
 
-- **Spend cap.** The stack uses a billed Anthropic key. Agree a turn cap with
-  whoever asked (default 120 model turns per pass), and export
-  `WISP_EVAL_TURN_CAP`. A turn is a user message or an agent run. One pass of
-  the 11 scenarios costs about 15 turns and $0.70-0.95.
+- **Spend cap.** The stack uses a billed Anthropic key. Agree a turn budget for
+  the pass with whoever asked (default 120 model turns) and watch it with
+  `sh/truth.sh spend`. A turn is a user message or an agent run.
+  `WISP_EVAL_TURN_CAP` (default 60) limits one `run.cjs` invocation; a capped run
+  lists what it skipped and exits 3. One pass of the 12 scenarios costs about 16
+  turns and $0.70-1.00.
 - **CPU.** The machine is shared. Run one docker build at a time. Do not run
   vitest, tsc or the full Playwright suite during a pass.
 - **Isolation.** Bring up your own stack from your own worktree with a pinned
