@@ -5179,14 +5179,19 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Bunun yerine şifrenizi veya kimlik doğrulama kodunuzu kullanın; seçeneklerinizi güncellemek için sayfayı yeniden yükleyin.",
     "pendingActivatesOnFirstApproval": "Beklemede — ilk onayda etkinleştirilir",
     "sessionExpiredReloadAndTryAgain": "Oturumun süresi doldu — sayfayı yeniden yükleyin ve tekrar deneyin.",
-    "registrationCancelled": "Kayıt iptal edildi."
+    "registrationCancelled": "Kayıt iptal edildi.",
+    "ssoVerificationExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu veya zaten kullanıldı. Bu cihazı kaydetmek için yeniden doğrulayın.",
+    "signInOptionsChanged": "Oturum açma seçenekleriniz değişti. Sayfayı yeniden yükleyip tekrar deneyin."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Kayıt olurken şifrenizle (Touch ID / Windows Hello) onaylayacaksınız.",
     "authenticatorCode": "Kimlik doğrulayıcı kodu",
     "confirmYourPassword": "Şifrenizi doğrulayın",
     "switchToAuthenticatorCode": "Bunun yerine kimlik doğrulama uygulamasını kullanın",
-    "usePasskeyInstead": "Bunun yerine geçiş anahtarınızı kullanın"
+    "usePasskeyInstead": "Bunun yerine geçiş anahtarınızı kullanın",
+    "ssoVerifyFirst": "Bu hesap kimlik sağlayıcınız üzerinden oturum açar ve parolası yoktur. Önce sağlayıcınızla doğrulayın, ardından bu cihazı kaydedin.",
+    "ssoVerifyButton": "Kimlik sağlayıcınızla doğrulayın",
+    "ssoVerified": "Kimlik doğrulandı. Bu cihazı 5 dakika içinde kaydedin."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Hazır yanıtlar",

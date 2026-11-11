@@ -5179,14 +5179,19 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Utilisez plutôt votre clé d’accès ou votre code d’authentification — actualisez la page pour mettre à jour vos options.",
     "pendingActivatesOnFirstApproval": "En attente — s’active à la première approbation",
     "sessionExpiredReloadAndTryAgain": "Session expirée — actualisez la page et réessayez.",
-    "registrationCancelled": "L’enregistrement a été annulé."
+    "registrationCancelled": "L’enregistrement a été annulé.",
+    "ssoVerificationExpired": "La vérification auprès de votre fournisseur d'identité a expiré ou a déjà été utilisée. Vérifiez à nouveau pour enregistrer cet appareil.",
+    "signInOptionsChanged": "Vos options de connexion ont changé. Rechargez la page et réessayez."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d’accès (Touch ID / Windows Hello) lors de l’enregistrement.",
     "authenticatorCode": "Code d’authentification",
     "confirmYourPassword": "Confirmez votre mot de passe",
     "switchToAuthenticatorCode": "Utiliser plutôt l’application d’authentification",
-    "usePasskeyInstead": "Utiliser plutôt votre clé d’accès"
+    "usePasskeyInstead": "Utiliser plutôt votre clé d’accès",
+    "ssoVerifyFirst": "Ce compte se connecte via votre fournisseur d'identité et n'a pas de mot de passe. Vérifiez d'abord auprès de votre fournisseur, puis enregistrez cet appareil.",
+    "ssoVerifyButton": "Vérifier auprès de votre fournisseur d'identité",
+    "ssoVerified": "Identité vérifiée. Enregistrez cet appareil dans les 5 minutes."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Réponses préfabriquées",

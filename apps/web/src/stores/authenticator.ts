@@ -55,7 +55,10 @@ export interface ApproverDevice {
 export type RegisterReauth =
   | { method: 'passkey' }
   | { method: 'totp'; code: string }
-  | { method: 'password'; password: string };
+  | { method: 'password'; password: string }
+  // #9007: a passwordless account's SSO re-auth grant, exchanged once at
+  // register-grant for a `register_approver_device` grant.
+  | { method: 'sso'; ssoReauthGrantId: string };
 
 class RegisterStepError extends Error {
   status?: number;
@@ -96,19 +99,26 @@ async function jsonOrThrow(response: Response, fallback: string): Promise<any> {
 
 /**
  * Mint a single-use register_approver_device grant with whichever re-auth
- * factor the caller proved (#2707 — spec: strongest available factor; the
- * password endpoint 403s `stronger_factor_required` if TOTP/passkey exist).
+ * factor the caller proved (#2707 — spec: strongest available factor;
+ * register-grant 403s `stronger_factor_required` if TOTP/passkey exist).
  */
 async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
-  if (reauth.method === 'password') {
+  if (reauth.method === 'password' || reauth.method === 'sso') {
+    // POST /authenticator/register-grant takes exactly one proof: the current
+    // password, or (#9007, passwordless accounts) the SSO re-auth grant. A
+    // rejected proof answers 400 with a stable `code` (`invalid_credentials`,
+    // `enrollment_grant_expired`) or the bare `enrollment_proof_required`
+    // token; 401 means only that the bearer is dead.
+    const body = reauth.method === 'password'
+      ? { currentPassword: reauth.password }
+      : { ssoReauthGrantId: reauth.ssoReauthGrantId };
     const data = await jsonOrThrow(
       await fetchWithAuth('/authenticator/register-grant', {
         method: 'POST',
-        body: JSON.stringify({ currentPassword: reauth.password }),
-        // A 401 here means "wrong password", not "stale access token" — unlike
-        // most fetchWithAuth callers, replaying after a token refresh would
-        // just resubmit the same bad password and fail again. Same rationale
-        // as the single-use webauthn assertion in intentApprovals.ts.
+        body: JSON.stringify(body),
+        // No refresh-and-replay on a 401: the section maps a 401 to "session
+        // expired, reload", and never re-sends a proof on its own. (Kept from
+        // #2707, when this route still answered a wrong password with 401.)
         skipUnauthorizedRetry: true,
       }),
       'Verification failed.'

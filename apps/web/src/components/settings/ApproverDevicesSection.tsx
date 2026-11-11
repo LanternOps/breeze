@@ -1,6 +1,6 @@
 import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2, ShieldCheck, X } from 'lucide-react';
 import {
   listApproverDevices,
@@ -13,7 +13,7 @@ import {
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { formatAbsolute, formatRelative } from '../account/relativeTime';
-import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
+import StepUpPrompt, { pickRegisterReauthTier, type RegisterReauthTier } from './StepUpPrompt';
 
 /**
  * Profile "Approval security" section (Breeze Authenticator Phase 2).
@@ -26,6 +26,11 @@ import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
  *
  * Every mutation flows through `runAction` so success/failure always surfaces
  * to the user (CLAUDE.md `no-silent-mutations`).
+ *
+ * #9007: a passwordless (SSO-only) account with no passkey or TOTP proves
+ * itself with a fresh IdP re-auth. ProfilePage owns that round-trip and the
+ * grant it brings back (shared with the MFA cards); this section only shows the
+ * verify step, spends the grant on submit, and tells the page it is gone.
  */
 
 type ConfirmState = {
@@ -62,9 +67,28 @@ const OK_RESPONSE = { ok: true, status: 200, json: async () => ({ success: true 
 export default function ApproverDevicesSection({
   passkeyCount,
   mfaMethod,
+  totpEnrolled,
+  hasPassword,
+  ssoReauthGrantId = null,
+  isStartingSsoReauth = false,
+  onStartSsoReauth,
+  onSsoReauthGrantSpent,
+  landOnRegister = false,
 }: {
   passkeyCount: number;
   mfaMethod: string | null;
+  totpEnrolled?: boolean;
+  /** `false` = passwordless account; `undefined` (unknown) keeps the password road. */
+  hasPassword?: boolean;
+  /** The SSO re-auth grant ProfilePage holds, if any (#9007). */
+  ssoReauthGrantId?: string | null;
+  isStartingSsoReauth?: boolean;
+  onStartSsoReauth?: () => void;
+  /** Called the moment the grant is sent: register-grant consumes it whatever
+   * happens next, so the page must stop advertising it to every card. */
+  onSsoReauthGrantSpent?: () => void;
+  /** This page load is the return leg of a trip this section started. */
+  landOnRegister?: boolean;
 }) {
   const { t } = useTranslation('settings');
   const [devices, setDevices] = useState<ApproverDevice[]>([]);
@@ -77,7 +101,18 @@ export default function ApproverDevicesSection({
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState('');
-  const tier: ReauthTier = pickReauthTier(passkeyCount, mfaMethod);
+  const tier: RegisterReauthTier = pickRegisterReauthTier(passkeyCount, mfaMethod, totpEnrolled, hasPassword);
+  // #9007: the IdP trip is a full-page navigation that puts the user back at
+  // the top of a long settings page. Bring the register form to them once, and
+  // focus the button that finishes the job (same pattern as the passkey card).
+  const landingDone = useRef(false);
+  const registerBlockRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node || !landOnRegister || landingDone.current) return;
+    landingDone.current = true;
+    // jsdom has no layout and so no `scrollIntoView`; optional-call it.
+    node.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    node.querySelector<HTMLButtonElement>('[data-testid="approver-device-register"]')?.focus();
+  }, [landOnRegister]);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -101,6 +136,7 @@ export default function ApproverDevicesSection({
   const buildReauth = (): RegisterReauth | null => {
     if (tier === 'passkey') return { method: 'passkey' };
     if (tier === 'totp') return reauthValue.length === 6 ? { method: 'totp', code: reauthValue } : null;
+    if (tier === 'sso') return ssoReauthGrantId ? { method: 'sso', ssoReauthGrantId } : null;
     return reauthValue.length > 0 ? { method: 'password', password: reauthValue } : null;
   };
 
@@ -117,22 +153,30 @@ export default function ApproverDevicesSection({
     const status = (err as { status?: number })?.status;
     const code = (err as { code?: string })?.code;
 
-    // A rejected re-auth PROOF: retyping the same field is what fixes it.
-    //
-    // Two shapes reach here, because the two mint roads sit on different
-    // endpoints:
-    //   - #4470 road: POST /auth/mfa/step-up (TOTP + passkey tiers) now answers
-    //     400 with a stable `code`. Branch on the code — never the message.
-    //   - legacy road: POST /authenticator/register-grant (password tier) still
-    //     answers 401 with the literal string "Invalid credentials", the only
-    //     discriminator it has, since that route has not migrated. A 401 whose
-    //     message is anything else is a rejected BEARER (middleware/auth.ts,
-    //     e.g. "Invalid or expired token") and needs a page reload, not a retype.
+    // #9007: the SSO grant was dead, spent, minted for another session, or
+    // never sent. Only a fresh IdP trip fixes it, so say "verify again" rather
+    // than "session expired". `enrollment_proof_required` carries no `code`;
+    // its literal `error` token arrives as the message.
+    if (
+      status === 400
+      && (code === 'enrollment_grant_expired' || (err instanceof Error && err.message === 'enrollment_proof_required'))
+    ) {
+      return t('approverDevicesSection.ssoVerificationExpired');
+    }
+
+    // A rejected re-auth PROOF. Both mint roads answer 400 with a stable
+    // `code` (#4470): POST /auth/mfa/step-up for the TOTP + passkey tiers, and
+    // POST /authenticator/register-grant for the password + SSO tiers (#9007
+    // moved it off 401). Branch on the code, never the message. Any 401 is a
+    // rejected BEARER and is handled below.
     const isProofRejection =
-      (status === 400 && (code === 'mfa_proof_invalid' || code === 'invalid_credentials'))
-      || (status === 401 && err instanceof Error && err.message === 'Invalid credentials');
+      status === 400 && (code === 'mfa_proof_invalid' || code === 'invalid_credentials');
 
     if (isProofRejection) {
+      // The account gained a password since the page loaded, so the server
+      // refuses the SSO road. Reloading moves the form to the password tier;
+      // "verify again" would loop (the IdP start refuses such an account).
+      if (tier === 'sso') return t('approverDevicesSection.signInOptionsChanged');
       if (tier === 'totp') return t('approverDevicesSection.incorrectCode');
       // The passkey tier never shows a password field — a rejection here means
       // the WebAuthn assertion itself was refused (burned/replayed challenge),
@@ -165,6 +209,10 @@ export default function ApproverDevicesSection({
     const trimmed = label.trim() || 'This device';
     setIsRegistering(true);
     try {
+      // register-grant consumes the SSO grant whatever happens after it (a
+      // cancelled Touch ID prompt included), so stop every card advertising it
+      // now. A grant the server refuses is equally dead.
+      if (reauth.method === 'sso') onSsoReauthGrantSpent?.();
       await runAction({
         // registerApproverDevice runs the full WebAuthn registration ceremony
         // (options → Touch ID/Hello → verify) and resolves void on success. A
@@ -186,8 +234,9 @@ export default function ApproverDevicesSection({
         },
         errorFallback: t('approverDevicesSection.failedToRegisterThisDevice'),
         successMessage: t('approverDevicesSection.thisDeviceCanNowApproveRequests'),
-        // A 401 here means "wrong code/password", not "stale access token" —
-        // must be toasted, not silently swallowed into a login redirect.
+        // A 401 here is a dead bearer that the mint deliberately did not
+        // refresh-and-replay (skipUnauthorizedRetry), so no auth redirect is
+        // coming: toast "session expired, reload" instead of swallowing it.
         treatUnauthorizedAsError: true,
       });
       setLabel('');
@@ -200,7 +249,7 @@ export default function ApproverDevicesSection({
         if (err.status === 403) setReauthValue('');
         return; // already toasted by runAction
       }
-      // Defensive net only: every documented failure path (401/403/429) is
+      // Defensive net only: every documented failure path (400/401/403/429) is
       // converted into a Response above and surfaced via runAction's
       // ActionError branch. This only fires for an error escaping runAction
       // itself (e.g. a bug in runAction), not a live path in normal use.
@@ -252,6 +301,16 @@ export default function ApproverDevicesSection({
       setMutatingId(null);
     }
   };
+
+  const stepUpPrompt = (
+    <StepUpPrompt
+      tier={tier}
+      reauthValue={reauthValue}
+      onChange={setReauthValue}
+      disabled={isRegistering}
+      sso={{ verified: !!ssoReauthGrantId, starting: isStartingSsoReauth, onStart: onStartSsoReauth }}
+    />
+  );
 
   return (
     <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs" data-testid="approver-devices-section">
@@ -401,12 +460,15 @@ export default function ApproverDevicesSection({
         )}
       </div>
 
-      <div className="space-y-4 rounded-md border p-4">
+      <div ref={registerBlockRef} className="space-y-4 rounded-md border p-4">
         <div className="space-y-1">
           <h3 className="text-sm font-medium">{t('approverDevicesSection.registerThisBrowser')}</h3>
           <p className="text-xs text-muted-foreground">
             {t('approverDevicesSection.optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo')}</p>
         </div>
+        {/* The IdP trip is a full-page navigation that loses anything typed, so
+            the verify step comes BEFORE the device name. */}
+        {tier === 'sso' && stepUpPrompt}
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="approver-device-label">
             {t('approverDevicesSection.deviceName')}</label>
@@ -421,7 +483,7 @@ export default function ApproverDevicesSection({
             data-testid="approver-device-label-input"
           />
         </div>
-        <StepUpPrompt tier={tier} reauthValue={reauthValue} onChange={setReauthValue} disabled={isRegistering} />
+        {tier !== 'sso' && stepUpPrompt}
         <button
           type="button"
           onClick={() => void handleRegister()}

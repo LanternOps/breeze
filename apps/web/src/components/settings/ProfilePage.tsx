@@ -323,6 +323,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   // #4045: 'delete' is the same landing for the delete-passkey action, which
   // puts the user on a Delete action instead of the name field.
   const [passkeyReauthReturn, setPasskeyReauthReturn] = useState<'add' | 'delete' | null>(null);
+  // #9007: the same one-shot landing for the Approval-security register form.
+  const [approverReauthReturn, setApproverReauthReturn] = useState(false);
   const passkeyNameRef = useRef<HTMLInputElement | null>(null);
   // #4045: the management view (recovery codes / disable) the user left from
   // for the IdP, to be reopened on return.
@@ -738,6 +740,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
     if (intent === 'remove_totp') {
       setMfaResumeView('remove-totp');
+      return;
+    }
+    if (intent === 'approver_device') {
+      // #9007: no /mfa/setup either. The approver section exchanges this grant
+      // at POST /authenticator/register-grant when the user clicks Register.
+      setApproverReauthReturn(true);
       return;
     }
     if (intent === 'delete_passkey') {
@@ -2145,7 +2153,17 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       <ConnectSsoCard />
 
       {/* Approval security (Breeze Authenticator) */}
-      <ApproverDevicesSection passkeyCount={passkeys.length} mfaMethod={user?.mfaMethod ?? null} />
+      <ApproverDevicesSection
+        passkeyCount={passkeys.length}
+        mfaMethod={user?.mfaMethod ?? null}
+        totpEnrolled={user?.totpEnrolled}
+        hasPassword={user?.hasPassword}
+        ssoReauthGrantId={ssoReauthGrantId}
+        isStartingSsoReauth={isStartingSsoReauth}
+        onStartSsoReauth={() => { void handleSsoReauthStart('approver_device'); }}
+        onSsoReauthGrantSpent={dropSsoReauthGrant}
+        landOnRegister={approverReauthReturn}
+      />
       <ThemingSettings
         preferences={user?.preferences}
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}

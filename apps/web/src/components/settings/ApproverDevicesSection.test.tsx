@@ -169,10 +169,10 @@ describe('ApproverDevicesSection', () => {
     await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
   });
 
-  it('shows an incorrect-password error and preserves the label on a 401 (credential failure)', async () => {
-    // The real API returns the literal string "Invalid credentials" for a
-    // rejected re-auth proof (routes/auth/helpers.ts, routes/auth/mfa.ts).
-    const err = Object.assign(new Error('Invalid credentials'), { status: 401 });
+  it('shows an incorrect-password error and preserves the label on a 400 invalid_credentials', async () => {
+    // #9007 PR 1: POST /authenticator/register-grant answers a rejected
+    // password with 400 + `code: 'invalid_credentials'` (#4470 shape).
+    const err = Object.assign(new Error('Invalid credentials'), { status: 400, code: 'invalid_credentials' });
     registerApproverDeviceMock.mockRejectedValueOnce(err);
     render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
     await screen.findByTestId('approver-device-dev-1');
@@ -261,8 +261,8 @@ describe('ApproverDevicesSection', () => {
     expect((screen.getByTestId('approver-stepup-password') as HTMLInputElement).value).toBe('');
   });
 
-  it('shows a passkey-specific error (not "Incorrect password") on a 401 in the passkey tier', async () => {
-    const err = Object.assign(new Error('Invalid credentials'), { status: 401 });
+  it('shows a passkey-specific error (not "Incorrect password") on a rejected proof in the passkey tier', async () => {
+    const err = Object.assign(new Error('Invalid credentials'), { status: 400, code: 'mfa_proof_invalid' });
     registerApproverDeviceMock.mockRejectedValueOnce(err);
     render(<ApproverDevicesSection passkeyCount={1} mfaMethod={null} />);
     await screen.findByTestId('approver-device-dev-1');
@@ -344,6 +344,169 @@ describe('ApproverDevicesSection', () => {
 
     const empty = await screen.findByTestId('approver-devices-empty');
     expect(empty.textContent).toMatch(/mobile app/i);
+  });
+
+  // #9007: the legacy "401 + literal 'Invalid credentials'" arm is gone with
+  // the route's move to 400. A 401 is the bearer, whatever its message.
+  it('treats any 401 as a dead session, even one whose message reads "Invalid credentials"', async () => {
+    const err = Object.assign(new Error('Invalid credentials'), { status: 401 });
+    registerApproverDeviceMock.mockRejectedValueOnce(err);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+    await screen.findByTestId('approver-device-dev-1');
+
+    fireEvent.change(screen.getByTestId('approver-stepup-password'), { target: { value: 'hunter2' } });
+    fireEvent.click(screen.getByTestId('approver-device-register'));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith({
+        type: 'error',
+        message: 'Session expired — reload the page and try again.',
+      }),
+    );
+    expect(showToastMock).not.toHaveBeenCalledWith({ type: 'error', message: 'Incorrect password.' });
+  });
+
+  describe('passwordless account: SSO re-auth road (#9007)', () => {
+    const SSO_EXPIRED = 'Your identity provider verification has expired or was already used. Verify again to register this device.';
+
+    it('offers the IdP round-trip, keeps Register disabled, and starts the trip on click', async () => {
+      const onStartSsoReauth = vi.fn();
+      render(
+        <ApproverDevicesSection
+          passkeyCount={0}
+          mfaMethod={null}
+          hasPassword={false}
+          ssoReauthGrantId={null}
+          onStartSsoReauth={onStartSsoReauth}
+        />,
+      );
+      await screen.findByTestId('approver-device-dev-1');
+
+      expect(screen.queryByTestId('approver-stepup-password')).toBeNull();
+      expect(screen.getByTestId('approver-device-register')).toBeDisabled();
+      fireEvent.click(screen.getByTestId('approver-stepup-sso-start'));
+      expect(onStartSsoReauth).toHaveBeenCalledTimes(1);
+      expect(registerApproverDeviceMock).not.toHaveBeenCalled();
+    });
+
+    it('disables the start button while the trip is starting', async () => {
+      render(
+        <ApproverDevicesSection passkeyCount={0} mfaMethod={null} hasPassword={false} isStartingSsoReauth onStartSsoReauth={vi.fn()} />,
+      );
+      expect(await screen.findByTestId('approver-stepup-sso-start')).toBeDisabled();
+    });
+
+    it('renders the verify step ABOVE the device-name field (the label does not survive the IdP trip)', async () => {
+      render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} hasPassword={false} onStartSsoReauth={vi.fn()} />);
+      const start = await screen.findByTestId('approver-stepup-sso-start');
+      const labelInput = screen.getByTestId('approver-device-label-input');
+      expect(start.compareDocumentPosition(labelInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('with a grant in hand: registers with the grant and reports it spent BEFORE the ceremony settles', async () => {
+      let resolveRegister: () => void = () => {};
+      registerApproverDeviceMock.mockImplementationOnce(
+        () => new Promise<void>((resolve) => { resolveRegister = resolve; }),
+      );
+      const onSsoReauthGrantSpent = vi.fn();
+      render(
+        <ApproverDevicesSection
+          passkeyCount={0}
+          mfaMethod={null}
+          hasPassword={false}
+          ssoReauthGrantId="sso-g"
+          onStartSsoReauth={vi.fn()}
+          onSsoReauthGrantSpent={onSsoReauthGrantSpent}
+        />,
+      );
+      await screen.findByTestId('approver-device-dev-1');
+
+      expect(screen.getByTestId('approver-stepup-sso-verified')).toBeTruthy();
+      expect(screen.queryByTestId('approver-stepup-sso-start')).toBeNull();
+      const register = screen.getByTestId('approver-device-register');
+      expect(register).not.toBeDisabled();
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), { target: { value: 'Desk' } });
+      fireEvent.click(register);
+
+      await waitFor(() =>
+        expect(registerApproverDeviceMock).toHaveBeenCalledWith('Desk', { method: 'sso', ssoReauthGrantId: 'sso-g' }),
+      );
+      // Still pending: the grant is already reported spent.
+      expect(onSsoReauthGrantSpent).toHaveBeenCalledTimes(1);
+      expect(onSsoReauthGrantSpent.mock.invocationCallOrder[0]).toBeLessThan(
+        registerApproverDeviceMock.mock.invocationCallOrder[0],
+      );
+      resolveRegister();
+      await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
+    });
+
+    it('a stronger factor outranks the IdP: passkey tier, no SSO button', async () => {
+      render(<ApproverDevicesSection passkeyCount={1} mfaMethod="passkey" hasPassword={false} onStartSsoReauth={vi.fn()} />);
+      await screen.findByTestId('approver-device-dev-1');
+      expect(screen.getByTestId('approver-stepup-passkey-note')).toBeTruthy();
+      expect(screen.queryByTestId('approver-stepup-sso-start')).toBeNull();
+    });
+
+    it('an authenticator app held as a backup outranks the IdP too', async () => {
+      render(
+        <ApproverDevicesSection passkeyCount={0} mfaMethod="passkey" totpEnrolled hasPassword={false} onStartSsoReauth={vi.fn()} />,
+      );
+      await screen.findByTestId('approver-device-dev-1');
+      expect(screen.getByTestId('approver-stepup-code')).toBeTruthy();
+      expect(screen.queryByTestId('approver-stepup-sso-start')).toBeNull();
+    });
+
+    it.each([
+      ['enrollment_grant_expired', { status: 400, code: 'enrollment_grant_expired' }, 'Your identity verification has expired. Please verify with your identity provider again.'],
+      ['enrollment_proof_required', { status: 400 }, 'enrollment_proof_required'],
+    ])('maps %s to "verify again" (not "session expired", not the raw server text)', async (_name, shape, message) => {
+      registerApproverDeviceMock.mockRejectedValueOnce(Object.assign(new Error(message), shape));
+      render(
+        <ApproverDevicesSection passkeyCount={0} mfaMethod={null} hasPassword={false} ssoReauthGrantId="sso-g" onStartSsoReauth={vi.fn()} />,
+      );
+      await screen.findByTestId('approver-device-dev-1');
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: SSO_EXPIRED }));
+      expect(showToastMock).toHaveBeenCalledTimes(1);
+    });
+
+    // The account gained a password after the page loaded: the server refuses
+    // the SSO road with the opaque invalid_credentials. "Incorrect password"
+    // would be nonsense on a form with no password field, and "verify again"
+    // would loop (the IdP start refuses an account with a password).
+    it('maps invalid_credentials on the sso tier to "reload", not "Incorrect password"', async () => {
+      registerApproverDeviceMock.mockRejectedValueOnce(
+        Object.assign(new Error('Invalid credentials'), { status: 400, code: 'invalid_credentials' }),
+      );
+      render(
+        <ApproverDevicesSection passkeyCount={0} mfaMethod={null} hasPassword={false} ssoReauthGrantId="sso-g" onStartSsoReauth={vi.fn()} />,
+      );
+      await screen.findByTestId('approver-device-dev-1');
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Your sign-in options changed. Reload the page and try again.',
+        }),
+      );
+      expect(showToastMock).not.toHaveBeenCalledWith({ type: 'error', message: 'Incorrect password.' });
+    });
+
+    it('lands on the register button when returning from the IdP', async () => {
+      render(
+        <ApproverDevicesSection
+          passkeyCount={0}
+          mfaMethod={null}
+          hasPassword={false}
+          ssoReauthGrantId="sso-g"
+          onStartSsoReauth={vi.fn()}
+          landOnRegister
+        />,
+      );
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('approver-device-register')));
+    });
   });
 
   it('revokes a device after confirming in the dialog', async () => {
