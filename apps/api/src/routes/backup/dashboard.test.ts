@@ -355,6 +355,127 @@ describe('backup dashboard routes', () => {
     const { data } = await res.json();
     expect(data.latestJobs[0].failureCategory).toBe('storage');
     expect(data.latestJobs[1]).toHaveProperty('failureCategory', null);
+    expect(data.latestJobs[0]).toHaveProperty('failureCause', null);
+    expect(data.latestJobs[1]).toHaveProperty('failureCause', null);
+  });
+
+  it('adds failureCause to dashboard latestJobs when the text establishes one', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 1 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({ id: 'job-403', status: 'failed', errorLog: 'file upload failed: storage session: storage answered status 403' }),
+      ]));
+
+    const { data } = await (await app.request('/backup/dashboard')).json();
+    expect(data.latestJobs[0]).toMatchObject({ failureCategory: 'storage', failureCause: 'storage_access_denied' });
+  });
+
+  // #11768: one destination failing for every device is one statement, not N.
+  describe('destination-level attention item', () => {
+    const CONFIG_ID = '99999999-9999-4999-8999-999999999999';
+    const OTHER_CONFIG_ID = '88888888-8888-4888-8888-888888888888';
+    const STORE_403 = 'system state publish failed: upload system state artifact registry/SYSTEM: storage session: storage answered status 403';
+    const recently = () => new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+    const row = (over: Record<string, unknown>) => ({
+      deviceId: DEVICE_ID,
+      status: 'failed',
+      errorLog: STORE_403,
+      completedAt: recently(),
+      createdAt: recently(),
+      rn: 1,
+      deviceName: 'Device',
+      deviceHostname: 'host',
+      configId: CONFIG_ID,
+      configName: 'Primary S3',
+      ...over,
+    });
+
+    async function dashboardWith(rankedRows: unknown[]) {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock(rankedRows));
+      return (await (await app.request('/backup/dashboard')).json()).data;
+    }
+
+    it('emits one critical item for three devices failing a store 403, before the per-device items', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2' }),
+        row({ deviceId: 'd3' }),
+      ]);
+
+      const destination = data.attentionItems.filter((i: any) => i.kind === 'destination_failing');
+      expect(destination).toHaveLength(1);
+      expect(destination[0]).toMatchObject({
+        id: `backup-destination-${CONFIG_ID}`,
+        severity: 'critical',
+        configId: CONFIG_ID,
+        destinationName: 'Primary S3',
+        failureCategory: 'storage',
+        failureCause: 'storage_access_denied',
+        failingDevices: 3,
+        totalDevices: 3,
+      });
+      expect(data.attentionItems[0].kind).toBe('destination_failing');
+      // The per-device items stay.
+      expect(data.attentionItems.filter((i: any) => String(i.id).startsWith('backup-failing-'))).toHaveLength(3);
+    });
+
+    it('counts N of M over every device whose latest job used the destination', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2' }),
+        row({ deviceId: 'd3', status: 'completed', errorLog: null }),
+      ]);
+      const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
+      expect(item).toMatchObject({ failingDevices: 2, totalDevices: 3 });
+    });
+
+    it('does not emit for one failing device', async () => {
+      const data = await dashboardWith([row({ deviceId: 'd1' }), row({ deviceId: 'd2', status: 'completed', errorLog: null })]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('ignores failures older than 48 hours and non-storage failures', async () => {
+      const old = new Date(Date.now() - 49 * 60 * 60 * 1000);
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', completedAt: old, createdAt: old }),
+        row({ deviceId: 'd2', completedAt: old, createdAt: old }),
+        row({ deviceId: 'd3', errorLog: 'backup helper exited unexpectedly' }),
+        row({ deviceId: 'd4', errorLog: 'backup helper exited unexpectedly' }),
+      ]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('groups by each device latest job and keeps destinations apart', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2', configId: OTHER_CONFIG_ID, configName: 'Other' }),
+        // d1 older job on another destination does not count for that destination.
+        row({ deviceId: 'd1', rn: 2, configId: OTHER_CONFIG_ID, configName: 'Other' }),
+      ]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('does not claim a cause for a store 5xx beyond the operation failing', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', errorLog: 'storage session: multipart:create failed with status 502 after 4 attempts' }),
+        row({ deviceId: 'd2', errorLog: 'storage session: multipart:create failed with status 502 after 4 attempts' }),
+      ]);
+      const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
+      expect(item.failureCause).toBe('storage_operation_failed');
+    });
   });
 
   it('keeps unrestricted dashboard behavior unchanged', async () => {
@@ -823,6 +944,8 @@ describe('backup dashboard routes', () => {
       const { data } = await res.json();
       expect(data.lastJob.failureCategory).toBe('agent');
       expect(data.lastFailureCategory).toBe('agent');
+      expect(data.lastJob.failureCause).toBe('helper_stopped');
+      expect(data.lastFailureCause).toBe('helper_stopped');
     });
 
     it('classifies lastFailure from the failed run when a later run succeeded', async () => {
