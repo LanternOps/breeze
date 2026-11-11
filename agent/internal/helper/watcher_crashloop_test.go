@@ -34,13 +34,20 @@ func (p *fakeExitProbe) close() { p.closed = true }
 // spawn reports PID 777. With *alive false each spawned process is dead at
 // once (a crash loop). Exit probes open only on a live PID, as on Windows.
 // *alive must only be changed with mgr.mu held: the watcher reads it.
+//
+// The cleanup stops mgr's watchers before restoring the package seams, in the
+// same function so the order cannot depend on when the caller registered
+// t.Cleanup(mgr.Shutdown) (cleanups run last-in-first-out).
 func crashingAssist(t *testing.T, mgr *Manager, alive *bool, code uint32) (*[]*fakeExitProbe, *int) {
 	t.Helper()
 	if err := os.WriteFile(mgr.binaryPath, []byte("bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	origList, origOpen := listHelperInstancesFunc, openExitProbeFunc
-	t.Cleanup(func() { listHelperInstancesFunc, openExitProbeFunc = origList, origOpen })
+	t.Cleanup(func() {
+		stopWatchersAndWait(mgr)
+		listHelperInstancesFunc, openExitProbeFunc = origList, origOpen
+	})
 	listHelperInstancesFunc = func(string) ([]helperInstance, error) {
 		if !*alive {
 			return nil, nil
@@ -64,6 +71,17 @@ func crashingAssist(t *testing.T, mgr *Manager, alive *bool, code uint32) (*[]*f
 		return 777, nil
 	}
 	return probes, &spawns
+}
+
+// stopWatchersAndWait cancels every session watcher and waits for each to
+// return. Unlike Shutdown it never abandons one after a timeout, so once it
+// returns no watcher goroutine can read a package seam.
+func stopWatchersAndWait(mgr *Manager) {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	for _, st := range mgr.sessions {
+		mgr.stopSessionWatcher(st)
+	}
 }
 
 func fastWatcher(t *testing.T) {
@@ -100,6 +118,39 @@ func linesContaining(buf *bytes.Buffer, s string) []string {
 		}
 	}
 	return out
+}
+
+// crashingAssist swaps package-level seams the watcher reads, so its cleanup
+// must leave no watcher running. Test cleanups run last-in-first-out, so the
+// seam restore runs before a t.Cleanup(mgr.Shutdown) registered earlier; a
+// watcher still ticking then reads listHelperInstancesFunc while the restore
+// writes it (a -race failure in TestApplyRelaunchesAfterTheWatcherWaited).
+func TestCrashingAssistStopsTheWatcherBeforeRestoringSeams(t *testing.T) {
+	fastWatcher(t)
+	mgr, _ := newNotInstalledManager(t)
+	t.Cleanup(mgr.Shutdown)
+	var w *watcher
+	t.Run("assist stays up", func(t *testing.T) {
+		alive := true
+		crashingAssist(t, mgr, &alive, 0)
+		mgr.Apply(&Settings{Enabled: true})
+		mgr.mu.Lock()
+		if st := mgr.sessions["1"]; st != nil {
+			w = st.watcher
+		}
+		mgr.mu.Unlock()
+		if w == nil {
+			t.Fatal("setup: Apply started no watcher")
+		}
+	})
+	if w == nil {
+		return
+	}
+	select {
+	case <-w.done:
+	default:
+		t.Fatal("crashingAssist's cleanup left the watcher running")
+	}
 }
 
 // Every watcher restart names how Assist exited.
