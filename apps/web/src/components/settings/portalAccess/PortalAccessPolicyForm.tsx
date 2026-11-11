@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { InheritChoice, type InheritChoiceOption } from '../../shared/InheritChoice';
 import InheritedField from '../../shared/InheritedField';
+import HashLink from '../../shared/HashLink';
 import type { PortalAccessPolicyField, PortalAccessPolicyValues, PortalAccessPolicyView } from '@breeze/shared';
 import { draftHasSsoMethod, ownValue, withDraftField, type PortalAccessPolicyDraft } from './types';
 
@@ -135,6 +136,15 @@ export function PortalAccessPolicyForm({
     { value: 'approval', label: t('portalAccessPolicy.selfRegistration.approval'), testId: `${ID}-self-registration-approval` },
     { value: 'instant', label: t('portalAccessPolicy.selfRegistration.instant'), testId: `${ID}-self-registration-instant` },
   ];
+  // W6 (#11383): self-registration admits only addresses at a verified domain,
+  // so with none it is on in name only. Keyed on what the form shows (the
+  // unsaved choice, else the saved own value, else the inherited one), so the
+  // warning appears as the person picks a mode, before they save. Org views
+  // only: a partner view carries `verifiedDomainCount: null`. A warning, not a
+  // refusal (OD6): a domain can lapse after save anyway, and enforcement is at use.
+  const selfRegistrationOn = capabilities.selfRegistration
+    && (ownValue(view, draft, 'selfRegistrationMode') ?? view.inherited.selfRegistrationMode.value) !== 'off';
+  const noVerifiedDomain = view.owner.kind === 'org' && view.verifiedDomainCount === 0 && selfRegistrationOn;
   const ssoNewPersonOptions: InheritChoiceOption<PortalAccessPolicyValues['ssoNewPersonMode']>[] = [
     { value: 'invited_only', label: t('portalAccessPolicy.ssoNewPerson.invitedOnly'), testId: `${ID}-sso-new-person-invited_only` },
     { value: 'approval', label: t('portalAccessPolicy.ssoNewPerson.approval'), testId: `${ID}-sso-new-person-approval` },
@@ -224,8 +234,23 @@ export function PortalAccessPolicyForm({
           <span className="font-medium">{t('portalAccessPolicy.invites.label')}</span>
           <span className="text-muted-foreground">{t('portalAccessPolicy.invites.value')}</span>
         </div>
-        {visible.has('selfRegistrationMode')
-          && row('selfRegistrationMode', 'self-registration', t('portalAccessPolicy.selfRegistration.label'), selfRegistrationOptions)}
+        {visible.has('selfRegistrationMode') && (
+          <div>
+            {row('selfRegistrationMode', 'self-registration', t('portalAccessPolicy.selfRegistration.label'), selfRegistrationOptions)}
+            {noVerifiedDomain && (
+              <p
+                role="status"
+                data-testid="self-registration-no-domain"
+                className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
+              >
+                {t('portalAccessPolicy.selfRegistration.noVerifiedDomain')}{' '}
+                <HashLink hash="domains" className="font-medium underline">
+                  {t('portalAccessPolicy.selfRegistration.verifyDomain')}
+                </HashLink>
+              </p>
+            )}
+          </div>
+        )}
         {visible.has('ssoNewPersonMode')
           && row('ssoNewPersonMode', 'sso-new-person', t('portalAccessPolicy.ssoNewPerson.label'), ssoNewPersonOptions)}
       </section>

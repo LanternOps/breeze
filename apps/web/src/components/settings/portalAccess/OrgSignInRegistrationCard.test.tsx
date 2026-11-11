@@ -27,7 +27,7 @@ function request(id: string) {
   return {
     id, email: `${id}@acme.test`, name: null, source: 'entra', status: 'pending',
     requestedAt: '2026-11-01T00:00:00.000Z', lastRequestedAt: '2026-11-01T00:00:00.000Z',
-    expiresAt: '2026-11-15T00:00:00.000Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false,
+    expiresAt: '2026-11-15T00:00:00.000Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false, domainVerified: null,
   };
 }
 

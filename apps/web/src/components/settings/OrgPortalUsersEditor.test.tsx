@@ -77,7 +77,7 @@ describe('OrgPortalUsersEditor', () => {
 
   it('an approval reloads the users table without unmounting the request list', async () => {
     let users = [] as unknown[];
-    let pending = [{ id: 'r1', email: 'new@acme.example', name: null, source: 'self', status: 'pending', requestedAt: '2026-11-01T00:00:00Z', lastRequestedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false }];
+    let pending = [{ id: 'r1', email: 'new@acme.example', name: null, source: 'self', status: 'pending', requestedAt: '2026-11-01T00:00:00Z', lastRequestedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false, domainVerified: true }];
     requestsHandler = async (url: string) => {
       if (url.endsWith('/r1/approve')) {
         pending = [];
@@ -97,7 +97,7 @@ describe('OrgPortalUsersEditor', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const existing = { id: 'pu-1', email: 'a@acme.example', name: 'A', status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null };
     let usersCalls = 0;
-    const pending = [{ id: 'r1', email: 'new@acme.example', name: null, source: 'self', status: 'pending', requestedAt: '2026-11-01T00:00:00Z', lastRequestedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false }];
+    const pending = [{ id: 'r1', email: 'new@acme.example', name: null, source: 'self', status: 'pending', requestedAt: '2026-11-01T00:00:00Z', lastRequestedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false, domainVerified: true }];
     requestsHandler = async (url: string) => {
       if (url.endsWith('/r1/approve')) return ok({ data: { outcome: 'account_created', portalUserId: 'pu-9' } });
       return ok({ data: pending, hasMore: false });
