@@ -9,8 +9,6 @@ import {
   accessReviewItems,
   users,
   roles,
-  permissions,
-  rolePermissions,
   partnerUsers,
   organizationUsers
 } from '../db/schema';
@@ -24,6 +22,7 @@ import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 import { assertCanManageTarget } from '../services/roleAssignment';
+import { getRolesPermissionGrants } from '../services/roleInheritance';
 import { canSelfDecideAccessReviewItem } from '../services/accessReviewSelfDecision';
 import { jsonError } from '../lib/jsonError';
 import { ERROR_CODES } from '@breeze/shared';
@@ -264,24 +263,11 @@ accessReviewRoutes.get(
       .where(eq(accessReviewItems.reviewId, reviewId));
 
     const roleIds = Array.from(new Set(items.map((item) => item.roleId)));
+    // Runtime grants: the role's own rows plus every ancestor's (#9600/#11702).
+    const grantsByRole = roleIds.length > 0 ? await getRolesPermissionGrants(roleIds) : new Map();
     const permissionsByRole = new Map<string, string[]>();
-
-    if (roleIds.length > 0) {
-      const rolePermissionRows = await db
-        .select({
-          roleId: rolePermissions.roleId,
-          resource: permissions.resource,
-          action: permissions.action
-        })
-        .from(rolePermissions)
-        .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-        .where(inArray(rolePermissions.roleId, roleIds));
-
-      rolePermissionRows.forEach((row) => {
-        const list = permissionsByRole.get(row.roleId) ?? [];
-        list.push(`${row.resource}:${row.action}`);
-        permissionsByRole.set(row.roleId, list);
-      });
+    for (const [roleId, grants] of grantsByRole) {
+      permissionsByRole.set(roleId, grants.map((g) => `${g.resource}:${g.action}`));
     }
 
     const itemsWithPermissions = items.map((item) => ({

@@ -2,17 +2,21 @@
  * Role names that grant a permission, for the picker's "Requires <role>"
  * (AI model registry W05, #7603, spec §11). Explicit grants plus every
  * wildcard form the RBAC matcher honours (`permissionGrantMatches`: the
- * resource and the action may each be `*`). Lists roles that carry the grant
- * directly; a role that only inherits it through `parent_role_id` (resolved
- * at runtime since #9600) is not named. Names are a hint, capped at three.
+ * resource and the action may each be `*`). Lists every role that holds the
+ * grant at runtime: its own rows plus those inherited through `parent_role_id`
+ * (resolved by roleInheritance since #9600/#11702). Names are a hint, capped
+ * at three.
  *
  * Tenancy: roles are partner / org rows and the picker runs under org tokens,
  * so this reads in a fresh system context with EXPLICIT filters — the
  * caller's own partner's roles, the caller's own org's roles, and the global
  * system templates (no partner, no org). Never another tenant's role names.
  */
-import { sql } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { roles } from '../../db/schema';
+import { permissionGrantMatches } from '../permissionMatching';
+import { getRolesPermissionGrants } from '../roleInheritance';
 
 const MAX_ROLE_NAMES = 3;
 
@@ -23,21 +27,19 @@ export async function rolesGrantingPermission(input: {
 }): Promise<string[]> {
   const [resource, action, ...rest] = input.permission.split(':');
   if (!resource || !action || rest.length > 0) return [];
-  const orgArm = input.orgId ? sql`OR r.org_id = ${input.orgId}::uuid` : sql``;
-  const result = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute<{ name: string }>(sql`
-    SELECT DISTINCT r.name
-    FROM roles r
-    JOIN role_permissions rp ON rp.role_id = r.id
-    JOIN permissions p ON p.id = rp.permission_id
-    WHERE p.resource IN (${resource}, '*') AND p.action IN (${action}, '*')
-      AND (
-        r.partner_id = ${input.partnerId}::uuid
-        ${orgArm}
-        OR (r.partner_id IS NULL AND r.org_id IS NULL)
-      )
-    ORDER BY r.name
-    LIMIT ${MAX_ROLE_NAMES}
-  `)));
-  const rows = Array.isArray(result) ? result : (result as { rows?: Array<{ name: string }> }).rows ?? [];
-  return rows.map((r) => r.name);
+  const tenantFilter = or(
+    eq(roles.partnerId, input.partnerId),
+    input.orgId ? eq(roles.orgId, input.orgId) : undefined,
+    and(isNull(roles.partnerId), isNull(roles.orgId)),
+  );
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const candidates = await db.select({ id: roles.id, name: roles.name }).from(roles).where(tenantFilter);
+    if (candidates.length === 0) return [];
+    const grants = await getRolesPermissionGrants(candidates.map((r) => r.id));
+    const names = new Set<string>();
+    for (const r of candidates) {
+      if ((grants.get(r.id) ?? []).some((g) => permissionGrantMatches(g, resource, action))) names.add(r.name);
+    }
+    return [...names].sort().slice(0, MAX_ROLE_NAMES);
+  }));
 }
