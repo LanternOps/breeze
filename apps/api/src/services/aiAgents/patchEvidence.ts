@@ -17,7 +17,8 @@
  * would truncate it into nonsense. So the bundle leads with a SCALAR rollup
  * (device/patch/severity counts, oldest outstanding age), then per-ring
  * posture, then the worst devices with a small per-device sample of their
- * outstanding patches, then the reboot backlog. Counts are real (`COUNT(*) OVER ()` / aggregates); rows are samples.
+ * outstanding patches, then the reboot backlog. Counts are real
+ * (`COUNT(*) OVER ()` / aggregates); rows are samples.
  *
  * ## The properties this module holds (copied from sweepEvidence.ts)
  *
