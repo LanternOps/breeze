@@ -13,7 +13,8 @@ import { inSystemDbContext } from '../outcomeProbes';
 import { createNotification } from '../userNotifications';
 import { resolveRecipientUserIds } from './recipients';
 
-export type ModelBlockedReason = 'model_unavailable' | 'model_refused';
+/** `tool_profile_underpowered` (#11393): the model's tool profile drops a tool the run needs. */
+export type ModelBlockedReason = 'model_unavailable' | 'model_refused' | 'tool_profile_underpowered';
 
 /**
  * Thrown inside the run loop; the run's catch moves it `running → blocked`
@@ -73,7 +74,9 @@ export async function notifyModelBlocked(input: {
   if (userIds.length === 0) return;
   const title = input.reason === 'model_refused'
     ? `${input.agentName}: the AI model declined a run`
-    : `${input.agentName}: its AI model is unavailable`;
+    : input.reason === 'tool_profile_underpowered'
+      ? `${input.agentName}: its AI model's tool profile cannot run it`
+      : `${input.agentName}: its AI model is unavailable`;
   await inSystemDbContext(async () => {
     for (const userId of userIds) {
       await createNotification({

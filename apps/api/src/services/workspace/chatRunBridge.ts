@@ -2,9 +2,12 @@
  * Worker run events → a live chat session (execution-plane spec §5.5).
  *
  * Chat-initiated launch is currently disabled (#6086; the launch tool is
- * fully deregistered — see `workspaceLaunchLimits.ts`), so nothing seeds this
- * bridge from within a turn today. The wiring is retained for when delegated
- * authorization lands: a launch admits a run and returns immediately, the run
+ * fully deregistered — see `workspaceLaunchLimits.ts`); the one seeder today is
+ * a Wisp hand-off (`watchRunForOriginSession`, #11084), which streams the run's
+ * progress and card here while its result text reaches the model from the run
+ * row on the next turn (`services/wisp/specialistResultsTurn.ts`, #11671). The
+ * generic wiring is retained for when delegated authorization lands: a launch
+ * admits a run and returns immediately, the run
  * then executes on the WORKER role, and its terminal event is published to
  * Redis by `finishRun` (`aiAgents/runLoop.ts`) — but `EventBus.subscribe` handlers fire
  * only in the publishing process — so an API process holding the technician's
@@ -55,6 +58,13 @@ export interface WatchedRun {
   runId: string;
   sessionId: string;
   orgId: string;
+  /**
+   * #11671: the run's result reaches the model from the run row on the next
+   * Wisp turn (services/wisp/specialistResultsTurn.ts), so the bridge streams
+   * the card only and does not queue it in `pendingRunResults`. That queue
+   * lives on the streaming session, which every message send rotates away.
+   */
+  resultDeliveredByTurn?: boolean;
 }
 
 /** `awaiting_approval` (#11084): a device-troubleshooting run settled with steps waiting for a person. */
@@ -62,7 +72,8 @@ export type RunDeliveryStatus = 'completed' | 'failed' | 'awaiting_approval';
 
 export interface PendingRunResult {
   runId: string;
-  status: RunDeliveryStatus;
+  /** `cancelled`: only from the durable Wisp read (specialistResultsTurn.ts); the bridge reports it as `failed`. */
+  status: RunDeliveryStatus | 'cancelled';
   /** The run's profile; `device_troubleshooting` changes how the result is worded to the model. */
   profile?: string;
   summary: string | null;
@@ -259,7 +270,7 @@ export function watchRunForOriginSession(watch: WatchedRun): boolean {
     incChatRunDelivery('not_attached');
     return false;
   }
-  getChatRunBridge().watch(watch);
+  getChatRunBridge().watch({ ...watch, resultDeliveredByTurn: true });
   return true;
 }
 
@@ -364,6 +375,12 @@ export async function deliverRunEvent(event: {
     ...(delivery.pendingIntentCount !== undefined ? { pendingIntentCount: delivery.pendingIntentCount } : {}),
   });
 
+  // #11671: a Wisp hand-off's result is read from the run row on the next turn.
+  if (watch.resultDeliveredByTurn) {
+    incChatRunDelivery('card_only');
+    return;
+  }
+
   const pending: PendingRunResult[] = session.pendingRunResults ?? (session.pendingRunResults = []);
   pending.push({ runId, ...delivery });
   while (pending.length > MAX_PENDING_RUN_RESULTS) pending.shift();
@@ -383,14 +400,29 @@ export async function deliverRunEvent(event: {
  * buffer and never reach the browser. Prepending on the next turn is delivered,
  * ordered, and costs no orphan turn.
  *
- * Returns null when nothing is queued, so the caller can skip the concatenation.
+ * NOTE: the queue lives on the streaming session, and the message route
+ * rotates that session away before every turn, so a result queued between
+ * turns does not survive to here. Wisp hand-offs therefore do not use it
+ * (#11671): their results are read from the run rows each turn and passed in
+ * as `durable`, rendered in the same block.
+ *
+ * Returns null when there is nothing to render, so the caller can skip the
+ * concatenation.
  */
-export function drainPendingRunResults(session: ActiveSession): string | null {
-  const pending = session.pendingRunResults;
-  if (!pending || pending.length === 0) return null;
-  session.pendingRunResults = [];
+export function drainPendingRunResults(session: ActiveSession, durable: readonly PendingRunResult[] = []): string | null {
+  const queued = session.pendingRunResults ?? [];
+  if (queued.length > 0) session.pendingRunResults = [];
+  // The same run and status from both sources is given once.
+  const seen = new Set<string>();
+  const results = [...queued, ...durable].filter((r) => {
+    const key = `${r.runId}:${r.status}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (results.length === 0) return null;
 
-  const blocks = pending.map((result) => {
+  const blocks = results.map((result) => {
     const artifacts = result.artifacts.length > 0
       ? result.artifacts
         .map((a) => `  - ${a.name} (${a.bytes} bytes, ${a.contentType}, handle ${a.handle})`)

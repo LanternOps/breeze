@@ -245,6 +245,15 @@ export async function recordRunningVersion(options: {
 
   const sql = openConnection(options.databaseUrl);
   try {
+    // Read first (#11731): on a read-only database even an INSERT that would
+    // conflict and do nothing is rejected (SQLSTATE 25006). A version already
+    // on file needs no write, so a read-only restart of the same image stays
+    // quiet; only a first boot of a new version attempts the INSERT.
+    const existing = await sql.unsafe<{ version: string }[]>(
+      `SELECT version FROM ${BREEZE_VERSION_HISTORY_TABLE} WHERE version = $1`,
+      [raw],
+    );
+    if (existing.length > 0) return;
     const inserted = await sql.unsafe<{ version: string }[]>(
       `INSERT INTO ${BREEZE_VERSION_HISTORY_TABLE} (version) VALUES ($1)
        ON CONFLICT (version) DO NOTHING
