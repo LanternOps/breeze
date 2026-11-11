@@ -158,6 +158,11 @@ export const JOB_SCHEDULES = {
   'playbook-execution-retention': '23 14 * * *',
   'cve-enrichment': '43 14 * * *',
   'receipt-retention': '3 15 * * *',
+  // High-volume table retention W4 (#4342, #11591) — AI transcripts (stub
+  // technician/client sessions past their windows, hard-delete stubs past the
+  // org's audit window), report-only until AI_TRANSCRIPT_RETENTION_ENFORCE.
+  // Daily tier lane (≡ 3 mod 5), slot pre-allocated by the retention plan.
+  'ai-transcript-retention': '8 15 * * *',
   'winget-index-sync': '3 16 * * *',
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
