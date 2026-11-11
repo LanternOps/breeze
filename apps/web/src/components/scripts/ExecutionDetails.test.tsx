@@ -254,7 +254,7 @@ describe('ExecutionDetails purged output (#4342 W2)', () => {
   it('shows the retention note instead of "No output" when outputPurgedAt is set', () => {
     renderExecution({ stdout: undefined, stderr: undefined, outputPurgedAt: '2026-01-01T00:00:00Z' });
 
-    expect(screen.getAllByText(/Output removed after the retention window/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Output removed after the retention window \([^{}]*\d[^{}]*\)/).length).toBeGreaterThan(0);
     expect(screen.queryByText('No output')).toBeNull();
   });
 

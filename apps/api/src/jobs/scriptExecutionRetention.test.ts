@@ -219,7 +219,12 @@ describe('script execution retention (#4342 W2)', () => {
       { table: 'script_executions', error: 'statement timeout' },
       { mode: 'report', table: 'script_execution_batches', retentionDays: 365, eligible: 0, eligibleCapped: false, durationMs: 1 },
     ]);
-    await expect(mod.runScriptExecutionRetention()).rejects.toThrow(/statement timeout/);
+    // Names the failed target only, so the job-level event groups as one issue;
+    // the per-target error was already logged and captured by the runner.
+    const err = await mod.runScriptExecutionRetention().catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/1 of 3 retention targets failed: script_execution_retention$/);
+    expect((err as Error).message).not.toContain('statement timeout');
   });
 
   it('flags every target incomplete and rethrows when the run itself throws', async () => {

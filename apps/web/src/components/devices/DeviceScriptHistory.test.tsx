@@ -342,7 +342,7 @@ describe('DeviceScriptHistory purged output (#4342 W2)', () => {
 
     fireEvent.click(await screen.findByText('Collect Inventory'));
 
-    expect((await screen.findAllByText(/Output removed after the retention window/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/Output removed after the retention window \([^{}]*\d[^{}]*\)/)).length).toBeGreaterThan(0);
     expect(screen.queryByText('No output')).toBeNull();
   });
 

@@ -48,7 +48,6 @@ import { sql } from 'drizzle-orm';
 
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
-import { captureException } from '../services/sentry';
 import {
   parsePositiveIntEnv,
   resolveRetentionDays,
@@ -198,14 +197,13 @@ export async function runScriptExecutionRetention(
     throw err;
   }
 
-  // runRetentionTargets already logged, captured and flagged each failed
-  // target, and ran the rest. Fail the job too, so BullMQ history shows it.
-  const failed = results.filter((r): r is { table: string; error: string } => 'error' in r);
+  // runRetentionTargets already logged and captured each failed target's own
+  // error, flagged its metric incomplete, and ran the rest. Fail the job too,
+  // so BullMQ history shows it. The message names only the failed targets (the
+  // detail is in the per-target capture), so it groups as one Sentry issue.
+  const failed = results.flatMap((r, i) => ('error' in r ? [TARGETS[i]!.metricName] : []));
   if (failed.length > 0) {
-    throw new Error(
-      `${LOG_PREFIX} ${failed.length} of ${results.length} targets failed: `
-      + failed.map((f) => `${f.table}: ${f.error}`).join('; '),
-    );
+    throw new Error(`${LOG_PREFIX} ${failed.length} of ${results.length} retention targets failed: ${failed.join(', ')}`);
   }
   return results;
 }
@@ -222,16 +220,9 @@ export function createScriptExecutionRetentionWorker(): Worker<ScriptExecutionRe
 export async function initializeScriptExecutionRetention(): Promise<void> {
   try {
     retentionWorker = createScriptExecutionRetentionWorker();
+    // Logs and captures the worker's `error` and `failed` events itself; a
+    // second pair of listeners here would report every failure twice.
     attachWorkerObservability(retentionWorker, 'scriptExecutionRetention');
-
-    retentionWorker.on('error', (error) => {
-      console.error(`${LOG_PREFIX} Worker error:`, error);
-      captureException(error);
-    });
-    retentionWorker.on('failed', (job, error) => {
-      console.error(`${LOG_PREFIX} Job ${job?.id} failed:`, error);
-      captureException(error);
-    });
 
     // Daily cron slot from the registry — NOT `every: 24h` (epoch-anchored).
     await getScriptExecutionRetentionQueue().upsertJobScheduler(

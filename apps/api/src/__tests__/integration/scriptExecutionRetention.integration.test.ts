@@ -86,7 +86,7 @@ describe('script execution retention (#4342 W2, real Postgres)', () => {
 
   async function monitor(): Promise<string> {
     const [row] = await getTestDb().insert(monitorDefinitions).values({
-      orgId, name: 'probe', kind: 'script', condition: {}, severity: 'medium',
+      orgId, name: `probe-${crypto.randomUUID()}`, kind: 'script', condition: {}, severity: 'medium',
     }).returning({ id: monitorDefinitions.id });
     return row!.id;
   }
@@ -239,5 +239,59 @@ describe('script execution retention (#4342 W2, real Postgres)', () => {
     // Nothing left to do on a second run.
     const again = await runScriptExecutionRetention(KNOBS);
     expect(again.map((r) => affected(r))).toEqual([0, 0, 0]);
+  });
+
+  it('guard edges: NULL completed_at sorts last, keys are per device, only terminal rows shield, script-less runs age out', async () => {
+    const s = await script('edges');
+    const recentAnchor = await exec({ scriptId: s, status: 'completed', createdAt: daysAgo(1) }); // disarms the script guard
+    const m = await monitor();
+    const proposalRun = async (createdAt: Date) => {
+      const [row] = await getTestDb().insert(scriptExecutions).values({
+        scriptId: null, sourceKind: 'proposal', proposalId: crypto.randomUUID(),
+        deviceId, orgId, status: 'completed', createdAt, completedAt: createdAt,
+      }).returning({ id: scriptExecutions.id });
+      return row!.id;
+    };
+    const ids = {
+      // A terminal probe with no completed_at is never newer than a completed one (NULLS LAST)…
+      nullCompletedProbe: await exec({ scriptId: s, status: 'cancelled', createdAt: daysAgo(400), completedAt: null, monitorId: m }),
+      completedProbe: await exec({ scriptId: s, status: 'completed', createdAt: daysAgo(500), monitorId: m }),
+      // …and the same monitor on another device keeps its own newest probe.
+      otherDeviceOld: await exec({ scriptId: s, status: 'completed', createdAt: daysAgo(600), monitorId: m, deviceId: otherOrgDeviceId, orgId: otherOrgId }),
+      otherDeviceNewest: await exec({ scriptId: s, status: 'completed', createdAt: daysAgo(550), monitorId: m, deviceId: otherOrgDeviceId, orgId: otherOrgId }),
+      // Disarms the script guard in the other org, so only the per-device monitor key keeps otherDeviceNewest.
+      otherOrgAnchor: await exec({ scriptId: s, status: 'completed', createdAt: daysAgo(1), deviceId: otherOrgDeviceId, orgId: otherOrgId }),
+      plainOld: await exec({ scriptId: s, status: 'completed', createdAt: daysAgo(500) }),
+      // Script-less (proposal) runs have only the age rule.
+      proposalOld: await proposalRun(daysAgo(400)),
+      proposalRecent: await proposalRun(daysAgo(10)),
+    };
+    // A newer probe still running does not displace the newest terminal one.
+    const m2 = await monitor();
+    const m2Old = await exec({ scriptId: s, status: 'failed', createdAt: daysAgo(500), monitorId: m2 });
+    const m2Running = await exec({ scriptId: s, status: 'running', createdAt: daysAgo(400), monitorId: m2 });
+    // A script whose only newer run is still running keeps its newest terminal run.
+    const lone = await script('lone');
+    const loneTerminal = await exec({ scriptId: lone, status: 'completed', createdAt: daysAgo(500) });
+    const loneRunning = await exec({ scriptId: lone, status: 'running', createdAt: daysAgo(100) });
+    // Two terminal probes that both lack completed_at tie, and ties are kept.
+    const m3 = await monitor();
+    const tieA = await exec({ scriptId: s, status: 'cancelled', createdAt: daysAgo(500), completedAt: null, monitorId: m3 });
+    const tieB = await exec({ scriptId: s, status: 'cancelled', createdAt: daysAgo(450), completedAt: null, monitorId: m3 });
+
+    const all = [...Object.values(ids), recentAnchor, m2Old, m2Running, loneTerminal, loneRunning, tieA, tieB];
+    const report = await runScriptExecutionRetention({ ...KNOBS, forceReport: true });
+    const enforce = await runScriptExecutionRetention(KNOBS);
+    const left = await rows(all);
+
+    const deleted = { nullCompletedProbe: ids.nullCompletedProbe, otherDeviceOld: ids.otherDeviceOld, plainOld: ids.plainOld, proposalOld: ids.proposalOld };
+    for (const [k, id] of Object.entries(deleted)) expect(left.has(id), `${k} should be deleted`).toBe(false);
+    const kept = {
+      completedProbe: ids.completedProbe, otherDeviceNewest: ids.otherDeviceNewest, otherOrgAnchor: ids.otherOrgAnchor, proposalRecent: ids.proposalRecent,
+      recentAnchor, m2Old, m2Running, loneTerminal, loneRunning, tieA, tieB,
+    };
+    for (const [k, id] of Object.entries(kept)) expect(left.has(id), `${k} should survive`).toBe(true);
+    expect(affected(enforce[1])).toBe(Object.keys(deleted).length);
+    expect(eligible(report[1])).toBe(affected(enforce[1]));
   });
 });
