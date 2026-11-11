@@ -1493,6 +1493,9 @@ Step 1's §8 is binding except for these points. A one-line note in that section
   arrives. Past either the load stops at once and the ticket fails with `ticket_too_large`, so a
   broken server cannot hold memory in the shared API process. Attachment files are not read at
   load and do not count.
+  The attachment-location index a load leaves behind is bounded in entries (#11730 review): a
+  ticket listing over 10,000 attachments is not indexed (its files are found by a fresh read) and
+  the index holds at most 100,000 entries across sources, least recently used dropped first.
 - **Zammad load.** About 107k requests for the bulk pass. Each one writes the token's
   `last_used_at` (Z11). Concurrency is 2, backoff is honoured, and the bulk runs off-hours.
 - **Partial runs** are safe by construction: every write is resumable (F3), a slice crash

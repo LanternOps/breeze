@@ -1,4 +1,4 @@
-import { ticketImportLimits } from '../../importLimits';
+import { ticketImportLimits, ZAMMAD_ATTACHMENT_INDEX_LIMITS } from '../../importLimits';
 import type { LoadedTicket, SourceHandle, SourceRow } from '../../moduleContract';
 import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError } from '../../sourceFetch';
 import {
@@ -46,6 +46,9 @@ import {
  *   `ticket_too_large` (#11296 follow-up): each answer is capped, but a broken
  *   server could otherwise list articles without end. Attachment files are
  *   never read at load, so they do not count.
+ * - **the attachment index** the load leaves behind (where each file lives)
+ *   is bounded in entries per ticket and in all (ZAMMAD_ATTACHMENT_INDEX_LIMITS,
+ *   #11730 review): see `rememberFileLocations`.
  */
 
 export const ZAMMAD_BIG_TICKET_ARTICLES = 500;
@@ -150,24 +153,61 @@ export function zammadCursorAfterRow(rawCursor: ZammadCursor | null, rowKey: str
  * handle of the source asks (a file is normally fetched right after its
  * ticket's load) and two sources never share an entry. Nothing personal: ids
  * only. A miss re-reads the ticket's articles (`fetchZammadAttachment`).
+ *
+ * Bounded in entries too, not only tickets (#11730 review, Strix): a ticket
+ * listing more than ZAMMAD_ATTACHMENT_INDEX_LIMITS.perTicket attachments is
+ * not indexed (its files take the miss path), and past `.total` entries
+ * across every source the least recently used tickets go first.
  */
 export type FileLocation = { ticketId: number; articleId: number };
 const LOCATIONS = new Map<string, Map<number, FileLocation>>();
+let indexedEntries = 0;
 export const ZAMMAD_FILE_LOCATION_TICKETS = 64;
 
 function locationKey(src: SourceHandle<unknown>, ticketKey: string): string {
   return `${src.sourceId}\n${src.baseUrl}\n${ticketKey}`;
 }
 
+function dropLocations(key: string): void {
+  const files = LOCATIONS.get(key);
+  if (!files) return;
+  indexedEntries -= files.size;
+  LOCATIONS.delete(key);
+}
+
+/** Where attachment `storeId` lives among `articles`, or null. */
+export function fileLocationIn(articles: readonly ZammadArticle[], storeId: number): FileLocation | null {
+  for (const article of articles) {
+    for (const file of article.attachments ?? []) {
+      if (file.id === storeId) return { ticketId: article.ticket_id, articleId: article.id };
+    }
+  }
+  return null;
+}
+
 export function rememberFileLocations(src: SourceHandle<unknown>, ticketKey: string, articles: readonly ZammadArticle[]): void {
+  const key = locationKey(src, ticketKey);
+  dropLocations(key);
+  const { perTicket, total } = ZAMMAD_ATTACHMENT_INDEX_LIMITS;
+  let stubs = 0;
+  for (const article of articles) stubs += article.attachments?.length ?? 0;
+  // Too many to keep: not indexed, so its files are found by a fresh read.
+  if (stubs > perTicket) return;
   const files = new Map<number, FileLocation>();
   for (const article of articles) {
     for (const file of article.attachments ?? []) files.set(file.id, { ticketId: article.ticket_id, articleId: article.id });
   }
-  const key = locationKey(src, ticketKey);
-  LOCATIONS.delete(key);
   LOCATIONS.set(key, files);
-  while (LOCATIONS.size > ZAMMAD_FILE_LOCATION_TICKETS) LOCATIONS.delete(LOCATIONS.keys().next().value!);
+  indexedEntries += files.size;
+  // perTicket <= total, so the ticket just added always stays.
+  while (LOCATIONS.size > ZAMMAD_FILE_LOCATION_TICKETS || indexedEntries > total) {
+    dropLocations(LOCATIONS.keys().next().value!);
+  }
+}
+
+/** Tests only: the entries the index holds across every source. */
+export function indexedFileLocationCount(): number {
+  return indexedEntries;
 }
 
 export function rememberedFileLocation(src: SourceHandle<unknown>, ticketKey: string, storeId: number): FileLocation | null {
@@ -184,9 +224,10 @@ export function rememberedFileLocation(src: SourceHandle<unknown>, ticketKey: st
 export function forgetFileLocations(sourceId?: string): void {
   if (sourceId === undefined) {
     LOCATIONS.clear();
+    indexedEntries = 0;
     return;
   }
-  for (const key of [...LOCATIONS.keys()]) if (key.startsWith(`${sourceId}\n`)) LOCATIONS.delete(key);
+  for (const key of [...LOCATIONS.keys()]) if (key.startsWith(`${sourceId}\n`)) dropLocations(key);
 }
 
 // ------------------------------------------------------------------- load

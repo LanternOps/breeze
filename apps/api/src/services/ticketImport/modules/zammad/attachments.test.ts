@@ -3,7 +3,9 @@ import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceUn
 import { fetchZammadAttachment, probeZammad } from './attachments';
 import { clearZammadDirectoryCache } from './directory';
 import { FakeZammad, loadZammadFixtures, RESIZED_COPY, zammadTestHandle } from './fakeZammad.fixtures';
-import { __zammadReadingTestHooks, forgetFileLocations, loadZammad, rememberedFileLocation, rememberFileLocations, ZAMMAD_FILE_LOCATION_TICKETS, zammadRow } from './reading';
+import { ZAMMAD_ATTACHMENT_INDEX_LIMITS } from '../../importLimits';
+import { __zammadReadingTestHooks, forgetFileLocations, indexedFileLocationCount, loadZammad, rememberedFileLocation, rememberFileLocations, ZAMMAD_FILE_LOCATION_TICKETS, zammadRow } from './reading';
+import type { ZammadArticle } from './shapes';
 
 /** Files and probes (spec 2026-10-19 §4.3, §5.9 deletions, §6.2; Z6, Z8, Z10). */
 
@@ -71,6 +73,58 @@ describe('fetchAttachment', () => {
     // Bounded: the least recently used ticket goes first.
     for (let i = 0; i < ZAMMAD_FILE_LOCATION_TICKETS; i += 1) rememberFileLocations(loader, `9${i}`, []);
     expect(rememberedFileLocation(loader, '102', 5004)).toBeNull();
+  });
+
+  describe('the index is bounded in entries, not only tickets (#11730 review, Strix)', () => {
+    const { perTicket, total } = ZAMMAD_ATTACHMENT_INDEX_LIMITS;
+    const stubs = (from: number, n: number) => Array.from({ length: n }, (_, i) => ({ id: from + i, store_file_id: from + i, filename: 'f', size: '1', preferences: {} }));
+    const articleWith = (ticketId: number, files: ReturnType<typeof stubs>) => ({ id: ticketId * 10, ticket_id: ticketId, attachments: files }) as unknown as ZammadArticle;
+
+    it('a ticket over the per-ticket cap is not indexed; its file still downloads through a fresh read', async () => {
+      const data = loadZammadFixtures('base');
+      data.byTicket.set(102, data.byTicket.get(102)!.map((a) => (a.id === 1004
+        ? { ...a, attachments: [...(a.attachments as unknown[]), ...stubs(100_000, perTicket)] }
+        : a)));
+      const fake = new FakeZammad(data);
+      const src = await loaded(fake, 102);
+      expect(rememberedFileLocation(src, '102', 5004)).toBeNull();
+      expect(indexedFileLocationCount()).toBe(0);
+      fake.requests.length = 0;
+      const bytes = await fetchZammadAttachment(src, { sourceId: 'attachment:5004', ticketKey: '102' }, 1024);
+      expect(Buffer.from(bytes).equals(fake.data.files.get(5004)!)).toBe(true);
+      expect(fake.requestedPaths()).toEqual([
+        '/api/v1/tickets/102?expand=true', '/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_attachment/102/1005/5004',
+      ]);
+      expect(indexedFileLocationCount()).toBe(0);
+    });
+
+    it('a ticket at the cap is indexed and its files come from the cache', () => {
+      const src = zammadTestHandle(new FakeZammad(), { sourceId: 'cap-source' });
+      rememberFileLocations(src, '7', [articleWith(7, stubs(1, perTicket))]);
+      expect(indexedFileLocationCount()).toBe(perTicket);
+      expect(rememberedFileLocation(src, '7', perTicket)).toEqual({ ticketId: 7, articleId: 70 });
+    });
+
+    it('past the total cap across sources the least recently used tickets go first', () => {
+      const fake = new FakeZammad();
+      const a = zammadTestHandle(fake, { sourceId: 'total-a' });
+      const b = zammadTestHandle(fake, { sourceId: 'total-b' });
+      const tickets = total / perTicket;
+      for (let i = 1; i <= tickets; i += 1) rememberFileLocations(i % 2 ? a : b, String(i), [articleWith(i, stubs(1, perTicket))]);
+      expect(indexedFileLocationCount()).toBe(total);
+      // Ticket 1 used most recently: ticket 2 is the oldest now.
+      expect(rememberedFileLocation(a, '1', 1)).not.toBeNull();
+      rememberFileLocations(a, 'next', [articleWith(99, stubs(1, 1))]);
+      expect(indexedFileLocationCount()).toBe(total - perTicket + 1);
+      expect(rememberedFileLocation(b, '2', 1)).toBeNull();
+      expect(rememberedFileLocation(a, '1', 1)).not.toBeNull();
+      expect(rememberedFileLocation(a, 'next', 1)).toEqual({ ticketId: 99, articleId: 990 });
+      // Re-indexing a ticket replaces its entries; forgetting a source releases its count.
+      rememberFileLocations(a, 'next', [articleWith(99, stubs(1, 3))]);
+      expect(indexedFileLocationCount()).toBe(total - perTicket + 3);
+      forgetFileLocations('total-b');
+      expect(indexedFileLocationCount()).toBe(Math.ceil(tickets / 2) * perTicket + 3);
+    });
   });
 
   it('the attachment id is the attachment\'s own, not the shared store file (review 7)', async () => {

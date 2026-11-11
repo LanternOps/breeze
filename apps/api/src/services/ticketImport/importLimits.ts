@@ -83,6 +83,22 @@ export function ticketImportLimits(): TicketImportLimits {
   };
 }
 
+/**
+ * The Zammad attachment index (modules/zammad/reading.ts `LOCATIONS`): one
+ * entry per attachment of a recently loaded ticket, kept in the process
+ * across slices (#11730 review, Strix). An entry is a few bytes of JSON at
+ * the source but ~100 bytes once parsed and kept, so the article budget
+ * alone does not bound it. A ticket with more attachments than
+ * `perTicket` is not indexed (its files are found by a fresh read, the
+ * cache-miss path); past `total` across every source the oldest tickets go.
+ * Worst case ~`total` × 100 B ≈ 10 MiB. Not env knobs: a real ticket is far
+ * below either, and a lower value only costs re-reads.
+ */
+export const ZAMMAD_ATTACHMENT_INDEX_LIMITS = {
+  perTicket: 10_000,
+  total: 100_000,
+} as const;
+
 /** The env names, for the boot report (config/validate.ts). */
 export const TICKET_IMPORT_LIMIT_ENV_VARS = [
   'TICKET_IMPORT_WORKER_CONCURRENCY',
