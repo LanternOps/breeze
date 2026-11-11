@@ -87,7 +87,6 @@ var (
 	serverURL        string
 	backupServerURL  string // seeded by bootstrap/enroll responses (#2288)
 	enrollmentSecret string
-	enrollSiteID     string
 	enrollDeviceRole string
 	forceEnroll      bool
 	quietEnroll      bool
@@ -324,10 +323,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
-	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Deprecated and ignored; the site comes from the enrollment key")
-	if err := enrollCmd.Flags().MarkDeprecated("site-id", siteIDDeprecationNotice); err != nil {
-		panic(err) // only fails if the flag above is not registered
-	}
+	enrollCmd.SetFlagErrorFunc(enrollFlagError)
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
@@ -771,6 +767,18 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	repairConfigThenInitLogging(cfg, func() {
 		repairStartupPermissions(cfg.SupportMode, sessionbroker.EnsureIPCGroup, config.FixConfigPermissions)
 	})
+
+	// #8318 — finish a reattach a previous process confirmed but did not
+	// finish swapping, before anything below reads the identity or the
+	// credentials. Never in support mode: a Quick Support client takes no
+	// part in a reattach.
+	if !cfg.SupportMode {
+		reattached, err := finishConfirmedRebindAtStartup(cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg = reattached
+	}
 
 	// Record this process's live PID immediately, before any startup step that
 	// can wedge (e.g. the mTLS renewal network call below). Otherwise a wedge
@@ -1464,6 +1472,17 @@ func gateEnrollResponseBackup(backup string) error {
 	return hostpolicy.AllowedURL(backup)
 }
 
+// enrollSecurityCapabilities is what an enrollment declares (#8318): the
+// rebind protocol, since a new install is exactly the device a reinstall
+// reattach makes the source. A Quick Support client declares nothing: a
+// disposable install must never become an existing device's identity.
+func enrollSecurityCapabilities(cfg *config.Config) *api.EnrollSecurityCapabilities {
+	if cfg.SupportMode {
+		return nil
+	}
+	return &api.EnrollSecurityCapabilities{RebindProtocolVersion: heartbeat.RebindProtocolVersion}
+}
+
 // applyEnrollResponseIdentity copies the identity/credential fields an
 // EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
 // HelperAuthToken, OrgID, SiteID, and DeviceID.
@@ -1599,7 +1618,6 @@ func enrollDevice(enrollmentKey string) {
 	initEnrollLogging(cfg, quietEnroll)
 
 	enrollLog := logging.L("enroll")
-	warnIgnoredSiteID(enrollLog, enrollSiteID)
 
 	// Clear any stale enroll-last-error.txt from a previous failed
 	// attempt BEFORE any validation or early return. Every attempt
@@ -1855,6 +1873,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 	}
 
 	enrollReq := &api.EnrollRequest{
+		SecurityCapabilities:   enrollSecurityCapabilities(cfg),
 		EnrollmentKey:          enrollmentKey,
 		EnrollmentSecret:       secret,
 		Hostname:               systemInfo.Hostname,

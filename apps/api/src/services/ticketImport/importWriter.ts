@@ -192,11 +192,14 @@ export type ImportTicketOptions = {
   partnerId: string;
   /**
    * Tells a source article id from a comment id the module composed (a
-   * time-accounting note, an owner note), for `commentsMissingInSource`: a
-   * composed note a later pass does not send is not an article deleted in
-   * the source. Without it, nothing is counted as missing. The module also
-   * answers false for an article it knows the source moved to another ticket
-   * (a merge in the source), which is not deleted either.
+   * time-accounting note, an owner note). Only source articles are compared
+   * for `commentsChangedInSource` (a composed note whose text moved with a
+   * renamed user is module output, not a change in the source) and counted
+   * for `commentsMissingInSource` (a composed note a later pass does not send
+   * is not an article deleted in the source). Without it, every comment is
+   * compared and nothing is counted as missing. The module also answers
+   * false for an article it knows the source moved to another ticket (a
+   * merge in the source), which is not deleted either.
    */
   isSourceArticleId?: (sourceId: string) => boolean;
   /**

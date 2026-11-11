@@ -5,7 +5,8 @@ vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'where', 'leftJoin']) chain[m] = vi.fn(() => chain);
   chain.limit = vi.fn(async () => rows.value);
-  return { db: chain };
+  // billingEnabled.ts reads the ambient DB context (org-scope partner-axis read).
+  return { db: chain, getCurrentDbAccessContext: () => null };
 });
 
 import { assertContractBillingEnabled, assertContractBillingEnabledById } from './contractBillingGate';

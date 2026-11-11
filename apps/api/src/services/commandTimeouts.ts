@@ -127,6 +127,11 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.SECURITY_THREAT_REMOVE,
   CommandTypes.SECURITY_THREAT_RESTORE,
   CommandTypes.BACKUP_RESTORE,
+  // Vendor updates (#11065): the vendor CLI exports then imports its settings,
+  // which takes minutes. The 30-minute tier fits (the 2-hour LONG tier is for
+  // the run, which downloads a tool and flashes firmware); listed explicitly so
+  // the budget is a decision rather than the unknown-type fallback.
+  CommandTypes.OEM_UPDATE_RELEASE,
 ]);
 
 /**
@@ -214,6 +219,8 @@ export const BACKUP_JOB_ABSOLUTE_TIMEOUT_MS = TWENTY_FOUR_HOURS;
 export const CALLER_VERIFY_TIMEOUT_MS = WORKSTATION_TIMEOUT_MAX_MS + 30_000;
 
 const LONG_TIMEOUT_TYPES = new Set<string>([
+  // Vendor updates (#11065): a vendor tool download plus a firmware flash.
+  CommandTypes.OEM_UPDATE_RUN,
   CommandTypes.AGENT_ROLLBACK_V1,
   // #3525: deliberately NOT SHORT_TIMEOUT_TYPES. The generic reaper clocks
   // `pending` rows from createdAt (jobs/staleCommandReaper.ts), so a 5-minute

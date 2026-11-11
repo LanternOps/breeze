@@ -26,8 +26,12 @@ import { authMiddleware } from '../../middleware/auth';
 import { ContractServiceError } from '../../services/contractTypes';
 import { contractAdoptRoutes } from './adopt';
 
+const gateMocks = vi.hoisted(() => ({ assertContractBillingEnabledById: vi.fn() }));
+vi.mock('../../services/contractBillingGate', () => gateMocks);
+
 const { adoptDraftContract } = serviceMocks;
 const { auditBillingDocument } = auditMocks;
+const { assertContractBillingEnabledById } = gateMocks;
 
 const X = '11111111-1111-4111-8111-111111111111';
 const Y = '22222222-2222-4222-8222-222222222222';
@@ -50,6 +54,18 @@ describe('POST /contracts/:id/adopt-draft (#9346)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     adoptDraftContract.mockResolvedValue(RESULT);
+  });
+
+  it('404 BILLING_DISABLED with billing off: the draft is not deleted and no audit row is written', async () => {
+    assertContractBillingEnabledById.mockImplementationOnce(async () => {
+      throw new ContractServiceError('Not found', 404, 'BILLING_DISABLED');
+    });
+    const res = await app.request(PATH, { method: 'POST', headers: WRITE, body });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(assertContractBillingEnabledById).toHaveBeenCalledWith(X);
+    expect(adoptDraftContract).not.toHaveBeenCalled();
+    expect(auditBillingDocument).not.toHaveBeenCalled();
   });
 
   it('401 unauthenticated', async () =>

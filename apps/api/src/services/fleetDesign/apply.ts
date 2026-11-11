@@ -542,6 +542,7 @@ async function stepRoleCorrections(ctx: ApplyCtx, tx: ApplyTransaction): Promise
       .where(and(eq(devices.id, rc.deviceId), eq(devices.orgId, ctx.orgId)))
       .limit(1);
     if (!current) throw new Error(`device_missing: ${rc.deviceId}`);
+    // own-device-row-allowlisted: fleet-design-apply-role-correction
     const [updated] = await tx
       .update(devices)
       .set({ deviceRole: rc.to, deviceRoleSource: 'ai', updatedAt: new Date() })
@@ -560,6 +561,7 @@ async function stepRoleCorrections(ctx: ApplyCtx, tx: ApplyTransaction): Promise
     });
     const row = await recordApplied({
       orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'role_correction', step: 5,
+      createdRefs: { deviceRole: rc.to },
       beforeImage: { deviceRole: current.deviceRole, deviceRoleSource: current.deviceRoleSource },
       userId: ctx.userId,
     }, tx);

@@ -1,5 +1,5 @@
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { reportRuns } from '../db/schema/reports';
 import {
   serviceDeliverableEvidence,
@@ -29,7 +29,7 @@ export async function previousOccurrenceBaselineFor(args: {
   currentPeriodStart: string;
 }): Promise<ReportResult['previous']> {
   try {
-    const [prior] = await db
+    const [prior] = await withDbTransactionIfHeld(() => db
       .select({
         summary: sql<Record<string, unknown> | null>`${reportRuns.result}->'summary'`,
         generatedAt: sql<string | null>`${reportRuns.result}->>'generatedAt'`,
@@ -50,7 +50,7 @@ export async function previousOccurrenceBaselineFor(args: {
       // The prior OCCURRENCE, not the most recently completed run: a late
       // re-generation of an older period must not become the baseline.
       .orderBy(desc(serviceDeliverableOccurrences.periodStart), desc(reportRuns.completedAt))
-      .limit(1);
+      .limit(1));
 
     if (!prior?.summary || typeof prior.summary !== 'object') return undefined;
     return {

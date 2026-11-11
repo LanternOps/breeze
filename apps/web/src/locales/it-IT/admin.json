@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Sezioni di sistema",
         "connections": "Connessioni",
-        "deprecations": "Deprecazioni"
+        "deprecations": "Deprecazioni",
+        "health": "Stato"
       },
       "connections": {
         "enabledMeaning": "Abilitato significa configurato. Breeze non contatta il servizio per verificare che risponda.",
@@ -720,6 +721,57 @@
           "load": "Impossibile caricare lo stato delle attività."
         },
         "retry": "Riprova"
+      },
+      "health": {
+        "coverage": "Solo lavoro di background condiviso: conteggi delle code e heartbeat dei job pianificati, letti da Redis. Questa scheda non mostra un verdetto complessivo. Lo stato per processo e per host è in /health/ready e nell’overlay di monitoraggio.",
+        "loading": "Caricamento dello stato del lavoro di background…",
+        "refresh": "Aggiorna",
+        "never": "mai",
+        "errors": {
+          "load": "Impossibile caricare lo stato del lavoro di background."
+        },
+        "status": {
+          "operational": "Operativo",
+          "degraded": "Degradato",
+          "unavailable": "Non disponibile",
+          "unknown": "Sconosciuto",
+          "disabled": "Disattivato"
+        },
+        "detail": {
+          "redis_unavailable": "Redis non è disponibile, quindi non è stato possibile leggere.",
+          "read_failed": "La lettura non è riuscita.",
+          "timeout": "La lettura è scaduta.",
+          "stale": "L’ultimo heartbeat è più vecchio del previsto.",
+          "missing": "Nessun heartbeat registrato.",
+          "no_threshold": "Solo conteggi. Per questa coda non è ancora definita una soglia di stato."
+        },
+        "queues": {
+          "title": "Code",
+          "description": "Lavoro in attesa in ogni coda condivisa. I conteggi non sono un verdetto di stato.",
+          "items": {
+            "connection-health-reconcile": "Riconciliatore di salute delle connessioni",
+            "connection-health-digest": "Riepilogo di salute delle connessioni",
+            "alerts": "Avvisi",
+            "event-dispatch": "Invio degli eventi"
+          },
+          "counts": {
+            "waiting": "In attesa",
+            "prioritized": "Prioritari",
+            "delayed": "Ritardati",
+            "active": "Attivi"
+          }
+        },
+        "jobs": {
+          "title": "Job pianificati",
+          "description": "Ultima esecuzione registrata di ogni job di salute delle connessioni.",
+          "items": {
+            "reconcile": "Riconciliatore di salute delle connessioni",
+            "digest": "Riepilogo di salute delle connessioni"
+          },
+          "kind": "Verifica connessione: {{kind}}",
+          "lastRun": "Ultima esecuzione: {{when}}",
+          "failureStreak": "Serie di errori: {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -994,6 +1046,7 @@
       "client_ai_usage": "Utilizzo AI client",
       "config_policy_alert_rules": "Regola di avviso del criterio",
       "config_policy_automations": "Automazione del criterio",
+      "config_policy_feature_link": "Collegamento funzione del criterio",
       "config_policy_monitoring_watches": "Controllo di monitoraggio del criterio",
       "configuration_policy": "Criterio di configurazione",
       "contact": "Contatto",
@@ -1001,6 +1054,7 @@
       "contract_document": "Documento del contratto",
       "contract_template": "Modello di contratto",
       "custom_field": "Campo personalizzato",
+      "customer_email_domain": "Dominio email del cliente",
       "deployment": "Distribuzione",
       "deployment_invite": "Invito alla distribuzione",
       "deployment_target": "Destinazione di distribuzione",
@@ -1096,6 +1150,7 @@
       "platform_admin": "Amministratore della piattaforma",
       "plugin": "Plugin",
       "policy": "Criterio",
+      "portal_access_request": "Richiesta di accesso al portale",
       "portal_auth": "Accesso al portale",
       "portal_user": "Utente del portale",
       "psa_connection": "Connessione PSA",
@@ -1181,6 +1236,8 @@
       "trust_page_template": "Modello del Centro di fiducia",
       "tunnel_allowlist": "Elenco consentiti del tunnel",
       "tunnel_session": "Sessione tunnel",
+      "unifi_collector": "Controller UniFi",
+      "unifi_site_mapping": "Mappatura sito UniFi",
       "update_ring": "Anello di aggiornamento",
       "user": "Utente",
       "user_risk_policy": "Criterio di rischio utente",

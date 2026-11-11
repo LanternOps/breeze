@@ -1,0 +1,46 @@
+{
+  "name": "synthetic-ci-success-missing",
+  "synthetic": true,
+  "source": { "run": 900000004, "pr": 900004, "recordedAt": "2026-11-08" },
+  "prFiles": ["docs/agents/testing.md"],
+  "facts": {
+    "run": {
+      "id": 900000004,
+      "attempt": 1,
+      "headSha": "5555555555555555555555555555555555555555",
+      "headBranch": "gh-readonly-queue/main/pr-900004-2222222222222222222222222222222222222222",
+      "headRepo": "LanternOps/breeze",
+      "event": "merge_group",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-11-08T10:00:00Z",
+      "updatedAt": "2026-11-08T10:30:00Z",
+      "pr": 900004
+    },
+    "jobs": [
+      {
+        "id": 900000401,
+        "name": "Lint",
+        "jobId": "lint",
+        "attempt": 1,
+        "conclusion": "success",
+        "startedAt": "2026-11-08T10:01:00Z",
+        "completedAt": "2026-11-08T10:06:00Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": null,
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "jobsComplete": true,
+    "ciSuccess": "missing",
+    "gate": null
+  }
+}

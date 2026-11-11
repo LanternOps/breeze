@@ -1,0 +1,121 @@
+{
+  "name": "11312-web3-disjoint",
+  "source": {
+    "run": 42451439098,
+    "pr": 11312,
+    "recordedAt": "2026-11-08"
+  },
+  "prFiles": [
+    "apps/api/src/routes/wisp.ts",
+    "apps/api/src/routes/wispCheckIns.test.ts",
+    "apps/api/src/routes/wispCheckIns.ts",
+    "apps/api/src/services/mcpCoverage.ts",
+    "apps/web/src/components/wisp/WispCheckInChip.test.tsx",
+    "apps/web/src/components/wisp/WispCheckInChip.tsx",
+    "apps/web/src/components/wisp/WispHomeThread.test.tsx",
+    "apps/web/src/components/wisp/WispHomeThread.tsx",
+    "apps/web/src/components/wisp/WispPost.test.tsx",
+    "apps/web/src/components/wisp/WispPost.tsx",
+    "apps/web/src/components/wisp/wispThreadHash.test.ts",
+    "apps/web/src/components/wisp/wispThreadHash.ts",
+    "apps/web/src/lib/wispCheckInsApi.test.ts",
+    "apps/web/src/lib/wispCheckInsApi.ts",
+    "apps/web/src/locales/de-DE/ai.json",
+    "apps/web/src/locales/en/ai.json",
+    "apps/web/src/locales/es-419/ai.json",
+    "apps/web/src/locales/fr-CA/ai.json",
+    "apps/web/src/locales/fr-FR/ai.json",
+    "apps/web/src/locales/it-IT/ai.json",
+    "apps/web/src/locales/pt-BR/ai.json",
+    "apps/web/src/locales/tr-TR/ai.json"
+  ],
+  "facts": {
+    "run": {
+      "id": 42451439098,
+      "attempt": 1,
+      "headSha": "c5e2ad9f61f07778d619156fbc70cadf1eb6c694",
+      "headBranch": "gh-readonly-queue/main/pr-11312-4514157ba45f374f45027ccbdabd3a86ffe0ae5c",
+      "headRepo": "LanternOps/breeze",
+      "event": "merge_group",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-11-08T05:36:25Z",
+      "updatedAt": "2026-11-08T06:03:01Z",
+      "pr": 11312
+    },
+    "jobs": [
+      {
+        "id": 128641344061,
+        "name": "Test Web (shard 3/4)",
+        "jobId": "test-web",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T05:36:39Z",
+        "completedAt": "2026-11-08T05:49:43Z",
+        "timeoutMinutes": 40,
+        "label": "web-3",
+        "runner": "vitest",
+        "failedStep": "Run Web tests",
+        "annotations": [
+          "Process completed with exit code 1.",
+          "src/components/settings/M365MailboxCard.test.tsx > M365MailboxCard > trusted ARC sealers (#10862) > shows the saved list and lets it be cleared: AssertionError: expected \"vi.fn()\" to be called with arguments: [ …(2) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   \"/tickets/mailbox/connections/c1/trusted-arc-sealers\",\n-   ObjectContaining {\n-     \"body\": \"{\\\"sealers\\\":[]}\",\n-   },\n+   \"/tickets/mailbox/connections\",\n  ]\n\n  2nd vi.fn() call:\n\n  [\n    \"/tickets/mailbox/connections/c1/trusted-arc-sealers\",\n-   ObjectContaining {\n-     \"body\": \"{\\\"sealers\\\":[]}\",\n+   {\n+     \"body\": \"{\\\"sealers\\\":[\\\"gateway.example\\\"]}\",\n+     \"headers\": {\n+       \"content-type\": \"application/json\",\n+     },\n+     \"method\": \"PATCH\",\n    },\n  ]\n\n  3rd vi.fn() call:\n\n  [\n-   \"/tickets/mailbox/connections/c1/trusted-arc-sealers\",\n-   ObjectContaining {\n-     \"body\": \"{\\\"sealers\\\":[]}\",\n-   },\n+   \"/tickets/mailbox/connections\",\n  ]\n\n\nNumber of calls: 3\n\n\nIgnored nodes: comments, script, style\n<html\n  lang=\"en\"\n>\n  <head>\n    <title>\n      Dashboard | Breeze RMM\n    </title>\n  </head>\n  <body>\n    <div>\n      <section\n        class=\"rounded-lg border p-4\"\n        data-testid=\"m365-mailbox-card\"\n      >\n        <h3\n          class=\"text-base font-semibold\"\n        >\n          Microsoft 365 support mailbox\n        </h3>\n        <p\n          class=\"mt-1 text-sm text-muted-foreground\"\n        >\n          Connect your shared support mailbox so customer email becomes tickets and replies are sent from it. No MX or forwarding changes required.\n        </p>\n        <ul\n          class=\"mt-4 space-y-3\"\n        >\n          <li\n            class=\"flex flex-col gap-2 rounded border p-3\"\n            data-testid=\"m365-connection\"\n          >\n            <div\n              class=\"flex items-center justify-between\"\n            >\n              <div>\n                <span\n                  class=\"font-medium\"\n                >\n                  support@a.com\n                </span>\n                <span\n                  class=\"ml-2 text-sm text-muted-foreground\"\n                >\n                  Support\n                </span>\n              </div>\n              <span\n                class=\"text-sm\"\n                data-testid=\"m365-status\"\n              >\n                Connected\n              </span>\n            </div>\n            <details\n              class=\"text-xs\"\n            >\n              <summary\n                class=\"cursor-pointer\"\n              >\n                Mail gateway (optional)\n              </summary>\n              <div\n                class=\"mt-2 flex flex-col gap-2\"\n              >\n                <p\n                  class=\"text-muted-foreground\"\n                >\n                  If mail reaches this mailbox through an inline gateway such as Avanan, Mimecast, Proofpoint or Barracuda, Microsoft's own check may fail legitimate mail. List the gateway's ARC sealing domain, the d= value in the ARC-Seal header of a message it delivered, and Breeze uses the gateway's verdict instead. Leave this empty if you have no gateway.\n                </p>\n                <p\n                  class=\"text-muted-foreground\"\n                >\n                  Only add a gateway that all of this tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Otherwise Breeze can't tell mail the gateway delivered from mail sent directly to Exchange.\n                </p>\n                <label\n                  class=\"flex flex-col gap-1\"\n                >\n                  <span\n                    class=\"font-medium\"\n                  >\n                    Trusted ARC sealing domains\n                  </span>\n                  <input\n                    class=\"rounded border bg-background px-2 py-1 text-sm\"\n                    data-testid=\"m365-arc-sealers-input\"\n                    placeholder=\"gateway.example.com\"\n                    value=\"\"\n                  />\n                </label>\n                <div>\n                  <button\n                    class=\"text-sm text-primary hover:underline disabled:opacity-50\"\n                    data-testid=\"m365-arc-sealers-save\"\n                    type=\"button\"\n                  >\n                   ",
+          "Retrying test shard: web-3: attempt 1 failed with 1 failing test(s); re-running the whole shard once",
+          "src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner: Error: Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/components/psa/PsaConnectionsPage.test.tsx:389:5\n\n"
+        ],
+        "logStatus": 200,
+        "logTail": " ❯ Timeout.checkRealTimersCallback ../../node_modules/.pnpm/@testing-library+dom@10.4.2/node_modules/@testing-library/dom/dist/wait-for.js:118:16\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯\n\n Test Files  1 failed | 514 passed (515)\n      Tests  1 failed | 5603 passed (5604)\n   Start at  05:43:30\n   Duration  369.05s (transform 43.50s, setup 326.64s, import 235.04s, tests 199.94s, environment 276.41s)\n\n\n##[error]AssertionError: expected \"vi.fn()\" to be called with arguments: [ …(2) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   \"/tickets/mailbox/connections/c1/trusted-arc-sealers\",\n-   ObjectContaining {\n-     \"body\": \"{\\\"sealers\\\":[]}\",\n-   },\n+   \"/tickets/mailbox/connections\",\n  ]\n\n  2nd vi.fn() call:\n\n  [\n    \"/tickets/mailbox/connections/c1/trusted-arc-sealers\",\n-   ObjectContaining {\n-     \"body\": \"{\\\"sealers\\\":[]}\",\n+   {\n+     \"body\": \"{\\\"sealers\\\":[\\\"gateway.example\\\"]}\",\n+     \"headers\": {\n+       \"content-type\": \"application/json\",\n+     },\n+     \"method\": \"PATCH\",\n    },\n  ]\n\n  3rd vi.fn() call:\n\n  [\n-   \"/tickets/mailbox/connections/c1/trusted-arc-sealers\",\n-   ObjectContaining {\n-     \"body\": \"{\\\"sealers\\\":[]}\",\n-   },\n+   \"/tickets/mailbox/connections\",\n  ]\n\n\nNumber of calls: 3\n\n\nIgnored nodes: comments, script, style\n<html\n  lang=\"en\"\n>\n  <head>\n    <title>\n      Dashboard | Breeze RMM\n    </title>\n  </head>\n  <body>\n    <div>\n      <section\n        class=\"rounded-lg border p-4\"\n        data-testid=\"m365-mailbox-card\"\n      >\n        <h3\n          class=\"text-base font-semibold\"\n        >\n          Microsoft 365 support mailbox\n        </h3>\n        <p\n          class=\"mt-1 text-sm text-muted-foreground\"\n        >\n          Connect your shared support mailbox so customer email becomes tickets and replies are sent from it. No MX or forwarding changes required.\n        </p>\n        <ul\n          class=\"mt-4 space-y-3\"\n        >\n          <li\n            class=\"flex flex-col gap-2 rounded border p-3\"\n            data-testid=\"m365-connection\"\n          >\n            <div\n              class=\"flex items-center justify-between\"\n            >\n              <div>\n                <span\n                  class=\"font-medium\"\n                >\n                  support@a.com\n                </span>\n                <span\n                  class=\"ml-2 text-sm text-muted-foreground\"\n                >\n                  Support\n                </span>\n              </div>\n              <span\n                class=\"text-sm\"\n                data-testid=\"m365-status\"\n              >\n                Connected\n              </span>\n            </div>\n            <details\n              class=\"text-xs\"\n            >\n              <summary\n                class=\"cursor-pointer\"\n              >\n                Mail gateway (optional)\n              </summary>\n              <div\n                class=\"mt-2 flex flex-col gap-2\"\n              >\n                <p\n                  class=\"text-muted-foreground\"\n                >\n                  If mail reaches this mailbox through an inline gateway such as Avanan, Mimecast, Proofpoint or Barracuda, Microsoft's own check may fail legitimate mail. List the gateway's ARC sealing domain, the d= value in the ARC-Seal header of a message it delivered, and Breeze uses the gateway's verdict instead. Leave this empty if you have no gateway.\n                </p>\n                <p\n                  class=\"text-muted-foreground\"\n                >\n                  Only add a gateway that all of this tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Otherwise Breeze can't tell mail the gateway delivered from mail sent directly to Exchange.\n                </p>\n                <label\n                  class=\"flex flex-col gap-1\"\n                >\n                  <span\n                    class=\"font-medium\"\n                  >\n                    Trusted ARC sealing domains\n                  </span>\n                  <input\n                    class=\"rounded border bg-background px-2 py-1 text-sm\"\n                    data-testid=\"m365-arc-sealers-input\"\n                    placeholder=\"gateway.example.com\"\n                    value=\"\"\n                  />\n                </label>\n                <div>\n                  <button\n                    class=\"text-sm text-primary hover:underline disabled:opacity-50\"\n                    data-testid=\"m365-arc-sealers-save\"\n                    type=\"button\"\n                  >\n                    S\n/home/runner/work/breeze/breeze/apps/web:\n ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @breeze/web@0.1.0 test: `vitest --run --shard=3/4`\nExit status 1\n##[error]Process completed with exit code 1.\n##[group]Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9\nwith:\n  name: flake-report-web-3\n  path: flake-report-*.json\n  if-no-files-found: ignore\n  retention-days: 14\n  overwrite: true\n  compression-level: 6\n  include-hidden-files: false\n  archive: true\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4514157ba45f374f45027ccbdabd3a86ffe0ae5c\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\nWith the provided path, there will be 1 file uploaded\nArtifact name is valid!\nRoot directory input is valid!\nUploading artifact: flake-report-web-3.zip\nBeginning upload of artifact content to blob storage\nUploaded bytes 238\nFinished uploading artifact content to blob storage!\nSHA256 digest of uploaded artifact is 5cdb2cf4f15bd9062ba3a1fdbef221389cb42798c9cb668a16d7624391a7009c\nFinalizing artifact upload\nArtifact flake-report-web-3 successfully finalized. Artifact ID 13606102025\nArtifact flake-report-web-3 has been successfully uploaded! Final size is 238 bytes. Artifact ID is 13606102025\nArtifact download URL: https://github.com/LanternOps/breeze/actions/runs/42451439098/artifacts/13606102025\nPost job cleanup.\nPruning is unnecessary.\nPost job cleanup.\n[command]/usr/bin/git version\ngit version 2.56.0\nTemporarily overriding HOME='/home/runner/work/_temp/076d8c8d-425a-47b8-ab68-2a40a068aa70' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/work/breeze/breeze\nRemoving SSH command configuration\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\nRemoving HTTP extra header\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.https\\:\\/\\/github\\.com\\/\\.extraheader\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.https\\:\\/\\/github\\.com\\/\\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\"\nRemoving includeIf entries pointing to credentials config files\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\nCleaning up orphan processes",
+        "logAttempts": [
+          {
+            "failures": [
+              "src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner"
+            ],
+            "truncated": false,
+            "unattributed": false,
+            "buildFailed": false,
+            "raceDetected": false,
+            "timedOut": false
+          },
+          {
+            "failures": [
+              "src/components/settings/M365MailboxCard.test.tsx > M365MailboxCard > trusted ARC sealers (#10862) > shows the saved list and lets it be cleared"
+            ],
+            "truncated": false,
+            "unattributed": false,
+            "buildFailed": false,
+            "raceDetected": false,
+            "timedOut": false
+          }
+        ],
+        "report": {
+          "label": "web-3",
+          "attempts": 2,
+          "flaky": [],
+          "quarantined": [],
+          "exitCode": 1
+        },
+        "reportError": null,
+        "errors": []
+      },
+      {
+        "id": 128646362349,
+        "name": "CI Success",
+        "jobId": "ci-success",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T06:02:56Z",
+        "completedAt": "2026-11-08T06:03:01Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Check all jobs passed",
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "ciSuccess": "present",
+    "gate": null
+  }
+}

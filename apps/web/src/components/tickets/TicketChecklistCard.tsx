@@ -402,7 +402,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
                 {editing ? (
                   <div className="space-y-1 rounded-md border bg-muted/30 p-1.5">
                     {item.done && editLabel.trim() !== item.label && (
-                      <p className="text-[11px] text-warning" data-testid="ticket-checklist-edit-warning">
+                      <p className="text-[11px] text-warning-ink" data-testid="ticket-checklist-edit-warning">
                         {t('editDoneWarning')}
                       </p>
                     )}
@@ -461,7 +461,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
                       {item.source === 'operator_task' && (
                         <span
                           data-testid={`ticket-checklist-operator-badge-${item.id}`}
-                          className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+                          className="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium bg-primary/10 text-primary-ink"
                           title={t('operator.badgeTitle')}
                         >
                           {t('source.operator_task')}

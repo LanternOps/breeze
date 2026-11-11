@@ -33,6 +33,8 @@ import (
 //     appends cannot be trusted to keep records honest (it does not know to
 //     retract them before overwriting an object), so readJournal drops every
 //     record older than a header update that lacks VerificationAware.
+//   - A torn last line drops every record too, since it may be a lost retraction
+//     (see journal_tail.go). The entries stay.
 //
 // What a record does not prove: the source can change without moving its size or
 // modification time, and a stored object can change in place while its key stays

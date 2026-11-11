@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, inArray, isNull, ilike, or, sql, desc, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
+import { pgErrorCode } from '../../utils/pgErrors';
 import {
   discoveredAssets,
   snmpDevices,
@@ -402,35 +403,40 @@ networkRoutes.post(
     }
 
     try {
-      const [row] = await db
-        .insert(discoveredAssets)
-        .values({
-          orgId: body.orgId,
-          siteId: body.siteId,
-          label: body.label,
-          assetType: body.assetType,
-          ipAddress: body.ipAddress ?? null,
-          hostname: body.hostname ?? null,
-          url: body.url ?? null,
-          macAddress: body.macAddress ?? null,
-          manufacturer: body.manufacturer ?? null,
-          model: body.model ?? null,
-          notes: body.notes ?? null,
-          tags: body.tags,
-          source: 'manual',
-          approvalStatus: 'approved',
-          typeSource: 'manual',
-          isOnline: false,
-          lastSeenAt: null,
-        })
-        .returning();
+      // Savepoint so a caught constraint violation cannot poison the request
+      // transaction and turn the mapped 4xx into a 500 at commit (#11203).
+      const [row] = await withDbTransaction(async () =>
+        db
+          .insert(discoveredAssets)
+          .values({
+            orgId: body.orgId,
+            siteId: body.siteId,
+            label: body.label,
+            assetType: body.assetType,
+            ipAddress: body.ipAddress ?? null,
+            hostname: body.hostname ?? null,
+            url: body.url ?? null,
+            macAddress: body.macAddress ?? null,
+            manufacturer: body.manufacturer ?? null,
+            model: body.model ?? null,
+            notes: body.notes ?? null,
+            tags: body.tags,
+            source: 'manual',
+            approvalStatus: 'approved',
+            typeSource: 'manual',
+            isOnline: false,
+            lastSeenAt: null,
+          })
+          .returning()
+      );
 
       // Same shared shape GET returns (toUnifiedListShape derives 'unknown'
       // status itself from lastSeenAt===null && source==='manual', which is
       // exactly what this row was just born as).
       return c.json(toUnifiedListShape(row! as UnifiedListSourceRow), 201);
     } catch (err) {
-      const code = (err as { code?: string }).code;
+      // Drizzle wraps the driver error, so `err.code` is never set; unwrap it.
+      const code = pgErrorCode(err);
       if (code === '23505') {
         return c.json({ error: 'An asset with this IP already exists in this organization' }, 409);
       }

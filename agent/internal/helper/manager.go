@@ -792,13 +792,8 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	tmp := state.configPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return fmt.Errorf("write temp config: %w", err)
-	}
-	if err := os.Rename(tmp, state.configPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename config: %w", err)
+	if err := writeHelperConfigFile(state.configPath, data, 0600); err != nil {
+		return err
 	}
 
 	copied := *cfg
@@ -817,8 +812,9 @@ var minConfigFlagVersion = [3]int{0, 14, 0}
 func (m *Manager) ensureRunningSession(state *sessionState) error {
 	// First check: scan the process table for breeze-helper.exe in this
 	// session. This is the reliable check that the old code used (by process
-	// name) — immune to PID tracking failures from cmd.exe wrappers, Tauri
-	// re-exec, or missing status files.
+	// name) — immune to PID tracking failures from launches whose PID is
+	// unknown (the user-helper IPC path), Tauri re-exec, or missing status
+	// files.
 	// A running Assist is never stopped by the checks below: they gate only a
 	// new launch.
 	if isHelperRunningInSession(state.key, m.binaryPath) ||

@@ -6,6 +6,7 @@ import ChatFileCard, {
   openWorkspaceFile,
   type WorkspaceFileSummary,
 } from '../workspace/ChatFileCard';
+import { productName, useT, useUiContext } from '../../i18n/uiContext';
 import { SafeMarkdownImage, SafeMarkdownLink } from '../../lib/safeMarkdown';
 
 // Extracted from App.tsx's default return (messages map, composer,
@@ -147,7 +148,7 @@ function ToolCallIndicator({ toolName }: { toolName?: string }) {
 
 function ThinkingIndicator() {
   return (
-    <div className="helper-message helper-message-assistant bg-ws-surface rounded-surface shadow-[var(--ws-shadow-1)]">
+    <div className="helper-message helper-message-assistant bg-ws-surface rounded-surface">
       <div className="helper-thinking">
         <span className="helper-thinking-dot" />
         <span className="helper-thinking-dot" />
@@ -166,6 +167,8 @@ export default function ChatView({
   setDraft: (value: string) => void;
 }) {
   const { messages, isStreaming, username, sendMessage } = useChatStore();
+  const t = useT();
+  const uiContext = useUiContext();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileResolutionMap = useMemo(() => buildFileResolutionMap(messages), [messages]);
 
@@ -193,8 +196,12 @@ export default function ChatView({
       <div className="helper-messages" data-testid="chat-view">
         {messages.length === 0 && (
           <div className="helper-empty text-ws-secondary">
-            <p>Hi{username ? `, ${username}` : ''}! I'm Breeze Helper.</p>
-            <p>Ask me anything about your computer.</p>
+            <p>
+              {username
+                ? t('chat.greetingNamed', { user: username, name: productName(uiContext) })
+                : t('chat.greeting', { name: productName(uiContext) })}
+            </p>
+            <p>{t('chat.greetingHint')}</p>
           </div>
         )}
 
@@ -217,7 +224,7 @@ export default function ChatView({
           return (
             <div
               key={msg.id}
-              className={`helper-message helper-message-${msg.role} bg-ws-surface rounded-surface shadow-[var(--ws-shadow-1)]`}
+              className={`helper-message helper-message-${msg.role} bg-ws-surface rounded-surface`}
             >
               <div className="helper-message-content">
                 {msg.role === 'assistant' ? (
@@ -253,12 +260,12 @@ export default function ChatView({
       </div>
 
       {/* Input */}
-      <form onSubmit={handleSubmit} className="helper-input-form bg-ws-surface border-ws-border-subtle shadow-[var(--ws-shadow-1)]">
+      <form onSubmit={handleSubmit} className="helper-input-form bg-ws-surface border-ws-border-subtle">
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask me anything..."
+          placeholder={t('chat.placeholder')}
           disabled={isStreaming}
           rows={1}
           className="helper-input bg-ws-canvas text-ws-ink"

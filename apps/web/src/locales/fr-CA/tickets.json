@@ -85,7 +85,8 @@
     },
     "checklistProgress": "{{done}}/{{total}} étapes",
     "checklistTitle": "Liste de vérification : {{done}} étapes sur {{total}} terminées",
-    "merged": "Fusionné"
+    "merged": "Fusionné",
+    "ageTitle": "Ouvert le {{created}} · Mis à jour le {{updated}}"
   },
   "ticketArchivedList": {
     "emptyTitle": "Aucun billet archivé.",
@@ -137,8 +138,17 @@
       "remove": "Retirer le fichier",
       "tooMany": "Vous pouvez joindre au plus {{max}} fichiers à un commentaire.",
       "tooLarge": "{{name}} dépasse 10 Mo.",
-      "sentWithoutAttachment_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
-      "sentWithoutAttachment_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
+      "rejectedType": "{{name}} n'a pas été joint : seuls les images JPEG, PNG et WebP et les PDF sont pris en charge.",
+      "rejectedEmpty": "{{name}} n'a pas été joint : le fichier est vide.",
+      "sentWithoutAttachmentReply_one": "Réponse publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
+      "sentWithoutAttachmentNote_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
+      "sentWithoutAttachmentReply_other": "Réponse publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les.",
+      "sentWithoutAttachmentNote_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
+    },
+    "modeLabel": "Visibilité du commentaire",
+    "recipient": {
+      "emails": "Envoyé par courriel à {{recipient}}",
+      "none": "Aucun courriel du demandeur au dossier. La réponse est enregistrée dans le billet, sans envoi de courriel."
     }
   },
   "ticketFeed": {
@@ -416,7 +426,18 @@
     },
     "filterByType": "Filtrer par type",
     "allTypes": "Tous les types",
-    "showMerged": "Afficher les fusionnés"
+    "showMerged": "Afficher les fusionnés",
+    "shortcutsButton": "Raccourcis",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, priorité {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, priorité {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA : temps restant {{relative}}",
+        "atRisk": "SLA à risque, temps restant {{relative}}",
+        "paused": "SLA en pause, temps restant {{relative}}",
+        "breached": "SLA en violation"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "Billet non trouvé. Il se peut qu’il ait été supprimé, ou que vous n’y ayez peut-être pas accès.",
@@ -842,6 +863,64 @@
       "SELF_LINK": "Un ticket ne peut pas être lié à lui-même.",
       "NOT_FOUND": "Ce ticket est introuvable ou n’est plus disponible.",
       "LINK_GONE": "Ce lien a déjà été supprimé."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Navigation entre billets",
+    "backTo": "Retour à {{tab}}",
+    "position": "{{index}} sur {{total}}",
+    "previous": "Billet précédent",
+    "next": "Billet suivant",
+    "more": "Plus d'actions",
+    "sections": "Sections du billet",
+    "tabs": {
+      "conversation": "Échanges",
+      "details": "Détails"
+    },
+    "descriptionAria": "Demande de {{author}}",
+    "invoiceDialogTitle": "Une partie du travail n'a pas été facturée",
+    "nextOffer": {
+      "label": "Ensuite",
+      "open": "Ouvrir",
+      "openAria": "Ouvrir {{number}} {{subject}}",
+      "atRisk": "À risque · reste {{relative}}",
+      "noSla": "Sans SLA"
+    },
+    "requester": {
+      "noEmail": "Aucun courriel au dossier"
+    },
+    "endpoint": {
+      "noDevice": "Aucun appareil lié",
+      "lastSeen": "vu pour la dernière fois {{ago}}",
+      "loading": "Chargement de l'appareil",
+      "loadFailed": "L'état en direct de l'appareil n'a pas pu être chargé.",
+      "os": "Système d'exploitation",
+      "signedIn": "Connecté",
+      "nobodySignedIn": "Personne de connecté",
+      "lastUser": "Dernier utilisateur {{user}}",
+      "activeAlerts": "Alertes actives",
+      "noAlerts": "Aucune alerte active",
+      "alertsFailed": "Les alertes n'ont pas pu être chargées.",
+      "untitledAlert": "Alerte sans titre",
+      "userSignedIn": "{{user}} connecté",
+      "alertCount": "{{count}} alertes",
+      "alertCount_one": "{{count}} alerte",
+      "alertCount_other": "{{count}} alertes",
+      "openDetails": "{{device}} : ouvrir les détails de l'appareil"
+    },
+    "details": {
+      "properties": "Propriétés",
+      "logged": "{{time}} saisi",
+      "partCount": "{{count}} pièces",
+      "partCount_one": "{{count}} pièce",
+      "partCount_other": "{{count}} pièces",
+      "pendingApprovals": "{{count}} en attente",
+      "pendingApprovals_one": "{{count}} en attente",
+      "pendingApprovals_other": "{{count}} en attente",
+      "linkCount": "{{count}} liés",
+      "linkCount_one": "{{count}} lié",
+      "linkCount_other": "{{count}} liés",
+      "approvals": "Approbations"
     }
   }
 }

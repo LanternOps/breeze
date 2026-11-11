@@ -44,6 +44,7 @@ import { addFeatureLink } from '../../services/configurationPolicy';
 import { persistInstallerOutcomes } from '../../services/edrProviders/installerMaterial';
 import { processCheckPolicy } from '../../jobs/softwareComplianceWorker';
 import { processRemediateDeviceInstall } from '../../jobs/softwareRemediationWorker';
+import { reconcileOrgCoverage } from '../../services/securityAgents/coverageReconcileRun';
 import { loadOrgInstallerReadiness } from '../../services/securityAgents/installerReadiness';
 import { loadManagedRuleApplicability } from '../../services/securityAgents/managedRuleApplicability';
 import { VENDOR_VIEW_STALE_MS, getVendorEndpointSource } from '../../services/securityAgents/vendorEndpointSources';
@@ -232,6 +233,10 @@ function installJob(f: Fixture, deviceId: string) {
   };
 }
 
+const coverageRows = (orgIds: string[]) => withSystemDbAccessContext(() =>
+  db.select().from(securityAgentDeviceStatus).where(inArray(securityAgentDeviceStatus.orgId, orgIds)),
+);
+
 const deploymentsIn = (orgId: string) => withSystemDbAccessContext(() =>
   db.select({ id: softwareDeployments.id }).from(softwareDeployments).where(eq(softwareDeployments.orgId, orgId)),
 );
@@ -347,17 +352,34 @@ describe('security agents — EDR framework vendor on live Postgres (#8170)', ()
     expect(deleted).toEqual([]);
   });
 
-  // Replace this test when a migration widens security_agent_device_status_vendor_chk:
-  // the rows should then read A pending, the rest not_applicable with the reasons above.
-  it('coverage rows stay empty until the status CHECK admits the vendor, and the failure does not stop the pass', async () => {
+  it("the compliance pass writes a coverage row per device, each on its own org's verdict, and none for the other partner", async () => {
     const f = await seed();
-    const rows = await withSystemDbAccessContext(async () => {
-      await processCheckPolicy({ type: 'check-policy', policyId: f.policy.id });
-      return db.select({ id: securityAgentDeviceStatus.id }).from(securityAgentDeviceStatus)
-        .where(inArray(securityAgentDeviceStatus.orgId, [f.orgs.a.id, f.orgs.b.id, f.orgs.c.id, f.orgs.d.id]));
-    });
-    expect(rows).toEqual([]);
-    expect(await complianceFor(f, f.dev.a)).toBeDefined();
+    await compliancePass(f);
+
+    const rows = await coverageRows([f.orgs.a.id, f.orgs.b.id, f.orgs.c.id, f.orgs.d.id, f.orgs.z.id]);
+    expect(rows).toHaveLength(5);
+    const byDevice = new Map(rows.map((row) => [row.deviceId, row]));
+    expect(byDevice.get(f.dev.a)).toMatchObject({ orgId: f.orgs.a.id, vendor: 'bitdefender', state: 'pending', policyId: f.policy.id });
+    expect(byDevice.get(f.dev.aMac)).toMatchObject({ orgId: f.orgs.a.id, state: 'not_applicable', reasonCode: 'requires_mdm_approval' });
+    expect(byDevice.get(f.dev.b)).toMatchObject({ orgId: f.orgs.b.id, state: 'not_applicable', reasonCode: 'installer_link_missing' });
+    expect(byDevice.get(f.dev.c)).toMatchObject({ orgId: f.orgs.c.id, state: 'not_applicable', reasonCode: 'tenant_ambiguous' });
+    expect(byDevice.get(f.dev.d)).toMatchObject({ orgId: f.orgs.d.id, state: 'not_applicable', reasonCode: 'org_not_mapped' });
+    expect(byDevice.has(f.dev.z)).toBe(false);
+  });
+
+  it("reconcile turns A's Windows device covered from a linked endpoint and leaves the not_applicable row alone", async () => {
+    const f = await seed();
+    await compliancePass(f);
+    await withSystemDbAccessContext(() =>
+      addEndpoint(f.connection, f.p.id, f.orgs.a.id, f.tenantA, { hostname: 'covered', deviceId: f.dev.a }),
+    );
+
+    const result = await reconcileOrgCoverage(f.orgs.a.id);
+    expect(result).toMatchObject({ evaluated: 1, changed: 1, alertsRaised: 0 });
+
+    const byDevice = new Map((await coverageRows([f.orgs.a.id])).map((row) => [row.deviceId, row]));
+    expect(byDevice.get(f.dev.a)).toMatchObject({ state: 'covered', vendor: 'bitdefender' });
+    expect(byDevice.get(f.dev.aMac)).toMatchObject({ state: 'not_applicable', reasonCode: 'requires_mdm_approval' });
   });
 });
 

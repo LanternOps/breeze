@@ -510,6 +510,15 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   list_users: 'tenancy',
   get_user: 'tenancy',
   list_roles: 'tenancy',
+  // Full-control W18 PR B (#6789): mapped for completeness; AGENT_HUMAN_ONLY_TOOLS keeps both out of the catalog.
+  manage_org_portal_settings: 'tenancy',
+  manage_report_recipients: 'automations_reports',
+  // Full-control W16 PR A (#6786): mapped for completeness; AGENT_HUMAN_ONLY_TOOLS keeps both out of the catalog.
+  run_patch_plan: 'tenancy',
+  create_operator_task: 'tenancy',
+  // Full-control W16 PR B (#6786): mapped for completeness; AGENT_HUMAN_ONLY_TOOLS keeps both out of the catalog.
+  manage_ai_agent_schedules: 'tenancy',
+  manage_fleet_designs: 'tenancy',
   delete_tenant: 'tenancy',
   test_webhook: 'tenancy',
   query_webhooks: 'tenancy',

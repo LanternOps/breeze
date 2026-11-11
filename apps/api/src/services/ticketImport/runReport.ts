@@ -69,6 +69,8 @@ export type RunCounters = {
   orgsChangedInSource: number;
   /** Custom attributes with a value, by name (not imported in v1). */
   customAttributes: Record<string, number>;
+  /** A module's own counts, by name (`module_count` notes). */
+  moduleCounts: Record<string, number>;
   issuesWritten: number;
   /** Issues past TICKET_IMPORT_MAX_ISSUES_PER_RUN: counted here, not written. */
   issuesDropped: number;
@@ -111,6 +113,7 @@ export function emptyCounters(): RunCounters {
     requestersChangedInSource: 0,
     orgsChangedInSource: 0,
     customAttributes: {},
+    moduleCounts: {},
     issuesWritten: 0,
     issuesDropped: 0,
     predicted: {
@@ -146,7 +149,7 @@ export function normalizeCounters(raw: unknown): RunCounters {
   const out = base as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(base)) {
     const stored = raw[key];
-    if (key === 'customAttributes') out[key] = countMap(stored);
+    if (key === 'customAttributes' || key === 'moduleCounts') out[key] = countMap(stored);
     else if (key === 'predicted') {
       const p = isRecord(stored) ? stored : {};
       out[key] = {

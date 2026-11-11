@@ -49,7 +49,8 @@
       "securityCheckToast": "Remote-Start nicht verfügbar: Sicherheitsprüfung fehlgeschlagen. Bitte wenden Sie sich an Ihren Administrator.",
       "securityPolicy": "Remote-Start durch Sicherheitsrichtlinie blockiert",
       "server": "Remote-Start fehlgeschlagen: Serverfehler. Bitte wenden Sie sich an Ihren Administrator.",
-      "vncTunnelFailed": "VNC-Tunnel konnte nicht geöffnet werden"
+      "vncTunnelFailed": "VNC-Tunnel konnte nicht geöffnet werden",
+      "providerUnavailable": "Dieses Fernwartungstool ist für dieses Gerät nicht mehr verfügbar. Aktualisieren Sie die Seite und versuchen Sie es erneut."
     },
     "fallback": {
       "linuxFirstRun": "Machen Sie die heruntergeladene Datei unter Linux ausführbar (chmod +x) und starten Sie sie einmal. Damit wird der Viewer registriert und Sitzungen öffnen sich danach automatisch.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Authentifizierung am Anzeigeserver (X-Authority) nicht möglich",
       "x11ConnectFailed": "Verbindung zum Anzeigeserver auf diesem Gerät nicht möglich"
     },
-    "opensNewWindow": "(öffnet ein neues Fenster)"
+    "opensNewWindow": "(öffnet ein neues Fenster)",
+    "split": {
+      "builtInViewer": "Integrierter Viewer",
+      "connectWith": "Mit {{name}} verbinden",
+      "connectWithBuiltIn": "Mit dem integrierten Viewer verbinden",
+      "menuLabel": "Verbindungsart wählen",
+      "opensInBrowser": "Öffnet sich in einem neuen Browser-Tab"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Tunnel erstellen...",
@@ -153,7 +161,7 @@
     "dateRange": "Datumsbereich",
     "detailsTitle": "Details Titel",
     "eventCount": "Ereignisanzahl",
-    "eventIdPlaceholder": "Platzhalter für die Ereignis-ID",
+    "eventIdPlaceholder": "z. B. 7036",
     "eventLogs": "Ereignisprotokolle",
     "eventsTitle": "{{name}} – Ereignisse",
     "fields": {
@@ -181,9 +189,9 @@
     },
     "logTitle": "{{name}} Protokoll",
     "lookupEventId": "Suchereignis-ID",
-    "noEvents": "Keine Ereignisse",
-    "noHandler": "Kein Handler",
-    "noMatches": "Keine Übereinstimmungen",
+    "noEvents": "Keine Ereignisprotokolle verfügbar.",
+    "noHandler": "Keine Ereignisprotokolle verfügbar. Verbinden Sie einen Abfrage-Handler, um Ereignisse von diesem Gerät abzurufen.",
+    "noMatches": "Keine Ereignisse gefunden. Passen Sie Ihre Filter an.",
     "page": "Seite {{current}} von {{total}}",
     "ranges": {
       "allTime": "Alle Zeit",
@@ -209,6 +217,7 @@
       "copy": "Kopieren",
       "delete": "Löschen",
       "download": "Herunterladen",
+      "mkdir": "Neuer Ordner",
       "move": "Verschieben",
       "purge": "Endgültig löschen",
       "restore": "Wiederherstellen",
@@ -232,7 +241,7 @@
       "minutesAgo": "Vor {{count}}m"
     },
     "title": "Dateiaktivität",
-    "unverifiedHint": "Unbestätigter Hinweis"
+    "unverifiedHint": "Das Gerät hat nicht rechtzeitig geantwortet – aktualisieren Sie zur Überprüfung"
   },
   "fileManager": {
     "activeCount": "{{count}} aktiv",
@@ -250,6 +259,7 @@
     "emptyDirectory": "Leeres Verzeichnis",
     "errors": {
       "copy": "Kopieren fehlgeschlagen",
+      "createFolder": "Ordner konnte nicht erstellt werden",
       "delete": "Fehler beim Löschen",
       "download": "Download fehlgeschlagen",
       "downloadTooLarge": "Zu groß für den Download ({{size}}). Der Dateibrowser überträgt Dateien bis {{max}}.",
@@ -264,6 +274,15 @@
     "home": "Zuhause",
     "modified": "Geändert",
     "moveTo": "Verschieben nach",
+    "newFolder": {
+      "action": "Neuer Ordner",
+      "title": "Neuer Ordner",
+      "nameLabel": "Ordnername",
+      "location": "Wird erstellt in {{path}}",
+      "created": "Ordner {{name}} erstellt",
+      "invalidName": "Ordnernamen dürfen keine Pfadtrennzeichen oder vom Dateisystem dieses Geräts nicht erlaubte Zeichen enthalten.",
+      "nameExists": "Hier gibt es bereits eine Datei oder einen Ordner mit diesem Namen."
+    },
     "selectedCount": "Ausgewählte Anzahl",
     "size": "Größe",
     "title": "Dateimanager",
@@ -306,7 +325,7 @@
     "noMatches": "Keine Übereinstimmungen",
     "processMemory": "Prozess-Arbeitsspeicher",
     "processes": "Prozesse",
-    "searchPlaceholder": "Prozesse suchen...",
+    "searchPlaceholder": "Nach Name oder PID suchen...",
     "showing": "Zeigt {{shown}} von {{total}} Prozessen",
     "status": {
       "idle": "Leerlauf",
@@ -318,7 +337,8 @@
     "title": "Prozessmanager",
     "totalCpu": "Insgesamt CPU",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Überwachen"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -367,11 +387,11 @@
     "device": "Gerät: {{id}}",
     "editValue": "Wert bearbeiten",
     "enterDecimalValue": "Geben Sie den Dezimalwert ein",
-    "enterHexBytes": "Geben Sie Hex-Bytes ein",
+    "enterHexBytes": "Geben Sie Hex-Bytes durch Leerzeichen getrennt ein (z. B. 00 01 02 03)",
     "enterHexValue": "Geben Sie den Hex-Wert ein",
     "enterKeyName": "Geben Sie den Schlüsselnamen ein",
     "enterStringValue": "Geben Sie den Zeichenfolgenwert ein",
-    "enterStrings": "Geben Sie Zeichenfolgen ein",
+    "enterStrings": "Geben Sie jede Zeichenfolge in einer neuen Zeile ein",
     "enterValueName": "Geben Sie den Wertnamen ein",
     "errors": {
       "createKey": "Registrierungsschlüssel konnte nicht erstellt werden",
@@ -403,7 +423,7 @@
     "noValues": "Keine Werte",
     "parentPath": "Übergeordneter Pfad",
     "root": "Wurzel",
-    "searchPlaceholder": "Registrierungswerte suchen...",
+    "searchPlaceholder": "Werte suchen...",
     "title": "Registrierungseditor",
     "value": "Wert",
     "valueCount": "Wertanzahl",
@@ -432,11 +452,11 @@
         "title": "Starten Sie die Terminalsitzung"
       }
     },
-    "noOnlineDevices": "Keine Online-Geräte",
-    "noSearchMatches": "Keine Suchtreffer",
+    "noOnlineDevices": "Es sind keine Geräte online verfügbar.",
+    "noSearchMatches": "Keine Geräte entsprechen Ihrer Suche.",
     "openDeviceList": "Öffnen Sie die Geräteliste",
     "os": "Os",
-    "searchPlaceholder": "Geräte suchen..."
+    "searchPlaceholder": "Online-Geräte suchen..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -544,7 +564,7 @@
       "start": "Starten",
       "stop": "Stopp"
     },
-    "adjustSearch": "Passen Sie die Suche an",
+    "adjustSearch": "Versuchen Sie, Ihre Suchanfrage anzupassen",
     "arguments": "Argumente",
     "author": "Autor",
     "deviceId": "Geräte-ID: {{id}}",
@@ -613,7 +633,7 @@
       "stop": "Stopp"
     },
     "actionBlocked": "Aktion blockiert",
-    "adjustHint": "Hinweis anpassen",
+    "adjustHint": "Passen Sie Ihre Suche oder Filter an.",
     "agentRestartConfirm": "Bestätigen Sie den Neustart des Agenten",
     "agentStopBlocked": "Agent Stop blockiert",
     "allStatus": "Alle Status",
@@ -643,9 +663,10 @@
     },
     "stopService": "Stoppen Sie den Dienst",
     "summary": "{{shown}} von {{total}} Leistungen auf {{device}}",
-    "title": "Titel",
+    "title": "Dienste",
     "windowsOnlyDescription": "Der Dienstemanager ist nur für Windows-Geräte verfügbar. {{device}} läuft {{os}}.",
-    "windowsOnlyTitle": "Nur Windows-Titel"
+    "windowsOnlyTitle": "Nur Windows",
+    "monitorThis": "Überwachen"
   },
   "sessionHistory": {
     "columns": {
@@ -667,7 +688,7 @@
     },
     "noSessions": "Keine Sitzungen",
     "page": "Seite {{current}} von {{total}}",
-    "searchPlaceholder": "Sitzungen suchen...",
+    "searchPlaceholder": "Nach Gerät oder Benutzer suchen...",
     "showing": "Zeigt {{start}} bis {{end}} von {{total}}",
     "stats": {
       "averageDuration": "Durchschnittliche Dauer",
@@ -735,7 +756,7 @@
     "deletePermanently": "Dauerhaft löschen",
     "deleteSelected": "Endgültig löschen ({{count}})",
     "empty": "Leer",
-    "emptyConfirm": "Papierkorb leeren? Alle enthaltenen Dateien werden endgültig gelöscht.",
+    "emptyConfirm": "Den gesamten Papierkorb leeren? Alle Elemente werden endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
     "emptyTrash": "Papierkorb leeren",
     "errors": {
       "empty": "Papierkorb konnte nicht geleert werden",
@@ -754,13 +775,13 @@
   "vncViewer": {
     "connect": "Verbinden",
     "credentials": {
-      "macDescription": "Mac-Beschreibung",
+      "macDescription": "Der Mac verwendet die Apple-Remote-Desktop-Authentifizierung. Geben Sie ein macOS-Benutzerkonto mit Zugriff auf die Bildschirmfreigabe ein (Anmeldename und Passwort des Benutzers).",
       "macLoginRequired": "Mac-Anmeldung erforderlich",
       "macPassword": "Mac-Passwort",
-      "macUsername": "Mac-Benutzername",
+      "macUsername": "macOS-Benutzername",
       "password": "Passwort",
       "passwordRequired": "Passwort erforderlich",
-      "vncDescription": "Vnc-Beschreibung"
+      "vncDescription": "Geben Sie das Passwort ein, das unter System Settings > General > Sharing > Screen Sharing > Computer Settings festgelegt wurde."
     },
     "disconnect": "Trennen",
     "errors": {
@@ -782,7 +803,7 @@
       "error": "Fehler",
       "passwordRequired": "Passwort erforderlich"
     },
-    "syncClipboard": "Zwischenablage synchronisieren",
+    "syncClipboard": "Zwischenablage mit Remote-Gerät synchronisieren",
     "tunnel": "Tunnel {{id}}"
   },
   "vncViewerPage": {

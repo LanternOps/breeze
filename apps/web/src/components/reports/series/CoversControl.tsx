@@ -1,10 +1,9 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDefaultReportOwnerScope } from '../ReportOwnerScopeField';
-import { isBusinessReportType } from '../businessReportAccess';
 import { SeriesRecipientsSection } from './SeriesRecipientsSection';
 import { SeriesTargetingFields } from './SeriesTargetingFields';
-import { availableCoversModes, DEFAULT_RECIPIENT_RULE, isSeriesEligibleReportType } from './seriesConfig';
+import { availableCoversModes, DEFAULT_RECIPIENT_RULE } from './seriesConfig';
 import type { CoversMode, CoversValue, SeriesCoversFields } from './types';
 
 const DEFAULT_SERIES_FIELDS: SeriesCoversFields = {
@@ -82,21 +81,12 @@ export function CoversControl({
     </div>
   );
   const orgSlot = value.mode === 'org' ? orgField : null;
-  // Past the gate but this type can't fan out: say so instead of silently
-  // offering one org only (business types show Combined instead).
-  const seriesUnavailable =
-    !lockMode && canChoose && !isBusinessReportType(reportType) && !isSeriesEligibleReportType(reportType);
 
   if (modes.length === 1) {
     return (
       <div data-testid="covers-control" data-mode={value.mode} className="space-y-3">
         {orgSlot}
         {seriesFields}
-        {seriesUnavailable && (
-          <p data-testid="covers-series-unavailable" className="text-xs text-muted-foreground">
-            {t('reports.series.covers.seriesUnavailableType')}
-          </p>
-        )}
       </div>
     );
   }

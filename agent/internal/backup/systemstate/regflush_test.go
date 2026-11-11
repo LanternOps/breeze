@@ -1,6 +1,7 @@
 package systemstate
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ func TestCollectRegistryHivesForRun_OwnSnapshotFlushesHivesFirst(t *testing.T) {
 		return snap.snapshot(v)
 	}}
 
-	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts); err != nil {
+	if _, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, opts); err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
 	if want := []string{"flush", "snapshot"}; !reflect.DeepEqual(events, want) {
@@ -50,7 +51,7 @@ func TestCollectRegistryHivesForRun_OwnSnapshotFlushesHivesFirst(t *testing.T) {
 func TestCollectRegistryHivesForRun_NoOwnSnapshotNoFlush(t *testing.T) {
 	origSave := runRegSave
 	t.Cleanup(func() { runRegSave = origSave })
-	runRegSave = func(hive, outPath string) ([]byte, error) {
+	runRegSave = func(_ context.Context, hive, outPath string) ([]byte, error) {
 		return nil, os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
 	}
 	root := fakeShadowRoot(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY", "DEFAULT")
@@ -66,7 +67,7 @@ func TestCollectRegistryHivesForRun_NoOwnSnapshotNoFlush(t *testing.T) {
 			staging := t.TempDir()
 			dir := filepath.Join(staging, "registry")
 			_ = os.MkdirAll(dir, 0o700)
-			if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts); err != nil {
+			if _, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, opts); err != nil {
 				t.Fatalf("collectRegistryHivesForRun: %v", err)
 			}
 			if len(events) != 0 {

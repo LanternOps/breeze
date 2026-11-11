@@ -17,9 +17,11 @@ const { queryMock, insertedRows, updateCalls } = vi.hoisted(() => ({
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
 
 // Wisp W04 Task 4: getOrCreate resolves the session's delegation grant itself
-// (lookupWispGrant); every session in this suite is an ordinary one.
+// (lookupWispGrant); every session in this suite is an ordinary one except in
+// the `Wisp tool index (#10430)` block.
 vi.mock('./wisp/chatCeiling', () => ({
   lookupWispGrant: vi.fn(async () => null),
+  wispSessionToolFilter: vi.fn(),
   unreachableWispAuth: (auth: unknown) => auth,
   WispSessionUnavailableError: class WispSessionUnavailableError extends Error {},
 }));
@@ -91,6 +93,8 @@ import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { TOOL_SEARCH_MIN_REMAINING_TURNS, TOOL_SEARCH_TURN_HEADROOM } from './aiToolSearchPolicy';
 import { settleInvocation } from './aiModels/settleInvocation';
+import { lookupWispGrant, wispSessionToolFilter } from './wisp/chatCeiling';
+import { createBreezeMcpServer } from './aiAgentSdkTools';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -204,6 +208,35 @@ function userToolSearchResultMessage(id: string) {
     },
   };
 }
+
+describe('Wisp tool index (#10430)', () => {
+  const GRANT = { grantId: 'g-1', revisionId: 'r-1', threadId: 't-1' };
+
+  it('registers a Wisp session\'s tools through its grant ceiling\'s tool filter', async () => {
+    const admitTool = (name: string) => name !== 'list_operator_tasks';
+    vi.mocked(lookupWispGrant).mockResolvedValueOnce(GRANT);
+    vi.mocked(wispSessionToolFilter).mockResolvedValueOnce(admitTool);
+    mockSdkQuery([RESULT_MSG]);
+    const session = await manager.getOrCreate(
+      'sess-wisp', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(wispSessionToolFilter).toHaveBeenCalledWith(GRANT);
+    expect(vi.mocked(createBreezeMcpServer).mock.calls.at(-1)?.[5]).toEqual({ admitTool });
+  });
+
+  it('leaves an ordinary session\'s server unfiltered', async () => {
+    mockSdkQuery([RESULT_MSG]);
+    const session = await manager.getOrCreate(
+      'sess-plain', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(wispSessionToolFilter).not.toHaveBeenCalled();
+    expect(vi.mocked(createBreezeMcpServer).mock.calls.at(-1)?.[5]).toBeUndefined();
+  });
+});
 
 describe('tool-search policy wiring (A-W04)', () => {
   afterEach(() => vi.unstubAllEnvs());

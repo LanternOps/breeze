@@ -284,7 +284,7 @@
     "alertThresholds": "Avisar em (% do orçamento)",
     "alertThresholdsHelp": "Administradores parceiros com acesso a cobrança recebem um alerta no aplicativo em cada nível e um e-mail para alertas mensais e de limite atingido. Deixe em branco para herdar 50, 80, 95.",
     "notSet": "Não definido, as organizações configuram individualmente",
-    "description": "Os valores de orçamento são aplicados a todas as organizações filhas. Os valores em dólares são armazenados internamente em centavos.",
+    "description": "Um valor definido aqui se aplica a todas as organizações e as bloqueia. Um campo deixado vazio é configurado por organização. Os valores em dólares são armazenados internamente em centavos.",
     "modes": {
       "perStep": "Por etapa",
       "actionPlan": "Plano de ação",
@@ -1095,8 +1095,8 @@
         "description": "Envie e-mails do seu próprio domínio"
       },
       "aiBudgets": {
-        "label": "Orçamentos de IA",
-        "description": "Limites de gastos com IA"
+        "label": "Orçamentos e limites de IA",
+        "description": "Limites de gasto, alertas e limites de taxa de IA"
       },
       "aiProvider": {
         "label": "Provedores e modelos de IA",
@@ -1119,8 +1119,8 @@
         "description": "Central de serviços, faturamento e topologia ativados/desativados"
       },
       "aiApprovals": {
-        "label": "Tempo limite de aprovação de IA",
-        "description": "Quanto tempo o Breeze AI aguarda a aprovação de uma ação restrita"
+        "label": "Aprovações de IA",
+        "description": "Modo de aprovação e quanto tempo o Breeze AI espera por uma aprovação"
       },
       "callerVerification": {
         "label": "Verificação de chamador",
@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Convidados conhecidos",
         "description": "Dispositivos aprovados de visitantes e técnicos por endereço MAC"
+      },
+      "customerPortal": {
+        "label": "Portal do cliente",
+        "description": "Regras padrão de login e cadastro para os portais dos seus clientes e solicitações de acesso aguardando uma decisão"
       }
     },
     "saved": "Configurações do parceiro salvas",
@@ -1198,6 +1202,7 @@
       "badge": {
         "locks": "Bloqueia organizações",
         "locksConditional": "Bloqueia organizações quando ativado",
+        "locksWhenSet": "Bloqueia organizações quando definido",
         "overridable": "A organização pode alterar",
         "overridableCap": "A organização pode alterar, até {{limit}}",
         "partnerOnly": "Para todo o parceiro"
@@ -1205,6 +1210,7 @@
       "badgeHelp": {
         "locks": "Enquanto estiver definido, todas as organizações usam o seu valor. O valor próprio da organização é ignorado.",
         "locksConditional": "Quando ativado, todas as organizações usam o seu valor em vez do próprio. Quando desativado, usam o próprio.",
+        "locksWhenSet": "Depois que você define um valor, todas as organizações o usam e o valor próprio é ignorado. Enquanto estiver vazio, cada organização configura o seu.",
         "overridable": "O seu valor é o padrão. Uma organização que define o próprio valor usa esse no lugar.",
         "overridableCap": "O seu valor é o padrão. Uma organização pode definir o próprio valor, até {{limit}}.",
         "partnerOnly": "As organizações não têm uma configuração própria. O seu valor se aplica a todas."
@@ -1851,7 +1857,8 @@
       "load": "Falha ao carregar a política de segurança de aprovação.",
       "save": "Não foi possível salvar a política de segurança de aprovação.",
       "unavailable": "Nenhuma política disponível."
-    }
+    },
+    "scopeNote": "Estas configurações se aplicam a todas as organizações da sua conta de parceiro."
   },
   "orgAuditRetentionSettings": {
     "title": "Retenção de Logs de Auditoria",
@@ -2321,7 +2328,8 @@
     "actions": {
       "resend": "Reenviar",
       "reactivate": "Reativar",
-      "sendInvite": "Enviar convite"
+      "sendInvite": "Enviar convite",
+      "grantBrowserAccess": "Dar acesso pelo navegador"
     },
     "fields": {
       "nameOptional": "Nome (opcional)",
@@ -2343,13 +2351,19 @@
       "inviteResent": "Convite reenviado",
       "reactivated": "Usuário reativado",
       "disabled": "Usuário desativado",
-      "removed": "Usuário removido"
+      "removed": "Usuário removido",
+      "browserAccessGranted": "Acesso pelo navegador concedido"
     },
     "errors": {
       "load": "Falha ao carregar os usuários do portal.",
       "sendInvite": "Falha ao enviar o convite",
       "action": "Falha na ação",
       "invalidEmail": "Informe um endereço de e-mail válido"
+    },
+    "badges": {
+      "noBrowserAccess": "Sem acesso pelo navegador",
+      "microsoft": "Login com Microsoft",
+      "google": "Login com Google"
     }
   },
   "orgRemoteAccessSettings": {
@@ -2968,7 +2982,8 @@
       "enabledHint": "«Ativado» e o modo são chaves separadas e uma execução precisa das duas: com isto desligado nada roda, seja qual for o modo, e no modo Desligado nada roda mesmo com isto ligado.",
       "enabledCreateHint": "Novos agentes são criados desligados. Revise a lista de ferramentas permitidas e os limites abaixo e depois ligue isto quando quiser que o agente comece a rodar.",
       "actKeysCleared": "As permissões do modo de ação são mantidas, mas não serão salvas a menos que este agente volte ao modo de ação.",
-      "recipientRoleNoMembers": "sem membros ativos"
+      "recipientRoleNoMembers": "sem membros ativos",
+      "enabledHintNoMode": "Quando está desativado, o agente não é executado."
     },
     "policyKeys": {
       "tools": {
@@ -3165,6 +3180,7 @@
           "blocked_by_source": "Excluída pelas fontes de atualização da política",
           "held_by_deferral": "Retida pela janela de adiamento",
           "blocked_by_category": "Excluída pelas regras de categoria do anel",
+          "managed_by_vendor_updates": "Gerenciado pelas atualizações do fabricante",
           "blocked_by_app_rule": "Bloqueada por uma regra de aplicativo",
           "blocked_by_feature_update_policy": "Excluído pela política de atualizações de recursos do Windows do anel",
           "awaiting_manual_approval": "Aguardando aprovação manual",
@@ -5168,7 +5184,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Você confirmará com sua chave de acesso (Touch ID/Windows Hello) ao se registrar.",
     "authenticatorCode": "Código do autenticador",
-    "confirmYourPassword": "Confirme sua senha"
+    "confirmYourPassword": "Confirme sua senha",
+    "switchToAuthenticatorCode": "Usar o aplicativo autenticador em vez disso",
+    "usePasskeyInstead": "Usar sua chave de acesso em vez disso"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Respostas automáticas",
@@ -5511,7 +5529,21 @@
     "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
     "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração do seu aplicativo autenticador.",
     "ssoReauthManageHint": "Esta conta entra por meio de um provedor de identidade e não tem senha. Verifique com seu provedor para confirmar esta alteração.",
-    "ssoReauthManageVerified": "Identidade verificada com seu provedor. Conclua a etapa abaixo para confirmar esta alteração."
+    "ssoReauthManageVerified": "Identidade verificada com seu provedor. Conclua a etapa abaixo para confirmar esta alteração.",
+    "notSetUp": "Não configurado",
+    "notAvailable": "Não disponível",
+    "backup": "Cópia de segurança",
+    "addBackup": "Adicionar backup",
+    "totpBackupAddHint": "Adicione um aplicativo autenticador como backup para continuar entrando caso sua chave de acesso não esteja disponível.",
+    "totpPolicyDisallowed": "A política da sua organização não permite aplicativos autenticadores.",
+    "totpBackupActiveHint": "Use um código do seu aplicativo autenticador se sua chave de acesso não estiver disponível.",
+    "totpBackupVerifyNote": "Ao pressionar Verificar, você confirmará com sua chave de acesso.",
+    "confirmBackupButton": "Verificar e adicionar backup",
+    "removeTotpTitle": "Remover aplicativo autenticador",
+    "removeTotpBackupDescription": "Você continuará entrando com sua chave de acesso. Seus códigos de recuperação permanecem os mesmos.",
+    "removeTotpPrimaryDescription": "Sua chave de acesso passa a ser seu método principal de login. Seus códigos de recuperação permanecem os mesmos.",
+    "removeTotpConfirmWithPasskey": "Você confirmará com sua chave de acesso.",
+    "removing": "Removendo..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar do Pax8",
@@ -5636,7 +5668,13 @@
     "ssoReauthManageProofExpired": "A verificação com seu provedor de identidade expirou. Verifique novamente para confirmar esta alteração.",
     "verifyWithIdpToDeletePasskey": "Esta conta não tem senha. Verifique com seu provedor de identidade antes de remover uma chave de acesso.",
     "deletePasskeySsoReauth": "Verificar identidade para remover uma chave de acesso",
-    "deletePasskeySsoVerified": "Identidade verificada. Escolha Excluir na chave de acesso que deseja remover."
+    "deletePasskeySsoVerified": "Identidade verificada. Escolha Excluir na chave de acesso que deseja remover.",
+    "authenticatorBackupAdded": "Aplicativo autenticador adicionado como backup. Seus códigos de recuperação não foram alterados",
+    "authenticatorAppRemoved": "Aplicativo autenticador removido. Você entrará com sua chave de acesso",
+    "authenticatorCodeRejectedWaitForNext": "Esse código não foi aceito. Cada código funciona apenas uma vez; se você acabou de usá-lo, aguarde o próximo código do seu aplicativo autenticador.",
+    "passkeyConfirmationCanceled": "A confirmação com chave de acesso foi cancelada ou expirou.",
+    "passkeyProofRejected": "Não foi possível verificar sua chave de acesso. Tente novamente.",
+    "failedToRemoveAuthenticatorApp": "Falha ao remover o aplicativo autenticador"
   },
   "roleManager": {
     "roles": "Funções",
@@ -6363,8 +6401,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Orçamento de IA",
-    "description": "Limites de gastos, limites de frequência e modo de aprovação do Breeze AI nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
+    "title": "Orçamento e limites de IA",
+    "description": "Limites de gasto, alertas e limites de taxa do Breeze AI nesta organização. Campos definidos pelo seu parceiro aparecem aqui, mas só podem ser alterados na aba do parceiro.",
     "selectOrganization": "Selecione uma organização para configurar seu orçamento de IA."
   },
   "orgSettingsPage": {
@@ -6392,6 +6430,8 @@
       "generalDescription": "Perfil e padrões",
       "contacts": "Contatos",
       "contactsDescription": "Pessoas para procurar neste cliente, por local ou em toda a organização",
+      "domains": "Domínios",
+      "domainsDescription": "Domínios de e-mail dos clientes e prova de propriedade",
       "contracts": "Contratos",
       "contractsDescription": "Acordos recorrentes",
       "billing": "Cobrança",
@@ -6906,7 +6946,8 @@
         "pam_open_actuation": "A organização que será mesclada (e encerrada) tem sessões de acesso privilegiado (PAM) que ainda não terminaram a limpeza. Aguarde o encerramento delas e tente a mesclagem novamente.",
         "pam_evidence": "A organização que será mesclada tem histórico de acesso privilegiado (PAM), e mover o histórico PAM entre organizações não está habilitado nesta implantação. Mescle na direção oposta ou não mescle estas organizações.",
         "payment_in_flight": "Há um pagamento da organização que será mesclada ainda em andamento. Aguarde a conclusão e tente a mesclagem novamente.",
-        "lineage_depth": "Estas organizações já foram mescladas vezes demais, e esta mesclagem excederia a profundidade máxima do histórico de mesclagens."
+        "lineage_depth": "Estas organizações já foram mescladas vezes demais, e esta mesclagem excederia a profundidade máxima do histórico de mesclagens.",
+        "entra_tenant_conflict": "A organização que será mesclada tem um locatário da Microsoft comprovado, e a organização que permanece também está vinculada a um locatário da Microsoft. Remova um dos vínculos de locatário e tente a mesclagem novamente."
       }
     },
     "archive": {
@@ -7081,28 +7122,166 @@
   },
   "customerDomainsCard": {
     "title": "Domínios de e-mail do cliente",
-    "description": "Encaminhe domínios de e-mail de clientes verificados para a organização certa.",
+    "managedPerOrg": "Os domínios são gerenciados por organização. Abra uma organização para adicionar, verificar, mover ou remover os domínios dela.",
+    "emptySummary": "Ainda não há domínios de e-mail de clientes. Adicione-os na aba Domínios de cada organização.",
     "errors": {
-      "load": "Os mapeamentos de domínio do cliente não foram carregados.",
-      "save": "Não foi possível salvar o mapeamento do domínio do cliente. Tente novamente."
-    },
-    "toasts": {
-      "added": "Mapeamento de domínio de cliente adicionado",
-      "saved": "Mapeamento de domínio do cliente salvo",
-      "deleted": "Mapeamento de domínio de cliente excluído"
+      "load": "Os mapeamentos de domínio do cliente não foram carregados."
     },
     "columns": {
       "domain": "Domínio",
+      "status": "Status"
+    },
+    "actions": {
+      "manage": "Gerenciar"
+    }
+  },
+  "orgDomains": {
+    "title": "Domínios",
+    "description": "Domínios de e-mail que pertencem a este cliente. Um domínio declarado encaminha os e-mails recebidos para esta organização. Um domínio verificado é a prova de que o cliente é o proprietário dele, e o cadastro próprio no portal e o login com Google dependem disso.",
+    "forbidden": "Gerenciar os domínios de clientes exige uma função de administrador com acesso a todas as organizações.",
+    "partnerOnly": "Os domínios de clientes são gerenciados pelo seu provedor de serviços.",
+    "checkingAccess": "Verificando o acesso…",
+    "empty": "Ainda não há domínios. Adicione abaixo o domínio de e-mail do cliente.",
+    "neverChecked": "Nunca",
+    "notCurrent": "As evidências por trás desta verificação não são mais válidas. A nova verificação diária vai removê-la, a menos que ela passe novamente.",
+    "inactiveSuspended": "Inativo: não é usado para o encaminhamento de e-mails nem para o login até ser reativado.",
+    "stale": "A lista pode estar desatualizada: não foi possível recarregá-la após sua alteração.",
+    "columns": {
+      "domain": "Domínio",
+      "status": "Status",
+      "lastChecked": "Última verificação",
       "autoCreateContact": "Criar contato automaticamente"
     },
-    "empty": "Ainda não há mapeamentos de domínio de cliente.",
-    "placeholders": {
-      "domain": "customer.example.com",
-      "organization": "Selecione a organização..."
+    "aria": {
+      "active": "{{domain}} está ativo",
+      "autoCreateContact": "Criar contatos automaticamente para {{domain}}",
+      "verify": "Verificação de {{domain}}",
+      "move": "Mover {{domain}}",
+      "delete": "Excluir {{domain}}"
     },
-    "new": "Novo",
+    "states": {
+      "declared": "Declarado — somente encaminhamento de e-mails",
+      "pending_dns": "DNS pendente",
+      "verified": "Verificado · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "Registro TXT de DNS",
+      "entra_tenant": "Microsoft (o locatário do Entra comprovado da organização)",
+      "google_directory": "Diretório do Google Workspace"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "O locatário da Microsoft da organização ainda não foi comprovado.",
+        "connection_missing": "Requer uma conexão do Microsoft 365 para o locatário comprovado. Conecte o Microsoft 365 para esta organização ou use o DNS.",
+        "not_enabled": "A verificação da Microsoft não está disponível neste servidor."
+      },
+      "google_directory": {
+        "connection_missing": "Requer uma conexão do Google Workspace para esta organização.",
+        "not_enabled": "O Google Workspace não está habilitado neste servidor."
+      }
+    },
+    "cleared": {
+      "record_missing": "Verificação perdida: o registro DNS não foi encontrado.",
+      "not_in_directory": "Verificação perdida: o domínio não está mais no diretório.",
+      "tenant_not_proven": "Verificação perdida: o locatário da Microsoft não está mais comprovado.",
+      "connection_missing": "Verificação perdida: a conexão com o diretório foi removida.",
+      "stale": "Verificação perdida: não foi possível verificá-la novamente por 7 dias.",
+      "repointed": "Verificação perdida: o domínio foi movido para outra organização.",
+      "msp_removed": "Verificação removida.",
+      "displaced": "Verificação perdida: o domínio foi verificado por outra organização."
+    },
+    "checkReasons": {
+      "record_missing": "O registro DNS não foi encontrado. As alterações de DNS podem demorar para aparecer; verifique novamente mais tarde.",
+      "not_in_directory": "O domínio não é um domínio verificado no diretório.",
+      "tenant_not_proven": "O locatário da Microsoft da organização não foi comprovado.",
+      "connection_missing": "A organização não tem uma conexão de diretório correspondente.",
+      "dns_error": "Não foi possível consultar o DNS. Tente novamente mais tarde.",
+      "timeout": "A verificação expirou. Tente novamente mais tarde.",
+      "graph_unavailable": "Não foi possível acessar o Microsoft 365. Tente novamente mais tarde.",
+      "graph_tenant_mismatch": "O Microsoft 365 respondeu por um locatário diferente do comprovado.",
+      "google_scope_missing": "A concessão de delegação do Google Workspace não inclui o escopo {{scope}}. Adicione-o no console do Google Admin e verifique novamente.",
+      "google_access_denied": "O Google Workspace recusou o acesso. Verifique o e-mail do administrador e a concessão de delegação.",
+      "google_unavailable": "Não foi possível acessar o Google Workspace. Tente novamente mais tarde.",
+      "unknown": "A verificação não passou."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "Este domínio não está mais nesta organização. Recarregue a página.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "Este domínio está verificado para outra organização. O proprietário dela deve remover primeiro a outra verificação (registro DNS ou conexão de diretório).",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "A verificação do domínio mudou enquanto esta verificação era executada. Verifique novamente.",
+      "DOMAIN_INACTIVE": "Ative o domínio antes de verificá-lo.",
+      "DOMAIN_DNS_NOT_STARTED": "Obtenha primeiro o registro DNS.",
+      "DOMAIN_ALREADY_VERIFIED": "Este domínio está verificado por outro método. Remova primeiro essa verificação."
+    },
+    "verify": {
+      "methodLegend": "Método de verificação",
+      "panelTitle": "Verificar {{domain}}",
+      "methodLocked": "Para trocar de método, remova primeiro a verificação atual.",
+      "openPortalTab": "Comprove o locatário em Portal do Cliente › Login e cadastro.",
+      "dnsStartHint": "Obtenha um registro TXT para o administrador de DNS do cliente publicar.",
+      "startDns": "Obter registro DNS",
+      "starting": "Obtendo registro…",
+      "dnsInstructions": "Peça ao administrador de DNS do cliente que adicione este registro TXT e depois verifique-o.",
+      "recordName": "Nome do registro (host)",
+      "recordValue": "Valor do registro",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "googleScopeHint": "A concessão de delegação do Google Workspace da organização deve incluir {{scope}}.",
+      "inactive": "Este domínio está desativado. Ative-o para verificá-lo.",
+      "verify": "Verificar",
+      "checkNow": "Verificar agora",
+      "checking": "Verificando…",
+      "resultFailed": "Não verificado. {{reason}}",
+      "resultUnavailable": "Não foi possível concluir a verificação. {{reason}}",
+      "removeVerification": "Remover verificação",
+      "removeTitle": "Remover a verificação de {{domain}}?",
+      "removeMessage": "O domínio continua nesta organização para o encaminhamento de e-mails. O cadastro próprio e o login com Google deixam de confiar nele até que seja verificado novamente."
+    },
     "actions": {
-      "addDomain": "Adicionar domínio"
+      "verify": "Verificar",
+      "manageVerification": "Verificação",
+      "move": "Mover"
+    },
+    "add": {
+      "label": "Adicionar um domínio",
+      "placeholder": "contoso.com",
+      "submit": "Adicionar domínio"
+    },
+    "move": {
+      "title": "Mover {{domain}} para outra organização?",
+      "message": "Os e-mails recebidos deste domínio serão encaminhados para a organização que você escolher.",
+      "messageVerified": "O domínio perderá a verificação. A nova organização precisará verificá-lo novamente, e um registro DNS precisará ser publicado de novo com um valor novo.",
+      "targetLabel": "Organização",
+      "targetPlaceholder": "Selecione uma organização…",
+      "orgsFailed": "Não foi possível carregar as organizações. Feche isto e tente novamente."
+    },
+    "delete": {
+      "title": "Excluir {{domain}}?",
+      "message": "Os e-mails recebidos deste domínio não serão mais encaminhados para esta organização.",
+      "messageVerified": "Os e-mails recebidos deste domínio não serão mais encaminhados para esta organização, e a verificação dele será removida."
+    },
+    "toasts": {
+      "added": "{{domain}} adicionado",
+      "saved": "{{domain}} salvo",
+      "deleted": "{{domain}} excluído",
+      "moved": "{{domain}} movido para {{org}}",
+      "verified": "{{domain}} verificado",
+      "verificationRemoved": "Verificação removida de {{domain}}",
+      "copyFailed": "Não foi possível copiar. Selecione o texto e copie manualmente."
+    },
+    "errors": {
+      "load": "Não foi possível carregar os domínios.",
+      "save": "Não foi possível salvar o domínio. Tente novamente.",
+      "delete": "Não foi possível excluir o domínio. Tente novamente.",
+      "add": "Não foi possível adicionar o domínio. Tente novamente.",
+      "alreadyMapped": "Este domínio já foi adicionado a uma organização da sua conta.",
+      "startDns": "Não foi possível obter o registro DNS. Tente novamente.",
+      "check": "Não foi possível executar a verificação. Tente novamente.",
+      "removeVerification": "Não foi possível remover a verificação. Tente novamente."
     }
   },
   "customFieldsPage": {
@@ -7565,6 +7744,45 @@
       "create": "Não foi possível adicionar o contato.",
       "update": "Não foi possível salvar o contato.",
       "delete": "Não foi possível excluir o contato."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Sem acesso",
+        "invited": "Convidado",
+        "active": "Ativo",
+        "disabled": "Desativado",
+        "requested": "Solicitado"
+      },
+      "actions": {
+        "give": "Dar acesso ao portal",
+        "resend": "Reenviar convite",
+        "bulkGive": "Dar acesso ao portal ({{count}})",
+        "selectAll": "Selecionar todos os contatos desta página",
+        "selectRow": "Selecionar {{name}}"
+      },
+      "form": {
+        "giveAccess": "Dar acesso ao portal (envia um convite para este endereço de e-mail)",
+        "needsEmail": "Adicione um endereço de e-mail para dar acesso ao portal."
+      },
+      "toasts": {
+        "invited": "Convite do portal enviado",
+        "inviteEmailFailed": "Login do portal criado, mas não foi possível enviar o e-mail de convite. Use Reenviar convite.",
+        "bulkSummary": "Acesso ao portal: {{details}}",
+        "resendEmailFailed": "Não foi possível enviar o e-mail de convite. Tente novamente mais tarde com Reenviar convite."
+      },
+      "outcomes": {
+        "invited": "Convidados: {{count}}",
+        "already_has_access": "Já têm acesso: {{count}}",
+        "no_email": "Sem endereço de e-mail: {{count}}",
+        "email_bound_to_other_contact": "E-mail usado por outro contato: {{count}}",
+        "duplicate_email_in_batch": "E-mail duplicado na seleção: {{count}}",
+        "emailNotSent": "E-mails de convite não enviados: {{count}}"
+      },
+      "errors": {
+        "invite": "Não foi possível dar acesso ao portal.",
+        "bulkInvite": "Não foi possível dar acesso ao portal aos contatos selecionados."
+      }
     }
   },
   "bulkContactImport": {
@@ -7834,7 +8052,8 @@
     "productDefault": "Padrão do produto ({{minutes}} minutos)",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "description": "Por quanto tempo uma conversa em andamento com o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir.",
-    "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento."
+    "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento.",
+    "modeDescription": "Como o chat do Breeze AI pede confirmação antes de executar ações protegidas. Aplica-se haja ou não um limite de gasto."
   },
   "orgAiApprovalTimeout": {
     "title": "Tempo limite de aprovação de IA",
@@ -8220,5 +8439,226 @@
     "hideContent": "Ocultar conteúdo",
     "conversationUnavailable": "Esta conversa não está mais disponível.",
     "usersLoadFailed": "Não foi possível carregar os técnicos."
+  },
+  "orgAiApprovalMode": {
+    "title": "Modo de aprovação de IA",
+    "description": "Como o chat do Breeze AI pede confirmação antes de executar ações protegidas (Tier 2/3) nesta organização. Aplica-se haja ou não um limite de gasto.",
+    "save": "Salvar"
+  },
+  "portalAccessPolicy": {
+    "title": "Login e cadastro",
+    "orgDescription": "Como as pessoas desta organização fazem login no portal do cliente e como novas pessoas obtêm acesso pelo navegador. Um campo deixado em Herdar segue o padrão do parceiro.",
+    "partnerDescription": "O padrão para todas as organizações clientes. Cada organização pode substituir qualquer campo na sua aba Portal do Cliente.",
+    "loading": "Carregando configurações de login…",
+    "readOnly": "Você pode ver estas configurações, mas não alterá-las. Alterar o padrão do parceiro exige acesso total de parceiro.",
+    "save": "Salvar configurações de login",
+    "sources": {
+      "partner": "Padrão do parceiro",
+      "default": "Padrão do Breeze"
+    },
+    "signIn": {
+      "title": "Como as pessoas fazem login"
+    },
+    "newPeople": {
+      "title": "Como novas pessoas obtêm acesso pelo navegador"
+    },
+    "options": {
+      "on": "Ativado",
+      "off": "Desativado"
+    },
+    "microsoft": {
+      "label": "Login com Microsoft"
+    },
+    "google": {
+      "label": "Login com Google"
+    },
+    "password": {
+      "label": "Login com senha",
+      "allowed": "Permitido",
+      "ssoOnly": "Desativado — somente Microsoft/Google",
+      "ssoOnlyNeedsSso": "Disponível depois que o login com Microsoft ou Google for ativado."
+    },
+    "fallback": "O login com senha está ativado porque nenhum login com Microsoft ou Google está habilitado.",
+    "invites": {
+      "label": "Convites do MSP",
+      "value": "Sempre ativados"
+    },
+    "selfRegistration": {
+      "label": "Autocadastro",
+      "off": "Desativado",
+      "approval": "Requer aprovação",
+      "instant": "Imediato"
+    },
+    "ssoNewPerson": {
+      "label": "Primeiro login com Microsoft / Google",
+      "invitedOnly": "Somente pessoas convidadas",
+      "approval": "Requer aprovação",
+      "instant": "Imediato"
+    },
+    "requests": "Solicitações ({{count}})",
+    "errors": {
+      "load": "Não foi possível carregar as configurações de login.",
+      "save": "Não foi possível salvar as configurações de login.",
+      "methodUnavailable": "Este método de login ainda não está disponível nesta implantação do Breeze.",
+      "ssoOnlyNeedsSso": "Ative o login com Microsoft ou Google antes de desativar o login com senha.",
+      "tenantNotProven": "Comprove o locatário da Microsoft desta organização antes de ativar o login com Microsoft.",
+      "sessionHours": "Informe um número inteiro de horas de 1 a 168."
+    },
+    "toasts": {
+      "saved": "Configurações de login salvas."
+    },
+    "sessionHours": {
+      "label": "Duração da sessão Microsoft / Google (horas)",
+      "help": "Os logins com Microsoft e Google terminam após esta quantidade de horas, independentemente de quão ativa a pessoa esteja. De 1 a 168."
+    },
+    "entraTenant": {
+      "title": "Locatário da Microsoft",
+      "loading": "Carregando o locatário da Microsoft…",
+      "loadError": "Não foi possível carregar o locatário da Microsoft.",
+      "status": {
+        "none": "Nenhum locatário da Microsoft está vinculado ainda. O login com Microsoft permanece desativado para esta organização até que o locatário seja comprovado.",
+        "unproven": "O locatário {{tenantId}} está vinculado, mas não comprovado. O login com Microsoft permanece desativado para esta organização até que seja.",
+        "proven": "Locatário {{tenantId}} comprovado em {{date}} por meio de {{method}}."
+      },
+      "via": {
+        "m365_connection": "a conexão com o Microsoft 365",
+        "proof_run": "um login de administrador"
+      },
+      "proveConnection": "Usar a conexão com o Microsoft 365 (locatário {{tenantId}})",
+      "tenantLabel": "ID ou domínio do locatário",
+      "tenantHelp": "Crie um link e envie para um Administrador Global ou um Administrador de Função Privilegiada do locatário do cliente. O link funciona por 72 horas.",
+      "createLink": "Criar link de comprovação",
+      "linkLabel": "Link de comprovação",
+      "linkExpires": "Expira em {{date}}. Funciona somente para o locatário {{tenantId}}.",
+      "consentLabel": "Link de consentimento do administrador",
+      "consentHelp": "O administrador do locatário abre este link uma única vez para que todos da organização possam fazer login.",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "remove": "Remover vínculo do locatário",
+      "removeConfirm": {
+        "title": "Remover o vínculo do locatário da Microsoft?",
+        "message": "O login com Microsoft é interrompido para esta organização e as sessões Microsoft dela terminam. Isso também remove o mapeamento de locatário do AI for Office da organização, então o AI for Office deixa de funcionar aqui até que um locatário seja vinculado novamente."
+      },
+      "toasts": {
+        "proven": "Locatário da Microsoft comprovado.",
+        "linkCreated": "Link de comprovação criado.",
+        "removed": "Vínculo do locatário da Microsoft removido.",
+        "copyFailed": "Não foi possível copiar o link. Selecione-o e copie manualmente."
+      },
+      "errors": {
+        "prove": "Não foi possível comprovar o locatário pela conexão com o Microsoft 365.",
+        "createLink": "Não foi possível criar o link de comprovação.",
+        "remove": "Não foi possível remover o vínculo do locatário.",
+        "provenElsewhere": "Este locatário da Microsoft já está comprovado para outra organização. Somente um link de comprovação concluído pelo administrador do locatário pode movê-lo.",
+        "orgHasOtherTenant": "Esta organização está vinculada a um locatário diferente da Microsoft. Remova primeiro esse vínculo.",
+        "noVerifiedConnection": "Esta organização não tem nenhuma conexão com o Microsoft 365 cujo locatário tenha sido verificado por um login de administrador.",
+        "hintRequired": "Informe o ID do locatário da Microsoft do cliente ou um de seus domínios verificados.",
+        "hintInvalid": "Isso não é um ID de locatário da Microsoft nem um domínio verificado por um locatário da Microsoft.",
+        "hintLookupFailed": "Não foi possível acessar a Microsoft para consultar esse domínio. Tente novamente ou informe o ID do locatário.",
+        "protectedOrg": "Esta organização não pode ser vinculada a um locatário da Microsoft."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Desativar o login com senha?",
+      "intro": "Ao salvar, o login com senha é desativado para as organizações abaixo.",
+      "partnerIntro": "Ao salvar este padrão do parceiro, o login com senha é desativado para estas organizações. A página de cada organização lista as contas que ainda não conseguem fazer login.",
+      "explain": "As pessoas já conectadas à Microsoft perdem a senha e são desconectadas. As pessoas sem conexão com a Microsoft não conseguem fazer login até aceitarem um convite de login com Microsoft.",
+      "columns": {
+        "org": "Organização",
+        "passwordsToClear": "Senhas removidas",
+        "strandedTotal": "Ainda não conseguem fazer login"
+      },
+      "openOrg": "Abrir",
+      "strandedTitle": "Ainda não conseguem fazer login",
+      "strandedMore": "e mais {{count}}",
+      "strandedLoadError": "Não foi possível carregar os nomes dessas contas.",
+      "sendInvites": "Enviar convites de login com Microsoft a essas contas após salvar",
+      "confirm": "Desativar login com senha",
+      "changed": "O impacto mudou desde que você abriu esta janela. Revise os novos números."
+    },
+    "stranded": {
+      "title": "Ainda não conseguem fazer login ({{count}})",
+      "description": "Essas contas não têm conexão com a Microsoft, então não conseguem fazer login enquanto o login com senha estiver desativado. Envie a cada uma um convite de login com Microsoft.",
+      "loadError": "Não foi possível carregar as contas que não conseguem fazer login.",
+      "invite": "Enviar convite de login com Microsoft",
+      "inviteAll": "Convidar todos",
+      "more": "Mostrando {{shown}} de {{count}}.",
+      "toasts": {
+        "invited": "Convites de login com Microsoft enviados: {{count}}.",
+        "partial": "Convites de login com Microsoft enviados: {{invited}} de {{total}}. Os demais já estavam conectados ou não puderam ser convidados.",
+        "emailFailed": "{{count}} conta(s) passaram para convidada, mas o e-mail de convite não pôde ser enviado. Use Reenviar na lista de usuários do portal."
+      },
+      "errors": {
+        "invite": "Não foi possível enviar os convites de login com Microsoft.",
+        "unavailable": "O login com Microsoft não está disponível para esta organização, então não há com o que convidar."
+      }
+    },
+    "domains": {
+      "label": "Domínios",
+      "none": "Ainda não há domínios",
+      "manage": "Gerenciar em Organização › Domínios",
+      "loadFailed": "Não foi possível carregar os domínios."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Solicitações de acesso",
+    "description": "Pessoas aguardando acesso ao portal desta organização. Aprove para conceder acesso ou negue para descartar a solicitação.",
+    "columns": {
+      "person": "Pessoa",
+      "source": "Como solicitaram",
+      "requested": "Solicitado"
+    },
+    "sources": {
+      "self": "Autocadastro",
+      "entra": "Login com Microsoft",
+      "google": "Login com Google",
+      "addin_user": "Suplemento AI for Office"
+    },
+    "selectAll": "Selecionar todas as solicitações",
+    "selectOne": "Selecionar a solicitação de {{email}}",
+    "accountExists": "Já tem uma conta — Negue para descartar",
+    "actions": {
+      "approve": "Aprovar",
+      "deny": "Negar",
+      "approveSelected": "Aprovar selecionadas ({{count}})",
+      "denySelected": "Negar selecionadas ({{count}})"
+    },
+    "results": {
+      "accountExists": "Já tem uma conta",
+      "notPending": "Não está mais pendente",
+      "notFound": "Solicitação não encontrada",
+      "identityLinked": "Login já vinculado a outra conta",
+      "failed": "Não foi possível decidir esta solicitação",
+      "entraTenantNotProven": "O locatário da Microsoft desta organização não está mais comprovado"
+    },
+    "denyDialog": {
+      "title": "Negar solicitação de acesso",
+      "message": "Negar a solicitação de {{email}}? A pessoa receberá um e-mail informando que ela não foi aprovada.",
+      "bulkMessage_one": "Negar {{count}} solicitação? A pessoa receberá um e-mail informando que ela não foi aprovada.",
+      "bulkMessage_other": "Negar {{count}} solicitações? Cada pessoa receberá um e-mail informando que a solicitação não foi aprovada."
+    },
+    "toasts": {
+      "approved": "Acesso aprovado para {{email}}.",
+      "denied": "Solicitação de {{email}} negada.",
+      "bulkDone_one": "{{count}} solicitação decidida.",
+      "bulkDone_other": "{{count}} solicitações decididas.",
+      "bulkPartial": "{{succeeded}} de {{total}} solicitações decididas. As demais estão marcadas na lista."
+    },
+    "errors": {
+      "load": "Não foi possível carregar as solicitações de acesso.",
+      "action": "Não foi possível atualizar a solicitação de acesso.",
+      "bulk": "Não foi possível decidir as solicitações selecionadas."
+    },
+    "summary": {
+      "title": "Solicitações de acesso pendentes",
+      "description": "Solicitações aguardando nas suas organizações clientes. Abra uma organização para aprová-las ou negá-las.",
+      "empty": "Nenhuma solicitação pendente",
+      "orgPending_one": "{{count}} pendente",
+      "orgPending_other": "{{count}} pendentes",
+      "review": "Revisar solicitações",
+      "loadError": "Não foi possível carregar as solicitações de acesso pendentes."
+    },
+    "refreshFailed": "Não foi possível atualizar as solicitações de acesso, então esta lista pode estar desatualizada.",
+    "more": "Mostrando as primeiras {{count}} solicitações. Decida sobre elas para ver as demais."
   }
 }

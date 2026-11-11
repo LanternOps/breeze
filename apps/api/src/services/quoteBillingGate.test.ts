@@ -5,10 +5,11 @@ vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'where', 'leftJoin']) chain[m] = vi.fn(() => chain);
   chain.limit = vi.fn(async () => rows.value);
-  return { db: chain };
+  // billingEnabled.ts reads the ambient DB context (org-scope partner-axis read).
+  return { db: chain, getCurrentDbAccessContext: () => null };
 });
 
-import { assertQuoteBillingEnabled, assertQuoteBillingEnabledById } from './quoteBillingGate';
+import { assertQuoteBillingEnabled } from './quoteBillingGate';
 import { QuoteServiceError } from './quoteTypes';
 
 describe('quoteBillingGate', () => {
@@ -24,14 +25,5 @@ describe('quoteBillingGate', () => {
   it('billing on -> passes', async () => {
     rows.value = [{ billingEnabled: true }];
     await expect(assertQuoteBillingEnabled('org1')).resolves.toBeUndefined();
-  });
-
-  it('by id: unknown quote passes through; known quote with billing off throws', async () => {
-    rows.value = [];
-    await expect(assertQuoteBillingEnabledById('q1')).resolves.toBeUndefined();
-    // first read (quote org) returns the org, second (partner flag) returns off
-    const limit = ((await import('../db')).db as unknown as { limit: ReturnType<typeof vi.fn> }).limit;
-    limit.mockResolvedValueOnce([{ orgId: 'org1' }]).mockResolvedValueOnce([{ billingEnabled: false }]);
-    await expect(assertQuoteBillingEnabledById('q1')).rejects.toMatchObject({ code: 'BILLING_DISABLED', status: 404 });
   });
 });

@@ -1552,6 +1552,22 @@
     "riskLow": "Düşük",
     "riskMedium": "Orta",
     "riskHigh": "Yüksek",
-    "riskCritical": "Kritik"
+    "riskCritical": "Kritik",
+    "reviewInApprovals": "Onaylar’da incele",
+    "status": {
+      "proposed": "İnceleme bekliyor",
+      "scan_rejected": "Güvenlik taramasında reddedildi",
+      "review_failed": "Yapay zekâ incelemesi başarısız",
+      "reviewed": "İncelendi",
+      "approved": "Onaylandı",
+      "rejected": "Reddedildi",
+      "changes_requested": "Değişiklik istendi",
+      "expired": "Süresi doldu",
+      "superseded": "Yerine yenisi geçti",
+      "executed": "Çalıştırıldı",
+      "verified": "Doğrulandı",
+      "verification_failed": "Doğrulama başarısız",
+      "promoted": "Kütüphaneye kaydedildi"
+    }
   }
 }

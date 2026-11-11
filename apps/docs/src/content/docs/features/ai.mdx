@@ -128,12 +128,28 @@ Approved actions execute immediately. Rejected actions are logged and the AI is 
 
 If what the request refers to changes while it waits — the script is edited, the quote or invoice is revised, the organization's state moves on — the approved action does **not** run against the drifted content. It fails with a content-changed error instead, and the AI has to raise a fresh request.
 
+**An approval goes to the organization the action changes** (v0.127.0). When a partner technician asks the assistant to change a customer organization other than the one their session is open on, the approval request is filed in that organization and goes to its approvers. A request that names an organization or record the technician cannot access is refused, not filed elsewhere.
+
+#### Approval mode
+
+The **approval mode** decides how a chat asks before running gated actions. It applies whether or not any AI spending cap is set.
+
+| Mode | Behavior |
+|---|---|
+| **Per step** (default) | Each gated action waits for its own approval. |
+| **Action plan** | The AI proposes a multi-step plan and you approve the whole plan once. |
+| **Auto approve** | Tier 2 actions run without a prompt and are audit-logged; Tier 3 still asks. The chat shows a **Pause AI** button that drops back to per-step. |
+| **Hybrid plan** | Like action plan, plus live screenshots between steps and a persistent **Stop** button. |
+
+- **Partner default:** **Settings → Partner → AI Approvals**.
+- **Organization:** **Settings → Organization → AI**, in the **AI approval mode** card. A partner-set mode overrides the organization's and locks the field.
+
 #### Approval timeout
 
 A chat turn that is waiting on an approval is held open, so the wait is bounded. The **approval timeout** is how long the chat waits for someone to approve a gated action before it gives up:
 
 - **Default:** 5 minutes. **Range:** 5 to 60 minutes.
-- **Partner default:** **Settings → Partner → AI Approval Timeout**. Applies to every organization that has not set its own value.
+- **Partner default:** **Settings → Partner → AI Approvals**. Applies to every organization that has not set its own value.
 - **Organization override:** **Settings → Organization → AI**. Choose a value to override the partner default, or **Inherit** to follow it. The organization's value always wins. The selector shows the inherited value and where it comes from.
 - A change applies from the next chat message. It does not change a wait that is already in progress.
 
@@ -208,7 +224,7 @@ A self-hosted or smaller model usually retries and re-plans more than Claude doe
 Every per-tool limit becomes `ceil(limit × multiplier)`. At a multiplier of 3, for example, `run_script` allows 15 requests per 5 minutes instead of 5. The window stays the same. The multiplier applies to the built-in assistant and to the [MCP Server](/features/mcp-server/#per-tool-rate-limits).
 
 - The multiplier can only raise a limit. It never lowers or removes one. The API rejects a value outside 1–10, and a stored value that is out of range is treated as 1.
-- You set it in the same two places as the other budget fields (see [Configuring thresholds](#configuring-thresholds)): **Org settings → AI** for one organisation, or the **AI Budgets** tab of Partner Settings for every organisation under the partner. A partner value overrides the organisation value and locks the field.
+- You set it in the same two places as the other budget fields (see [Configuring thresholds](#configuring-thresholds)): **Org settings → AI** for one organisation, or the **AI Budgets & Limits** tab of Partner Settings for every organisation under the partner. A partner value overrides the organisation value and locks the field.
 - The organisation of the current call selects the multiplier: the chat session's organisation, or the MCP API key's organisation. A partner-scoped MCP caller that has no organisation uses the partner's value. Because the counter is shared across organisations, a user who works in two organisations with different multipliers is checked against the limit of the organisation they are working in now.
 - **AI Risk → Rate Limits** shows the limits that are in effect for the selected organisation, with the multiplier applied, and shows the default next to each limit that was raised.
 
@@ -378,7 +394,7 @@ When billing is not configured, AI usage is unlimited — cost tracking still re
 
 ### Turning AI on or off for every organisation
 
-The AI on/off switch lives on each organisation's **Org settings → AI** tab. The **AI Budgets** tab of Partner Settings has a matching **AI for all organizations** control with three choices:
+The AI on/off switch lives on each organisation's **Org settings → AI** tab. The **AI Budgets & Limits** tab of Partner Settings has a matching **AI for all organizations** control with three choices:
 
 - **Not set, each organization decides** (the default): each organisation keeps its own switch.
 - **On for every organization**: AI is on everywhere, and organisations can't turn it off.
@@ -404,9 +420,9 @@ Alerts are delivered to active users with the `billing:manage` permission, wheth
 The threshold ladder is configured in two places:
 
 - **Organisation**: **Org settings → AI** (v0.114.0+; previously on the AI Usage page). The **AI Usage** page itself is now usage-only, and shows a read-only **Effective budget** panel with each field's value and where it came from (Set by partner, Set by organization, or Default).
-- **Partner**: the **AI Budgets** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
+- **Partner**: the **AI Budgets & Limits** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
 
-A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets tab.
+A partner-set value locks the corresponding field in **Org settings → AI**: the field is grayed out and shows a **Managed by partner** note, so the org can see the value but can't edit or submit it. If every field is locked, the org's Save button is disabled entirely. A partner-scoped user with permission to manage partner-wide policies also sees a **View partner-wide budgets** link from the locked field straight to the Partner Settings AI Budgets & Limits tab.
 
 Either field takes two kinds of input: leave it empty to inherit (the org inherits the partner value, or the 50/80/95 default when the partner sets nothing), or type an explicit ladder of up to five whole percentages, such as `60, 90`. Turning pre-cap warnings off entirely requires storing an empty list, which the UI cannot produce; do that through `PUT /ai/budget` with `"alertThresholdPercents": []`. The 100% cap-reached alert still fires regardless.
 
@@ -907,6 +923,31 @@ These tools let you ask the assistant what the AI has done and is planning. They
 
 The operator task and Fleet Design tools describe a whole organization, so a session limited to some sites or devices cannot use them. The operator task tools are available in AI chat and over MCP only: AI agents are never offered them, because task text is written by people and by other agent runs. The device, schedule and Fleet Design tools are also available to AI agents; a device-bound agent can read only its own device.
 
+#### Starting a patch run or an AI task from chat
+
+Two tools start AI work, the same work as the **Run now** buttons. Both need one approval (supervised) and an MFA-verified session; API keys and MCP connections cannot satisfy that while two-factor authentication is enabled. AI agents and Wisp specialist sessions are never offered them.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `run_patch_plan` | 3 | Run the organization's patch agent now. It proposes installs, each its own approval; it installs nothing itself. |
+| `create_operator_task` | 3 | Start an AI task to get one stopped service running again on one device. Each change the task makes asks for its own approval. |
+
+- **Every launch costs AI credits and can notify people**, which is why neither runs without an approval. They are supervised, not two-person, because the run itself only proposes: every effect on a device has its own approval, and the organization's run caps limit the spend.
+- **A retried approval is one run or task; approving the same request twice is two.** The launch is tied to the approval, not to its arguments.
+- **`run_patch_plan` refuses a session limited to some sites or devices**, because a device-less run is hidden from such a session, so it could not read the result. `create_operator_task` reports a device outside your sites as not found.
+- **`create_operator_task` is service recovery only.** Onboarding and offboarding change people's accounts, so they stay on the Recipe Library page.
+
+#### Schedules and Fleet Designs from chat
+
+| Tool | Actions | Approval |
+|------|---------|----------|
+| `manage_ai_agent_schedules` | `create`: a partner baseline for every organization, or one organization's tighter override. `update`. `delete` | `create` and `update` are supervised; `delete` needs two approvers, and for a baseline the second must be a partner-level user with access to all organizations |
+| `manage_fleet_designs` | `run`, `preview`, `applied`, `apply`, `rollback`, `document` | `preview` and `applied` need none; `run` and `document` are supervised; `apply` and `rollback` need two approvers |
+
+- **`manage_ai_agent_schedules` cannot turn on act mode, and an armed schedule can only be narrowed.** An update may only set act mode off. While a baseline is armed, a change that widens what runs unattended or changes the cadence is refused. Arming stays on the AI Agents page. Deleting a baseline deletes every organization's override and cannot be undone, and deleting an override that narrows an armed baseline is refused.
+- **`apply` and `rollback` are bound to what the approver saw.** If what they touch changes after approval, they refuse and change nothing. `apply` bills through role corrections, reaches devices and can install automatic service restarts. `rollback` removes monitoring from devices and restores roles; items changed since the apply stay as they are. `run` uses AI credits, may notify people and applies nothing. Enabling the designer agent stays on the Fleet Design page.
+- **Neither tool is offered to AI agents, and both refuse a session limited to some sites or devices.**
+
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 
 #### Organization, user and role reads
@@ -924,6 +965,20 @@ These read-only tools answer "who is this customer, who can log in, and what can
 | `list_roles` | 1 | Breeze roles: list them, read one role's permissions, see who holds it, or see its effective (inherited) permissions. Partner callers need full partner access |
 
 Only `get_audit_retention` is available to AI agents. The other six are chat and MCP only: logins, roles and portal users are personal data with no device to scope them to, and the summary and readiness reads need partner scope.
+
+#### Customer portal settings and report recipients
+
+Two writers change what customers see and receive. Both are chat and MCP only (never offered to AI agents), and every change needs approval.
+
+| Tool | Actions | Approval |
+|------|---------|----------|
+| `manage_org_portal_settings` | `get`: an organization's portal settings. `update`: portal sections, support contact, welcome and footer text, logo and colours. `set_sensitive_access`: per-device patch and vulnerability detail, rack and room placement, the support-hours balance, network alerts and trust-page editing | `update` is supervised; `set_sensitive_access` needs two approvers |
+| `manage_report_recipients` | `list`, `add`, `remove` and `convert` the contacts a scheduled report is emailed to | Every write is supervised |
+
+- **Sensitive portal data needs two people.** What a customer has seen in the portal cannot be recalled, so `set_sensitive_access` is four-eyes, and the approval is bound to the flags as they stood when it was approved: if any changed in the meantime, the release is refused.
+- **`update` never turns on dormant sensitive data.** Network alerts and rack placement show only while the network section is on, and the hours balance only while Support usage is on. If one of those is already on, turning its section on with `update` is refused; use `set_sensitive_access` and name it.
+- **Custom CSS stays in the web app.** It is served to customers' browsers as written, so no AI tool writes it.
+- **Adding a recipient sends report data out of Breeze.** `add` and `convert` need the `reports:export` permission and an MFA-verified session. `convert` only moves an address already in the report's email list onto a contact, so it never adds a delivery.
 
 Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
 

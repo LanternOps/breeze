@@ -26,6 +26,7 @@ The list shows a compact set of columns by default — hostname, class, organiza
 - **Desktop access** and **reliability score**
 - **Warranty Ends** (v0.126.0, in the chooser's Inventory group) — the warranty end date with the same status badge as the device's Warranty card. It sorts by end date, with devices that have no warranty record last (shown as a dash).
 - **Serial, asset tag, location** — inventory fields for manual assets (asset tag and location) and, where reported, serial number (manual assets and agent devices); see [Manual Assets](#manual-assets).
+- **Product Number** (v0.127.0, in the chooser's Inventory group) — the manufacturer's product or machine code reported by Windows and Linux agents 0.127.0 and later, such as an HP product number or a Lenovo or Dell machine type. macOS has no equivalent, so the cell stays empty. Like other columns, it is included in the CSV export when visible.
 
 Your column selection and order are remembered per browser, so each technician can tailor the list to their workflow. Most columns are sortable by clicking the header.
 
@@ -154,6 +155,12 @@ A removed device's **Actions** menu offers two choices in place of Remove:
 From v0.118.0, **Delete permanently** (and the automatic purge below) is refused while the device has a backup snapshot under legal hold or inside its immutability window. From v0.122.1, a legal hold set on the device's backup policy or on a configuration policy's backup settings blocks it too. Release the hold, or wait for the window to end, then try again.
 
 From v0.122.1, deleting a device permanently no longer removes its backup files from storage, even those past retention, so purging a device does not reclaim backup storage.
+
+From v0.127.0, **Delete permanently** first checks that the agent confirmed it was uninstalled. If the uninstall failed, expired before the agent came back for it, or was cancelled, or if none was queued (the device was removed with "Leave the agent installed"), you are told that the agent did not confirm removal and asked whether to **Delete anyway**. Deleting anyway can leave the agent installed and running on the machine with nothing managing it, so uninstall it there by hand if it is still present. The audit log records that the delete was forced. A device removed through a reattach, a Quick Support device, and a device whose installer reported its own uninstall do not need the confirmation.
+
+API callers get `409` with `code: "UNINSTALL_NOT_CONFIRMED"` and an `uninstallState` (`failed`, `expired`, `cancelled`, `agent_returned` or `none`). Re-send `DELETE /devices/:id/permanent` with the JSON body `{ "force": true }` to delete anyway.
+
+Bulk **Delete Permanently…** and the automatic purge below never delete anyway. They skip these devices and report how many were skipped, and the devices stay until you delete them one at a time.
 
 Selecting several removed devices at once in the device list adds bulk equivalents: **Restore Selected** applies immediately, while **Delete Permanently…** asks you to type the device count to confirm, then runs as a background job (up to 500 devices per run) with a progress indicator -- deleting a large batch touches too many records to finish inside a single request.
 
@@ -340,7 +347,7 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 
 | Section | Contents |
 |---------|----------|
-| **System** | Hostname, display name (editable), serial number, manufacturer, model. |
+| **System** | Hostname, display name (editable), serial number, product number (v0.127.0, when the agent reports one), manufacturer, model. |
 | **Device Role** | The device's assigned role and how it was determined. |
 | **Function** | What the device is *for* (domain controller, kiosk, finance workstation, …), assessed by the AI Fleet designer or set by hand — see [Device function](#device-function) below. |
 | **Operating System** | OS type, version, build, and architecture. |

@@ -54,7 +54,7 @@ vi.mock('jspdf', () => {
 });
 
 const autoTable = vi.fn();
-vi.mock('jspdf-autotable', () => ({ default: (...args: unknown[]) => autoTable(...args) }));
+vi.mock('jspdf-autotable', () => ({ autoTable: (...args: unknown[]) => autoTable(...args) }));
 
 import { exportReport } from './reportExport';
 import type { ReportBranding } from '@breeze/shared/reportPdf';

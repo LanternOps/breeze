@@ -355,7 +355,9 @@ export interface PortalRunDto {
     // #5784 W06 — managed evidence, same rule. `portalRunListPredicate` has no
     // type filter, so an unwidened union here is a type lie the compiler cannot
     // see: the value comes from the database.
-    | 'identity_access_review';
+    | 'identity_access_review'
+    // #11018 W2 — managed evidence, listed once delivered, never generated here.
+    | 'ticket_sla_performance';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;

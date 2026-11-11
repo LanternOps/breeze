@@ -22,14 +22,14 @@ const forbiddenReader = {
 describe('validateTopologyCommandAuthority payload gate', () => {
   it('denies a payload that is not a diagnostic command at all', async () => {
     await expect(
-      validateTopologyCommandAuthority(row, { type: 'script' }, { reader: forbiddenReader }),
+      validateTopologyCommandAuthority(row, { type: 'script' }, { reader: forbiddenReader, permissionVersions: 'live' }),
     ).resolves.toEqual({ allow: false, reason: 'scope_changed' });
   });
 
   it('denies a payload whose commandId is not the row being delivered', async () => {
     const payload = { ...basePayload(), commandId: '00000000-0000-4000-8000-0000000000ff' };
     await expect(
-      validateTopologyCommandAuthority(row, payload, { reader: forbiddenReader }),
+      validateTopologyCommandAuthority(row, payload, { reader: forbiddenReader, permissionVersions: 'live' }),
     ).resolves.toEqual({ allow: false, reason: 'scope_changed' });
   });
 
@@ -38,6 +38,7 @@ describe('validateTopologyCommandAuthority payload gate', () => {
       validateTopologyCommandAuthority(row, basePayload(), {
         reader: forbiddenReader,
         now: new Date('2026-01-01T00:05:00.000Z'),
+        permissionVersions: 'live',
       }),
     ).resolves.toEqual({ allow: false, reason: 'expired' });
   });

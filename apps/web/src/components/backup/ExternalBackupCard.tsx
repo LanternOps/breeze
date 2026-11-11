@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { HardDrive, Loader2, Unlink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { deriveBackupHealth, type BackupHealth, type ExternalBackupStatus } from '@breeze/shared';
+import { deriveBackupHealth, verifiedBootableState, type BackupHealth, type ExternalBackupStatus } from '@breeze/shared';
 
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -31,6 +31,9 @@ export type ProviderDeviceRow = {
   breezeDeviceId: string | null;
   /** Optional: the bar is skipped rather than faked when the route omits it. */
   history28d?: Array<{ day: string; status: ExternalBackupStatus | null }>;
+  verifiedBootableAt: string | null;
+  verifiedBootable: boolean | null;
+  verifiedBootableFailedChecks: string[] | null;
 };
 
 export default function ExternalBackupCard({
@@ -106,6 +109,8 @@ export default function ExternalBackupCard({
   const health: BackupHealth =
     row.health ??
     deriveBackupHealth({ status: row.status, lastSuccessAt: row.lastSuccessAt, errorsCount: row.errorsCount }).health;
+  const bootCheck = verifiedBootableState({ providerKey: row.provider, verifiedBootable: row.verifiedBootable });
+  const failedChecks = row.verifiedBootableFailedChecks ?? [];
 
   return (
     <div data-testid="external-backup-card" className="rounded-lg border bg-card p-5 shadow-xs">
@@ -166,6 +171,21 @@ export default function ExternalBackupCard({
               .join(', ') || '--'}
           </dd>
         </div>
+        {bootCheck !== 'not_applicable' && (
+          <div data-testid="external-backup-boot-check" className="sm:col-span-3">
+            <dt className="text-xs text-muted-foreground">{t('backupHealth.external.bootCheck')}</dt>
+            <dd className="text-sm text-foreground">
+              {t(/* i18n-dynamic */ `backupHealth.verifiedBootable.${bootCheck}`)}
+              {row.verifiedBootableAt && (
+                <>
+                  {' '}
+                  {formatDateTime(row.verifiedBootableAt, { fallback: '--', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </>
+              )}
+              {bootCheck === 'failed' && failedChecks.length > 0 && ` (${failedChecks.join(', ')})`}
+            </dd>
+          </div>
+        )}
       </dl>
 
       {row.history28d && row.history28d.length > 0 && (

@@ -239,7 +239,11 @@ describe('backup verification service', () => {
   it('reports zero coverage when assigned-device resolution fails', async () => {
     const orgId = `org-assignment-failure-${Date.now()}`;
 
-    resolveAllBackupAssignedDevicesMock.mockRejectedValueOnce(new Error('feature config unavailable'));
+    // Twice: the readiness listing resolves assigned devices too, in sequence
+    // before the summary's own call.
+    resolveAllBackupAssignedDevicesMock
+      .mockRejectedValueOnce(new Error('feature config unavailable'))
+      .mockRejectedValueOnce(new Error('feature config unavailable'));
 
     const summary = await getBackupHealthSummary(orgId);
     expect(summary.verification.coveragePercent).toBe(0);

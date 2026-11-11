@@ -178,8 +178,19 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * target selector (a FANOUT_MODULES entry, parked guard beside the filter).
  * 75 → 76 (#9635): services/softwarePolicyCoverage.ts, the org device set the
  * Inventory Approve / Deny placement check resolves (parked guard beside it).
+ * 76 → 77 (#11065): jobs/oemUpdatesWorker.ts, the vendor update not-returned
+ * monitor (a FANOUT_MODULES entry, parked guard beside the filter).
+ * 77 → 80 (#11072): services/oemUpdates/candidates.ts, rebootSweep.ts and
+ * releaseSweep.ts, the vendor update scheduler's device selectors (each a
+ * parkedFanoutModules entry, parked guard beside the filter).
+ * 80 → 81 (#11073): services/oemUpdates/laneDelivery.ts, which classes a vendor
+ * lane delivers on a device (a parkedFanoutModules entry, parked guard beside the
+ * filter).
+ * 81 → 82 (#11074): routes/oemUpdates/fleet.ts, the Vendor updates fleet list
+ * (parked guard beside the filter), and services/oemUpdates/overdueSweep.ts,
+ * its alerts (a parkedFanoutModules entry) 82 → 83.
  */
-const EPHEMERAL_DISCOVERED_FILES = 76;
+const EPHEMERAL_DISCOVERED_FILES = 83;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

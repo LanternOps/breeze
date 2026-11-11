@@ -1,11 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
 import { devices, securityStatus } from '../../db/schema';
 import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { appearedRemoteTools } from '../../services/remoteToolAlerts/knownTools';
+import { raiseRemoteToolAppearedAlerts } from '../../services/remoteToolAlerts/alerts';
 import { recordAgentIngestSubmission } from '../metrics';
 import { securityStatusIngestSchema, managementPostureIngestSchema } from './schemas';
 import { upsertSecurityStatusForDevice } from './helpers';
@@ -184,6 +186,17 @@ agentSecurityRoutes.put('/:id/management/posture', zValidator('json', management
     } catch (auditErr) {
       console.error('[agents] audit event write failed for posture submit:', auditErr);
     }
+  }
+
+  // #11306 — a remote access / RMM tool the previous scan did not have alerts
+  // the partner. A device's first posture is the baseline and raises nothing.
+  // Raised after this request's transaction commits, so the alert path never
+  // holds a second pooled connection while this one is open (#1105) and never
+  // fires for a posture that rolled back. It never throws.
+  const appeared = appearedRemoteTools(device.managementPosture, payload);
+  if (appeared.length > 0) {
+    const target = { deviceId: device.id, orgId: device.orgId, detectedAt: payload.collectedAt, tools: appeared };
+    runAfterDbContextCommit('management-posture.remote-tool-alerts', () => raiseRemoteToolAppearedAlerts(target));
   }
 
   return c.json({ success: true });

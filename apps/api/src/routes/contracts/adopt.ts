@@ -12,6 +12,7 @@ import { zValidator } from '../../lib/validation';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { adoptDraftContract } from '../../services/contractAdoptService';
+import { assertContractBillingEnabledById } from '../../services/contractBillingGate';
 import { auditBillingDocument } from '../../services/billingDocumentAudit';
 import { contractActorFrom, handleContractError } from './contracts';
 
@@ -26,6 +27,9 @@ contractAdoptRoutes.post(
   zValidator('param', idParam), zValidator('json', adoptDraftContractSchema),
   async (c) => {
     try {
+      // Deletes the source draft, so it is gated like draft delete (spec §7.1).
+      // Gated on the target: the service requires source and target in one org.
+      await assertContractBillingEnabledById(c.req.valid('param').id);
       const result = await adoptDraftContract(c.req.valid('param').id, c.req.valid('json'), contractActorFrom(c));
       // One row, on the surviving contract; the deleted draft is named in details.
       auditBillingDocument(c, 'contract', 'draft_adopted', result.target, {

@@ -96,7 +96,10 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
       reauth: { method: 'totp', code: '123456' },
     });
     const post = calls('/wisp/grants').find(([u, i]) => u === '/wisp/grants' && (i as RequestInit)?.method === 'POST')!;
-    expect(JSON.parse(String((post[1] as RequestInit).body))).toEqual({ orgId: 'org-1', stepUpGrantId: 'su-1' });
+    // #10402: the browser's zone travels with the grant, for the morning brief.
+    expect(JSON.parse(String((post[1] as RequestInit).body))).toEqual({
+      orgId: 'org-1', stepUpGrantId: 'su-1', browserTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
   });
 
   it('then fetches /wisp/thread?orgId= and calls onGranted with grant + thread', async () => {
@@ -108,7 +111,7 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     expect(onGranted).toHaveBeenCalledWith({
       grantId: 'g-1', threadId: 't-1', scopeOrgId: 'org-1', focusOrgId: null, focusOrgName: null, status: 'active',
       expiresAt: '2027-01-01T00:00:00.000Z', summary: 'Last time: patched.', budgetCentsPerDay: 200, floorTickMinutes: 30,
-      wideningAvailable: true, unattendedReads: false,
+      wideningAvailable: true, unattendedReads: false, summaryRefine: false,
     });
     expect(h.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Wisp is on' }));
   });
@@ -531,7 +534,7 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     expect(calls('/wisp/grants/preview')[0]![0]).toBe('/wisp/grants/preview?orgId=org-1');
     await waitFor(() => expect(h.fetchWithAuth.mock.calls.some(([u]) => u === '/wisp/grants')).toBe(true));
     const post = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants')!;
-    expect(JSON.parse(String((post[1] as RequestInit).body))).toEqual({ orgId: 'org-1', stepUpGrantId: 'su-1' });
+    expect(JSON.parse(String((post[1] as RequestInit).body))).toMatchObject({ orgId: 'org-1', stepUpGrantId: 'su-1' });
   });
 
   it('an account without a passkey or authenticator app cannot confirm', async () => {
@@ -539,5 +542,12 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={vi.fn()} />);
     expect(await screen.findByText(/Wisp needs a passkey or an authenticator app/)).toBeInTheDocument();
     expect(screen.getByTestId('wisp-grant-confirm')).toBeDisabled();
+  });
+
+  it('the no-factor sentence links to the profile page', async () => {
+    routes((url) => (url === '/users/me' ? res({ mfaMethod: 'sms' }) : undefined));
+    render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={vi.fn()} />);
+    const link = await screen.findByRole('link', { name: /profile/i });
+    expect(link.getAttribute('href')).toBe('/settings/profile');
   });
 });

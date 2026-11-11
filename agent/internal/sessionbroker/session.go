@@ -18,6 +18,12 @@ type pendingResponse struct {
 	ch           chan *ipc.Envelope
 	expectedType string
 	validate     func(*ipc.Envelope) error
+	// discard marks a tombstone left by sendCommandAbandoningLateReply: the
+	// sender stopped waiting at abandonedAt, so HandleResponse consumes a
+	// late reply (keeping it from being forwarded as unsolicited) and drops
+	// the entry. A tombstone has no ch.
+	discard     bool
+	abandonedAt time.Time
 }
 
 // Session represents a connected user helper with verified identity.
@@ -420,6 +426,10 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 			)
 			return true
 		}
+		if pending.discard {
+			s.discardLateReply(env, pending.abandonedAt)
+			return true
+		}
 		if pending.validate != nil && env.Error == "" {
 			if err := pending.validate(env); err != nil {
 				log.Warn("response payload validation failed, dropping",
@@ -431,9 +441,24 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 				return true
 			}
 		}
+		// Deliver under s.mu, re-reading the registration: abandonPending may
+		// have swapped in a tombstone since the read above, and a reply sent to
+		// the abandoned channel after its last check would be lost unlogged and
+		// strand the tombstone. The send never blocks, so holding s.mu is cheap.
+		s.mu.Lock()
+		if current, still := s.pending[env.ID]; still && current.discard {
+			s.mu.Unlock()
+			s.discardLateReply(env, current.abandonedAt)
+			return true
+		}
+		dropped := false
 		select {
 		case pending.ch <- env:
 		default:
+			dropped = true
+		}
+		s.mu.Unlock()
+		if dropped {
 			log.Warn("response channel full, dropping", "id", env.ID)
 		}
 		return true

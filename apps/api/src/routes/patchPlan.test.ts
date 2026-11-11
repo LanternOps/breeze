@@ -141,6 +141,27 @@ describe('POST /ai/patch-plan/runs', () => {
     });
   });
 
+  it('503s enqueue_failed, audits a failure, and returns no runId when the run could not be enqueued (#11182)', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({
+      created: true,
+      run: { id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' },
+    });
+    const res = await postRuns(buildApp(), { orgId: ORG_ID });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'enqueue_failed', error: expect.stringContaining('could not be queued') });
+    expect(body).not.toHaveProperty('runId');
+
+    expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
+    expect(writeRouteAuditMock.mock.calls[0]![1]).toMatchObject({
+      action: 'ai_patch_plan.run.manual_trigger',
+      resourceId: AGENT_ID,
+      result: 'failure',
+      details: { skipped: 'enqueue_failed' },
+    });
+  });
+
   it('404s for an org the caller cannot access — never 403', async () => {
     const res = await postRuns(buildApp(), { orgId: OTHER_ORG_ID });
     expect(res.status).toBe(404);

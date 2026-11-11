@@ -1,0 +1,91 @@
+{
+  "name": "11312-runner-lost",
+  "source": {
+    "run": 42453222760,
+    "pr": 11312,
+    "recordedAt": "2026-11-08"
+  },
+  "prFiles": [
+    "apps/api/src/routes/wisp.ts",
+    "apps/api/src/routes/wispCheckIns.test.ts",
+    "apps/api/src/routes/wispCheckIns.ts",
+    "apps/api/src/services/mcpCoverage.ts",
+    "apps/web/src/components/wisp/WispCheckInChip.test.tsx",
+    "apps/web/src/components/wisp/WispCheckInChip.tsx",
+    "apps/web/src/components/wisp/WispHomeThread.test.tsx",
+    "apps/web/src/components/wisp/WispHomeThread.tsx",
+    "apps/web/src/components/wisp/WispPost.test.tsx",
+    "apps/web/src/components/wisp/WispPost.tsx",
+    "apps/web/src/components/wisp/wispThreadHash.test.ts",
+    "apps/web/src/components/wisp/wispThreadHash.ts",
+    "apps/web/src/lib/wispCheckInsApi.test.ts",
+    "apps/web/src/lib/wispCheckInsApi.ts",
+    "apps/web/src/locales/de-DE/ai.json",
+    "apps/web/src/locales/en/ai.json",
+    "apps/web/src/locales/es-419/ai.json",
+    "apps/web/src/locales/fr-CA/ai.json",
+    "apps/web/src/locales/fr-FR/ai.json",
+    "apps/web/src/locales/it-IT/ai.json",
+    "apps/web/src/locales/pt-BR/ai.json",
+    "apps/web/src/locales/tr-TR/ai.json"
+  ],
+  "facts": {
+    "run": {
+      "id": 42453222760,
+      "attempt": 1,
+      "headSha": "e3702cf316ebeade516667668ea83b0c39ded9d2",
+      "headBranch": "gh-readonly-queue/main/pr-11312-67f42db8ede4ed0b06a7def3380dbd329057730f",
+      "headRepo": "LanternOps/breeze",
+      "event": "merge_group",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-11-08T06:04:16Z",
+      "updatedAt": "2026-11-08T07:08:46Z",
+      "pr": 11312
+    },
+    "jobs": [
+      {
+        "id": 128647076287,
+        "name": "Integration Tests (shard 11/16)",
+        "jobId": "integration-test",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T06:21:00Z",
+        "completedAt": "2026-11-08T07:08:01Z",
+        "timeoutMinutes": 55,
+        "label": "integration-11",
+        "runner": "vitest",
+        "failedStep": "Run integration tests",
+        "annotations": [
+          "The hosted runner lost communication with the server. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error."
+        ],
+        "logStatus": 404,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": "not_uploaded",
+        "errors": []
+      },
+      {
+        "id": 128659597890,
+        "name": "CI Success",
+        "jobId": "ci-success",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T07:08:40Z",
+        "completedAt": "2026-11-08T07:08:45Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Check all jobs passed",
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "ciSuccess": "present",
+    "gate": null
+  }
+}

@@ -111,6 +111,17 @@ describe('mfaStepUpSchema operation field', () => {
     ).toThrow();
   });
 
+  // #10650: removing the authenticator app is provable by a passkey or the
+  // authenticator itself. A recovery code can only ever mint delete_passkey;
+  // SMS is refused by the /mfa/step-up handler (it is a valid schema shape).
+  it('accepts remove_totp for totp and passkey, never for a recovery code', () => {
+    expect(mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'remove_totp' }).operation).toBe('remove_totp');
+    expect(mfaStepUpSchema.parse({ method: 'passkey', credential: { id: 'cred-1' }, operation: 'remove_totp' }).operation).toBe('remove_totp');
+    expect(() =>
+      mfaStepUpSchema.parse({ method: 'recovery', code: 'ABCD-1234', operation: 'remove_totp', passkeyId: '10000000-0000-4000-8000-000000000009' })
+    ).toThrow();
+  });
+
   // #4018: enroll_first_factor is a REAL StepUpOperation, so the `satisfies`
   // constraint on STEP_UP_OPERATIONS would happily accept it being added to
   // the client-requestable list — nothing in the type system stops that. But

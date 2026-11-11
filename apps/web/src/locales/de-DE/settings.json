@@ -284,7 +284,7 @@
     "alertThresholds": "Warnen bei (% des Budgets)",
     "alertThresholdsHelp": "Partner-Admins mit Abrechnungszugriff erhalten bei jeder Stufe eine In-App-Benachrichtigung und eine E-Mail für monatliche und Obergrenzen-Warnungen. Leer lassen, um 50, 80, 95 zu übernehmen.",
     "notSet": "Nicht festgelegt, Organisationen werden individuell konfiguriert",
-    "description": "Budgetwerte werden in allen untergeordneten Organisationen durchgesetzt. Dollarbeträge werden intern in Cent gespeichert.",
+    "description": "Ein hier festgelegter Wert gilt für alle Organisationen und sperrt das Feld. Ein leer gelassenes Feld wird pro Organisation konfiguriert. Dollarbeträge werden intern in Cent gespeichert.",
     "modes": {
       "perStep": "Pro Schritt",
       "actionPlan": "Aktionsplan",
@@ -1095,8 +1095,8 @@
         "description": "E-Mails von Ihrer eigenen Domain senden"
       },
       "aiBudgets": {
-        "label": "KI-Budgets",
-        "description": "KI-Ausgabenlimits"
+        "label": "KI-Budgets & Limits",
+        "description": "KI-Ausgabenlimits, Warnungen und Ratenlimits"
       },
       "aiProvider": {
         "label": "KI-Anbieter und Modelle",
@@ -1119,8 +1119,8 @@
         "description": "Service Desk, Abrechnung und Topologie ein/aus"
       },
       "aiApprovals": {
-        "label": "KI-Genehmigungs-Timeout",
-        "description": "Wie lange Breeze AI auf die Genehmigung einer geschützten Aktion wartet"
+        "label": "KI-Genehmigungen",
+        "description": "Genehmigungsmodus und wie lange Breeze AI auf eine Genehmigung wartet"
       },
       "callerVerification": {
         "label": "Anruferverifizierung",
@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Bekannte Gäste",
         "description": "Zugelassene Besucher- und Techniker-Geräte nach MAC-Adresse"
+      },
+      "customerPortal": {
+        "label": "Kundenportal",
+        "description": "Standardregeln für Anmeldung und Registrierung in den Portalen Ihrer Kunden sowie Zugriffsanfragen, die auf eine Entscheidung warten"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -1198,6 +1202,7 @@
       "badge": {
         "locks": "Sperrt Organisationen",
         "locksConditional": "Sperrt Organisationen, wenn aktiviert",
+        "locksWhenSet": "Sperrt Organisationen, sobald gesetzt",
         "overridable": "Organisation kann abweichen",
         "overridableCap": "Organisation kann abweichen, bis {{limit}}",
         "partnerOnly": "Partnerweit"
@@ -1205,6 +1210,7 @@
       "badgeHelp": {
         "locks": "Solange dies gesetzt ist, verwendet jede Organisation Ihren Wert. Ein eigener Wert der Organisation wird ignoriert.",
         "locksConditional": "Wenn aktiviert, verwendet jede Organisation Ihren Wert statt ihres eigenen. Wenn deaktiviert, verwenden die Organisationen ihren eigenen.",
+        "locksWhenSet": "Sobald Sie einen Wert festlegen, verwenden alle Organisationen ihn und ihr eigener Wert wird ignoriert. Solange das Feld leer ist, konfiguriert jede Organisation ihren eigenen.",
         "overridable": "Ihr Wert ist der Standard. Eine Organisation, die einen eigenen Wert festlegt, verwendet stattdessen diesen.",
         "overridableCap": "Ihr Wert ist der Standard. Eine Organisation kann einen eigenen Wert festlegen, höchstens {{limit}}.",
         "partnerOnly": "Organisationen haben hierfür keine eigene Einstellung. Ihr Wert gilt für alle."
@@ -1851,7 +1857,8 @@
       "load": "Die Genehmigungssicherheitsrichtlinie konnte nicht geladen werden.",
       "save": "Die Genehmigungssicherheitsrichtlinie konnte nicht gespeichert werden.",
       "unavailable": "Keine Richtlinie verfügbar."
-    }
+    },
+    "scopeNote": "Diese Einstellungen gelten für alle Organisationen unter Ihrem Partnerkonto."
   },
   "orgAuditRetentionSettings": {
     "title": "Audit-Protokoll-Aufbewahrung",
@@ -2321,7 +2328,8 @@
     "actions": {
       "resend": "Erneut senden",
       "reactivate": "Reaktivieren",
-      "sendInvite": "Einladung senden"
+      "sendInvite": "Einladung senden",
+      "grantBrowserAccess": "Browserzugriff erteilen"
     },
     "fields": {
       "nameOptional": "Name (optional)",
@@ -2343,13 +2351,19 @@
       "inviteResent": "Einladung erneut gesendet",
       "reactivated": "Benutzer reaktiviert",
       "disabled": "Benutzer deaktiviert",
-      "removed": "Benutzer entfernt"
+      "removed": "Benutzer entfernt",
+      "browserAccessGranted": "Browserzugriff erteilt"
     },
     "errors": {
       "load": "Portalbenutzer konnten nicht geladen werden.",
       "sendInvite": "Einladung konnte nicht gesendet werden",
       "action": "Aktion fehlgeschlagen",
       "invalidEmail": "Geben Sie eine gültige E-Mail-Adresse ein"
+    },
+    "badges": {
+      "noBrowserAccess": "Kein Browserzugriff",
+      "microsoft": "Microsoft-Anmeldung",
+      "google": "Google-Anmeldung"
     }
   },
   "orgRemoteAccessSettings": {
@@ -2968,7 +2982,8 @@
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
       "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
       "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
-      "recipientRoleNoMembers": "keine aktiven Mitglieder"
+      "recipientRoleNoMembers": "keine aktiven Mitglieder",
+      "enabledHintNoMode": "Wenn diese Option aus ist, läuft der Agent nicht."
     },
     "policyKeys": {
       "tools": {
@@ -3165,6 +3180,7 @@
           "blocked_by_source": "Durch die Update-Quellen der Richtlinie ausgeschlossen",
           "held_by_deferral": "Durch das Aufschubfenster zurückgehalten",
           "blocked_by_category": "Durch die Kategorieregeln des Rings ausgeschlossen",
+          "managed_by_vendor_updates": "Von Hersteller-Updates verwaltet",
           "blocked_by_app_rule": "Durch eine App-Regel blockiert",
           "blocked_by_feature_update_policy": "Durch die Richtlinie des Rings für Windows-Funktionsupdates ausgeschlossen",
           "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
@@ -5168,7 +5184,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Sie bestätigen bei der Registrierung mit Ihrem Passkey (Touch ID / Windows Hello).",
     "authenticatorCode": "Authentifizierungscode",
-    "confirmYourPassword": "Bestätigen Sie Ihr Passwort"
+    "confirmYourPassword": "Bestätigen Sie Ihr Passwort",
+    "switchToAuthenticatorCode": "Stattdessen Authentifizierungs-App verwenden",
+    "usePasskeyInstead": "Stattdessen Ihren Passkey verwenden"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Vorgefertigte Antworten",
@@ -5511,7 +5529,21 @@
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
     "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung Ihrer Authenticator-App abzuschließen.",
     "ssoReauthManageHint": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich bei Ihrem Anbieter, um diese Änderung zu bestätigen.",
-    "ssoReauthManageVerified": "Identität bei Ihrem Anbieter bestätigt. Schließen Sie den folgenden Schritt ab, um diese Änderung zu bestätigen."
+    "ssoReauthManageVerified": "Identität bei Ihrem Anbieter bestätigt. Schließen Sie den folgenden Schritt ab, um diese Änderung zu bestätigen.",
+    "notSetUp": "Nicht eingerichtet",
+    "notAvailable": "Nicht verfügbar",
+    "backup": "Backup",
+    "addBackup": "Backup hinzufügen",
+    "totpBackupAddHint": "Fügen Sie eine Authentifizierungs-App als Backup hinzu, damit Sie sich weiterhin anmelden können, wenn Ihr Passkey nicht verfügbar ist.",
+    "totpPolicyDisallowed": "Die Richtlinie Ihrer Organisation lässt keine Authentifizierungs-Apps zu.",
+    "totpBackupActiveHint": "Verwenden Sie einen Code aus Ihrer Authentifizierungs-App, wenn Ihr Passkey nicht verfügbar ist.",
+    "totpBackupVerifyNote": "Wenn Sie auf „Überprüfen“ klicken, bestätigen Sie mit Ihrem Passkey.",
+    "confirmBackupButton": "Überprüfen und Backup hinzufügen",
+    "removeTotpTitle": "Authentifizierungs-App entfernen",
+    "removeTotpBackupDescription": "Sie melden sich weiterhin mit Ihrem Passkey an. Ihre Wiederherstellungscodes bleiben unverändert.",
+    "removeTotpPrimaryDescription": "Ihr Passkey wird zu Ihrer primären Anmeldemethode. Ihre Wiederherstellungscodes bleiben unverändert.",
+    "removeTotpConfirmWithPasskey": "Sie bestätigen mit Ihrem Passkey.",
+    "removing": "Entfernen..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import aus Pax8",
@@ -5636,7 +5668,13 @@
     "ssoReauthManageProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um diese Änderung zu bestätigen.",
     "verifyWithIdpToDeletePasskey": "Dieses Konto hat kein Passwort. Bestätigen Sie sich bei Ihrem Identitätsanbieter, bevor Sie einen Passkey entfernen.",
     "deletePasskeySsoReauth": "Identität bestätigen, um einen Passkey zu entfernen",
-    "deletePasskeySsoVerified": "Identität bestätigt. Wählen Sie beim zu entfernenden Passkey „Löschen“."
+    "deletePasskeySsoVerified": "Identität bestätigt. Wählen Sie beim zu entfernenden Passkey „Löschen“.",
+    "authenticatorBackupAdded": "Authentifizierungs-App als Backup hinzugefügt. Ihre Wiederherstellungscodes haben sich nicht geändert",
+    "authenticatorAppRemoved": "Authentifizierungs-App entfernt. Sie melden sich mit Ihrem Passkey an",
+    "authenticatorCodeRejectedWaitForNext": "Dieser Code wurde nicht akzeptiert. Jeder Code funktioniert nur einmal. Wenn Sie ihn gerade verwendet haben, warten Sie auf den nächsten Code Ihrer Authentifizierungs-App.",
+    "passkeyConfirmationCanceled": "Die Passkey-Bestätigung wurde abgebrochen oder es kam zu einer Zeitüberschreitung.",
+    "passkeyProofRejected": "Ihr Passkey konnte nicht überprüft werden. Bitte versuchen Sie es erneut.",
+    "failedToRemoveAuthenticatorApp": "Die Authentifizierungs-App konnte nicht entfernt werden"
   },
   "roleManager": {
     "roles": "Rollen",
@@ -6310,8 +6348,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "KI-Budget",
-    "description": "Ausgabenobergrenzen, Ratenlimits und Genehmigungsmodus für Breeze AI in dieser Organisation. Von Ihrem Partner festgelegte Felder werden hier angezeigt, können aber nur auf dem Partner-Tab geändert werden.",
+    "title": "KI-Budget & Limits",
+    "description": "Ausgabenlimits, Warnungen und Ratenlimits für Breeze AI in dieser Organisation. Felder, die Ihr Partner festgelegt hat, werden hier angezeigt, können aber nur im Partner-Tab geändert werden.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihr KI-Budget zu konfigurieren."
   },
   "orgSettingsPage": {
@@ -6339,6 +6377,8 @@
       "generalDescription": "Profil und Standardeinstellungen",
       "contacts": "Kontakte",
       "contactsDescription": "Ansprechpartner bei diesem Kunden, je Standort oder organisationsweit",
+      "domains": "Domänen",
+      "domainsDescription": "E-Mail-Domänen von Kunden und Eigentumsnachweis",
       "contracts": "Verträge",
       "contractsDescription": "Wiederkehrende Vereinbarungen",
       "billing": "Abrechnung",
@@ -6853,7 +6893,8 @@
         "pam_open_actuation": "Die aufzulösende Organisation hat PAM-Sitzungen (privilegierter Zugriff), deren Bereinigung noch nicht abgeschlossen ist. Warten Sie, bis sie beendet sind, und versuchen Sie die Zusammenführung dann erneut.",
         "pam_evidence": "Die aufzulösende Organisation hat einen PAM-Verlauf (privilegierter Zugriff), und das Verschieben von PAM-Verlauf zwischen Organisationen ist in dieser Bereitstellung nicht aktiviert. Führen Sie die Organisationen in umgekehrter Richtung zusammen oder gar nicht.",
         "payment_in_flight": "Eine Zahlung der aufzulösenden Organisation ist noch in Bearbeitung. Warten Sie, bis sie abgeschlossen ist, und versuchen Sie die Zusammenführung dann erneut.",
-        "lineage_depth": "Diese Organisationen wurden bereits zu oft zusammengeführt; diese Zusammenführung würde die maximale Tiefe des Zusammenführungsverlaufs überschreiten."
+        "lineage_depth": "Diese Organisationen wurden bereits zu oft zusammengeführt; diese Zusammenführung würde die maximale Tiefe des Zusammenführungsverlaufs überschreiten.",
+        "entra_tenant_conflict": "Die aufzulösende Organisation hat einen nachgewiesenen Microsoft-Mandanten, und die verbleibende Organisation ist ebenfalls mit einem Microsoft-Mandanten verknüpft. Entfernen Sie eine der Mandantenverknüpfungen und versuchen Sie die Zusammenführung dann erneut."
       }
     },
     "archive": {
@@ -7028,28 +7069,166 @@
   },
   "customerDomainsCard": {
     "title": "Kunden-E-Mail-Domänen",
-    "description": "Leiten Sie verifizierte Kunden-E-Mail-Domänen an die richtige Organisation weiter.",
+    "managedPerOrg": "Domänen werden pro Organisation verwaltet. Öffnen Sie eine Organisation, um ihre Domänen hinzuzufügen, zu verifizieren, zu verschieben oder zu entfernen.",
+    "emptySummary": "Noch keine E-Mail-Domänen von Kunden. Fügen Sie sie auf dem Tab „Domänen“ der jeweiligen Organisation hinzu.",
     "errors": {
-      "load": "Die Zuordnungen der Kundendomänen konnten nicht geladen werden.",
-      "save": "Die Zuordnung der Kundendomäne konnte nicht gespeichert werden. Wiederholen."
-    },
-    "toasts": {
-      "added": "Kundendomänenzuordnung hinzugefügt",
-      "saved": "Zuordnung der Kundendomäne gespeichert",
-      "deleted": "Kundendomänenzuordnung gelöscht"
+      "load": "Die Zuordnungen der Kundendomänen konnten nicht geladen werden."
     },
     "columns": {
       "domain": "Domäne",
-      "autoCreateContact": "Kontakt automatisch erstellen"
+      "status": "Status"
     },
-    "empty": "Noch keine Kundendomänenzuordnungen.",
-    "placeholders": {
-      "domain": "customer.example.com",
-      "organization": "Organisation auswählen..."
-    },
-    "new": "Neu",
     "actions": {
-      "addDomain": "Domäne hinzufügen"
+      "manage": "Verwalten"
+    }
+  },
+  "orgDomains": {
+    "title": "Domänen",
+    "description": "E-Mail-Domänen, die zu diesem Kunden gehören. Eine deklarierte Domäne leitet eingehende E-Mails an diese Organisation weiter. Eine verifizierte Domäne ist der Nachweis, dass der Kunde sie besitzt; darauf stützen sich die Selbstregistrierung im Portal und die Google-Anmeldung.",
+    "forbidden": "Zum Verwalten von Kundendomänen ist eine Administratorrolle mit Zugriff auf alle Organisationen erforderlich.",
+    "partnerOnly": "Kundendomänen werden von Ihrem Dienstleister verwaltet.",
+    "checkingAccess": "Zugriff wird geprüft…",
+    "empty": "Noch keine Domänen. Fügen Sie unten die E-Mail-Domäne des Kunden hinzu.",
+    "neverChecked": "Nie",
+    "notCurrent": "Der Nachweis hinter dieser Verifizierung ist nicht mehr gültig. Die tägliche Neuprüfung hebt sie auf, sofern er nicht wieder besteht.",
+    "inactiveSuspended": "Inaktiv: wird weder für die E-Mail-Weiterleitung noch für die Anmeldung verwendet, bis sie wieder aktiviert wird.",
+    "stale": "Die Liste ist möglicherweise nicht aktuell: Sie konnte nach Ihrer Änderung nicht neu geladen werden.",
+    "columns": {
+      "domain": "Domäne",
+      "status": "Status",
+      "lastChecked": "Zuletzt geprüft",
+      "autoCreateContact": "Kontakt automatisch anlegen"
+    },
+    "aria": {
+      "active": "{{domain}} ist aktiv",
+      "autoCreateContact": "Kontakte für {{domain}} automatisch anlegen",
+      "verify": "Verifizierung für {{domain}}",
+      "move": "{{domain}} verschieben",
+      "delete": "{{domain}} löschen"
+    },
+    "states": {
+      "declared": "Deklariert — nur E-Mail-Weiterleitung",
+      "pending_dns": "DNS ausstehend",
+      "verified": "Verifiziert · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "DNS-TXT-Eintrag",
+      "entra_tenant": "Microsoft (der nachgewiesene Entra-Mandant der Organisation)",
+      "google_directory": "Google Workspace-Verzeichnis"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "Der Microsoft-Mandant der Organisation ist noch nicht nachgewiesen.",
+        "connection_missing": "Erfordert eine Microsoft 365-Verbindung für den nachgewiesenen Mandanten. Verbinden Sie Microsoft 365 für diese Organisation oder verwenden Sie DNS.",
+        "not_enabled": "Die Microsoft-Verifizierung ist auf diesem Server nicht verfügbar."
+      },
+      "google_directory": {
+        "connection_missing": "Erfordert eine Google Workspace-Verbindung für diese Organisation.",
+        "not_enabled": "Google Workspace ist auf diesem Server nicht aktiviert."
+      }
+    },
+    "cleared": {
+      "record_missing": "Verifizierung verloren: Der DNS-Eintrag wurde nicht gefunden.",
+      "not_in_directory": "Verifizierung verloren: Die Domäne ist nicht mehr im Verzeichnis enthalten.",
+      "tenant_not_proven": "Verifizierung verloren: Der Microsoft-Mandant ist nicht mehr nachgewiesen.",
+      "connection_missing": "Verifizierung verloren: Die Verzeichnisverbindung wurde entfernt.",
+      "stale": "Verifizierung verloren: Sie konnte 7 Tage lang nicht neu geprüft werden.",
+      "repointed": "Verifizierung verloren: Die Domäne wurde einer anderen Organisation zugewiesen.",
+      "msp_removed": "Verifizierung entfernt.",
+      "displaced": "Verifizierung verloren: Die Domäne wurde von einer anderen Organisation verifiziert."
+    },
+    "checkReasons": {
+      "record_missing": "Der DNS-Eintrag wurde nicht gefunden. DNS-Änderungen können eine Weile dauern, bis sie sichtbar werden; prüfen Sie später erneut.",
+      "not_in_directory": "Die Domäne ist keine verifizierte Domäne im Verzeichnis.",
+      "tenant_not_proven": "Der Microsoft-Mandant der Organisation ist nicht nachgewiesen.",
+      "connection_missing": "Die Organisation hat keine passende Verzeichnisverbindung.",
+      "dns_error": "DNS konnte nicht abgefragt werden. Versuchen Sie es später erneut.",
+      "timeout": "Die Prüfung ist abgelaufen. Versuchen Sie es später erneut.",
+      "graph_unavailable": "Microsoft 365 war nicht erreichbar. Versuchen Sie es später erneut.",
+      "graph_tenant_mismatch": "Microsoft 365 hat für einen anderen als den nachgewiesenen Mandanten geantwortet.",
+      "google_scope_missing": "Der Google Workspace-Delegierungsberechtigung fehlt der Scope {{scope}}. Fügen Sie ihn in der Google Admin-Konsole hinzu und prüfen Sie dann erneut.",
+      "google_access_denied": "Google Workspace hat den Zugriff verweigert. Prüfen Sie die Administrator-E-Mail-Adresse und die Delegierungsberechtigung.",
+      "google_unavailable": "Google Workspace war nicht erreichbar. Versuchen Sie es später erneut.",
+      "unknown": "Die Prüfung wurde nicht bestanden."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "Diese Domäne gehört nicht mehr zu dieser Organisation. Laden Sie die Seite neu.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "Diese Domäne ist für eine andere Organisation verifiziert. Deren Eigentümer muss zuerst die andere Verifizierung (DNS-Eintrag oder Verzeichnisverbindung) entfernen.",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "Die Verifizierung der Domäne hat sich während dieser Prüfung geändert. Prüfen Sie erneut.",
+      "DOMAIN_INACTIVE": "Aktivieren Sie die Domäne, bevor Sie sie verifizieren.",
+      "DOMAIN_DNS_NOT_STARTED": "Rufen Sie zuerst den DNS-Eintrag ab.",
+      "DOMAIN_ALREADY_VERIFIED": "Diese Domäne ist bereits mit einer anderen Methode verifiziert. Entfernen Sie zuerst diese Verifizierung."
+    },
+    "verify": {
+      "methodLegend": "Verifizierungsmethode",
+      "panelTitle": "{{domain}} verifizieren",
+      "methodLocked": "Um die Methode zu wechseln, entfernen Sie zuerst die aktuelle Verifizierung.",
+      "openPortalTab": "Weisen Sie den Mandanten unter Kundenportal › Anmeldung & Registrierung nach.",
+      "dnsStartHint": "Rufen Sie einen TXT-Eintrag ab, den der DNS-Administrator des Kunden veröffentlichen kann.",
+      "startDns": "DNS-Eintrag abrufen",
+      "starting": "Eintrag wird abgerufen…",
+      "dnsInstructions": "Bitten Sie den DNS-Administrator des Kunden, diesen TXT-Eintrag hinzuzufügen, und prüfen Sie ihn anschließend.",
+      "recordName": "Eintragsname (Host)",
+      "recordValue": "Eintragswert",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "googleScopeHint": "Die Google Workspace-Delegierungsberechtigung der Organisation muss {{scope}} enthalten.",
+      "inactive": "Diese Domäne ist ausgeschaltet. Schalten Sie sie ein, um sie zu verifizieren.",
+      "verify": "Verifizieren",
+      "checkNow": "Jetzt prüfen",
+      "checking": "Wird geprüft…",
+      "resultFailed": "Nicht verifiziert. {{reason}}",
+      "resultUnavailable": "Die Prüfung konnte nicht abgeschlossen werden. {{reason}}",
+      "removeVerification": "Verifizierung entfernen",
+      "removeTitle": "Verifizierung für {{domain}} entfernen?",
+      "removeMessage": "Die Domäne bleibt für die E-Mail-Weiterleitung bei dieser Organisation. Selbstregistrierung und Google-Anmeldung vertrauen ihr erst wieder, wenn sie erneut verifiziert wurde."
+    },
+    "actions": {
+      "verify": "Verifizieren",
+      "manageVerification": "Verifizierung",
+      "move": "Verschieben"
+    },
+    "add": {
+      "label": "Domäne hinzufügen",
+      "placeholder": "contoso.com",
+      "submit": "Domäne hinzufügen"
+    },
+    "move": {
+      "title": "{{domain}} in eine andere Organisation verschieben?",
+      "message": "Eingehende E-Mails von dieser Domäne werden an die von Ihnen gewählte Organisation weitergeleitet.",
+      "messageVerified": "Die Domäne verliert ihre Verifizierung. Die neue Organisation muss sie erneut verifizieren, und ein DNS-Eintrag muss mit einem neuen Wert erneut veröffentlicht werden.",
+      "targetLabel": "Organisation",
+      "targetPlaceholder": "Organisation auswählen…",
+      "orgsFailed": "Die Organisationen konnten nicht geladen werden. Schließen Sie dies und versuchen Sie es erneut."
+    },
+    "delete": {
+      "title": "{{domain}} löschen?",
+      "message": "Eingehende E-Mails von dieser Domäne werden nicht mehr an diese Organisation weitergeleitet.",
+      "messageVerified": "Eingehende E-Mails von dieser Domäne werden nicht mehr an diese Organisation weitergeleitet, und ihre Verifizierung wird entfernt."
+    },
+    "toasts": {
+      "added": "{{domain}} hinzugefügt",
+      "saved": "{{domain}} gespeichert",
+      "deleted": "{{domain}} gelöscht",
+      "moved": "{{domain}} nach {{org}} verschoben",
+      "verified": "{{domain}} verifiziert",
+      "verificationRemoved": "Verifizierung für {{domain}} entfernt",
+      "copyFailed": "Kopieren nicht möglich. Markieren Sie den Text und kopieren Sie ihn manuell."
+    },
+    "errors": {
+      "load": "Die Domänen konnten nicht geladen werden.",
+      "save": "Die Domäne konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+      "delete": "Die Domäne konnte nicht gelöscht werden. Versuchen Sie es erneut.",
+      "add": "Die Domäne konnte nicht hinzugefügt werden. Versuchen Sie es erneut.",
+      "alreadyMapped": "Diese Domäne wurde bereits einer Organisation in Ihrem Konto hinzugefügt.",
+      "startDns": "Der DNS-Eintrag konnte nicht abgerufen werden. Versuchen Sie es erneut.",
+      "check": "Die Prüfung konnte nicht ausgeführt werden. Versuchen Sie es erneut.",
+      "removeVerification": "Die Verifizierung konnte nicht entfernt werden. Versuchen Sie es erneut."
     }
   },
   "customFieldsPage": {
@@ -7565,6 +7744,45 @@
       "create": "Der Kontakt konnte nicht hinzugefügt werden.",
       "update": "Der Kontakt konnte nicht gespeichert werden.",
       "delete": "Der Kontakt konnte nicht gelöscht werden."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Kein Zugang",
+        "invited": "Eingeladen",
+        "active": "Aktiv",
+        "disabled": "Deaktiviert",
+        "requested": "Angefragt"
+      },
+      "actions": {
+        "give": "Portalzugang geben",
+        "resend": "Einladung erneut senden",
+        "bulkGive": "Portalzugang geben ({{count}})",
+        "selectAll": "Alle Kontakte auf dieser Seite auswählen",
+        "selectRow": "{{name}} auswählen"
+      },
+      "form": {
+        "giveAccess": "Portalzugang geben (sendet eine Einladung an diese E-Mail-Adresse)",
+        "needsEmail": "Fügen Sie eine E-Mail-Adresse hinzu, um Portalzugang zu geben."
+      },
+      "toasts": {
+        "invited": "Portaleinladung gesendet",
+        "inviteEmailFailed": "Portal-Login erstellt, aber die Einladungs-E-Mail konnte nicht gesendet werden. Verwenden Sie „Einladung erneut senden“.",
+        "bulkSummary": "Portalzugang: {{details}}",
+        "resendEmailFailed": "Die Einladungs-E-Mail konnte nicht gesendet werden. Versuchen Sie es später erneut mit „Einladung erneut senden“."
+      },
+      "outcomes": {
+        "invited": "Eingeladen: {{count}}",
+        "already_has_access": "Hat bereits Zugang: {{count}}",
+        "no_email": "Keine E-Mail-Adresse: {{count}}",
+        "email_bound_to_other_contact": "E-Mail von anderem Kontakt verwendet: {{count}}",
+        "duplicate_email_in_batch": "Doppelte E-Mail in der Auswahl: {{count}}",
+        "emailNotSent": "Einladungs-E-Mails nicht gesendet: {{count}}"
+      },
+      "errors": {
+        "invite": "Portalzugang konnte nicht gegeben werden.",
+        "bulkInvite": "Portalzugang konnte für die ausgewählten Kontakte nicht gegeben werden."
+      }
     }
   },
   "bulkContactImport": {
@@ -7834,7 +8052,8 @@
     "productDefault": "Produktstandard ({{minutes}} Minuten)",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "description": "Wie lange eine laufende Breeze AI-Runde auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird.",
-    "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
+    "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit.",
+    "modeDescription": "Wie der Breeze AI-Chat vor geschützten Aktionen nachfragt. Gilt unabhängig davon, ob ein Ausgabenlimit gesetzt ist."
   },
   "orgAiApprovalTimeout": {
     "title": "KI-Genehmigungs-Timeout",
@@ -8220,5 +8439,226 @@
     "hideContent": "Inhalt ausblenden",
     "conversationUnavailable": "Diese Unterhaltung ist nicht mehr verfügbar.",
     "usersLoadFailed": "Techniker konnten nicht geladen werden."
+  },
+  "orgAiApprovalMode": {
+    "title": "KI-Genehmigungsmodus",
+    "description": "Wie der Breeze AI-Chat in dieser Organisation vor geschützten (Tier 2/3) Aktionen nachfragt. Gilt unabhängig davon, ob ein Ausgabenlimit gesetzt ist.",
+    "save": "Speichern"
+  },
+  "portalAccessPolicy": {
+    "title": "Anmeldung & Registrierung",
+    "orgDescription": "Wie sich Personen in dieser Organisation am Kundenportal anmelden und wie neue Personen Browserzugriff erhalten. Ein Feld mit der Einstellung „Erben“ übernimmt den Standard Ihres Partners.",
+    "partnerDescription": "Der Standard für alle Kundenorganisationen. Jede Organisation kann jedes Feld auf ihrem Tab „Kundenportal“ überschreiben.",
+    "loading": "Anmeldeeinstellungen werden geladen…",
+    "readOnly": "Sie können diese Einstellungen einsehen, aber nicht ändern. Zum Ändern des Partner-Standards ist voller Partnerzugriff erforderlich.",
+    "save": "Anmeldeeinstellungen speichern",
+    "sources": {
+      "partner": "Partner-Standard",
+      "default": "Breeze-Standard"
+    },
+    "signIn": {
+      "title": "Wie sich Personen anmelden"
+    },
+    "newPeople": {
+      "title": "Wie neue Personen Browserzugriff erhalten"
+    },
+    "options": {
+      "on": "Ein",
+      "off": "Aus"
+    },
+    "microsoft": {
+      "label": "Microsoft-Anmeldung"
+    },
+    "google": {
+      "label": "Google-Anmeldung"
+    },
+    "password": {
+      "label": "Anmeldung mit Passwort",
+      "allowed": "Erlaubt",
+      "ssoOnly": "Aus — nur Microsoft/Google",
+      "ssoOnlyNeedsSso": "Verfügbar, sobald die Microsoft- oder Google-Anmeldung aktiviert ist."
+    },
+    "fallback": "Die Anmeldung mit Passwort ist aktiv, weil weder Microsoft- noch Google-Anmeldung aktiviert ist.",
+    "invites": {
+      "label": "Einladungen vom MSP",
+      "value": "Immer aktiv"
+    },
+    "selfRegistration": {
+      "label": "Selbstregistrierung",
+      "off": "Aus",
+      "approval": "Genehmigung erforderlich",
+      "instant": "Sofort"
+    },
+    "ssoNewPerson": {
+      "label": "Erste Microsoft-/Google-Anmeldung",
+      "invitedOnly": "Nur eingeladene Personen",
+      "approval": "Genehmigung erforderlich",
+      "instant": "Sofort"
+    },
+    "requests": "Anfragen ({{count}})",
+    "errors": {
+      "load": "Anmeldeeinstellungen konnten nicht geladen werden.",
+      "save": "Anmeldeeinstellungen konnten nicht gespeichert werden.",
+      "methodUnavailable": "Diese Anmeldemethode ist in dieser Breeze-Bereitstellung noch nicht verfügbar.",
+      "ssoOnlyNeedsSso": "Aktivieren Sie die Microsoft- oder Google-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren.",
+      "tenantNotProven": "Weisen Sie den Microsoft-Mandanten dieser Organisation nach, bevor Sie die Microsoft-Anmeldung aktivieren.",
+      "sessionHours": "Geben Sie eine ganze Zahl von Stunden zwischen 1 und 168 ein."
+    },
+    "toasts": {
+      "saved": "Anmeldeeinstellungen gespeichert."
+    },
+    "sessionHours": {
+      "label": "Sitzungsdauer für Microsoft/Google (Stunden)",
+      "help": "Microsoft- und Google-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168."
+    },
+    "entraTenant": {
+      "title": "Microsoft-Mandant",
+      "loading": "Microsoft-Mandant wird geladen…",
+      "loadError": "Der Microsoft-Mandant konnte nicht geladen werden.",
+      "status": {
+        "none": "Es ist noch kein Microsoft-Mandant verknüpft. Die Microsoft-Anmeldung bleibt für diese Organisation deaktiviert, bis ihr Mandant nachgewiesen ist.",
+        "unproven": "Mandant {{tenantId}} ist verknüpft, aber nicht nachgewiesen. Die Microsoft-Anmeldung bleibt für diese Organisation deaktiviert, bis er nachgewiesen ist.",
+        "proven": "Mandant {{tenantId}} am {{date}} nachgewiesen über {{method}}."
+      },
+      "via": {
+        "m365_connection": "die Microsoft 365-Verbindung",
+        "proof_run": "eine Administrator-Anmeldung"
+      },
+      "proveConnection": "Microsoft 365-Verbindung verwenden (Mandant {{tenantId}})",
+      "tenantLabel": "Mandanten-ID oder Domäne",
+      "tenantHelp": "Erstellen Sie einen Link und senden Sie ihn an einen Globalen Administrator oder Administrator für privilegierte Rollen des Mandanten des Kunden. Der Link ist 72 Stunden gültig.",
+      "createLink": "Nachweislink erstellen",
+      "linkLabel": "Nachweislink",
+      "linkExpires": "Läuft am {{date}} ab. Funktioniert nur für Mandant {{tenantId}}.",
+      "consentLabel": "Link für Administratoreinwilligung",
+      "consentHelp": "Der Administrator des Mandanten öffnet ihn einmalig, damit sich alle in der Organisation anmelden können.",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "remove": "Mandantenverknüpfung entfernen",
+      "removeConfirm": {
+        "title": "Microsoft-Mandantenverknüpfung entfernen?",
+        "message": "Die Microsoft-Anmeldung wird für diese Organisation beendet, und ihre Microsoft-Sitzungen enden. Dadurch wird auch die Mandantenzuordnung der Organisation für AI for Office entfernt; AI for Office funktioniert hier erst wieder, wenn ein Mandant erneut verknüpft ist."
+      },
+      "toasts": {
+        "proven": "Microsoft-Mandant nachgewiesen.",
+        "linkCreated": "Nachweislink erstellt.",
+        "removed": "Microsoft-Mandantenverknüpfung entfernt.",
+        "copyFailed": "Der Link konnte nicht kopiert werden. Markieren Sie ihn und kopieren Sie ihn selbst."
+      },
+      "errors": {
+        "prove": "Der Mandant konnte nicht über die Microsoft 365-Verbindung nachgewiesen werden.",
+        "createLink": "Der Nachweislink konnte nicht erstellt werden.",
+        "remove": "Die Mandantenverknüpfung konnte nicht entfernt werden.",
+        "provenElsewhere": "Dieser Microsoft-Mandant ist bereits für eine andere Organisation nachgewiesen. Nur ein vom Administrator des Mandanten abgeschlossener Nachweislink kann ihn verschieben.",
+        "orgHasOtherTenant": "Diese Organisation ist mit einem anderen Microsoft-Mandanten verknüpft. Entfernen Sie zuerst diese Verknüpfung.",
+        "noVerifiedConnection": "Diese Organisation hat keine Microsoft 365-Verbindung, deren Mandant durch eine Administrator-Anmeldung bestätigt wurde.",
+        "hintRequired": "Geben Sie die Microsoft-Mandanten-ID des Kunden oder eine seiner bestätigten Domänen ein.",
+        "hintInvalid": "Das ist weder eine Microsoft-Mandanten-ID noch eine von einem Microsoft-Mandanten bestätigte Domäne.",
+        "hintLookupFailed": "Microsoft konnte zur Suche dieser Domäne nicht erreicht werden. Versuchen Sie es erneut oder geben Sie die Mandanten-ID ein.",
+        "protectedOrg": "Diese Organisation kann nicht mit einem Microsoft-Mandanten verknüpft werden."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Anmeldung mit Passwort deaktivieren?",
+      "intro": "Durch das Speichern wird die Anmeldung mit Passwort für die folgenden Organisationen deaktiviert.",
+      "partnerIntro": "Durch das Speichern dieses Partner-Standards wird die Anmeldung mit Passwort für diese Organisationen deaktiviert. Auf der Seite jeder Organisation sind die Konten aufgeführt, die sich noch nicht anmelden können.",
+      "explain": "Personen, die bereits mit Microsoft verbunden sind, verlieren ihr Passwort und werden abgemeldet. Personen ohne Microsoft-Verbindung können sich erst anmelden, wenn sie eine Einladung zur Microsoft-Anmeldung angenommen haben.",
+      "columns": {
+        "org": "Organisation",
+        "passwordsToClear": "Entfernte Passwörter",
+        "strandedTotal": "Können sich noch nicht anmelden"
+      },
+      "openOrg": "Öffnen",
+      "strandedTitle": "Können sich noch nicht anmelden",
+      "strandedMore": "und {{count}} weitere",
+      "strandedLoadError": "Die Namen dieser Konten konnten nicht geladen werden.",
+      "sendInvites": "Nach dem Speichern Einladungen zur Microsoft-Anmeldung an diese Konten senden",
+      "confirm": "Anmeldung mit Passwort deaktivieren",
+      "changed": "Die Auswirkungen haben sich seit dem Öffnen geändert. Prüfen Sie die neuen Zahlen."
+    },
+    "stranded": {
+      "title": "Können sich noch nicht anmelden ({{count}})",
+      "description": "Diese Konten haben keine Microsoft-Verbindung und können sich daher nicht anmelden, solange die Anmeldung mit Passwort deaktiviert ist. Senden Sie jedem eine Einladung zur Microsoft-Anmeldung.",
+      "loadError": "Die Konten, die sich nicht anmelden können, konnten nicht geladen werden.",
+      "invite": "Einladung zur Microsoft-Anmeldung senden",
+      "inviteAll": "Alle einladen",
+      "more": "{{shown}} von {{count}} werden angezeigt.",
+      "toasts": {
+        "invited": "Einladungen zur Microsoft-Anmeldung gesendet: {{count}}.",
+        "partial": "Einladungen zur Microsoft-Anmeldung gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden.",
+        "emailFailed": "{{count}} Konto/Konten wurden auf eingeladen gesetzt, aber die Einladungs-E-Mail konnte nicht gesendet werden. Verwenden Sie „Erneut senden“ in der Liste der Portalbenutzer."
+      },
+      "errors": {
+        "invite": "Einladungen zur Microsoft-Anmeldung konnten nicht gesendet werden.",
+        "unavailable": "Die Microsoft-Anmeldung ist für diese Organisation nicht verfügbar, daher gibt es nichts, womit eingeladen werden könnte."
+      }
+    },
+    "domains": {
+      "label": "Domänen",
+      "none": "Noch keine Domänen",
+      "manage": "Verwalten unter Organisation › Domänen",
+      "loadFailed": "Die Domänen konnten nicht geladen werden."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Zugriffsanfragen",
+    "description": "Personen, die auf Zugriff auf das Portal dieser Organisation warten. Genehmigen Sie, um Zugriff zu gewähren, oder lehnen Sie ab, um die Anfrage zu verwerfen.",
+    "columns": {
+      "person": "Antragsteller",
+      "source": "Art der Anfrage",
+      "requested": "Angefragt"
+    },
+    "sources": {
+      "self": "Selbstregistrierung",
+      "entra": "Microsoft-Anmeldung",
+      "google": "Google-Anmeldung",
+      "addin_user": "AI-for-Office-Add-in"
+    },
+    "selectAll": "Alle Anfragen auswählen",
+    "selectOne": "Anfrage von {{email}} auswählen",
+    "accountExists": "Hat bereits ein Konto — Zum Verwerfen ablehnen",
+    "actions": {
+      "approve": "Genehmigen",
+      "deny": "Ablehnen",
+      "approveSelected": "Ausgewählte genehmigen ({{count}})",
+      "denySelected": "Ausgewählte ablehnen ({{count}})"
+    },
+    "results": {
+      "accountExists": "Hat bereits ein Konto",
+      "notPending": "Nicht mehr ausstehend",
+      "notFound": "Anfrage nicht gefunden",
+      "identityLinked": "Anmeldung bereits mit einem anderen Konto verknüpft",
+      "failed": "Diese Anfrage konnte nicht entschieden werden",
+      "entraTenantNotProven": "Der Microsoft-Mandant dieser Organisation ist nicht mehr nachgewiesen"
+    },
+    "denyDialog": {
+      "title": "Zugriffsanfrage ablehnen",
+      "message": "Anfrage von {{email}} ablehnen? Die Person erhält eine E-Mail, dass die Anfrage nicht genehmigt wurde.",
+      "bulkMessage_one": "{{count}} Anfrage ablehnen? Die Person erhält eine E-Mail, dass die Anfrage nicht genehmigt wurde.",
+      "bulkMessage_other": "{{count}} Anfragen ablehnen? Jede Person erhält eine E-Mail, dass die Anfrage nicht genehmigt wurde."
+    },
+    "toasts": {
+      "approved": "Zugriff für {{email}} genehmigt.",
+      "denied": "Anfrage von {{email}} abgelehnt.",
+      "bulkDone_one": "{{count}} Anfrage entschieden.",
+      "bulkDone_other": "{{count}} Anfragen entschieden.",
+      "bulkPartial": "{{succeeded}} von {{total}} Anfragen entschieden. Die übrigen sind in der Liste markiert."
+    },
+    "errors": {
+      "load": "Zugriffsanfragen konnten nicht geladen werden.",
+      "action": "Die Zugriffsanfrage konnte nicht aktualisiert werden.",
+      "bulk": "Die ausgewählten Anfragen konnten nicht entschieden werden."
+    },
+    "summary": {
+      "title": "Ausstehende Zugriffsanfragen",
+      "description": "Anfragen, die in Ihren Kundenorganisationen warten. Öffnen Sie eine Organisation, um sie zu genehmigen oder abzulehnen.",
+      "empty": "Keine ausstehenden Anfragen",
+      "orgPending_one": "{{count}} ausstehend",
+      "orgPending_other": "{{count}} ausstehend",
+      "review": "Anfragen prüfen",
+      "loadError": "Ausstehende Zugriffsanfragen konnten nicht geladen werden."
+    },
+    "refreshFailed": "Die Zugriffsanfragen konnten nicht aktualisiert werden. Diese Liste ist möglicherweise veraltet.",
+    "more": "Die ersten {{count}} Anfragen werden angezeigt. Entscheiden Sie über diese, um die übrigen zu sehen."
   }
 }

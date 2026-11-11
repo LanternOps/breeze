@@ -107,6 +107,18 @@ export function chordRouting(input: ChordRoutingInput): 'key_press' | 'held' {
 }
 
 /**
+ * The modifiers a key_press released on the remote, which the viewer must stop
+ * treating as held. An agent that reports `releasesHeldInput` (W2a, #8251)
+ * keeps a held modifier out of the chord and leaves it down, so none were
+ * released: forgetting them anyway meant their key_up was never sent and the
+ * modifier stayed down on the remote for good (#9595). Older agents pressed
+ * and released every chord modifier.
+ */
+export function modifiersReleasedByKeyPress(modifiers: string[], agentKeepsHeldModifiers: boolean): string[] {
+  return agentKeepsHeldModifiers ? [] : modifiers;
+}
+
+/**
  * A push this soon after the operator sent a copy chord in this window belongs
  * to that copy, even if they have since switched away (copy, then Alt-Tab).
  * The agent polls every 500 ms.

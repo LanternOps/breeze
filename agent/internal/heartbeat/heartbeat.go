@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -338,6 +337,11 @@ type SecurityCapabilities struct {
 	// (emission lands in a later wave): send retainState only to a beat
 	// declaring exactly 1; any other value gets the legacy response shape.
 	RetainStateProtocolVersion int `json:"retainStateProtocolVersion,omitempty"`
+	// RebindProtocolVersion (#8318) declares that this build verifies the
+	// signed `rebind` directive and runs the bounded rebind (rebind_flow.go).
+	// The API records it non-sticky; only exactly 1 makes this device eligible
+	// to be the source of a reattach. Never declared by a Quick Support client.
+	RebindProtocolVersion int `json:"rebindProtocolVersion,omitempty"`
 	// PromptIdentityProtocolVersion (#10190 W03) declares that this build
 	// caches HeartbeatResponse.PromptIdentity and fetches its logo from
 	// /agents/:id/prompt-identity/logo. The API sends the block only to a
@@ -399,6 +403,10 @@ type HeartbeatResponse struct {
 	// RetainState (#8258) lists features the server made no decision about this
 	// beat (keep current state); see retain_state.go. Absent = today's semantics.
 	RetainState RetainState `json:"retainState"`
+	// Rebind (#8318) is the signed reattach directive, present on the main and
+	// the parked beat while this install is the source of an open intent.
+	// Verified before use; see rebind_directive.go and rebind_flow.go.
+	Rebind *RebindDirective `json:"rebind,omitempty"`
 	// PromptHost is the prompt-host kill switch (#10190); absent = nothing enabled.
 	PromptHost *PromptHostSettings `json:"promptHost,omitempty"`
 	// PromptIdentity is the MSP identity block (#10190 W03), kept raw so a
@@ -462,6 +470,8 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// rebind is the reattach rebind flow's state (#8318, rebind_flow.go).
+	rebind      rebindState
 	containment *containmentRuntime
 	// Endpoint messaging (#8293): cards the Assist helper drew and the user has
 	// not yet closed, for replay after a helper restart; and the upstream event
@@ -819,6 +829,17 @@ type Heartbeat struct {
 	retryCfg    httputil.RetryConfig
 	stopOnce    sync.Once
 	authMon     *authstate.Monitor
+
+	// verificationPool is the lane for backup_verify and backup_test_restore
+	// (#6106). Each waits up to backupVerificationTimeout on the backup
+	// helper; on the shared pool that wait held a slot, so a few
+	// verifications could starve scripts and monitors. It has pool's worker
+	// and queue sizes, so verifications get the concurrency they had, now in
+	// their own queue, and total pooled capacity is twice
+	// MaxConcurrentCommands. Agent-side a verification is only an IPC wait;
+	// the work runs in the helper. Nil in fixtures that never set it: the
+	// dispatch, stop and drain paths then use pool alone.
+	verificationPool *workerpool.Pool
 
 	// Command deduplication: prevents the same commandId from being
 	// executed twice when delivered via both WebSocket and heartbeat.
@@ -1319,6 +1340,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		tunnelMgr:                      tunnel.NewManager(false),
 		securityScanner:                &security.SecurityScanner{Config: cfg},
 		pool:                           workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
+		verificationPool:               workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
 		healthMon:                      health.NewMonitor(),
 		retryCfg:                       httputil.DefaultRetryConfig(),
 		seenCommands:                   make(map[string]time.Time),
@@ -1337,6 +1359,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// a failed result for every command the previous process died running
 	// (#8296).
 	h.commandJournal.Recover(h.backupOutbox)
+	// After Recover has read the vendor update run marker for its synthetic
+	// result, and before any command can start a new run (#11065).
+	recoverOemRuns()
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
 	h.initWorkloads()
@@ -1417,11 +1442,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 					}
 				}
 
-				sessionNum, err := strconv.ParseUint(sessionKey, 10, 32)
-				if err != nil {
-					return 0, fmt.Errorf("invalid session key %q: %w", sessionKey, err)
-				}
-				return 0, sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
+				return spawnAssistDirect(sessionKey, binaryPath, args)
 			}),
 		)
 	} else {
@@ -1969,6 +1990,20 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			}()
 			h.handleSASFromHelper(session, env)
 		}()
+	case ipc.TypeDesktopClipboardRead:
+		// Waits on the user helper for up to the clipboard proxy's timeout,
+		// so it runs off the dispatch goroutine, like SAS.
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic in handleDesktopClipboardRead", "error", fmt.Sprint(r))
+					// Answer anyway, so the helper reports the failure now
+					// instead of waiting out its timeout.
+					sendDesktopClipboardReadResult(session, env, ipc.DesktopClipboardReadResult{Error: "internal error"})
+				}
+			}()
+			h.handleDesktopClipboardRead(session, env)
+		}()
 	case ipc.TypeDesktopLeaseRenew:
 		// A helper-hosted session's lease watchdog lives in the helper, which
 		// holds no command socket. This is the inbound half of the IPC lease
@@ -2299,6 +2334,11 @@ func (h *Heartbeat) Start() {
 	// #8971: deliver the user's PAM declines to the server (outbox drain).
 	go h.runPamWithdrawDrain()
 
+	// #8318 — know whether a staged reattach set is on disk before the
+	// credential and certificate work below starts, so none of it runs on an
+	// unprimed view of the reattach (a new token rotation waits on one).
+	h.primeRebindState()
+
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
 	// that was interrupted between the durable disk write and the server
 	// confirmation. This runs first on purpose: if the agent was offline long
@@ -2319,6 +2359,14 @@ func (h *Heartbeat) Start() {
 	// receive. Runs after the reconcile above so staged material is finished
 	// first. See maybeSelfInitiateCertRenewal.
 	go h.maybeSelfInitiateCertRenewal()
+
+	// #8318 — resume a reattach a previous process left mid-flight (§6.6);
+	// its state was primed above.
+	go h.resumeRebind()
+
+	// #11065 — after a firmware update's reboot, report BitLocker and the BIOS
+	// version once. A no-op when nothing is pending.
+	go h.verifyOemUpdates()
 
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
@@ -2448,6 +2496,15 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
+			// #8318 — drive a staged reattach before the auth-dead skip: an
+			// agent whose confirm committed with its answer lost is one whose
+			// source credentials are now refused. Once the reattached identity
+			// is on disk this process holds retired credentials; it only waits
+			// for its restart.
+			h.tickRebind()
+			if h.rebindOwnsIdentity() {
+				continue
+			}
 			// Issue #2621 — retry an unfinished credential rotation on every tick
 			// while one is outstanding. This runs BEFORE the auth-dead skip on
 			// purpose: if the server already promoted but the confirmation
@@ -2618,6 +2675,9 @@ func (h *Heartbeat) Start() {
 func (h *Heartbeat) StopAcceptingCommands() {
 	h.accepting.Store(false)
 	h.pool.StopAccepting()
+	if h.verificationPool != nil {
+		h.verificationPool.StopAccepting()
+	}
 }
 
 // DrainAndWait waits for all in-flight commands and inventory goroutines to complete,
@@ -2627,7 +2687,12 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopTimeSync()
 	h.stopWorkloads()
 	log.Info("draining in-flight commands and inventory goroutines")
+	// Both pools share ctx's deadline: their tasks run concurrently, so
+	// draining them in turn still bounds the whole wait by that deadline.
 	h.pool.Drain(ctx)
+	if h.verificationPool != nil {
+		h.verificationPool.Drain(ctx)
+	}
 	h.wg.Wait()
 
 	// Wait for inventory goroutines with deadline
@@ -4396,6 +4461,14 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		if p.SeveritySource != "" && severity != "unknown" {
 			item["severitySource"] = p.SeveritySource
 		}
+		// Omitted, never defaulted: an absent type means the API leaves the patch
+		// with Windows Update. An API that predates the field ignores it (#11073).
+		if p.ReportedUpdateType != "" {
+			item["reportedUpdateType"] = p.ReportedUpdateType
+		}
+		if p.ReportedUpdateOwner != "" {
+			item["reportedUpdateOwner"] = p.ReportedUpdateOwner
+		}
 		items[i] = item
 	}
 	return items
@@ -5428,6 +5501,11 @@ func (h *Heartbeat) beatSkipReason() string {
 	if h.identityIntakePaused() {
 		return "restarting to apply a server-assigned identity"
 	}
+	// #8318 — the identity on disk is the reattached one; the credentials in
+	// memory are the retired source's.
+	if h.rebindOwnsIdentity() {
+		return "restarting to apply a reattached identity"
+	}
 	return ""
 }
 
@@ -5496,7 +5574,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
-		SecurityCapabilities: compiledSecurityCapabilities(),
+		SecurityCapabilities: h.securityCapabilitiesForBeat(),
 		Containment:          h.containmentReport(),
 		ReportedIdentity:     h.reportIdentityForBeat(),
 		// #8382 — why the last identity assertion was refused, once.
@@ -5689,6 +5767,9 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 			h.authMon.RecordAuthFailure()
 		}
 		h.noteAuthRejectedLiveness()
+		// #8318 — with a staged reattach set on disk, a confirm may have
+		// committed and retired these credentials: replay it and probe.
+		h.noteSourceCredentialsRejected()
 		return nil, false
 	}
 
@@ -5709,6 +5790,10 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	if h.authMon != nil {
 		h.authMon.RecordSuccess()
 	}
+	// #8318 — this process's credentials are proven current: a staged
+	// reattach set the server ended can go, and a reattached identity that
+	// has now authenticated no longer needs its staged set.
+	h.noteCredentialsCurrent()
 
 	// Update state file with latest heartbeat timestamp so the watchdog
 	// can detect stale heartbeats.
@@ -6026,6 +6111,17 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	identityRestarting := h.applyIdentityAssertion(identityAssertion)
 
 	rollbackActive := rollbackInResponse || h.rollbackInProgress()
+
+	// #8318 — the signed reattach directive, after the pin above for the same
+	// reason as the identity assertion. Not while a restart for an identity
+	// or a rollback is pending: the directive comes on every beat. While a
+	// reattach is in flight no NEW token rotation starts (see
+	// rebindInProgress); the server re-signals it later.
+	directiveAccepted := h.handleRebindDirective(response.Rebind, identityRestarting || rollbackActive)
+	// A verified directive starts the flow on its own goroutine, so the staged
+	// set may not be on disk yet: hold rotation for this beat too. One this
+	// agent will not act on (unverifiable, ended, support mode) holds nothing.
+	rebindHold := h.rebindInProgress() || directiveAccepted
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
 		if !h.accepting.Load() {
@@ -6040,9 +6136,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			go h.processCommand(c)
 			continue
 		}
-		if !h.pool.Submit(func() { h.processCommand(c) }) {
-			log.Warn("command rejected, worker pool full", logging.KeyCommandID, cmd.ID)
-		}
+		h.dispatchPolledCommand(c)
 	}
 
 	// Handle upgrade if requested and auto-update is enabled
@@ -6079,8 +6173,8 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle proactive bearer-token rotation before the token becomes stale.
-	if identityRestarting {
-		// Re-signaled after the restart.
+	if identityRestarting || rebindHold {
+		// Re-signaled after the restart, or once the reattach is resolved.
 	} else if response.RotateToken {
 		go h.handleTokenRotation()
 	} else if !response.ConfirmTokenRotation && h.maybeStartOwedHelperTokenRotation(time.Now()) {
@@ -6592,18 +6686,25 @@ func (h *Heartbeat) promoteLegacyCertImmediately(m *api.MtlsCertData) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	prevCertPEM, prevKeyPEM, prevExpires := h.config.MtlsCertPEM, h.config.MtlsKeyPEM, h.config.MtlsCertExpires
 	h.config.MtlsCertPEM = m.Certificate
 	h.config.MtlsKeyPEM = m.PrivateKey
 	h.config.MtlsCertExpires = m.ExpiresAt
 	h.config.AuthToken = token
-	err = config.SaveTo(h.config, config.ActiveConfigFile())
+	err = h.saveConfigLocked()
 	h.config.AuthToken = ""
-	if err != nil {
+	if errors.Is(err, errRebindOwnsIdentity) {
+		h.config.MtlsCertPEM, h.config.MtlsKeyPEM, h.config.MtlsCertExpires = prevCertPEM, prevKeyPEM, prevExpires
+	} else if err != nil {
 		// Clear expires so the next heartbeat re-triggers renewal.
 		h.config.MtlsCertExpires = ""
 	}
 	h.mu.Unlock()
 
+	if errors.Is(err, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a renewed mTLS certificate (legacy server)")
+		return
+	}
 	if err != nil {
 		log.Error("failed to save renewed mTLS cert -- renewal will be re-attempted", "error", err.Error())
 		return
@@ -6639,7 +6740,7 @@ func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
 	h.config.PendingMTLSCertificateID = renewResp.CertificateID
 	h.config.PendingMTLSExpiresAt = activationExpiresAt
 	h.config.AuthToken = token
-	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
+	saveErr := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if saveErr != nil {
 		h.config.PendingMTLSCertificate = ""
@@ -6649,6 +6750,10 @@ func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(saveErr, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a pending mTLS certificate")
+		return
+	}
 	if saveErr != nil {
 		log.Error("mTLS renewal aborted — pending certificate could not be durably persisted; continuing on the existing certificate",
 			"error", saveErr.Error())
@@ -6854,7 +6959,7 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 	h.config.PendingMTLSCertificateID = ""
 	h.config.PendingMTLSExpiresAt = time.Time{}
 	h.config.AuthToken = token
-	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
+	saveErr := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if saveErr != nil {
 		h.config.MtlsCertPEM = prevCertPEM
@@ -6867,6 +6972,10 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(saveErr, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a confirmed mTLS certificate")
+		return
+	}
 	if saveErr != nil {
 		// The server has ALREADY confirmed/promoted this certificate — only
 		// our local disk write failed. Both in-memory and on-disk state have
@@ -6910,7 +7019,7 @@ func (h *Heartbeat) clearPendingMTLSCert() {
 	h.config.PendingMTLSCertificateID = ""
 	h.config.PendingMTLSExpiresAt = time.Time{}
 	h.config.AuthToken = token
-	err := config.SaveTo(h.config, config.ActiveConfigFile())
+	err := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if err != nil {
 		h.config.PendingMTLSCertificate = prevPendingCert
@@ -6920,6 +7029,10 @@ func (h *Heartbeat) clearPendingMTLSCert() {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(err, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a discarded pending mTLS certificate")
+		return
+	}
 	if err != nil {
 		log.Error("failed to clear expired pending mTLS certificate from disk; will retry on the next tick", "error", err.Error())
 		h.pendingMTLSCertOnDisk.Store(true)
@@ -7603,12 +7716,13 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 		return h.runTrackedCommand(cmd), true
 	}
 
-	if h.pool == nil {
+	pool := h.commandPoolFor(cmd.Type)
+	if pool == nil {
 		return h.executeCommand(cmd), true
 	}
 
 	resultCh := make(chan tools.CommandResult, 1)
-	if !h.pool.Submit(func() {
+	if !pool.Submit(func() {
 		resultCh <- h.runTrackedCommand(cmd)
 	}) {
 		return tools.CommandResult{
@@ -7651,7 +7765,7 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
 				Error:    "agent is shutting down",
 			}, false
-		case <-h.pool.Context().Done():
+		case <-pool.Context().Done():
 			return tools.CommandResult{
 				Status:   "failed",
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
@@ -9116,6 +9230,7 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		IdentitySyncProtocolVersion:           identitySyncProtocolVersion,
 		WorkloadInventoryProtocolVersion:      workloads.ProtocolVersion,
 		RetainStateProtocolVersion:            retainStateProtocolVersion,
+		RebindProtocolVersion:                 rebindProtocolVersion,
 		PromptIdentityProtocolVersion:         promptidentity.ProtocolVersion,
 		PamUserNotifyProtocolVersion:          pamUserNotifyProtocolVersion(),
 	}

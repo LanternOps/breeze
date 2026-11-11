@@ -67,6 +67,7 @@ function syncDependencies() {
       maxItemsSkus: 200,
       maxItemsSigninEvents: 25_000,
       signinEventsRpm: 6,
+      signinEventsPageSize: 100,
       continuationKey: null,
     },
     continuations: createSyncContinuationCodec({ key: null }),

@@ -157,6 +157,8 @@ Remote desktop sessions can optionally stream system audio from the device to th
 
 Breeze can capture the Windows secure desktop (Ctrl+Alt+Del screen, UAC prompts, lock screen). This is possible because the helper process runs as SYSTEM with `GENERIC_ALL` access to the input desktop. Secure desktop capture is automatic — no additional configuration is required.
 
+From the 0.128.0 agent, the Windows sign-in screen is captured instead of showing a black frame. When the agent cannot confirm which desktop a frame came from, it still sends the frame and notes it in the agent log. Capture of the console sign-in screen was verified in the lab for this release; preferring the sign-in screen of an RDP session was not.
+
 ### Session Consent & End-User Notification
 
 By default, when a technician starts a remote desktop session the person sitting at the device is told about it. You can tune this per [Configuration Policy](/features/configuration-policies/) on the **Remote Access** feature, choosing one of three session-prompt modes:
@@ -223,6 +225,8 @@ As of v0.89.0, hardware encoding on Windows is significantly more reliable and f
 
 If the hardware encoder stalls (for example, due to a driver issue), the agent automatically switches to a software encoder within approximately 600 milliseconds — previous builds took around 11 seconds to recover. Headless servers without a GPU use software rendering automatically with no configuration needed.
 
+From the 0.128.0 agent, a Windows device with no hardware encoder where the OpenH264 software encoder cannot load starts the session on Windows' built-in H.264 encoder instead of refusing it, and the picture stays current on a static screen. Known issue: on this fallback the picture can stay blocky after a burst of change on an otherwise static screen until the screen changes again ([#11639](https://github.com/LanternOps/breeze/issues/11639)).
+
 ### VNC Fallback and In-Window Switcher (macOS)
 
 Some macOS devices and scenarios — older releases, certain hardware configurations, or sessions started at the login screen — cannot use WebRTC remote desktop. Breeze auto-detects these situations and falls back to VNC via the built-in macOS Screen Sharing service.
@@ -265,7 +269,7 @@ From v0.122.1, Ctrl/Cmd+Shift+V and Ctrl/Cmd+Shift+F are no longer viewer shortc
 
 ### Keyboard and Mouse Input
 
-- **Nothing stays held down.** When the viewer window loses focus or the session drops, the viewer and agent release every key and mouse button they pressed on the remote. If a key still seems stuck, use **Release stuck keys**.
+- **Nothing stays held down.** When the viewer window loses focus or the session drops, the viewer and agent release every key and mouse button they pressed on the remote. If a key still seems stuck, use **Release stuck keys**. With a current agent it also releases any Shift, Ctrl, Alt/Option, or Win/Command key the remote computer still reports as held. This includes one held by the person at that computer.
 - **German and French keyboards** (QWERTZ and AZERTY) type the right letters on Windows and Linux remotes.
 
 ### Keyboard Mode
@@ -273,7 +277,7 @@ From v0.122.1, Ctrl/Cmd+Shift+V and Ctrl/Cmd+Shift+F are no longer viewer shortc
 The **Keyboard mode** control in the Breeze Viewer toolbar (v0.123.0+) sets how your keystrokes reach the remote:
 
 - **Type what I see** (default). The remote resolves each key through its own keyboard layout, so the characters you see on your keys are what gets typed. IME composition (Chinese, Japanese, Korean input) and dead keys (for example ´ then E for É) are sent as finished text once you commit them. The remote sees nothing until the composition is committed.
-- **Physical keys**. The viewer sends the physical key position and the remote's own layout decides what it types, which keeps distinctions such as the numpad and the right-hand modifier keys. Use it when your keyboard and the remote machine share a non-US layout (French or Belgian AZERTY, Spanish, German): punctuation keys such as `ù`, `^`, `$`, `)`, `;`, `:`, `!` and `<>` then type exactly what is printed on them. It needs a WebRTC session and an agent from v0.123.0 or later (v0.126.0 or later for the punctuation and letter keys on Windows); on an older agent or a WebSocket session the option is disabled and its tooltip says why.
+- **Physical keys**. The viewer sends the physical key position and the remote's own layout decides what it types, which keeps distinctions such as the numpad and the right-hand modifier keys. Use it when your keyboard and the remote machine share a non-US layout (French or Belgian AZERTY, Spanish, German): punctuation keys such as `ù`, `^`, `$`, `)`, `;`, `:`, `!` and `<>` then type exactly what is printed on them. It needs a WebRTC session and an agent from v0.123.0 or later (v0.127.0 or later for the punctuation and letter keys on Windows); on an older agent or a WebSocket session the option is disabled and its tooltip says why.
 
 The mode is remembered for each device, and the last mode you chose becomes the default for devices that have no choice of their own. Keyboard mode does not apply to VNC sessions.
 
@@ -308,8 +312,10 @@ Pressing the remote's paste shortcut sends your clipboard first. If it can't be 
 
 Clipboard v2 needs agent and Breeze Viewer v0.122.1 or later. With an older agent the chip reports that the agent did not report clipboard status: text only, policy unknown. On a VNC session the clipboard is text only.
 
-<Aside type="caution" title="Known gap: images copied on a Windows device">
-  An image copied on a Windows device does not reach the viewer yet. The desktop session runs as SYSTEM and cannot read the user's copied image formats. Text copies work in both directions, and images pasted *into* a Windows device are not affected. A fix is planned for a follow-up release.
+On Windows the desktop session runs as SYSTEM, which cannot read the image formats the signed-in user copies. When SYSTEM finds nothing it can read, the agent reads the clipboard through its helper running as that user, in the same Windows session. It does this when the clipboard changes, and retries after a short delay if that helper cannot be reached. An image the user copies (PNG or JFIF, for example from a browser or the Snipping Tool) then reaches the viewer. When no user helper is running in that Windows session, for example at the sign-in screen, only what SYSTEM can read itself is sent, which in practice is text.
+
+<Aside type="caution" title="Known gap: bitmap-only copies on Windows">
+  A copy that holds only a bitmap (a classic Print Screen capture, older versions of Paint) does not reach the viewer. The agent reads PNG and JFIF images, not plain bitmaps. When a copy holds text as well as an image only the user can read, the viewer gets the text. Images pasted *into* a Windows device are not affected.
 </Aside>
 
 ### Login Screen (macOS)
@@ -384,6 +390,13 @@ Wake-on-LAN powers on an offline device from the Breeze dashboard without visiti
 
 If a wake cannot be sent, Breeze returns a specific reason rather than failing silently — the most common are: the target has no recorded MAC address, no known IPv4 subnet (only IPv6), or no online agent is available at its site and subnet to relay the packet. Every wake attempt — successful or not — is recorded in the audit log with the actor, target, relay device, MACs attempted, and result.
 
+**Outcomes (v0.127.0+):**
+
+- **Online devices are skipped.** Waking a device that is already online sends nothing and reports that the device is already online (`TARGET_ONLINE`).
+- **Bulk wake reports what it did.** Waking several devices from the Devices list ends with a summary such as "Sent to 3, skipped 2", with the skipped devices grouped by reason (already online, no online peer at their site, and so on).
+- **Every wake that is sent is followed up.** Breeze records the attempt and, within about 12 minutes, resolves it as **came online** (the device has checked in since the wake), **timed out** (the relay sent the packet but the device did not check in within 10 minutes), **send failed** (the relay never confirmed sending it) or **unknown** (the outcome could not be established, for example because the attempt was checked too late to tell when the device came back, or the agent was reinstalled meanwhile). Closed attempts are kept for 90 days by default (`WAKE_ATTEMPT_RETENTION_DAYS`).
+- **Docked laptops are reachable.** A wake targets the MAC addresses the device reports now plus those it reported in the last 30 days (up to eight), so a laptop's dock or USB network adapter is still tried after it is unplugged. A historical MAC that another device in the organization reported more recently is left out.
+
 ### Pluggable Remote-Desktop Launcher
 
 By default, **Connect → Desktop** opens the built-in Breeze WebRTC desktop session. MSPs that standardise on a third-party tool (RustDesk, ScreenConnect, TeamViewer, AnyDesk, and similar) can configure Breeze to hand off to that tool instead, per partner.
@@ -415,6 +428,8 @@ Each device then needs that custom field populated with its identifier for the t
 - Preset passwords are stored server-side only and are never embedded in the web bundle or earlier API responses. The launch URL is issued one-shot in response to an explicit user click and each issuance is audit logged.
 
 **Per-technician preference.** Each technician can pick their own remote tool from the tenant's enabled providers under **Settings → Profile → Preferred remote tool**. The preference only selects among providers the partner has already configured — it can never add one — and only affects that user's own **Connect → Desktop** clicks. If the chosen provider is later disabled or deleted, launches fall back to the tenant default. The chooser is hidden from users without remote-access permission.
+
+**Choosing a tool per click.** When a device can be opened with more than one tool, the **Connect Desktop** button on the device page and on Remote Tools becomes a split button. The main part does what it always did: it launches your preferred tool, or the tenant default, or the built-in viewer when neither applies (hover it to see which). The arrow next to it lists the other tools this device can use plus **Built-in viewer**, so you can pick AnyDesk for one session and the built-in viewer for the next without changing any setting. A tool appears in the list only when it is enabled and the device has its identifier custom field filled in. As with the preference, a pick only selects among the tools the partner has configured. If the tool was disabled after the page loaded, Breeze tells you it is no longer available and does not launch a different tool instead. The list appears only for users with remote-access permission, and only on the full-size button, not in the compact device-menu entries.
 
 ---
 
@@ -612,7 +627,7 @@ To free session capacity, close active sessions from the Active Sessions list on
 |--------|------|-------------|
 | POST | `/devices/:id/commands` | Body `{ "type": "wake" }` — dispatch a Wake-on-LAN magic packet to the device via an automatically selected relay agent. Returns the relay device and MACs attempted, or a specific failure reason. |
 | POST | `/mobile/devices/:id/actions` | Body `{ "action": "wake" }` — equivalent quick-action wake used by the mobile app. |
-| POST | `/devices/:id/remote-access-launch` | Issue a one-shot remote-desktop launch URL for the device's configured provider. Returns the resolved `launchUrl` and scheme, or `422` if no provider applies or the scheme is disallowed. |
+| POST | `/devices/:id/remote-access-launch` | Issue a one-shot remote-desktop launch URL for the device's configured provider. Optional body `{ "providerId": "<id>" }` launches that provider instead of the default; it must be one of the tenant's enabled providers. Returns the resolved `launchUrl`, `scheme` and `providerId`. Returns `404` if no provider applies (`code` `provider_not_available` when the requested id is not an enabled provider), `400` for a body that is not empty or `{ "providerId": string }`, and `422` if the resolved URL fails the scheme check. |
 
 Remote-access providers are configured per partner under **Settings → Remote**; see [Pluggable Remote-Desktop Launcher](#pluggable-remote-desktop-launcher).
 
@@ -650,6 +665,10 @@ The Linux build of the Breeze Viewer ships as a single AppImage, `breeze-viewer-
    ```
 
 </Steps>
+
+<Aside type="caution" title="The Linux viewer cannot connect to Windows devices yet">
+  A device whose agent runs as a service accepts remote desktop over WebRTC only, and every Windows agent runs as a service. The Linux viewer has no WebRTC: the WebKitGTK it is built with is compiled without it. Connecting to such a device ends with *"This device needs WebRTC for remote desktop (it runs as a service), but this viewer build does not support WebRTC."* Use the Windows or macOS viewer for those devices. Terminal, file transfer and scripts are not affected. Tracked in [#9557](https://github.com/LanternOps/breeze/issues/9557).
+</Aside>
 
 Keep the AppImage at a stable path. The registration records the absolute path it was run from, so moving or deleting the file after the first run leaves `breeze://` pointing at a file that no longer exists — run it again from the new location to refresh the entry.
 

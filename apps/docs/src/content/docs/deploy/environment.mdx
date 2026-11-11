@@ -154,7 +154,7 @@ deployment env vars.
 | `IS_HOSTED` | — | Yes (prod) | `true` for hosted SaaS edition, `false` for self-hosted. Must be set explicitly — the API refuses to boot otherwise. Controls signup gating, billing, email-verification policy, and the default for signup-abuse detection. |
 | `ABUSE_SIGNALS_ENABLED` | value of `IS_HOSTED` | | Signup-abuse detection switch. Defaults to the value of `IS_HOSTED` — **on** for a hosted deployment, **off** for a self-hosted one (its heuristics police untrusted public signups and are noise on a single-team install; when off, the only artifact is one `[AbuseSignals] Disabled` line at boot). Set `true` to opt a genuinely multi-tenant self-hosted service in, or `false` to switch a hosted deployment off. When set, it must be a boolean (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) — validated at boot. |
 | `TRUST_PROXY_HEADERS` | — | Yes (prod) | `true` when behind a reverse proxy (Caddy, Cloudflare). Must be set explicitly in production. |
-| `TRUSTED_PROXY_CIDRS` | — | When `TRUST_PROXY_HEADERS=true` | Comma-separated CIDRs of trusted reverse proxies (e.g., `10.0.0.0/8,172.16.0.0/12`). Required when proxy headers are trusted. |
+| `TRUSTED_PROXY_CIDRS` | — | When `TRUST_PROXY_HEADERS=true` | Comma-separated CIDRs of trusted reverse proxies (e.g., `10.0.0.0/8,172.16.0.0/12`).  Required when proxy headers are trusted. At startup the API compares the list with the subnets it is attached to and logs one `[proxy-trust]` warning if none overlap — usually a pinned container address that went stale after a recreate or host reboot. It is a warning only (a proxy outside the attached networks is a valid topology); fix it by setting the proxy's current `/32` or by pinning the proxy to a static address. |
 | `INTERNAL_SERVICE_CIDRS` | — (compose: `BREEZE_DOCKER_SUBNET`) | | Private CIDRs of in-cluster callers (portal and web server-side rendering) whose plain-HTTP calls to `INTERNAL_API_HOSTS` are let through `FORCE_HTTPS`. The API checks the socket source address and never exempts a trusted proxy. Empty disables the exemption; public or all-address ranges refuse startup. |
 | `INTERNAL_API_HOSTS` | `api:3001` | | Comma-separated `host:port` values that in-cluster callers use to reach the API (the host in `INTERNAL_API_URL`). |
 | `TRUST_CF_CONNECTING_IP` | `false` | `true` / `false`, `1` / `0`, `yes` / `no`, `on` / `off` (empty or unset is allowed) | Set to `true` **only** when Breeze is fronted by Cloudflare. Cloudflare overwrites the `CF-Connecting-IP` header at its edge, but a non-Cloudflare reverse proxy (including the bundled Caddy) does not strip it — so trusting it without a Cloudflare front would let a client spoof the header to defeat IP allowlists and per-IP rate limits. When off, client IPs are resolved from `X-Forwarded-For` instead. If you are behind Cloudflare and leave this unset, client-IP attribution (rate limits, audit logs, IP allowlists) falls back to `X-Forwarded-For`; the API logs a startup warning in that case. **From v0.106.0 a value outside the list above stops the API from starting** — previously a typo here was silently read as "off", quietly attributing every client IP to the wrong address. |
@@ -303,6 +303,7 @@ From v0.118.0 each user may request 30 TURN credentials per 10 minutes. Tune it 
 | `PROMETHEUS_PORT` | `9090` | Prometheus web UI port (monitoring stack) |
 | `ALERTMANAGER_PORT` | `9093` | Alertmanager web UI port (monitoring stack) |
 | `LOKI_PORT` | `3100` | Loki log aggregation API port (monitoring stack) |
+| `PROMETHEUS_IMAGE_REF`, `GRAFANA_IMAGE_REF`, `ALERTMANAGER_IMAGE_REF`, `LOKI_IMAGE_REF`, `PROMTAIL_IMAGE_REF`, `REDIS_EXPORTER_IMAGE_REF`, `POSTGRES_EXPORTER_IMAGE_REF` | pinned digest | **v0.128.0+, monitoring stack only.** Override one image in `docker-compose.monitoring.yml` each. Empty uses the digest-pinned default the release ships. Set one to your current image to stay on it when you take a newer monitoring file. See [Observability Stack](/monitoring/stack/). |
 | `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` | `3` | Number of 5-minute buckets a metric anomaly must span before it opens an episode; a shorter blip closes without one. The default was `2` before v0.122.1. |
 | `DEVICE_METRICS_RETENTION_DAYS` | `30` | Retention for the raw `device_metrics` series, clamped to 1–365. History charts are served from `metric_rollups` and are unaffected. **On first run after upgrading, older raw metrics are pruned — set this before starting the new version if you need more than 30 days.** |
 
@@ -369,6 +370,17 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `USER_RISK_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
+
+#### Report-only retention jobs
+
+Some retention jobs ship **report-only**: each nightly run counts the rows it would delete and deletes nothing. Each of these jobs has its own `<NAME>_RETENTION_ENFORCE` variable, listed with that job's other settings when the job is added.
+
+- **Default:** `false`, so the job only reports. An unset or empty value uses the default.
+- **Turning deletion on:** set the variable to `true` (or `1`) and restart the API. Only `true`/`1` and `false`/`0` are accepted, in any letter case. Any other value logs a warning and the job stays report-only.
+- **What to check before turning it on:** after a few nightly runs, read the job's `REPORT-ONLY` log line, which has the form `[ExampleRetention] REPORT-ONLY: 1200 example_table rows eligible (window 120 d); set EXAMPLE_RETENTION_ENFORCE=true to delete`, and the Prometheus gauge `breeze_retention_rows_eligible{job_name="…"}`. Both show how many rows the first enforcing run would remove. The count stops at one run's capacity (`BATCH_SIZE × MAX_BATCHES`). The log line marks a capped count with `+`, and a larger backlog drains over several nights.
+- **Once enforcing:** the job reports `breeze_retention_rows_deleted_total`. While a backlog remains, it also sets `breeze_retention_backlog_incomplete` to `1`.
+
+Deleted rows cannot be recovered. Confirm you have a current database backup before you turn on any `_ENFORCE` variable.
 
 ### Metric history retention (`metric_rollups`)
 
@@ -521,6 +533,15 @@ paces WebSockets harder — if an instance stays at level 3 it needs more
 capacity, not more shedding. Invalid values fall back to the default with a
 startup warning; they never stop the API from booting.
 
+In `enforce` mode, a disconnecting agent's device is normally marked offline at
+once. At level 1 and above, and while 4 of those writes are already running at
+level 0 (a mass disconnect, such as every agent of a restarting instance
+dropping together), the offline detector marks the device instead, within 5
+minutes if it has not reconnected. A mass disconnect therefore no longer raises
+the level through its own offline writes.
+`breeze_admission_offline_deferred_total` counts these, by `reason` (`level` or
+`in_flight`).
+
 ### Database pool-health watchdog
 
 The API's Postgres driver (postgres.js) can leave a pooled connection permanently
@@ -669,6 +690,7 @@ Most per-endpoint rate limits (MFA, dashboard usage) are fixed in code and not c
 | `LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS` | `900` | Lockout duration once `LOGIN_ACCOUNT_LOCKOUT_MAX` is reached. Not mapped in the stock compose file — add it to the `api` service `environment:` block as well as `.env`. |
 | `AUTH_REFRESH_RATE_LIMIT` | `60` | Requests per window allowed on `POST /auth/refresh`, keyed per refresh-token family (roughly one browser session chain). |
 | `AUTH_REFRESH_RATE_WINDOW_SECONDS` | `60` | Window for `AUTH_REFRESH_RATE_LIMIT`. |
+| `USER_RATE_LIMIT_PER_MINUTE` | `600` | **v0.127.0+.** Requests per minute per signed-in user for dashboard traffic, so several technicians behind one office NAT do not share a budget. The per-IP ceiling for valid sessions is ten times this value. Anonymous and API-key traffic keeps the shared 600/min per-IP limit (300/min before v0.127.0), and agent WebSocket connections have their own per-IP bucket. Empty, invalid or non-positive values use the default. Mapped in both Compose files. |
 
 <Aside type="note">
   Earlier `.env.example` files carried `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `SESSION_MAX_AGE`, and `ENABLE_API_DOCS` entries. None of these were ever read by the API — they are gone from `.env.example` as of v0.99.0 and can be safely deleted from your `.env`.
@@ -735,6 +757,7 @@ Event-log rows per device are already limited by the event-log policy's hourly r
 | `BREEZE_LEGACY_ALERTING_SWEEP` | on | Set to `false` to skip converting and retiring leftover legacy alert rules and service/process watches at boot. The API still counts and logs what is left. See the [v0.118.0 upgrade notes](/deploy/upgrades/#v01180--legacy-alerting-retired-network-checks-become-monitors). |
 | `AGENT_ROLLBACK_DENYLISTED_VERSIONS` | unset | Comma-separated agent versions that an agent rollback may never target. Unset means no restriction. |
 | `AGENT_ROLLBACK_MIN_VERSION` | unset | Lowest agent version a rollback may target. An invalid version is ignored. Unset means no restriction. |
+| `MIGRATION_LOCK_TIMEOUT_MS` | `300000` (5 min) | **v0.128.0+.** How long a starting API waits for the migration lock while another process holds it. While it waits it logs which database session holds the lock; at the deadline it exits non-zero and the container restart policy tries again. Before v0.128.0 it waited forever. Raise it if a large migration routinely runs longer. A value that is not a positive whole number of milliseconds (for example `10m`) stops the API at boot. Mapped in both shipped Compose files from v0.128.0. |
 | `EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST` | unset | Comma-separated sending domains that may be adopted when they already exist at the email provider without the `_breeze-verify.<domain>` TXT record. Only needed for a migration. See [Custom Sender Addresses](/deploy/custom-sender-addresses/). |
 
 The four `OFFLINE_DETECTOR_REEVAL_*` variables were removed in v0.118.0. The job that read them was retired with legacy alerting, so you can delete them from `.env`.
@@ -766,7 +789,7 @@ The four `OFFLINE_DETECTOR_REEVAL_*` variables were removed in v0.118.0. The job
 | `PATCH_REPORT_STORAGE_PATH` | `./data/patch-reports` | Patch compliance report storage |
 | `PATCH_REPORT_RETENTION_DAYS` | `30` | Days a generated patch compliance report file is kept after it completes (minimum `1`). A daily job then removes the file and marks the report `expired`. A value that is not a plain integer falls back to the default. |
 | `PATCH_REPORT_ORPHAN_MIN_AGE_MS` | `3600000` (1 hour) | How old a `<uuid>.csv` file in `PATCH_REPORT_STORAGE_PATH` that no report owns (for example, left behind when an organization was erased and the file could not be removed at the time) must be before the daily job removes it. Never below 10 minutes. |
-| `TUNNEL_ORIGIN_TEMPLATE` | unset | Serves Network Proxy content from a dedicated origin per tunnel (host mode), in the form `https://{id}.<suffix>`. Unset keeps path mode. The suffix must be on a different registrable domain from every app, API, portal, WebAuthn and CORS origin; a malformed template, or one that shares a registrable domain with any of them, stops the API from booting. Each partner also opts in under **Settings → Partner → Remote Access**. See [Network Proxy Dedicated Origin](/deploy/network-proxy-tunnel-origin/). |
+| `TUNNEL_ORIGIN_TEMPLATE` | unset | Serves Network Proxy content from a dedicated origin per tunnel (host mode), in the form `https://{id}.<suffix>`. Unset keeps path mode. The suffix must be on a different registrable domain from every app, API, portal, WebAuthn and CORS origin; a malformed template, or one that shares a registrable domain with any of them, stops the API from booting. Each partner also opts in under **Settings → Partner → Remote Access**. Pass it to the `web` service too: the dashboard's `frame-src` allows the tunnel origin only when the web container has it. See [Network Proxy Dedicated Origin](/deploy/network-proxy-tunnel-origin/). |
 | `TUNNEL_FRAME_ANCESTOR` | origin of `PUBLIC_APP_URL` (else `DASHBOARD_URL`) | Exact `https://` origin allowed to frame tunnel content when `TUNNEL_ORIGIN_TEMPLATE` is set. Boot fails if it is unset and neither default exists. |
 | `TUNNEL_SITE_ADDRESS` | `http://tunnel-disabled.invalid` (matches nothing) | Caddy site address for the tunnel domain, for example `*.us.tunnel.example.net, *.*.us.tunnel.example.net` (use `http://` forms behind Cloudflare Tunnel). Must be on a different registrable domain from `CADDY_SITE_ADDRESS`. Never set it empty. |
 | `TUNNEL_HOST_SUFFIX` | `tunnel-disabled.invalid` (matches nothing) | Caddy: the bare tunnel suffix (`<region>.<tunnel-domain>`). Tunnel-domain hosts that miss the wildcards get `421` instead of being served as the app. Never set it empty. |
@@ -832,6 +855,10 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `FLOWS_ENABLED` | `true` | Turns on [Flows](/features/flows/) in the Tool Catalog (on by default since Jobs started moving to Flows; preview in v0.125.0 with default `false`). Set `false` to keep Flows off: every flow route answers 404 and Jobs stay fully writable, including creating new ones. The `FLOW_*` limits are listed on that page. |
 | `NETWORK_ISOLATION_ENABLED` | `false` | **v0.126.0+, not available yet.** Switch for [network isolation](/features/network-isolation/). The feature is groundwork in this release: the agent version gate is a placeholder and the Windows agent pieces ship switched off, so turning this on activates nothing usable. Leave it unset. Mapped in both Compose files. |
 | `NETWORK_ISOLATION_ENABLED_PARTNER_IDS` | empty | **v0.126.0+, not available yet.** Comma-separated partner IDs (UUIDs) allowed to start network isolation once the feature ships. Leave it unset. Mapped in both Compose files. |
+| `BREEZE_OEM_UPDATES_ENABLED` | `false` | **v0.127.0+, not available yet.** Master switch for [vendor updates](/features/vendor-updates/) (Dell, Surface, HP, Lenovo). Every lane stays closed in code even with the flag on, and the hardware has not been verified, so leave it unset. With it off, the Patches page hides the **Vendor updates** tab. Mapped in both Compose files. |
+| `BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST` | empty (all partners) | **v0.127.0+.** Comma-separated partner IDs. When set, only those partners get vendor updates. Mapped in both Compose files. |
+| `BREEZE_OEM_UPDATES_DISABLED_LANES` | empty | **v0.127.0+.** Kill switch: comma-separated makers (`dell`, `surface`, `hp`, `lenovo`) whose new runs stop after the API restarts. An unknown maker stops the API at boot. Mapped in both Compose files. |
+| `OEM_UPDATES_MAX_DISPATCH_PER_TICK` | `200` | **v0.127.0+.** Most vendor update runs, and alerts per rule, started in one 10-minute scheduler pass. Mapped in both Compose files. |
 | `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS` | `false` | Self-hosted only — refused when `IS_HOSTED=true`. Allows a tool source URL to resolve to a private, link-local, or loopback address. Leave off unless you specifically need a tool source on your internal network. |
 | `CALLER_VERIFICATION_ENABLED` | `true` | Caller verification (anti-vishing). On by default: the technician workflow, the SMS/email link tier and the public `/verify/<token>` page are available, and **protected Microsoft 365 actions (`m365_disable_user`, `m365_reset_password`) require a fresh, unused caller verification** before they can be created or released. Unset means `true` (the shipped Compose files also map an empty value to `true`). Must be the exact literal `true` or `false`; any other value (`1`, `yes`, `on`) is refused at boot. Setting it to `false` hides the workflow (every caller verification route, including the public page, answers `404`, and every web surface is hidden) **and refuses those protected M365 resets and disables** — it is not a bypass. Rejected-verification emails are best-effort: they stop after three consecutive failures, and a deployment with no email transport sends only the in-app notice. |
 | `CALLER_VERIFICATION_WORKSTATION_ENABLED` | `false` | The workstation verification tier (through the agent and Breeze Assist). Off by default and **not available in this release**: it is reported as unavailable, cannot be started, and a workstation grant is never accepted by the gate while this is off. Must be the exact literal `true` or `false`; other values are refused at boot. |
@@ -883,6 +910,7 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | `MCP_HEADER_MISMATCH_ALERT_THRESHOLD` | `50` | Stateless requests whose `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header is missing or disagrees with the request body are refused with `-32020`. Per API process and per 60-second window: when this many true header/body mismatches occur within one window, one Sentry warning is raised for that window. Read at startup. |
 | `OAUTH_CIMD_ENABLED` | `false` | Accept Client ID Metadata Documents: an OAuth client may use an https URL as its `client_id` and the authorization server fetches its metadata document. Works next to Dynamic Client Registration. Needs `MCP_OAUTH_ENABLED=true`. The API refuses to boot on a non-boolean value. See [MCP Server](/features/mcp-server/#client-id-metadata-documents-cimd). |
 | `OAUTH_CIMD_ALLOWED_HOSTS` | (empty) | Optional comma-separated hostnames, or `.suffix` entries meaning any subdomain of the suffix (for example `client.example.com,.example.org`), allowed to publish CIMD documents. Unset means any public https host. The API refuses to boot on a malformed entry (scheme, path, port, wildcard or empty item). A change takes effect when the API restarts. |
+| `OAUTH_REFRESH_ROTATION_GRACE_MS` | `10000` | Refresh-token rotation grace window in milliseconds. When the same OAuth client presents a refresh token it rotated less than this long ago, it receives the token that rotation issued instead of the grant being revoked as token reuse. Later presentations, and any presentation by a different client, are still reuse. Capped at `30000`; `0` turns the window off; any value other than a non-negative integer also turns it off and logs a warning. See [MCP Server](/features/mcp-server/#refresh-token-rotation). |
 | `MCP_UNATTENDED_TIER3_PRINCIPALS` | — | Operator opt-in, empty = nobody. By default every Tier 3 tool/action (and `collect_evidence`) is denied over MCP with `MCP_APPROVAL_REQUIRED` because MCP has no interactive approval step. Comma-separated `api_key:<api key id>` / `oauth_client_user:<client_id>/<user id>` / `partner_sp:<partner service principal id>` entries (OAuth binds client AND user; a shared client_id alone never qualifies; a `partner_sp` entry names the principal, so key rotation keeps it, and like an OAuth entry it applies in every org the principal reaches) lift only that deny, only for those principals (trusted unattended agents). `ai:execute`, `ai:execute_admin` (production), `MCP_EXECUTE_TOOL_ALLOWLIST` (production), RBAC, rate limits, the Tier 3 execution ledger and the audit log still apply, and `collect_evidence` is gated as Tier 3. Tier 4, tenant (BYO MCP) tools and the onboarding bootstrap tools stay approval-only. At startup the API logs a WARN listing the configured principals, and a separate WARN for any entry that is not well formed (it can never match). Each bypassed call's audit row carries `approvalBypass: "unattended_principal"` and `approvalBypassPrincipal` (the matched entry). |
 
 **v0.125.0+, all off or inert by default.** These are mapped in both shipped Compose files and described on the MCP Server page: `MCP_TIER3_INTENTS_ENABLED` (`false`), `MCP_INTENT_MAX_LIVE_PER_PRINCIPAL` (`20`), `MCP_INTENT_CREATES_PER_HOUR` (`60`), `MCP_INTENT_CREATES_PER_USER_PER_HOUR` (`60`), `MCP_APPROVAL_WAIT_MS` (`20000`) and `MCP_APPROVAL_WAITS_PER_PRINCIPAL` (`2`) under [Approvals over MCP](/features/mcp-server/#approvals-over-mcp); `MCP_APPS_ENABLED` (`false`); and `MCP_TASKS_ENABLED` (`false`, needs `MCP_STATELESS_ENABLED`), `MCP_TASK_PENDING_POLL_INTERVAL_MS` (`30000`), `MCP_TASK_POLL_INTERVAL_MS` (`5000`) and `MCP_TASK_TTL_GRACE_MS` (`3600000`). A non-boolean value for any of the `*_ENABLED` flags stops the API from booting.
@@ -1048,6 +1076,7 @@ These are read by the **`m365-graph-read-executor` sidecar**, not the API. They 
 | `M365_MAX_IN_FLIGHT` | `32` | Integer `1`–`1024` | Overall in-flight Graph request ceiling for the executor. **Must be greater than or equal to `M365_SYNC_MAX_IN_FLIGHT`**, or the executor refuses to start. |
 | `M365_SIGNIN_ACTIVITY_RPM` | `4` | Positive integer | Token bucket for sign-in-activity Graph requests. Microsoft's limit is **10 per minute per application across all tenants**, so divide this across every region and replica that shares one app registration. |
 | `M365_SIGNIN_PAGES_PER_CALL` | `5` | Positive integer | Pages fetched per sign-in call before returning an opaque continuation. |
+| `M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE` | `100` | Integer `10`–`1000` | **v0.128.0+.** Page size for the sign-in events sync. A smaller page makes each Graph request faster when Microsoft is slow to answer. Not in `.env.example` or the shipped Compose files. |
 | `M365_SYNC_MAX_ITEMS_USERS` | `25000` | Positive integer | Per-pull user cap. A tenant over the cap syncs as `partial` and never has vanished rows marked stale; raising the cap is the remedy. |
 | `M365_SYNC_MAX_ITEMS_DEVICES` | `25000` | Positive integer | Same, for Intune managed devices. |
 | `M365_SYNC_MAX_ITEMS_CA` | `500` | Positive integer | Same, for Conditional Access policies. |
@@ -1240,6 +1269,30 @@ The warranty worker looks each physical device's serial number up against its ma
 | Variable | Default | Description |
 |---|---|---|
 | `CLIENT_AI_ENTRA_CLIENT_ID` | — | Entra application (client) ID for the multi-tenant **Breeze AI for Office** add-in app registration. The entire `/api/v1/client-ai/admin/*` admin surface (tenant mapping, org policy, usage, templates) answers `404` ("Breeze AI for Office is not enabled") until this is set. Leave unset if you don't use the Office add-ins' AI features. |
+
+## Customer portal Microsoft sign-in (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORTAL_ENTRA_CLIENT_ID` | — | Application (client) ID of the multi-tenant **Breeze Portal** Entra app registration. Sign in with Microsoft for the customer portal stays off until both this and the secret are set. |
+| `PORTAL_ENTRA_CLIENT_SECRET` | — | Client secret for that app registration. |
+| `PORTAL_ENTRA_CALLBACK_BASE_URL` | origin of `PUBLIC_URL`, then `PUBLIC_APP_URL`, then `PUBLIC_API_URL` | Base URL used to build the redirect URIs. Set it only when the portal is served from a different host than the API; use the portal host. |
+
+To set up the app registration:
+
+1. In Microsoft Entra, register a new application with supported account types **Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant)** and platform **Web**.
+2. Add two redirect URIs:
+   - `https://<your-breeze-domain>/api/v1/portal/auth/oidc/entra/callback`
+   - `https://<your-breeze-domain>/api/v1/portal/auth/oidc/entra/consent-return`
+3. Under **Certificates & secrets**, add a client secret and put its value in `PORTAL_ENTRA_CLIENT_SECRET`.
+4. Under **API permissions**, add the delegated permissions `openid`, `profile` and `email`, plus `Directory.Read.All`. `Directory.Read.All` is used only during the tenant proof sign-in, so a customer's administrator can confirm their role. **Do not grant tenant-wide admin consent for `Directory.Read.All`**; customers consent to `openid profile email` only.
+5. Under **Token configuration**, add the ID-token optional claims `acct`, `email` and `xms_edov`.
+
+<Aside>
+  The portal and the API must be served from one site, as in the default Caddy layout. The sign-in binding cookie is `SameSite=Lax`, so a split-site deployment can't complete the sign-in. If your portal is served from a separate host, set `PORTAL_ENTRA_CALLBACK_BASE_URL` to the portal host.
+</Aside>
+
+See [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/) for how MSPs and customer administrators use it.
 
 ## Accounting (QuickBooks Online)
 

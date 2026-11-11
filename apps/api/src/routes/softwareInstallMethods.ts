@@ -10,7 +10,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { softwareCatalog, softwareInstallMethods } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -91,13 +91,17 @@ softwareInstallMethodRoutes.post(
     }
     const payload = c.req.valid('json');
     try {
-      const [method] = await db.insert(softwareInstallMethods).values({
-        catalogId: item.id,
-        platform: payload.platform,
-        kind: payload.kind,
-        packageId: payload.packageId,
-        enabled: payload.enabled ?? true,
-      }).returning();
+      // Savepoint around the insert only (#11203): the caught unique violation
+      // must not poison the request transaction. Audit stays outside it.
+      const [method] = await withDbTransaction(async () =>
+        db.insert(softwareInstallMethods).values({
+          catalogId: item.id,
+          platform: payload.platform,
+          kind: payload.kind,
+          packageId: payload.packageId,
+          enabled: payload.enabled ?? true,
+        }).returning()
+      );
       writeRouteAudit(c, {
         orgId: orgResult.orgId,
         action: 'software.install_method.create',
@@ -209,8 +213,12 @@ softwareInstallMethodRoutes.delete(
     if (!existing) return c.json({ error: 'Install method not found' }, 404);
 
     try {
-      await db.delete(softwareInstallMethods)
-        .where(and(eq(softwareInstallMethods.id, existing.id), eq(softwareInstallMethods.catalogId, item.id)));
+      // Savepoint so the caught FK violation cannot poison the request
+      // transaction and turn the 409 into a 500 at commit (#11203).
+      await withDbTransaction(async () =>
+        db.delete(softwareInstallMethods)
+          .where(and(eq(softwareInstallMethods.id, existing.id), eq(softwareInstallMethods.catalogId, item.id)))
+      );
     } catch (err: unknown) {
       // Same DrizzleQueryError unwrap as the create handler above (#3881).
       if (pgErrorCode(err) === '23503') {

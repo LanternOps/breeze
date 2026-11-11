@@ -1552,6 +1552,22 @@
     "riskLow": "Bajo",
     "riskMedium": "Medio",
     "riskHigh": "Alto",
-    "riskCritical": "Crítico"
+    "riskCritical": "Crítico",
+    "reviewInApprovals": "Revisar en Aprobaciones",
+    "status": {
+      "proposed": "Pendiente de revisión",
+      "scan_rejected": "Rechazado por el análisis de seguridad",
+      "review_failed": "Falló la revisión de IA",
+      "reviewed": "Revisado",
+      "approved": "Aprobado",
+      "rejected": "Rechazado",
+      "changes_requested": "Cambios solicitados",
+      "expired": "Vencido",
+      "superseded": "Reemplazado",
+      "executed": "Ejecutado",
+      "verified": "Verificado",
+      "verification_failed": "Falló la verificación",
+      "promoted": "Guardado en la biblioteca"
+    }
   }
 }

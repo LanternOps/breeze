@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
   calls: [] as string[],
   selectRows: [] as unknown[][],
   insertReturning: [] as Array<unknown[] | Error>,
-  updateReturning: [] as unknown[][],
+  updateReturning: [] as Array<unknown[] | Error>,
   executeRows: [] as unknown[][],
   inserts: [] as Array<{ values: Record<string, unknown>; conflict: 'nothing' | 'update'; opts: Record<string, unknown> }>,
   updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   rememberForGrant: vi.fn(),
   resolveGrantCeiling: vi.fn(),
   captureException: vi.fn(),
+  notifyNudgeResolved: vi.fn(),
 }));
 
 vi.mock('../../db', () => {
@@ -60,7 +61,13 @@ vi.mock('../../db', () => {
       where: (where: unknown) => {
         h.calls.push('update');
         h.updates.push({ set, where });
-        return Object.assign(Promise.resolve(undefined), { returning: async () => h.updateReturning.shift() ?? [] });
+        return Object.assign(Promise.resolve(undefined), {
+          returning: async () => {
+            const r = h.updateReturning.shift() ?? [];
+            if (r instanceof Error) throw r;
+            return r;
+          },
+        });
       },
     }),
   }));
@@ -84,7 +91,9 @@ vi.mock('./grantAuthority', async (importOriginal) => {
 });
 vi.mock('./memoryBroker', () => ({ rememberForGrant: h.rememberForGrant }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
+vi.mock('./nudgeResolved', () => ({ notifyNudgeResolved: h.notifyNudgeResolved }));
 
+import { getCurrentDbAccessContext, runOutsideDbContext } from '../../db';
 import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
 import {
   ConcernNotFoundError,
@@ -96,6 +105,7 @@ import {
   recordNudge,
   resolveConcern,
   resolveConcernBySignature,
+  resolveConcernsForAlert,
   upsertConcern,
 } from './concerns';
 
@@ -133,6 +143,7 @@ beforeEach(() => {
   h.rememberForGrant.mockReset().mockResolvedValue({ id: 'block' });
   h.resolveGrantCeiling.mockReset().mockResolvedValue(ceiling());
   h.captureException.mockReset();
+  h.notifyNudgeResolved.mockReset().mockResolvedValue(undefined);
 });
 
 describe('nextBackoff', () => {
@@ -268,6 +279,117 @@ describe('resolveConcern', () => {
     h.rememberForGrant.mockRejectedValueOnce(new Error('db down'));
     await expect(resolveConcern(C1, { grantId: G1 }, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
     expect(h.captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #11427: a concern Wisp nudged about that closes by any path (assessment,
+// alert, person, reaper) tells the person, once, that no action is needed —
+// when the resolution is committed.
+describe('resolveConcern → resolved-nudge follow-up (#11427)', () => {
+  it('a real transition hands the concern to the follow-up once, outside any DB context', async () => {
+    h.updateReturning.push([resolvedRow]);
+    await expect(resolveConcern(C1, { userId: 'u1' }, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
+    expect(h.notifyNudgeResolved).toHaveBeenCalledTimes(1);
+    expect(h.notifyNudgeResolved).toHaveBeenCalledWith(C1);
+    expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalled();
+  });
+
+  it("inside a caller's system transaction (resolution not committed) it is skipped with a trace; the resolve stands", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as never);
+    try {
+      h.updateReturning.push([resolvedRow]);
+      await expect(resolveConcern(C1, {}, 'superseded_no_effective_agent')).resolves.toEqual({ resolved: true, remembered: false });
+      expect(h.notifyNudgeResolved).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('no resolved-nudge follow-up'), { concernId: C1 });
+    } finally {
+      vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
+      warn.mockRestore();
+    }
+  });
+
+  it('runs on the grant path too (after the memory write)', async () => {
+    h.updateReturning.push([resolvedRow]);
+    h.selectRows.push([{ currentRevisionId: R1 }]);
+    await expect(resolveConcern(C1, { grantId: G1 }, 'customer replied')).resolves.toEqual({ resolved: true, remembered: true });
+    expect(h.notifyNudgeResolved).toHaveBeenCalledWith(C1);
+  });
+
+  it('a second resolve of the same concern (already closed) sends no follow-up', async () => {
+    h.updateReturning.push([resolvedRow]);
+    await resolveConcern(C1, {}, 'fixed');
+    h.updateReturning.push([]);
+    await expect(resolveConcern(C1, {}, 'fixed')).resolves.toEqual({ resolved: false, remembered: false });
+    expect(h.notifyNudgeResolved).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing follow-up never fails the resolve: it is captured and the result stands', async () => {
+    h.updateReturning.push([resolvedRow]);
+    h.notifyNudgeResolved.mockRejectedValueOnce(new Error('notify down'));
+    await expect(resolveConcern(C1, {}, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException.mock.calls[0]![2]).toMatchObject({ concernId: C1, op: 'wisp.concerns.resolve.nudgeResolved' });
+  });
+});
+
+describe('resolveConcernsForAlert (#11427)', () => {
+  const ALERT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const C2 = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  const render = (w: unknown) => new PgDialect().sqlToQuery(w as SQL);
+
+  it("resolves every live concern of the alert's org whose evidence names the alert (alertId or rebootAlertId), outcome alert_resolved", async () => {
+    h.selectRows.push([{ id: C1 }, { id: C2 }]);
+    h.updateReturning.push([resolvedRow], [{ ...resolvedRow, id: C2 }]);
+    await expect(resolveConcernsForAlert(ALERT, O1)).resolves.toEqual({ resolved: 2 });
+    expect(h.updates.map((u) => u.set)).toEqual([
+      expect.objectContaining({ status: 'resolved', outcome: 'alert_resolved', resolvedByUserId: null }),
+      expect.objectContaining({ status: 'resolved', outcome: 'alert_resolved', resolvedByUserId: null }),
+    ]);
+    // No grant: nothing is remembered as Wisp-authored memory.
+    expect(h.rememberForGrant).not.toHaveBeenCalled();
+    expect(h.notifyNudgeResolved).toHaveBeenCalledTimes(2);
+  });
+
+  it("is scoped to the alert's org and live statuses, and matches both evidence keys", async () => {
+    h.selectRows.push([]);
+    await resolveConcernsForAlert(ALERT, O1);
+    expect(h.calls).toEqual(['system', 'select']);
+    const { sql: text, params } = render(h.selectWheres[0]);
+    expect(text).toContain('"wisp_concerns"."org_id" = $');
+    expect(text).toContain('"wisp_concerns"."status" in');
+    expect(text).toContain(`->>'alertId'`);
+    expect(text).toContain(`->>'rebootAlertId'`);
+    expect(params).toEqual(expect.arrayContaining([O1, 'open', 'snoozed', ALERT]));
+    // Another org's id is never part of the query.
+    expect(params).not.toContain(O2);
+  });
+
+  it('nothing matching → no write; a concern closed meanwhile is not counted (idempotent)', async () => {
+    h.selectRows.push([]);
+    await expect(resolveConcernsForAlert(ALERT, O1)).resolves.toEqual({ resolved: 0 });
+    expect(h.updates).toHaveLength(0);
+
+    h.selectRows.push([{ id: C1 }]);
+    h.updateReturning.push([]);
+    await expect(resolveConcernsForAlert(ALERT, O1)).resolves.toEqual({ resolved: 0 });
+    expect(h.notifyNudgeResolved).not.toHaveBeenCalled();
+  });
+
+  it('one concern that fails to resolve is reported and never stops the rest', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.selectRows.push([{ id: C1 }, { id: C2 }]);
+    h.updateReturning.push(new Error('deadlock'), [{ ...resolvedRow, id: C2 }]);
+    await expect(resolveConcernsForAlert(ALERT, O1)).resolves.toEqual({ resolved: 1 });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException.mock.calls[0]![2]).toMatchObject({ concernId: C1, alertId: ALERT, op: 'wisp.concerns.resolveForAlert' });
+    expect(h.notifyNudgeResolved).toHaveBeenCalledWith(C2);
+    err.mockRestore();
+  });
+
+  it('a non-uuid alert or org id queries nothing', async () => {
+    await expect(resolveConcernsForAlert('not-a-uuid', O1)).resolves.toEqual({ resolved: 0 });
+    await expect(resolveConcernsForAlert(ALERT, 'nope')).resolves.toEqual({ resolved: 0 });
+    expect(h.calls).toEqual([]);
   });
 });
 

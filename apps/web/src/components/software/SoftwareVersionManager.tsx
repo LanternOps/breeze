@@ -186,12 +186,25 @@ interface SoftwareVersionManagerProps {
   /** #6958: a Breeze-pinned built-in (builtinPackageKey set). Versions are
    *  managed by Breeze: no add, edit or promote here (the API answers 403). */
   builtinReadOnly?: boolean;
+  /** Who owns the package (#11412). Partner-owned packages are written through
+   *  the same upload routes, but only by a full-partner admin. */
+  ownerScope?: "organization" | "partner";
+  /** The signed-in user's `canManagePartnerWide`. Only an explicit `false`
+   *  disables the form; `undefined` (not loaded yet) leaves it enabled and the
+   *  server still answers 403. */
+  canManagePartnerWide?: boolean;
+  /** Set on a built-in integration package: blank install args default to the
+   *  package's own template server-side. */
+  integrationProvider?: "huntress" | "sentinelone";
 }
 export default function SoftwareVersionManager({
   timezone,
   catalogId: propCatalogId,
   embedded = false,
   builtinReadOnly = false,
+  ownerScope = "organization",
+  canManagePartnerWide,
+  integrationProvider,
 }: SoftwareVersionManagerProps) {
   useTranslation("policies");
   const [versions, setVersions] = useState<VersionEntry[]>([]);
@@ -214,6 +227,8 @@ export default function SoftwareVersionManager({
   // Without S3 configured the upload routes 503, so gray the file picker out
   // up front instead of failing after the user chose a file.
   const { enabled: uploadsEnabled } = usePackageUploadsGate();
+  const partnerWriteBlocked =
+    ownerScope === "partner" && canManagePartnerWide === false;
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Owns the in-flight chunked upload so Cancel (and unmount) can actually stop
   // it. A ref, not state: it must survive re-renders without causing one, and
@@ -353,6 +368,13 @@ export default function SoftwareVersionManager({
     () => versions.find((item) => item.id === selectedVersionId) ?? versions[0],
     [versions, selectedVersionId],
   );
+  // Built-in integration packages (SentinelOne, Huntress) take their server
+  // default template when the field is blank; the generic msiexec prefill
+  // would fail server validation (e.g. missing {s1_site_token}).
+  const prefillSilentArgs = (
+    current: { silentInstallArgs: string; silentUninstallArgs: string },
+    nextFileType: SoftwareFileType | null,
+  ) => (integrationProvider ? {} : applySilentArgsPrefill(current, nextFileType));
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -361,7 +383,7 @@ export default function SoftwareVersionManager({
       file,
       fileName: file.name,
       // Auto-populate MSI silent args (retractable — see applySilentArgsPrefill).
-      ...applySilentArgsPrefill(prev, deriveSoftwareFileTypeFromUrl(file.name)),
+      ...prefillSilentArgs(prev, deriveSoftwareFileTypeFromUrl(file.name)),
       ...applyOsHint(prev, file.name),
     }));
   };
@@ -373,7 +395,7 @@ export default function SoftwareVersionManager({
     setFormState((prev) => ({
       ...prev,
       downloadUrl: value,
-      ...applySilentArgsPrefill(
+      ...prefillSilentArgs(
         prev,
         prev.fileType || deriveSoftwareFileTypeFromUrl(value),
       ),
@@ -387,7 +409,7 @@ export default function SoftwareVersionManager({
     setFormState((prev) => ({
       ...prev,
       fileType: value,
-      ...applySilentArgsPrefill(
+      ...prefillSilentArgs(
         prev,
         value || deriveSoftwareFileTypeFromUrl(prev.downloadUrl),
       ),
@@ -797,7 +819,9 @@ export default function SoftwareVersionManager({
       </div>
     );
   }
-  if (error && versions.length === 0) {
+  // LOAD failures only: a rejected create/save keeps the form (and the typed
+  // input) mounted and shows the error inline below.
+  if (error && versions.length === 0 && !isFormOpen) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
@@ -953,7 +977,7 @@ export default function SoftwareVersionManager({
               )}{" "}
               <code className="font-mono">
                 {'{{org.name}}'}
-              </code>
+              </code>{" "}
               {i18n.t(
                 "policies:software.softwareVersionManager.resolvePerOrganizationAtDeployTime",
               )}
@@ -1045,6 +1069,17 @@ export default function SoftwareVersionManager({
             </div>
           </div>
 
+          {partnerWriteBlocked && (
+            <p
+              className="mt-4 text-xs text-amber-600 dark:text-amber-500"
+              data-testid="partner-wide-requires-full-access"
+            >
+              {i18n.t(
+                "policies:software.softwareVersionManager.partnerWideRequiresFullAccess",
+              )}
+            </p>
+          )}
+
           {editingVersionId ? (
             /* The uploaded binary is immutable per version — replacing the
                installer means adding a new version, not editing this one. */
@@ -1068,7 +1103,7 @@ export default function SoftwareVersionManager({
               />
               <button
                 type="button"
-                disabled={!uploadsEnabled}
+                disabled={!uploadsEnabled || partnerWriteBlocked}
                 title={
                   uploadsEnabled
                     ? undefined
@@ -1123,6 +1158,16 @@ export default function SoftwareVersionManager({
                 tenantVariables={tenantVariables}
               />
             </div>
+            {integrationProvider && (
+              <p
+                className="mt-1 text-xs text-muted-foreground"
+                data-testid="builtin-args-default"
+              >
+                {i18n.t(
+                  "policies:software.softwareVersionManager.builtinArgsDefault",
+                )}
+              </p>
+            )}
           </div>
           )}
 
@@ -1313,6 +1358,7 @@ export default function SoftwareVersionManager({
               type="submit"
               disabled={
                 saving ||
+                partnerWriteBlocked ||
                 tokenErrors.length > 0 ||
                 !successExitCodesResult.ok ||
                 installSpecIssues.length > 0

@@ -235,6 +235,17 @@ describe('wisp_thread_posts constraints', () => {
     await insertPost(f, f.orgA1, { link: null });
   });
 
+  it('a first_look post inserts with no org (#10402)', async () => {
+    const f = await seed();
+    const row = await insertPost(f, null, { kind: 'first_look', dedupeKey: `wisp.first_look:${f.grantA}` });
+    expect(row.kind).toBe('first_look');
+    expect(row.orgId).toBeNull();
+    await expectSqlState(() => insertPost(f, null, { kind: 'first_look', dedupeKey: `wisp.first_look:${f.grantA}` }), '23505');
+    // Partner-level: an org token of the same partner never reads it.
+    expect(await visibleIds(partnerContext(f.partnerA, [f.orgA1, f.orgA2]))).toContain(row.id);
+    expect(await visibleIds(orgContext(f.orgA1, f.partnerA))).not.toContain(row.id);
+  });
+
   it('a specialist_result post inserts (W2 #11085); an unknown kind still fails 23514', async () => {
     const f = await seed();
     const row = await insertPost(f, f.orgA1, { kind: 'specialist_result', dedupeKey: `wisp.specialist_result:${randomUUID()}:completed` });

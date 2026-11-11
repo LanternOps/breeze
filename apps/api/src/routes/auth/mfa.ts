@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { jsonError } from '../../lib/jsonError';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users } from '../../db/schema';
@@ -69,8 +69,15 @@ import {
   MFA_CODE_INVALID,
   MFA_PROOF_INVALID,
   mintLoginRegisterGrant,
+  hasActiveTotpFactor,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
+import {
+  confirmTotpEnrollment,
+  enforceTotpEnrollmentPolicy,
+  serializeTotpSetupRecord,
+  totpSetupRoleFor,
+} from './totpFactor';
 
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
 import { preContextCheck } from '../../middleware/preContextChecks';
@@ -115,18 +122,17 @@ function authIssuanceAdmissionError(c: Context, error: unknown): Response | null
   return null;
 }
 
-async function enforceTotpEnrollmentPolicy(c: Context, auth: AuthContext): Promise<Response | null> {
-  const policy = await getEffectiveMfaPolicy({
-    scope: auth.scope,
-    userId: auth.user.id,
-    orgId: auth.orgId ?? null,
-    partnerId: auth.partnerId ?? null,
-  }, { failClosed: true, failClosedMethods: true });
-  if (!policy.allowedMethods.totp) {
-    return c.json({ error: 'Your organization does not allow authenticator-app MFA' }, 403);
-  }
-  return null;
-}
+/**
+ * #10650 Decision 1: thrown inside /mfa/disable's write when an active passkey
+ * exists under the row lock, so the epoch bump and replacement session roll
+ * back with it.
+ */
+class FactorRemovalRequiredError extends Error {}
+
+const FACTOR_REMOVAL_REQUIRED_BODY = {
+  error: 'Remove your passkeys first, or remove this sign-in method on its own.',
+  code: 'factor_removal_required',
+} as const;
 
 // Factor-MANAGEMENT body schemas (recovery-code rotation, MFA disable). A
 // stolen access token must not be sufficient to rotate or remove an MFA factor:
@@ -234,15 +240,24 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUp
   );
   if (stepUpError) return stepUpError;
 
-  // Check if MFA is already enabled
+  // An account with no factor stages its FIRST factor; a passkey-primary
+  // account with no authenticator app stages a BACKUP (#10650). Anything else
+  // already holds TOTP or SMS and cannot add a second TOTP here.
   const [user] = await db
-    .select({ mfaEnabled: users.mfaEnabled })
+    .select({ mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod, mfaSecret: users.mfaSecret })
     .from(users)
     .where(eq(users.id, auth.user.id))
     .limit(1);
 
-  if (user?.mfaEnabled) {
+  const role = user ? totpSetupRoleFor(user) : 'initial';
+  if (!role) {
     return c.json({ error: 'MFA is already enabled' }, 400);
+  }
+  // The record is bound to the session that staged it; without a session id
+  // there is nothing to bind it to.
+  const sid = auth.token?.sid;
+  if (!sid) {
+    return c.json({ error: 'MFA setup unavailable. Please try again later.' }, 503);
   }
 
   // Generate new secret
@@ -259,7 +274,16 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUp
     600, // 10 min expiry
     // Bind the password proof to its authenticated epochs. Cleanup is best-effort;
     // a delayed writer or failed DEL must not revive setup after an admin reset.
-    JSON.stringify({ secret, authEpoch: auth.token?.aep, mfaEpoch: auth.token?.mep })
+    // #10650: also bound to this session (`sid`) and to the role it was staged
+    // for, so another session cannot confirm it and a confirm whose account
+    // changed shape in between is refused.
+    serializeTotpSetupRecord({
+      secret,
+      authEpoch: auth.token?.aep as number,
+      mfaEpoch: auth.token?.mep as number,
+      sid,
+      role,
+    })
   );
 
   return c.json({
@@ -644,167 +668,22 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   }
 
   // Case 2: confirming MFA setup for an already authenticated user.
+  //
+  // I3: the `await authMiddleware(c, async () => {})` idiom tears the RLS
+  // context down when its empty `next` returns, so nothing below may use the
+  // bare pool; confirmTotpEnrollment reads under system context and writes only
+  // through the session-replacement primitives.
   await authMiddleware(c, async () => {});
   const auth = c.get('auth');
-  const setupData = await redis.get(`mfa:setup:${auth.user.id}`);
-  if (!setupData) {
-    return c.json({ error: 'No pending MFA setup' }, 400);
-  }
-
-  let secret: string;
-  try {
-    const parsed = JSON.parse(setupData);
-    secret = parsed.secret;
-    if (typeof secret !== 'string') throw new Error('Invalid setup data');
-    if (!Number.isSafeInteger(parsed.authEpoch) || !Number.isSafeInteger(parsed.mfaEpoch)
-      || parsed.authEpoch !== auth.token?.aep || parsed.mfaEpoch !== auth.token?.mep) {
-      return c.json({ error: 'MFA setup expired. Please start setup again.' }, 400);
-    }
-  } catch {
-    return c.json({ error: 'Invalid MFA setup data' }, 500);
-  }
-  const policyError = await enforceTotpEnrollmentPolicy(c, auth);
-  if (policyError) return policyError;
-  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
-  // requires a fresh existing-factor proof (no-op for initial enrollment).
-  //
-  // Two-phase, same idiom as passkeys register/options + register/verify:
-  //   validate (non-consuming) HERE, so a missing/bogus/stale grant 403s
-  //   before the consuming TOTP verifier burns the setup time-step (M10);
-  //   consume BELOW, only once the code itself has proven valid, so a
-  //   fat-fingered 6-digit code does not destroy the user's single-use grant
-  //   and force them back through /auth/mfa/step-up. (PR3 carry-forward.)
-  const stepUpGrantId = c.req.valid('json').stepUpGrantId;
-  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
-  if (stepUpError) return stepUpError;
-
-  // Consuming verifier: record the accepted time step so it cannot be replayed
-  // at login within its ~90s validity window (SR2-24). Fails closed if Redis is
-  // down (consumeMFAToken returns false).
-  const valid = await consumeMFAToken(secret, code, auth.user.id);
-
-  if (!valid) {
-    const orgId = await resolveUserAuditOrgId(auth.user.id);
-    writeAuthAudit(c, {
-      orgId: orgId ?? undefined,
-      action: 'auth.mfa.setup.failed',
-      result: 'failure',
-      reason: 'invalid_mfa_code',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { phase: 'setup_confirmation' }
-    });
-    return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
-  }
-
-  // Terminal factor write: NOW consume the grant (single-use). Re-checks the
-  // binding against the LIVE epochs, so a factor change or session switch
-  // between validate and consume invalidates it. A loss here (concurrent
-  // consume of the same grant) fails CLOSED with the same 403 — the factor is
-  // not written.
-  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
-  if (stepUpConsumeError) return stepUpConsumeError;
-
-  // #4018: terminal burn for the passwordless SSO road. This is the confirm
-  // half of the /mfa/setup flow whose gate validated the grant non-consumingly,
-  // so ONE SSO re-auth grant (#7369: of either purpose) installs exactly one factor.
-  // `passwordAlreadyProven` because this branch never had a password gate of
-  // its own — /mfa/setup holds it — and must stay unchanged for password
-  // accounts.
-  const enrollmentConsumeError = await resolveEnrollmentStepUp(
-    c,
-    auth,
-    { ssoReauthGrantId: c.req.valid('json').ssoReauthGrantId },
-    { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true, rejectionStatus: MFA_PROOF_REJECTION_STATUS }
-  );
-  if (enrollmentConsumeError) return enrollmentConsumeError;
-
-  // SR2-07/SR2-19: fold the factor write into the atomic epoch-bump +
-  // refresh-family-revoke transaction, then best-effort post-commit cleanup +
-  // remote-session teardown — enabling MFA is a security-relevant factor
-  // change and must invalidate any assurance minted before this factor
-  // existed.
-  //
-  // I3: unlike every other factor-change caller, this Case-2 path has NO
-  // ambient DB access context — the `await authMiddleware(c, async () => {})`
-  // idiom above tears the RLS context down when its empty `next` returns. So
-  // establish a real system context here; without it the invalidation
-  // transaction runs on the bare pool, forced RLS matches 0 rows, and
-  // advanceUserEpochs throws → hard 500 with the factor never enabled.
-  const recoveryCodes = generateRecoveryCodes();
-  const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
-  let capability: AuthIssuanceCapability;
-  try {
-    capability = await beginAuthIssuance(requestAuthBinding(c));
-  } catch (error) {
-    const response = authIssuanceAdmissionError(c, error);
-    if (!response) throw error;
-    return response;
-  }
-  let result;
-  try {
-    result = await completeInitialMfaEnrollment({
-      userId: auth.user.id,
-      identity: {
-        userId: auth.user.id,
-        email: auth.user.email,
-        roleId: auth.token?.roleId ?? null,
-        orgId: auth.orgId ?? null,
-        partnerId: auth.partnerId ?? null,
-        scope: auth.scope,
-        mfa: true,
-        mfaSrc: 'factor',
-        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
-      },
-      capability,
-      expectedAuthEpoch: auth.token?.aep as number,
-      expectedMfaEpoch: auth.token?.mep as number,
-      revokeReason: 'mfa-setup-confirm',
-      recoveryCodes,
-      recoveryCodeHashes,
-      persistFactor: async (tx, hashes) => {
-        const rows = await tx
-          .update(users)
-          .set({
-            mfaSecret: encryptMfaSecret(secret),
-            mfaEnabled: true,
-            mfaMethod: 'totp',
-            mfaRecoveryCodes: [...hashes],
-            updatedAt: new Date()
-          })
-          .where(eq(users.id, auth.user.id))
-          .returning({ id: users.id });
-        if (rows.length !== 1) throw new Error('MFA enrollment user disappeared');
-        return undefined;
-      },
-    });
-  } catch (error) {
-    await cancelAuthIssuance(capability).catch(() => undefined);
-    const response = authIssuanceAdmissionError(c, error);
-    if (!response) throw error;
-    return response;
-  }
-  await bindIssuedUserSession(result.issued);
-  installAuthorizedUserSessionCookies(c, result.issued);
-
-  const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
-  writeAuthAudit(c, {
-    orgId: setupOrgId ?? undefined,
-    action: 'auth.mfa.setup',
-    result: 'success',
-    userId: auth.user.id,
-    email: auth.user.email,
-    details: { method: 'totp', mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
-  });
-
-  await redis.del(`mfa:setup:${auth.user.id}`);
-
-  c.header('Cache-Control', 'no-store');
-  return c.json({
-    success: true,
-    message: 'MFA enabled successfully',
-    recoveryCodes: result.recoveryCodes,
-    tokens: toPublicTokens(result.issued),
+  const body = c.req.valid('json');
+  // `passwordAlreadyProven`: this branch never had a password gate of its own —
+  // /mfa/setup holds it. The SSO road (#4018) still validates and burns its
+  // grant here.
+  return confirmTotpEnrollment(c, auth, {
+    code,
+    ssoReauthGrantId: body.ssoReauthGrantId,
+    stepUpGrantId: body.stepUpGrantId,
+    passwordAlreadyProven: true,
   });
 });
 
@@ -859,6 +738,26 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
 
   if (!user?.mfaEnabled) {
     return c.json({ error: 'MFA is not enabled' }, 400);
+  }
+
+  // #10650 Decision 1: switching MFA off while passkeys remain would leave them
+  // listed on an account whose password login skips MFA. Refuse before any code
+  // is checked or grant spent; the user removes the passkeys, or, if an
+  // authenticator app is enrolled, removes it on its own (/mfa/totp/remove).
+  // An SMS-primary account with passkeys deletes the passkeys first
+  // (Decision 1A). Counted under system
+  // context, escaping the request context first, as passkey removal does.
+  const [passkeyState] = await runOutsideDbContext(() => withSystemDbAccessContext(async () =>
+    db
+      .select({
+        passkeyCount: sql<number>`(SELECT COUNT(*)::int FROM user_passkeys WHERE user_id = ${auth.user.id} AND disabled_at IS NULL)`,
+      })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1)
+  ));
+  if (Number(passkeyState?.passkeyCount ?? 0) > 0) {
+    return c.json(FACTOR_REMOVAL_REQUIRED_BODY, 409);
   }
 
   const currentMethod = user.mfaMethod || 'totp';
@@ -987,14 +886,28 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
             phoneVerified: false,
             updatedAt: new Date()
           })
-          .where(eq(users.id, auth.user.id))
+          // #10650 Decision 1: the pre-read above is advisory. Under the row
+          // lock the epoch bump took, a passkey registered concurrently must
+          // make this disable lose rather than leave it behind.
+          .where(and(
+            eq(users.id, auth.user.id),
+            sql`NOT EXISTS (SELECT 1 FROM user_passkeys WHERE user_id = ${auth.user.id} AND disabled_at IS NULL)`,
+          ))
           .returning({ id: users.id });
-        if (rows.length !== 1) throw new Error('MFA disable user disappeared');
+        if (rows.length !== 1) throw new FactorRemovalRequiredError();
         return undefined;
       },
     });
   } catch (error) {
     await cancelAuthIssuance(capability).catch(() => undefined);
+    if (error instanceof FactorRemovalRequiredError) {
+      // The SSO re-auth grant (passwordless road) was spent just before the
+      // write; say so, so the client drops it instead of re-presenting it.
+      return c.json({
+        ...FACTOR_REMOVAL_REQUIRED_BODY,
+        ...(reauth.proof.road === 'sso' ? { stepUpGrantConsumed: true } : {}),
+      }, 409);
+    }
     const response = authIssuanceAdmissionError(c, error);
     if (!response) throw error;
     return response;
@@ -1042,7 +955,9 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
   });
 });
 
-// MFA enable compatibility endpoint for frontend settings flow
+// MFA enable compatibility endpoint for frontend settings flow. Confirms the
+// secret staged by /mfa/setup — as the account's first factor, or (#10650) as
+// the backup beside a primary passkey; see confirmTotpEnrollment.
 mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithStepUpSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
@@ -1050,194 +965,25 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
 
   const auth = c.get('auth');
   const { code, currentPassword, ssoReauthGrantId, stepUpGrantId } = c.req.valid('json');
-
-  // Re-verify identity before flipping mfaEnabled=true on the user row:
-  // password, or (passwordless SSO accounts only, #4018) a fresh SSO re-auth
-  // grant. Same two-phase idiom as the SR2-20 grant below — VALIDATE here,
-  // CONSUME after the TOTP code proves out — so a mistyped code does not burn
-  // the user's single-use grant and force another IdP round-trip.
-  const enrollmentError = await resolveEnrollmentStepUp(
-    c,
-    auth,
-    { currentPassword, ssoReauthGrantId },
-    { keyPrefix: 'mfa:pwd', consume: false, rejectionStatus: MFA_PROOF_REJECTION_STATUS }
-  );
-  if (enrollmentError) return enrollmentError;
-
-  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
-  // requires a fresh existing-factor proof (no-op for initial enrollment).
-  //
-  // Two-phase, same idiom as passkeys register/options + register/verify:
-  //   validate (non-consuming) HERE, so a missing/bogus/stale grant 403s
-  //   before the consuming TOTP verifier burns the setup time-step;
-  //   consume BELOW, only once the code itself has proven valid, so a
-  //   fat-fingered 6-digit code does not destroy the user's single-use grant
-  //   and force them back through /auth/mfa/step-up. (PR3 carry-forward.)
-  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
-  if (stepUpError) return stepUpError;
-
-  const redis = getRedis();
-
-  if (!redis) {
-    const message = 'MFA enablement unavailable. Please try again later.';
-    return c.json({ error: message, message }, 503);
-  }
-
-  const setupData = await redis.get(`mfa:setup:${auth.user.id}`);
-  if (!setupData) {
-    const message = 'No pending MFA setup';
-    return c.json({ error: message, message }, 400);
-  }
-
-  let secret: string;
-  try {
-    const parsed = JSON.parse(setupData) as { secret?: unknown; authEpoch?: number; mfaEpoch?: number };
-    if (typeof parsed.secret !== 'string') {
-      throw new Error('Invalid setup data');
-    }
-    secret = parsed.secret;
-    if (!Number.isSafeInteger(parsed.authEpoch) || !Number.isSafeInteger(parsed.mfaEpoch)
-      || parsed.authEpoch !== auth.token?.aep || parsed.mfaEpoch !== auth.token?.mep) {
-      return c.json({ error: 'MFA setup expired. Please start setup again.' }, 400);
-    }
-  } catch {
-    const message = 'Invalid MFA setup data';
-    return c.json({ error: message, message }, 500);
-  }
-  const policyError = await enforceTotpEnrollmentPolicy(c, auth);
-  if (policyError) return policyError;
-
-  // Consuming verifier: record the accepted time step so it cannot be replayed
-  // at login within its ~90s validity window (SR2-24). Fails closed if Redis is
-  // down (consumeMFAToken returns false).
-  const valid = await consumeMFAToken(secret, code, auth.user.id);
-  if (!valid) {
-    const orgId = await resolveUserAuditOrgId(auth.user.id);
-    writeAuthAudit(c, {
-      orgId: orgId ?? undefined,
-      action: 'auth.mfa.setup.failed',
-      result: 'failure',
-      reason: 'invalid_mfa_code',
-      userId: auth.user.id,
-      email: auth.user.email,
-      details: { phase: 'setup_confirmation' }
-    });
-    return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
-  }
-
-  // Terminal factor write: NOW consume the grant (single-use). Re-checks the
-  // binding against the LIVE epochs, so a factor change or session switch
-  // between validate and consume invalidates it. A loss here (concurrent
-  // consume of the same grant) fails CLOSED with the same 403 — the factor is
-  // not written.
-  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
-  if (stepUpConsumeError) return stepUpConsumeError;
-
-  // #4018: same terminal burn for the passwordless SSO road — one
-  // SSO re-auth grant (#7369: of either purpose) installs exactly one factor. `passwordAlreadyProven`
-  // because the password road was already satisfied at the gate above.
-  //
-  // Deliberately omit `currentPassword` here (unlike the gate call above,
-  // which needs it to pick a road). resolveEnrollmentStepUp's road-1
-  // short-circuit (`if (input.currentPassword)`) runs BEFORE the
-  // `passwordAlreadyProven` check, so passing it again would re-run
-  // requireCurrentPasswordStepUp — a second argon2 verify and a second charge
-  // against the 5-per-5-minutes step-up rate limit for every successful
-  // enable, and a user on their 4th attempt would take a 429 here AFTER
-  // consumeMFAToken already burned their TOTP time-step above.
-  const enrollmentConsumeError = await resolveEnrollmentStepUp(
-    c,
-    auth,
-    { ssoReauthGrantId },
-    { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true, rejectionStatus: MFA_PROOF_REJECTION_STATUS }
-  );
-  if (enrollmentConsumeError) return enrollmentConsumeError;
-
-  const recoveryCodes = generateRecoveryCodes();
-  const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
-  let capability: AuthIssuanceCapability;
-  try {
-    capability = await beginAuthIssuance(requestAuthBinding(c));
-  } catch (error) {
-    const response = authIssuanceAdmissionError(c, error);
-    if (!response) throw error;
-    return response;
-  }
-  let result;
-  try {
-    result = await completeInitialMfaEnrollment({
-      userId: auth.user.id,
-      identity: {
-        userId: auth.user.id,
-        email: auth.user.email,
-        roleId: auth.token?.roleId ?? null,
-        orgId: auth.orgId ?? null,
-        partnerId: auth.partnerId ?? null,
-        scope: auth.scope,
-        mfa: true,
-        mfaSrc: 'factor',
-        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
-      },
-      capability,
-      expectedAuthEpoch: auth.token?.aep as number,
-      expectedMfaEpoch: auth.token?.mep as number,
-      revokeReason: 'mfa-enable',
-      recoveryCodes,
-      recoveryCodeHashes,
-      persistFactor: async (tx, hashes) => {
-        const rows = await tx
-          .update(users)
-          .set({
-            mfaSecret: encryptMfaSecret(secret),
-            mfaEnabled: true,
-            mfaMethod: 'totp',
-            mfaRecoveryCodes: [...hashes],
-            updatedAt: new Date()
-          })
-          .where(eq(users.id, auth.user.id))
-          .returning({ id: users.id });
-        if (rows.length !== 1) throw new Error('MFA enrollment user disappeared');
-        return undefined;
-      },
-    });
-  } catch (error) {
-    await cancelAuthIssuance(capability).catch(() => undefined);
-    const response = authIssuanceAdmissionError(c, error);
-    if (!response) throw error;
-    return response;
-  }
-  await bindIssuedUserSession(result.issued);
-  installAuthorizedUserSessionCookies(c, result.issued);
-
-  await redis.del(`mfa:setup:${auth.user.id}`);
-
-  const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
-  writeAuthAudit(c, {
-    orgId: setupOrgId ?? undefined,
-    action: 'auth.mfa.setup',
-    result: 'success',
-    userId: auth.user.id,
-    email: auth.user.email,
-    details: { method: 'totp', mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
-  });
-
-  c.header('Cache-Control', 'no-store');
-  return c.json({
-    success: true,
-    recoveryCodes: result.recoveryCodes,
-    message: 'MFA enabled successfully',
-    tokens: toPublicTokens(result.issued),
+  // Re-verifies the password (or, #4018, a fresh SSO grant) at its gate: this
+  // endpoint is a terminal write in its own right.
+  return confirmTotpEnrollment(c, auth, {
+    code,
+    currentPassword,
+    ssoReauthGrantId,
+    stepUpGrantId,
+    passwordAlreadyProven: false,
   });
 });
 
 // SR2-20: existing-factor step-up. Proves an EXISTING MFA factor (TOTP, SMS,
 // or passkey — a discriminated union on `method` so a passkey-only user is
 // never locked out) and mints a short-lived single-use grant scoped to the
-// requested operation (including add_factor, rotate_recovery_codes, and
-// register_approver_device), which the caller then presents as `stepUpGrantId`
-// to the corresponding protected mutation
-// (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`)
-// on an already-protected account. The passkey branch expects the client to
+// requested operation (including add_factor, rotate_recovery_codes,
+// remove_totp and register_approver_device), which the caller then presents as
+// `stepUpGrantId` to the corresponding protected mutation
+// (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`,
+// `/mfa/totp/remove`) on an already-protected account. The passkey branch expects the client to
 // have already called `POST /auth/mfa/step-up/options` (passkeys.ts) to get
 // a fresh WebAuthn challenge.
 /**
@@ -1349,6 +1095,22 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
     return rejectProof(c, 'Invalid credentials', MFA_PROOF_INVALID, MFA_PROOF_REJECTION_STATUS);
   }
 
+  // #10650: removing the authenticator app is proven by a passkey or by the
+  // authenticator itself — never by SMS (the schema already keeps recovery
+  // codes to delete_passkey). Same opaque rejection as a wrong proof.
+  if (body.operation === 'remove_totp' && body.method === 'sms') {
+    writeAuthAudit(c, {
+      orgId: auth.orgId ?? undefined,
+      action: 'auth.mfa.stepup.failed',
+      result: 'failure',
+      reason: 'method_not_allowed',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { method: body.method, operation: body.operation },
+    });
+    return rejectProof(c, 'Invalid credentials', MFA_PROOF_INVALID, MFA_PROOF_REJECTION_STATUS);
+  }
+
   if (body.operation === 'delete_passkey' && body.passkeyId) {
     const eligibility = await checkPasskeyRemovalEligibility(c, auth, body.passkeyId);
     if ('error' in eligibility) return eligibility.error;
@@ -1362,7 +1124,10 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
       .from(users)
       .where(eq(users.id, auth.user.id))
       .limit(1);
-    if (!u?.mfaEnabled || u.mfaMethod !== 'totp') {
+    // #10650: the shared predicate — a TOTP primary, or the backup beside a
+    // primary passkey (how a user who lost the passkey proves themselves to
+    // repair it). A stale secret beside SMS stays the uniform rejection.
+    if (!u || !hasActiveTotpFactor(u)) {
       return rejectProof(c, 'Invalid credentials', MFA_PROOF_INVALID, MFA_PROOF_REJECTION_STATUS);
     }
     const secret = u?.mfaSecret ? decryptMfaSecret(u.mfaSecret) : null;

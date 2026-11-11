@@ -135,6 +135,19 @@ describe('listThreadTimeline', () => {
     ]);
   });
 
+  it("#11145: a couldn't-look post carries its variant; no other post does, and the dedupe key never leaves the server", async () => {
+    h.rows.ai_messages = [];
+    h.rows.wisp_thread_posts = [
+      post(PO1, '2026-10-24T10:00:00.000Z', { kind: 'first_look', dedupeKey: `wisp.first_look_failed:${ceiling().grantId}` }),
+      post(PO2, '2026-10-24T09:00:00.000Z', { kind: 'first_look', dedupeKey: `wisp.first_look:${ceiling().grantId}` }),
+    ];
+    const page = await listThreadTimeline(ceiling(), T1);
+    expect(page.items[0]).toMatchObject({ id: PO1, kind: 'first_look', variant: 'couldnt_look' });
+    expect(page.items[1]).toMatchObject({ id: PO2, kind: 'first_look' });
+    expect(page.items[1]).not.toHaveProperty('variant');
+    expect(JSON.stringify(page.items)).not.toContain('dedupeKey');
+  });
+
   it('messages: SQL pins the thread, the partner, the ceiling orgs and the visible roles; an out-of-ceiling row is dropped by the belt', async () => {
     h.rows.ai_messages = [msg(M1, '2026-10-24T09:00:00.000Z'), msg(M2, '2026-10-24T09:01:00.000Z', { sessionId: S2, sessionOrgId: O2 })];
     const page = await listThreadTimeline(ceiling(), T1);

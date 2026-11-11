@@ -28,6 +28,8 @@ import { resolveBillingEmail } from '../invoicePdf';
 import { lockInvoiceForCollection } from './reservation';
 import { getAutopayMethod, markPaymentMethodUnusable } from './paymentMethods';
 import { hasLiveAutopayPartner, isAutopayEnabledForPartner } from './autopayGate';
+import { isAutopayChargingAllowed } from './chargingAllowed';
+import { isBillingEnabledForPartner } from '../billingEnabled';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
@@ -63,7 +65,11 @@ function admittedMethod(live: Stripe.PaymentMethod, method: Method, enrollment: 
   return !!card && hasSupportedCardEvidence(card) && card.funding === method.cardFunding;
 }
 
-async function prepareMethodAdmission(invoiceId: string) {
+/** The client's own on-session payment is not MSP-initiated money movement: it ignores the billing switch (BRZ-8807). */
+const chargingGate = (initiatedBy: CollectionAttemptInitiator) =>
+  initiatedBy === 'client_on_session' ? isAutopayEnabledForPartner : isAutopayChargingAllowed;
+
+async function prepareMethodAdmission(invoiceId: string, initiatedBy: CollectionAttemptInitiator) {
   const snapshot = await withSystemDbAccessContext(async () => {
     const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
     if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
@@ -72,7 +78,7 @@ async function prepareMethodAdmission(invoiceId: string) {
       .where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
     if (!enrollment || enrollment.status !== 'active' || enrollment.partnerId !== invoice.partnerId
       || enrollment.orgId !== invoice.orgId) return refuse('enrollment_inactive');
-    if (!await isAutopayEnabledForPartner(db, invoice.partnerId)) return defer('charging_disabled');
+    if (!await chargingGate(initiatedBy)(db, invoice.partnerId)) return defer('charging_disabled');
     const readiness = await getAutopayStripeReadiness(db, invoice.partnerId);
     if (!readiness.ready || readiness.stripeAccountId !== enrollment.stripeAccountId) return defer('stripe_unavailable');
     const method = await getAutopayMethod(db, invoice.orgId);
@@ -114,7 +120,7 @@ async function prepareMethodAdmission(invoiceId: string) {
 export async function reserveCollection(input: CollectionInput)
   : Promise<CollectionResult | { attempt: typeof invoiceCollectionAttempts.$inferSelect }> {
   assertNoHeldDbContextForStripe('reserveCollection');
-  const admission = await prepareMethodAdmission(input.invoiceId);
+  const admission = await prepareMethodAdmission(input.invoiceId, input.initiatedBy);
   if ('outcome' in admission) return admission;
   return withSystemDbAccessContext(async () => {
     const locked = await lockInvoiceForCollection(db, input.invoiceId);
@@ -132,7 +138,7 @@ export async function reserveCollection(input: CollectionInput)
       .where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1).for('update');
     if (!enrollment || enrollment.status !== 'active' || enrollment.orgId !== invoice.orgId
       || enrollment.partnerId !== invoice.partnerId) return refuse('enrollment_inactive');
-    if (!await isAutopayEnabledForPartner(db, invoice.partnerId)) return defer('charging_disabled');
+    if (!await chargingGate(input.initiatedBy)(db, invoice.partnerId)) return defer('charging_disabled');
     const readiness = await getAutopayStripeReadiness(db, invoice.partnerId);
     if (!readiness.ready || readiness.stripeAccountId !== enrollment.stripeAccountId) return defer('stripe_unavailable');
     const method = await getAutopayMethod(db, invoice.orgId);
@@ -592,6 +598,8 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
       || enrollment.stripeAccountId !== data.mapping?.stripeAccountId
       || (typeof pi.customer === 'string' ? pi.customer : pi.customer?.id) !== enrollment.stripeCustomerId
       || !await isAutopayEnabledForPartner(db, locked.invoice.partnerId)
+      // Billing switched off after reservation: no new money moves (BRZ-8807); the client's own on-session payment is exempt.
+      || (attempt.initiatedBy !== 'client_on_session' && !await isBillingEnabledForPartner(locked.invoice.partnerId))
       || !['sent', 'partially_paid', 'overdue'].includes(locked.invoice.status)
       || toMinorUnits(locked.invoice.balance, locked.invoice.currencyCode) < toMinorUnits(attempt.principalAmount, attempt.currency)
       || (attempt.scheduleId && (!schedule || schedule.id !== attempt.scheduleId || schedule.state !== 'collecting'
@@ -1188,7 +1196,9 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
               orgId: invoice.orgId, partnerId: invoice.partnerId, partnerOnly: true,
               event: 'autopay.needs_attention',
               dedupeKey: `autopay:charging_disabled:${invoice.partnerId}:${now.toISOString().slice(0,10)}`,
-              message: 'Automatic payments are disabled. Due invoices will be checked again on the next daily run.',
+              message: await isBillingEnabledForPartner(invoice.partnerId)
+                ? 'Automatic payments are disabled. Due invoices will be checked again on the next daily run.'
+                : 'Billing is turned off, so automatic payments are on hold. Due invoices will be checked again on the next daily run.',
             });
           },'autopay.collectionDeferred');
         }

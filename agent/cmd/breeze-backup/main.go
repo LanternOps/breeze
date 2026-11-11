@@ -38,17 +38,37 @@ import (
 
 var version = "dev"
 
-var rootCmd = &cobra.Command{
-	Use:   "breeze-backup",
-	Short: "Breeze RMM Backup Helper",
-	Long:  "Backup helper binary spawned by the Breeze agent for backup operations.",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if protocolInfo {
-			return printProtocolInfo(cmd.OutOrStdout())
-		}
-		runBackupHelper()
-		return nil
-	},
+// newRootCmd builds a fresh command tree. main uses one per process; tests
+// build their own so cobra flag state (--version, --protocol-info) cannot leak
+// between runs on a shared package-level command (#11122).
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "breeze-backup",
+		Short: "Breeze RMM Backup Helper",
+		Long:  "Backup helper binary spawned by the Breeze agent for backup operations.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if protocolInfo {
+				return printProtocolInfo(cmd.OutOrStdout())
+			}
+			runBackupHelper()
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
+	cmd.Flags().BoolVar(&protocolInfo, backupipc.ProtocolInfoFlag, false, "print the storage protocol versions this helper implements as JSON and exit")
+
+	// Stable, parseable `breeze-backup --version` output, mirroring the
+	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
+	// installedBackupVersion() execs this binary and parses the same prefix.
+	cmd.Version = version
+	cmd.SetVersionTemplate("Breeze Backup Version: {{.Version}}\n")
+
+	cmd.AddCommand(newBMRRecoverCommand())
+	cmd.AddCommand(newRecoveryConsoleCommand())
+	cmd.AddCommand(newRebuildCommand())
+	cmd.AddCommand(newSnapshotDirCommand())
+	return cmd
 }
 
 var socketPath string
@@ -170,19 +190,8 @@ func (c *activeCommandCanceller) cancelAll() bool {
 	return true
 }
 
-func init() {
-	rootCmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
-	rootCmd.Flags().BoolVar(&protocolInfo, backupipc.ProtocolInfoFlag, false, "print the storage protocol versions this helper implements as JSON and exit")
-
-	// Stable, parseable `breeze-backup --version` output, mirroring the
-	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
-	// installedBackupVersion() execs this binary and parses the same prefix.
-	rootCmd.Version = version
-	rootCmd.SetVersionTemplate("Breeze Backup Version: {{.Version}}\n")
-}
-
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }

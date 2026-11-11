@@ -432,3 +432,25 @@ test('regression: the real repo package.json and lockfile pass the audit', () =>
     'pnpm.overrides has drifted — run `node scripts/security/check-override-floors.mjs --report`',
   );
 });
+
+test('regression (#3690): the real overrides pass when their optional-peer-only targets leave the lockfile', () => {
+  // Deleting pnpm-lock.yaml and resolving from scratch (no node_modules) drops
+  // these packages: their only consumers are optional peers that the current
+  // lockfile still carries from earlier resolutions (@react-native-community/cli
+  // under @react-native/community-cli-plugin, joi under @hookform/resolvers,
+  // @react-email/render under resend). Removing them from the parsed resolutions
+  // reproduces that state. Without a waiver the pins would fail DEAD and push
+  // whoever regenerates into deleting them. `neoip` goes too: the ip override
+  // is an alias, and the DEAD check looks up the alias target.
+  const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'));
+  const lockText = readFileSync(resolve(REPO_ROOT, 'pnpm-lock.yaml'), 'utf8');
+  const resolutions = parseLockResolutions(lockText);
+  for (const name of ['ip', 'neoip', 'joi', 'js-cookie']) resolutions.delete(name);
+
+  const { violations } = auditOverrides({
+    overrides: pkg.pnpm.overrides,
+    lockOverrides: parseLockOverrides(lockText),
+    resolutions,
+  });
+  assert.deepEqual(violations.map((v) => `${v.kind} ${v.key}`), []);
+});

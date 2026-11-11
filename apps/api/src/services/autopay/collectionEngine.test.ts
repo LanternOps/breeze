@@ -10,7 +10,7 @@ const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   reads: [] as { table: unknown; where?: SQL; lock?: string }[],
   beforeRead: vi.fn(),
   balance: '100.00', reserved: '0.00', ordinal: 0,
-  method: vi.fn(), gate: vi.fn(), partnerLive: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
+  method: vi.fn(), gate: vi.fn(), billingOn: vi.fn(), partnerLive: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
   retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(), notCharged: vi.fn(),
   piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(), methodNotice: vi.fn(),
   capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), accountProvenance:vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
@@ -26,6 +26,7 @@ vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, noti
   noticeDedupeKey: (id: string, kind: string) => `${id}:${kind}:1` }));
 vi.mock('./notChargedNotice', async importOriginal => ({ ...await importOriginal<typeof import('./notChargedNotice')>(), noticeChargeNotMade: h.notCharged }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method, markPaymentMethodUnusable: h.unusable }));
+vi.mock('../billingEnabled', () => ({ isBillingEnabledForPartner: h.billingOn }));
 vi.mock('./autopayGate', () => ({ isAutopayEnabledForPartner: h.gate, hasLiveAutopayPartner: h.partnerLive }));
 vi.mock('./stripeCapabilities', () => ({ getAutopayStripeReadiness: h.readiness }));
 vi.mock('./billingPaymentSettings', () => ({ resolveBillingPaymentSettings: h.settings }));
@@ -135,7 +136,7 @@ beforeEach(() => {
   h.method.mockImplementation(async () => ({ ...method }));
   h.provenance.mockResolvedValue([invoice.orgId]);
   h.accountProvenance.mockResolvedValue({stripeAccountId:'acct_test',stripeCustomerId:'cus_test',methodType:'card'});
-  h.revocation.mockResolvedValue({ charged: 0, blocked: 0, stillPending: 0 }); h.gate.mockResolvedValue(true); h.partnerLive.mockResolvedValue(true);
+  h.revocation.mockResolvedValue({ charged: 0, blocked: 0, stillPending: 0 }); h.gate.mockResolvedValue(true); h.billingOn.mockResolvedValue(true); h.partnerLive.mockResolvedValue(true);
   h.readiness.mockResolvedValue({ ready: true, stripeAccountId: 'acct_test', accountCountry: 'US' });
   h.settings.mockResolvedValue({ cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' }, feeAttested: true,
     autopayCap: { value: { enabled: false } } });
@@ -178,6 +179,7 @@ it.each(['paid', 'void', 'draft'])('refuses a %s invoice', async status => {
 it.each([
   ['enrollment_inactive', () => update(orgAutopayEnrollments, { status: 'paused' })],
   ['charging_disabled', () => h.gate.mockResolvedValue(false)],
+  ['charging_disabled', () => h.billingOn.mockResolvedValue(false)],
   ['stripe_unavailable', () => h.readiness.mockResolvedValue({ ready: false })],
   ['method_not_usable', () => h.method.mockResolvedValue({ ...method, status: 'pending_verification' })],
   ['schedule_inactive', () => update(invoiceAutopaySchedules, { enrollmentGeneration: 2 })],
@@ -189,6 +191,17 @@ it.each([
   ['retry_not_due', () => update(invoiceAutopaySchedules, { state: 'retry_scheduled', nextAttemptAt: new Date('2026-10-21T00:00Z') })],
 ] as const)('isolates the %s guard', async (reason, change) => {
   change(); await expect(reserveCollection(input)).resolves.toMatchObject({ reason }); expect(attempts()).toEqual([]);
+});
+it.each(['scheduler', 'msp_charge_now'] as const)('defers %s collection while billing is off, before any Stripe call or attempt', async initiatedBy => {
+  h.billingOn.mockResolvedValue(false);
+  await expect(reserveCollection({ ...input, initiatedBy })).resolves.toMatchObject({ outcome: 'deferred', reason: 'charging_disabled' });
+  expect(attempts()).toEqual([]); expect(h.retrieve).not.toHaveBeenCalled(); expect(h.create).not.toHaveBeenCalled();
+});
+it('lets the client pay on-session while billing is off', async () => {
+  h.billingOn.mockResolvedValue(false); h.ordinal = 7; bankAuthority();
+  await expect(withClientPaymentAuthority(clientAuthority,()=>reserveCollection({ invoiceId: invoice.id, initiatedBy: 'client_on_session' }))).resolves.toMatchObject({
+    attempt: { scheduleId: null, attemptNo: 8 },
+  });
 });
 it('refuses an absent invoice', async () => {
   h.rows.set(invoices, []);
@@ -1018,10 +1031,11 @@ it('persists final failure attention inside the outcome transaction', async () =
   expect(h.staff).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({event:'payment.failed_final'}));
 });
 
-it.each(['gate','readiness','account','org-suspended','org-deleted','invoice-void','balance','method-pending','method-removed','schedule-state','elapsed-notice'])(
+it.each(['gate','billing-off','readiness','account','org-suspended','org-deleted','invoice-void','balance','method-pending','method-removed','schedule-state','elapsed-notice'])(
  'rechecks %s immediately before confirmation',async change=>{
  recovery();h.create.mockImplementationOnce(async()=>{
   if(change==='gate')h.gate.mockResolvedValue(false);
+  if(change==='billing-off')h.billingOn.mockResolvedValue(false);
   if(change==='readiness')h.readiness.mockResolvedValue({ready:false,stripeAccountId:'acct_test'});
   if(change==='account')h.readiness.mockResolvedValue({ready:true,stripeAccountId:'acct_other'});
   if(change==='org-suspended')update(organizations,{status:'suspended'});

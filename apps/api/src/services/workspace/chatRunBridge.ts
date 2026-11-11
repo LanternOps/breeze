@@ -32,7 +32,7 @@
 import Redis from 'ioredis';
 import { and, count, eq } from 'drizzle-orm';
 import type { AiRunResultArtifactRef } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import { aiAgentRuns } from '../../db/schema';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { wrapUntrustedData } from '../aiInputSanitizer';
@@ -117,14 +117,14 @@ async function readRunForDelivery(runId: string, orgId: string): Promise<RunDeli
         // never costs the person the result.
         let pendingIntentCount: number | undefined;
         try {
-          const [pending] = await db
+          const [pending] = await withDbTransaction(() => db
             .select({ n: count() })
             .from(actionIntents)
             .where(and(
               eq(actionIntents.requestingAgentRunId, runId),
               eq(actionIntents.orgId, orgId),
               eq(actionIntents.status, 'pending_approval'),
-            ));
+            )));
           pendingIntentCount = Number(pending?.n ?? 0);
         } catch (err) {
           console.error('[ChatRunBridge] pending intent count failed', { runId, err });

@@ -34,6 +34,18 @@ export function partnerScopeDenied(auth: AuthContext, what: string): string | nu
     : null;
 }
 
+/**
+ * Full-control W16 PR B (#6786): a site- or device-restricted session is refused
+ * outright. Stricter than `canMutateOrgWideGovernance`, which ignores `allowedSiteIds`
+ * on a partner-scoped session: the Fleet Design routes refuse any permission set
+ * carrying a site list, whatever its scope, and a release rebuilds that list live.
+ */
+export function restrictedSessionDenied(auth: AuthContext, what: string): string | null {
+  return Array.isArray(auth.allowedSiteIds) || auth.allowedDeviceIds !== undefined
+    ? jsonError(`${what} applies beyond one site or device; a site- or device-restricted session cannot use it`, 'ACCESS_DENIED')
+    : null;
+}
+
 /** First `limit` rows plus the counts the model needs to know it saw a slice. */
 export function capped<T>(rows: readonly T[], limit: number): { rows: T[]; showing: number; total: number; truncated: boolean } {
   const slice = rows.slice(0, limit);

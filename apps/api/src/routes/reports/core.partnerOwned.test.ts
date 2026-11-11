@@ -154,6 +154,7 @@ vi.mock('../../db', () => {
     },
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+    withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   };
 });
 

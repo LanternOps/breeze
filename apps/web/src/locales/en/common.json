@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Character-key shortcuts are on.",
       "charKeysOff": "Character-key shortcuts are off. Only Ctrl/Cmd shortcuts work.",
-      "charKeysManage": "Change in profile settings"
+      "charKeysManage": "Change in profile settings",
+      "queueTitle": "Tickets queue",
+      "queueHint": "On the Tickets page, outside a text field.",
+      "queue": {
+        "next": "Next ticket",
+        "previous": "Previous ticket",
+        "open": "Open the ticket (after a resolve: the offered next one)",
+        "toggleBulk": "Add to or remove from the bulk selection",
+        "assignMe": "Assign to me",
+        "reply": "Write a reply",
+        "internal": "Write an internal note",
+        "resolve": "Resolve with a note",
+        "back": "Back to the queue"
+      }
     }
   },
   "migrationBanner": {
@@ -2031,7 +2044,7 @@
         "paused": "Paused",
         "everyInterval": "every {{interval}}",
         "lastPolled": "Last polled {{time}}",
-        "configureMonitoring": "Configure Monitoring",
+        "configureMonitoring": "Configure monitoring",
         "pauseSnmpPolling": "Pause SNMP polling",
         "resumeSnmpPolling": "Resume SNMP polling",
         "disableSnmpMonitoring": "Disable SNMP monitoring",
@@ -2055,7 +2068,7 @@
         },
         "ip": "IP",
         "snmp": "SNMP",
-        "networkChecks": "Network Checks",
+        "networkChecks": "Network checks",
         "emptyAssets": "No assets found.",
         "lastSeen": "Last seen {{time}}",
         "activeRatio": "{{active}}/{{total}} active",
@@ -2865,6 +2878,9 @@
     "noneConfigured": "No {{source}} configured",
     "overriding": "Overrides {{source}}",
     "overridingWithValue": "Overrides {{source}} ({{value}})"
+  },
+  "inheritChoice": {
+    "inherit": "Inherit — {{value}} ({{source}})"
   },
   "fixMemoryPage": {
     "title": "Fix memory",

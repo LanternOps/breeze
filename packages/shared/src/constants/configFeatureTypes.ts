@@ -38,6 +38,9 @@ export const CONFIG_FEATURE_TYPES = [
   'security_agents',
   // #10100 — network-isolation containment tuning, inline-only, partner-wide
   'containment',
+  // #11065 — vendor (Dell, Surface, HP, Lenovo) update schedule and categories,
+  // inline-only, partner-wide
+  'oem_updates',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
@@ -154,6 +157,10 @@ export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protec
   // creates a silent-regression risk (unpatched/unbacked-up real fleets).
   patch: 'protective', // resolves to ring/schedule metadata only — no credential delivered; dropping it silently unpatches real hostname/tag-ringed fleets
   backup: 'protective', // resolves to a backup-profile/destination REFERENCE, not storage credentials — dropping it silently stops backups for real hostname/tag-keyed groups
+  // #11065 spec 4.1: like patch, a fixed vendor payload that carries no credential or admin-authored
+  // content, so it grants nothing. Gating would be unsafe: dropping a group override that turns BIOS off
+  // could expose a broader policy that turns it on. Arming is gated at write time (devices.execute + MFA).
+  oem_updates: 'protective',
 };
 
 export const EXECUTION_GATED_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = new Set(

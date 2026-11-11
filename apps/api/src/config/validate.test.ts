@@ -351,6 +351,28 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('Portal Entra app (portal registration W4)', () => {
+    const portalEntra = {
+      PORTAL_ENTRA_CLIENT_ID: '44444444-4444-4444-8444-444444444444',
+      PORTAL_ENTRA_CLIENT_SECRET: 'portal-entra-secret',
+    };
+
+    it('refuses boot when the app is configured with a malformed callback base', () => {
+      withEnv({ ...validEnv, ...portalEntra, PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.example.test/sub/path' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_ENTRA_CALLBACK_BASE_URL/);
+      });
+    });
+
+    it('boots with a valid base, and ignores the base entirely when the app is not configured', () => {
+      withEnv({ ...validEnv, ...portalEntra, PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.example.test' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, PORTAL_ENTRA_CLIENT_ID: '', PORTAL_ENTRA_CALLBACK_BASE_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   describe('M365 customer Graph-actions onboarding + reveal key', () => {
     it('refuses boot when actions onboarding is enabled without a complete descriptor', () => {
       withEnv({
@@ -3115,6 +3137,41 @@ describe('validateConfig', () => {
   it('rejects a non-boolean BREEZE_WISP_ENABLED', () => {
     withEnv({ ...validEnv, BREEZE_WISP_ENABLED: 'maybe' }, () => {
       expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED must be a boolean/);
+    });
+  });
+
+  // Vendor updates (#11065): the lab override opens closed firmware gates, so it
+  // never reaches production. A typo in the kill switch would silently not stop a lane.
+  it('refuses BREEZE_OEM_UPDATES_LAB_DEVICE_IDS under NODE_ENV=production', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: '11111111-1111-4111-8111-111111111111' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_LAB_DEVICE_IDS must not be set in production/);
+    });
+  });
+
+  it('allows BREEZE_OEM_UPDATES_LAB_DEVICE_IDS outside production', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: '11111111-1111-4111-8111-111111111111' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('rejects a non-boolean BREEZE_OEM_UPDATES_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_ENABLED must be a boolean/);
+    });
+  });
+
+  it('rejects a partner allowlist that parses to nothing: empty means every partner', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ' , ,' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST/);
+    });
+  });
+
+  it('rejects an unknown lane in BREEZE_OEM_UPDATES_DISABLED_LANES', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell,dels' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_DISABLED_LANES.*dels/);
+    });
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell, HP' }, () => {
+      expect(() => validateConfig()).not.toThrow();
     });
   });
 

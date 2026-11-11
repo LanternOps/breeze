@@ -13,7 +13,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'limit', 'as']) {
+  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'groupBy', 'limit', 'as']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   chain.then = (onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -31,6 +31,7 @@ vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
   },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -53,6 +54,12 @@ vi.mock('../../db/schema', () => ({
     errorCount: 'backup_jobs.error_count',
     errorLog: 'backup_jobs.error_log',
   },
+  backupStorageSessions: {
+    jobId: 'backup_storage_sessions.job_id',
+    scope: 'backup_storage_sessions.scope',
+    resumedAt: 'backup_storage_sessions.resumed_at',
+  },
+  IN_FLIGHT_BACKUP_JOB_STATUSES: ['pending', 'running'] as const,
   backupSnapshots: {
     orgId: 'backup_snapshots.org_id',
     deviceId: 'backup_snapshots.device_id',
@@ -88,6 +95,8 @@ vi.mock('drizzle-orm', () => ({
   lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   desc: (value: unknown) => ({ op: 'desc', value }),
+  isNotNull: (column: unknown) => ({ op: 'isNotNull', column }),
+  max: (column: unknown) => ({ op: 'max', column }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     op: 'sql',
     strings,
@@ -297,6 +306,57 @@ describe('backup dashboard routes', () => {
     expect(body.data.points.every((point: { totalBytes: number }) => point.totalBytes === 0)).toBe(true);
   });
 
+  it('adds dataAccounting to dashboard latestJobs', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({
+          id: 'job-inc', status: 'completed', backupMode: 'file',
+          totalSize: 1000, referencedSize: 900, baseSnapshotId: 'snap-base',
+        }),
+        makeRecentJob({
+          id: 'job-bad', status: 'failed', backupMode: 'file',
+          totalSize: 2000, transferredSize: 1500, baseSnapshotId: null, fullBackupReason: 'base_expired',
+        }),
+      ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.latestJobs[0].dataAccounting).toMatchObject({ uploadedBytes: 100, reusedBytes: 900, runKind: 'incremental' });
+    expect(data.latestJobs[1].dataAccounting).toMatchObject({
+      uploadedBytes: null,
+      processedBytes: 1500,
+      runKind: 'full',
+      fullRunReason: 'base_expired',
+    });
+  });
+
+  it('adds failureCategory to dashboard latestJobs', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({ id: 'job-bad', status: 'failed', errorLog: 'failed to upload file to s3: SlowDown' }),
+        makeRecentJob({ id: 'job-ok', status: 'completed', errorLog: null }),
+      ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.latestJobs[0].failureCategory).toBe('storage');
+    expect(data.latestJobs[1]).toHaveProperty('failureCategory', null);
+  });
+
   it('keeps unrestricted dashboard behavior unchanged', async () => {
     resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
       { deviceId: DEVICE_ID, configId: 'config-1', featureLinkId: 'feature-1' },
@@ -408,6 +468,39 @@ describe('backup dashboard routes', () => {
     expect(body.data.attentionItems).toHaveLength(1);
     expect(body.data.attentionItems[0].description).toMatch(/^backup stopped · Last unsuccessful /);
     expect(body.data.attentionItems[0].description).not.toContain('reparse');
+  });
+
+  // #11026: rows persisted before the server stopped storing it can still carry
+  // the note that a file list did not fit in the result. It is never the reason.
+  it('keeps the recoverable index drop note out of an attention item reason', async () => {
+    const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 2 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 2, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'failed',
+          errorLog: `backup stopped || bounded: ${indexNote}`,
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems[0].description).toMatch(/^backup stopped · Last unsuccessful /);
+    expect(body.data.attentionItems[0].description).not.toContain('snapshot file index');
   });
 
   // #3000: a device whose latest backup landed `partial` (a real snapshot, but
@@ -701,6 +794,64 @@ describe('backup dashboard routes', () => {
       expect(body.data.lastJob.vssMetadata).toBeNull();
     });
 
+    it('status lastJob carries dataAccounting', async () => {
+      mockStatusQueries(makeJob({
+        status: 'completed',
+        backupMode: 'system_image',
+        totalSize: 1000,
+        referencedSize: 0,
+        baseSnapshotId: 'snap-base',
+      }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.dataAccounting).toMatchObject({
+        uploadedBytes: 1000,
+        runKind: 'full',
+        fullRunReason: 'nothing_reused',
+      });
+    });
+
+    it('status lastJob and lastFailure carry failureCategory', async () => {
+      mockStatusQueries(makeJob({ status: 'failed', errorLog: 'backup helper exited unexpectedly' }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.failureCategory).toBe('agent');
+      expect(data.lastFailureCategory).toBe('agent');
+    });
+
+    it('classifies lastFailure from the failed run when a later run succeeded', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          makeJob({ id: 'job-ok', status: 'completed', createdAt: new Date('2026-04-02T00:00:00.000Z') }),
+          makeJob({ id: 'job-bad', status: 'failed', errorLog: 'Agent not connected' }),
+        ]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.failureCategory).toBeNull();
+      expect(data.lastFailureCategory).toBe('device_offline');
+    });
+
+    it('reports null failure categories for a device with no failed run', async () => {
+      mockStatusQueries(makeJob());
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const { data } = await res.json();
+      expect(data.lastJob).toHaveProperty('failureCategory', null);
+      expect(data).toHaveProperty('lastFailureCategory', null);
+    });
+
     it('includes errorLog — the ONLY channel a total VSS failure has', async () => {
       // When the shadow copy could not be created there is no vssMetadata at
       // all, so the degradation rides the warning into error_log. Without this
@@ -830,6 +981,120 @@ describe('backup dashboard routes', () => {
       expect(JSON.stringify(orderTerms[0])).toContain('backup_jobs.started_at');
       expect(orderTerms[1]).toEqual({ op: 'desc', value: 'backup_jobs.created_at' });
       expect(orderTerms[2]).toEqual({ op: 'desc', value: 'backup_jobs.id' });
+    });
+  });
+
+  describe('GET /status/:deviceId — activeJobs (#11027)', () => {
+    function inFlight(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'job-x',
+        status: 'running',
+        backupMode: 'file',
+        backupType: 'file',
+        createdAt: new Date('2026-11-05T10:00:00.000Z'),
+        startedAt: new Date('2026-11-05T10:01:00.000Z'),
+        completedAt: null,
+        totalSize: 400,
+        transferredSize: 100,
+        fileCount: 10,
+        totalFiles: 40,
+        lastProgressAt: new Date('2026-11-05T10:05:00.000Z'),
+        lastKeepaliveAt: new Date('2026-11-05T10:06:00.000Z'),
+        errorLog: null,
+        vssMetadata: null,
+        ...overrides,
+      };
+    }
+
+    it('status returns activeJobs running-first with resumedAt', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      const sessionsChain = chainMock([
+        { jobId: 'job-running', resumedAt: new Date('2026-11-05T10:02:00.000Z') },
+      ]);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          // Created later and never started: a second mode queued behind the
+          // running one on the same device (#11012's shape).
+          inFlight({
+            id: 'job-pending',
+            status: 'pending',
+            backupMode: 'system_image',
+            backupType: 'system_image',
+            createdAt: new Date('2026-11-05T10:00:00.000Z'),
+            startedAt: null,
+            totalSize: null,
+            transferredSize: null,
+            lastProgressAt: null,
+            lastKeepaliveAt: new Date('2026-11-05T10:06:00.000Z'),
+          }),
+          inFlight({ id: 'job-running', transferredSize: 0 }),
+          inFlight({ id: 'job-done', status: 'completed', completedAt: new Date('2026-11-04T10:00:00.000Z'), startedAt: new Date('2026-11-04T09:00:00.000Z') }),
+        ]))
+        .mockReturnValueOnce(sessionsChain);
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.activeJobs.map((j: { id: string }) => j.id)).toEqual(['job-running', 'job-pending']);
+      expect(data.activeJobs[0]).toMatchObject({
+        status: 'running',
+        backupMode: 'file',
+        totalSize: 400,
+        transferredSize: 0,
+        fileCount: 10,
+        totalFiles: 40,
+        startedAt: '2026-11-05T10:01:00.000Z',
+        lastKeepaliveAt: '2026-11-05T10:06:00.000Z',
+        resumedAt: '2026-11-05T10:02:00.000Z',
+      });
+      expect(data.activeJobs[1]).toMatchObject({ status: 'pending', startedAt: null, resumedAt: null });
+
+      // One grouped query, scoped to the active ids and to resumed write sessions.
+      const where = JSON.stringify(sessionsChain.where.mock.calls[0]);
+      expect(where).toContain('backup_storage_sessions.job_id');
+      expect(where).toContain('job-running');
+      expect(where).toContain('job-pending');
+      expect(where).not.toContain('job-done');
+      expect(where).toContain('snapshot_write');
+      expect(where).toContain('isNotNull');
+      expect(sessionsChain.groupBy).toHaveBeenCalledWith('backup_storage_sessions.job_id');
+    });
+
+    it('orders same-status jobs by startedAt then createdAt ascending', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          inFlight({ id: 'p-late', status: 'pending', startedAt: null, createdAt: new Date('2026-11-05T11:00:00.000Z') }),
+          inFlight({ id: 'p-early', status: 'pending', startedAt: null, createdAt: new Date('2026-11-05T09:00:00.000Z') }),
+          inFlight({ id: 'r-late', startedAt: new Date('2026-11-05T10:30:00.000Z') }),
+          inFlight({ id: 'r-early', startedAt: new Date('2026-11-05T10:10:00.000Z') }),
+        ]))
+        .mockReturnValueOnce(chainMock([]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const { data } = await res.json();
+      expect(data.activeJobs.map((j: { id: string }) => j.id)).toEqual(['r-early', 'r-late', 'p-early', 'p-late']);
+    });
+
+    it('status returns empty activeJobs and skips the session query when nothing is in flight', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          inFlight({ id: 'job-done', status: 'completed', completedAt: new Date('2026-11-04T10:00:00.000Z') }),
+        ]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.activeJobs).toEqual([]);
+      // device lookup + job history only — no backup_storage_sessions read.
+      expect(selectMock).toHaveBeenCalledTimes(2);
     });
   });
 

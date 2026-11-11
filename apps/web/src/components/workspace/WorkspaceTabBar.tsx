@@ -11,6 +11,9 @@ interface WorkspaceTabBarProps {
   onCloseTab: (tabId: string) => void;
   onRenameTab: (tabId: string, title: string) => void;
   onNewTab: () => void;
+  /** #10289: the "+" menu's "New plain chat", offered only while a Wisp grant is active. */
+  onNewPlainTab?: () => void;
+  wispGrantActive?: boolean;
   /** #9840 W4: the "+" menu's "Open a past conversation". */
   onOpenPast: () => void;
   /** #9427 W3: the tab menu's "Continue in side panel". */
@@ -24,6 +27,8 @@ export default function WorkspaceTabBar({
   onCloseTab,
   onRenameTab,
   onNewTab,
+  onNewPlainTab,
+  wispGrantActive = false,
   onOpenPast,
   onContinueInPanel,
 }: WorkspaceTabBarProps) {
@@ -31,6 +36,7 @@ export default function WorkspaceTabBar({
   // At the cap the "+" stays, so the reason is discoverable; its items are
   // disabled rather than evicting a tab (D5).
   const full = tabs.length >= MAX_TABS;
+  const offerPlain = wispGrantActive && !!onNewPlainTab;
   return (
     <div className="flex items-end gap-0.5 border-b border-gray-200 bg-white px-2 pt-2 dark:border-gray-700 dark:bg-gray-900">
       <div role="tablist" className="contents">
@@ -63,7 +69,24 @@ export default function WorkspaceTabBar({
             </>
           }
           items={[
-            { id: "new-chat", label: t("aiConversationMove.newChat"), onSelect: onNewTab, disabled: full, testId: "workspace-new-chat" },
+            {
+              id: "new-chat",
+              label: t("aiConversationMove.newChat"),
+              onSelect: onNewTab,
+              disabled: full,
+              ...(offerPlain ? { description: t("wisp.plainChat.wispDescription") } : {}),
+              testId: "workspace-new-chat",
+            },
+            ...(offerPlain
+              ? [{
+                  id: "new-plain-chat",
+                  label: t("wisp.plainChat.new"),
+                  description: t("wisp.plainChat.newDescription"),
+                  onSelect: onNewPlainTab,
+                  disabled: full,
+                  testId: "workspace-new-plain-chat",
+                }]
+              : []),
             {
               id: "open-past",
               label: t("aiConversationMove.openPastConversation"),

@@ -350,6 +350,9 @@ function buildProviderLeg(
       connectionIsActive: sql<boolean | null>`${backupProviderConnections.isActive}`.as('connectionIsActive'),
       connectionLastSyncAt: sql<Date | null>`${backupProviderConnections.lastSyncAt}`.as('connectionLastSyncAt'),
       connectionSyncIntervalMinutes: sql<number | null>`${backupProviderConnections.syncIntervalMinutes}`.as('connectionSyncIntervalMinutes'),
+      verifiedBootableAt: backupProviderDevices.verifiedBootableAt,
+      verifiedBootable: backupProviderDevices.verifiedBootable,
+      verifiedBootableFailedChecks: backupProviderDevices.verifiedBootableFailedChecks,
     })
     .from(backupProviderDevices)
     .innerJoin(organizations, eq(organizations.id, backupProviderDevices.orgId))

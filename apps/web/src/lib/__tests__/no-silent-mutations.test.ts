@@ -264,7 +264,16 @@ const TARGET_GLOBS = [
   'src/components/time/TimerWidget.tsx',
   'src/components/time/TimesheetPage.tsx',
   'src/components/tickets/TicketTimeBilling.tsx',
+  // The quick time entry moved out of TicketTimeBilling (shared with the
+  // composer's Log time); its POST /time-entries stays guarded.
+  'src/components/tickets/TicketQuickTimeEntry.tsx',
   'src/components/tickets/TicketPartsCard.tsx',
+  // Split out of TicketWorkbench by the focus-view redesign: move-org, the
+  // invoice action and the AI assist POSTs (triage apply/reject, draft
+  // send/discard, proposal post-note) all go through runAction.
+  'src/components/tickets/TicketMoveOrgDialog.tsx',
+  'src/components/tickets/TicketInvoiceAction.tsx',
+  'src/components/tickets/useTicketAiAssist.ts',
   'src/components/clientAi/OrgsTab.tsx',
   'src/components/clientAi/PolicyEditor.tsx',
   'src/components/clientAi/SessionsTab.tsx',
@@ -386,6 +395,8 @@ const TARGET_GLOBS = [
   // codes, so a silent failure would leave a tech reading out a dead code or
   // believing a session was torn down when it wasn't.
   'src/components/remote/QuickSupportPage.tsx',
+  // File browser "New folder" (#10975).
+  'src/components/remote/FileManager.tsx',
   // PSA connections: create/update/delete/status/test all mutate stored PSA
   // credentials or a live connection's state. They were rewritten with bare
   // fetchWithAuth + setError, which the page's error banner only renders when
@@ -607,6 +618,24 @@ const TARGET_GLOBS = [
   'src/components/aiOperator/RecipeCard.tsx',
   // The draft preview and the admission that starts a four-eyes offboarding.
   'src/components/aiOperator/StartRecipeForm.tsx',
+  // Portal registration W3 (#11380): the sign-in policy writes (org card, partner unit) and the
+  // access-request approve/deny/decide calls, plus the portal-user and contact surfaces they touch.
+  'src/components/settings/portalAccess/OrgSignInRegistrationCard.tsx',
+  'src/components/settings/partnerSettings/units/portalAccessPolicyUnit.ts',
+  'src/components/settings/partnerSettings/PartnerCustomerPortalTab.tsx',
+  'src/components/settings/portalAccess/PortalAccessRequestsList.tsx',
+  'src/components/settings/OrgPortalUsersEditor.tsx',
+  'src/components/settings/contactPortalAccess.ts',
+  // Portal registration W4 (#11381): the tenant proof actions (prove, proof link, remove) and the
+  // sso_only flow's Microsoft sign-in invites.
+  'src/components/settings/portalAccess/EntraTenantPanel.tsx',
+  'src/components/settings/portalAccess/ssoOnlyActions.ts',
+  'src/components/settings/portalAccess/StrandedAccountsList.tsx',
+  // Portal registration W5 (#11382): Organization › Domains — add, toggle, move, delete, and the
+  // DNS start / verification check / remove-verification calls.
+  'src/components/settings/orgDomains/OrgDomainsTab.tsx',
+  'src/components/settings/orgDomains/AddDomainForm.tsx',
+  'src/components/settings/orgDomains/DomainVerificationPanel.tsx',
 ];
 
 // Ratchet floor, not a total: adding an entry above never touches this line.

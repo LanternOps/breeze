@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { deviceCommands } from '../db/schema';
 
 /**
@@ -82,11 +82,11 @@ export async function commandCasPriorStatusTags(
   commandId: string,
 ): Promise<Record<string, string>> {
   try {
-    const [row] = await db
+    const [row] = await withDbTransactionIfHeld(() => db
       .select({ status: deviceCommands.status, result: deviceCommands.result })
       .from(deviceCommands)
       .where(eq(deviceCommands.id, commandId))
-      .limit(1);
+      .limit(1));
     return { prior_status: priorStatusTagValue(row) };
   } catch (err) {
     console.warn('[commandCas] prior-status lookup failed:', err);

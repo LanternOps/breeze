@@ -10,9 +10,14 @@
  * window re-checked, then the same `purgeRemovedDevice` the Permanently
  * Delete button uses (which refuses while the agent's uninstall is still
  * collectable) and a `purged` ledger row. The ledger outlives the device.
+ *
+ * #11153: a parked device whose agent never confirmed it was uninstalled is
+ * never forced. It is kept out of the candidate list by the shared gate
+ * (`devicePurgeUninstallGate.ts`) — the list is oldest-first and capped, so
+ * leaving it in would stall the sweep behind it — and counted instead.
  */
 import { Queue, Worker } from 'bullmq';
-import { and, asc, eq, isNotNull, lt } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, lt, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import { getBullMQConnection, getRedis } from '../services/redis';
@@ -23,6 +28,7 @@ import { invalidateOrgDeviceCount } from '../services/agentOrgRateLimit';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
 import { PARKED_PURGE_AFTER_EXPIRY_DAYS } from '../services/unassignedPool/limits';
 import { purgeExpiredParkedDevice } from '../services/unassignedPool/parkedExpiry';
+import { purgeUninstallAttemptableSql } from '../services/devicePurgeUninstallGate';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -36,6 +42,8 @@ export interface ParkedDevicePurgeSummary {
   purged: number;
   /** The agent's uninstall is still collectable; picked up on a later run. */
   skippedUninstallPending: number;
+  /** #11153 — past the window, but the agent never confirmed it was uninstalled. */
+  skippedUninstallNotConfirmed: number;
   /** Restored, assigned, re-dated or refused between the SELECT and the lock. */
   skippedOther: number;
   failed: number;
@@ -54,22 +62,42 @@ export async function runParkedDevicePurgeOnce(now: Date = new Date()): Promise<
   const startedAt = Date.now();
   const cutoff = new Date(now.getTime() - PARKED_PURGE_AFTER_EXPIRY_DAYS * 86_400_000);
 
+  const pastWindow = and(
+    eq(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
+    eq(devices.status, 'decommissioned'),
+    isNotNull(devices.decommissionedAt),
+    lt(devices.decommissionedAt, cutoff),
+  );
   const candidates = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
     .select({ deviceId: devices.id, partnerId: organizations.partnerId, decommissionedAt: devices.decommissionedAt })
     .from(devices)
     .innerJoin(organizations, eq(organizations.id, devices.orgId))
-    .where(and(
-      eq(organizations.type, UNASSIGNED_POOL_ORG_TYPE),
-      eq(devices.status, 'decommissioned'),
-      isNotNull(devices.decommissionedAt),
-      lt(devices.decommissionedAt, cutoff),
-    ))
+    .where(and(pastWindow, purgeUninstallAttemptableSql()))
     .orderBy(asc(devices.decommissionedAt))
     .limit(PARKED_DEVICE_PURGE_MAX_PER_RUN)));
 
   const summary: ParkedDevicePurgeSummary = {
-    candidates: candidates.length, purged: 0, skippedUninstallPending: 0, skippedOther: 0, failed: 0, durationMs: 0,
+    candidates: candidates.length,
+    purged: 0,
+    skippedUninstallPending: 0,
+    skippedUninstallNotConfirmed: 0,
+    skippedOther: 0,
+    failed: 0,
+    durationMs: 0,
   };
+
+  // Reporting only: a failed count is logged and the sweep still runs.
+  try {
+    const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .select({ unconfirmedCount: sql<number>`count(*)::int` })
+      .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
+      .where(and(pastWindow, sql`NOT (${purgeUninstallAttemptableSql()})`))));
+    summary.skippedUninstallNotConfirmed = Number(row?.unconfirmedCount ?? 0);
+  } catch (err) {
+    console.error(`${LOG_PREFIX} failed to count unconfirmed-uninstall parked devices:`, err);
+    captureException(err);
+  }
   const touchedOrgs = new Set<string>();
 
   for (const candidate of candidates) {
@@ -84,6 +112,7 @@ export async function runParkedDevicePurgeOnce(now: Date = new Date()): Promise<
     }
     if (!outcome.purged) {
       if (outcome.reason === 'UNINSTALL_PENDING') summary.skippedUninstallPending += 1;
+      else if (outcome.reason === 'UNINSTALL_NOT_CONFIRMED') summary.skippedUninstallNotConfirmed += 1;
       else summary.skippedOther += 1;
       continue;
     }
@@ -104,6 +133,9 @@ export async function runParkedDevicePurgeOnce(now: Date = new Date()): Promise<
           partnerId: candidate.partnerId,
           purgeAfterExpiryDays: PARKED_PURGE_AFTER_EXPIRY_DAYS,
           decommissionedAt: candidate.decommissionedAt?.toISOString() ?? null,
+          // #11153 — never forced; the state that allowed the purge.
+          force: false,
+          ...(outcome.uninstallState ? { uninstallState: outcome.uninstallState } : {}),
         },
         result: 'success',
         initiatedBy: 'schedule',
@@ -123,8 +155,8 @@ export async function runParkedDevicePurgeOnce(now: Date = new Date()): Promise<
   }
 
   summary.durationMs = Date.now() - startedAt;
-  if (summary.candidates > 0) {
-    console.log(`${LOG_PREFIX} purged ${summary.purged}/${summary.candidates} expired parked devices (uninstall-pending=${summary.skippedUninstallPending}, other=${summary.skippedOther}, failed=${summary.failed}) in ${summary.durationMs}ms`);
+  if (summary.candidates > 0 || summary.skippedUninstallNotConfirmed > 0) {
+    console.log(`${LOG_PREFIX} purged ${summary.purged}/${summary.candidates} expired parked devices (uninstall-pending=${summary.skippedUninstallPending}, uninstall-not-confirmed=${summary.skippedUninstallNotConfirmed}, other=${summary.skippedOther}, failed=${summary.failed}) in ${summary.durationMs}ms`);
   }
   return summary;
 }

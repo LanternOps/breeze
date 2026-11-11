@@ -86,13 +86,17 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
 
   1. Open **Integrations → UniFi**, choose **Self-hosted controller**, optionally give it an **account label** (for example, "Acme HQ controllers"), and click **Connect**. This just creates the self-hosted integration -- there is nothing to validate yet, since no controller has been registered.
 
-  2. In the **Controllers** card, register each controller: enter the **Controller URL**, pick the **Site this controller serves**, choose a **collector agent** (only agents at the selected site are offered), enter the controller's **local API key**, and click **Register controller**.
+  2. In the **Controllers** card, register each controller: enter the **Controller URL**, pick the **Collector agent location** (the site where the agent that polls this controller lives, often your own internal organization; you match the controller's sites to customers after you register it), choose a **collector agent** (only agents at the selected site are offered), enter the controller's **local API key**, and click **Register controller**.
 
   3. Once the assigned agent reaches the controller (within about a minute), the controller's own local sites are discovered automatically and appear in the **Site mapping** card. Map each discovered controller site to whichever **Breeze site** it corresponds to, then click **Save mappings**. Use **Refresh** to re-check for newly discovered sites.
 
   4. Devices and clients polled from each mapped site are reconciled into that site's discovered assets, using the same telemetry pipeline as agent-collected deep telemetry.
 
   </Steps>
+
+  <Aside type="caution" title="Unmapped sites appear for mapping but file no inventory">
+    A controller site that is not mapped to a Breeze site still appears in the **Site mapping** card, but Breeze stores none of its devices or clients. They are not filed under the collector agent's organization, because that agent's organization may be a different customer. Rows filed there by earlier versions are removed the next time the controller reports them. Map every controller site you want inventoried. If you later unmap a site, its devices and clients are removed the next time the controller reports them, and anything the controller no longer lists is marked stale instead. Discovered assets that were already created stay in place for you to review. A collector agent too old to report site ids files nothing for this controller until it is updated.
+  </Aside>
 
   <Aside type="note">
     Sites are mapped individually rather than per controller, so **one self-hosted controller can feed many UniFi sites across several different Breeze organizations**. In this mode the collector agent isn't optional -- it is the only way Breeze reaches your controller. If the assigned agent goes offline, polling for that controller stops until it reconnects or you point the registration at a different agent.
@@ -141,7 +145,9 @@ UniFi devices and connected clients flow into Breeze's discovered-assets view, m
 
 Once connected, the panel shows the account label, last sync time, and last sync status, with a status badge on the header (**Active**, **Sync error**, or **Reconnect required**). If the stored key becomes invalid, UniFi enters a **reauth required** state with a prominent banner and a **Reconnect** action; a failed sync surfaces the backend's error message rather than failing silently.
 
-On **cloud** connections, the **Sync history** table lists the most recent sync runs (newest first) with each run's trigger, status (`success`, `partial`, `failed`, or a transient `running`), hosts seen, and devices created / updated / unchanged / removed.
+On **cloud** connections, the **Sync history** table lists the most recent sync runs (newest first) with each run's trigger, status (`success`, `partial`, `failed`, or a transient `running`), hosts seen, devices created / updated / unchanged / removed, and **Unmapped sites**: how many UniFi sites the key can see that have no Breeze site mapped (from v0.128.0; shows **—** when the run did not count them, for example a failed run or one with no mappings yet).
+
+Every site mapping change and every controller registration or removal is written to the [audit log](/reference/audit-logs/). A controller is named by its host only; the API key is never recorded.
 
 <Aside type="caution">
   Connecting, mapping sites, registering controllers, and managing collectors are sensitive partner actions. Use **Disconnect** to remove the integration; on a reauth-required connection, disconnecting is also how you clear the stale key before reconnecting.

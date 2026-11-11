@@ -380,6 +380,7 @@
         "mrr_renewals": "MRR et renouvellements",
         "quote_win_rate": "Taux de transformation des devis",
         "client_profitability": "Rentabilité client",
+        "ticket_sla_performance": "Performance des SLA",
         "backup_status": "État des sauvegardes"
       },
       "threatDetection": {
@@ -409,6 +410,29 @@
         "noncompliant": "Non conformes",
         "notMeasured": "S. O.",
         "staleEnrolments": "Inscriptions obsolètes"
+      },
+      "slaPerformance": {
+        "priority": "Priorité",
+        "ticketsOpened": "Tickets ouverts",
+        "firstResponse": "Première réponse",
+        "resolution": "Résolution",
+        "target": "Cible",
+        "measured": "Mesurés",
+        "withinSla": "% dans le SLA",
+        "median": "Médiane",
+        "mean": "Moyenne",
+        "varies": "variable",
+        "breaches": "Manquements",
+        "breachCount_one": "{{count}} manquement",
+        "breachCount_other": "{{count}} manquements",
+        "unavailable": "Le résumé SLA de cette exécution est illisible et ne peut pas être affiché ici. Générez à nouveau le rapport.",
+        "notes": "Ce qui est mesuré",
+        "priorities": {
+          "urgent": "Urgente",
+          "high": "Élevée",
+          "normal": "Normale",
+          "low": "Faible"
+        }
       },
       "identityAccess": {
         "notMeasured": "N. D.",
@@ -486,6 +510,7 @@
         "mrr_renewals": "MRR et renouvellements",
         "quote_win_rate": "Taux de transformation des devis",
         "client_profitability": "Rentabilité client",
+        "ticket_sla_performance": "Performance des SLA",
         "backup_status": "État des sauvegardes"
       },
       "runsTable": {
@@ -1039,6 +1064,7 @@
         "mrr_renewals": "MRR et renouvellements",
         "quote_win_rate": "Taux de transformation des devis",
         "client_profitability": "Rentabilité client",
+        "ticket_sla_performance": "Performance des SLA",
         "backup_status": "État des sauvegardes"
       },
       "schedules": {
@@ -1119,6 +1145,10 @@
         "quote_win_rate": {
           "name": "Taux de transformation des devis",
           "description": "La part des devis envoyés qui ont été gagnés, comptée par opportunité, de sorte qu'un devis révisé puis renvoyé ne compte qu'une fois. Le taux principal ne couvre que les opportunités tranchées, avec le nombre de celles encore ouvertes à côté. Les valeurs sont hors taxes, un ensemble par devise, sans conversion."
+        },
+        "ticket_sla_performance": {
+          "name": "Performance des SLA",
+          "description": "Délais de réponse et de résolution par rapport au SLA, prêts pour le client, par priorité, avec les manquements."
         },
         "client_profitability": {
           "name": "Rentabilité client",
@@ -1274,6 +1304,12 @@
       "cancel": "Annuler",
       "createReport": "Créer le rapport"
     },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Inclure les objets des tickets",
+      "includeSubjectsHelp": "Les rapports remis sont visibles par tous les utilisateurs du portail de cette organisation. Laissez désactivé, sauf si chaque utilisateur peut voir l’objet de chaque ticket.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
     "clientProfitabilityOptions": {
       "groupBy": "Regrouper par",
       "groupByDefault": "Par défaut selon la portée du rapport",
@@ -1314,8 +1350,7 @@
         "series": "Un rapport par organisation",
         "seriesHint": "Une définition, avec une copie distincte pour chaque organisation couverte, envoyée aux contacts de cette organisation.",
         "combined": "Toutes les organisations combinées",
-        "combinedHint": "Un rapport combiné sur l’ensemble de vos organisations, pour votre propre équipe.",
-        "seriesUnavailableType": "Ce type de rapport ne peut pas être envoyé sous forme d’un rapport par organisation."
+        "combinedHint": "Un rapport combiné sur l’ensemble de vos organisations, pour votre propre équipe."
       },
       "schedule": {
         "label": "Fréquence d’envoi de la copie de chaque organisation",

@@ -50,3 +50,19 @@ describe('agentOffMessage', () => {
     expect(agentOffMessage('disabled', null)).toContain('The agent this specialist needs is switched off');
   });
 });
+
+// #10406: the on-demand assessment's refusal details.
+describe('assessment refusal details (#10406)', () => {
+  it('a chat-only refusal says who can start one, instead of listing the kind as an option', () => {
+    const msg = specialistRefusalMessage('unknown_kind', 'chat_only');
+    expect(msg).toMatch(/only a person in chat/i);
+    expect(msg).not.toMatch(/not a specialist kind/);
+  });
+
+  it('each launcher detail has its own sentence', () => {
+    const generic = specialistRefusalMessage('admission_skipped');
+    for (const detail of ['no_open_alerts', 'no_assessable_orgs', 'queue_unavailable']) {
+      expect(specialistRefusalMessage('admission_skipped', detail), detail).not.toBe(generic);
+    }
+  });
+});

@@ -165,20 +165,20 @@ describe('registry_operations reads are agent executions, not device reads (§2.
   });
 });
 
-describe('file_operations write/rename require scripts:execute, like file upload/move', () => {
+describe('file_operations write/rename/mkdir require scripts:execute, like file upload/move/mkdir', () => {
   // routes/systemTools/fileBrowser.ts requireScriptsExecute.
-  it.each(['write', 'rename'])('%s is denied to devices:execute without scripts:execute', (action) => {
+  it.each(['write', 'rename', 'mkdir'])('%s is denied to devices:execute without scripts:execute', (action) => {
     expect(allows(parseGrants(['devices:read', 'devices:execute']), 'file_operations', { action })).toBe(false);
   });
-  it.each(['write', 'rename'])('%s is allowed with devices:execute + scripts:execute', (action) => {
+  it.each(['write', 'rename', 'mkdir'])('%s is allowed with devices:execute + scripts:execute', (action) => {
     expect(allows(parseGrants(['devices:execute', 'scripts:execute']), 'file_operations', { action })).toBe(true);
   });
-  it.each(['write', 'rename'])('%s stays allowed to every seeded role that already held it', (action) => {
+  it.each(['write', 'rename', 'mkdir'])('%s stays allowed to every seeded role that already held it', (action) => {
     expect(allows(ORG_TECHNICIAN, 'file_operations', { action })).toBe(true);
     expect(allows(grantsOf('Partner Technician'), 'file_operations', { action })).toBe(true);
     expect(allows(grantsOf('Org Admin'), 'file_operations', { action })).toBe(true);
   });
-  it.each(['list', 'read', 'delete', 'mkdir'])('%s is not raised to scripts:execute', (action) => {
+  it.each(['list', 'read', 'delete'])('%s is not raised to scripts:execute', (action) => {
     expect(allows(parseGrants(['devices:execute']), 'file_operations', { action })).toBe(true);
   });
 });

@@ -23,7 +23,7 @@ import { generateRecoveryToken, hashRecoveryToken } from '../../services/recover
 import { bmrPublicRoutes } from '../../routes/backup/bmr';
 import { bmrRecoveryPublicRoutes } from '../../routes/backup/bmrRecoveries';
 import { hydrateSnapshotFileIndex } from '../../services/backupSnapshotFileIndex';
-import { fetchBackupObjectBytes } from '../../services/backupSnapshotStorage';
+import { MANIFEST_STREAM_MAX_BYTES, openBackupObjectStream } from '../../services/backupSnapshotStorage';
 import {
   generateRecoveryCode,
   hashRecoveryCode,
@@ -345,7 +345,7 @@ runDb('R6/R7/R9/R19: hydrates a three-generation chain, authorizes exact referen
   await retireSnapshotRow(fixture, fixture.g1); // g1 retired BEFORE hydration — provenance must come from the retirement record
 
   const outcome = await hydrateSnapshotFileIndex(fixture.g3.snapshotDbId, {
-    deps: { fetchManifestBytes: (args) => fetchBackupObjectBytes(args) },
+    deps: { openManifest: (args) => openBackupObjectStream({ ...args, maxBytes: MANIFEST_STREAM_MAX_BYTES }) },
   });
   expect(outcome).toMatchObject({ status: 'complete', externalCount: 2, entryCount: 3 });
 
@@ -387,7 +387,7 @@ runDb('R6/R7/R9/R19: hydrates a three-generation chain, authorizes exact referen
 
 runDb('exchange without capabilities on a referenced snapshot is refused before the code is consumed', async () => {
   const fixture = await seedThreeGenerationChain();
-  await hydrateSnapshotFileIndex(fixture.g3.snapshotDbId, { deps: { fetchManifestBytes: (args) => fetchBackupObjectBytes(args) } });
+  await hydrateSnapshotFileIndex(fixture.g3.snapshotDbId, { deps: { openManifest: (args) => openBackupObjectStream({ ...args, maxBytes: MANIFEST_STREAM_MAX_BYTES }) } });
 
   const code = generateRecoveryCode();
   const [rec] = await getTestDb().insert(bareMetalRecoveries).values({
@@ -413,7 +413,7 @@ runDb('exchange without capabilities on a referenced snapshot is refused before 
 runDb('org B\'s snapshot key is refused through org A\'s token, even for an authorized external reference shape', async () => {
   const fixtureA = await seedThreeGenerationChain();
   const fixtureB = await seedThreeGenerationChain();
-  await hydrateSnapshotFileIndex(fixtureA.g3.snapshotDbId, { deps: { fetchManifestBytes: (args) => fetchBackupObjectBytes(args) } });
+  await hydrateSnapshotFileIndex(fixtureA.g3.snapshotDbId, { deps: { openManifest: (args) => openBackupObjectStream({ ...args, maxBytes: MANIFEST_STREAM_MAX_BYTES }) } });
 
   const token = generateRecoveryToken();
   await getTestDb().insert(recoveryTokens).values({
@@ -464,7 +464,7 @@ runDb('R19: a 100,000-entry manifest with an empty agent-reported index hydrates
   // without those files existing.
 
   const start = Date.now();
-  const outcome = await hydrateSnapshotFileIndex(g4!.id, { deps: { fetchManifestBytes: (args) => fetchBackupObjectBytes(args) } });
+  const outcome = await hydrateSnapshotFileIndex(g4!.id, { deps: { openManifest: (args) => openBackupObjectStream({ ...args, maxBytes: MANIFEST_STREAM_MAX_BYTES }) } });
   const elapsedMs = Date.now() - start;
 
   expect(outcome).toMatchObject({ status: 'complete', entryCount: 100_000, externalCount: 100_000 });
