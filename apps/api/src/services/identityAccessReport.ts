@@ -50,6 +50,7 @@
  * both portal-user allowlists so a customer can never generate one on demand.
  */
 import { and, asc, desc, eq, gte, lte, max, min } from 'drizzle-orm';
+import { managedDeviceConditions } from './managedDeviceScope';
 import type {
   AdminSigninRow,
   CaPolicyRow,
@@ -529,7 +530,7 @@ export async function generateIdentityAccessReport(
   const deviceRows = await db
     .select({ activeVpns: devices.activeVpns })
     .from(devices)
-    .where(eq(devices.orgId, orgId));
+    .where(and(...managedDeviceConditions(orgId)));
   const vpnReportingDevices = deviceRows.filter((row) => Array.isArray(row.activeVpns));
   const remoteAccessMeasured = vpnReportingDevices.length > 0;
   const byProvider: Record<string, number> = {};
