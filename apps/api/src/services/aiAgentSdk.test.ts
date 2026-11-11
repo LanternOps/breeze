@@ -171,6 +171,9 @@ vi.mock('./aiAgentSdkTools', () => ({
     s1_threat_action: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
+  // #11395: read by the preflight only under a constrained chat tool profile.
+  listChatSurfaceToolNames: () => ['query_devices', 'get_device_details', 'set_device_context', 'execute_command'],
+  chatToolDomain: () => undefined,
 }));
 
 const mockGetUserPushTokens = vi.fn();
@@ -593,6 +596,49 @@ describe('runPreFlightChecks', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  // --- #11395: the constrained chat prompt (Decision 7) ---
+
+  describe('tool profile prompt (#11395)', () => {
+    const minimal = { toolProfile: 'minimal', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' } as const;
+
+    it('an identity exposure keeps the stored prompt and never rebuilds it (byte-identical full path)', async () => {
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(result.ok && result.systemPrompt).toBe('existing system prompt');
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    });
+
+    it('a constrained chat exposure always rebuilds, even with a stored prompt and no page', async () => {
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { toolProfileFacts: minimal }));
+      mockBuildSystemPrompt.mockResolvedValue('compact prompt');
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(result.ok && result.systemPrompt).toBe('compact prompt');
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)!;
+      expect(args[0]).toBe(auth);
+      expect(args[4]).toMatchObject({ promptMode: 'constrained', names: ['query_devices', 'get_device_details', 'set_device_context'] });
+    });
+
+    it('switching back to full restores the stored prompt (full → minimal → full)', async () => {
+      const first = await runPreFlightChecks('session-1', 'hello', auth);
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { toolProfileFacts: minimal }));
+      mockBuildSystemPrompt.mockResolvedValue('compact prompt');
+      const second = await runPreFlightChecks('session-1', 'hello', auth);
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('platform'));
+      const third = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(first.ok && second.ok && third.ok).toBe(true);
+      if (first.ok && second.ok && third.ok) {
+        expect(second.systemPrompt).not.toBe(first.systemPrompt);
+        expect(third.systemPrompt).toBe(first.systemPrompt);
+      }
+    });
+
+    it('a non-chat session (script builder) never gets the chat compact prompt', async () => {
+      mockGetSession.mockResolvedValue(makeSession({ type: 'script_builder' }));
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { surface: 'script_builder', toolProfileFacts: minimal }));
+      await runPreFlightChecks('session-1', 'hello', auth);
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    });
   });
 
   // --- Rate limits use session's org, not auth's org ---

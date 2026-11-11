@@ -116,6 +116,8 @@ import { isPlatformLlmConfigured } from './llm/llmAvailability';
 import type { AiModelChoice, AiSurface } from '@breeze/shared';
 import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
+import { effectiveToolProfile, type ToolExposure } from './aiModels/toolExposure';
+import { chatPromptExposure } from './aiModels/sessionToolExposure';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
 import { PRE_HOOK_THREW_REFUSAL, recordPreHookRefusal, refusalLedgerText, takeLedgeredRefusal } from './aiChatRefusalLedger';
@@ -552,6 +554,19 @@ type PreFlightSession = NonNullable<Awaited<ReturnType<typeof getSession>>>;
  * Callers that pass `inDb` must NOT also wrap this call in a context, or the
  * rate limit runs inside it again.
  */
+/**
+ * #11395: the chat tool exposure the prompt is built from, or undefined for
+ * the identity exposure (and every non-chat surface), which keeps today's
+ * prompt paths untouched. Same resolver and inputs as the chat registration
+ * (`chatPromptExposure`).
+ */
+async function chatPromptExposureFor(model: ResolvedModel): Promise<ToolExposure | undefined> {
+  if (model.surface !== 'chat' || !model.toolProfileFacts) return undefined;
+  if (effectiveToolProfile(model.toolProfileFacts, 'chat').profile === 'full') return undefined;
+  const { listChatSurfaceToolNames, chatToolDomain } = await import('./aiAgentSdkTools');
+  return chatPromptExposure(model.toolProfileFacts, { registryNames: listChatSurfaceToolNames, domainOf: chatToolDomain });
+}
+
 export async function runPreFlightChecks(
   sessionId: string,
   content: string,
@@ -705,6 +720,11 @@ async function runPreFlightAdmission(
     }
   }
   let systemPrompt: string;
+  // #11395 (Decision 7): a constrained chat tool exposure gets the compact
+  // prompt, rebuilt every turn (the stored prompt is the `full` one and is
+  // never overwritten), so switching back to `full` restores it byte-for-byte.
+  // Identity exposures take the unchanged paths below.
+  const promptExposure = await chatPromptExposureFor(model);
   // Resolve the live ceiling BEFORE rebuilding a Wisp prompt: record context
   // and the thread seed must both respect the grant, not just the caller.
   if (sanitizedPageContext && session.wispGrantId) {
@@ -715,7 +735,9 @@ async function runPreFlightAdmission(
       if (!grant) throw new WispSessionUnavailableError('grant_unpinned', sessionId);
       const ceiling = await resolveGrantCeiling(grant.grantId, grant.revisionId);
       systemPrompt = [
-        await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling),
+        promptExposure
+          ? await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling, promptExposure)
+          : await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling),
         await wispSeedForSession(grant, auth, ceiling, sanitizedPageContext, model.logicalModel),
       ].filter(Boolean).join('\n');
     } catch (err) {
@@ -725,6 +747,8 @@ async function runPreFlightAdmission(
       }
       throw err;
     }
+  } else if (promptExposure) {
+    systemPrompt = await buildSystemPrompt(auth, sanitizedPageContext, undefined, undefined, promptExposure);
   } else {
     systemPrompt = sanitizedPageContext
       ? await buildSystemPrompt(auth, sanitizedPageContext)

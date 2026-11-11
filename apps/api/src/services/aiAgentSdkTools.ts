@@ -16,7 +16,8 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolDomain, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
+import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolDomain, getToolSearchHint, compactDescriptionFor, type ExecuteToolOptions } from './aiTools';
+import type { ToolExposure } from './aiModels/toolExposure';
 import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
@@ -1738,6 +1739,8 @@ interface BreezeToolTemplate {
   readonly declarations: readonly SdkTool[];
   /** attachRegistryMeta results, memoized per declaration (lazily: a hint-less tool only throws when registered). */
   readonly withRegistryMeta: WeakMap<SdkTool, SdkTool>;
+  /** #11395: the same, with the compact description a constrained exposure advertises. */
+  readonly withCompactMeta: WeakMap<SdkTool, SdkTool>;
 }
 
 let cachedBreezeToolTemplate: BreezeToolTemplate | undefined;
@@ -1748,17 +1751,30 @@ function breezeToolTemplate(): BreezeToolTemplate {
   // A throw here (an unregistered description) caches nothing: the next call
   // retries, exactly as the per-session build used to fail every time.
   const declarations = Object.freeze(declareBreezeSdkToolTemplates());
-  cachedBreezeToolTemplate = { gateKey, declarations, withRegistryMeta: new WeakMap() };
+  cachedBreezeToolTemplate = { gateKey, declarations, withRegistryMeta: new WeakMap(), withCompactMeta: new WeakMap() };
   return cachedBreezeToolTemplate;
 }
 
-function templateWithRegistryMeta(template: BreezeToolTemplate, declaration: SdkTool): SdkTool {
-  let withMeta = template.withRegistryMeta.get(declaration);
+function templateWithRegistryMeta(template: BreezeToolTemplate, declaration: SdkTool, compact = false): SdkTool {
+  const memo = compact ? template.withCompactMeta : template.withRegistryMeta;
+  let withMeta = memo.get(declaration);
   if (!withMeta) {
-    withMeta = attachRegistryMeta(declaration);
-    template.withRegistryMeta.set(declaration, withMeta);
+    // #11395: a constrained exposure advertises the compact description.
+    withMeta = attachRegistryMeta(compact
+      ? { ...declaration, description: compactDescriptionFor(declaration.name, declaration.description) }
+      : declaration);
+    memo.set(declaration, withMeta);
   }
   return withMeta;
+}
+
+/** The live session's tool exposure, or undefined (no session, or a throwing accessor). */
+function sessionToolExposureOf(getActiveSession?: () => ActiveSession | undefined): ToolExposure | undefined {
+  try {
+    return getActiveSession?.()?.toolExposure;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -6157,12 +6173,24 @@ export function createBreezeMcpServer(
      * the per-call gate is unchanged.
      */
     admitTool?: (toolName: string) => boolean;
+    /**
+     * #11395: the tool exposure to advertise under, for a caller with no
+     * session (headless agent runs). Otherwise the session's own
+     * `toolExposure` is read, so a factory-built server (the helper's) honours
+     * it too. A constrained exposure registers only `exposure.names` (on top
+     * of `onlyTools`) with compact descriptions; the identity exposure, or
+     * none, changes nothing.
+     */
+    toolExposure?: Pick<ToolExposure, 'names' | 'promptMode'>;
   },
 ) {
   // #11004: the static declarations come from the per-process template; only
   // the tools actually registered below get this session's handlers.
   const template = breezeToolTemplate();
   const tools = template.declarations;
+  const exposure = options?.toolExposure ?? sessionToolExposureOf(getActiveSession);
+  const exposedNames = exposure?.names ? new Set(exposure.names) : null;
+  const compactDescriptions = exposure?.promptMode === 'constrained';
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are
   // never in the TOOL_TIERS registry — that's what keeps them off the chat/MCP
@@ -6219,8 +6247,8 @@ export function createBreezeMcpServer(
   const admit = options?.admitTool ?? (() => true);
   const boundTools = bindBreezeSdkTools(
     registeredTools
-      .filter((t) => admit(t.name))
-      .map((declaration) => templateWithRegistryMeta(template, declaration)),
+      .filter((t) => admit(t.name) && (exposedNames === null || exposedNames.has(t.name)))
+      .map((declaration) => templateWithRegistryMeta(template, declaration, compactDescriptions)),
     { getAuth, getActiveSession, onPreToolUse, onPostToolUse },
   );
 

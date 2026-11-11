@@ -109,6 +109,29 @@ export function finalizeSessionToolExposure(input: SessionToolExposureInput): Se
 }
 
 /**
+ * The chat exposure the system prompt is built from (#11395). Chat's prompt
+ * is composed in the turn preflight, before `getOrCreate` finalizes the
+ * session's exposure, so it re-runs the SAME resolver over the SAME inputs
+ * the chat query registers (the Breeze registry, no caller list): names and
+ * prompt mode match the registration by construction
+ * (sessionToolExposure.test.ts pins it). Extras are left out: tenant and
+ * flow tools never appear in the prompt's tool lines, and the approval mode
+ * only ever adds `propose_action_plan`, which chat always keeps.
+ */
+export function chatPromptExposure(
+  facts: ToolProfileFacts,
+  deps: { registryNames: () => readonly string[]; domainOf: (name: string) => AiToolDomain | undefined },
+): ToolExposure {
+  const constrained = effectiveToolProfile(facts, 'chat').profile !== 'full';
+  return resolveToolExposure({
+    surface: 'chat',
+    facts,
+    surfaceBaseSet: constrained ? deps.registryNames() : [],
+    extraTools: [],
+  }, { domainOf: deps.domainOf });
+}
+
+/**
  * `allowedTools` under an exposure: the caller's list narrowed to the kept
  * names, or (Breeze registry, no caller list) the kept names as
  * `mcp__breeze__` names. The identity exposure returns the caller's list.

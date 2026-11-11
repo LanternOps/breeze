@@ -957,6 +957,14 @@ describe('executeAgentRun', () => {
     expect(prepareSdkChild).toHaveBeenCalledWith(gateway, {
       key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1', compactSchemas: true,
     });
+    // The server advertises under the same exposure (compact descriptions; no session to read it from).
+    expect(createBreezeMcpServer.mock.calls[0]?.[5]).toMatchObject({ toolExposure: { profile: 'minimal', promptMode: 'constrained' } });
+  });
+
+  it('#11395: the identity tool profile passes no toolExposure to the server (registration unchanged)', async () => {
+    seedRows();
+    await executeAgentRun(RUN_ID);
+    expect(createBreezeMcpServer.mock.calls[0]?.[5] ?? {}).not.toHaveProperty('toolExposure');
   });
 
   it('a non-catalog run takes its child env from prepareSdkChild for the resolved connection', async () => {

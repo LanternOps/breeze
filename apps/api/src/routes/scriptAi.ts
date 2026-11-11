@@ -322,8 +322,9 @@ scriptAiRoutes.post(
           model,
           SCRIPT_BUILDER_MCP_TOOL_NAMES,
           // Custom MCP server factory for script builder tools
-          (getAuth, onPreToolUse, onPostToolUse) => ({
-            server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
+          // #11395: getSession lets the server advertise only the session's tool exposure.
+          (getAuth, onPreToolUse, onPostToolUse, getSession) => ({
+            server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse, getSession),
             name: SCRIPT_BUILDER_MCP_SERVER_NAME,
           }),
           { budgetReservationId, ledgerUserId: auth.user.id },

@@ -183,6 +183,7 @@ import { m365ToolSearchHints, m365ToolTiers, registerM365Tools } from './aiTools
 import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
 import { authorizeTopologyAiToolCall, isTopologyAiToolName, topologyAiAliasScope, type TopologyToolBinding } from './topology/aiToolGate';
 import { applyHelperDeviceScope } from './helperToolFilter';
+import { COMPACT_TOOL_DESCRIPTIONS } from './aiToolCompactDescriptions';
 // ============================================
 // Shared Types
 // ============================================
@@ -694,6 +695,25 @@ export function getToolSearchHint(toolName: string): string | undefined {
   return aiTools.get(toolName)?.searchHint
     ?? m365ToolSearchHints[toolName]
     ?? googleToolSearchHints[toolName];
+}
+
+/** #11395: the curated compact description a constrained tool profile advertises, if the tool has one. */
+export function getToolCompactDescription(toolName: string): string | undefined {
+  return Object.hasOwn(COMPACT_TOOL_DESCRIPTIONS, toolName) ? COMPACT_TOOL_DESCRIPTIONS[toolName] : undefined;
+}
+
+const COMPACT_DESCRIPTION_MAX = 200;
+
+/**
+ * #11395: what a constrained profile advertises for a tool: its curated
+ * compact description, else the first sentence of `fullDescription`, capped
+ * at 200 chars (a `custom` pick or a script-builder tool has no curated one).
+ */
+export function compactDescriptionFor(toolName: string, fullDescription: string): string {
+  const curated = getToolCompactDescription(toolName);
+  if (curated) return curated;
+  const first = fullDescription.match(/^.*?[.!?](?=\s|$)/s)?.[0] ?? fullDescription;
+  return first.length <= COMPACT_DESCRIPTION_MAX ? first : `${first.slice(0, COMPACT_DESCRIPTION_MAX - 1).trimEnd()}…`;
 }
 
 export function getToolAlwaysLoad(toolName: string): boolean {

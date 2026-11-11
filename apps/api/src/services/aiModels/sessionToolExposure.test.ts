@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ToolProfileUnderpoweredError, allowedToolsUnder, bareToolName, finalizeSessionToolExposure, type SessionToolExposureInput } from './sessionToolExposure';
+import { ToolProfileUnderpoweredError, allowedToolsUnder, bareToolName, chatPromptExposure, finalizeSessionToolExposure, type SessionToolExposureInput } from './sessionToolExposure';
 import { FULL_IDENTITY_FINGERPRINT, type ToolProfileFacts } from './toolExposure';
 import { CHAT_MINIMAL_TOOLS } from './toolProfiles';
 
@@ -99,5 +99,27 @@ describe('finalizeSessionToolExposure (#11394)', () => {
       expect(err).toMatchObject({ code: 'tool_profile_underpowered', status: 409, surface: 'script_builder', missing: ['execute_script_on_device'] });
       expect((err as Error).message).toContain('script builder');
     }
+  });
+});
+
+describe('chatPromptExposure (#11395)', () => {
+  const deps = { registryNames: () => REGISTRY, domainOf: () => undefined };
+  it.each([
+    ['identity', facts()],
+    ['minimal', facts({ toolProfile: 'minimal' })],
+    ['standard', facts({ toolProfile: 'standard' })],
+    ['custom', facts({ toolProfile: 'custom', toolAllowlist: { domains: ['integrations'], tools: ['query_devices', 'execute_command'] } })],
+    ['minimal on anthropic', facts({ toolProfile: 'minimal', transport: 'anthropic' })],
+  ] as const)('%s: names, promptMode and fingerprint-free fields equal the session exposure the query registers', (_label, f) => {
+    const prompt = chatPromptExposure(f, deps);
+    const session = finalizeSessionToolExposure(input({ facts: f })).exposure;
+    expect(prompt.names).toEqual(session.names);
+    expect(prompt.promptMode).toBe(session.promptMode);
+    expect(prompt.profile).toBe(session.profile);
+  });
+
+  it('never reads the registry for the identity exposure', () => {
+    const registryNames = () => { throw new Error('read'); };
+    expect(chatPromptExposure(facts(), { registryNames, domainOf: () => undefined }).names).toBeNull();
   });
 });

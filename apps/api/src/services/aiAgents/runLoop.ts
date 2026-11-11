@@ -2802,7 +2802,13 @@ async function driveSdkLoop(
       ),
       ...flowSdkTools.filter((t) => toolProfile.exposure.names === null || toolProfile.keepsFlowTool(t.name)),
     ],
-    registeredOnlyTools ? { onlyTools: registeredOnlyTools } : undefined);
+    registeredOnlyTools || toolProfile.exposure.names !== null
+      ? {
+          ...(registeredOnlyTools ? { onlyTools: registeredOnlyTools } : {}),
+          // #11395: a constrained profile advertises compact descriptions (no session to read it from).
+          ...(toolProfile.exposure.names !== null ? { toolExposure: toolProfile.exposure } : {}),
+        }
+      : undefined);
 
   const prompt = promptContext(ctx, effective);
   // S8: the ONE surface with a genuinely stable request identity — the agent
