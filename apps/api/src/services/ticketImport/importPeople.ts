@@ -102,6 +102,15 @@ export async function resolveImportRequester(input: ImportRequesterInput): Promi
     { orgId, email, name: request.name ?? null, roles: [] },
     { userId: null, destinationSource: 'import' },
   );
+  // The link's updated_at is the contact's as the import left it: createContact
+  // stamps it again after its insert (the legacy roles sync, on the API's
+  // clock), so "edited since the import" is a later contact updated_at than
+  // the link's, both on the same clock (createdContacts.ts).
+  const [stamped] = await db
+    .select({ updatedAt: contacts.updatedAt })
+    .from(contacts)
+    .where(and(eq(contacts.id, created.id), eq(contacts.orgId, orgId)))
+    .limit(1);
   // A link of this source for the same person can only race another run of
   // the same source, which W4's one active run per source rules out; a unique
   // violation here rolls the whole header back, contact included, and the
@@ -112,6 +121,7 @@ export async function resolveImportRequester(input: ImportRequesterInput): Promi
     system,
     externalId: request.sourceUserKey,
     createdBy: null,
+    ...(stamped ? { updatedAt: stamped.updatedAt } : {}),
   });
   return { kind: 'created', contactId: created.id };
 }

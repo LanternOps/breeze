@@ -18,9 +18,9 @@ import { importContactSystem } from './importPeople';
  *   - `portal_login`: a portal user is linked to it;
  *   - `role`: it holds a role (`contacts.roles` or a `contact_roles` row);
  *   - `other_link`: another system linked it too (a PSA sync, a CSV import);
- *   - `edited`: it was changed after its creation (`updated_at` moved; the
- *     import's insert stamps both columns in one transaction, so they start
- *     equal).
+ *   - `edited`: it was changed after the import created it: its `updated_at`
+ *     is later than its link's, which the import set to the contact's own
+ *     `updated_at` when it linked it (importPeople.ts).
  * Removal is never refused because tickets reference the contact: a ticket
  * keeps its submitter snapshot and the FK sets `requester_contact_id` to NULL
  * (F37), which is where an import with the option off would have left it.
@@ -57,7 +57,7 @@ function rowsQuery(system: string) {
         OR EXISTS (SELECT 1 FROM ${contactRoles} cr WHERE cr.contact_id = ${contacts.id}))`,
       otherLink: sql<boolean>`EXISTS (SELECT 1 FROM ${contactExternalLinks} ol
         WHERE ol.contact_id = ${contacts.id} AND ol.system <> ${system})`,
-      edited: sql<boolean>`${contacts.updatedAt} > ${contacts.createdAt}`,
+      edited: sql<boolean>`${contacts.updatedAt} > ${contactExternalLinks.updatedAt}`,
     })
     .from(contactExternalLinks)
     .innerJoin(contacts, and(eq(contacts.id, contactExternalLinks.contactId), eq(contacts.orgId, contactExternalLinks.orgId)))
