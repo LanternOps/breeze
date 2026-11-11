@@ -35,14 +35,15 @@ function compile(pattern, flags) {
   return new RegExp(pattern, flags || '');
 }
 
-// Tool rows filtered by step, tool name, status (anchored regex) and input (regex).
+// Tool rows filtered by step, origin, tool name and status (both anchored regexes) and input (regex).
 function matchTools(check, tools) {
   const status = check.status ? new RegExp(`^(?:${check.status})$`) : null;
+  const tool = check.tool ? new RegExp(`^(?:${check.tool})$`) : null;
   const input = check.inputMatches ? new RegExp(check.inputMatches) : null;
   return (tools || []).filter((t) =>
     (!check.step || t.step === check.step) &&
     (!check.origin || t.origin === check.origin) &&
-    (!check.tool || t.tool === check.tool) &&
+    (!tool || tool.test(t.tool || '')) &&
     (!status || status.test(t.status || '')) &&
     (!input || input.test(t.input || '')));
 }

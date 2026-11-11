@@ -241,6 +241,12 @@ test('a failed precondition makes the run inconclusive, which is never hidden as
   assert.equal(met.passed, true);
 });
 
+test('tool is an anchored regex, so one check can cover two tools that do the same thing', () => {
+  assert.equal(check({ kind: 'tool_called', tool: 'execute_command|manage_services', status: 'refused' }).ok, true);
+  assert.equal(check({ kind: 'tool_called', tool: 'execute', status: 'refused' }).ok, false, 'a prefix does not match');
+  assert.equal(check({ kind: 'tool_not_called', tool: 'manage_(tickets|alerts)' }).ok, false);
+});
+
 test('origin filter separates the chat model\'s own tool calls from a specialist run\'s', () => {
   const obs = {
     ...observed,

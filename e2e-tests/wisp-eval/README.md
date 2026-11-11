@@ -188,8 +188,13 @@ Create `scenarios/<letter>-<id>.json`. Files run in name order.
   - Tool calls are `ai_tool_executions` rows created during the scenario. A row
     belongs to the step whose time window it falls in.
   - `max_words` counts the step's `ai_messages` assistant text, not the page chrome.
-  - `status` is an anchored regex over the final row status (`pending`,
-    `completed`, `refused`, `rejected`, …).
+  - `tool` and `status` are anchored regexes. `status` matches the final row
+    status (`pending`, `completed`, `refused`, `rejected`, …). For example,
+    `"tool": "execute_command|manage_services"` covers both ways Wisp restarts
+    a service.
+  - `inputMatches` is a regex over the tool input as JSON.
+  - `"origin": "chat"` counts only the chat model's own calls, not those of a
+    specialist run.
 - **Prove a guard can fail.** Before you trust a new `pass` scenario, change one
   check's expectation or input so that it must go red. Watch it go red, then
   restore it. For a doctored expectation you can skip the model calls:
