@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { clientAiOrgPolicies, clientAiTenantMappings } from '../../db/schema/clientAi';
 import { partners } from '../../db/schema/orgs';
@@ -12,6 +12,8 @@ import { CLIENT_AI_ENTRA_CLIENT_ID } from '../../config/env';
 import { resolveScopedOrgId } from '../c2c/helpers';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { lockPortalEntraOrgMappings } from '../../services/portalEntraTenantProof';
+import { auditPortalPasswordFallback } from '../../services/portalPasswordFallback';
 import { putPolicySchema, putTenantMappingSchema } from './schemas';
 import { clientAiAdminOrgRoutes } from './adminOrgs';
 import { clientAiAdminSessionRoutes } from './adminSessions';
@@ -120,21 +122,40 @@ clientAiAdminRoutes.put(
     const now = new Date();
 
     let row: typeof clientAiTenantMappings.$inferSelect | undefined;
+    let before: { entraTenantId: string; provenAt: Date | null } | undefined;
     try {
-      [row] = await db
-        .insert(clientAiTenantMappings)
-        .values({
-          orgId,
-          entraTenantId: entraTenantId.toLowerCase(),
-          createdBy: auth.user?.id ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: clientAiTenantMappings.orgId,
-          set: { entraTenantId: entraTenantId.toLowerCase(), updatedAt: now },
-        })
-        .returning();
+      // Savepoint so the caught unique violation cannot poison the request
+      // transaction and turn the 409 into a 500 at commit (#11203).
+      [row] = await withDbTransaction(async () => {
+        // This upsert can CREATE the org's mapping. An org merge's FOR UPDATE
+        // cannot lock that row in advance, so take the per-org lock the merge
+        // holds for both its orgs (portal registration W4, plan D8 / OD7).
+        // Without it, a mapping created for an unmapped survivor mid-merge
+        // would make keep-survivor drop the loser's proven mapping. Released
+        // with the savepoint if the upsert fails, else held to request commit.
+        await lockPortalEntraOrgMappings([orgId]);
+        // Under the org lock: whether this upsert repoints a PROVEN mapping,
+        // whose proof the repoint trigger then clears (#11582).
+        [before] = await db
+          .select({ entraTenantId: clientAiTenantMappings.entraTenantId, provenAt: clientAiTenantMappings.provenAt })
+          .from(clientAiTenantMappings)
+          .where(eq(clientAiTenantMappings.orgId, orgId))
+          .limit(1);
+        return db
+          .insert(clientAiTenantMappings)
+          .values({
+            orgId,
+            entraTenantId: entraTenantId.toLowerCase(),
+            createdBy: auth.user?.id ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: clientAiTenantMappings.orgId,
+            set: { entraTenantId: entraTenantId.toLowerCase(), updatedAt: now },
+          })
+          .returning();
+      });
     } catch (err) {
       // client_ai_tenant_mappings_tenant_uniq: the tenant is already mapped to
       // a DIFFERENT org. Deliberately opaque — do not reveal which org.
@@ -154,6 +175,11 @@ clientAiAdminRoutes.put(
       resourceName: row.entraTenantId,
       details: { entraTenantId: row.entraTenantId },
     });
+    // The proof was on the old tenant and the trigger cleared it: portal
+    // Microsoft sign-in falls back to password for this org (W4 D2, #11582).
+    if (before?.provenAt && !row.provenAt) {
+      await auditPortalPasswordFallback(c, { orgId, tenantId: before.entraTenantId, cause: 'ai_for_office_mapping_changed' });
+    }
 
     return c.json({ mapping: toMappingResponse(row) });
   }
@@ -181,6 +207,10 @@ clientAiAdminRoutes.delete(
         resourceId: row.id,
         resourceName: row.entraTenantId,
       });
+      // The row carried the portal tenant proof (D1): Microsoft sign-in falls back (#11582).
+      if (row.provenAt) {
+        await auditPortalPasswordFallback(c, { orgId, tenantId: row.entraTenantId, cause: 'ai_for_office_mapping_removed' });
+      }
     }
 
     return c.json({ mapping: null });

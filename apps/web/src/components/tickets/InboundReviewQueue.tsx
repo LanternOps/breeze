@@ -10,9 +10,9 @@ import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
 // Inbound review queue: quarantined (unknown sender) and failed inbound emails.
-// Convert to a ticket or dismiss. Admin-only surface — the backing routes carry
-// writePerm + adminMiddleware, so a non-admin gets a 403 and the graceful
-// "admins only" message (the parent tab also hides itself for non-admins).
+// Convert to a ticket or dismiss. Restricted surface — the backing routes need
+// tickets:email_review (admins hold it via *:*), so a caller without it gets a
+// 403 and the graceful "admins only" message (the parent tab also hides itself).
 //
 // Extracted out of settings/InboundEmailCard so it can live under the Tickets
 // area (the dismiss/convert workflow is a ticketing task, not a settings task).
@@ -223,7 +223,7 @@ export default function InboundReviewQueue({ onTotalChange }: InboundReviewQueue
                     <span className="rounded border px-1 py-0.5">{t(/* i18n-dynamic */ `inboundReviewQueue.parseStatus.${r.parseStatus}`)}</span>{' '}
                     {formatDateTime(r.createdAt)}
                     {r.parseStatus === 'failed' && r.error && (
-                      <span className="ml-2 text-red-600">{r.error}</span>
+                      <span className="ml-2 text-destructive-ink">{r.error}</span>
                     )}
                   </div>
                   {convertOpenId === r.id && (

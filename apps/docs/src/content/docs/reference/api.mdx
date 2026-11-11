@@ -131,6 +131,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `GET` | `/groups/:id/devices` | List devices in group |
 | `POST` | `/groups/:id/devices` | Add devices to group |
 | `DELETE` | `/groups/:id/devices/:deviceId` | Remove device from group |
+| `POST` | `/groups/:id/devices/remove` | Remove up to 500 devices from a static group; body `{ deviceIds }`; answers 200 with one outcome per device (`removed`, `not_member`, `forbidden`) |
 | `POST` | `/groups/:id/preview` | Preview dynamic group membership |
 | `POST` | `/groups/:id/devices/:deviceId/pin` | Pin device to dynamic group |
 | `DELETE` | `/groups/:id/devices/:deviceId/pin` | Unpin device |
@@ -657,6 +658,8 @@ A rule matches an elevation candidate on one or more of these fields (`POST`/`PA
 | `GET` | `/software/catalog/search` | Search catalog |
 | `GET` | `/software/catalog/:id/versions` | List versions |
 | `POST` | `/software/catalog/:id/versions` | Add version |
+| `POST` | `/software/catalog/:id/versions/uploads` | Start a chunked installer upload (then `PUT` chunks and complete). The session belongs to the catalog item's owner; on a partner-wide package it ignores `?orgId` and requires full partner access |
+| `POST` | `/software/catalog/:id/versions/upload` | Single-request multipart installer upload, same ownership rules |
 | `GET` | `/software/catalog/:id` | Get software details |
 | `PATCH` | `/software/catalog/:id` | Update software |
 | `DELETE` | `/software/catalog/:id` | Remove from catalog |
@@ -845,6 +848,7 @@ Device-scoped management commands exposed as REST endpoints.
 | `GET` | `/system-tools/devices/:deviceId/files` | List/read files |
 | `GET` | `/system-tools/devices/:deviceId/files/download` | Download file |
 | `POST` | `/system-tools/devices/:deviceId/files/upload` | Upload file |
+| `POST` | `/system-tools/devices/:deviceId/files/mkdir` | Create folder |
 
 ## Maintenance Windows
 

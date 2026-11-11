@@ -7,6 +7,7 @@ import {
   XLSX_MIME_TYPE,
   XlsxLimitError,
   rowsToXlsx,
+  sheetsToXlsx,
   xlsxColumnName,
 } from './xlsxExport';
 
@@ -190,5 +191,46 @@ describe('xlsxColumnName', () => {
     expect(xlsxColumnName(701)).toBe('ZZ');
     expect(xlsxColumnName(702)).toBe('AAA');
     expect(xlsxColumnName(16383)).toBe('XFD');
+  });
+});
+
+describe('sheetsToXlsx', () => {
+  const twoSheets = () => parts(sheetsToXlsx([
+    { name: 'Priorities', rows: [{ priority: 'urgent' }] },
+    { name: 'Breaches', rows: [{ ticket: 'T-1' }] },
+  ]));
+
+  it('writes one worksheet per sheet, each with its own columns', () => {
+    const files = twoSheets();
+    expect(files['xl/worksheets/sheet1.xml']).toContain('urgent');
+    expect(files['xl/worksheets/sheet1.xml']).not.toContain('T-1');
+    expect(files['xl/worksheets/sheet2.xml']).toContain('T-1');
+    expect(files['xl/worksheets/sheet2.xml']).toContain('ticket');
+  });
+
+  it('names and wires every sheet in the workbook, relationships and content types', () => {
+    const files = twoSheets();
+    expect(files['xl/workbook.xml']).toContain('<sheet name="Priorities" sheetId="1" r:id="rId1"/>');
+    expect(files['xl/workbook.xml']).toContain('<sheet name="Breaches" sheetId="2" r:id="rId2"/>');
+    expect(files['xl/_rels/workbook.xml.rels']).toContain('Id="rId2"');
+    expect(files['xl/_rels/workbook.xml.rels']).toContain('Target="worksheets/sheet2.xml"');
+    expect(files['[Content_Types].xml']).toContain('/xl/worksheets/sheet2.xml');
+  });
+
+  it('escapes a sheet name', () => {
+    const files = parts(sheetsToXlsx([{ name: 'A & B', rows: [] }]));
+    expect(files['xl/workbook.xml']).toContain('name="A &amp; B"');
+  });
+
+  it('applies the worksheet limits to every sheet', () => {
+    const tooWide = Object.fromEntries(Array.from({ length: XLSX_MAX_COLUMNS + 1 }, (_, i) => [`c${i}`, i]));
+    expect(() => sheetsToXlsx([{ name: 'ok', rows: [] }, { name: 'wide', rows: [tooWide] }])).toThrow(XlsxLimitError);
+  });
+
+  it('rowsToXlsx is the one-sheet case of it', () => {
+    const rows = [{ hostname: 'pc-1' }];
+    expect(parts(rowsToXlsx(rows))['xl/worksheets/sheet1.xml'])
+      .toBe(parts(sheetsToXlsx([{ name: 'Report', rows }]))['xl/worksheets/sheet1.xml']);
+    expect(Object.keys(parts(rowsToXlsx(rows)))).not.toContain('xl/worksheets/sheet2.xml');
   });
 });

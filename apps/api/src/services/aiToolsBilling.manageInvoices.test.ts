@@ -99,6 +99,7 @@ function contractRow(id = 'contract-1'): Awaited<ReturnType<typeof contractServi
     createdBy: 'u-1',
     createdAt: now,
     updatedAt: now,
+    sourceQuoteId: null,
   };
 }
 

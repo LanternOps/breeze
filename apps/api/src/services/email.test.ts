@@ -73,6 +73,18 @@ describe('email service', () => {
     process.env = originalEnv;
   });
 
+  it.each([true, false])('renders the alert subject in email (workload=%s)', async (workload) => {
+    process.env.RESEND_API_KEY = 're_test_123';
+    process.env.EMAIL_FROM = 'noreply@example.com';
+    const { getEmailService } = await import('./email');
+    await getEmailService()!.sendAlertNotification({ to: 'ops@example.com', alertName: 'Alert', severity: 'high', summary: 'Failed', subjectName: workload ? 'Microsoft 365 mail backup · Example customer' : 'Server-1', ownerKind: workload ? 'backup_workload' : 'device', deviceName: workload ? undefined : 'Server-1' });
+    const sent = resendSendMock.mock.calls[0]?.[0];
+    const line = workload ? 'Subject: Microsoft 365 mail backup · Example customer' : 'Device: Server-1';
+    expect(sent.text).toContain(line);
+    expect(sent.html).toContain(line);
+    expect(sent.html).not.toContain('Device: undefined');
+  });
+
   it('uses Resend in auto mode when resend config is present', async () => {
     process.env.RESEND_API_KEY = 're_test_123';
     process.env.EMAIL_FROM = 'noreply@example.com';
@@ -287,6 +299,50 @@ describe('email service', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(resendSendMock).not.toHaveBeenCalled();
     expect(createTransportMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('portal access request decision templates (W3 #11380, OD3)', () => {
+  it('approved: subject names the org, one button to the login URL, partner brand line', async () => {
+    const { buildPortalAccessApprovedTemplate } = await import('./email');
+    const t = buildPortalAccessApprovedTemplate({
+      to: 'a@customer.test', loginUrl: 'https://portal.example.com/login', orgName: 'Contoso',
+      partnerId: 'p1', partnerName: 'Acme MSP',
+    });
+    expect(t.subject).toBe('You can now sign in to the Contoso portal');
+    expect(t.html.match(/<a href=/g)).toHaveLength(1);
+    expect(t.html).toContain('href="https://portal.example.com/login"');
+    expect(t.html).toContain('Acme MSP');
+    expect(t.text).toContain('https://portal.example.com/login');
+  });
+
+  it('declined: the neutral copy, no link', async () => {
+    const { buildPortalAccessDeclinedTemplate } = await import('./email');
+    const t = buildPortalAccessDeclinedTemplate({ to: 'a@customer.test', orgName: 'Contoso', partnerId: 'p1', partnerName: 'Acme MSP' });
+    expect(t.subject).toBe('Your portal access request');
+    const copy = 'Your request for access to the Contoso portal was not approved. If you think this is a mistake, contact your IT provider.';
+    expect(t.html).toContain(copy);
+    expect(t.text).toContain(copy);
+    expect(t.html).not.toMatch(/<a href=/);
+  });
+
+  it('escapes the org name in the html', async () => {
+    const { buildPortalAccessApprovedTemplate, buildPortalAccessDeclinedTemplate } = await import('./email');
+    const orgName = '<b>Evil</b> & Co';
+    const approved = buildPortalAccessApprovedTemplate({ to: 'a@x.test', loginUrl: 'https://p.test/login', orgName, partnerId: null });
+    const declined = buildPortalAccessDeclinedTemplate({ to: 'a@x.test', orgName, partnerId: null });
+    for (const html of [approved.html, declined.html]) {
+      expect(html).not.toContain('<b>Evil</b>');
+      expect(html).toContain('&lt;b&gt;Evil&lt;/b&gt; &amp; Co');
+    }
+  });
+
+  it('falls back to generic wording without an org name', async () => {
+    const { buildPortalAccessApprovedTemplate, buildPortalAccessDeclinedTemplate } = await import('./email');
+    expect(buildPortalAccessApprovedTemplate({ to: 'a@x.test', loginUrl: 'https://p.test/login', partnerId: null }).subject)
+      .toBe('You can now sign in to your portal');
+    expect(buildPortalAccessDeclinedTemplate({ to: 'a@x.test', partnerId: null }).text)
+      .toContain('Your request for portal access was not approved.');
   });
 });
 

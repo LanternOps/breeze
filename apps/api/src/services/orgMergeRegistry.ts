@@ -324,6 +324,12 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // custom executor would only duplicate it, and
   // orgMergeRegistry.integration.test.ts requires every `custom` table to have
   // its own CUSTOM_EXECUTORS entry.
+  // #9981. A reservation hangs off a task that stays with the source org
+  // (composite (task_id, org_id) FK), so it stays too. It is not lost to the
+  // survivor: admission there reads the active reservations of every org
+  // merged into it (org_merge_events), so a fenced task whose effect may
+  // still land keeps blocking a second offboarding of the same account.
+  ai_operator_account_reservations: { kind: 'leave-for-erasure', note: 'provider-account reservations of a task that stays with the source org; survivor-side admission still reads them through org_merge_events until the loser shell is erased' },
   ai_operator_task_targets: { kind: 'leave-for-erasure', note: 'frozen targets of a task that stays with the source org; fenceAiOperatorTasks detaches their device/ticket/contact pointers in the resolve phase, before devices/tickets/contacts repoint, then the rows are erased with the loser shell' },
   ai_operator_task_target_accounts: { kind: 'leave-for-erasure', note: 'frozen provider identities behind a contact target; the connection pointers are nulled in the resolve phase before m365_connections repoints and google_workspace_connections keeps the survivor, and the immutable external_id is retained as evidence' },
   ai_operator_task_steps: { kind: 'leave-for-erasure', note: 'step attempts of a task that stays with the source org; erased with it' },
@@ -543,6 +549,8 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // Singleton config rows (UNIQUE(org_id)) — survivor's config wins:
   audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
+  portal_access_policies: { kind: 'keep-survivor' }, // verified: portal_access_policies_org_uq partial UNIQUE (org_id); spec §5.3 survivor wins
+  portal_access_requests: { kind: 'repoint-dedupe', key: ['email'], keyWhere: "{status} = 'pending'" }, // verified: portal_access_requests_pending_email_uq (org_id, email) WHERE status = 'pending'
   portal_branding: { kind: 'keep-survivor' }, // verified: portal_branding.org_id UNIQUE (portal.ts)
   org_billing_profile_assignments: { kind: 'keep-survivor' }, // org_id UNIQUE
   org_ticket_settings: { kind: 'keep-survivor' }, // verified: org_ticket_settings.org_id UNIQUE (ticketConfig.ts)
@@ -1031,6 +1039,8 @@ const REPOINT_TABLES: readonly string[] = [
   // SET CONSTRAINTS ALL DEFERRED lets parents and this row repoint in separate
   // statements; breeze_network_isolation_device_moved skips a merging org.
   "device_network_isolations",
+  "device_oem_policy_side",
+  "device_oem_update_status",
   "device_patches",
   "device_process_samples",
   "device_recovery_keys",
@@ -1044,6 +1054,8 @@ const REPOINT_TABLES: readonly string[] = [
   "device_time_daily",
   "device_time_status",
   "device_vulnerabilities",
+  "device_wake_attempts",
+  "device_wake_status",
   "device_warranty",
   // device_workloads / device_workload_runtimes (#3834): plain repoint — the
   // only unique keys are (device_id, runtime, workload_id) and (device_id,
@@ -1212,6 +1224,10 @@ const REPOINT_TABLES: readonly string[] = [
   "playbook_executions",
   "plugin_instances",
   "plugins",
+  // Plain repoint, no dedupe: both unique keys ((issuer, subject) and
+  // (portal_user_id, provider)) are org-free, so a re-tenant can never collide,
+  // and the composite (portal_user_id, org_id) FK is deferred by the merge.
+  "portal_user_identities",
   "portal_users",
   "provision_credential_handles",
   "psa_connections",
@@ -1318,6 +1334,11 @@ const REPOINT_TABLES: readonly string[] = [
   "ticket_email_links",
   "ticket_external_refs",
   "ticket_forms",
+  // ticket_import_org_maps (#8313 W4): a source org's target org. Plain
+  // repoint: its unique keys are (source_id, source_org_key) and the fallback's
+  // (source_id), neither of which contains org_id, so the survivor can never
+  // collide. Its composite org FK is DEFERRABLE INITIALLY IMMEDIATE.
+  "ticket_import_org_maps",
   // ticket_links (#7900 W02). Own org_id (shape 1); both legs live in the
   // loser org and both tickets repoint with it, so a plain repoint keeps every
   // link intact. Its unique keys are on ticket ids (globally unique), so no
@@ -1407,6 +1428,10 @@ const REPOINT_TABLES: readonly string[] = [
   // stays behind (leave-for-erasure): the survivor is outside that grant's
   // ceiling, so the wake path skips it, and erasing the loser shell deletes
   // the grant and, by ON DELETE CASCADE, those rows.
+  // Wisp check-in timers W01 (#10992). Partner-level check-ins (org_id NULL)
+  // never match the repoint, and the only unique key is the PK, so a repoint
+  // cannot collide. The thread and grant are partner-axis and stay put.
+  "wisp_check_ins",
   "wisp_concern_recipients",
   "wisp_concerns",
   // Wisp W08a (#9914). Partner-level links (org_id NULL) never match the

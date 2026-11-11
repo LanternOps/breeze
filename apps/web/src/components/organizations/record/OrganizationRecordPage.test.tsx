@@ -37,7 +37,7 @@ vi.mock('./OrgServiceTab', () => ({
 // which would add a request this suite's exact-request assertions do not
 // expect; the button has its own suite, and OrgRecordHeader.test.tsx asserts
 // it is mounted.
-vi.mock('@/components/wisp/WispLinkButton', () => ({ default: () => null }));
+vi.mock('@/components/wisp/WispTalkButton', () => ({ default: () => null }));
 
 const trustTabProps = vi.hoisted(() => vi.fn());
 vi.mock('@/components/trustCenter/TrustCenterTab', () => ({

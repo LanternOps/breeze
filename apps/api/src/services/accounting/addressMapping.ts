@@ -7,10 +7,11 @@
  * `accountingCustomerImport.ts` re-exports `siteAddressFrom` from here for
  * its own callers; `accountingMappingService.ts` imports directly from this
  * file instead — `accountingCustomerImport.ts` transitively imports
- * `services/orgImport/index.ts` (for `commitOrgImport`/`previewOrgImport`),
- * which imports `services/tenantLifecycle.ts`, which dynamically `import()`s
- * `routes/agentWs.ts` (deliberately — see tenantLifecycle.ts's header
- * comment). Several `accountingMappingService` callers (quoteSendWorker,
+ * `services/orgImport/index.ts` (for `commitOrgImport`/`previewOrgImport`)
+ * and with it the tenant-lifecycle service graph. That graph reached
+ * `routes/agentWs.ts` until #4142 moved the tenant socket sever onto the
+ * relay facade; it is still a large graph these callers have no use for.
+ * Several `accountingMappingService` callers (quoteSendWorker,
  * stripeReconcileSweep, invoiceWorker, contractWorker, accountingSyncWorker,
  * accountingReconcileWorker) are `global`-placement workers in
  * `workerRegistry.ts`: their import closure must never reach socket-local

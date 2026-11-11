@@ -6,7 +6,8 @@ import {
   getPathRoot,
   isPathRoot,
   isWindowsPath,
-  joinRemotePath
+  joinRemotePath,
+  validateFolderName
 } from './filePathUtils';
 
 describe('isWindowsPath', () => {
@@ -234,5 +235,63 @@ describe('getInitialFilePath', () => {
 
   it('returns /home for linux', () => {
     expect(getInitialFilePath('linux')).toBe('/home');
+  });
+});
+
+describe('validateFolderName', () => {
+  const POSIX = '/data';
+  const WINDOWS = 'C:\\Users';
+
+  it('accepts an ordinary name on either platform', () => {
+    expect(validateFolderName('Reports 2026', POSIX, [])).toBeNull();
+    expect(validateFolderName('Reports 2026', WINDOWS, [])).toBeNull();
+  });
+
+  it.each(['a/b', 'a\\b', '/', '\\', '.', '..', 'a\u0000b', 'a\nb'])('refuses %j on either platform', (name) => {
+    expect(validateFolderName(name, POSIX, [])).toBe('invalid');
+    expect(validateFolderName(name, WINDOWS, [])).toBe('invalid');
+  });
+
+  it.each(['a<b', 'a>b', 'a:b', 'a"b', 'a|b', 'a?b', 'a*b', 'trailing.'])(
+    'refuses %j on Windows, where the file system does, and allows it elsewhere',
+    (name) => {
+      expect(validateFolderName(name, WINDOWS, [])).toBe('invalid');
+      expect(validateFolderName(name, POSIX, [])).toBeNull();
+    },
+  );
+
+  // Mirrors isReservedWindowsName in agent/internal/remote/tools/software_install_archive.go.
+  it.each([
+    'con', 'CON', 'Prn', 'aux', 'nul', 'com1', 'COM9', 'lpt1', 'LPT9', 'com0', 'lpt0',
+    'con.txt', 'nul.tar.gz', 'conin$', 'CONOUT$', 'com\u00b9', 'lpt\u00b3', 'con ',
+    'trailing ',
+  ])('refuses the Windows reserved/trailing-space name %j on Windows, allows it on POSIX', (name) => {
+    expect(validateFolderName(name, WINDOWS, [])).toBe('invalid');
+    expect(validateFolderName(name, POSIX, [])).toBeNull();
+  });
+
+  it.each(['console', 'com10', 'lpt', 'com', 'auxiliary', 'nulled', 'my con'])(
+    'allows the look-alike %j on Windows',
+    (name) => {
+      expect(validateFolderName(name, WINDOWS, [])).toBeNull();
+    },
+  );
+
+  it('treats a name that differs only by case as taken on Windows, not on POSIX', () => {
+    expect(validateFolderName('reports', WINDOWS, ['Reports'])).toBe('exists');
+    expect(validateFolderName('reports', POSIX, ['Reports'])).toBeNull();
+    expect(validateFolderName('Reports', POSIX, ['Reports'])).toBe('exists');
+  });
+
+  it.each(['macos', 'darwin'])('treats a case-only difference as taken on %s, whose default volume ignores case', (osType) => {
+    expect(validateFolderName('reports', '/Users/tech', ['Reports'], osType)).toBe('exists');
+  });
+
+  it('keeps Windows rules off a macOS path', () => {
+    expect(validateFolderName('a:b', '/Users/tech', [], 'macos')).toBeNull();
+  });
+
+  it('reports an invalid name ahead of a clash', () => {
+    expect(validateFolderName('..', POSIX, ['..'])).toBe('invalid');
   });
 });

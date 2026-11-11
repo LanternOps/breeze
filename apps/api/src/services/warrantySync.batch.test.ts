@@ -51,6 +51,7 @@ vi.mock('./warrantyProviders', () => ({
   getProviderForManufacturer: vi.fn(),
   normalizeManufacturer: (m: string) => m.toLowerCase(),
 }));
+vi.mock('../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
 vi.mock('./warrantyAlertEvaluator', () => ({ evaluateWarrantyAlerts: vi.fn() }));
 vi.mock('./unassignedPool/selectorPredicate', () => ({ notParkedDeviceCondition: () => 'not-parked' }));
 const captureExceptionMock = vi.fn();

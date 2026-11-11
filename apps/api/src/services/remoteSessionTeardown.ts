@@ -2,8 +2,8 @@ import { and, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, tunnelSessions, devices } from '../db/schema';
 import { revokeViewerSession } from './viewerTokenRevocation';
-import { sendCommandToAgent } from '../routes/agentWs';
 import { dispatchCommandToAgent } from './agentCommandRelay';
+import { closeLocalTerminalSession, closeLocalTunnelSession } from './remoteSessionSocketLocal';
 import { captureException } from './sentry';
 import {
   buildStopDesktopCommand,
@@ -31,27 +31,39 @@ export type DisconnectedSession = {
   terminalGeneration?: bigint | null;
 };
 
-// Lazy import of the terminal WS module to break the import cycle
-// (terminalWs → agentWs → terminalWs already exists; routing this through a
-// dynamic import keeps remoteSessionTeardown out of that static cluster).
-let _terminalWs: typeof import('../routes/terminalWs') | null = null;
-async function getTerminalWs() {
-  if (!_terminalWs) _terminalWs = await import('../routes/terminalWs');
-  return _terminalWs;
-}
+// This module reaches no route file (#4142): agent signals go through the
+// relay facade (services/agentCommandRelay.ts), and a live terminal/tunnel
+// browser socket on THIS process is closed through the role-safe boundary
+// services/remoteSessionSocketLocal.ts, which answers false on a worker.
 
-let _tunnelWs: typeof import('../routes/tunnelWs') | null = null;
-async function getTunnelWs() {
-  if (!_tunnelWs) _tunnelWs = await import('../routes/tunnelWs');
-  return _tunnelWs;
+/** Tunnel rows torn down at once; each may wait on a relay ack. */
+const TUNNEL_TEARDOWN_CONCURRENCY = 8;
+
+/**
+ * Run `fn` over `items`, at most `limit` at a time. Never rejects: `fn` logs
+ * its own failures, and anything it lets escape is logged here.
+ */
+async function forEachBounded<T>(items: readonly T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const item = items[next++]!;
+      await fn(item).catch((err: unknown) => {
+        console.error('[remoteSessionTeardown] teardown step threw unexpectedly:', err);
+      });
+    }
+  };
+  await Promise.allSettled(Array.from({ length: Math.min(limit, items.length) }, lane));
 }
 
 /**
  * Given tunnel rows already marked `disconnected`, revoke their viewer tokens
  * and close the tunnel (locally, or with a `tunnel_close` to the owning
- * agent). Exported for writers that disconnect tunnels inside their own
- * transaction and tear down after it commits (the install incarnation
- * boundary, services/deviceInstallBoundary).
+ * agent through the relay, so it reaches the agent on any instance). Rows run
+ * concurrently, at most {@link TUNNEL_TEARDOWN_CONCURRENCY} at a time, and a
+ * failure on one never stops the others. Exported for writers that disconnect
+ * tunnels inside their own transaction and tear down after it commits (the
+ * install incarnation boundary, services/deviceInstallBoundary).
  */
 export async function teardownDisconnectedTunnels(disconnected: DisconnectedSession[]): Promise<void> {
   if (disconnected.length === 0) return;
@@ -71,23 +83,26 @@ export async function teardownDisconnectedTunnels(disconnected: DisconnectedSess
     console.error(`[remoteSessionTeardown] Failed to revoke tunnel ${row.id}:`, err);
   })));
 
-  for (const row of disconnected) {
+  await forEachBounded(disconnected, TUNNEL_TEARDOWN_CONCURRENCY, async (row) => {
     let closedLocally = false;
     try {
-      const { closeTunnelSession } = await getTunnelWs();
-      closedLocally = await closeTunnelSession(row.id);
+      closedLocally = await closeLocalTunnelSession(row.id);
     } catch (err) {
       console.error(`[remoteSessionTeardown] Failed to close tunnel socket ${row.id}:`, err);
     }
     const agentId = agentByDevice.get(row.deviceId);
-    if (!closedLocally && agentId) {
-      sendCommandToAgent(agentId, {
+    if (closedLocally || !agentId) return;
+    try {
+      // Outside any held DB context: the relay refuses to run inside one (#4142).
+      await runOutsideDbContext(() => dispatchCommandToAgent(agentId, {
         id: `tun-close-${row.id}`,
         type: 'tunnel_close',
         payload: { tunnelId: row.id },
-      });
+      }));
+    } catch (err) {
+      console.error(`[remoteSessionTeardown] Failed to send tunnel_close for tunnel ${row.id}:`, err);
     }
-  }
+  });
 }
 
 /**
@@ -190,7 +205,12 @@ export async function teardownDisconnectedSessions(
           captureException(invariant);
           throw invariant;
         }
-        await dispatchCommandToAgent(agentId, buildStopDesktopCommand(row.id, row.terminalGeneration));
+        // Outside any held DB context: the relay refuses to run inside one
+        // (#4142), and this teardown runs inline in request handlers. The
+        // send itself touches no database. The request transaction still
+        // waits on the ack (known limitation; tracked in #4142).
+        const generation = row.terminalGeneration;
+        await runOutsideDbContext(() => dispatchCommandToAgent(agentId, buildStopDesktopCommand(row.id, generation)));
       } catch (err) {
         console.error(
           `[remoteSessionTeardown] Failed to send stop_desktop for session ${row.id}:`,
@@ -208,13 +228,12 @@ export async function teardownDisconnectedSessions(
       // command id and is dropped by the agent's command dedup.
       let closedLocally = false;
       try {
-        const { closeTerminalSession } = await getTerminalWs();
         // Async since Wave 4: the close proof is a cross-replica Redis
         // compare, not a local map lookup. Awaiting keeps the
         // `!closedLocally` agent fallback below honest — a non-awaited
         // promise would always be truthy and silently skip the fallback,
-        // leaving a PTY alive on another instance.
-        closedLocally = await closeTerminalSession(row.id);
+        // leaving a PTY alive on another instance. False on a worker.
+        closedLocally = await closeLocalTerminalSession(row.id);
       } catch (err) {
         console.error(
           `[remoteSessionTeardown] Failed to close terminal socket for session ${row.id}:`,
@@ -225,11 +244,12 @@ export async function teardownDisconnectedSessions(
         try {
           // Same durable-relay reasoning as stop_desktop above: this fallback
           // exists precisely for the case where the socket is NOT local.
-          await dispatchCommandToAgent(agentId, {
+          // Outside any held DB context, as stop_desktop above (#4142).
+          await runOutsideDbContext(() => dispatchCommandToAgent(agentId, {
             id: `term-stop-${row.id}`,
             type: 'terminal_stop',
             payload: { sessionId: row.id },
-          });
+          }));
         } catch (err) {
           console.error(
             `[remoteSessionTeardown] Failed to send terminal_stop for session ${row.id}:`,

@@ -84,6 +84,21 @@
       "resolved": "Gelöst",
       "suppressed": "Unterdrückt",
       "dismissed": "Verworfen"
+    },
+    "createPsaTicket": "PSA-Ticket erstellen",
+    "psaTicketRequested": "PSA-Ticket angefordert",
+    "failedToCreatePsaTicket": "PSA-Ticket konnte nicht angefordert werden",
+    "lifecycleLine": {
+      "text": "{{rearm}} · Abklingzeit {{minutes}} Min. ({{source}})",
+      "rearmNewEvidence": "Wird bei neuen Nachweisen wieder scharf",
+      "rearmAfterDelay": "Wird nach {{minutes}} Min. wieder scharf",
+      "sources": {
+        "monitor": "dieser Monitor",
+        "org": "Org-Standard",
+        "partner": "Partner-Standard",
+        "builtin": "integrierter Standard",
+        "legacy": "Alarmregel"
+      }
     }
   },
   "alertDetails": {
@@ -238,7 +253,7 @@
     "partnerWideTargetsEveryDeviceEachOrg": "(partnerweit – zielt auf jedes Gerät ab; es gilt die Standard-Benachrichtigungsweiterleitung jeder Organisation)",
     "thisOrganizationOnly": "Nur diese Organisation",
     "failedToFetchAlertRule": "Warnungsregel konnte nicht abgerufen werden",
-    "genericError": "Allgemeiner Fehler",
+    "genericError": "Ein Fehler ist aufgetreten",
     "failedToSaveAlertRule": "Warnungsregel konnte nicht gespeichert werden",
     "createAlertRule": "Erstellen Sie eine Alarmregel",
     "editAlertRule": "Alarmregel bearbeiten",
@@ -314,12 +329,12 @@
     "automaticallyResolveWhenConditionIsNoLonger": "Automatische Lösung, wenn die Bedingung nicht mehr erfüllt ist",
     "whenEnabledAlertsWillAutoResolveIf": "Wenn diese Option aktiviert ist, werden Warnungen automatisch aufgelöst, wenn die Metrik wieder normal ist",
     "cancel": "Abbrechen",
-    "severityHelp": "Hilfe zum Schweregrad",
+    "severityHelp": "Legt das Routing der Benachrichtigungen und die Priorität im Dashboard fest. Kritische Alarme benachrichtigen die Bereitschaft sofort.",
     "selectTargetType": "Wählen Sie den Zieltyp aus",
     "noTargetsAvailable": "Keine Ziele verfügbar",
-    "conditionsHelp": "Hilfe zu Bedingungen",
-    "notificationChannelsHelp": "Hilfe zu Benachrichtigungskanälen",
-    "cooldownHelp": "Cooldown-Hilfe",
+    "conditionsHelp": "Damit der Alarm ausgelöst wird, müssen alle Bedingungen gleichzeitig erfüllt sein. Fügen Sie mehrere hinzu, um zusammengesetzte Regeln zu erstellen.",
+    "notificationChannelsHelp": "Wohin die Alarme gesendet werden. Kanäle konfigurieren Sie unter Einstellungen > Benachrichtigungskanäle.",
+    "cooldownHelp": "Nach dem Auslösen wartet die Regel so lange, bevor sie für dasselbe Gerät erneut ausgelöst werden kann.",
     "saveRule": "Regel speichern",
     "severityOption": {
       "critical": "Kritisch",
@@ -472,8 +487,8 @@
     "deviceStatusUnavailable": "Der Gerätestatus konnte nicht geladen werden. Aktualisieren Sie, um es erneut zu versuchen.",
     "setUpAlertRules": "Richten Sie Benachrichtigungsregeln ein",
     "failedToFetchAlerts": "Warnungen konnten nicht abgerufen werden",
-    "unknownDevice": "Unbekanntes Gerät",
-    "genericError": "Allgemeiner Fehler",
+    "unknownDevice": "Unbekannt",
+    "genericError": "Ein Fehler ist aufgetreten",
     "failedToAcknowledgeAlert": "Warnung konnte nicht bestätigt werden",
     "alertAcknowledged": "Warnung bestätigt",
     "failedToResolveAlert": "Warnung konnte nicht gelöst werden",
@@ -654,6 +669,7 @@
       "info": "Infos"
     },
     "status": {
+      "open": "Offen",
       "active": "Aktiv",
       "acknowledged": "Anerkannt",
       "resolved": "Gelöst",
@@ -859,7 +875,7 @@
     "noRecipients": "Keine Empfänger",
     "emailNotification": "E-Mail-Benachrichtigung",
     "slackNotification": "Slack-Benachrichtigung",
-    "teamsNotification": "Teams-Benachrichtigung",
+    "teamsNotification": "Microsoft Teams-Benachrichtigung",
     "pagerDutyIntegration": "Pager Duty-Integration",
     "customWebhook": "Benutzerdefinierter Webhook",
     "pushoverKey": "Schlüssel {{key}}…",
@@ -931,7 +947,7 @@
     "routingRuleDeleted": "Routing-Regel gelöscht",
     "failedToDeleteRoutingRule": "Routing-Regel konnte nicht gelöscht werden",
     "failedToFetchNotificationChannels": "Benachrichtigungskanäle konnten nicht abgerufen werden",
-    "genericError": "Allgemeiner Fehler",
+    "genericError": "Ein Fehler ist aufgetreten",
     "ruleCount": "Regelanzahl",
     "createNotificationChannel": "Erstellen Sie einen Benachrichtigungskanal",
     "editNotificationChannel": "Benachrichtigungskanal bearbeiten",
@@ -967,5 +983,10 @@
       "body": "Bestehende Vorlagen bleiben hier bearbeitbar und werden im nächsten Release umgewandelt.",
       "link": "Monitore öffnen"
     }
+  },
+  "subject": {
+    "label": "Betroffenes Objekt",
+    "backupWorkload": "Backup-Workload",
+    "topologySite": "Topologiestandort"
   }
 }

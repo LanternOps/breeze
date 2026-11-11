@@ -99,7 +99,7 @@ export const wispConcerns = pgTable('wisp_concerns', {
   raisedByGrantIdx: index('wisp_concerns_raised_by_grant_idx')
     .on(t.raisedByGrantId)
     .where(sql`raised_by_grant_id IS NOT NULL`),
-  subjectKindChk: check('wisp_concerns_subject_kind_chk', sql`${t.subjectKind} IN ('ticket','device','alert','org','integration','run','task','incident','quote','invoice','contract','site')`),
+  subjectKindChk: check('wisp_concerns_subject_kind_chk', sql`${t.subjectKind} IN ('ticket','device','alert','org','integration','run','task','incident','quote','invoice','contract','site','readiness')`),
   severityChk: check('wisp_concerns_severity_chk', sql`${t.severity} IN ('info','low','medium','high')`),
   statusChk: check('wisp_concerns_status_chk', sql`${t.status} IN ('open','snoozed','resolved','dismissed')`),
   summaryLenChk: check('wisp_concerns_summary_len_chk', sql`char_length(${t.summary}) BETWEEN 1 AND 2000`),
@@ -164,8 +164,16 @@ export const wispWatches = pgTable('wisp_watches', {
   status: text('status').$type<WatchStatus>().notNull().default('active'),
   /** The grant status that stopped it; `'paused'` is read by W02's userResumeGrant (A29). */
   stoppedReason: text('stopped_reason'),
+  /** Last claim + evaluation, whether or not it launched a run (#11424). */
   lastRanAt: timestamp('last_ran_at', { withTimezone: true }),
   nextDueAt: timestamp('next_due_at', { withTimezone: true }).notNull(),
+  /**
+   * #11424: sha256 (hex) of the sorted hit-set of the last evaluation a run was
+   * queued for, and its size (services/wisp/watchHits.ts). NULL = never
+   * recorded; the next evaluation launches a run.
+   */
+  hitHash: text('hit_hash'),
+  hitCount: integer('hit_count'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
@@ -192,6 +200,7 @@ export const wispWatches = pgTable('wisp_watches', {
   kindChk: check('wisp_watches_kind_chk', sql`${t.kind} IN ('ticket_waiting','alert_pattern','backup_health','patch_compliance','security_findings','custom_query','ticket_cluster')`),
   cadenceChk: check('wisp_watches_cadence_chk', sql`${t.cadenceMinutes} BETWEEN 15 AND 10080`),
   statusChk: check('wisp_watches_status_chk', sql`${t.status} IN ('active','stopped')`),
+  hitCountChk: check('wisp_watches_hit_count_chk', sql`${t.hitCount} IS NULL OR ${t.hitCount} >= 0`),
 }));
 
 export type WispConcernRow = typeof wispConcerns.$inferSelect;

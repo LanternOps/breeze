@@ -15,7 +15,7 @@
   "dependencies": {
     "@breeze/extension-sdk": "workspace:*",
     "@breeze/extension-web-sdk": "workspace:*",
-    "hono": "^4.13.13"
+    "hono": "^4.13.14"
   },
   "devDependencies": {
     "happy-dom": "^21.0.4",

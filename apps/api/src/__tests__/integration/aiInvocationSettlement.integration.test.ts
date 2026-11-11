@@ -22,7 +22,8 @@ vi.mock('../../db/lockTimeout', async (importOriginal) => {
 
 import { db, withSystemDbAccessContext } from '../../db';
 import { settleAndDebitAiReservations } from '../../jobs/aiBudgetReservationSweep';
-import { aiAgentRuns, aiAgents } from '../../db/schema';
+import { aiAgentRuns, aiAgents, wispGrants } from '../../db/schema';
+import { spentUnderGrant, summaryRefineSourceRef } from '../../services/wisp/budget';
 import { settleComputeCents } from '../../services/aiCostTracker';
 import {
   listFailedPlatformCreditDebits,
@@ -239,6 +240,23 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     expect(await reservationState(id)).toMatchObject({ status: 'settled' });
   });
 
+  it('#10390: a session summary settled the way threadSummaryRefine settles it lands in its grant\'s daily spend', async () => {
+    const [grant] = await sys(() => db.insert(wispGrants).values({
+      partnerId: s.partnerId, orgId: null, grantorUserId: s.userId, status: 'active',
+      expiresAt: new Date(Date.now() + 30 * 86_400_000),
+    }).returning({ id: wispGrants.id }));
+    expect(await spentUnderGrant(grant!.id)).toBe(0);
+
+    const id = await reserve(s, binding, { session: false });
+    const out = await settleInvocation(settleInput(s, binding, id, {
+      sessionId: null, sourceRef: summaryRefineSourceRef(grant!.id),
+    }));
+
+    expect(out.costCents).toBeGreaterThan(0);
+    expect(out.deferred).toBe(false);
+    expect(await spentUnderGrant(grant!.id)).toBe(Math.ceil(out.costCents));
+  });
+
   it('a $0 SDK cost on a model added by today\'s discovery bills its platform rate', async () => {
     const pm = (await getPlatformModelById(await seedPricedPlatformModel()))!;
     const fresh = { ...binding, wireModel: pm.modelId, logicalModel: pm.modelId, rateSnapshot: { source: 'platform' as const, standard: pm.rates! } };
@@ -252,6 +270,42 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     const [usage] = await q<{ c: string }>(sql`
       SELECT total_cost_cents AS c FROM ai_cost_usage WHERE org_id = ${s.orgId}::uuid AND period = 'daily'`);
     expect(Number(usage!.c)).toBeCloseTo(out.costCents, 6);
+  });
+
+  it('#10413: the CLI background call settles as model_role background, fallback_used false, at its own platform rate', async () => {
+    const bg = (await getPlatformModelById(await seedPricedPlatformModel()))!;
+    const id = await reserve(s, binding);
+    const BGT = { input: 900, output: 15, cacheRead: 0, cacheWrite: 0 };
+    const out = await settleInvocation(settleInput(s, binding, id, {
+      usage: [
+        { model: binding.wireModel, tokens: T, webSearchRequests: 0, speedServed: 'standard', providerModel: null },
+        { model: bg.modelId, tokens: BGT, webSearchRequests: 0, speedServed: 'standard', providerModel: null },
+      ],
+    }));
+    const expected = priceInvocation(binding.rateSnapshot, T, {}) + priceInvocation({ source: 'platform', standard: bg.rates! }, BGT, {});
+    expect(out.costCents).toBeCloseTo(expected, 6);
+    const rows = await q<{ requested_model: string; model_role: string | null; fallback_used: boolean; cost_cents: string }>(sql`
+      SELECT requested_model, model_role, fallback_used, cost_cents FROM ai_invocations
+      WHERE org_id = ${s.orgId}::uuid ORDER BY (requested_model = ${binding.wireModel}) DESC`);
+    expect(rows.map((r) => [r.requested_model, r.model_role, r.fallback_used])).toEqual([
+      [binding.wireModel, 'primary', false],
+      [bg.modelId, 'background', false],
+    ]);
+    expect(rows.reduce((sum, r) => sum + Number(r.cost_cents), 0)).toBeCloseTo(expected, 6);
+    expect(await reservationState(id)).toMatchObject({ status: 'settled' });
+  });
+
+  it('#10413: ai_invocations_model_role_chk ties model_role fallback to fallback_used', async () => {
+    // Resolves to the violated constraint's name (drizzle wraps the pg error in `cause`), or null when the row inserted.
+    const insert = (role: string, fallbackUsed: boolean) => q(sql`
+      INSERT INTO ai_invocations (org_id, surface, funding_source, requested_model, served_model, ledger_mode, model_role, fallback_used)
+      VALUES (${s.orgId}::uuid, 'chat', 'platform', 'm', 'm', 'shadow', ${role}, ${fallbackUsed})`)
+      .then(() => null, (e: { cause?: { constraint_name?: string } }) => e.cause?.constraint_name ?? 'unexpected error');
+    expect(await insert('background', true)).toBe('ai_invocations_model_role_chk');
+    expect(await insert('fallback', false)).toBe('ai_invocations_model_role_chk');
+    expect(await insert('helper', false)).toBe('ai_invocations_model_role_chk');
+    expect(await insert('fallback', true)).toBeNull();
+    expect(await insert('background', false)).toBeNull();
   });
 
   it('a settlement carrying a rate the turn did not bind is rejected and writes nothing — not even the SDK snapshot', async () => {

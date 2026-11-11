@@ -27,5 +27,9 @@ func TestMain(m *testing.M) {
 	// firing mid-run would scan the CI host and hit nil transports. Tests that
 	// care about scheduling swap in their own recorder (captureRescans).
 	schedulePostInstallRescan = func(*Heartbeat, time.Duration) {}
+	// Localized copy (prompt host, PAM outcome notices #10696) falls back to
+	// the machine's UI language; tests never read the CI host's. Tests that
+	// care set their own (setOSUILocaleForTest).
+	osUILocale = func() string { return "en-US" }
 	os.Exit(m.Run())
 }

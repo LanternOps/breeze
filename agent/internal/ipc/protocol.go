@@ -59,7 +59,17 @@ type Conn struct {
 	// with respect to other Recv calls, so a Conn must have a single reader;
 	// every caller today runs one Recv loop.
 	recvSeq atomic.Uint64
-	mu      sync.Mutex // serializes writes
+	// Partial-frame read state, owned by the single reader (see recvSeq).
+	// Callers arm a short read deadline before each Recv and treat a timeout as
+	// an idle tick (the user helper every 5s, breeze-backup every 1s), so a
+	// deadline can fire after part of a frame has been consumed. These fields
+	// keep those bytes so the next Recv resumes the same frame instead of
+	// parsing body bytes as a length header (issue #10541).
+	rhdr   [4]byte
+	rhdrN  int        // header bytes read so far
+	rbody  []byte     // non-nil once the header is complete and valid
+	rbodyN int        // body bytes read so far
+	mu     sync.Mutex // serializes writes
 	// writeTimeoutNanos, when > 0, overrides the package-level writeTimeout for
 	// this Conn's Send() calls (see SetWriteTimeout). 0 means "use the default".
 	writeTimeoutNanos atomic.Int64
@@ -277,24 +287,48 @@ func (c *Conn) effectiveWriteTimeout() time.Duration {
 }
 
 // Recv reads a length-prefixed JSON message, validates HMAC and sequence.
+//
+// Recv is resumable across read-deadline timeouts. If the deadline fires
+// partway through a frame, Recv returns the (wrapped) timeout error and keeps
+// the bytes already read; the next call continues the same frame. Without
+// this, the bytes consumed before the timeout were lost and the next Recv
+// started mid-frame, reading `{"id` as a length — the "message too large:
+// 2065852772" desync of issue #10541. The wire format is unchanged.
+//
+// A framing error (impossible length) is sticky: the stream has lost sync and
+// cannot recover, so every later Recv reports the same error rather than
+// guessing at a frame boundary. Callers already treat it as fatal.
 func (c *Conn) Recv() (*Envelope, error) {
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(c.conn, header); err != nil {
-		return nil, fmt.Errorf("ipc: read header: %w", err)
+	if c.rbody == nil {
+		n, err := io.ReadFull(c.conn, c.rhdr[c.rhdrN:])
+		c.rhdrN += n
+		if err != nil {
+			return nil, fmt.Errorf("ipc: read header: %w", err)
+		}
+
+		length := binary.BigEndian.Uint32(c.rhdr[:])
+		if length > uint32(MaxMessageSize) {
+			// The raw header bytes make a desync diagnosable from the shipped
+			// log line: ASCII here means the reader is inside a JSON body.
+			return nil, fmt.Errorf("ipc: message too large: %d > %d (header %x)", length, MaxMessageSize, c.rhdr[:])
+		}
+		if length == 0 {
+			return nil, fmt.Errorf("ipc: zero-length message")
+		}
+		c.rbody = make([]byte, length)
+		c.rbodyN = 0
 	}
 
-	length := binary.BigEndian.Uint32(header)
-	if length > uint32(MaxMessageSize) {
-		return nil, fmt.Errorf("ipc: message too large: %d > %d", length, MaxMessageSize)
-	}
-	if length == 0 {
-		return nil, fmt.Errorf("ipc: zero-length message")
-	}
-
-	data := make([]byte, length)
-	if _, err := io.ReadFull(c.conn, data); err != nil {
+	n, err := io.ReadFull(c.conn, c.rbody[c.rbodyN:])
+	c.rbodyN += n
+	if err != nil {
 		return nil, fmt.Errorf("ipc: read payload: %w", err)
 	}
+
+	// Frame complete: reset for the next one before validating, so a frame
+	// that fails HMAC or sequence checks is not re-read.
+	data := c.rbody
+	c.rhdrN, c.rbody, c.rbodyN = 0, nil, 0
 
 	var env Envelope
 	if err := json.Unmarshal(data, &env); err != nil {

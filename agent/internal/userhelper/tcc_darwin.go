@@ -51,7 +51,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -59,6 +58,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
@@ -253,9 +253,10 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 	wasAllGranted := false
 	firstCheck := true
 	promptFile := tccPromptFilePath()
+	var denials denialLog
 
 	check := func() {
-		status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
+		status := collectTCCStatus(policy, desktopContext, &denials)
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
 			consecutiveFailures++
@@ -327,6 +328,16 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 			}
 		}
 	}
+}
+
+// collectTCCStatus is one loop check: the permission state, plus the denial
+// verdict (#10300) when the policy allows it.
+func collectTCCStatus(policy tccLoopPolicy, desktopContext string, denials *denialLog) *ipc.TCCStatus {
+	status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
+	if policy.diagnoseDenial {
+		denials.observe(attachDenialVerdict(status))
+	}
+	return status
 }
 
 // requestScreenRecordingAtLoopStart raises the Screen Recording consent
@@ -477,7 +488,7 @@ func showTCCDialog(missing []string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), tccHelperCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	cmd := procspawn.CommandContext(ctx, "osascript", "-e", script)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Debug("TCC dialog dismissed or timed out", "error", err.Error())
@@ -526,7 +537,7 @@ func openSettingsForPermission(permission string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), tccHelperCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "open", url)
+	cmd := procspawn.CommandContext(ctx, "open", url)
 	if err := cmd.Run(); err != nil {
 		log.Warn("failed to open System Settings", "permission", permission, "error", err.Error())
 	}

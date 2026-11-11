@@ -36,6 +36,19 @@ vi.mock('./sentry', async (importOriginal) => ({
 const publishEventMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('./eventBus', () => ({ publishEvent: (...args: unknown[]) => publishEventMock(...args) }));
 
+// #10926 — createSourcedAlert stages alert.triggered on the row and hands the
+// id to the alert outbox, which publishes after the transaction commits.
+const scheduleStagedAlertDispatchMock = vi.fn();
+vi.mock('./subjectAlertOutbox', () => ({
+  scheduleStagedAlertDispatch: (...args: unknown[]) => scheduleStagedAlertDispatchMock(...args),
+}));
+
+/** The `alert.triggered` envelope staged in the inserted row's context. */
+function stagedTrigger(values: ReturnType<typeof vi.fn>) {
+  const row = values.mock.calls[0]![0] as { context: { _subjectDispatch: Record<string, unknown> } };
+  return row.context._subjectDispatch;
+}
+
 const writeAuditEventMock = vi.fn();
 vi.mock('./auditEvents', () => ({
   writeAuditEvent: (...args: unknown[]) => writeAuditEventMock(...args),
@@ -228,13 +241,15 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({ configItemName: 'warranty_expiry', deviceId: DEVICE_ID, severity: 'low' })
     );
-    expect(publishEventMock).toHaveBeenCalledWith(
-      'alert.triggered',
-      ORG_ID,
-      expect.objectContaining({ source: 'warranty_evaluator' }),
-      'warranty-alert-evaluator',
-      expect.objectContaining({}),
-    );
+    // Staged for the outbox, not published inline before COMMIT (#10926).
+    expect(publishEventMock).not.toHaveBeenCalledWith('alert.triggered', expect.anything(), expect.anything(), expect.anything(), expect.anything());
+    expect(stagedTrigger(values)).toMatchObject({
+      eventType: 'alert.triggered',
+      publisher: 'warranty-alert-evaluator',
+      retryOnPublishFailure: true,
+      payload: expect.objectContaining({ source: 'warranty_evaluator' }),
+    });
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-1');
   });
 
   // #10371 — warranty expiry is a date-driven lifecycle notice, not a device
@@ -289,10 +304,9 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(insertMock).not.toHaveBeenCalled();
   });
 
-  it('rolls the warranty alert row back when publishing alert.triggered throws (#5325)', async () => {
+  it('keeps the warranty alert and leaves its publish to the outbox, so no inline failure can strand or delete it (#5325, #10926)', async () => {
     stubAutoResolve();
-    captureInsert();
-    publishEventMock.mockRejectedValueOnce(new Error('redis down'));
+    const { values } = captureInsert();
     // 1: warranty row (expiring, fixed-term)
     selectMock.mockReturnValueOnce(queueSelect([baseWarranty]));
     // 2: device row (evaluate)
@@ -314,11 +328,16 @@ describe('evaluateWarrantyAlerts gating', () => {
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
 
-    // An unpublished `active` row would satisfy check 7 forever, so the device
-    // would never alert on this warranty again.
-    expect(result).toBeNull();
-    expect(deleteMock).toHaveBeenCalled();
-    expect(captureExceptionMock).toHaveBeenCalled();
+    // An unpublished `active` row would satisfy check 7 forever (#5325). It
+    // used to be deleted when the inline publish failed. Now nothing publishes
+    // inline: the row carries a durable envelope that the outbox publishes
+    // after COMMIT and retries on failure, so it is never left unannounced.
+    expect(result).toBe('alert-1');
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(stagedTrigger(values)).toMatchObject({ eventType: 'alert.triggered', retryOnPublishFailure: true });
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-1');
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
   it('does NOT fire for fixed-term coverage when the assigned policy disables warranty alerts', async () => {

@@ -1,3 +1,4 @@
+import type { HeartbeatEpisodeContext } from '../../services/networkIsolation/reconcile';
 import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
@@ -21,8 +22,8 @@ import {
 } from '../../db/schema';
 import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
-import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
-import { ERROR_CODES } from '@breeze/shared';
+import type { BatteryStatus, ContainmentDesiredBlock, DesktopAccessState, TCCPermissions } from '@breeze/shared';
+import { ERROR_CODES, isResolvedTerminalIsolationState } from '@breeze/shared';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { refreshReadinessAfterRecovery } from '../../services/bareMetalReadinessRefresh';
 import { recordBackupCapabilityRegressed, type BackupHelperCapability } from '../../services/backupMetrics';
@@ -73,7 +74,7 @@ import {
 } from './helpers';
 import { buildFeatureUpdateConfigUpdate, toFeatureUpdateSettingsWire } from './featureUpdateConfig';
 import type { RingFeatureUpdates } from '@breeze/shared/validators';
-import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
+import { isolationAgentUpgradeGate, shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { DeferredCacheFills } from '../../services/hotPathCache';
 import {
   buildSettingsDecisionFields,
@@ -113,6 +114,7 @@ import {
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
+  effectiveWatchdogEdition,
   type EditionWithheldContext as SharedEditionWithheldContext,
 } from '../../services/agentEditionCompat';
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
@@ -658,7 +660,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }),
     );
 
-    return c.json({ commands: drainCommands });
+    return c.json({ commands: drainCommands, containment: { networkIsolation: null } });
   }
 
   // Pre-assignment — a device parked in its partner's
@@ -892,6 +894,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
       watchdogLastSeen: now,
       watchdogVersion: data.agentVersion,
+      // #4297 — the watchdog's own edition, written WITH its version so the
+      // pair always describes the same binary. Unconditional: a silent beat
+      // clears a value an earlier build reported (a rollback or reinstall to a
+      // pre-reporting build must not inherit it); readers then fall back to
+      // agentEdition (effectiveWatchdogEdition).
+      watchdogEdition: data.agentEdition ?? null,
       updatedAt: now,
     };
     if (transitioningIntoSilent) {
@@ -902,7 +910,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     try {
       // #8318 §6.4: bound to the authenticated id + agent_id, so a watchdog
       // beat of a superseded install matches 0 rows after a reattach confirm.
-      watchdogRowsUpdated = (await updateOwnDeviceRow(db, agent, watchdogUpdates)).length;
+      watchdogRowsUpdated = (await withDbTransaction(() => updateOwnDeviceRow(db, agent, watchdogUpdates))).length;
     } catch (err) {
       console.error('Failed to update watchdog status:', err);
     }
@@ -950,7 +958,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       shouldLogWatchdogRestartActivity(device.id, restartSignature, now.getTime())
     ) {
       try {
-        await db.insert(agentLogs).values({
+        await withDbTransaction(() => db.insert(agentLogs).values({
           deviceId: device.id,
           orgId: device.orgId,
           timestamp: new Date(),
@@ -966,7 +974,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
             watchdogState: data.watchdogState ?? null,
           },
           agentVersion: data.agentVersion,
-        });
+        }));
         // Commit to the dedupe cache only after the row landed — a failed
         // insert must stay retryable on the next heartbeat.
         markWatchdogRestartActivityLogged(device.id, restartSignature, now.getTime());
@@ -999,25 +1007,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // failover beat.
     //
     // A SILENT watchdog is NOT evidence of a self-host build the way a silent
-    // main agent is: watchdog edition reporting first ships alongside this
-    // gate, so every watchdog in the field today is silent — including the
-    // hosted fleet's, whose recovery path (#1104) must not be withheld. Fall
-    // back to the device row's agentEdition, written unconditionally from
-    // every MAIN-agent beat: agent and watchdog install and upgrade from the
-    // same lane, so the main agent's build edition identifies the watchdog's.
-    // If both are silent (the stranded pre-telemetry band), the version-band
-    // inference inside the predicate takes over. Known imprecision: a device
-    // whose main agent already reports 'self-host' (transition-capable) but
-    // whose watchdog is still an older self-host build gets a hosted offer
+    // main agent is: watchdog edition reporting first shipped alongside this
+    // gate, so every older watchdog build is silent — including the hosted
+    // fleet's, whose recovery path (#1104) must not be withheld.
+    //
+    // #4297 — this beat's payload IS the watchdog's own report, and it is what
+    // watchdogUpdates just wrote to devices.watchdog_edition, so it goes in as
+    // the watchdog edition. The stored column is deliberately NOT consulted
+    // for a silent beat: it describes an earlier build, and this beat
+    // supersedes it. effectiveWatchdogEdition then falls back to the device
+    // row's agentEdition, written unconditionally from every MAIN-agent beat
+    // — a stated degradation that assumes agent and watchdog install and
+    // upgrade from the same lane. If both are silent (the stranded
+    // pre-telemetry band), the version-band inference inside the predicate
+    // takes over. Known imprecision of the fallback: a device whose main
+    // agent already reports 'self-host' (transition-capable) but whose
+    // watchdog is still an older silent self-host build gets a hosted offer
     // its watchdog refuses — failover-only, self-heals once the watchdog
     // catches up via the main branch.
     // Hoisted so the warn calls below print the value that actually DECIDED
     // (the fallback included) — logging the silent payload as "none" when the
     // stored edition drove the withhold would steer the operator to the wrong
     // remediation.
-    const effectiveWatchdogEdition = data.agentEdition ?? device.agentEdition;
+    const watchdogEditionForGate = effectiveWatchdogEdition({
+      watchdogEdition: data.agentEdition,
+      agentEdition: device.agentEdition,
+    });
     const watchdogAcceptsServedEdition = agentAcceptsServedEdition({
-      reportedEdition: effectiveWatchdogEdition,
+      reportedEdition: watchdogEditionForGate,
       agentVersion: data.agentVersion,
     });
 
@@ -1050,7 +1067,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           warnEditionOfferWithheld({
             deviceId: device.id,
             role: 'watchdog',
-            reportedEdition: effectiveWatchdogEdition,
+            reportedEdition: watchdogEditionForGate,
             agentVersion: data.agentVersion,
           });
         }
@@ -1083,7 +1100,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // when no watchdog target resolves).
       warnEditionRecoveryWithheld({
         deviceId: device.id,
-        reportedEdition: effectiveWatchdogEdition,
+        reportedEdition: watchdogEditionForGate,
         agentVersion: data.agentVersion,
       });
     } else if (watchdogAcceptsServedEdition) {
@@ -1116,7 +1133,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         });
 
         if (targetAgent && compareAgentVersions(targetAgent, device.agentVersion) > 0) {
-          agentUpgradeTo = targetAgent;
+          // Supported recovery targets need no episode read. Below-floor targets
+          // require absence of an unresolved episode; isolate lookup faults in a savepoint.
+          if (isolationAgentUpgradeGate(targetAgent, true).allow) {
+            agentUpgradeTo = targetAgent;
+          } else {
+            try {
+              const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+              const unresolved = await withDbTransaction(() => findUnresolvedEpisode(
+                db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device.id,
+              ));
+              if (isolationAgentUpgradeGate(targetAgent, unresolved !== null).allow) agentUpgradeTo = targetAgent;
+            } catch (err) {
+              console.error('[heartbeat] watchdog recovery isolation lookup failed', { deviceId: device.id, orgId: device.orgId });
+              captureException(err, undefined, { phase: 'isolation_watchdog_upgrade_lookup', deviceId: device.id, orgId: device.orgId });
+            }
+          }
         }
       } catch (err) {
         console.error(`[agents] failed to evaluate watchdog-branch agent recovery target for ${agentId}:`, err);
@@ -1137,6 +1169,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           data.securityCapabilities?.scriptSecretEnvVersion,
         ),
       }),
+      containment: { networkIsolation: null },
       watchdogUpgradeTo,
       upgradeTo: agentUpgradeTo,
     });
@@ -1159,6 +1192,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // a downgrade FROM a capable build back to an old one — correctly
     // reports back down to 0 rather than leaving a stale capability claim
     // that Task 5's dispatch gate would wrongly trust.
+    networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0,
+    networkIsolationMechanism: data.securityCapabilities?.networkIsolationMechanism ?? null,
+    networkIsolationUnsupportedReason: data.securityCapabilities?.networkIsolationUnsupportedReason ?? null,
+    networkIsolationReady: data.securityCapabilities?.networkIsolationReady ?? false,
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
     // #3409 PR4 — same non-sticky contract as the line above: written every
     // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
@@ -1347,6 +1384,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // — leave the stored value untouched in that case.
   if (data.watchdogVersion) {
     deviceUpdates.watchdogVersion = data.watchdogVersion;
+    // #4297 — devices.watchdog_edition is the watchdog's own report about the
+    // build at watchdog_version. A different installed version (an upgrade,
+    // rollback or reinstall through the main agent) means that report no
+    // longer describes the binary on disk, so drop it and let readers fall
+    // back to agentEdition until the watchdog next reports. No race with a
+    // concurrent watchdog beat: both beats take the row's FOR NO KEY UPDATE
+    // lock as their first statement (selectOwnDeviceRowForUpdate, above) and
+    // hold it to commit, so `device.watchdogVersion` here is the committed
+    // value this write replaces.
+    if (data.watchdogVersion !== device.watchdogVersion) {
+      deviceUpdates.watchdogEdition = null;
+    }
   }
 
   // Keep devices.backup_version fresh from the agent's heartbeat, mirroring
@@ -1943,7 +1992,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.onedriveDeviceState) {
     const s = data.onedriveDeviceState;
     try {
-      await db.insert(onedriveDeviceState).values({
+      await withDbTransaction(() => db.insert(onedriveDeviceState).values({
         deviceId: device.id,
         orgId: device.orgId,
         signedIn: s.signedIn,
@@ -1970,7 +2019,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           lastReportedAt: new Date(),
           updatedAt: new Date(),
         },
-      });
+      }));
     } catch (err) {
       // Drizzle query errors serialize the bound params — including the
       // signedInUpns jsonb (end-user PII) — into their message. Log/report
@@ -2074,95 +2123,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     } catch (err) {
       console.error(`[agents] failed to resolve upgrade targets for ${agentId}:`, err);
       captureException(err);
-    }
-  }
-
-  if (normalizedArch && !acceptsServedEdition) {
-    warnEditionOfferWithheld({
-      deviceId: device.id,
-      role: 'agent',
-      reportedEdition: data.agentEdition,
-      agentVersion: data.agentVersion,
-    });
-    // #4072 follow-up — automatic recovery for the stranded device behind the
-    // withhold above (default-off env flag; every precondition and the
-    // once-per-device claim live in the service). Fire-and-forget: the beat's
-    // response must not wait on script dispatch, and a dispatch failure must
-    // never fail the heartbeat. The service resolves the pin-honouring target
-    // with the SAME resolver as the offer path, so a holdback pin holds
-    // auto-migration too.
-    // The cheap non-DB gate runs FIRST so a flag-off deployment (or a
-    // non-candidate device) costs this hot path nothing beyond a few
-    // comparisons — no ALS exit, no system context, no second transaction.
-    if (
-      shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
-    ) {
-      // runOutsideDbContext is load-bearing, not defensive: this promise is
-      // detached, and the surrounding org-scoped withDbAccessContext
-      // TRANSACTION commits when the handler returns — a detached query on the
-      // ambient context would run against the dead tx handle (same reason as
-      // the manifest-trust keyset at the top of this handler, #1105). The
-      // service opens its OWN system context for the claim and the command
-      // rows and sends only after it commits (#7103) — wrapping it in one here
-      // would make the send precede that commit again. System context is safe:
-      // everything dispatched was validated in the org-scoped block, the claim
-      // re-binds to the device's org and liveness, and dispatchScriptToDevice's
-      // org-equality invariant still applies.
-      runOutsideDbContext(() =>
-        maybeDispatchEditionMigration({
-          device,
-          reportedAgentVersion: data.agentVersion,
-          normalizedArch,
-          updateGateAllows,
-          pin: versionPins.agent,
-          resolveTarget: () =>
-            resolvePinnedUpgradeTarget({
-              component: 'agent',
-              platform: device.osType,
-              architecture: normalizedArch,
-              pin: versionPins.agent,
-              agentId,
-            }),
-        }),
-        // The service catches everything itself; this catch only exists so a
-        // future regression there can never surface as an unhandled rejection
-        // on the heartbeat hot path.
-      ).catch((err) => {
-        console.error(`[agents] auto edition migration hook failed for ${agentId}:`, err);
-      });
-    }
-  } else if (acceptsServedEdition) {
-    // Re-arm THIS branch's withhold warn: if the device later regresses to an
-    // incompatible build (same process), that is a fresh episode and must log
-    // again. Only the agent-role key — the watchdog branch owns its own.
-    warnedEditionWithheldDevices.delete(`${device.id}:agent`);
-  }
-
-  if (normalizedArch && acceptsServedEdition) {
-    try {
-      // Resolve the effective target: the tenant's agent pin (issue #2124) when
-      // set, else the globally promoted latest. Fails closed if the pinned
-      // version has no build for this platform/arch (returns null → no upgrade).
-      const targetVersion = upgradeTargets?.get('agent') ?? null;
-
-      if (targetVersion) {
-        // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
-        // them back to a release version. The dev-push flow disables auto_update
-        // on the agent side; the server also refrains from sending upgradeTo.
-        if (data.agentVersion.startsWith('dev-')) {
-          // no-op: leave upgradeTo null so agent stays on the dev build
-        } else if (updateGateAllows) {
-          // Upgrade-only: a pin names the target but never triggers an auto
-          // DOWNGRADE through this channel (cmp > 0). Holdback works by keeping
-          // devices already on/below the pin from jumping to a newer latest.
-          const cmp = compareAgentVersions(targetVersion, data.agentVersion);
-          if (cmp > 0) {
-            upgradeTo = targetVersion;
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
     }
   }
 
@@ -2387,7 +2347,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       const topology = resolvedFlags.materialization
         ? await withResolvedTopologyFlags(
           { orgId: agent.orgId, flags: resolvedFlags },
-          () => db.transaction(() => topologyHeartbeat(device, data)),
+          () => withDbTransaction(() => topologyHeartbeat(device, data)),
         )
         : topologyHeartbeatWithoutMaterialization(device, data);
       mergedConfigUpdate.networkContext = topology.config;
@@ -2396,6 +2356,146 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       console.error('[heartbeat] Topology collection failed:', error);
       captureException(error);
       networkContextReceipt = collectionUnavailable;
+    }
+  }
+
+  const isolationContext: HeartbeatEpisodeContext = {};
+  let isolation: typeof import('../../services/networkIsolation/reconcile') | undefined;
+  let savepointFreeLookup = false;
+  try {
+    // Load inside the fault boundary: isolation must not prevent other heartbeat work.
+    isolation = await import('../../services/networkIsolation/reconcile');
+    const { reconcileContainmentReport, noteIsolationReportDropped } = isolation;
+    // Informational input may have collapsed under .catch(undefined); report paths, never values.
+    const rawBeat = await c.req.json();
+    const rawIsolation = rawBeat?.containment?.networkIsolation;
+    if (data.containment?.networkIsolation === undefined) noteIsolationReportDropped(device.id, rawIsolation);
+    const reconcile = () => reconcileContainmentReport(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, data.containment?.networkIsolation, new Date(), isolationContext);
+    // #4618: without a report reconciliation only does the indexed episode SELECT.
+    // Keep that common path at one statement; real reconciliation retains its savepoint.
+    if (data.containment?.networkIsolation === undefined) { savepointFreeLookup = true; await reconcile(); savepointFreeLookup = false; }
+    else await withDbTransaction(reconcile);
+  } catch (err) {
+    console.error('[heartbeat] isolation reconcile failed', { deviceId: device.id, isolationId: isolationContext.row?.id, savepointFreeLookup });
+    captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
+    // A statement that failed outside a savepoint has aborted the org transaction: nothing after
+    // this point would commit, so fail the beat rather than return command claims that roll back.
+    // (Security review 2026-10-31.) The agent retries on its next beat.
+    if (savepointFreeLookup) throw err;
+  }
+  let containment: ContainmentDesiredBlock = { networkIsolation: null };
+  if (isolation) {
+    const { buildContainmentHeartbeatBlock, storedContainmentHeartbeatBlock } = isolation;
+    // `device` was read before this beat's capability write, and a capability claim is same-heartbeat
+    // truth: an agent that just dropped below level 3 would reject a block carrying policy permits.
+    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0 };
+    try {
+      // A cached absence needs no block build (and no SAVEPOINT / RELEASE).
+      containment = isolationContext.row === null
+        ? storedContainmentHeartbeatBlock(null)
+        : await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, beatDevice, isolationContext));
+    } catch (err) {
+      console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
+      captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
+      containment = storedContainmentHeartbeatBlock(isolationContext.row, beatDevice);
+    }
+  }
+
+  // Reuse reconciliation's indexed lookup rather than querying again for an upgrade.
+  // Unknown evidence withholds a below-floor target; it never changes release delivery.
+  const isolationEpisode = isolationContext.row;
+  const isolationLookupResolved = isolationEpisode !== undefined;
+  const hasUnresolvedIsolation = isolationEpisode === undefined
+    || (isolationEpisode !== null && !isResolvedTerminalIsolationState(isolationEpisode.state));
+
+  if (normalizedArch && !acceptsServedEdition) {
+    warnEditionOfferWithheld({
+      deviceId: device.id,
+      role: 'agent',
+      reportedEdition: data.agentEdition,
+      agentVersion: data.agentVersion,
+    });
+    // #4072 follow-up — automatic recovery for the stranded device behind the
+    // withhold above (default-off env flag; every precondition and the
+    // once-per-device claim live in the service). Fire-and-forget: the beat's
+    // response must not wait on script dispatch, and a dispatch failure must
+    // never fail the heartbeat. The service resolves the pin-honouring target
+    // with the SAME resolver as the offer path, so a holdback pin holds
+    // auto-migration too.
+    // The cheap non-DB gate runs FIRST so a flag-off deployment (or a
+    // non-candidate device) costs this hot path nothing beyond a few
+    // comparisons — no ALS exit, no system context, no second transaction.
+    if (
+      // A migration reinstalls the agent via MSI; defer it until isolation is resolved.
+      isolationLookupResolved && !hasUnresolvedIsolation
+      && shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
+    ) {
+      // runOutsideDbContext is load-bearing, not defensive: this promise is
+      // detached, and the surrounding org-scoped withDbAccessContext
+      // TRANSACTION commits when the handler returns — a detached query on the
+      // ambient context would run against the dead tx handle (same reason as
+      // the manifest-trust keyset at the top of this handler, #1105). The
+      // service opens its OWN system context for the claim and the command
+      // rows and sends only after it commits (#7103) — wrapping it in one here
+      // would make the send precede that commit again. System context is safe:
+      // everything dispatched was validated in the org-scoped block, the claim
+      // re-binds to the device's org and liveness, and dispatchScriptToDevice's
+      // org-equality invariant still applies.
+      runOutsideDbContext(() =>
+        maybeDispatchEditionMigration({
+          device,
+          reportedAgentVersion: data.agentVersion,
+          normalizedArch,
+          updateGateAllows,
+          pin: versionPins.agent,
+          resolveTarget: () =>
+            resolvePinnedUpgradeTarget({
+              component: 'agent',
+              platform: device.osType,
+              architecture: normalizedArch,
+              pin: versionPins.agent,
+              agentId,
+            }),
+        }),
+        // The service catches everything itself; this catch only exists so a
+        // future regression there can never surface as an unhandled rejection
+        // on the heartbeat hot path.
+      ).catch((err) => {
+        console.error(`[agents] auto edition migration hook failed for ${agentId}:`, err);
+      });
+    }
+  } else if (acceptsServedEdition) {
+    // Re-arm THIS branch's withhold warn: if the device later regresses to an
+    // incompatible build (same process), that is a fresh episode and must log
+    // again. Only the agent-role key — the watchdog branch owns its own.
+    warnedEditionWithheldDevices.delete(`${device.id}:agent`);
+  }
+
+  if (normalizedArch && acceptsServedEdition) {
+    try {
+      // Resolve the effective target: the tenant's agent pin (issue #2124) when
+      // set, else the globally promoted latest. Fails closed if the pinned
+      // version has no build for this platform/arch (returns null → no upgrade).
+      const targetVersion = upgradeTargets?.get('agent') ?? null;
+
+      if (targetVersion) {
+        // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
+        // them back to a release version. The dev-push flow disables auto_update
+        // on the agent side; the server also refrains from sending upgradeTo.
+        if (data.agentVersion.startsWith('dev-')) {
+          // no-op: leave upgradeTo null so agent stays on the dev build
+        } else if (updateGateAllows) {
+          // Upgrade-only: a pin names the target but never triggers an auto
+          // DOWNGRADE through this channel (cmp > 0). Holdback works by keeping
+          // devices already on/below the pin from jumping to a newer latest.
+          const cmp = compareAgentVersions(targetVersion, data.agentVersion);
+          if (cmp > 0 && isolationAgentUpgradeGate(targetVersion, hasUnresolvedIsolation).allow) {
+            upgradeTo = targetVersion;
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
     }
   }
 
@@ -2409,6 +2509,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceId: device.id,
     remoteManagement,
     mainResponse: {
+      containment,
       commands: deliverableCommands,
       configUpdate: mergedConfigUpdate,
       networkContextReceipt,

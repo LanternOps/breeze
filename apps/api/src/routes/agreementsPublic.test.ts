@@ -266,7 +266,8 @@ describe('GET /:token — view', () => {
     expect(res.status).toBe(200);
     expectPublicHeaders(res);
     const { data } = await res.json();
-    expect(data.request).toMatchObject({ id: REQUEST_ID, status: 'viewed', label: 'BAA', coverMessage: 'Please sign' });
+    expect(data.request).toMatchObject({ id: REQUEST_ID, status: 'viewed', coverMessage: 'Please sign' });
+    expect(data.request).not.toHaveProperty('label'); // staff-internal (#10294)
     expect(data.template).toEqual({ name: 'Business Associate Agreement', versionNumber: 3, sourceType: 'authored' });
     // Frozen client name + manual value substituted; the href value re-sanitized.
     expect(data.html).toContain('Example Clinic PO PO-9');
@@ -315,6 +316,24 @@ describe('GET /:token — view', () => {
     const { data } = await res.json();
     expect(data.request.status).toBe(status);
     expect(markAgreementRequestViewed).not.toHaveBeenCalled();
+  });
+
+  it('#10294: a signed request names the template as it was at signing, not the renamed live template', async () => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution({}, {
+      status: 'signed', expiresAt: new Date(NOW - 1000), signedAt: new Date('2027-01-11T09:00:00.000Z'),
+    }) as never);
+    vi.mocked(loadTemplateVersionRenderData).mockResolvedValue(renderData({ templateName: 'BAA (renamed)' }));
+    // Branding (org, partner), then the signed agreement's frozen name.
+    dbResults.push([], [{ settings: {} }], [{ templateNameSnapshot: 'Business Associate Agreement' }]);
+    const { data } = await (await get()).json();
+    expect(data.template.name).toBe('Business Associate Agreement');
+    expect(JSON.stringify(data)).not.toContain('renamed');
+  });
+
+  it('an open request still names the live template (nothing is frozen until signing)', async () => {
+    vi.mocked(loadTemplateVersionRenderData).mockResolvedValue(renderData({ templateName: 'BAA (renamed)' }));
+    const { data } = await (await get()).json();
+    expect(data.template.name).toBe('BAA (renamed)');
   });
 
   it('an uploaded template carries the token-scoped file url and no html', async () => {

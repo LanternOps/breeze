@@ -602,7 +602,8 @@ function seedRows(options: {
 const hooks: Hooks = {};
 
 interface QueryScript {
-  toolCalls?: Array<{ tool: string; input: Record<string, unknown> }>;
+  /** `result`: what an ALLOWED call's tool returned (default `{"ok":true}`, not an error). */
+  toolCalls?: Array<{ tool: string; input: Record<string, unknown>; result?: { output: string; isError: boolean } }>;
   assistantText?: string;
   results?: Array<Record<string, unknown>>;
   hangUntilAbort?: boolean;
@@ -671,7 +672,7 @@ function scriptQuery(script: QueryScript) {
         const verdict = await hooks.pre!(call.tool, call.input);
         preVerdicts.push(verdict);
         if (verdict.allowed) {
-          await hooks.post!(call.tool, call.input, '{"ok":true}', false, 5);
+          await hooks.post!(call.tool, call.input, call.result?.output ?? '{"ok":true}', call.result?.isError ?? false, 5);
         } else {
           await hooks.post!(call.tool, call.input, JSON.stringify({ error: verdict.error }), true, 0);
         }
@@ -3011,6 +3012,38 @@ describe('executeAgentRun', () => {
     })]);
   });
 
+  it('#10413: bills every modelUsage key of the fresh hop query (the CLI background call included), confirmed', async () => {
+    seedRows();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const BG = 'claude-haiku-4-5-20251001';
+    const main = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 5_000 };
+    const base = resultMessage({ num_turns: 5, usage: main });
+    scriptQuery({
+      assistantText: 'done',
+      results: [{
+        ...base,
+        modelUsage: {
+          ...(base.modelUsage as Record<string, unknown>),
+          [BG]: { inputTokens: 900, outputTokens: 15, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, webSearchRequests: 0, costUSD: 0 },
+        },
+      }],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    const input = settleInvocation.mock.calls[0]![0] as { usage: unknown; outcome: unknown };
+    expect(input.usage).toEqual([
+      expect.objectContaining({ model: AGENT_WIRE_MODEL, tokens: { input: 10, output: 20, cacheRead: 90_000, cacheWrite: 5_000 } }),
+      expect.objectContaining({ model: BG, tokens: { input: 900, output: 15, cacheRead: 0, cacheWrite: 0 } }),
+    ]);
+    expect(input.outcome).toMatchObject({ servedModel: AGENT_WIRE_MODEL, fallbackUsed: false });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('ai_usage_unconfirmed'))).toBe(false);
+    // The premise of billing from zero: the hop query neither resumes nor persists a transcript.
+    expect(lastQueryOptions).toMatchObject({ persistSession: false });
+    expect(lastQueryOptions).not.toHaveProperty('resume');
+  });
+
   it('a run that ended with no result marks its reservation indeterminate instead of settling', async () => {
     seedRows();
     queryMock.mockImplementation((params: { prompt: unknown; options: Record<string, unknown> }) => {
@@ -3133,6 +3166,28 @@ describe('executeAgentRun', () => {
     const final = finalTransition()!;
     const outcome = final.patch.outcome as { executedActions: Array<{ executionId: string }> };
     expect(outcome.executedActions[0]!.executionId).toBe('exec-1');
+  });
+
+  // #10411: a failed run tool call kept only status 'failed' — the reason
+  // survived only in the model's prose.
+  it('a failed allowed tool call hands its result to the ledger row for the error text', async () => {
+    seedRows();
+    scriptQuery({
+      toolCalls: [{
+        tool: 'query_devices',
+        input: { status: 'online' },
+        result: { output: JSON.stringify({ error: 'Device is offline' }), isError: true },
+      }],
+      assistantText: 'done',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(completeToolExecution).toHaveBeenCalledWith(expect.objectContaining({
+      executionId: 'exec-1',
+      isError: true,
+      output: JSON.stringify({ error: 'Device is offline' }),
+    }));
   });
 
   it('a ledger write failure never blocks the tool call — falls back to (inline)', async () => {

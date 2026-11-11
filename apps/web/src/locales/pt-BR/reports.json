@@ -380,6 +380,7 @@
         "mrr_renewals": "MRR e renovações",
         "quote_win_rate": "Taxa de ganho de orçamentos",
         "client_profitability": "Lucratividade por cliente",
+        "ticket_sla_performance": "Desempenho de SLA",
         "backup_status": "Status do backup"
       },
       "threatDetection": {
@@ -409,6 +410,29 @@
         "noncompliant": "Fora de conformidade",
         "notMeasured": "N/D",
         "staleEnrolments": "Inscrições desatualizadas"
+      },
+      "slaPerformance": {
+        "priority": "Prioridade",
+        "ticketsOpened": "Tickets abertos",
+        "firstResponse": "Primeira resposta",
+        "resolution": "Resolução",
+        "target": "Meta",
+        "measured": "Medidos",
+        "withinSla": "% dentro do SLA",
+        "median": "Mediana",
+        "mean": "Média",
+        "varies": "varia",
+        "breaches": "Violações",
+        "breachCount_one": "{{count}} violação",
+        "breachCount_other": "{{count}} violações",
+        "unavailable": "Não foi possível ler o resumo de SLA desta execução, por isso ele não pode ser exibido aqui. Gere o relatório novamente.",
+        "notes": "O que é medido",
+        "priorities": {
+          "urgent": "Urgente",
+          "high": "Alta",
+          "normal": "Normal",
+          "low": "Baixa"
+        }
       },
       "identityAccess": {
         "notMeasured": "N/D",
@@ -486,6 +510,7 @@
         "mrr_renewals": "MRR e renovações",
         "quote_win_rate": "Taxa de ganho de orçamentos",
         "client_profitability": "Lucratividade por cliente",
+        "ticket_sla_performance": "Desempenho de SLA",
         "backup_status": "Status do backup"
       },
       "runsTable": {
@@ -812,6 +837,7 @@
           "os": "SO",
           "owner": "Proprietario",
           "patch_level": "Nivel de patch",
+          "product_number": "Número do produto",
           "serial": "Número de série",
           "site": "Site",
           "status": "Status"
@@ -1038,6 +1064,7 @@
         "mrr_renewals": "MRR e renovações",
         "quote_win_rate": "Taxa de ganho de orçamentos",
         "client_profitability": "Lucratividade por cliente",
+        "ticket_sla_performance": "Desempenho de SLA",
         "backup_status": "Status do backup"
       },
       "schedules": {
@@ -1118,6 +1145,10 @@
         "quote_win_rate": {
           "name": "Taxa de ganho de orçamentos",
           "description": "A parcela dos orçamentos enviados que foram ganhos, contada por oportunidade, de modo que um orçamento revisado e reenviado conta uma só vez. A taxa principal considera apenas as oportunidades decididas, com a quantidade ainda em aberto ao lado. Os valores são antes dos impostos, um conjunto por moeda, sem conversão."
+        },
+        "ticket_sla_performance": {
+          "name": "Desempenho de SLA",
+          "description": "Tempos de resposta e resolução em relação ao SLA, prontos para o cliente, por prioridade e com as violações."
         },
         "client_profitability": {
           "name": "Lucratividade por cliente",
@@ -1273,6 +1304,12 @@
       "cancel": "Cancelar",
       "createReport": "Criar relatório"
     },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Incluir assuntos dos tickets",
+      "includeSubjectsHelp": "Os relatórios entregues ficam visíveis para todos os usuários do portal desta organização. Deixe desativado, a menos que todos os usuários possam ver o assunto de cada ticket.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
     "clientProfitabilityOptions": {
       "groupBy": "Agrupar por",
       "groupByDefault": "Padrão para o escopo do relatório",
@@ -1313,8 +1350,7 @@
         "series": "Um relatório por organização",
         "seriesHint": "Uma definição, com uma cópia separada para cada organização abrangida, enviada aos contatos dessa organização.",
         "combined": "Todas as organizações combinadas",
-        "combinedHint": "Um relatório combinado de todas as suas organizações, para a sua própria equipe.",
-        "seriesUnavailableType": "Este tipo de relatório não pode ser enviado como um relatório por organização."
+        "combinedHint": "Um relatório combinado de todas as suas organizações, para a sua própria equipe."
       },
       "schedule": {
         "label": "Com que frequência a cópia de cada organização é enviada",

@@ -207,6 +207,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
         partnerId: fixture.partner.id,
         orderId: fixture.order.id,
         actorUserId: fixture.user.id,
+        mode: { kind: 'rest' },
       })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('ready') });
 
       expect(createClient).not.toHaveBeenCalled();
@@ -236,6 +237,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: fixture.partner.id,
       orderId: fixture.order.id,
       actorUserId: fixture.user.id,
+      mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('future') });
 
     expect(createClient).not.toHaveBeenCalled();
@@ -272,6 +274,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: fixture.partner.id,
       orderId: fixture.order.id,
       actorUserId: fixture.user.id,
+      mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('no longer matches') });
 
     expect(client.cancelSubscription).not.toHaveBeenCalled();
@@ -291,6 +294,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: fixture.partner.id,
       orderId: fixture.order.id,
       actorUserId: fixture.user.id,
+      mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('active') });
 
     expect(client.createOrder).not.toHaveBeenCalled();
@@ -305,6 +309,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: fixture.partner.id,
       orderId: fixture.order.id,
       actorUserId: fixture.user.id,
+      mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('changed') });
 
     expect(createClient).not.toHaveBeenCalled();
@@ -338,6 +343,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: fixture.partner.id,
       orderId: fixture.order.id,
       actorUserId: fixture.user.id,
+      mode: { kind: 'rest' },
     });
     expect(restagedClient.updateSubscriptionQuantity)
       .toHaveBeenCalledWith('subscription-cancel', 25);
@@ -354,6 +360,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: fixture.partner.id,
       orderId: fixture.order.id,
       actorUserId: fixture.user.id,
+      mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('baseline') });
     expect(client.updateSubscriptionQuantity).not.toHaveBeenCalled();
     const [orderAfter] = await withSystemDbAccessContext(() => db.select()
@@ -374,6 +381,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: fixture.partner.id,
       orderId: fixture.order.id,
       actorUserId: fixture.user.id,
+      mode: { kind: 'rest' },
     });
 
     expect(client.updateSubscriptionQuantity).toHaveBeenCalledWith('subscription-cancel', 15);
@@ -406,6 +414,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: patchWins.partner.id,
       orderId: patchWins.order.id,
       actorUserId: patchWins.user.id,
+      mode: { kind: 'rest' },
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(patchWinsClient.createOrder).not.toHaveBeenCalled();
@@ -428,6 +437,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: claimWins.partner.id,
       orderId: claimWins.order.id,
       actorUserId: claimWins.user.id,
+      mode: { kind: 'rest' },
     });
     await expect(updateOrderLine({
       partnerId: claimWins.partner.id,
@@ -441,7 +451,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
     const fixture = await seedOrder();
     const client = successfulClient();
     const service = serviceWithClient(client);
-    const input = { partnerId: fixture.partner.id, orderId: fixture.order.id, actorUserId: fixture.user.id };
+    const input = { partnerId: fixture.partner.id, orderId: fixture.order.id, actorUserId: fixture.user.id, mode: { kind: 'rest' as const } };
 
     const results = await Promise.allSettled([service.submitOrder(input), service.submitOrder(input)]);
     const failureMessages = results.flatMap((result) => result.status === 'rejected'
@@ -471,6 +481,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: rejectedFixture.partner.id,
       orderId: rejectedFixture.order.id,
       actorUserId: rejectedFixture.user.id,
+      mode: { kind: 'rest' },
     });
 
     const [contractLine] = await withSystemDbAccessContext(() =>
@@ -488,6 +499,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: cancelFixture.partner.id,
       orderId: cancelFixture.order.id,
       actorUserId: cancelFixture.user.id,
+      mode: { kind: 'rest' },
     });
     const [cancelContractLine] = await withSystemDbAccessContext(() =>
       db.select().from(contractLines).where(eq(contractLines.id, cancelFixture.contractLine.id)));
@@ -505,6 +517,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: timeoutFixture.partner.id,
       orderId: timeoutFixture.order.id,
       actorUserId: timeoutFixture.user.id,
+      mode: { kind: 'rest' },
     });
     expect(timeoutResult.lines[0]?.submitState).toBe('needs_reconcile');
     await withSystemDbAccessContext(() => db.update(pax8CompanyMappings)
@@ -535,7 +548,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
         pax8OrderId: 'captured-parent',
         submittedAt: capturedAt,
       }).where(eq(pax8Orders.id, parentGuardFixture.order.id));
-      await db.update(pax8OrderLines).set({ submitState: 'needs_reconcile' })
+      await db.update(pax8OrderLines).set({ submitState: 'needs_reconcile', authorizedBaselineQuantity: '0.00' })
         .where(eq(pax8OrderLines.id, parentGuardFixture.line.id));
     });
     const parentGuardBundle = await pax8OrderSubmitRepository.loadReconcileOrder({
@@ -574,7 +587,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
         resultSubscriptionId: 'captured-subscription',
       }],
       'captured-parent',
-    )).resolves.toEqual({ resolved: 1, stillUnknown: 0 });
+    )).resolves.toEqual(expect.objectContaining({ resolved: 1, stillUnknown: 0, billingConflicts: [] }));
 
     const nullParentFixture = await seedOrder();
     await withSystemDbAccessContext(async () => {
@@ -583,7 +596,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
         pax8CompanyId: 'company-1',
         submittedAt: capturedAt,
       }).where(eq(pax8Orders.id, nullParentFixture.order.id));
-      await db.update(pax8OrderLines).set({ submitState: 'needs_reconcile' })
+      await db.update(pax8OrderLines).set({ submitState: 'needs_reconcile', authorizedBaselineQuantity: '0.00' })
         .where(eq(pax8OrderLines.id, nullParentFixture.line.id));
     });
     const nullParentBundle = await pax8OrderSubmitRepository.loadReconcileOrder({
@@ -599,7 +612,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
         resultSubscriptionId: 'matched-subscription',
       }],
       'matched-parent',
-    )).resolves.toEqual({ resolved: 1, stillUnknown: 0 });
+    )).resolves.toEqual(expect.objectContaining({ resolved: 1, stillUnknown: 0, billingConflicts: [] }));
     const [nullParentOrder] = await withSystemDbAccessContext(() => db.select()
       .from(pax8Orders).where(eq(pax8Orders.id, nullParentFixture.order.id)));
     expect(nullParentOrder?.pax8OrderId).toBe('matched-parent');
@@ -617,18 +630,31 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
         };
       });
     const rollbackService = serviceWithClient(rollbackClient);
-    await expect(rollbackService.submitOrder({
+    const missingLineResult = await rollbackService.submitOrder({
       partnerId: rollbackFixture.partner.id,
       orderId: rollbackFixture.order.id,
       actorUserId: rollbackFixture.user.id,
-    })).rejects.toMatchObject({ status: 409 });
+      mode: { kind: 'rest' },
+    });
+    expect(missingLineResult).toMatchObject({
+      kind: 'executed',
+      status: 'partially_failed',
+      lines: [{ lineId: rollbackFixture.line.id, submitState: 'succeeded', error: expect.stringContaining('billing_conflict:line_missing:') }],
+      billingConflicts: [{ lineId: rollbackFixture.line.id, reason: 'line_missing' }],
+    });
     const rollbackState = await withSystemDbAccessContext(async () => {
       const [order] = await db.select().from(pax8Orders).where(eq(pax8Orders.id, rollbackFixture.order.id));
       const [line] = await db.select().from(pax8OrderLines).where(eq(pax8OrderLines.id, rollbackFixture.line.id));
-      return { order, line };
+      const [contractLine] = await db.select().from(contractLines).where(eq(contractLines.id, rollbackFixture.contractLine.id));
+      return { order, line, contractLine };
     });
-    expect(rollbackState.order?.status).toBe('submitting');
-    expect(rollbackState.line?.submitState).toBe('in_flight');
+    expect(rollbackState.order?.status).toBe('partially_failed');
+    expect(rollbackState.order?.pax8OrderId).toBe('pax-order-rollback');
+    expect(rollbackState.line?.submitState).toBe('succeeded');
+    expect(rollbackState.line?.resultSubscriptionId).toBe('subscription-rollback');
+    expect(rollbackState.line?.error).toContain('billing_conflict:line_missing:');
+    expect(rollbackState.contractLine).toBeUndefined(); // billing must not be recreated after deletion
+    expect(rollbackClient.createOrder).toHaveBeenCalledTimes(2); // one dry run and one vendor send
 
     const duplicateFixture = await seedOrder({ action: 'cancel' });
     await withSystemDbAccessContext(() => db.insert(pax8OrderLines).values({
@@ -646,6 +672,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: duplicateFixture.partner.id,
       orderId: duplicateFixture.order.id,
       actorUserId: duplicateFixture.user.id,
+      mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 422 });
     expect(duplicateClient.createOrder).not.toHaveBeenCalled();
     expect(duplicateClient.cancelSubscription).not.toHaveBeenCalled();
@@ -656,6 +683,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       partnerId: wrongPartner.id,
       orderId: duplicateFixture.order.id,
       actorUserId: duplicateFixture.user.id,
+      mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 404 });
     expect(isolatedClient.createOrder).not.toHaveBeenCalled();
 

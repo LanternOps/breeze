@@ -65,8 +65,8 @@ export function generateTurnCredentials(scope: TurnCredentialScope): { username:
   return { username, credential, ttlSeconds: ttl, expiresAt: expiry };
 }
 
-export function getIceServers(scope?: TurnCredentialScope): Array<{ urls: string | string[]; username?: string; credential?: string }> {
-  const servers: Array<{ urls: string | string[]; username?: string; credential?: string }> = [
+export function getIceServers(scope?: TurnCredentialScope, opts?: { relayOnly?: boolean }): Array<{ urls: string | string[]; username?: string; credential?: string }> {
+  const servers: Array<{ urls: string | string[]; username?: string; credential?: string }> = opts?.relayOnly ? [] : [
     { urls: 'stun:stun.l.google.com:19302' }
   ];
 

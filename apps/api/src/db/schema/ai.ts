@@ -14,7 +14,10 @@ import type { AiTurnModel } from '@breeze/shared';
 
 export const aiSessionStatusEnum = pgEnum('ai_session_status', ['active', 'closed', 'expired']);
 export const aiMessageRoleEnum = pgEnum('ai_message_role', ['user', 'assistant', 'system', 'tool_use', 'tool_result']);
-export const aiToolStatusEnum = pgEnum('ai_tool_status', ['pending', 'approved', 'executing', 'completed', 'failed', 'rejected']);
+// 'rejected': the approval lifecycle ended without an approval (denied,
+// expired, wait ended). 'refused': the platform refused the call before it ran
+// (guardrail, RBAC, rate limit, validation, ceiling; #10411).
+export const aiToolStatusEnum = pgEnum('ai_tool_status', ['pending', 'approved', 'executing', 'completed', 'failed', 'rejected', 'refused']);
 export const aiApprovalModeEnum = pgEnum('ai_approval_mode', [
   'per_step', 'action_plan', 'auto_approve', 'hybrid_plan',
 ]);

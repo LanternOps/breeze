@@ -14,6 +14,9 @@
  * resolves a concern whose subject is gone with outcome `subject_gone`.
  * `incident` (w00 A30) is minted by the ticket-cluster poller / correlator and
  * names the concern itself; `quote`/`invoice`/`contract`/`site` are w00 A35.
+ * `readiness` (#10386) is Wisp's own "what I can / cannot do in this org" note,
+ * subject id = the org id: a slot of its own, so it never takes the org's
+ * one-live-concern slot from a real org-level concern.
  */
 export const CONCERN_SUBJECT_KINDS = [
   'ticket',
@@ -28,9 +31,16 @@ export const CONCERN_SUBJECT_KINDS = [
   'invoice',
   'contract',
   'site',
+  'readiness',
 ] as const;
 export type ConcernSubjectKind = (typeof CONCERN_SUBJECT_KINDS)[number];
 export type ConcernSubject = { kind: ConcernSubjectKind; id: string };
+
+/**
+ * Subject kinds only system code writes (#10386): neither an assessment run's
+ * `record_concern` nor a chat turn may raise one.
+ */
+export const SYSTEM_ONLY_CONCERN_SUBJECT_KINDS = ['readiness'] as const satisfies readonly ConcernSubjectKind[];
 
 /**
  * Subject kinds a person may raise from a chat turn (`raise_concern`, w00 A25

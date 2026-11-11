@@ -10,15 +10,17 @@
  * "Today" is the UTC day `now` falls in (`utcDayWindow`, the same window the
  * per-grant budget is charged against in budget.ts).
  */
-import { and, eq, gte, inArray, isNotNull, like, lt, ne, or, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { aiInvocations } from '../../db/schema/aiInvocations';
+import { aiSessions } from '../../db/schema/ai';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { partners } from '../../db/schema/orgs';
 import { users } from '../../db/schema/users';
 import { wispGrants, type WispGrantStatus } from '../../db/schema/wisp';
 import { wispConcerns } from '../../db/schema/wispConcerns';
-import { utcDayWindow } from './budget';
+import { GRANT_OVERHEAD_SOURCE_REF_PREFIXES, combineSpendLines, utcDayWindow } from './budget';
 
 export interface WispPartnerOverviewRow {
   partnerId: string;
@@ -101,8 +103,8 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
     .where(inArray(partners.id, partnerIds));
 
   // One pass over today's grant runs. `spentCents` mirrors budget.ts
-  // spentUnderGrant (skipped runs excluded) so "exhausted" here means the same
-  // thing chargeableUnderGrant refuses on.
+  // spendBreakdownUnderGrant (skipped runs excluded); with the overhead and chat
+  // rows below, "exhausted" here means the same thing chargeableUnderGrant refuses on.
   const runRows = await db
     .select({
       grantId: aiAgentRuns.grantId,
@@ -138,7 +140,47 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
     .where(and(eq(wispConcerns.status, 'open'), inArray(wispConcerns.partnerId, partnerIds)))
     .groupBy(wispConcerns.partnerId);
 
+  // #10390: grant-keyed overhead (model-written session summaries, ...), every registered prefix.
+  // Summed RAW: combineSpendLines rounds overhead + chat up once, together.
+  const overheadRows = await db
+    .select({
+      sourceRef: aiInvocations.sourceRef,
+      total: sql<string | number>`coalesce(sum(${aiInvocations.costCents}), 0)`,
+    })
+    .from(aiInvocations)
+    .where(and(
+      or(...GRANT_OVERHEAD_SOURCE_REF_PREFIXES.map((prefix) => sql`starts_with(${aiInvocations.sourceRef}, ${prefix})`)),
+      gte(aiInvocations.createdAt, start),
+      lt(aiInvocations.createdAt, end),
+    ))
+    .groupBy(aiInvocations.sourceRef);
+
+  // #10414: chat = invocations on a grant's Wisp session that are not a run's own call.
+  const chatRows = await db
+    .select({
+      grantId: aiSessions.wispGrantId,
+      total: sql<string | number>`coalesce(sum(${aiInvocations.costCents}), 0)`,
+    })
+    .from(aiInvocations)
+    .innerJoin(aiSessions, eq(aiSessions.id, aiInvocations.sessionId))
+    .where(and(
+      isNotNull(aiSessions.wispGrantId),
+      isNull(aiInvocations.agentRunId),
+      gte(aiInvocations.createdAt, start),
+      lt(aiInvocations.createdAt, end),
+    ))
+    .groupBy(aiSessions.wispGrantId);
+
   const runsByGrant = new Map(runRows.map((r) => [r.grantId, r]));
+  const overheadByGrant = new Map<string, number>();
+  for (const r of overheadRows) {
+    const ref = r.sourceRef ?? '';
+    const prefix = GRANT_OVERHEAD_SOURCE_REF_PREFIXES.find((p) => ref.startsWith(p));
+    if (prefix === undefined) continue;
+    const grantId = ref.slice(prefix.length);
+    overheadByGrant.set(grantId, (overheadByGrant.get(grantId) ?? 0) + toCount(r.total));
+  }
+  const chatByGrant = new Map(chatRows.map((r) => [r.grantId, toCount(r.total)]));
   const tasksByGrant = new Map(taskRows.map((r) => [r.grantId, toCount(r.n)]));
   const concernsByPartner = new Map(concernRows.map((r) => [r.partnerId, toCount(r.n)]));
   const partnerById = new Map(partnerRows.map((p) => [p.id, p]));
@@ -173,7 +215,14 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
     // Live = could run again today: not revoked/expired, and not past expires_at
     // (the status may lag the clock until the lifecycle sweep flips it).
     const live = (g.status === 'active' || g.status === 'paused') && notExpired;
-    if (live && runs && toCount(runs.spentCents) >= g.budgetCentsPerDay) row.budgetExhaustedGrantsToday += 1;
+    const overheadRaw = overheadByGrant.get(g.id);
+    const chatRaw = chatByGrant.get(g.id);
+    const spentToday = combineSpendLines({
+      runsCents: toCount(runs?.spentCents),
+      overheadRaw: overheadRaw ?? 0,
+      chatRaw: chatRaw ?? 0,
+    }).totalCents;
+    if (live && (runs || overheadRaw !== undefined || chatRaw !== undefined) && spentToday >= g.budgetCentsPerDay) row.budgetExhaustedGrantsToday += 1;
   }
 
   return [...rows.values()].sort((a, b) => a.partnerName.localeCompare(b.partnerName));

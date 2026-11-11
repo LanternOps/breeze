@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/netpolicy"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
@@ -91,6 +91,8 @@ type Updater struct {
 	// handle. The failure mode is closed: client is nil whenever clientErr
 	// is set, and every download entry point checks clientErr first.
 	clientErr error
+	// signedPkgSize belongs to the per-install copy populated from a verified manifest.
+	signedPkgSize int64
 }
 
 // New creates a new Updater. The returned client enforces netpolicy on every
@@ -590,6 +592,12 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 		return map[string]struct{}{
 			fmt.Sprintf("breeze-agent-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
 		}
+	case "isolation-recovery":
+		suffix := ""
+		if runtime.GOOS == "windows" {
+			suffix = ".exe"
+		}
+		return map[string]struct{}{fmt.Sprintf("breeze-isolation-recovery-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {}}
 	case "helper":
 		switch runtime.GOOS {
 		case "windows":
@@ -670,6 +678,14 @@ func pkgAssetName() string {
 // .pkg being added) — so the caller falls back to verified-binary replacement
 // rather than installing bytes never bound to the signed trust root.
 func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
+	return releaseAssetChecksum(verifiedManifest, version, pkgAssetName())
+}
+
+// releaseAssetChecksum returns the SHA-256 that an already-verified release
+// artifact manifest lists for asset name at release version. It fails closed
+// on a different release, a missing entry, a disallowed edition, or a
+// malformed checksum.
+func releaseAssetChecksum(verifiedManifest []byte, version, name string) (string, error) {
 	var manifest releaseArtifactManifest
 	if err := json.Unmarshal(verifiedManifest, &manifest); err != nil {
 		return "", fmt.Errorf("invalid release artifact manifest JSON: %w", err)
@@ -680,7 +696,6 @@ func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
 	if !releaseTagMatchesVersion(manifest.Release, version) {
 		return "", fmt.Errorf("release artifact manifest version mismatch: expected %s, got %s", version, manifest.Release)
 	}
-	name := pkgAssetName()
 	for i := range manifest.Assets {
 		if manifest.Assets[i].Name != name {
 			continue
@@ -908,12 +923,47 @@ func normalizePreflightErr(err error) error {
 	return err
 }
 
+// UpdateMarkerName is the transient marker in config.ConfigDir() that the
+// updater writes, holding the target version, just before it hands off to a
+// restart. The next agent start consumes it (heartbeat/update_outcome.go).
+const UpdateMarkerName = ".update-restart"
+
+// UpdateHelperFailureLogPrefix names the Windows restart helper's failure log,
+// ${env:TEMP}\<prefix><stamp>.log (buildRestartScript). The heartbeat reads it
+// after a swap that did not take (#9751), so both sides use this constant.
+const UpdateHelperFailureLogPrefix = "breeze-update-failure-"
+
+// updateMarkerPath is the marker location; a test seam.
+var updateMarkerPath = func() string { return filepath.Join(config.ConfigDir(), UpdateMarkerName) }
+
 // writeUpdateMarker creates a transient file that tells the new process
-// to skip startup jitter and send an immediate heartbeat.
+// to skip startup jitter and send an immediate heartbeat, and lets it check
+// whether the update took effect (#9751).
 func writeUpdateMarker(version string) {
-	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
+	markerPath := updateMarkerPath()
 	if err := os.WriteFile(markerPath, []byte(version), 0600); err != nil {
-		log.Warn("failed to write update marker", "path", markerPath, "error", err.Error())
+		log.Warn("failed to write update marker; the next start cannot tell whether this update took effect",
+			"path", markerPath, "targetVersion", version, "error", err.Error())
+	}
+}
+
+// updateMarkerTxn removes the marker an update wrote when that update then
+// returns an error without handing off to a restart. A marker left behind would
+// make the next, unrelated start (crash, reboot) report this version as a swap
+// that did not take effect and latch it (#9751), and skip its startup jitter.
+type updateMarkerTxn struct{ written bool }
+
+func (m *updateMarkerTxn) write(version string) {
+	writeUpdateMarker(version)
+	m.written = true
+}
+
+// abandonOnError removes the marker when err is non-nil and this update wrote
+// one. A marker it did not write (another component's update) is left alone.
+func (m *updateMarkerTxn) abandonOnError(err error) {
+	if err != nil && m.written {
+		removeUpdateMarker()
+		m.written = false
 	}
 }
 
@@ -931,7 +981,7 @@ func writeUpdateMarker(version string) {
 // wrote. The cost is bounded to that restart losing its jitter skip; the
 // write-side of the same race predates this function.
 func removeUpdateMarker() {
-	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
+	markerPath := updateMarkerPath()
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		log.Warn("failed to remove update marker", "path", markerPath, "error", err.Error())
 	}
@@ -990,7 +1040,12 @@ func (u *Updater) UpdateToWithOptions(version string, opts UpdateOptions) error 
 // updateTo is the unexported implementation shared by UpdateTo and
 // UpdateToWithOptions. opts.UserHelper, when non-nil, is threaded through to
 // RestartWithHelper on Windows.
-func (u *Updater) updateTo(version string, opts UpdateOptions) error {
+func (u *Updater) updateTo(version string, opts UpdateOptions) (retErr error) {
+	var marker updateMarkerTxn
+	defer func() { marker.abandonOnError(retErr) }()
+	if err := checkIsolationCompanions(opts); err != nil {
+		return err
+	}
 	log.Info("starting update", "targetVersion", version)
 
 	// Pre-flight: verify we can write to the binary's directory.
@@ -1015,6 +1070,17 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
+	if err := checkIsolationCompanions(opts); err != nil {
+		removeCleanup(tempPath)
+		return err
+	}
+
+	// Refuse legacy size-less artifacts if containment began during download.
+	if err := verifyIsolationSize(tempPath, manifest.Size); err != nil {
+		removeCleanup(tempPath)
+		return err
+	}
+
 	// 3. Backup current binary
 	if err := u.backupCurrentBinary(); err != nil {
 		removeCleanup(tempPath)
@@ -1025,7 +1091,11 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	//    The script handles: stop service -> copy new binary -> start service.
 	//    The agent exits normally after spawning the script.
 	if runtime.GOOS == "windows" {
-		writeUpdateMarker(version)
+		if err := u.checkIsolationInstall(tempPath, &manifest, opts); err != nil {
+			removeCleanup(tempPath)
+			return err
+		}
+		marker.write(version)
 		// User-helper and backup swaps are wired in by the heartbeat-layer
 		// caller (heartbeat.doUpgrade), not here — the updater package is
 		// component-agnostic, and downloading a second component requires
@@ -1067,11 +1137,12 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	//    root. (issue: macOS update RCE.)
 	if runtime.GOOS == "darwin" {
 		defer removeCleanup(tempPath)
-		writeUpdateMarker(version)
+		marker.write(version)
+		pkgUpdater := u.withVerifiedPkgSize(manifestPayload)
 		pkgChecksum, pkgErr := pkgAssetChecksum(manifestPayload, version)
 		if pkgErr != nil {
 			log.Warn("signed .pkg checksum unavailable, falling back to verified-binary replacement", "error", pkgErr.Error())
-		} else if installErr := u.installViaPkg(version, pkgChecksum); installErr != nil {
+		} else if installErr := pkgUpdater.installViaPkg(version, pkgChecksum); installErr != nil { //nolint:staticcheck // SA4023: unreachable on Windows, where installViaPkg is an always-error stub.
 			// installViaPkg downloads the signed .pkg (pkg_darwin.go), so this
 			// error chain can be a *url.Error carrying the presigned asset URL.
 			key, value := SafeDownloadErrorFields(installErr)
@@ -1094,6 +1165,9 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	}
 
 	// 6. Non-macOS or pkg fallback: replace binary inline and restart
+	if err := u.checkIsolationInstall(tempPath, &manifest, opts); err != nil {
+		return err
+	}
 	if err := u.replaceBinary(tempPath); err != nil {
 		if isCodeSignatureErr(err) {
 			// The darwin branch above already wrote the update marker before
@@ -1130,7 +1204,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 		}
 	}
 
-	writeUpdateMarker(version)
+	marker.write(version)
 	if err := Restart(); err != nil {
 		if rbErr := u.Rollback(); rbErr != nil {
 			log.Error("rollback also failed after restart error", "restartError", err, "rollbackError", rbErr)
@@ -1363,6 +1437,10 @@ func (u *Updater) DownloadBinary(version string) (string, error) {
 	if err := u.verifyChecksum(tempPath, manifest.Checksum); err != nil {
 		removeCleanup(tempPath)
 		return "", fmt.Errorf("checksum verification failed: %w", err)
+	}
+	if err := verifyIsolationSize(tempPath, manifest.Size); err != nil {
+		removeCleanup(tempPath)
+		return "", err
 	}
 	return tempPath, nil
 }
@@ -1611,7 +1689,7 @@ func defaultStagedSignatureCheck(path string) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	out, err := exec.Command("codesign", "--verify", "--verbose", path).CombinedOutput()
+	out, err := procspawn.Command("codesign", "--verify", "--verbose", path).CombinedOutput()
 	if err == nil {
 		return nil
 	}
@@ -1699,6 +1777,11 @@ func (u *Updater) replaceBinary(newPath string) error {
 // temp file. Used by dev_push when updating a non-agent binary (e.g. the
 // desktop helper) so the updater's automatic replace+restart flow is skipped.
 func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error) {
+	// Only a caller-supplied checksum, never a signed manifest (helper
+	// dev-pushes): containment refuses it, as it does UpdateFromURL.
+	if isolationActive() {
+		return "", ErrUpdateBlockedByIsolation
+	}
 	tempPath, err := u.downloadFromURL(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to download binary: %w", err)
@@ -1722,6 +1805,10 @@ func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error
 // u.extras, which was a real footgun for any future dev-push surface that
 // shared an Updater instance with the heartbeat upgrade path.
 func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOptions) error {
+	// This path has only a caller-supplied checksum, never a signed manifest.
+	if isolationActive() {
+		return ErrUpdateBlockedByIsolation
+	}
 	lease, ok := TryBeginProcessMutation("agent-dev-update")
 	if !ok {
 		return ErrProcessMutationInProgress
@@ -1760,6 +1847,11 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
+	if isolationActive() {
+		removeCleanup(tempPath)
+		return ErrUpdateBlockedByIsolation
+	}
+
 	// 3. Backup current binary
 	if err := u.backupCurrentBinary(); err != nil {
 		removeCleanup(tempPath)
@@ -1768,6 +1860,10 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 
 	// 4. Windows: spawn helper script for binary swap
 	if runtime.GOOS == "windows" {
+		if err := u.checkIsolationInstall(tempPath, nil, opts); err != nil {
+			removeCleanup(tempPath)
+			return err
+		}
 		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper, opts.Backup); err != nil {
 			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
@@ -1780,6 +1876,9 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 
 	// 5. Non-Windows: replace binary inline and restart
 	defer removeCleanup(tempPath)
+	if err := u.checkIsolationInstall(tempPath, nil, opts); err != nil {
+		return err
+	}
 	if err := u.replaceBinary(tempPath); err != nil {
 		if isCodeSignatureErr(err) {
 			logCodeSignatureRejection("", err)
@@ -1811,10 +1910,8 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 // signed-manifest flow legitimately follows a control-plane URL to a public
 // CDN — so this method does NOT compare origins itself. All destination
 // safety (scheme, dial-time address, redirect chain, credential stripping on
-// origin change) is enforced by u.client, which netpolicy.NewClient built
-// from updaterPolicy(u.config); this is the single, dial-time-authoritative
-// check. A local host/scheme comparison here would be redundant at best and
-// a silent divergence risk at worst — removed, not duplicated (#SSRF-AGENT-001).
+// origin change) is enforced by the netpolicy client. During containment,
+// artifactRequest additionally restricts every hop to control-plane hosts.
 func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	if err := u.checkClient(); err != nil {
 		return "", err
@@ -1829,7 +1926,7 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
-	resp, err := u.client.Do(req)
+	resp, err := u.artifactRequest(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to download binary: %w", err)
 	}

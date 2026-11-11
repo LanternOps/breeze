@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Os atalhos de tecla única estão ativados.",
       "charKeysOff": "Os atalhos de tecla única estão desativados. Apenas atalhos com Ctrl/Cmd funcionam.",
-      "charKeysManage": "Alterar nas configurações do perfil"
+      "charKeysManage": "Alterar nas configurações do perfil",
+      "queueTitle": "Fila de chamados",
+      "queueHint": "Na página de chamados, fora de um campo de texto.",
+      "queue": {
+        "next": "Próximo chamado",
+        "previous": "Chamado anterior",
+        "open": "Abrir o chamado (após resolver: o próximo sugerido)",
+        "toggleBulk": "Adicionar à seleção em massa ou remover dela",
+        "assignMe": "Atribuir a mim",
+        "reply": "Escrever uma resposta",
+        "internal": "Escrever uma nota interna",
+        "resolve": "Resolver com uma nota",
+        "back": "Voltar para a fila"
+      }
     }
   },
   "migrationBanner": {
@@ -1337,7 +1350,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nenhum ticket corresponde à sua pesquisa ou filtros.",
-          "noTickets": "A sincronização de tickets ainda não está disponível, então os tickets do PSA não são importados.",
+          "noTickets": "Ainda não há tickets de alertas. Ative os tickets de alertas na conexão vinculada do ConnectWise Manage.",
           "title": "Nenhum ticket do PSA"
         },
         "filters": {
@@ -1350,16 +1363,42 @@
           "updated": "Atualizado"
         },
         "searchPlaceholder": "Pesquisar tickets",
-        "status": {
-          "closed": "Fechado",
-          "inProgress": "Em andamento",
-          "open": "Aberto",
-          "resolved": "Resolvido",
-          "waiting": "Aguardando"
-        },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets do PSA",
+        "title": "Tickets de alertas",
         "unlinked": "Não vinculado"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Atividade dos tickets",
+        "refresh": "Atualizar",
+        "redrive": "Reprocessar",
+        "loading": "Carregando atividade dos tickets…",
+        "loadFailed": "Não foi possível carregar a atividade dos tickets. Atualize para tentar novamente.",
+        "actionFailed": "Não foi possível atualizar a atividade dos tickets.",
+        "actionSucceeded": "Atividade dos tickets atualizada.",
+        "help": "Reprocessar tenta novamente as criações com falha e os alertas sem empresa vinculada. Marcar como tratado interrompe o processamento sem alterar o ticket do PSA.",
+        "empty": "Nenhum ticket precisa de atenção.",
+        "viewAlert": "Ver alerta",
+        "createAnyway": "Criar mesmo assim",
+        "markHandled": "Marcar como tratado",
+        "duplicateWarning": "Talvez já exista um ticket no PSA. Verifique primeiro: esta única nova tentativa pode criar uma duplicata.",
+        "confirmCreate": "Criar mais um ticket",
+        "cancel": "Cancelar",
+        "previous": "Anterior",
+        "next": "Próxima",
+        "page": "Página {{page}} de {{total}}",
+        "states": {
+          "never_attempted": "Na fila",
+          "create_in_flight": "Criando",
+          "created": "Criado",
+          "create_outcome_unknown": "Resultado da criação desconhecido",
+          "rejected": "Rejeitado",
+          "failed": "Falha",
+          "needs_attention": "Precisa de atenção",
+          "handled": "Tratado",
+          "skipped_no_company": "Sem empresa vinculada",
+          "skipped_ambiguous_company": "Vínculo de empresa ambíguo",
+          "skipped_resolved_before_create": "Resolvido antes da criação"
+        }
       }
     },
     "webhooks": {
@@ -1434,6 +1473,10 @@
           "ticketCreated": {
             "description": "Acionado quando um ticket é criado.",
             "label": "Ticket criado"
+          },
+          "ticketMerged": {
+            "description": "Acionado quando um ticket é mesclado em outro ticket.",
+            "label": "Ticket mesclado"
           },
           "ticketCommented": {
             "description": "Acionado quando um comentário ou nota é adicionado a um ticket.",
@@ -2905,5 +2948,8 @@
   "featureLock": {
     "lockedLabel": "Bloqueado",
     "upgrade": "Ver planos"
+  },
+  "inheritChoice": {
+    "inherit": "Herdar — {{value}} ({{source}})"
   }
 }

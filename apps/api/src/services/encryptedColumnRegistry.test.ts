@@ -77,6 +77,16 @@ describe('encryptedColumnRegistry', () => {
     expect(spec).toMatchObject({ kind: 'text', aadBinding: 'row', aadTag: 'flows.webhook_secret_encrypted' });
   });
 
+  it('registers the ticket import source credential with row-bound AAD (#8313 W4)', () => {
+    const spec = encryptedColumnRegistry.find(
+      (c) => c.table === 'ticket_import_sources' && c.column === 'credentials_encrypted',
+    );
+    expect(spec).toMatchObject({ kind: 'text', aadBinding: 'row' });
+    // Row-bound columns have a dedicated writer (sourceCredentials.ts); the
+    // generic write helper must refuse them.
+    expect(() => encryptColumnValueForWrite('ticket_import_sources', 'credentials_encrypted', '{}')).toThrow();
+  });
+
   it('transforms text columns from legacy ciphertext to the active v2 key id', () => {
     setEncryptionEnv({ APP_ENCRYPTION_KEY: 'legacy-key-material' });
     const legacyCiphertext = encryptSecret('legacy-secret');

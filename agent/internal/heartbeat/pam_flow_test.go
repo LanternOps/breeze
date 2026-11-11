@@ -443,8 +443,9 @@ func TestRunPamFlow(t *testing.T) {
 				if gotDismissSession != selectedSession {
 					t.Errorf("dismiss session = %p, want exact selected session %p", gotDismissSession, selectedSession)
 				}
-				if gotDismissID != outcome.RequestID {
-					t.Errorf("dismiss request ID = %q, want %q", gotDismissID, outcome.RequestID)
+				// #10370: its own IPC id, never the dialog's.
+				if want := outcome.RequestID + pamDenyDismissIDSuffix; gotDismissID != want {
+					t.Errorf("dismiss request ID = %q, want %q", gotDismissID, want)
 				}
 				if gotDismissTimeout != pamDismissTimeout {
 					t.Errorf("dismiss timeout = %v, want %v", gotDismissTimeout, pamDismissTimeout)
@@ -562,8 +563,8 @@ func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
 			if session != selectedSession {
 				t.Errorf("dismiss session = %p, want selected session %p", session, selectedSession)
 			}
-			if id != "req-deny" {
-				t.Errorf("dismiss request ID = %q, want req-deny", id)
+			if want := "req-deny" + pamDenyDismissIDSuffix; id != want {
+				t.Errorf("dismiss request ID = %q, want %q", id, want)
 			}
 			if timeout != pamDismissTimeout {
 				t.Errorf("dismiss timeout = %v, want %v", timeout, pamDismissTimeout)
@@ -583,7 +584,7 @@ func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			h.denyConsent(selectedSession, "req-deny", "policy_denied", "")
+			h.denyConsent(selectedSession, "req-deny", "policy_denied", "", etwlua.ConsentInstance{})
 		}()
 	}
 	wg.Wait()
@@ -612,7 +613,7 @@ func TestDenyConsentTimeoutKeepsGateUntilHelperQuiescent(t *testing.T) {
 		},
 	}
 
-	h.denyConsent(selectedSession, "req-timeout", "policy_denied", "")
+	h.denyConsent(selectedSession, "req-timeout", "policy_denied", "", etwlua.ConsentInstance{})
 
 	resultCh := make(chan pamactuator.Result, 1)
 	go func() {
@@ -630,7 +631,7 @@ func TestDenyConsentTimeoutKeepsGateUntilHelperQuiescent(t *testing.T) {
 	if manager.promoteSeen != 0 {
 		t.Fatalf("Promote calls while dismissal uncertain = %d, want 0", manager.promoteSeen)
 	}
-	h.denyConsent(selectedSession, "req-second-deny", "policy_denied", "")
+	h.denyConsent(selectedSession, "req-second-deny", "policy_denied", "", etwlua.ConsentInstance{})
 	if got := dismissCalls.Load(); got != 1 {
 		t.Fatalf("dismiss calls while previous completion uncertain = %d, want 1", got)
 	}
@@ -788,7 +789,7 @@ func TestDenyConsentProvenFailedDismissalKeepsGateClosed(t *testing.T) {
 				},
 			}
 
-			h.denyConsent(&sessionbroker.Session{SessionID: "helper"}, "req-denied", "policy_denied", "")
+			h.denyConsent(&sessionbroker.Session{SessionID: "helper"}, "req-denied", "policy_denied", "", etwlua.ConsentInstance{})
 
 			// Give the quiescence goroutine time to (wrongly) release the gate.
 			time.Sleep(50 * time.Millisecond)
@@ -863,7 +864,7 @@ func TestDenyConsentHelperDeathRecoversViaProof(t *testing.T) {
 		},
 	}
 
-	h.denyConsent(&sessionbroker.Session{SessionID: "dying-helper"}, "req-death", "policy_denied", "2")
+	h.denyConsent(&sessionbroker.Session{SessionID: "dying-helper"}, "req-death", "policy_denied", "2", etwlua.ConsentInstance{})
 
 	// Safe to assert unconditionally: recovery cannot prove anything until the
 	// barrier opens, so the gate is deterministically still closed here.
@@ -921,7 +922,7 @@ func TestPamGateRecoveryExhaustionStaysFailClosed(t *testing.T) {
 		},
 	}
 
-	h.denyConsent(stillLive, "req-stuck", "policy_denied", "")
+	h.denyConsent(stillLive, "req-stuck", "policy_denied", "", etwlua.ConsentInstance{})
 
 	// Let recovery run to exhaustion.
 	deadline := time.Now().Add(2 * time.Second)
@@ -1014,7 +1015,7 @@ func TestDenyConsentSilentHelperReachesRecovery(t *testing.T) {
 		},
 	}
 
-	h.denyConsent(recovered, "req-silent", "policy_denied", "")
+	h.denyConsent(recovered, "req-silent", "policy_denied", "", etwlua.ConsentInstance{})
 
 	if !gateClosed(h) {
 		t.Fatal("gate must engage when the dismissal cannot be proven")
@@ -1055,7 +1056,7 @@ func TestDenyConsentNilQuiescenceReachesRecovery(t *testing.T) {
 		},
 	}
 
-	h.denyConsent(helper, "req-nil-chan", "policy_denied", "")
+	h.denyConsent(helper, "req-nil-chan", "policy_denied", "", etwlua.ConsentInstance{})
 
 	if !gateClosed(h) {
 		t.Fatal("a nil quiescence channel must still engage the fail-closed gate")
@@ -1088,7 +1089,7 @@ func TestPamGateRecoveryStopsOnShutdown(t *testing.T) {
 		},
 	}
 
-	h.denyConsent(&sessionbroker.Session{SessionID: "helper"}, "req-shutdown", "policy_denied", "")
+	h.denyConsent(&sessionbroker.Session{SessionID: "helper"}, "req-shutdown", "policy_denied", "", etwlua.ConsentInstance{})
 	if !gateClosed(h) {
 		t.Fatal("gate must engage before shutdown")
 	}
@@ -1247,7 +1248,7 @@ func TestRecoveryDrainsLateProof(t *testing.T) {
 		},
 	}
 
-	h.denyConsent(&sessionbroker.Session{SessionID: "slow-helper"}, "req-late", "policy_denied", "")
+	h.denyConsent(&sessionbroker.Session{SessionID: "slow-helper"}, "req-late", "policy_denied", "", etwlua.ConsentInstance{})
 	if !gateClosed(h) {
 		t.Fatal("gate must engage while the dismissal is unproven")
 	}

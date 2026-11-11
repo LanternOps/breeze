@@ -32,6 +32,7 @@ import { applyOsHint } from "@/lib/installerPackageHints";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
+import InstallScriptsFields from "./InstallScriptsFields";
 import PackageManagerPicker, {
   type SelectedPackageMethod,
 } from "./PackageManagerPicker";
@@ -71,30 +72,6 @@ const CATEGORIES = [
 ] as const;
 const OS_OPTIONS = ["Windows", "macOS", "Linux"] as const;
 
-// Literal template tokens, rendered outside translation strings (i18next would
-// treat `{{...}}` as interpolation).
-const INSTALL_SCRIPT_TOKENS = [
-  "{{org.*}}",
-  "{{site.*}}",
-  "{{device.hostname}}",
-  "{{device.customField.<key>}}",
-  "{{var.<key>}}",
-  "{{install.dir}}",
-  "{{install.file}}",
-] as const;
-
-function installSpecIssueMessage(code: InstallSpecIssue): string {
-  switch (code) {
-    case "zip_requires_post_install_script":
-      return i18n.t("policies:software.addPackageModal.issueZipRequiresPostInstallScript");
-    case "scripts_require_single_os":
-      return i18n.t("policies:software.addPackageModal.issueScriptsRequireSingleOs");
-    case "script_too_large":
-      return i18n.t("policies:software.addPackageModal.issueScriptTooLarge");
-    case "args_unsupported_for_file_type":
-      return i18n.t("policies:software.addPackageModal.issueArgsUnsupportedForFileType");
-  }
-}
 /**
  * Server-acknowledged bytes → a percentage safe to render as a CSS width.
  *
@@ -155,8 +132,8 @@ export default function AddPackageModal({
   // /config → softwarePackages.uploadsEnabled).
   const { enabled: s3UploadsEnabled } = usePackageUploadsGate(open);
   // Ownership axis (#2135): partner admins can create the package once for all
-  // their orgs. Chunked upload sessions are org-tenanted, so partner-wide
-  // packages are URL-only for now — the file source is disabled in that mode.
+  // their orgs. Partner-owned upload sessions (#11412) make the file source
+  // available to both scopes.
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const [ownerScope, setOwnerScopeState] = useState<OwnerScope>("organization");
   // Ownership is create-only server-side. Once step 1 created the catalog row
@@ -164,31 +141,13 @@ export default function AddPackageModal({
   // selector could no longer change anything — lock it so the UI never claims
   // a scope the package doesn't have.
   const [scopeLocked, setScopeLocked] = useState(false);
-  // Set when switching to partner-wide discarded an already-picked file, so
-  // the user is told rather than left wondering where their file went.
-  const [droppedFileName, setDroppedFileName] = useState("");
-  const uploadsEnabled = s3UploadsEnabled && ownerScope !== "partner";
+  const uploadsEnabled = s3UploadsEnabled;
   const uploadDisabledReason = !s3UploadsEnabled
     ? i18n.t("policies:software.addPackageModal.uploadsRequireS3Storage")
-    : ownerScope === "partner"
-      ? i18n.t("policies:software.addPackageModal.partnerWideUrlOnly")
-      : null;
+    : null;
   const setOwnerScope = (next: OwnerScope) => {
     if (scopeLocked) return;
     setOwnerScopeState(next);
-    // Partner-wide packages are URL-only (see above): drop a picked file and
-    // fall back to the URL source rather than submitting a doomed upload —
-    // and say so, via droppedFileName, rather than doing it silently.
-    if (next === "partner") {
-      setForm((prev) => {
-        if (prev.source !== "file" && !prev.file) return prev;
-        if (prev.fileName) setDroppedFileName(prev.fileName);
-        return { ...prev, source: "url", file: null, fileName: "" };
-      });
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    } else {
-      setDroppedFileName("");
-    }
   };
   const fileInputRef = useRef<HTMLInputElement>(null);
   // If the catalog item was created but the version write failed, keep its id so
@@ -218,7 +177,6 @@ export default function AddPackageModal({
     setForm(blankForm);
     setOwnerScopeState(defaultOwnerScope);
     setScopeLocked(false);
-    setDroppedFileName("");
     setAdvancedOpen(false);
     createdCatalogId.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -941,17 +899,6 @@ export default function AddPackageModal({
                   {uploadDisabledReason}
                 </p>
               )}
-              {droppedFileName && ownerScope === "partner" && (
-                <p
-                  className="mt-1 text-xs text-amber-600 dark:text-amber-500"
-                  data-testid="pkg-file-dropped-notice"
-                >
-                  {i18n.t(
-                    "policies:software.addPackageModal.selectedFileRemoved",
-                  )}{" "}
-                  ({droppedFileName})
-                </p>
-              )}
 
               {form.source === "manager" ? (
                 <div className="mt-3">
@@ -982,8 +929,8 @@ export default function AddPackageModal({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {i18n.t(
                       "policies:software.addPackageModal.useVariablesLike",
-                    )}
-                    <code className="font-mono">{"{{org.name}}"}</code>
+                    )}{" "}
+                    <code className="font-mono">{"{{org.name}}"}</code>{" "}
                     {i18n.t(
                       "policies:software.addPackageModal.resolvedPerOrganizationAtDeployTime",
                     )}
@@ -1127,58 +1074,14 @@ export default function AddPackageModal({
             )}
 
             {!isManager && (
-              <div data-testid="install-scripts">
-                <span className={labelCls}>
-                  {i18n.t("policies:software.addPackageModal.installScripts")}
-                </span>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {i18n.t("policies:software.addPackageModal.installScriptsHelp")}
-                </p>
-                <p className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-                  {i18n.t("policies:software.addPackageModal.availableTokens")}
-                  {INSTALL_SCRIPT_TOKENS.map((t) => (
-                    <code key={t} className="rounded bg-muted px-1 font-mono">
-                      {t}
-                    </code>
-                  ))}
-                </p>
-                <label className={cn(labelCls, "mt-3 block")} htmlFor="pkg-pre-install-script">
-                  {i18n.t("policies:software.addPackageModal.preInstallScript")}
-                </label>
-                <textarea
-                  id="pkg-pre-install-script"
-                  data-testid="pre-install-script"
-                  value={form.preInstallScript}
-                  onChange={(e) => update("preInstallScript", e.target.value)}
-                  placeholder={i18n.t("policies:software.addPackageModal.preInstallScriptPlaceholder")}
-                  rows={4}
-                  spellCheck={false}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs"
-                />
-                <label className={cn(labelCls, "mt-3 block")} htmlFor="pkg-post-install-script">
-                  {i18n.t("policies:software.addPackageModal.postInstallScript")}
-                </label>
-                <textarea
-                  id="pkg-post-install-script"
-                  data-testid="post-install-script"
-                  value={form.postInstallScript}
-                  onChange={(e) => update("postInstallScript", e.target.value)}
-                  placeholder={i18n.t("policies:software.addPackageModal.postInstallScriptPlaceholder")}
-                  rows={4}
-                  spellCheck={false}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs"
-                />
-                {installSpecIssues.map((code) => (
-                  <p
-                    key={code}
-                    role="alert"
-                    data-testid={`install-spec-issue-${code}`}
-                    className="mt-2 text-xs text-destructive"
-                  >
-                    {installSpecIssueMessage(code)}
-                  </p>
-                ))}
-              </div>
+              <InstallScriptsFields
+                idPrefix="pkg"
+                preInstallScript={form.preInstallScript}
+                postInstallScript={form.postInstallScript}
+                onPreInstallScriptChange={(v) => update("preInstallScript", v)}
+                onPostInstallScriptChange={(v) => update("postInstallScript", v)}
+                issues={installSpecIssues}
+              />
             )}
           </section>
 

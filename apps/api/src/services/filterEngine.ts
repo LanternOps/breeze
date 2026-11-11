@@ -3,7 +3,7 @@ import { db } from '../db';
 import { sqlTextArray, sqlValue } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
 import { PG_UUID_REGEX } from '../utils/uuid';
-import { devices, deviceCustomFieldValues, deviceHardware, deviceHardwareHealth, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
+import { devices, deviceCustomFieldValues, deviceHardware, deviceHardwareHealth, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, deviceWarranty, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
   FilterFieldCategory,
@@ -116,6 +116,8 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'hardware.diskTotalGb', label: 'Disk Size (GB)', category: 'hardware', type: 'number', operators: OPERATORS_BY_TYPE.number },
   { key: 'hardware.gpuModel', label: 'GPU Model', category: 'hardware', type: 'string', operators: OPERATORS_BY_TYPE.string },
   { key: 'hardware.health', label: 'Hardware Health', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['ok', 'warning', 'critical', 'unknown'], description: 'Storage/RAID health rollup; devices with no hardware report match none' },
+  // #9863 — stored device_warranty.status (the value the Warranty card shows).
+  { key: 'warranty.status', label: 'Warranty Status', category: 'hardware', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['active', 'expiring', 'expired', 'unknown', 'subscription_active'], description: 'Warranty status from the last warranty sync; devices with no warranty record count as unknown, so "not expired" includes them' },
 
   // Network fields
   { key: 'network.ipAddress', label: 'IP Address', category: 'network', type: 'string', operators: OPERATORS_BY_TYPE.string },
@@ -134,6 +136,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'software.vendor', label: 'Software Vendor', category: 'software', type: 'string', operators: ['contains', 'equals'], description: 'Match devices with software from a vendor' },
 
   // Device-state predicates (virtual EXISTS fields against related tables)
+  { key: 'networkIsolation.active', label: 'Network Isolated', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has an unresolved network isolation episode' },
   { key: 'patches.pending', label: 'Has Pending Patches', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has at least one pending patch' },
   { key: 'alerts.critical', label: 'Has Critical Alerts', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has an active critical alert' },
   { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device OS reports a reboot is pending' },
@@ -221,6 +224,7 @@ export function getAllFilterableFields(): FilterFieldDefinition[] {
 // | lastUser/helperVersion/agentVersion | free-text strings the agent reports every heartbeat            | refused           |
 // | osType/osVersion/osBuild/architecture | agent-reported OS facts (`heartbeat.ts`)                    | allowed           |
 // | hardware.*/network.*           | agent-reported inventory/network facts                          | allowed           |
+// | warranty.status                | `services/warrantySync.ts`: vendor lookup keyed on the agent-reported serial, admin CSV import, or an agent-owned source; a coverage fact like hardware.* | allowed |
 // | metrics.*                      | agent-reported metrics                                          | allowed           |
 // | software.installed/notInstalled/version/vendor | agent inventory scan (`software_inventory`) — self-reported; the agent supplies every entry (same shape as custom.*), unlike an OS/hardware fact the device cannot simply choose to misreport | refused |
 // | hostsWorkloads/workloadRuntimes | agent-reported workload runtime detection (`devices.hosts_workloads` / `workload_runtimes`, denormalised from the agent's workload inventory report); the device supplies every value, so a fabricated "docker host" claim must not decide execution targeting | refused |
@@ -317,6 +321,20 @@ function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'ne
       table: 'hardware',
       column: 'health',
       computed: sql`(SELECT ${deviceHardwareHealth.health}::text FROM ${deviceHardwareHealth} WHERE ${deviceHardwareHealth.deviceId} = ${devices.id})`
+    };
+  }
+
+  // #9863: device_warranty holds at most one row per device subject (partial
+  // unique index on device_id; manual-asset rows have device_id NULL), so the
+  // scalar subquery yields one value. No row reads as 'unknown' — the word the
+  // Warranty card and list column use for "no coverage data" — so the filter
+  // can find devices whose warranty was never looked up. Cast to text so the
+  // comparison never feeds a raw user value to the pg enum.
+  if (field === 'warranty.status') {
+    return {
+      table: 'devices',
+      column: 'warrantyStatus',
+      computed: sql`COALESCE((SELECT ${deviceWarranty.status}::text FROM ${deviceWarranty} WHERE ${deviceWarranty.deviceId} = ${devices.id}), ${'unknown'})`
     };
   }
 
@@ -460,9 +478,12 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   // on devices.id and needs no join. The chip bar emits `equals 'yes'`/`'no'`;
   // the advanced builder may send a real boolean — treat false/'no'/'false' as
   // the negative, and `notEquals` flips the polarity.
-  if (field === 'patches.pending' || field === 'alerts.critical' || field === 'system.rebootRequired') {
+  if (field === 'patches.pending' || field === 'alerts.critical' || field === 'system.rebootRequired' || field === 'networkIsolation.active') {
     let inner: SQL<unknown>;
-    if (field === 'patches.pending') {
+    if (field === 'networkIsolation.active') {
+      // Matches device_network_isolations_one_unresolved_uniq, including local releases awaiting acknowledgement.
+      inner = sql`EXISTS (SELECT 1 FROM device_network_isolations WHERE device_id = ${devices.id} AND state NOT IN ('released', 'expired', 'failed', 'uninstalled'))`;
+    } else if (field === 'patches.pending') {
       inner = sql`EXISTS (SELECT 1 FROM device_patches WHERE device_id = ${devices.id} AND status = 'pending')`;
     } else if (field === 'alerts.critical') {
       inner = sql`EXISTS (SELECT 1 FROM alerts WHERE device_id = ${devices.id} AND status = 'active' AND severity = 'critical')`;
@@ -569,6 +590,9 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   // standing "we'd add the joins here" gap — hardware/network/metrics/group
   // filters previously errored (unjoined table / unsupported).
   if (fieldInfo.computed) {
+    const known = pgEnumValuesForField(field);
+    const message = known && unknownEnumValueMessage(field, known, operator, value);
+    if (message) throw new FilterValueError(message);
     return applyOperator(fieldInfo.computed, operator, value);
   }
   // Array semantics for the workload runtime array: the scalar fallback for
@@ -700,6 +724,8 @@ function assertKnownEnumValues(col: unknown, field: string, operator: FilterOper
 // The pg enum values behind a filter field, if it maps straight onto an enum
 // column of devices / device_hardware / device_network.
 function pgEnumValuesForField(field: string): readonly string[] | undefined {
+  // Computed over a pg enum column, so the enum still bounds the value set.
+  if (field === 'warranty.status') return pgEnumValues(deviceWarranty.status);
   let info: ReturnType<typeof getColumnForField>;
   try {
     info = getColumnForField(field);

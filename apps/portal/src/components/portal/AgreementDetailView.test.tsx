@@ -1,14 +1,22 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { portalApi, type PortalAgreementDetail } from '@/lib/api';
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import { AgreementDetailView } from './AgreementDetailView';
 
+// SignaturePanel prints "today"; pin only Date (not timers, so waitFor still polls) to a day
+// that can never equal a fixture day, in any runner timezone (UTC-12..UTC+14).
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-03-15T12:00:00.000Z'));
+});
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -18,7 +26,6 @@ const DETAIL: PortalAgreementDetail = {
   request: {
     id: ID,
     status: 'sent',
-    label: null,
     coverMessage: 'Please sign.\nThanks!',
     expiresAt: '2026-12-01T00:00:00.000Z',
     effectiveDate: '2026-11-01',

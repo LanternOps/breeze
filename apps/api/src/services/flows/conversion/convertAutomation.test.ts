@@ -168,7 +168,11 @@ describe('convertAutomation — actions', () => {
     expect(s[1]).toMatchObject({ tool: 'resolve_targets', input: { fromStep: { stepId: 'a0_run_script', set: 'failed' } }, when: 'length(steps.a0_run_script.output.failedDeviceIds) > 0' });
     expect(s[2]).toMatchObject({
       tool: 'notify', when: 'length(steps.a0_run_script.output.failedDeviceIds) > 0', forEach: { items: 'steps.a0_failed.output.devices' },
-      input: { channelId: CHANNEL, title: 'Nightly cleanup action failed', severity: 'warning' },
+      input: {
+        channelId: CHANNEL, title: 'Nightly cleanup action failed', severity: 'warning',
+        // #10705 — the notice names the device and the reason it failed.
+        message: 'Automation Nightly cleanup action 1 failed on {{item.hostname}}: {{item.failureReason}}',
+      },
     });
     expect(has(r, 'notification_emails_unused')).toBe(true);
     // notify narrows like stop

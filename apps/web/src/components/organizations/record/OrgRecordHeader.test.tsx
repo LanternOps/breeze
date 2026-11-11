@@ -13,9 +13,9 @@ vi.mock('@/lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
 }));
 // The real button self-gates on the Wisp flag + grant (its own suite covers that).
-vi.mock('@/components/wisp/WispLinkButton', () => ({
-  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
-    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
   ),
 }));
 import OrgRecordHeader from './OrgRecordHeader';
@@ -59,9 +59,10 @@ describe('OrgRecordHeader', () => {
     expect(screen.getByTestId('org-record-status').textContent).toBe('Active');
   });
 
-  it('mounts the Link-to-Wisp button with the organization as its own org (W08 Task 10)', () => {
+  it('mounts the Talk-to-Wisp button with the organization as its own org (W08 Task 10)', () => {
     renderHeader();
-    const button = screen.getByTestId('wisp-link-button-mock');
+    const button = screen.getByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
     expect(button).toHaveAttribute('data-kind', 'organization');
     expect(button).toHaveAttribute('data-id', 'org-1');
     expect(button).toHaveAttribute('data-org', 'org-1');

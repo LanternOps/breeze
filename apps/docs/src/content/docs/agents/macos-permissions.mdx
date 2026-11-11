@@ -244,6 +244,17 @@ Expect `Authority=Developer ID Application: LanternOps LLC (D8W6N2JYMA)` and `Te
 **The PPPC profile is installed but permissions are not granted.**
 Confirm the profile arrived through MDM (`profiles list` should show it under a device channel). PPPC payloads are ignored when the profile is installed manually. Also verify the code requirement matches the installed binary, at whichever path it runs from: `codesign -d -r- /usr/local/bin/breeze-agent` (or the `/Library/Breeze/bin` path) prints the designated requirement to compare against.
 
+**System Settings shows Screen Recording or Accessibility on, but Breeze reports it missing.**
+macOS honours a grant only while the binary still matches the code requirement recorded with it. If `breeze-desktop-helper` on disk was replaced by a build with a different signature (an ad-hoc or unsigned copy, or a locally built helper), or the grant was written by the permission self-heal in agent 0.105.2 and earlier (which recorded no code requirement), System Settings keeps showing the toggle on while macOS refuses the helper, with no prompt. When the helper sees a denial it explains it: the `desktop helper startup probe` line in the device's agent logs carries `tccVerdict` plus the helper's signing identity, its designated requirement, and, for each denied permission, the TCC row and the requirement stored in it. The agent's `TCC permissions received` line carries the same verdict as `denialVerdict`.
+
+| Verdict | Meaning | Fix |
+|---|---|---|
+| `requirement_mismatch` | The grant was made to a differently signed build | Reinstall the official signed release; the existing grant applies again. If the verdict stays, reset and grant again as in the next row |
+| `legacy_row_no_csreq` | The grant has no code requirement (old self-heal) | `sudo tccutil reset ScreenCapture` and `sudo tccutil reset Accessibility`, then grant again |
+| `not_granted` | No grant for this path, or it is off | Grant it in System Settings |
+| `unexplained` | The grant matches this binary; the cause is elsewhere | Collect the log line and contact support |
+| `unobservable` | The helper could not read the TCC database (it needs Full Disk Access) | Grant Full Disk Access to the helper, or check its signing identity in the same log line |
+
 **Remote desktop connects but shows a black screen.**
 Screen Recording has not been approved for `breeze-desktop-helper`. This permission always requires a one-time user approval -- see the table above.
 

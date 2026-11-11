@@ -11,6 +11,8 @@ import { buildAlertWebhookProjections } from './alertEnrichment';
 
 const FROZEN_V2_KEYS = {
   alertId: 'string|null', ruleId: 'string|null', monitorId: 'string|null', deviceId: 'string|null', episodeId: 'string|null',
+  owner: 'object{kind:enum(device,topology_site,backup_workload),ref:string|null}|null',
+  ownerKind: 'enum(device,topology_site,backup_workload)|null', ownerLabel: 'string|null', subjectName: 'string|null',
   status: 'enum(active,acknowledged,resolved,suppressed)', severity: 'enum(critical,high,medium,low,info)|null',
   title: 'string|null', message: 'string|null', triggeredAt: 'string(datetime)|null', acknowledgedAt: 'string(datetime)|null', resolvedAt: 'string(datetime)|null',
   deviceHostname: 'string|null', siteId: 'string|null', siteName: 'string|null', orgName: 'string|null', alertUrl: 'string',
@@ -66,6 +68,19 @@ describe('frozen alert v2 contract', () => {
     expect(Object.keys(alertWebhookDataV2PartnerSchema.shape).sort()).toEqual([...Object.keys(FROZEN_V2_KEYS), 'orgExternalIds'].sort());
     expect(describeType(alertWebhookDataV2PartnerSchema.shape.orgExternalIds)).toBe('array<object{externalId:string,system:string}>');
   });
+  it('retains the device owner from the triggered fixture when real subject enrichment finds no rows', async () => {
+    const fixture = fixtures.find(({ name }) => name === 'alert.triggered.json')!.event;
+    const { org, partner } = await buildAlertWebhookProjections({
+      id: fixture.id, type: fixture.type, orgId: fixture.orgId, metadata: { timestamp: fixture.timestamp },
+      payload: fixture.data, source: 'contract', priority: 'normal',
+    });
+    for (const projection of [org, partner]) {
+      expect(projection.ownerKind).toBe('device');
+      expect(projection.owner).toEqual({ kind: 'device', ref: fixture.data.deviceId });
+      expect(projection.enrichmentIncomplete).toBe(true);
+    }
+  });
+
   it('preserves the subject-key triggered variant at the top level', async () => {
     const fixture = fixtures.find(({ name }) => name === 'alert.triggered.json')!.event;
     const payload = { ...fixture.data, episodeId: '66666666-6666-4666-8666-666666666666', subjectKey: 'disk:primary', responsesOwner: false };

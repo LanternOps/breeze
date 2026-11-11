@@ -8,7 +8,7 @@ const h = vi.hoisted(() => ({ fetchWithAuth: vi.fn(), showToast: vi.fn() }));
 vi.mock('../stores/auth', () => ({ fetchWithAuth: h.fetchWithAuth }));
 vi.mock('../components/shared/Toast', () => ({ showToast: h.showToast }));
 
-import { addWispLink, listWispLinks, removeWispLink } from './wispLinksApi';
+import { addWispLink, listWispLinks, removeWispLink, pinWispLink, listWispNeighbours } from './wispLinksApi';
 import { getWispPartnerEnabled, setWispPartnerEnabled } from './wispPartnerSettingsApi';
 import { ActionError } from './runAction';
 
@@ -78,4 +78,27 @@ describe('wispPartnerSettingsApi', () => {
     h.fetchWithAuth.mockResolvedValueOnce(res(403, { error: 'Only partner admins', code: 'partner_admin_required' }));
     await expect(setWispPartnerEnabled(false)).rejects.toBeInstanceOf(ActionError);
   });
+});
+
+it('pins through runAction without ambient org and encodes both ids', async () => {
+  h.fetchWithAuth.mockResolvedValue(res(200, { data: { link } }));
+  expect(await pinWispLink('th/1', 'l/1')).toEqual(link);
+  expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread/th%2F1/links/l%2F1/pin', { method: 'POST', skipOrgIdInjection: true });
+  h.fetchWithAuth.mockResolvedValue(res(409, { error: 'Pin limit', code: 'link_limit' }));
+  await expect(pinWispLink('th1', 'l1')).rejects.toMatchObject({ status: 409, code: 'link_limit' });
+});
+
+
+it('lists neighbours without ambient org, encodes ids, and surfaces failed or malformed reads', async () => {
+  h.showToast.mockClear();
+  const neighbour = { ...link, id: null, source: 'auto' };
+  h.fetchWithAuth.mockResolvedValueOnce(res(200, { data: { links: [neighbour] } }));
+  expect(await listWispNeighbours('th/1', { kind: 'ticket', id: 't/1&x=2' })).toEqual([neighbour]);
+  expect(h.fetchWithAuth).toHaveBeenLastCalledWith('/wisp/thread/th%2F1/links/neighbours?kind=ticket&id=t%2F1%26x%3D2', { skipOrgIdInjection: true });
+  expect(h.showToast).not.toHaveBeenCalled();
+  h.fetchWithAuth.mockResolvedValueOnce(res(200, { data: {} }));
+  await expect(listWispNeighbours('th1', { kind: 'ticket', id: 't1' })).rejects.toThrow(/no links array/);
+  h.fetchWithAuth.mockResolvedValueOnce(res(404, {}));
+  await expect(listWispNeighbours('th1', { kind: 'ticket', id: 't1' })).rejects.toThrow(/404/);
+  expect(h.showToast).not.toHaveBeenCalled();
 });

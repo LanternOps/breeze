@@ -6,24 +6,33 @@ import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignment
 import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { mfaGatedToolError } from './aiToolMfaGate';
-import type { AiTool } from './aiTools';
+import type { AiTool, PreFilingVerdict } from './aiTools';
 import {
   complianceInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   securityAgentsInlineSettingsSchema,
   systemProtectionInlineSettingsSchema,
+  containmentInlineSettingsSchema,
+  oemUpdatesInlineSettingsSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { checkSecurityAgentsLinkWrite, SecurityAgentsLinkWriteError } from './securityAgents/securityAgentsLinkWrite';
 import { checkSecurityRuleSetsWrite } from '../routes/configurationPolicies/securityRuleSetGate';
+import { checkOemUpdatesLinkWrite, OemUpdatesLinkWriteError } from './oemUpdates/oemUpdatesLinkWrite';
+import {
+  oemUpdatesPreviousForWrite,
+  overrideDeleteArmsOemUpdates,
+  policyArmsOemUpdates,
+} from '../routes/configurationPolicies/oemUpdatesGate';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import { INLINE_SETTINGS_EXAMPLES } from './aiToolsConfigPolicyExamples';
-import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { CONFIG_POLICY_ORG_ID_DESCRIPTION, CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION } from './aiToolSchemas';
+import { resolveWritableToolOrgId, withOwnerScopeOption } from './aiToolWriteOrg';
 import { describeMaintenanceSchedule } from './maintenanceWindowProjection';
 import {
   resolveEffectiveConfig,
@@ -38,6 +47,7 @@ import {
   updateFeatureLink,
   WarrantyConsentError,
   policyEffectivelyEnablesHpCmslCollection,
+  policyEffectivelyArmsOemUpdates,
   removeFeatureLink,
   listFeatureLinks,
   listAssignments,
@@ -103,10 +113,14 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   // error instead of surfacing as the generic tool error. Normalized so the
   // JSONB stores the default-filled object, matching the HTTP route.
   system_protection: { schema: systemProtectionInlineSettingsSchema, normalize: true },
+  containment: { schema: containmentInlineSettingsSchema, normalize: true },
   // #6960: strict, so a guessed key (or a pasted secret) is named in the error.
   // Arming (enabled:true) and featurePolicyId are refused earlier, by
   // securityAgentsToolRefusal.
   security_agents: { schema: securityAgentsInlineSettingsSchema, normalize: true },
+  // #11070: strict. Arming, featurePolicyId and closed gates are refused
+  // earlier, by oemUpdatesToolRefusal.
+  oem_updates: { schema: oemUpdatesInlineSettingsSchema, normalize: true },
 };
 
 /**
@@ -125,6 +139,39 @@ function securityAgentsToolRefusal(featurePolicyId: unknown, inlineSettings: unk
   if (check.refusal.body.code === 'security_agents_execute_required') {
     return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
   }
+  return JSON.stringify({ error: check.refusal.body.error, code: check.refusal.body.code });
+}
+
+/**
+ * #11070: an assistant never arms vendor updates. Turning them on, adding a
+ * category, switching overnight reboot on or unblocking an update installs
+ * vendor drivers, firmware or a BIOS and may reboot devices, which needs a
+ * person with devices.execute + MFA. Narrowing (switching off, removing a
+ * category, blocking an update) is allowed.
+ */
+export const OEM_UPDATES_AI_REFUSAL_MESSAGE =
+  'The assistant cannot turn on vendor updates. Turning them on, adding an update category, switching on overnight '
+  + 'reboot, unblocking an update, assigning or activating a policy that has them on all install vendor drivers, '
+  + 'firmware or BIOS updates and can reboot devices, which needs a person with the devices.execute permission and '
+  + "MFA. Ask them to make this change from the policy's Vendor updates tab. The assistant can still turn vendor "
+  + 'updates off, remove a category or block an update.';
+
+const OEM_UPDATES_AI_REFUSAL = JSON.stringify({ error: OEM_UPDATES_AI_REFUSAL_MESSAGE, code: 'oem_updates_execute_required' });
+
+/**
+ * Runs the shared oem_updates link-write check with arming NOT authorized,
+ * ahead of schema validation, against the settings in effect before the write.
+ * Returns a tool result string, or null when the write may proceed.
+ */
+function oemUpdatesToolRefusal(featurePolicyId: unknown, previous: unknown, next: unknown): string | null {
+  const check = checkOemUpdatesLinkWrite({
+    featurePolicyId: featurePolicyId === undefined ? undefined : (featurePolicyId as string | null),
+    previous,
+    next,
+    armAuthorized: false,
+  });
+  if (check.ok) return null;
+  if (check.refusal.body.code === 'oem_updates_execute_required') return OEM_UPDATES_AI_REFUSAL;
   return JSON.stringify({ error: check.refusal.body.error, code: check.refusal.body.code });
 }
 
@@ -192,10 +239,26 @@ function warrantyConsentRefusal(err: unknown): string | null {
       ? JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE })
       : JSON.stringify({ error: err.message, code: err.code });
   }
+  // #11070: same for the vendor updates backstop.
+  if (err instanceof OemUpdatesLinkWriteError) {
+    return err.code === 'oem_updates_execute_required'
+      ? OEM_UPDATES_AI_REFUSAL
+      : JSON.stringify({ error: err.message, code: err.code });
+  }
   if (!(err instanceof WarrantyConsentError)) return null;
   return JSON.stringify({
     error: `${err.message} Ask a user to switch it on from the policy's Warranty tab, where they accept HP's licence themselves.`,
   });
+}
+
+/**
+ * #11070: true when changing this policy to active would start vendor updates:
+ * it is not active now and its oem_updates link in effect is armed. A policy the
+ * caller cannot read is left to updateConfigPolicy's own "not found".
+ */
+async function activationArmsOemUpdates(policyId: string, auth: AuthContext): Promise<boolean> {
+  const current = await getConfigPolicy(policyId, auth);
+  return !!current && current.status !== 'active' && policyArmsOemUpdates(current);
 }
 
 function validateInlineSettingsForFeature(
@@ -208,7 +271,7 @@ function validateInlineSettingsForFeature(
   }
 
   const entry = featureType ? VALIDATED_INLINE_SETTINGS[featureType] : undefined;
-  if (!entry || raw === undefined || raw === null) return { value: raw };
+  if (!entry || (featureType !== 'containment' && (raw === undefined || raw === null))) return { value: raw };
 
   const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
@@ -246,6 +309,8 @@ export const MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED =
   'Authoring a maintenance feature link suppresses monitoring and requires an interactive user session. API-key and OAuth-grant callers cannot perform this action.';
 export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
   'This feature link is a maintenance link. Re-issue the call with featureType: "maintenance" so the change routes through approval.';
+export const CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED =
+  'This feature link is a containment link. Re-issue the call with featureType: "containment" so the change routes through approval.';
 
 /** Per-feature inline settings reference, returned on demand by describe. */
 export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
@@ -262,7 +327,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   pam: `inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.`,
   vulnerability: `inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.`,
   device_lifecycle: `inlineSettings {purgeRemovedAfterDays: number|null} — permanently delete removed devices N days after removal (1..3650); null/absent = keep forever. Purge is IRREVERSIBLE: it destroys the device record and all of its history. A daily job applies it; devices whose agent uninstall is still queued are skipped until it completes. Closest level wins, so an org-level link with null opts that org out of a partner-wide window.`,
-  remote_access: `{ webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic", allowUserEndSession?: true (the person at the device may end the session from the on-screen indicator, after a confirmation; default true) } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.`,
+  remote_access: `{ webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 30, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic", allowUserEndSession?: true (the person at the device may end the session from the on-screen indicator, after a confirmation; default true) } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.`,
   onedrive_helper: `{ silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }`,
   software_policy: `Link-only: featurePolicyId → existing software policy UUID; no inlineSettings.`,
   peripheral_control: `Link-only: featurePolicyId → existing peripheral policy UUID; no inlineSettings.`,
@@ -270,7 +335,9 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   hardware_monitoring: `{ enabled: true, pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60 } — inline-only RAID and disk-health collection settings. All fields are optional; these are the defaults. enabled is boolean; pollIntervalMinutes is an integer in 5..60; diskHealthIntervalMinutes is an integer in 15..1440. Collection is enabled without a policy link. Attach hardware monitors separately for alerts.`,
   time_sync: `{ enforceNtp: false, ntpServers: [], pollIntervalMinutes: 60, timezone: { expected: 'site', pinnedTimezone: null, autoFix: false } } — inline-only domain-aware Windows time settings. Up to 5 NTP hosts, no flags or ports; at least one host when enforceNtp is true. pollIntervalMinutes is an integer in 15..1440. A pinned IANA timezone must have a Windows mapping and overrides the site timezone. Workgroup, Entra-only and forest-root PDC devices use manual peers; members, DCs and other PDCs use the domain hierarchy. Unknown roles are skipped. GPO wins. autoFix defaults to false.`,
   workload_inventory: `{ enabled: false, dockerEnabled: true, podmanEnabled: true, hypervEnabled: true, proxmoxEnabled: true, intervalMinutes: 60 } — inline-only workload inventory settings. enabled defaults to false (opt-in): runtimes are always detected, but containers and VMs are listed only when enabled is true and the runtime's own flag is true. Turning a runtime off deletes its listed workloads. intervalMinutes is an integer in 15..1440. Collection is read-only.`,
-  security_agents: `{ version: 1, agents: [{ vendor: "huntress"|"sentinelone"|"controld"|"nextdns", enabled: boolean, platforms?: ["windows"|"macos"|"linux"] }] } — inline-only third-party security agent selection. Strict: no keys, tokens or other fields (per-customer keys come from the vendor integration). Each vendor at most once; agents: [] opts the assigned devices out. No featurePolicyId. This tool cannot enable a vendor (enabling installs software, which needs a person with devices.execute); it can only list vendors as disabled.`,
+  security_agents: `{ version: 1, agents: [{ vendor: "huntress"|"sentinelone"|"controld"|"nextdns"|"bitdefender", enabled: boolean, platforms?: ["windows"|"macos"|"linux"] }] } — inline-only third-party security agent selection. Strict: no keys, tokens or other fields (per-customer keys come from the vendor integration). Each vendor at most once; agents: [] opts the assigned devices out. No featurePolicyId. This tool cannot enable a vendor (enabling installs software, which needs a person with devices.execute); it can only list vendors as disabled.`,
+  oem_updates: `{ version: 1, enabled: false, schedule: { weekOfMonth: "first"|"second"|"third"|"fourth"|"last", dayOfWeek: "sun".."sat", windowStart: "HH:MM", windowHours: 1..8 }, catchUpNights: 0..14, reboot: "overnight"|"never", vendors: { dell?|surface?|hp?|lenovo?: { enabled: boolean, categories: { bios?, firmware?, driver?, application?: boolean }, blockedUpdateIds: [] (at most 200 unique IDs) } } } — inline-only vendor (Dell, Surface, HP, Lenovo) update schedule. Strict; every field but blockedUpdateIds is required. An absent vendor or category is off. A category whose rollout gate is still closed cannot be set true. No featurePolicyId. This tool cannot turn vendor updates on (on, a new category, overnight reboot, unblocking an update, assigning or activating a policy that has them on all need a person with devices.execute); it can turn them off, remove a category or block an update.`,
+  containment: `{ version: 1, extraAllow: [], defaultTtlHours: 72, deadManMinutes: 0, remoteRelay: true, requireSignedReleaseToken: false } — strict inline-only containment configuration (not consumed yet); version is required, other fields default as shown. No featurePolicyId. defaultTtlHours: integer 1..720; deadManMinutes: 0 or integer 15..1440. extraAllow: at most 32 strict { host? (DNS name), cidr?, proto: "tcp"|"udp"|"udp+tcp", ports: 1..16 unique integers 1..65535, label: trimmed 1..100 characters }; exactly one of host/cidr, no wildcard or localhost hosts, loopback networks, IPv4 prefixes shorter than /8, or IPv6 prefixes shorter than /32.`,
   system_protection: `{ beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' } — inline-only Windows System Restore checkpoint toggles. Strict: unknown keys are rejected, so there is no onFailure/abort setting. beforePatching defaults to true (matches existing agent behaviour); the other two default to false (opt-in). labelPrefix is 1..64 characters with no control characters. A checkpoint is best-effort and not a backup: Windows may throttle or later remove it.`,
 };
 
@@ -281,6 +348,43 @@ const FEATURE_POLICY_ID_HINTS: Partial<Record<ConfigFeatureType, string>> = {
   software_policy: 'featurePolicyId → existing software policy UUID',
   peripheral_control: 'featurePolicyId → existing peripheral policy UUID',
 };
+
+/** Who owns a configuration policy a create would write (#1724, #6667). */
+type ConfigPolicyCreateOwner = { partnerId: string } | { orgId: string };
+
+/**
+ * The owner of a `manage_configuration_policy` create, or the refusal its
+ * handler returns. Shared by the handler and `validateBeforeFiling` (#11432),
+ * so a create filed for approval resolves the same owner when it runs.
+ *
+ * A partner-owned ("all orgs") policy is owned by the caller's OWN partner,
+ * never a client-supplied value, and needs full partner org access
+ * (orgAccess 'all', or system scope): it pushes config to every org under the
+ * partner, the same gate the HTTP route enforces. Otherwise the owner org comes
+ * from `resolveWritableToolOrgId`, which never guesses one (#6667); its
+ * ambiguous refusal names both owners the model can choose.
+ */
+function resolveConfigPolicyCreateOwner(input: Record<string, unknown>, auth: AuthContext): ConfigPolicyCreateOwner | { error: string } {
+  if (!canMutateOrgWideGovernance(auth)) return { error: SITE_CEILING_WRITE_DENIED_MESSAGE };
+  if (!input.name) return { error: 'name is required for create' };
+  if (input.ownerScope === 'partner') {
+    if (!auth.partnerId) return { error: 'Partner-wide policies require partner scope' };
+    if (!canManagePartnerWidePolicies(auth)) {
+      return { error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' };
+    }
+    return { partnerId: auth.partnerId };
+  }
+  const resolved = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+  if (!resolved.orgId) return { error: withOwnerScopeOption(resolved.error ?? 'Organization context required') };
+  return { orgId: resolved.orgId };
+}
+
+/** `validateBeforeFiling` for manage_configuration_policy: only a create's owner is judged. */
+function validateConfigPolicyBeforeFiling(input: Record<string, unknown>, auth: AuthContext): PreFilingVerdict {
+  if (input.action !== 'create') return { ok: true };
+  const owner = resolveConfigPolicyCreateOwner(input, auth);
+  return 'error' in owner ? { ok: false, error: owner.error } : { ok: true };
+}
 
 function retiredFeatureRefusal(featureType: string): string {
   return JSON.stringify({
@@ -587,6 +691,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
+      // #11070: same door for vendor updates. An unresolvable parent reads as
+      // armed (policyEffectivelyArmsOemUpdates fails closed).
+      if (await policyEffectivelyArmsOemUpdates(policy.id)) return OEM_UPDATES_AI_REFUSAL;
+
       // assignPolicy returns null (instead of throwing) on a duplicate — see
       // the comment on its onConflictDoNothing insert in configurationPolicy.ts
       // for why the raised-violation catch pattern doesn't work inside this
@@ -732,8 +840,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Create only. Ownership: organization (default, one org) or partner (unassigned library policy; requires full partner org access). Not accepted on update.' },
-          orgId: { type: 'string', description: 'Create only. Org UUID to own the policy; required unless you access exactly one org. Ignored for ownerScope "partner". Cannot be set on update.' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION },
+          orgId: { type: 'string', description: CONFIG_POLICY_ORG_ID_DESCRIPTION },
         },
         required: ['action'],
       },
@@ -749,27 +857,18 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'create') {
-        if (!input.name) return JSON.stringify({ error: 'name is required for create' });
+        // The same owner `validateBeforeFiling` judged before any approval card.
+        const owner = resolveConfigPolicyCreateOwner(input, auth);
+        if ('error' in owner) return JSON.stringify({ error: owner.error });
 
-        // Partner-wide ("all orgs") policy (#1724). The partner is ALWAYS derived
-        // from the caller's own token — never a client-supplied value — so a
-        // caller cannot create a policy owned by another partner. A partner-wide
-        // policy pushes config to EVERY org under the partner, so only callers
-        // with full partner org access (orgAccess='all', or system scope) may
-        // create one — the same gate the HTTP route enforces.
-        if (input.ownerScope === 'partner') {
-          if (!auth.partnerId) {
-            return JSON.stringify({ error: 'Partner-wide policies require partner scope' });
-          }
-          if (!canManagePartnerWidePolicies(auth)) {
-            return JSON.stringify({ error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' });
-          }
-
+        // Partner-wide ("all orgs") policy (#1724), owned by the caller's own
+        // partner (see resolveConfigPolicyCreateOwner).
+        if ('partnerId' in owner) {
           // Duplicate-name check within the partner's own partner-wide policies.
           const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
             .from(configurationPolicies)
             .where(and(
-              eq(configurationPolicies.partnerId, auth.partnerId),
+              eq(configurationPolicies.partnerId, owner.partnerId),
               eq(configurationPolicies.name, input.name as string),
             ))
             .limit(1);
@@ -779,7 +878,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
             });
           }
 
-          const policy = await createConfigPolicy({ partnerId: auth.partnerId }, {
+          const policy = await createConfigPolicy({ partnerId: owner.partnerId }, {
             name: input.name as string,
             description: input.description as string | undefined,
             status: (input.status as 'active' | 'inactive' | 'archived') ?? 'active',
@@ -794,16 +893,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ success: true, policy });
         }
 
-        // Never `accessibleOrgIds[0]` (#6667): for a multi-org caller that is an
-        // arbitrary customer org. The resolver refuses rather than guesses.
-        const resolvedOrg = resolveWritableToolOrgId(
-          auth,
-          typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined,
-        );
-        if (!resolvedOrg.orgId) {
-          return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
-        }
-        const orgId = resolvedOrg.orgId;
+        // Never `accessibleOrgIds[0]` (#6667): the resolver refused rather than guessed.
+        const orgId = owner.orgId;
 
         // Check for duplicate name in same org
         const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
@@ -844,6 +935,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if (Object.keys(updates).length === 0) {
           return JSON.stringify({ error: 'Nothing to update: supply at least one of name, description, status.' });
         }
+        if (updates.status === 'active' && await activationArmsOemUpdates(input.policyId as string, auth)) {
+          return OEM_UPDATES_AI_REFUSAL;
+        }
 
         const updated = await updateConfigPolicy(input.policyId as string, updates, auth);
         if (!updated) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
@@ -853,6 +947,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       if (action === 'activate' || action === 'deactivate') {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required' });
         const newStatus = action === 'activate' ? 'active' : 'inactive';
+        if (newStatus === 'active' && await activationArmsOemUpdates(input.policyId as string, auth)) {
+          return OEM_UPDATES_AI_REFUSAL;
+        }
         const updated = await updateConfigPolicy(input.policyId as string, { status: newStatus }, auth);
         if (!updated) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
         return JSON.stringify({ success: true, message: `Policy "${updated.name}" ${action}d`, policy: updated });
@@ -891,6 +988,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
     }),
+    validateBeforeFiling: validateConfigPolicyBeforeFiling,
   });
 
   // 8. configuration_policy_compliance — Tier 1 (read)
@@ -1112,11 +1210,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       // lookup, reused by the update branch below) and make the omission an
       // actionable refusal, not a silent write.
       let existingFeatureType: string | undefined;
+      let existingInlineSettings: unknown = null;
       if (action === 'update') {
         const featureLinkIdForLookup = input.featureLinkId as string | undefined;
         if (!featureLinkIdForLookup) return JSON.stringify({ error: 'featureLinkId is required for update' });
         const [existingLink] = await db
-          .select({ featureType: configPolicyFeatureLinks.featureType })
+          .select({ featureType: configPolicyFeatureLinks.featureType, inlineSettings: configPolicyFeatureLinks.inlineSettings })
           .from(configPolicyFeatureLinks)
           .where(and(
             eq(configPolicyFeatureLinks.id, featureLinkIdForLookup),
@@ -1124,6 +1223,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           ))
           .limit(1);
         existingFeatureType = existingLink?.featureType as string | undefined;
+        existingInlineSettings = existingLink?.inlineSettings ?? null;
         if (isRetiredConfigFeatureType(existingFeatureType)) {
           return retiredFeatureRefusal(existingFeatureType);
         }
@@ -1151,6 +1251,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      // #10100: same anti-bypass as maintenance. The guardrail escalates
+      // containment to tier 3 from input.featureType, so an update must name it.
+      if (action === 'update' && existingFeatureType === 'containment' && input.featureType !== 'containment') {
+        return JSON.stringify({ error: CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED });
+      }
+
       if (action === 'add') {
         const featureType = input.featureType as string | undefined;
         if (!featureType) return JSON.stringify({ error: 'featureType is required for add' });
@@ -1165,8 +1271,22 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           });
         }
 
+        if (featureType === 'containment' && input.featurePolicyId) {
+          return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
+        }
+
         if (featureType === 'security_agents') {
           const refusal = securityAgentsToolRefusal(input.featurePolicyId ?? null, input.inlineSettings ?? null);
+          if (refusal) return refusal;
+        }
+
+        // #11070: compared with the link in effect (the parent's, for a new override).
+        if (featureType === 'oem_updates') {
+          const refusal = oemUpdatesToolRefusal(
+            input.featurePolicyId ?? null,
+            oemUpdatesPreviousForWrite(policy),
+            input.inlineSettings ?? null,
+          );
           if (refusal) return refusal;
         }
 
@@ -1212,8 +1332,17 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         const featureLinkId = input.featureLinkId as string | undefined;
         if (!featureLinkId) return JSON.stringify({ error: 'featureLinkId is required for update' });
 
+        if (existingFeatureType === 'containment' && input.featurePolicyId) {
+          return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
+        }
+
         if (existingFeatureType === 'security_agents') {
           const refusal = securityAgentsToolRefusal(input.featurePolicyId, input.inlineSettings);
+          if (refusal) return refusal;
+        }
+
+        if (existingFeatureType === 'oem_updates') {
+          const refusal = oemUpdatesToolRefusal(input.featurePolicyId, existingInlineSettings, input.inlineSettings);
           if (refusal) return refusal;
         }
 
@@ -1258,6 +1387,14 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       if (action === 'remove') {
         const featureLinkId = input.featureLinkId as string | undefined;
         if (!featureLinkId) return JSON.stringify({ error: 'featureLinkId is required for remove' });
+
+        // #11070: removing an override reverts the policy to its parent's vendor
+        // updates link; when that arms beyond the override, it is arming.
+        const removing = (policy.featureLinks as Array<{ id: string; featureType: string }> | undefined)
+          ?.find((l) => l.id === featureLinkId);
+        if (removing?.featureType === 'oem_updates' && overrideDeleteArmsOemUpdates(policy)) {
+          return OEM_UPDATES_AI_REFUSAL;
+        }
 
         const deleted = await removeFeatureLink(featureLinkId, configPolicyId);
         if (!deleted) return JSON.stringify({ error: 'Feature link not found' });

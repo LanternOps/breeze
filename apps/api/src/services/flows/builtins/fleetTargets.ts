@@ -35,6 +35,8 @@ export interface FleetDevice {
   hostname: string;
   /** Display name, else hostname — the legacy `{{device}}` value. */
   name: string;
+  /** `resolve_targets` over a fleet step's FAILED set only: why the device failed (#10705). */
+  failureReason?: string;
 }
 
 export interface FleetTargetResolution {

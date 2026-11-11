@@ -74,6 +74,9 @@ export const pax8OrderLines = pgTable('pax8_order_lines', {
   billingTerm: varchar('billing_term', { length: 20 }),
   commitmentTermId: varchar('commitment_term_id', { length: 64 }),
   quantity: numeric('quantity', { precision: 12, scale: 2 }),
+  // Linked contract line manual_quantity observed inside the claim transaction,
+  // for every action; null when no contract line is linked. Both submit and
+  // reconcile compare against this durable approved baseline before billing.
   authorizedBaselineQuantity: numeric('authorized_baseline_quantity', { precision: 12, scale: 2 }),
   provisioningDetails: jsonb('provisioning_details').notNull().default([]),
   targetSubscriptionId: varchar('target_subscription_id', { length: 64 }),

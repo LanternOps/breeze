@@ -5,9 +5,12 @@ import { metricsRoutes } from './metrics';
 import { processSamplesRoutes } from './processSamples';
 import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
+import { networkIsolationRoutes } from './networkIsolation';
 import { forceRebootRoutes } from './forceReboot';
+import { oemUpdatesRoutes } from './oemUpdates';
 import { hardwareRoutes } from './hardware';
 import { placementRoutes } from './placement';
+import { deviceCircuitsRoutes } from './circuits';
 import { alertsRoutes } from './alerts';
 import { deviceMonitorsRoutes } from './monitors';
 import { anomaliesRoutes } from './anomalies';
@@ -102,6 +105,7 @@ deviceRoutes.route('/', filesystemRoutes);
 deviceRoutes.route('/', moveOrgRoutes);
 // #8729: POST /:id/force-reboot, the only (step-up) way to force-reboot a device.
 deviceRoutes.route('/', forceRebootRoutes);
+deviceRoutes.route('/', networkIsolationRoutes);
 
 // Mount the network arm of the unified Devices list (#1322) BEFORE core
 // routes — `GET /network` is a static path that must not be eaten by the
@@ -167,11 +171,15 @@ deviceRoutes.route('/', commandsRoutes);
 deviceRoutes.route('/', hardwareRoutes);
 // GET/PUT/DELETE /:id/placement — physical placement (room/rack/U), #8134.
 deviceRoutes.route('/', placementRoutes);
+// GET /:id/circuits — WAN circuits and interfaces of a device (read only), #8134.
+deviceRoutes.route('/', deviceCircuitsRoutes);
 deviceRoutes.route('/', alertsRoutes);
 // #6371 W05c2: GET /:id/monitors — effective monitors for the device page.
 deviceRoutes.route('/', deviceMonitorsRoutes);
 deviceRoutes.route('/', anomaliesRoutes);
 deviceRoutes.route('/', patchesRoutes);
+// #11065 W04: POST /:id/oem-updates/run (Run vendor updates), GET status and history.
+deviceRoutes.route('/', oemUpdatesRoutes);
 deviceRoutes.route('/', scriptsRoutes);
 // #5022 W02: GET /:id/ai-origin, GET /:id/ai-activity. :id-prefixed, so
 // mounting order relative to coreRoutes is immaterial (only STATIC paths

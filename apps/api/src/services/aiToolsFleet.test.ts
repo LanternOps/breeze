@@ -65,6 +65,8 @@ vi.mock('./siteScope', async (importOriginal) => {
 
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' })),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -398,7 +400,7 @@ describe('manage_groups peripheral reconciliation', () => {
       selectCall += 1;
       const rows = selectCall === 1
         ? [{ id: 'group-1', orgId: 'org-1', siteId: null, name: 'Servers' }]
-        : [{ id: 'device-1', siteId: 'site-1' }, { id: 'device-2', siteId: 'site-1' }];
+        : [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }, { id: 'device-2', orgId: 'org-1', siteId: 'site-1' }];
       return {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -1032,8 +1034,10 @@ describe('manage_patches handler', () => {
   });
 
   it('list requires org context (never returns the unscoped global catalog)', async () => {
+    // System scope reaches every org, so a read that names none is refused
+    // rather than run platform-wide (#10396).
     const result = JSON.parse(await tool.handler({ action: 'list' }, noOrgAuth));
-    expect(result.error).toContain('Organization context required');
+    expect(result.error).toMatch(/orgId is required/);
     expect(result.patches).toBeUndefined();
   });
 
@@ -2114,6 +2118,10 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
     }
 
     it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      // #10431's split check reads the device's org; one org means no split.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId: 'org-2' }]) }),
+      } as never);
       const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
       expect(result.error).toBe('orgId is required: you have access to multiple organizations');
       expect(db.insert).not.toHaveBeenCalled();

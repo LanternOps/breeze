@@ -116,19 +116,23 @@ describe('desiredManagedPolicy — partner-uploaded binary gate (SentinelOne, #6
   const s1 = (enabled: boolean) => ({ version: 1 as const, agents: [{ vendor: 'sentinelone' as const, enabled }] });
   const s1Catalog = new Map([['sentinelone' as const, CATALOG_S1]]);
 
-  it('a catalog row with no deployable MSI version yields no rule and reports the missing binary', () => {
+  // #9247: the rule is KEPT and the missing installer reported. Installs are
+  // gated per device by the readiness preflight (`installer_missing`), which
+  // is what puts a partner-visible coverage row on every reached device.
+  it('a catalog row with no deployable MSI version keeps its rule and reports the missing binary', () => {
     const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: s1(true), catalogByVendor: edr(s1Catalog), uploadedBinaryVendors: new Set() });
     expect(desired.missingBinary).toEqual(['sentinelone']);
     expect(desired.missingCatalog).toEqual([]);
-    expect(desired.vendors).toEqual([]);
-    expect(desired.row.rules.software).toEqual([]);
-    expect(desired.row.isActive).toBe(false);
+    expect(desired.vendors).toEqual(['sentinelone']);
+    expect(desired.row.rules.software).toEqual([
+      { name: 'Sentinel Agent*', catalogId: CATALOG_S1, reason: expect.stringContaining('SentinelOne') },
+    ]);
+    expect(desired.row.isActive).toBe(true);
   });
 
-  it('fails closed when the caller does not say whether a binary was uploaded', () => {
+  it('reports the binary missing when the caller does not say whether one was uploaded (fail closed)', () => {
     const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: s1(true), catalogByVendor: edr(s1Catalog) });
     expect(desired.missingBinary).toEqual(['sentinelone']);
-    expect(desired.row.isActive).toBe(false);
   });
 
   it('with a deployable MSI the rule is generated and the policy armed', () => {
@@ -155,14 +159,14 @@ describe('desiredManagedPolicy — partner-uploaded binary gate (SentinelOne, #6
     expect(desired.vendors).toEqual(['huntress']);
   });
 
-  it('Huntress + SentinelOne without its MSI: Huntress still gets its rule, SentinelOne is reported', () => {
+  it('Huntress + SentinelOne without its MSI: both keep their rule, SentinelOne is reported', () => {
     const desired = desiredManagedPolicy({
       configPolicy: PARTNER_WIDE,
       settings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }, { vendor: 'huntress', enabled: true }] },
       catalogByVendor: edr(new Map([['huntress' as const, CATALOG_HUNTRESS], ['sentinelone' as const, CATALOG_S1]])),
       uploadedBinaryVendors: new Set(),
     });
-    expect(desired.vendors).toEqual(['huntress']);
+    expect(desired.vendors).toEqual(['huntress', 'sentinelone']);
     expect(desired.missingBinary).toEqual(['sentinelone']);
   });
 });
@@ -253,19 +257,31 @@ describe('syncManagedSoftwarePolicy — SentinelOne MSI gate (#6960 W04)', () =>
     await expect(syncManagedSoftwarePolicy(executor, S1_LINK)).rejects.toMatchObject({ code: 'security_agents_binary_missing' });
   });
 
-  it('sweep (skip): no rule, the vendor is reported as missing its binary, and an existing armed row is deactivated', async () => {
+  it('sweep (skip): the MSI going away leaves an armed row untouched (rule kept, no generation bump) and reports the binary missing', async () => {
     const armed = desiredManagedPolicy({
       configPolicy: PARTNER_WIDE,
       settings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] },
       catalogByVendor: edr(new Map([['sentinelone' as const, CATALOG_S1]])),
       uploadedBinaryVendors: new Set(['sentinelone' as const]),
     }).row;
-    const { executor, writes, updates } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [], [{ id: 'policy-1', ...armed }]]);
+    const { executor, writes } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [], [{ id: 'policy-1', ...armed }]]);
     const result = await syncManagedSoftwarePolicy(executor, S1_LINK, { onMissingCatalog: 'skip' });
-    expect(result).toMatchObject({ action: 'update', vendors: [], skippedVendors: ['sentinelone'], missingBinaryVendors: ['sentinelone'] });
-    expect(writes[0]).toBe('update');
-    expect(updates[0]).toMatchObject({ isActive: false, rules: { software: [], allowUnknown: true } });
-    expect(updates[0]).toHaveProperty('approvalGeneration');
+    expect(result).toMatchObject({
+      action: 'none', policyId: 'policy-1', vendors: ['sentinelone'], skippedVendors: [], missingBinaryVendors: ['sentinelone'],
+    });
+    expect(writes).toEqual([]);
+  });
+
+  it('sweep (skip): a row an older sweep deactivated for a missing MSI is re-armed with its rule', async () => {
+    const dropped = {
+      ...desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: S1_LINK.inlineSettings as never, catalogByVendor: edr(new Map()) }).row,
+      isActive: false,
+      rules: { software: [], allowUnknown: true },
+    };
+    const { executor, updates } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [], [{ id: 'policy-1', ...dropped }]]);
+    const result = await syncManagedSoftwarePolicy(executor, S1_LINK, { onMissingCatalog: 'skip' });
+    expect(result).toMatchObject({ action: 'update', vendors: ['sentinelone'], missingBinaryVendors: ['sentinelone'] });
+    expect(updates[0]).toMatchObject({ isActive: true, rules: { software: [expect.objectContaining({ catalogId: CATALOG_S1 })] } });
   });
 
   it('Huntress never reads software_versions (no uploaded binary needed)', async () => {
@@ -341,36 +357,36 @@ describe('planManagedPolicySync', () => {
 
 describe('repairManagedSoftwarePolicies', () => {
   beforeEach(() => { captureMock.mockClear(); transactionMock.mockClear(); });
-  it('an enabled vendor whose MSI is missing is surfaced (warn + Sentry, own fingerprint), not silently dropped', async () => {
+  // #9247: a missing MSI is partner-visible now (installer_missing coverage
+  // rows), so the sweep no longer pages Sentry for it.
+  it('an enabled vendor whose MSI is missing sends nothing to Sentry (it is a coverage state)', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     captureMock.mockClear();
     selectMock.mockReturnValueOnce({ from: () => ({ where: async () => [{ id: 'link-s1' }] }) });
     transactionMock.mockResolvedValueOnce({
-      policyId: 'policy-1', action: 'update', vendors: [], skippedVendors: ['sentinelone'], missingBinaryVendors: ['sentinelone'],
+      policyId: 'policy-1', action: 'none', vendors: ['sentinelone'], skippedVendors: [], missingBinaryVendors: ['sentinelone'],
     });
-    await expect(repairManagedSoftwarePolicies()).resolves.toEqual({ links: 1, changed: 1, failed: 0 });
-    expect(captureMock).toHaveBeenCalledTimes(1);
-    const [, , tags, opts] = captureMock.mock.calls[0]!;
-    expect(tags).toMatchObject({ area: 'security_agents_repair', vendors: 'sentinelone' });
-    expect(opts).toEqual({ fingerprint: ['security_agents_repair', 'binary_missing'] });
-    expect(tags).toMatchObject({ linkId: 'link-s1' });
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/installer/i), expect.objectContaining({ linkId: 'link-s1', vendors: ['sentinelone'] }));
+    await expect(repairManagedSoftwarePolicies()).resolves.toEqual({ links: 1, changed: 0, failed: 0 });
+    expect(captureMock).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(expect.stringMatching(/installer/i), expect.objectContaining({ linkId: 'link-s1', vendors: ['sentinelone'] }));
+    info.mockRestore();
     warn.mockRestore();
   });
 
-  it('a missing catalog package and a missing installer are reported separately, each under its own fingerprint', async () => {
+  it('a missing catalog package is still sent to Sentry; a missing installer alongside it is not', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     selectMock.mockReturnValueOnce({ from: () => ({ where: async () => [{ id: 'link-both' }] }) });
     transactionMock.mockResolvedValueOnce({
-      policyId: 'policy-1', action: 'none', vendors: [], skippedVendors: ['huntress', 'sentinelone'], missingBinaryVendors: ['sentinelone'],
+      policyId: 'policy-1', action: 'none', vendors: ['sentinelone'], skippedVendors: ['huntress'], missingBinaryVendors: ['sentinelone'],
     });
     await repairManagedSoftwarePolicies();
-    expect(captureMock).toHaveBeenCalledTimes(2);
-    const calls = captureMock.mock.calls.map(([, , tags, opts]) => ({ vendors: tags.vendors, fingerprint: opts.fingerprint[1] }));
-    expect(calls).toEqual([
-      { vendors: 'huntress', fingerprint: 'catalog_missing' },
-      { vendors: 'sentinelone', fingerprint: 'binary_missing' },
-    ]);
+    expect(captureMock).toHaveBeenCalledTimes(1);
+    const [, , tags, opts] = captureMock.mock.calls[0]!;
+    expect(tags).toMatchObject({ area: 'security_agents_repair', vendors: 'huntress', linkId: 'link-both' });
+    expect(opts).toEqual({ fingerprint: ['security_agents_repair', 'catalog_missing'] });
+    info.mockRestore();
     warn.mockRestore();
   });
 

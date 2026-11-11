@@ -395,7 +395,9 @@
         "message_other": "Excluir {{count}} contratos em rascunho? Somente rascunhos são excluídos{{untouched}}; isso não pode ser desfeito.",
         "untouchedSuffix": " — quaisquer contratos ativos ou pausados na sua seleção não serão alterados",
         "confirm": "Excluir rascunhos"
-      }
+      },
+      "fromQuoteReady": "De {{number}} · pronto para ativar",
+      "fromQuoteReadyUnnumbered": "De uma cotação · pronto para ativar"
     },
     "contractPax8Drawer": {
       "title": "Vincular uma assinatura Pax8",
@@ -861,8 +863,10 @@
       "expiryDefaultHint_other": "Padrão: {{count}} dias, em Configurações de faturamento → Acordos.",
       "autoReminderHint_one": "Os lembretes automáticos são enviados todos os dias, até {{max}} no total.",
       "autoReminderHint_other": "Os lembretes automáticos são enviados a cada {{count}} dias, até {{max}} no total.",
-      "expiryDefaultUnavailable": "Não foi possível carregar o vencimento padrão das Configurações de faturamento; o padrão interno está sendo exibido.",
+      "expiryDefaultUnavailable": "Não foi possível carregar o vencimento padrão das Configurações de faturamento. Deixe a data em branco e o padrão será aplicado ao criar o acordo.",
+      "expiryBlankHint": "Deixe em branco para usar o padrão de Configurações de faturamento → Acordos.",
       "label": "Rótulo (opcional)",
+      "labelHint": "Somente interno. Os clientes veem o nome do modelo.",
       "createDraft": "Criar rascunho e visualizar",
       "creating": "Criando…",
       "preview": {
@@ -1667,6 +1671,14 @@
         "attachError": "Não foi possível anexar o arquivo de evidência.",
         "downloadError": "Não foi possível baixar o arquivo de evidência.",
         "tooLarge": "Este arquivo é maior que 10 MB. Escolha um arquivo menor."
+      },
+      "generatedContracts": {
+        "title_one": "Esta cotação criou {{count}} contrato",
+        "title_other": "Esta cotação criou {{count}} contratos",
+        "draftHint_one": "{{count}} rascunho não fatura nada até ser ativado. Revise-o e ative-o para começar a faturar.",
+        "draftHint_other": "{{count}} rascunhos não faturam nada até serem ativados. Revise-os e ative-os para começar a faturar.",
+        "ready": "Pronto para ativar",
+        "unavailable": "Não foi possível carregar os contratos criados por esta cotação. Recarregue a página para tentar novamente."
       }
     },
     "currency": {

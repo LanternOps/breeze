@@ -795,13 +795,17 @@ func (s sckStreamShim) start(refreshFilter bool) error {
 	refresh := C.int(0)
 	if refreshFilter {
 		refresh = 1
+		// A restart (#10874): wake the display first. If the lock screen
+		// switched it off, the rebuilt filter would otherwise find zero
+		// displays. The session's assertion keeps it on once it is lit.
+		declareForStreamRestart(displayPower)
 	}
 	var nsCode C.long
 	code := int(C.sckStartStream(C.int(s.displayIndex), refresh, &nsCode))
 	if code == 0 {
 		return nil
 	}
-	err := translateDarwinError(code)
+	err := describeCurrentDisplayState(displayPower, translateDarwinError(code))
 	if nsCode != 0 {
 		return fmt.Errorf("%w (SCStreamError %d)", err, int64(nsCode))
 	}

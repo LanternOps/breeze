@@ -84,8 +84,12 @@ cp "$SCRIPT_DIR/install-location.sh" "$SCRIPTS/install-location.sh"
 # Also sourced by postinstall: the breeze-group create/repair rule, shared with
 # the daemon, which go:embeds the same file (#7829).
 cp "$SCRIPT_DIR/../../internal/sessionbroker/ensure_ipc_group.sh" "$SCRIPTS/ensure_ipc_group.sh"
+# The network-isolation recovery daemon's template (#10099). It travels with
+# the scripts, not in the payload: launchd would load a payload LaunchDaemon at
+# every boot. postinstall renders it only when a recovery binary was staged.
+cp "$SCRIPT_DIR/../../service/launchd/com.breeze.isolation.plist" "$SCRIPTS/com.breeze.isolation.plist"
 chmod 755 "$SCRIPTS/preinstall" "$SCRIPTS/postinstall"
-chmod 644 "$SCRIPTS/install-location.sh" "$SCRIPTS/ensure_ipc_group.sh"
+chmod 644 "$SCRIPTS/install-location.sh" "$SCRIPTS/ensure_ipc_group.sh" "$SCRIPTS/com.breeze.isolation.plist"
 
 # ----- Build component package -----
 mkdir -p "$(dirname "$OUTPUT")"

@@ -35,6 +35,17 @@ describe('managed evidence registry', () => {
     expect(isManagedEvidenceType('__proto__')).toBe(false);
   });
 
+  // #11018 D5: a delivered run is visible to every portal user of the org, while
+  // a portal user may only read their own tickets. Subjects stay off by default.
+  it('registers ticket_sla_performance with ticket subjects off', () => {
+    expect(isManagedEvidenceType('ticket_sla_performance')).toBe(true);
+    expect(managedEvidenceEntry('ticket_sla_performance' as never)).toEqual({
+      type: 'ticket_sla_performance',
+      definitionName: 'Service evidence — SLA performance',
+      defaultConfig: { includeSubjects: false },
+    });
+  });
+
   it('stays in step with the shared validator’s list', async () => {
     const { MANAGED_EVIDENCE_REPORT_TYPES } = await import('@breeze/shared');
     expect([...MANAGED_EVIDENCE_REPORT_TYPES].sort()).toEqual(Object.keys(MANAGED_EVIDENCE_REGISTRY).sort());

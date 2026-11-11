@@ -312,6 +312,35 @@ describe('eventLogRowSchema — server-side message length cap (#2642)', () => {
   });
 });
 
+describe('eventLogRowSchema — source is truncated to the varchar(255) column (#11279)', () => {
+  const withSource = (source: string) => ({ ...makeEvent('m'), source });
+
+  it('keeps a source of exactly 255 characters untouched', () => {
+    expect(eventLogRowSchema.parse(withSource('s'.repeat(255))).source).toBe('s'.repeat(255));
+  });
+
+  it('truncates a 300-character source to 255 instead of rejecting the row', () => {
+    const parsed = eventLogRowSchema.safeParse(withSource('s'.repeat(300)));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.source).toBe('s'.repeat(255));
+  });
+
+  it('truncates on code-point boundaries, never splitting a surrogate pair', () => {
+    const parsed = eventLogRowSchema.parse(withSource('😀'.repeat(300)));
+    expect(Array.from(parsed.source)).toHaveLength(255);
+    expect(parsed.source).toBe('😀'.repeat(255));
+  });
+
+  it('leaves an astral source untouched when it is over 255 UTF-16 units but within 255 code points', () => {
+    const source = '😀'.repeat(200);
+    expect(eventLogRowSchema.parse(withSource(source)).source).toBe(source);
+  });
+
+  it('still rejects an empty source', () => {
+    expect(eventLogRowSchema.safeParse(withSource('')).success).toBe(false);
+  });
+});
+
 describe('heartbeatSchema — WebSocket desktop start-fence capability', () => {
   const minimal = { status: 'ok' as const, agentVersion: '0.120.0' };
 

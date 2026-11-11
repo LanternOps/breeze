@@ -11,9 +11,10 @@ import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { queueBackupStopCommand } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { resolveScopedOrgId } from './helpers';
+import { loadJobResumedAt, resolveScopedOrgId } from './helpers';
 import { backupJobHistoryOrderBy } from '../../services/backupJobOrdering';
 import { jobListSchema } from './schemas';
+import { classifyBackupFailure, deriveBackupJobDataAccounting } from '@breeze/shared';
 
 // Legacy `?status=` spellings this API has always accepted, mapped to the real
 // backup_status enum values. See the note at the use site in the list route.
@@ -172,10 +173,12 @@ jobsRoutes.get('/jobs/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
   if (!canAccessDeviceSite({ siteId: row.siteId }, c.get('permissions') as UserPermissions | undefined)) {
     return c.json({ error: 'Device not found or access denied' }, 403);
   }
+  const resumedAt = await loadJobResumedAt([row.job.id]);
   return c.json({
     ...toJobResponse(row.job),
     deviceName: row.deviceName ?? row.deviceHostname ?? null,
     configName: row.configName ?? null,
+    resumedAt: resumedAt.get(row.job.id)?.toISOString() ?? null,
   });
 });
 
@@ -706,8 +709,13 @@ jobsRoutes.post(
     console.warn(`[BackupJobs] Failed to remove queued dispatch for job ${row.id}:`, err);
   }
 
+  // A job still waiting for its device was never sent (#11013): there is nothing
+  // to stop, and a pre-queue helper would apply the stop to the whole device.
+  // Read off the row the cancel itself settled, not `current`: a catch-up claim
+  // between that read and the cancel clears the window and sends the backup.
+  const neverSent = current.status === 'pending' && row.catchUpUntil != null;
   let stopQueued = false;
-  if (current.status === 'running' || (current.status === 'pending' && !dispatchRemoved)) {
+  if (current.status === 'running' || (current.status === 'pending' && !dispatchRemoved && !neverSent)) {
     try {
       const { error } = await queueBackupStopCommand(row.deviceId, {
         userId: auth?.user?.id ?? undefined,
@@ -765,5 +773,7 @@ function toJobResponse(row: typeof backupJobs.$inferSelect) {
     referencedFiles: row.referencedFiles ?? null,
     errorCount: row.errorCount ?? null,
     errorLog: row.errorLog ?? null,
+    failureCategory: classifyBackupFailure({ status: row.status, errorLog: row.errorLog }),
+    dataAccounting: deriveBackupJobDataAccounting(row),
   };
 }

@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Character-key shortcuts are on.",
       "charKeysOff": "Character-key shortcuts are off. Only Ctrl/Cmd shortcuts work.",
-      "charKeysManage": "Change in profile settings"
+      "charKeysManage": "Change in profile settings",
+      "queueTitle": "Tickets queue",
+      "queueHint": "On the Tickets page, outside a text field.",
+      "queue": {
+        "next": "Next ticket",
+        "previous": "Previous ticket",
+        "open": "Open the ticket (after a resolve: the offered next one)",
+        "toggleBulk": "Add to or remove from the bulk selection",
+        "assignMe": "Assign to me",
+        "reply": "Write a reply",
+        "internal": "Write an internal note",
+        "resolve": "Resolve with a note",
+        "back": "Back to the queue"
+      }
     }
   },
   "migrationBanner": {
@@ -1337,7 +1350,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "No tickets match your search or filters.",
-          "noTickets": "Ticket sync is not available yet, so PSA tickets are not imported.",
+          "noTickets": "No alert tickets yet. Enable alert ticketing on the bound ConnectWise Manage connection to get started.",
           "title": "No PSA tickets"
         },
         "filters": {
@@ -1350,16 +1363,42 @@
           "updated": "Updated"
         },
         "searchPlaceholder": "Search tickets",
-        "status": {
-          "closed": "Closed",
-          "inProgress": "In Progress",
-          "open": "Open",
-          "resolved": "Resolved",
-          "waiting": "Waiting"
-        },
         "ticketCount": "{{filtered}} of {{total}} tickets",
-        "title": "PSA Tickets",
+        "title": "Alert tickets",
         "unlinked": "Unlinked"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Ticket activity",
+        "refresh": "Refresh",
+        "redrive": "Re-drive",
+        "loading": "Loading ticket activity…",
+        "loadFailed": "Could not load ticket activity. Refresh to try again.",
+        "actionFailed": "Could not update ticket activity.",
+        "actionSucceeded": "Ticket activity updated.",
+        "help": "Re-drive retries failed creates and alerts without company links. Mark handled stops work on the mapping without changing the PSA ticket.",
+        "empty": "No tickets need attention.",
+        "viewAlert": "View alert",
+        "createAnyway": "Create anyway",
+        "markHandled": "Mark handled",
+        "duplicateWarning": "A ticket may already exist in the PSA. Check there first: this one-time retry can create a duplicate.",
+        "confirmCreate": "Create one more ticket",
+        "cancel": "Cancel",
+        "previous": "Previous",
+        "next": "Next",
+        "page": "Page {{page}} of {{total}}",
+        "states": {
+          "never_attempted": "Queued",
+          "create_in_flight": "Creating",
+          "created": "Created",
+          "create_outcome_unknown": "Create outcome unknown",
+          "rejected": "Rejected",
+          "failed": "Failed",
+          "needs_attention": "Needs attention",
+          "handled": "Handled",
+          "skipped_no_company": "No company link",
+          "skipped_ambiguous_company": "Ambiguous company link",
+          "skipped_resolved_before_create": "Resolved before create"
+        }
       }
     },
     "webhooks": {
@@ -1434,6 +1473,10 @@
           "ticketCreated": {
             "description": "Triggered when a ticket is created.",
             "label": "Ticket Created"
+          },
+          "ticketMerged": {
+            "description": "Triggered when a ticket is merged into another ticket.",
+            "label": "Ticket Merged"
           },
           "ticketCommented": {
             "description": "Triggered when a comment or note is added to a ticket.",
@@ -2001,7 +2044,7 @@
         "paused": "Paused",
         "everyInterval": "every {{interval}}",
         "lastPolled": "Last polled {{time}}",
-        "configureMonitoring": "Configure Monitoring",
+        "configureMonitoring": "Configure monitoring",
         "pauseSnmpPolling": "Pause SNMP polling",
         "resumeSnmpPolling": "Resume SNMP polling",
         "disableSnmpMonitoring": "Disable SNMP monitoring",
@@ -2025,7 +2068,7 @@
         },
         "ip": "IP",
         "snmp": "SNMP",
-        "networkChecks": "Network Checks",
+        "networkChecks": "Network checks",
         "emptyAssets": "No assets found.",
         "lastSeen": "Last seen {{time}}",
         "activeRatio": "{{active}}/{{total}} active",
@@ -2835,6 +2878,9 @@
     "noneConfigured": "No {{source}} configured",
     "overriding": "Overrides {{source}}",
     "overridingWithValue": "Overrides {{source}} ({{value}})"
+  },
+  "inheritChoice": {
+    "inherit": "Inherit — {{value}} ({{source}})"
   },
   "fixMemoryPage": {
     "title": "Fix memory",

@@ -57,6 +57,231 @@ async function readBack(id: string): Promise<{ deltaLink: string | null; status:
 }
 
 describe('ticket_mailbox_connections worker writes persist under FORCE RLS (no request context)', () => {
+  // #10863: what the worker's floor and baseline writes do to a real row, under the
+  // real provider CHECK, with no surrounding DB context, as the worker calls them.
+  describe('connect baseline (#10863)', () => {
+    const readBaseline = async (id: string) => (await withSystemDbAccessContext(async () => db.select({
+      deltaLink: ticketMailboxConnections.deltaLink,
+      eligibleAfter: ticketMailboxConnections.eligibleAfter,
+      skipped: ticketMailboxConnections.baselineSkippedCount,
+      completedAt: ticketMailboxConnections.baselineCompletedAt,
+      status: ticketMailboxConnections.status,
+    }).from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, id))))[0]!;
+    const setRow = (id: string, values: Partial<typeof ticketMailboxConnections.$inferInsert>) =>
+      withSystemDbAccessContext(async () => db.update(ticketMailboxConnections).set(values).where(eq(ticketMailboxConnections.id, id)));
+
+    /** A row part-way through consent, then bound, exactly as the callback does it. */
+    async function connectMailbox(): Promise<{ id: string; partnerId: string; tenantId: string; consentAttemptId: string; mailboxAddress: string }> {
+      const { createPendingConnection, bindVerifiedTenant } = await import('../../services/ticketMailbox/connectionService');
+      const partner = await withSystemDbAccessContext(() => createPartner());
+      const tenantId = randomUUID();
+      const mailboxAddress = `support-${randomUUID()}@a.com`;
+      const pending = await withSystemDbAccessContext(() => createPendingConnection({
+        partnerId: partner.id, mailboxAddress, displayName: null, createdBy: null,
+      }));
+      await withSystemDbAccessContext(() => bindVerifiedTenant(pending.id, partner.id, pending.consentAttemptId, tenantId, {
+        microsoftOid: randomUUID(), breezeUserId: null,
+      }));
+      return { id: pending.id, partnerId: partner.id, tenantId, consentAttemptId: pending.consentAttemptId, mailboxAddress };
+    }
+
+    /** Re-consent from the row's current state, then bind again. */
+    async function reconnect(partnerId: string, mailboxAddress: string, tenantId: string) {
+      const { createPendingConnection, bindVerifiedTenant } = await import('../../services/ticketMailbox/connectionService');
+      const pending = await withSystemDbAccessContext(() => createPendingConnection({
+        partnerId, mailboxAddress, displayName: null, createdBy: null,
+      }));
+      await withSystemDbAccessContext(() => bindVerifiedTenant(pending.id, partnerId, pending.consentAttemptId, tenantId, {
+        microsoftOid: randomUUID(), breezeUserId: null,
+      }));
+    }
+
+    runDb('a new connection gets a floor at bind, on an m365 row, with its baseline open', async () => {
+      const before = Date.now();
+      const { id } = await connectMailbox();
+      const row = await readBaseline(id);
+      expect(row.status).toBe('connected');
+      expect(row.deltaLink).toBeNull();
+      expect(row.eligibleAfter!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+      expect(row.eligibleAfter!.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+      expect(row.skipped).toBe(0);
+      expect(row.completedAt).toBeNull();
+    });
+
+    runDb('parts of a baseline add up, the first deltaLink closes it, and a losing sweep counts nothing', async () => {
+      const { updateDeltaCursor } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await connectMailbox();
+
+      await expect(updateDeltaCursor(snapshot, null, 'resume-1', new Date(), null, { skipped: 2000, completed: false })).resolves.toBe(true);
+      expect(await readBaseline(snapshot.id)).toMatchObject({ deltaLink: 'resume-1', skipped: 2000, completedAt: null });
+
+      // An overlapping sweep that also started from no cursor loses the swap.
+      await expect(updateDeltaCursor(snapshot, null, 'resume-stale', new Date(), null, { skipped: 2000, completed: false })).resolves.toBe(false);
+      expect(await readBaseline(snapshot.id)).toMatchObject({ deltaLink: 'resume-1', skipped: 2000, completedAt: null });
+
+      const doneAt = new Date();
+      await expect(updateDeltaCursor(snapshot, 'resume-1', 'delta-1', doneAt, null, { skipped: 487, completed: true })).resolves.toBe(true);
+      const row = await readBaseline(snapshot.id);
+      expect(row).toMatchObject({ deltaLink: 'delta-1', skipped: 2487 });
+      expect(row.completedAt!.getTime()).toBe(doneAt.getTime());
+    });
+
+    runDb('an expired cursor restarts an open baseline count, and keeps a finished one and the floor', async () => {
+      const { updateDeltaCursor, resetDeltaCursor } = await import('../../services/ticketMailbox/connectionService');
+
+      const open = await connectMailbox();
+      const openFloor = (await readBaseline(open.id)).eligibleAfter;
+      await updateDeltaCursor(open, null, 'resume-1', new Date(), null, { skipped: 2000, completed: false });
+      await expect(resetDeltaCursor(open, 'resume-1')).resolves.toBe(true);
+      expect(await readBaseline(open.id)).toMatchObject({ deltaLink: null, skipped: 0, completedAt: null, eligibleAfter: openFloor });
+
+      const done = await connectMailbox();
+      const doneFloor = (await readBaseline(done.id)).eligibleAfter;
+      await updateDeltaCursor(done, null, 'delta-1', new Date(), null, { skipped: 42, completed: true });
+      await expect(resetDeltaCursor(done, 'delta-1')).resolves.toBe(true);
+      const row = await readBaseline(done.id);
+      expect(row).toMatchObject({ deltaLink: null, skipped: 42, eligibleAfter: doneFloor });
+      expect(row.completedAt).not.toBeNull();
+    });
+
+    runDb('a re-consent keeps the floor and the finished baseline, and clears the cursor', async () => {
+      const { updateDeltaCursor } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await connectMailbox();
+      const floor = new Date('2026-06-01T00:00:00.000Z');
+      await setRow(snapshot.id, { eligibleAfter: floor });
+      await updateDeltaCursor(snapshot, null, 'delta-1', new Date(), null, { skipped: 42, completed: true });
+      await setRow(snapshot.id, { status: 'reauth_required' });
+
+      await reconnect(snapshot.partnerId, snapshot.mailboxAddress, snapshot.tenantId);
+
+      const row = await readBaseline(snapshot.id);
+      expect(row).toMatchObject({ status: 'connected', deltaLink: null, skipped: 42 });
+      expect(row.eligibleAfter!.getTime()).toBe(floor.getTime());
+      expect(row.completedAt).not.toBeNull();
+    });
+
+    runDb('a re-consent during an open baseline keeps the floor and restarts the count', async () => {
+      const { updateDeltaCursor } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await connectMailbox();
+      const floor = (await readBaseline(snapshot.id)).eligibleAfter;
+      await updateDeltaCursor(snapshot, null, 'resume-1', new Date(), null, { skipped: 2000, completed: false });
+
+      await reconnect(snapshot.partnerId, snapshot.mailboxAddress, snapshot.tenantId);
+
+      expect(await readBaseline(snapshot.id)).toMatchObject({ deltaLink: null, skipped: 0, completedAt: null, eligibleAfter: floor });
+    });
+
+    runDb('connecting again after a disconnect is a new connection: new floor, new baseline', async () => {
+      const { updateDeltaCursor, disableConnection } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await connectMailbox();
+      const oldFloor = new Date('2026-06-01T00:00:00.000Z');
+      await setRow(snapshot.id, { eligibleAfter: oldFloor });
+      await updateDeltaCursor(snapshot, null, 'delta-1', new Date(), null, { skipped: 42, completed: true });
+      await withSystemDbAccessContext(() => disableConnection(snapshot.id, snapshot.partnerId));
+
+      const before = Date.now();
+      await reconnect(snapshot.partnerId, snapshot.mailboxAddress, snapshot.tenantId);
+
+      const row = await readBaseline(snapshot.id);
+      expect(row).toMatchObject({ status: 'connected', deltaLink: null, skipped: 0, completedAt: null });
+      expect(row.eligibleAfter!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    });
+
+    runDb('a row with no cursor or floor that has polled seeds from its last poll, already baselined', async () => {
+      const { seedDeltaFloor } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await seedConnectedMailbox(randomUUID());
+      const lastPolledAt = new Date('2026-10-30T08:00:00.000Z');
+      await setRow(snapshot.id, { lastPolledAt });
+
+      const now = new Date();
+      const seeded = await seedDeltaFloor(snapshot, now);
+
+      // Five minutes before the last poll: mail the last round read but had not
+      // committed yet is re-offered, and dedup absorbs what was ingested.
+      const expectedFloor = lastPolledAt.getTime() - 5 * 60_000;
+      expect(seeded!.eligibleAfter.getTime()).toBe(expectedFloor);
+      expect(seeded!.baselineCompletedAt!.getTime()).toBe(now.getTime());
+      const row = await readBaseline(snapshot.id);
+      expect(row.eligibleAfter!.getTime()).toBe(expectedFloor);
+      expect(row.completedAt).not.toBeNull();
+    });
+
+    runDb('re-consenting a mailbox from before the floor picks up from its last poll, not from the reconnect', async () => {
+      const { updateDeltaCursor } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await seedConnectedMailbox(randomUUID());
+      const lastPolledAt = new Date('2026-10-30T08:00:00.000Z');
+      await updateDeltaCursor(snapshot, null, 'delta-legacy', lastPolledAt, null);
+      await setRow(snapshot.id, { status: 'reauth_required' });
+      const mailboxAddress = (await withSystemDbAccessContext(async () => db.select({ m: ticketMailboxConnections.mailboxAddress })
+        .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id))))[0]!.m;
+
+      await reconnect(snapshot.partnerId, mailboxAddress, snapshot.tenantId);
+
+      const row = await readBaseline(snapshot.id);
+      expect(row).toMatchObject({ status: 'connected', deltaLink: null, skipped: 0 });
+      expect(row.eligibleAfter!.getTime()).toBe(lastPolledAt.getTime() - 5 * 60_000);
+      // Not a connect, so the card says nothing about mail "already in this inbox".
+      expect(row.completedAt).not.toBeNull();
+    });
+
+    runDb('a gmail address re-connected through Microsoft starts a fresh floor and baseline', async () => {
+      const { createPendingConnection, bindVerifiedTenant } = await import('../../services/ticketMailbox/connectionService');
+      const partner = await withSystemDbAccessContext(() => createPartner());
+      const mailboxAddress = `support-${randomUUID()}@a.com`;
+      await withSystemDbAccessContext(() => getTestDb().execute(sql`
+        INSERT INTO ticket_mailbox_connections (partner_id, provider, mailbox_address, status, eligible_after)
+        VALUES (${partner.id}, 'gmail', ${mailboxAddress}, 'reauth_required', '2026-01-01T00:00:00Z')
+      `));
+
+      const before = Date.now();
+      const pending = await withSystemDbAccessContext(() => createPendingConnection({
+        partnerId: partner.id, mailboxAddress, displayName: null, createdBy: null,
+      }));
+      await withSystemDbAccessContext(() => bindVerifiedTenant(pending.id, partner.id, pending.consentAttemptId, randomUUID(), {
+        microsoftOid: randomUUID(), breezeUserId: null,
+      }));
+
+      const row = await readBaseline(pending.id);
+      expect(row).toMatchObject({ status: 'connected', skipped: 0, completedAt: null });
+      expect(row.eligibleAfter!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    });
+
+    runDb('a row with no cursor or floor that never polled seeds from now, with its baseline open', async () => {
+      const { seedDeltaFloor } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await seedConnectedMailbox(randomUUID());
+
+      const now = new Date();
+      const seeded = await seedDeltaFloor(snapshot, now);
+
+      expect(seeded!.eligibleAfter.getTime()).toBe(now.getTime());
+      expect(seeded!.baselineCompletedAt).toBeNull();
+    });
+
+    runDb('the seed lands once, and never on a row that already has a cursor or a floor', async () => {
+      const { seedDeltaFloor, updateDeltaCursor } = await import('../../services/ticketMailbox/connectionService');
+      const snapshot = await seedConnectedMailbox(randomUUID());
+      await expect(seedDeltaFloor(snapshot, new Date())).resolves.not.toBeNull();
+      await expect(seedDeltaFloor(snapshot, new Date())).resolves.toBeNull();
+
+      // An existing connection with a cursor is left without a floor.
+      const existing = await seedConnectedMailbox(randomUUID());
+      await updateDeltaCursor(existing, null, 'delta-1', new Date(), null);
+      await expect(seedDeltaFloor(existing, new Date())).resolves.toBeNull();
+      expect((await readBaseline(existing.id)).eligibleAfter).toBeNull();
+    });
+
+    runDb('the provider CHECK still refuses baseline state on a gmail row', async () => {
+      const snapshot = await seedConnectedMailbox(randomUUID());
+      const write = () => withSystemDbAccessContext(() => getTestDb().execute(sql`
+        UPDATE ticket_mailbox_connections
+           SET provider = 'gmail', tenant_id = NULL, status = 'pending_consent', baseline_skipped_count = 5
+         WHERE id = ${snapshot.id}
+      `));
+      const err = await write().catch((e: unknown) => e) as Error & { cause?: Error };
+      expect(`${err.message} ${err.cause?.message ?? ''}`).toContain('ticket_mailbox_connections_provider_fields_consistent');
+    });
+  });
+
   runDb('recordPollAttempt persists with no DB context (#8308)', async () => {
     const snapshot = await seedConnectedMailbox(randomUUID());
     const { recordPollAttempt } = await import('../../services/ticketMailbox/connectionService');

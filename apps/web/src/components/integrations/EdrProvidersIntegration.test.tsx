@@ -88,6 +88,20 @@ describe("EdrProvidersIntegration", () => {
     expect(screen.getByTestId("edr-connection-detections-c1").textContent).toContain("5");
   });
 
+  it("shows Inactive instead of Connected when the connection is switched off (11283)", async () => {
+    connections = [conn({ isActive: false })];
+    render(<EdrProvidersIntegration />);
+    const badge = await screen.findByTestId("edr-connection-badge-inactive");
+    expect(badge.textContent).toContain("Inactive");
+    expect(screen.queryByTestId("edr-connection-badge-connected")).toBeNull();
+  });
+
+  it("keeps the Connected badge for an active connection (11283)", async () => {
+    render(<EdrProvidersIntegration />);
+    expect(await screen.findByTestId("edr-connection-badge-connected")).toBeInTheDocument();
+    expect(screen.queryByTestId("edr-connection-badge-inactive")).toBeNull();
+  });
+
   it("shows the partner-only message and fetches nothing for an org-scoped user", async () => {
     scope = "organization";
     render(<EdrProvidersIntegration />);

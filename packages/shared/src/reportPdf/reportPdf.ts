@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf';
-import autoTable, { type CellHookData } from 'jspdf-autotable';
+import { autoTable, type CellHookData } from 'jspdf-autotable';
 import type { PostureControls, PostureProduct, PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 import type { HardwareLifecycleSummary } from '../types/hardwareLifecycleReport';
@@ -21,6 +21,7 @@ import * as identityAccessPdf from './identityAccessPdf';
 // Namespace imports for the three business report types (#3198 W02), same
 // no-cycle / spy-visibility reason as threatDetectionPdf/identityAccessPdf.
 import * as ticketSlaPdf from './ticketSlaPdf';
+import * as ticketSlaPerformancePdf from './ticketSlaPerformancePdf';
 import * as technicianTimePdf from './technicianTimePdf';
 import * as arAgingPdf from './arAgingPdf';
 import * as aiUsageByClientPdf from './aiUsageByClientPdf';
@@ -28,6 +29,7 @@ import * as mrrRenewalsPdf from './mrrRenewalsPdf';
 import * as quoteWinRatePdf from './quoteWinRatePdf';
 import * as clientProfitabilityPdf from './clientProfitabilityPdf';
 import type { TicketSlaSummary, TechnicianTimeSummary, ArAgingSummary, AiUsageByClientSummary, MrrRenewalsSummary, QuoteWinRateSummary, ClientProfitabilitySummary } from '../types/businessReports';
+import { isTicketSlaPerformanceSummary, type TicketSlaPerformanceSummary } from '../types/ticketSlaPerformance';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -165,7 +167,7 @@ export type BuildOpts = {
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
   summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
-    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary | QuoteWinRateSummary | ClientProfitabilitySummary | BackupStatusReportData;
+    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary | QuoteWinRateSummary | ClientProfitabilitySummary | TicketSlaPerformanceSummary | BackupStatusReportData;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -188,6 +190,7 @@ const DESIGNED_BUSINESS_TYPES: ReadonlySet<string> = new Set([
   'mrr_renewals',
   'quote_win_rate',
   'client_profitability',
+  'ticket_sla_performance',
 ]);
 
 const PAGE = { w: 297, h: 210, mx: 14, bandH: 19, footY: 199 } as const;
@@ -222,6 +225,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   mrr_renewals: 'MRR & Renewals',
   quote_win_rate: 'Quote Win Rate',
   client_profitability: 'Client Profitability',
+  ticket_sla_performance: 'Service Level Performance',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -2475,6 +2479,23 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactEmail: opts.branding?.contactEmail ?? null,
         contactName: opts.branding?.contactName ?? null,
       },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (opts.reportType === 'ticket_sla_performance' && isTicketSlaPerformanceSummary(opts.summary)) {
+    // Self-contained chrome: both tables paginate on their own.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    ticketSlaPerformancePdf.renderTicketSlaPerformanceReport(
+      doc,
+      opts.summary,
+      { generatedAt: opts.generatedAt },
       {
         C,
         PAGE,

@@ -36,6 +36,11 @@ export const CONFIG_FEATURE_TYPES = [
   // #6960 — third-party security agents (Huntress, SentinelOne, DNS filters),
   // inline-only desired state; the install policy is generated from the link.
   'security_agents',
+  // #10100 — network-isolation containment tuning, inline-only, partner-wide
+  'containment',
+  // #11065 — vendor (Dell, Surface, HP, Lenovo) update schedule and categories,
+  // inline-only, partner-wide
+  'oem_updates',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
@@ -125,6 +130,9 @@ export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protec
   onedrive_helper: 'execution_gated', // delivers OneDrive helper library-mapping/credential config
   helper: 'execution_gated', // Breeze Assist technician/AI-chat capability grants on the device
   security_agents: 'execution_gated', // arms installation of third-party security agents (with per-customer keys substituted at dispatch)
+  // extraAllow grants an isolated device network permits it would not otherwise have. A device
+  // self-selecting into a group must fall back to "no grant": the fixed W1 defaults (strictest containment).
+  containment: 'execution_gated',
   maintenance: 'execution_gated', // grants suppression of alerting/monitoring for the window — capability to evade detection, not merely a restriction
 
   // protective — restricts the device or only detects/reports; never grants a
@@ -149,6 +157,10 @@ export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protec
   // creates a silent-regression risk (unpatched/unbacked-up real fleets).
   patch: 'protective', // resolves to ring/schedule metadata only — no credential delivered; dropping it silently unpatches real hostname/tag-ringed fleets
   backup: 'protective', // resolves to a backup-profile/destination REFERENCE, not storage credentials — dropping it silently stops backups for real hostname/tag-keyed groups
+  // #11065 spec 4.1: like patch, a fixed vendor payload that carries no credential or admin-authored
+  // content, so it grants nothing. Gating would be unsafe: dropping a group override that turns BIOS off
+  // could expose a broader policy that turns it on. Arming is gated at write time (devices.execute + MFA).
+  oem_updates: 'protective',
 };
 
 export const EXECUTION_GATED_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = new Set(

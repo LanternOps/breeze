@@ -80,6 +80,8 @@ export async function notifyAgreementOutcome(input: {
       }
       return {
         recipient,
+        // STAFF-facing (the sender's outcome notice), so the internal label is
+        // right here; customer surfaces use the template name only (#10294).
         agreementName: req.label?.trim() || req.templateName?.trim() || 'Agreement',
         orgName: req.orgName?.trim() || 'A customer',
         declineReason: req.declineReason,

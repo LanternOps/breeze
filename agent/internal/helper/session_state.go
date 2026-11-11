@@ -42,6 +42,19 @@ type sessionState struct {
 	gaveUpAt      time.Time
 	gaveUpVersion string
 
+	// crashFailures counts Assist exits since its last healthy run (#10302).
+	// It lives here rather than in the watcher goroutine so a heartbeat
+	// relaunch or a watcher restart cannot silently zero it. Cleared by
+	// noteAssistRunningLocked (after watcherHealthyUptime), on give-up, on a
+	// not-a-crash watcher exit, and by freshCrashTracking (new binary, rollback
+	// restart). Dropped with the state when the session goes away.
+	crashFailures int
+	// lastSpawnAt is when ensureRunningSession last launched Assist in this
+	// session, from any caller (watcher, Apply, update, rollback). Zero only
+	// while the agent has not launched Assist in this session since it started;
+	// never cleared on exit.
+	lastSpawnAt time.Time
+
 	// launchIssue: the install-issue code of a pre-launch refusal in this
 	// session (webview2_outdated); "" when the last launch check passed.
 	launchIssue string
@@ -61,6 +74,21 @@ type sessionState struct {
 	// lastExit is the most recent Assist exit the watcher observed.
 	lastExit      assistExit
 	lastExitKnown bool
+
+	// waitingForUser: the last launch attempt in this session found nobody
+	// signed in (#10379). Dedupes the DEBUG wait line to one per change; not a
+	// failure, so it never touches crashFailures or watcherGaveUp.
+	waitingForUser bool
+	// noTokenSince: when Apply first found no user token for this session in
+	// the current wait; zero when not waiting. noTokenWarned: the WARN for
+	// this wait has fired. See noteNoUserTokenLocked.
+	noTokenSince  time.Time
+	noTokenWarned bool
+
+	// brandingRejectLogged dedupes the WARN for a rejected branding decision.
+	brandingRejectLogged bool
+	// brandingReadLogged dedupes the WARN for an unreadable stored branding.
+	brandingReadLogged bool
 }
 
 func newSessionState(key, baseDir string) *sessionState {
@@ -70,6 +98,21 @@ func newSessionState(key, baseDir string) *sessionState {
 		configPath: filepath.Join(sessionDir, "helper_config.yaml"),
 		statusPath: filepath.Join(sessionDir, "helper_status.yaml"),
 	}
+}
+
+// freshCrashTracking gives Assist a fresh chance after a deliberate change
+// (new binary, rollback restart): it leaves the give-up state and starts the
+// crash count over.
+func (s *sessionState) freshCrashTracking() {
+	s.watcherGaveUp = false
+	s.crashFailures = 0
+}
+
+// clearUserWait ends a wait for a signed-in user (#10379).
+func (s *sessionState) clearUserWait() {
+	s.waitingForUser = false
+	s.noTokenSince = time.Time{}
+	s.noTokenWarned = false
 }
 
 func (s *sessionState) configUnchanged(cfg *Config) bool {
@@ -82,7 +125,8 @@ func (s *sessionState) configUnchanged(cfg *Config) bool {
 		s.lastConfig.PortalUrl == cfg.PortalUrl &&
 		s.lastConfig.DeviceName == cfg.DeviceName &&
 		s.lastConfig.DeviceStatus == cfg.DeviceStatus &&
-		s.lastConfig.LastCheckin == cfg.LastCheckin
+		s.lastConfig.LastCheckin == cfg.LastCheckin &&
+		brandingEqual(s.lastConfig.Branding, cfg.Branding)
 }
 
 func (s *sessionState) refreshPID() {

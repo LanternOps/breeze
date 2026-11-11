@@ -135,7 +135,7 @@ func negativeProbeTarget(spec ResolvedSpec) (netip.AddrPort, error) {
 }
 
 // HTTPVerifierConfig builds the positive probe: a fresh authenticated round
-// trip to POST /agents/isolation/:isolationId/verify (W1b).
+// trip to POST /agents/:id/isolation/:isolationId/verify (W1b).
 type HTTPVerifierConfig struct {
 	// URL returns the verify URL for an episode (DefaultVerifyURL).
 	URL func(isolationID string) string
@@ -153,10 +153,10 @@ type HTTPVerifierConfig struct {
 }
 
 // DefaultVerifyURL is the W1b verify route under serverURL.
-func DefaultVerifyURL(serverURL string) func(string) string {
+func DefaultVerifyURL(serverURL, agentID string) func(string) string {
 	base := strings.TrimRight(serverURL, "/")
 	return func(isolationID string) string {
-		return base + "/api/v1/agents/isolation/" + url.PathEscape(isolationID) + "/verify"
+		return base + "/api/v1/agents/" + url.PathEscape(agentID) + "/isolation/" + url.PathEscape(isolationID) + "/verify"
 	}
 }
 

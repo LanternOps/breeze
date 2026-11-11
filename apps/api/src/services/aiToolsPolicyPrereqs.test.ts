@@ -18,6 +18,7 @@ vi.mock('../jobs/peripheralJobs', () => ({
 }));
 
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
   db: {
     insert: insertMock,
     update: updateMock,

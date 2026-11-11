@@ -70,6 +70,10 @@ A patch whose source published no severity, and that the agent cannot rate, is s
 
 A patch whose latest install reported success but needs a restart stays pending on the device until it restarts. From v0.121.0 the device's **Patches** tab shows such a row as **Installed, reboot required** instead of an untouched pending patch, and it no longer counts as awaiting approval. An install started from the device's **Patches** tab (or from vulnerability remediation) also counts as an install attempt: a newer one replaces an older failed patch job in the **Install failed** status, and its own failure shows its own reason.
 
+### Install dates
+
+From the 0.128.0 agent, installed updates show the date the operating system recorded for the install: Windows Update history on Windows, install history on macOS, and the program's install date for winget and Chocolatey packages. A later scan that cannot read a date keeps the date already shown, as long as the installed version is the same; a new version clears it until a date is reported. Where the operating system has no date (Linux packages, Homebrew, or a winget or Chocolatey package whose name doesn't match an installed program exactly), the row shows **Installed (date unknown)**. The customer portal's **Last patch** date fills in once dates arrive.
+
 ### Approval on a device's Patches tab
 
 The **Approval** column on a device's **Patches** tab shows what the next scheduled patch run would do with each pending patch. Breeze works this out with the same rules the scheduled run uses, against the update ring the device's patch policy links to:
@@ -524,16 +528,18 @@ Each patch policy must declare which **patch sources** it manages, and at least 
 
 #### Application Rules
 
-Application rules give you per-app control over third-party and custom updates. They are part of the [update ring](/features/update-rings/) (the ring's `appRules` list, under **Application rules** in the ring editor), so they apply to every configuration policy that links that ring. Each rule targets a specific package and chooses one of two actions:
+Application rules give you per-app control over third-party and custom updates, and over individual Linux OS packages (apt and dnf/yum). They are part of the [update ring](/features/update-rings/) (the ring's `appRules` list, under **Application rules** in the ring editor), so they apply to every configuration policy that links that ring. Each rule targets a specific package and chooses one of two actions:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `source` | string | `third_party` or `custom` |
-| `packageId` | string | The catalog package identifier the rule applies to (e.g., `Mozilla.Firefox`) |
+| `source` | string | `third_party` or `custom` for applications; `linux` for a Linux OS package |
+| `packageId` | string | The catalog package identifier the rule applies to (e.g., `Mozilla.Firefox`), or the Linux package name (e.g., `docker-ce`) |
 | `action` | string | `block` to prevent the application from being updated, or `pin` to hold it at a specific version |
 | `pinnedVersion` | string | **Required when `action` is `pin`** — the version the application is held at. Updates beyond this version are withheld until the pin is changed |
 
 A **block** rule keeps the application off the approved/installable list entirely. A **pin** rule allows the application up to the pinned version but holds back anything newer, which is useful when a vendor's latest release is known to break a line-of-business workflow. A ring can carry up to 200 application rules, one per package. A rule overrides a manual approval: a blocked application is not installed by a scheduled run even when someone approved the patch.
+
+**Linux packages.** In the ring editor, pick a package from the search list (packages your Linux devices have reported as upgradable) or choose **Linux package** next to the manual entry box and type its name. A rule for `docker-ce` matches that package on both apt and dnf/yum devices. Pins compare versions the way the package manager does (epoch first, then version, then release), so enter the full version from the patch list, including any epoch, for example `5:24.0.7-1~ubuntu.22.04~jammy`. A pin without the epoch holds every candidate that has one. Breeze upgrades Linux packages one at a time (`apt-get install --only-upgrade <package>`, `dnf update <package>`). A blocked package is never requested by name, but the package manager can still upgrade it as a dependency of another approved package. Use `apt-mark hold` or the dnf `versionlock` plugin on the device if that must never happen.
 
 ### Creating a patch deployment job from a policy
 

@@ -19,7 +19,6 @@ import {
   getViewerAccessTokenExpirySeconds,
 } from '../services/remoteSessionAuth';
 import {
-  getIceServers,
   logSessionAudit,
   buildRemoteSessionPromptPayload,
   createDesktopStartCommandId,
@@ -43,6 +42,7 @@ import {
 } from '../services/remoteDesktopStartIntent';
 import { releaseDesktopStartInFlight } from '../services/desktopStartInFlight';
 import { webrtcOfferSchema } from './remote/schemas';
+import { resolveDesktopIcePlan } from './remote/desktopRelayPolicy';
 import { sendCommandToAgent, sendDesktopIceCandidateToAgent, isAgentConnected } from './agentWs';
 import {
   agentIceCandidatesForViewer,
@@ -60,6 +60,7 @@ import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
+import { enforceExpiredDesktopReconnectHold, markDesktopViewerReconnectIntent } from '../services/desktopReconnectGrace';
 import { createAuditLogAsync } from '../services/auditService';
 import {
   bindRemoteConnection,
@@ -361,6 +362,24 @@ async function validateViewerSessionAccess(
   }
   if (live.user.email !== payload.email) {
     return { valid: false, status: 403, error: 'Viewer token does not match session owner' };
+  }
+  if (accessMode === 'live') {
+    // #10542: a peer drop during a viewer reconnect holds the session's end
+    // for a short grace. Once that deadline has passed, end the session here
+    // before this token is served again, on whichever instance gets the
+    // request, so a hold whose timer was lost cannot leave the token live.
+    const session = live.session as typeof remoteSessions.$inferSelect;
+    const hold = await enforceExpiredDesktopReconnectHold({
+      id: session.id,
+      deviceId: session.deviceId,
+      desktopStartGeneration: BigInt(session.desktopStartGeneration ?? 0),
+    });
+    if (hold === 'ended') {
+      return { valid: false, status: 401, error: 'Session closed' };
+    }
+    if (hold === 'unavailable') {
+      return { valid: false, status: 503, error: 'Unable to verify current remote access' };
+    }
   }
   return {
     valid: true,
@@ -1848,12 +1867,28 @@ export function createDesktopWsRoutes(
         }, 400);
       }
 
-      return c.json({
-        iceServers: getIceServers({
+      // #10542: on a live session this fetch is the start of a reconnect (the
+      // first connect fetches while the row is still pending or connecting).
+      // The viewer sends it before it closes its old peer (older viewers send
+      // it just after), so the agent's peer-drop report for that peer follows
+      // the mark, and the mark lets that drop wait for this viewer's new offer
+      // instead of ending the session under it. Written before the ICE plan is
+      // resolved, so it lands as early as possible.
+      if (access.session.status === 'active') {
+        await markDesktopViewerReconnectIntent(sessionId, BigInt(access.session.desktopStartGeneration ?? 0));
+      }
+
+      const icePlan = await withSystemDbAccessContext(() =>
+        resolveDesktopIcePlan(access.device.id, {
           sessionId,
           userId: access.session.userId,
           deviceId: access.session.deviceId,
         })
+      );
+      if (!icePlan.ok) return c.json({ error: icePlan.error, code: icePlan.code }, 409);
+      return c.json({
+        iceServers: icePlan.iceServers,
+        ...(icePlan.relayOnly ? { relayOnly: true } : {}),
       });
     }
   );
@@ -1972,6 +2007,16 @@ export function createDesktopWsRoutes(
           code: CONSENT_UPGRADE_REQUIRED_CODE,
         }, 409);
       }
+      // Refuse isolation policy conflicts before minting a lease or publishing a start intent.
+      const icePlan = await withSystemDbAccessContext(() =>
+        resolveDesktopIcePlan(access.device.id, {
+          sessionId,
+          userId: access.session.userId,
+          deviceId: access.session.deviceId,
+        })
+      );
+      if (!icePlan.ok) return c.json({ error: icePlan.error, code: icePlan.code }, 409);
+
       // Fail-closed revocation lease (same gate as the JWT offer route).
       const offerLease = await prepareRevocationLeaseForStart(sessionId);
       if (!offerLease.ok) {
@@ -2067,11 +2112,8 @@ export function createDesktopWsRoutes(
             sessionId,
             startGeneration: formatDesktopGeneration(startGeneration),
             offer: data.offer,
-            iceServers: getIceServers({
-              sessionId,
-              userId: access.session.userId,
-              deviceId: access.session.deviceId,
-            }),
+            iceServers: icePlan.iceServers,
+            ...(icePlan.relayOnly ? { relayOnly: true } : {}),
             clipboard: desktopPolicy.clipboard,
             idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
             maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,

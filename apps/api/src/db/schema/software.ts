@@ -27,8 +27,8 @@ export const softwareCatalog = pgTable('software_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
   // Dual-axis ownership: exactly one of org_id / partner_id is set
   // (CHECK software_catalog_one_owner_chk). Partner-scoped rows are built-in
-  // integration packages, marked by integrationProvider ('huntress'|'sentinelone',
-  // CHECK software_catalog_integration_provider_chk).
+  // integration packages, marked by integrationProvider (the legacy providers or
+  // an EDR provider key, CHECK software_catalog_integration_provider_chk).
   orgId: uuid('org_id').references(() => organizations.id),
   partnerId: uuid('partner_id').references(() => partners.id),
   integrationProvider: varchar('integration_provider', { length: 20 }),
@@ -257,11 +257,16 @@ export const softwareInventory = pgTable('software_inventory', {
 // Rows are deleted on complete/abort; the softwareUploadSessionCleanup job
 // reaps sessions idle for SOFTWARE_UPLOAD_SESSION_IDLE_TTL_HOURS (2h) or older
 // than SOFTWARE_UPLOAD_SESSION_MAX_AGE_HOURS (24h) regardless of activity.
-// Tenancy shape 1 (direct org_id, forced RLS — see
-// migrations/2026-08-11-software-upload-sessions.sql).
+// Tenancy: dual-axis org XOR partner (software_upload_sessions_one_owner_chk,
+// forced RLS, no partner-wide SELECT branch — see
+// migrations/2027-01-22-230300-software-upload-sessions-partner-owner.sql).
+// A session mirrors the owner of the catalog row it uploads into: an
+// org-owned package books an org session, a partner-wide package (#9246)
+// books a partner session.
 export const softwareUploadSessions = pgTable('software_upload_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
+  partnerId: uuid('partner_id').references(() => partners.id, { onDelete: 'cascade' }),
   // ON DELETE CASCADE so a direct `DELETE FROM software_catalog` outside the
   // org-erasure path cannot strand sessions. It is NOT needed for the org
   // cascade itself: deleteOrgCascade runs topologicalCascadeOrder(), which
@@ -289,6 +294,7 @@ export const softwareUploadSessions = pgTable('software_upload_sessions', {
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   orgIdx: index('software_upload_sessions_org_id_idx').on(table.orgId),
+  partnerIdx: index('software_upload_sessions_partner_id_idx').on(table.partnerId),
   catalogIdx: index('software_upload_sessions_catalog_id_idx').on(table.catalogId),
   lastActivityIdx: index('software_upload_sessions_last_activity_idx').on(table.lastActivityAt),
 }));

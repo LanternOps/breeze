@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunOutsideDbContextFn } from '../db';
+import { Pax8IntegrationGenerationChangedError } from './pax8SyncService';
 import { Pax8ApiError } from './pax8Client';
 import {
   createPax8OrderSubmitService,
   type Pax8OrderSubmitRepository,
-  type SubmitBundle,
+  type ClaimedBundle,
 } from './pax8OrderSubmit';
 
 const newLine = {
@@ -54,7 +55,7 @@ const cancelLine = {
   sortOrder: 2,
 } as const;
 
-function bundle(lines: readonly unknown[] = [newLine]): SubmitBundle {
+function bundle(lines: readonly unknown[] = [newLine]): ClaimedBundle {
   return {
     order: {
       id: 'ord-1',
@@ -65,8 +66,10 @@ function bundle(lines: readonly unknown[] = [newLine]): SubmitBundle {
       status: 'submitting',
       createdAt: new Date('2026-07-14T01:00:00Z'),
       submittedAt: new Date('2026-07-20T01:00:00Z'),
-    } as SubmitBundle['order'],
-    lines: lines as SubmitBundle['lines'],
+    } as ClaimedBundle['order'],
+    lines: lines as ClaimedBundle['lines'],
+    preClaimStatus: 'draft',
+    integrationGeneration: {id:'integration-1',partnerId:'p1',isActive:true,apiBaseUrl:'https://example.test',tokenUrl:'https://example.test/token',credentialGeneration:'hash'},
   };
 }
 
@@ -77,12 +80,12 @@ function resultFor(
   const status = states.every((state) => state === 'succeeded')
     ? 'completed'
     : states.every((state) => state === 'failed') ? 'failed' : 'partially_failed';
-  return { orderId: 'ord-1', status, lines } as const;
+  return { kind: 'executed', orderId: 'ord-1', status, lines, billingConflicts: [] } as const;
 }
 
 function setup(
   lines: readonly unknown[] = [newLine],
-  orderOverrides: Partial<SubmitBundle['order']> = {},
+  orderOverrides: Partial<ClaimedBundle['order']> = {},
 ) {
   const client = {
     createOrder: vi.fn(),
@@ -98,6 +101,7 @@ function setup(
     claimOrder: vi.fn().mockResolvedValue(claimed),
     createClient: vi.fn().mockResolvedValue(client),
     claimLines: vi.fn().mockResolvedValue(undefined),
+    reopenUnsentOrder: vi.fn().mockImplementation(async (_bundle,error,refusalCode) => ({ kind: 'refused', orderId: 'ord-1', status: 'draft', lines: [], billingConflicts: [], error, refusalCode })),
     persistPreflightFailure: vi.fn().mockImplementation(async (_bundle, errorBody) =>
       resultFor(claimed.lines.map((line) => ({
         lineId: line.id,
@@ -166,7 +170,7 @@ describe('submitOrder', () => {
     const raw = '{"details":[{"message":"msDomain is required"}]}';
     client.createOrder.mockRejectedValueOnce(new Pax8ApiError('Pax8 API returned 422', 422, raw));
 
-    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(client.createOrder).toHaveBeenCalledTimes(1);
     expect(client.createOrder.mock.calls[0]![1]).toEqual({ isMock: true });
@@ -180,7 +184,7 @@ describe('submitOrder', () => {
     const { service, client } = setup([newLine, changeLine, cancelLine]);
     client.createOrder.mockRejectedValueOnce(new Pax8ApiError('Pax8 API returned 422', 422, 'invalid provisioning'));
 
-    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(res.status).toBe('failed');
     expect(res.lines.every((line) => line.submitState === 'failed')).toBe(true);
@@ -194,7 +198,7 @@ describe('submitOrder', () => {
       .mockResolvedValueOnce({ pax8OrderId: null, lineItems: [] })
       .mockResolvedValueOnce({ pax8OrderId: 'pax-order-1', lineItems: [] });
 
-    await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(repository.claimOrder).toHaveBeenCalledBefore(repository.claimLines as any);
     expect(client.createOrder).toHaveBeenCalledTimes(2);
@@ -208,7 +212,7 @@ describe('submitOrder', () => {
       .mockResolvedValueOnce({ pax8OrderId: null, lineItems: [] })
       .mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }));
 
-    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(res.lines[0]!.submitState).toBe('needs_reconcile');
     expect(client.createOrder).toHaveBeenCalledTimes(2);
@@ -218,7 +222,7 @@ describe('submitOrder', () => {
     const { service, repository, client } = setup();
     (repository.claimOrder as any).mockRejectedValueOnce(Object.assign(new Error('Reconcile first'), { status: 409 }));
 
-    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' }))
+    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} }))
       .rejects.toMatchObject({ status: 409 });
     expect(client.createOrder).not.toHaveBeenCalled();
   });
@@ -235,7 +239,7 @@ describe('submitOrder', () => {
       new Pax8ApiError('Pax8 API returned 422', 422, '{"message":"seat decrease not allowed"}'),
     );
 
-    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(res.status).toBe('partially_failed');
     expect(res.lines.find((line) => line.lineId === 'line-new')!.submitState).toBe('succeeded');
@@ -248,7 +252,7 @@ describe('submitOrder', () => {
     client.createOrder.mockResolvedValueOnce({ pax8OrderId: null, lineItems: [] });
     (repository.claimLines as any).mockRejectedValueOnce(Object.assign(new Error('Incomplete claim'), { status: 409 }));
 
-    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' }))
+    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} }))
       .rejects.toMatchObject({ status: 409 });
     expect(client.createOrder).toHaveBeenCalledTimes(1); // isMock only
   });
@@ -262,7 +266,7 @@ describe('submitOrder', () => {
         { lineItemNumber: 2, productId: 'prod-1', subscriptionId: 'sub-2' },
       ] });
 
-    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(res.lines.every((line) => line.submitState === 'succeeded')).toBe(true);
     expect(repository.persistSubmitResults).toHaveBeenCalledWith(
@@ -293,7 +297,7 @@ describe('submitOrder', () => {
       .mockResolvedValueOnce({ pax8OrderId: null, lineItems: [] })
       .mockResolvedValueOnce({ pax8OrderId: 'pax-order-1', lineItems });
 
-    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(res.lines.every((line) => line.submitState === 'needs_reconcile')).toBe(true);
   });
@@ -307,7 +311,7 @@ describe('submitOrder', () => {
         lineItems: [{ lineItemNumber: 1, productId: 'prod-1', subscriptionId: 'sub-1' }],
       });
 
-    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(res.lines[0]!.submitState).toBe('needs_reconcile');
   });
@@ -319,7 +323,7 @@ describe('submitOrder', () => {
     const { service, client } = setup([line]);
     client[method].mockRejectedValueOnce(error);
 
-    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} });
 
     expect(client[method]).toHaveBeenCalledTimes(1);
     expect(res.lines[0]!.submitState).toBe('needs_reconcile');
@@ -330,7 +334,7 @@ describe('submitOrder', () => {
     const { service, repository, client } = setup([changeLine, secondChange]);
     (repository.claimOrder as any).mockRejectedValueOnce(Object.assign(new Error('duplicate target'), { status: 422 }));
 
-    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' }))
+    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'rest'} }))
       .rejects.toMatchObject({ status: 422 });
     expect(client.updateSubscriptionQuantity).not.toHaveBeenCalled();
   });
@@ -591,4 +595,96 @@ describe('reconcileOrder', () => {
       null,
     );
   });
+});
+
+
+describe('approved submit options', () => {
+  it('verifyClaim refuses drift before any client or line claim', async () => {
+    const { service, repository, client } = setup();
+    const verifyClaim = vi.fn().mockRejectedValue(new Error('PREVIEW_MISMATCH'));
+    vi.mocked(repository.claimOrder).mockImplementation(async (input) => {
+      if (input.mode.kind === 'ai') await input.mode.verifyClaim(bundle(), {} as never);
+      return bundle();
+    });
+    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'ai',verifyClaim} }))
+      .rejects.toThrow('PREVIEW_MISMATCH');
+    expect(repository.createClient).not.toHaveBeenCalled();
+    expect(repository.claimLines).not.toHaveBeenCalled();
+    expect(client.createOrder).not.toHaveBeenCalled();
+  });
+
+  it('verifies an unchanged order before isMock', async () => {
+    const status = 'draft' as const;
+    const { service, repository, client } = setup();
+    const verifyClaim = vi.fn().mockResolvedValue({ok:true});
+    vi.mocked(repository.claimOrder).mockImplementation(async (input) => {
+      const claimed = { ...bundle(), preClaimStatus: status };
+      if (input.mode.kind === 'ai') await input.mode.verifyClaim(claimed, {} as never);
+      return claimed;
+    });
+    await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'ai',verifyClaim} });
+    expect(verifyClaim).toHaveBeenCalledOnce();
+    expect(verifyClaim).toHaveBeenCalledBefore(client.createOrder);
+  });
+
+  it('reopens a failed post-claim isMock without terminally failing or sending real writes', async () => {
+    const { service, repository, client } = setup();
+    client.createOrder.mockRejectedValueOnce(new Pax8ApiError('validation', 422, 'invalid provisioning'));
+    const result = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'ai',verifyClaim: async () => ({ok:true})} });
+    expect(result.status).toBe('draft');
+    expect(result).toMatchObject({kind:'refused',refusalCode:'PREFLIGHT_FAILED'});
+    expect(repository.reopenUnsentOrder).toHaveBeenCalledWith(expect.anything(), 'invalid provisioning', 'PREFLIGHT_FAILED');
+    expect(repository.persistPreflightFailure).not.toHaveBeenCalled();
+    expect(repository.claimLines).not.toHaveBeenCalled();
+    expect(client.createOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('reopens an integration-generation refusal before any HTTP', async () => {
+    const { service, repository, client } = setup();
+    vi.mocked(repository.createClient).mockRejectedValue(new Pax8IntegrationGenerationChangedError());
+    const result = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'ai',verifyClaim: async () => ({ok:true})} });
+    expect(result).toMatchObject({kind:'refused',refusalCode:'INTEGRATION_CHANGED'});
+    expect(repository.reopenUnsentOrder).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('integration configuration changed'), 'INTEGRATION_CHANGED');
+    expect(repository.persistPreflightFailure).not.toHaveBeenCalled();
+    expect(client.createOrder).not.toHaveBeenCalled();
+  });
+});
+
+it('reopens a provably unsent quote when preflight payload construction throws', async () => {
+  const { service, repository, client } = setup([{ ...newLine, provisioningDetails: {} }], { source: 'quote' });
+  const result = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', mode: {kind: 'ai',verifyClaim: async () => ({ok:true})} });
+  expect(result).toMatchObject({ status: 'draft', refusalCode: 'PREFLIGHT_FAILED' });
+  expect(repository.reopenUnsentOrder).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('invalid provisioning details'), 'PREFLIGHT_FAILED');
+  expect(repository.persistPreflightFailure).not.toHaveBeenCalled();
+  expect(repository.claimLines).not.toHaveBeenCalled();
+  expect(client.createOrder).not.toHaveBeenCalled();
+});
+
+it('reopens an integration change on REST before any vendor request', async () => {
+  const {service,repository,client} = setup();
+  vi.mocked(repository.createClient).mockRejectedValueOnce(new Pax8IntegrationGenerationChangedError('before order submission; nothing was sent'));
+  const out = await service.submitOrder({partnerId:'p1',orderId:'ord-1',actorUserId:'u1',mode:{kind:'rest'}});
+  expect(out).toMatchObject({kind:'refused',refusalCode:'INTEGRATION_CHANGED'});
+  expect(repository.persistPreflightFailure).not.toHaveBeenCalled(); expect(client.createOrder).not.toHaveBeenCalled();
+});
+it('records successful vendor evidence before persist and again on persist failure', async () => {
+  const {service,repository,client} = setup();
+  const info = vi.spyOn(console,'info').mockImplementation(() => {});
+  const error = vi.spyOn(console,'error').mockImplementation(() => {});
+  client.createOrder.mockResolvedValue({pax8OrderId:'remote-order',lineItems:[{lineItemNumber:1,productId:'prod-1',subscriptionId:'remote-sub'}]});
+  vi.mocked(repository.persistSubmitResults).mockRejectedValueOnce(new Error('persist failed'));
+  await expect(service.submitOrder({partnerId:'p1',orderId:'ord-1',actorUserId:'u1',mode:{kind:'rest'}})).rejects.toThrow('persist failed');
+  expect(info).toHaveBeenCalledWith(expect.stringContaining('PAX8_EXECUTION_RESULT'),expect.objectContaining({partnerId:'p1',orderId:'ord-1',pax8OrderId:'remote-order',outcomes:[expect.objectContaining({lineId:'line-new',resultSubscriptionId:'remote-sub',submitState:'succeeded'})]}));
+  expect(info).toHaveBeenCalledBefore(repository.persistSubmitResults as any);
+  expect(error).toHaveBeenCalledWith(expect.stringContaining('PAX8_PERSIST_FAILED'),expect.objectContaining({pax8OrderId:'remote-order',error:expect.any(Error)}));
+  info.mockRestore(); error.mockRestore();
+});
+
+it('tags errors after line claim as execute-phase conflicts', async () => {
+  const {service,repository} = setup([{...newLine}]);
+  vi.mocked(repository.claimLines).mockImplementationOnce(async claimed => {
+    claimed.lines[0]!.provisioningDetails = {};
+  });
+  await expect(service.submitOrder({partnerId:'p1',orderId:'ord-1',actorUserId:'u1',mode:{kind:'rest'}}))
+    .rejects.toMatchObject({phase:'execute'});
 });

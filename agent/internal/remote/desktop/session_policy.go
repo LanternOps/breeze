@@ -80,6 +80,7 @@ func shouldStopForLifetime(now, startWall, lastActivity time.Time, policy Sessio
 //     mode: handleStartDesktop), not silently downgraded here.
 func ResolveSessionPolicyFromIPC(r ipc.DesktopStartRequest) SessionPolicy {
 	p := DefaultSessionPolicy()
+	p.RelayOnly = r.RelayOnly
 	if r.ClipboardHostToViewer != nil {
 		p.ClipboardHostToViewer = *r.ClipboardHostToViewer
 	}

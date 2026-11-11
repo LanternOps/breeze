@@ -292,11 +292,92 @@ export function comparePatchVersions(
   return 0;
 }
 
+/** dpkg's character weight: '~' below everything (end of string included), letters below other symbols. */
+function linuxVersionCharOrder(c: string | undefined): number {
+  if (c === undefined || (c >= '0' && c <= '9')) return 0;
+  if (/[A-Za-z]/.test(c)) return c.charCodeAt(0);
+  if (c === '~') return -1;
+  return c.charCodeAt(0) + 256;
+}
+
+function isAsciiDigit(c: string | undefined): boolean {
+  return c !== undefined && c >= '0' && c <= '9';
+}
+
+/** dpkg `verrevcmp`: alternating non-digit runs (by weight) and digit runs (numerically). */
+function compareLinuxVersionPart(a: string, b: string): number {
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    while ((i < a.length && !isAsciiDigit(a[i])) || (j < b.length && !isAsciiDigit(b[j]))) {
+      const ac = linuxVersionCharOrder(a[i]);
+      const bc = linuxVersionCharOrder(b[j]);
+      if (ac !== bc) return ac - bc;
+      i++;
+      j++;
+    }
+    while (a[i] === '0') i++;
+    while (b[j] === '0') j++;
+    let firstDiff = 0;
+    while (isAsciiDigit(a[i]) && isAsciiDigit(b[j])) {
+      if (firstDiff === 0) firstDiff = a.charCodeAt(i) - b.charCodeAt(j);
+      i++;
+      j++;
+    }
+    if (isAsciiDigit(a[i])) return 1;
+    if (isAsciiDigit(b[j])) return -1;
+    if (firstDiff !== 0) return firstDiff;
+  }
+  return 0;
+}
+
+function splitLinuxVersion(v: string): { epoch: number; upstream: string; revision: string } | null {
+  const colon = v.indexOf(':');
+  let epoch = 0;
+  let rest = v;
+  if (colon >= 0) {
+    const epochText = v.slice(0, colon);
+    if (!/^\d+$/.test(epochText)) return null;
+    epoch = parseInt(epochText, 10);
+    rest = v.slice(colon + 1);
+  }
+  const dash = rest.lastIndexOf('-');
+  return dash >= 0
+    ? { epoch, upstream: rest.slice(0, dash), revision: rest.slice(dash + 1) }
+    : { epoch, upstream: rest, revision: '' };
+}
+
+/**
+ * Version ordering for Linux package pins (#9370), following dpkg:
+ * `[epoch:]upstream[-revision]` — epoch first, then upstream, then revision;
+ * digit runs compare numerically and '~' sorts before everything (so
+ * `1.0~rc1` < `1.0`). RPM `version-release` strings from dnf order the same
+ * way for the usual forms. The tolerant comparator above is wrong here: it
+ * reads `5:10` < `5:9` by codepoint, which would let a pinned package
+ * upgrade past its pin.
+ *
+ * Returns null when either side is blank or the epoch is not numeric;
+ * callers treat null as "cannot prove within pin" (hold).
+ */
+export function compareLinuxPackageVersions(
+  a: string | null | undefined,
+  b: string | null | undefined
+): -1 | 0 | 1 | null {
+  const av = splitLinuxVersion((a ?? '').trim());
+  const bv = splitLinuxVersion((b ?? '').trim());
+  if (!av || !bv || !av.upstream || !bv.upstream) return null;
+  const cmp = av.epoch !== bv.epoch
+    ? av.epoch - bv.epoch
+    : compareLinuxVersionPart(av.upstream, bv.upstream) || compareLinuxVersionPart(av.revision, bv.revision);
+  return cmp === 0 ? 0 : cmp < 0 ? -1 : 1;
+}
+
 /**
  * Canonical lookup key for app rules. The UI presents 'third_party' and
  * 'custom' patch sources as one bucket (manual UI entries hardcode
- * 'third_party'), so both collapse to a canonical 'third_party' key; other
- * sources keep their own key. Delegates to the shared implementation so the
+ * 'third_party'), so both collapse to a canonical 'third_party' key; Linux
+ * keys drop the `apt:`/`yum:` provider prefix (#9370); other sources keep
+ * their own key. Delegates to the shared implementation so the
  * ring app-rule validator's uniqueness check uses the same identity.
  */
 export function appRuleKey(source: string, packageId: string): string {
@@ -331,7 +412,9 @@ export function evaluateAppRule(
   if (!rule) return 'allowed';
   if (rule.action === 'block') return 'blocked';
 
-  const cmp = comparePatchVersions(patch.version, rule.pinnedVersion);
+  const cmp = patch.source === 'linux'
+    ? compareLinuxPackageVersions(patch.version, rule.pinnedVersion)
+    : comparePatchVersions(patch.version, rule.pinnedVersion);
   if (cmp === null) return 'held';
   return cmp > 0 ? 'held' : 'allowed';
 }

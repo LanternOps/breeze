@@ -55,6 +55,7 @@ import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee } f
 import { removedTicketLinksFromRows, type RemovedTicketLink } from '../ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from '../ticketLinkLock';
 import { reresolveMovedTicketCalendars } from '../businessCalendars/reresolve';
+import { detachPsaMappingsForDeviceMove } from './psaTicketingGuard';
 
 export type DeviceOrgMoveTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -556,6 +557,10 @@ export async function moveDeviceOrgInTransaction(
         WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid AND topology_site_id IS NULL)
           AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)`,
   );
+
+  // Cross-partner moves must finish remote PSA work before dropping its ledger.
+  // Site-owned alert mappings remain at the source site, like external refs.
+  await detachPsaMappingsForDeviceMove(tx, deviceId, targetOrgId);
 
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
@@ -1059,6 +1064,14 @@ export async function moveDeviceOrgInTransaction(
   for (const table of getDeviceOrgMoveDeleteTables()) {
     await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
   }
+
+  // Attempts and relay evidence belong to the source network.
+  await tx.execute(sql`DELETE FROM device_wake_attempts WHERE device_id = ${deviceId}::uuid`);
+
+  // Wake proof is specific to the source org's network and must be earned again.
+  await tx.execute(sql`UPDATE device_wake_status
+    SET last_came_online_at = NULL, proof_fingerprint = NULL, consecutive_timeouts = 0
+    WHERE device_id = ${deviceId}::uuid`);
 
   // Ticket-linked billing rows denormalize org_id from their ticket (Phase 3 spec §2);
   // tickets bound to this device move org with it, so these must follow —

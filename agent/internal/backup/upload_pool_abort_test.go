@@ -81,8 +81,8 @@ func TestUploadPool_StopWithJournalThenResume(t *testing.T) {
 	defer cancel()
 	// Runs on the coordinator after each accounted file, before its journal
 	// append: stopping at filesDone == 2 still journals f01.
-	onProgress := func(filesDone, _ int, _, _ int64, _ string) {
-		if filesDone >= 2 {
+	onProgress := func(p RunProgress) {
+		if p.FilesDone >= 2 {
 			cancel()
 		}
 	}
@@ -182,8 +182,8 @@ func TestUploadPool_StopKeepsFinishedHeadUpload(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	onProgress := func(filesDone, _ int, _, _ int64, _ string) {
-		if filesDone >= 1 {
+	onProgress := func(p RunProgress) {
+		if p.FilesDone >= 1 {
 			cancel()
 		}
 	}

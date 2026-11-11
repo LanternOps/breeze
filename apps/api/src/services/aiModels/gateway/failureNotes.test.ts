@@ -4,6 +4,7 @@ import {
   GATEWAY_FAILURE_NOTE_MAX_ENTRIES,
   GATEWAY_FAILURE_NOTE_TTL_MS,
   noteGatewayFailure,
+  takeGatewayFailure,
   takeGatewayFailureNote,
 } from './failureNotes';
 
@@ -18,6 +19,14 @@ describe('gateway failure notes', () => {
     expect(takeGatewayFailureNote('s2')).toBeNull();
     expect(takeGatewayFailureNote('s1')).toBe('reason one');
     expect(takeGatewayFailureNote('s1')).toBeNull();
+  });
+
+  it('a coded note carries its code, and an uncoded one reads as null (#10577)', () => {
+    noteGatewayFailure('s1', 'too big', 'context_window_exceeded');
+    noteGatewayFailure('s2', 'other');
+    expect(takeGatewayFailure('s1')).toEqual({ message: 'too big', code: 'context_window_exceeded' });
+    expect(takeGatewayFailure('s1')).toBeNull();
+    expect(takeGatewayFailure('s2')).toEqual({ message: 'other', code: null });
   });
 
   it('the latest note for a session wins', () => {

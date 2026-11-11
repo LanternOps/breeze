@@ -24,7 +24,7 @@
  * web UI, not the PDF.
  */
 import type { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { autoTable } from 'jspdf-autotable';
 import type {
   ComplianceState,
   EndpointManagementSummary,

@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { eq, and, inArray } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { backupJobs, backupSnapshots, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { sqlInstances, backupChains } from '../../db/schema/applicationBackup';
@@ -247,24 +248,16 @@ mssqlRoutes.post(
           ? data.instances
           : null;
       if (instances) {
-        for (const inst of instances) {
-          await db
-            .insert(sqlInstances)
-            .values({
-              orgId,
-              deviceId,
-              instanceName: inst.name,
-              version: inst.version || null,
-              edition: inst.edition || null,
-              port: inst.port || null,
-              authType: inst.authType || 'windows',
-              databases: inst.databases || [],
-              status: inst.status || 'unknown',
-              lastDiscoveredAt: new Date(),
-            })
-            .onConflictDoUpdate({
-              target: [sqlInstances.deviceId, sqlInstances.instanceName],
-              set: {
+        // One savepoint around the upserts: a failed statement rolls back and the
+        // request transaction survives the fallback below (#11203).
+        await withDbTransaction(async () => {
+          for (const inst of instances) {
+            await db
+              .insert(sqlInstances)
+              .values({
+                orgId,
+                deviceId,
+                instanceName: inst.name,
                 version: inst.version || null,
                 edition: inst.edition || null,
                 port: inst.port || null,
@@ -272,13 +265,29 @@ mssqlRoutes.post(
                 databases: inst.databases || [],
                 status: inst.status || 'unknown',
                 lastDiscoveredAt: new Date(),
-                updatedAt: new Date(),
-              },
-            });
-        }
+              })
+              .onConflictDoUpdate({
+                target: [sqlInstances.deviceId, sqlInstances.instanceName],
+                set: {
+                  version: inst.version || null,
+                  edition: inst.edition || null,
+                  port: inst.port || null,
+                  authType: inst.authType || 'windows',
+                  databases: inst.databases || [],
+                  status: inst.status || 'unknown',
+                  lastDiscoveredAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              });
+          }
+        });
       }
       return c.json({ data });
-    } catch {
+    } catch (err) {
+      // Now reachable for a failed upsert too, so say so: the raw output below
+      // reads as a success with nothing persisted (#11203).
+      // The code, not the error: its message carries query params or raw stdout.
+      console.error('[backup:mssql] discovery result not parsed or not persisted', { deviceId, code: pgErrorCode(err) ?? (err instanceof Error ? err.name : 'unknown') });
       return c.json({ data: result.stdout });
     }
   }

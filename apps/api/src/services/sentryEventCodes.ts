@@ -29,6 +29,7 @@
  *     ceiling `isBoundedTagValue` enforces.
  */
 export const SENTRY_EVENT_CODES = [
+  'pax8_order_execution_result',
   // --- middleware -------------------------------------------------------
   /** A request was refused by a body-size limit (global gate or route rule). */
   'body_limit_rejected',
@@ -345,6 +346,16 @@ export const SENTRY_EVENT_CODES = [
    * would otherwise raise no alert on its own.
    */
   'tenant_erasure_refused_legal_hold',
+  /** An unresolved isolation prevents erasing its recovery records. */
+  'tenant_erasure_refused_isolation',
+  /** Forced credential suspension leaves isolation recovery to expiry and the offline code. */
+  'network_isolation_forced_token_suspension',
+  /**
+   * #10919: an isolate or release command reached delivery that is not the row
+   * the isolation service issued (the episode's command_id / release_command_id).
+   * Cancelled at claim; nothing a running service produces, so each one is worth a look.
+   */
+  'network_isolation_command_unbound',
   /**
    * Helper screenshot files could not be removed after their rows were
    * deleted (org erasure, device purge, site delete) or by the orphan sweep

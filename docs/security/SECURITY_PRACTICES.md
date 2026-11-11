@@ -460,12 +460,14 @@ Breeze now includes a structured incident lifecycle API with auditable transitio
 
 - **Lifecycle states**: `detected` -> `analyzing` -> `contained` -> `recovering` -> `closed`
 - **Evidence chain**: evidence entries record who collected it, when, where it is stored, and optional integrity hash
-- **Containment governance**: high-risk actions (`network_isolation`, `account_disable`, `usb_block`) require an `approvalRef`
+- **Containment governance**: AI high-risk actions (`network_isolation`, `account_disable`, `usb_block`) require an `approvalRef`. Manual incident `/contain` calls record actions only; they do not execute endpoint isolation. Human network-isolation routes require an interactive session, device execution permission, site access, and MFA when enabled. A self-host with 2FA disabled provides password-only assurance.
 - **Timeline integrity**: incident timeline entries are appended for creation, containment, evidence collection, closure, and SLA escalation
 - **Eventing**: `incident.created`, `incident.contained`, `incident.escalated`, and `incident.closed` are emitted for downstream automations and integrations
 - **Auditability**: all mutating incident endpoints emit structured route audit events with actor identity and action metadata
 
 Core endpoints are exposed under `/api/v1/incidents/*` for creation, triage, containment, evidence handling, closure, and report generation.
+
+Network isolation is off by default behind `NETWORK_ISOLATION_ENABLED` and is Windows-only until Linux and macOS support ship. Every episode has a mandatory expiry (72 hours by default, up to 720 hours) and an audited offline break-glass code. Start gates never prevent console release, extension, acknowledgement, or code viewing for an existing episode. Disabling the feature flag blocks new starts; it does not release devices. Emergency fleet release uses a scripted release request for each episode. See the [network-isolation runbook](../../apps/docs/src/content/docs/features/network-isolation.mdx) for the permitted traffic and residual risks.
 
 ---
 

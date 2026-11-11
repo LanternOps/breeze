@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
-// Admin-writable subset of portal_branding (feature toggles + support contact,
-// plus customCss as of #5952). Visual branding (logo, colors) and
-// customDomain/domainVerified are deliberately NOT writable here — they ship
-// with the domain-verification project. `.strict()` is the enforcement:
-// unknown keys are rejected.
+// Admin-writable subset of portal_branding: feature toggles, support contact,
+// customCss (#5952), primaryColor (#9962), logoUrl and secondaryColor (#9673).
+// faviconUrl, accentColor and customDomain/domainVerified are deliberately NOT
+// writable here — they ship with the domain-verification project. `.strict()`
+// is the enforcement: unknown keys are rejected.
 
 export const PORTAL_CUSTOM_CSS_MAX_LENGTH = 65_536;
 
@@ -117,6 +117,31 @@ export const portalCustomCssSchema = z
 /** #rgb / #rrggbb — the only shape an org document accent may take (#9962). */
 export const PORTAL_PRIMARY_COLOR_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 
+/** Matches MAX_LOGO_BYTES in the web logo encoder and the partner Branding cap. */
+export const PORTAL_LOGO_MAX_LENGTH = 400_000;
+
+const PORTAL_LOGO_DATA_URI = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
+const PORTAL_LOGO_HTTPS_URL = /^https:\/\/[^\s"'<>\\]+$/;
+
+/**
+ * Whether a value may be stored as an org logo (#9673): an uploaded PNG data
+ * URI (the editor always encodes PNG, and PNG is the one format every renderer
+ * embeds, report PDFs included), or an https URL so a customer's browser never
+ * loads it insecurely (PDFs print the company name instead of a URL logo). The
+ * value goes unchanged into `<img src>` on the portal and customer documents, so
+ * anything else is refused at write.
+ */
+export function isPortalLogoUrl(value: string): boolean {
+  if (value.length > PORTAL_LOGO_MAX_LENGTH) return false;
+  if (PORTAL_LOGO_DATA_URI.test(value)) return true;
+  if (!PORTAL_LOGO_HTTPS_URL.test(value)) return false;
+  try {
+    return new URL(value).hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export const updatePortalSettingsSchema = z.object({
   enableTickets: z.boolean().optional(),
   enableAssetCheckout: z.boolean().optional(),
@@ -176,6 +201,18 @@ export const updatePortalSettingsSchema = z.object({
     .regex(PORTAL_PRIMARY_COLOR_PATTERN, 'Primary color must be a hex colour such as #2563eb')
     .nullable()
     .optional(),
+  // #9673: the org level of the secondary colour and logo in the same chain.
+  // Null = inherit the partner's value.
+  secondaryColor: z
+    .string()
+    .regex(PORTAL_PRIMARY_COLOR_PATTERN, 'Secondary color must be a hex colour such as #0f766e')
+    .nullable()
+    .optional(),
+  logoUrl: z
+    .string()
+    .refine(isPortalLogoUrl, 'Logo must be a PNG image of at most 400 KB, or an https URL')
+    .nullable()
+    .optional(),
   // #5952: canonical write path for portal_branding.custom_css. Rejected
   // (not silently stripped) on a disallowed pattern — see
   // findUnsafePortalCssPattern above.
@@ -189,12 +226,70 @@ export type UpdatePortalSettingsInput = z.infer<typeof updatePortalSettingsSchem
 // portal users by id; update a portal user's editable fields. `status` here
 // is deliberately limited to active/disabled — 'invited' is a system-set
 // state, not something an MSP can set directly via this endpoint.
+//
+// `contactId` (portal registration W1, #11378): bind the login to THIS contact.
+// The invite email must equal the contact's email (case-insensitive), because
+// binding a contact grants its ticket history; the API refuses a mismatch.
 export const invitePortalUserSchema = z.object({
   email: z.string().email().max(255),
   name: z.string().min(1).max(255).optional(),
-  message: z.string().max(1000).optional()
+  message: z.string().max(1000).optional(),
+  contactId: z.string().guid().optional()
 }).strict();
 export type InvitePortalUserInput = z.infer<typeof invitePortalUserSchema>;
+
+// Batch "Give portal access" from the Contacts tab. Each invite sends one
+// email synchronously inside the request, so the batch is capped.
+export const INVITE_CONTACTS_MAX = 100;
+export const inviteContactsToPortalSchema = z.object({
+  contactIds: z.array(z.string().guid()).min(1).max(INVITE_CONTACTS_MAX)
+}).strict();
+export type InviteContactsToPortalInput = z.infer<typeof inviteContactsToPortalSchema>;
+
+// Per-contact outcome of a batch invite. Exactly these five: any further
+// detail rides in `reason` / `emailSent`, never as a sixth outcome.
+export const CONTACT_PORTAL_INVITE_OUTCOMES = [
+  'invited',
+  'already_has_access',
+  'no_email',
+  'email_bound_to_other_contact',
+  'duplicate_email_in_batch'
+] as const;
+export type ContactPortalInviteOutcome = (typeof CONTACT_PORTAL_INVITE_OUTCOMES)[number];
+
+/** Why a contact counts as `already_has_access` (or why a single invite was refused). */
+export type AlreadyHasAccessReason = 'active' | 'disabled' | 'external_identity' | 'login_email_differs';
+
+/** One contact's result, keyed on `outcome` so impossible combinations do not type-check. */
+export type ContactPortalInviteResult =
+  | {
+      contactId: string;
+      outcome: 'invited';
+      portalUserId: string;
+      /** false: the login exists but the email did not go out (use Resend). */
+      emailSent: boolean;
+    }
+  | { contactId: string; outcome: 'already_has_access'; portalUserId: string; reason: AlreadyHasAccessReason }
+  | { contactId: string; outcome: 'email_bound_to_other_contact'; portalUserId: string }
+  | { contactId: string; outcome: 'no_email' | 'duplicate_email_in_batch' };
+
+/** `POST …/portal-users/invite-contacts` response body. */
+export type ContactPortalInviteResponse = {
+  data: { results: ContactPortalInviteResult[]; counts: Record<ContactPortalInviteOutcome, number> };
+};
+
+/** Stable `code` values on invite refusals (`{ error, code }` bodies). */
+export const PORTAL_INVITE_ERROR_CODES = {
+  PORTAL_INVITE_CONTACT_NOT_FOUND: 'PORTAL_INVITE_CONTACT_NOT_FOUND',
+  PORTAL_INVITE_CONTACT_NO_EMAIL: 'PORTAL_INVITE_CONTACT_NO_EMAIL',
+  PORTAL_INVITE_EMAIL_MISMATCH: 'PORTAL_INVITE_EMAIL_MISMATCH',
+  PORTAL_INVITE_CONTACT_CONFLICT: 'PORTAL_INVITE_CONTACT_CONFLICT',
+  PORTAL_INVITE_LOGIN_EMAIL_DIFFERS: 'PORTAL_INVITE_LOGIN_EMAIL_DIFFERS',
+  PORTAL_INVITE_ALREADY_ACTIVE: 'PORTAL_INVITE_ALREADY_ACTIVE',
+  PORTAL_INVITE_USER_DISABLED: 'PORTAL_INVITE_USER_DISABLED',
+  PORTAL_INVITE_EXTERNAL_IDENTITY: 'PORTAL_INVITE_EXTERNAL_IDENTITY'
+} as const;
+export type PortalInviteErrorCode = keyof typeof PORTAL_INVITE_ERROR_CODES;
 
 export const bulkInvitePortalUsersSchema = z.object({
   userIds: z.array(z.string().guid()).optional()

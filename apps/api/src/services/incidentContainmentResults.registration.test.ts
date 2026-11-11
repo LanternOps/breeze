@@ -13,6 +13,9 @@ describe('execute_containment terminal wiring (#9662)', () => {
     expect(source('../routes/agents/commands.ts')).toMatch(
       /REGISTRY_DISPATCHED_COMMAND_TYPES = new Set\(\[[\s\S]*?'execute_containment'[\s\S]*?\]\);/,
     );
+    expect(source('../routes/agents/commands.ts')).toMatch(
+      /REGISTRY_DISPATCHED_COMMAND_TYPES = new Set\(\[[\s\S]*?'release_containment'[\s\S]*?\]\);/,
+    );
     expect(source('./commandResultHandlers.ts')).toContain('execute_containment: handleExecuteContainmentResult');
   });
 

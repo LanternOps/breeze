@@ -60,6 +60,7 @@ import {
   resolveBackupConfigForDevice,
   resolveBackupProtectionForDevice,
   resolveSystemProtectionForDevice,
+  resolveContainmentPolicy,
 } from '../../services/featureConfigResolver';
 import { createPartner, createOrganization, createSite } from './db-utils';
 
@@ -288,6 +289,20 @@ async function seedSystemProtectionPolicy(
         inlineSettings,
       });
     }
+    return policyId;
+  });
+}
+
+// containment (#10100): inline-only like system_protection; the enum value
+// comes from 2027-01-19-120000-config-feature-containment.sql.
+async function seedContainmentPolicy(owner: Owner, inlineSettings: Record<string, unknown>): Promise<string> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const policyId = await createPolicy(owner, 'containment policy');
+    await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policyId,
+      featureType: 'containment',
+      inlineSettings,
+    });
     return policyId;
   });
 }
@@ -643,6 +658,110 @@ describe('per-device config-policy resolvers honour partner-wide policies (#2930
       );
       expect(result.settings.beforeScripts).toBe(false);
       expect(result.settings.labelPrefix).toBe('Breeze');
+    });
+  });
+
+  describe('resolveContainmentPolicy (#10100)', () => {
+    const PARTNER_SEED = {
+      version: 1,
+      extraAllow: [{ cidr: '192.0.2.0/24', proto: 'tcp', ports: [443], label: 'EDR console' }],
+      defaultTtlHours: 24,
+    };
+
+    it('resolves a partner-wide containment policy for a device in a child org', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const policyId = await seedContainmentPolicy({ orgId: null, partnerId: partner.id }, PARTNER_SEED);
+      await assign(policyId, 'partner', partner.id);
+
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        resolveContainmentPolicy(device.id),
+      );
+      expect(result.isPlatformDefault).toBe(false);
+      expect(result.invalidStoredSettings).toBe(false);
+      expect(result.defaultTtlHours).toBe(24);
+      expect(result.extraAllow).toEqual(PARTNER_SEED.extraAllow);
+      expect(result.remoteRelay).toBe(true);
+      expect(result.revision).toMatch(/^c1:[0-9a-f]{32}$/);
+    });
+
+    it('a partner-wide containment policy is INVISIBLE without breeze.current_partner_id', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const policyId = await seedContainmentPolicy({ orgId: null, partnerId: partner.id }, PARTNER_SEED);
+      await assign(policyId, 'partner', partner.id);
+
+      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
+        resolveContainmentPolicy(device.id),
+      );
+      expect(blind.isPlatformDefault).toBe(true);
+      expect(blind.extraAllow).toEqual([]);
+      expect(blind.defaultTtlHours).toBe(72);
+    });
+
+    it("another partner's partner-wide containment policy never reaches the device, even under system context", async () => {
+      const partnerA = await createPartner();
+      const partnerB = await createPartner();
+      const org = await createOrganization({ partnerId: partnerA.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const foreign = await seedContainmentPolicy({ orgId: null, partnerId: partnerB.id }, PARTNER_SEED);
+      await assign(foreign, 'partner', partnerB.id);
+
+      // System context bypasses RLS: policyOwnershipCondition is the only guard.
+      const result = await withDbAccessContext(SYSTEM_CTX, () => resolveContainmentPolicy(device.id));
+      expect(result.isPlatformDefault).toBe(true);
+      expect(result.extraAllow).toEqual([]);
+    });
+
+    it('an inactive partner-wide containment policy grants nothing', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const policyId = await seedContainmentPolicy({ orgId: null, partnerId: partner.id }, PARTNER_SEED);
+      await assign(policyId, 'partner', partner.id);
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db.update(configurationPolicies).set({ status: 'inactive' }).where(eq(configurationPolicies.id, policyId)),
+      );
+
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        resolveContainmentPolicy(device.id),
+      );
+      expect(result.isPlatformDefault).toBe(true);
+      expect(result.extraAllow).toEqual([]);
+    });
+
+    it('an org-level containment policy overrides the partner default (closest wins)', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+
+      const partnerPolicy = await seedContainmentPolicy({ orgId: null, partnerId: partner.id }, PARTNER_SEED);
+      await assign(partnerPolicy, 'partner', partner.id);
+      const partnerOnly = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        resolveContainmentPolicy(device.id),
+      );
+
+      const orgPolicy = await seedContainmentPolicy({ orgId: org!.id, partnerId: null }, { version: 1, remoteRelay: false });
+      await assign(orgPolicy, 'organization', org!.id);
+
+      const result = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        resolveContainmentPolicy(device.id),
+      );
+      expect(result.remoteRelay).toBe(false);
+      expect(result.extraAllow).toEqual([]);
+      expect(result.defaultTtlHours).toBe(72);
+      expect(result.revision).not.toBe(partnerOnly.revision);
     });
   });
 

@@ -1,5 +1,5 @@
-import { and, desc, eq, getTableColumns, isNull, notInArray } from 'drizzle-orm';
-import { RESOLVED_TERMINAL_STATES } from '@breeze/shared';
+import { and, desc, eq, getTableColumns, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { RESOLVED_TERMINAL_STATES, isTerminalIsolationState, type SafeAgentReport } from '@breeze/shared';
 import { isPgUniqueViolation } from '@breeze/shared/pgErrors';
 import type { db } from '../../db';
 import {
@@ -64,6 +64,8 @@ export type CreateEpisodeInput = Omit<
   | 'releaseKind'
   | 'mechanism'
   | 'lastAgentReport'
+  | 'appliedPolicyRevision'
+  | 'policyEventSeq'
   | 'breakGlassAckSeq'
   | 'expiryWarnedAt'
   | 'dispatchedAt'
@@ -100,6 +102,8 @@ export async function createEpisode(tx: EpisodeTx, values: CreateEpisodeInput): 
     releaseKind: null,
     mechanism: null,
     lastAgentReport: null,
+    appliedPolicyRevision: null,
+    policyEventSeq: 0,
     breakGlassAckSeq: null,
     expiryWarnedAt: null,
     dispatchedAt: null,
@@ -154,6 +158,42 @@ export async function findUnconfirmedTombstone(tx: EpisodeTx, deviceId: string):
   return row ?? null;
 }
 
+/** One indexed device lookup per beat; unconfirmed tombstones take precedence. */
+export async function findHeartbeatEpisode(tx: EpisodeTx, deviceId: string): Promise<DeviceNetworkIsolation | null> {
+  const [row] = await tx.select().from(deviceNetworkIsolations).where(and(
+    eq(deviceNetworkIsolations.deviceId, deviceId),
+    or(notInArray(deviceNetworkIsolations.state, [...RESOLVED_TERMINAL_STATES]), and(
+      eq(deviceNetworkIsolations.desiredState, 'released'), isNull(deviceNetworkIsolations.releaseConfirmedAt),
+    )),
+  )).orderBy(desc(sql`(${deviceNetworkIsolations.desiredState} = 'released' AND ${deviceNetworkIsolations.releaseConfirmedAt} IS NULL)`), desc(deviceNetworkIsolations.createdAt), desc(deviceNetworkIsolations.id)).limit(1);
+  return row ?? null;
+}
+
+/** Payload labels are insufficient: only an episode binding owns an isolation command. */
+export async function findEpisodeByCommand(tx: Pick<EpisodeTx, 'select'>, commandId: string): Promise<DeviceNetworkIsolation | null> {
+  const [row] = await tx.select().from(deviceNetworkIsolations).where(or(
+    eq(deviceNetworkIsolations.commandId, commandId), eq(deviceNetworkIsolations.releaseCommandId, commandId),
+  )).limit(1);
+  return row ?? null;
+}
+
+/** Persist exactly the same safe whitelist for both heartbeat and command-result evidence. */
+export async function writeAgentReport(tx: EpisodeTx, id: string, safeReport: SafeAgentReport, ackSeq?: number): Promise<void> {
+  await tx.update(deviceNetworkIsolations).set({
+    lastAgentReport: safeReport,
+    ...(safeReport.isolationId ? { mechanism: safeReport.mechanism } : {}),
+    ...(ackSeq !== undefined ? { breakGlassAckSeq: sql`coalesce(${deviceNetworkIsolations.breakGlassAckSeq}, ${ackSeq})` } : {}),
+  }).where(eq(deviceNetworkIsolations.id, id));
+}
+
+/** How far the agent's journal has been read for policy events, and what it says is committed. */
+export async function writePolicyEventProgress(tx: EpisodeTx, id: string, progress: { policyEventSeq: number; appliedPolicyRevision?: string | null }): Promise<void> {
+  await tx.update(deviceNetworkIsolations).set({
+    policyEventSeq: progress.policyEventSeq,
+    ...(progress.appliedPolicyRevision !== undefined ? { appliedPolicyRevision: progress.appliedPolicyRevision } : {}),
+  }).where(eq(deviceNetworkIsolations.id, id));
+}
+
 /** An episode without its break-glass ciphertext: safe to hand to a route or the AI. */
 export type EpisodeSummary = Omit<DeviceNetworkIsolation, 'breakGlassSecretEnc'>;
 
@@ -203,6 +243,9 @@ export function toEpisodeSnapshot(row: DeviceNetworkIsolation): EpisodeSnapshot 
  * generation and journal high-water mark (compare-and-swap). Under `withEpisodeLock` that always
  * holds; outside it, a concurrent writer makes this return false instead of overwriting newer state.
  * False also means the row vanished (a concurrent device delete). Callers must handle false.
+ *
+ * `allowSnapshot` is for a policy change: the new permits and the generation that delivers them land in
+ * one UPDATE, so neither can be seen without the other.
  */
 export async function writeEpisodeSnapshot(
   tx: EpisodeTx,
@@ -210,10 +253,13 @@ export async function writeEpisodeSnapshot(
   prev: EpisodeSnapshot,
   next: EpisodeSnapshot,
   at: Date = new Date(),
+  allowSnapshot?: Pick<DeviceNetworkIsolation, 'allowSnapshot' | 'allowSnapshotRevision'>,
 ): Promise<boolean> {
   const updated = await tx
     .update(deviceNetworkIsolations)
     .set({
+      ...(isTerminalIsolationState(next.state) ? { breakGlassSecretEnc: '' } : {}),
+      ...allowSnapshot,
       state: next.state,
       desiredState: next.desiredState,
       generation: next.generation,

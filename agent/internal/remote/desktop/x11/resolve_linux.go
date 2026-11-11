@@ -6,13 +6,13 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // ResolveDisplayTargets enumerates X sockets under /tmp/.X11-unix and Wayland
@@ -296,12 +296,12 @@ func loginctlDetails() map[string]struct {
 		uid    int
 		active bool
 	}{}
-	out, err := exec.Command("loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
+	out, err := procspawn.Command("loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
 	if err != nil {
 		return result
 	}
 	for _, s := range parseLoginctlSessions(string(out)) {
-		det, err := exec.Command("loginctl", "show-session", s.id,
+		det, err := procspawn.Command("loginctl", "show-session", s.id,
 			"-p", "Display", "-p", "Type", "-p", "Active", "-p", "State").Output()
 		if err != nil {
 			continue

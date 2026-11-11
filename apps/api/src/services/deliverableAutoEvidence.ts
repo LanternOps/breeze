@@ -41,8 +41,9 @@
  * nightly sweep does not spam the ticket.
  */
 import { and, eq } from 'drizzle-orm';
+import { safeErrorMessage } from './aiModels/safeDbError';
 import { reportRunOwnerColumns } from './reportRunOwner';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
 import { reports, reportRuns } from '../db/schema/reports';
 import { serviceDeliverableEvidence, serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables';
 import { ticketComments } from '../db/schema/portal';
@@ -278,17 +279,18 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
     try {
       // Savepoint: a Postgres error inside the generator must not poison this
       // occurrence's transaction, or the failed-run stamp below could not run.
-      result = await db.transaction(() => generate());
+      result = await withDbTransaction(() => generate());
     } catch (err) {
       // Log the generator's own failure BEFORE the bookkeeping writes: if one of
       // those throws, the whole occurrence transaction rolls back and only the
       // secondary error would otherwise reach the caller and Sentry.
       console.error('[deliverables] auto-evidence generation failed', `occurrenceId=${args.occurrenceId}`,
-        `reportId=${definition.id}`, err instanceof Error ? err.message : String(err));
+        `reportId=${definition.id}`, safeErrorMessage(err));
       const outcome = await recordRefusal('generation_failed');
       await db.update(reportRuns).set({
           status: 'failed', completedAt: new Date(),
-          errorMessage: err instanceof Error ? err.message : 'Failed to generate report',
+          // Stored on the run: never the failed query's values.
+          errorMessage: err instanceof Error ? safeErrorMessage(err) : 'Failed to generate report',
         })
         .where(eq(reportRuns.id, run.id));
       return outcome;

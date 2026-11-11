@@ -25,6 +25,16 @@ vi.mock('@/hooks/useEventStream', () => ({
   useEventStream: () => ({ connected: true, subscribe: vi.fn(), unsubscribe: vi.fn() }),
 }));
 
+// #9939: the always-allow graduation prefetch is gated on the policy-decide
+// flag (/config) and `ai_agents:read`. Both open here so the existing
+// always-allow cases keep exercising the prefetch; the closed gate is pinned
+// in ApprovalsInbox.requests.test.tsx.
+vi.mock('../../stores/featuresStore', () => ({
+  useAiAgentsPolicyDecideGate: () => ({ enabled: true, loaded: true }),
+}));
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
 const fetchMock = vi.mocked(fetchWithAuth);
 const response = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({

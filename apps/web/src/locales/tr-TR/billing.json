@@ -395,7 +395,9 @@
         "message_other": "{{count}} taslak sözleşmeler silinsin mi? Yalnızca taslaklar silinir{{untouched}}; bu geri alınamaz.",
         "untouchedSuffix": "— seçiminizdeki tüm aktif veya duraklatılmış sözleşmelere dokunulmaz",
         "confirm": "Taslakları sil"
-      }
+      },
+      "fromQuoteReady": "{{number}} kaynaklı · etkinleştirmeye hazır",
+      "fromQuoteReadyUnnumbered": "Bir tekliften · etkinleştirmeye hazır"
     },
     "contractPax8Drawer": {
       "title": "Pax8 aboneliğini bağlayın",
@@ -861,8 +863,10 @@
       "expiryDefaultHint_other": "Varsayılan: {{count}} gün, Faturalandırma ayarları → Anlaşmalar bölümünden.",
       "autoReminderHint_one": "Otomatik hatırlatmalar her gün gönderilir, toplamda en fazla {{max}}.",
       "autoReminderHint_other": "Otomatik hatırlatmalar her {{count}} günde bir gönderilir, toplamda en fazla {{max}}.",
-      "expiryDefaultUnavailable": "Faturalandırma ayarlarındaki varsayılan son kullanma süresi yüklenemedi; yerleşik varsayılan gösteriliyor.",
+      "expiryDefaultUnavailable": "Faturalandırma ayarlarındaki varsayılan son kullanma tarihi yüklenemedi. Tarihi boş bırakırsanız anlaşma oluşturulurken varsayılanınız uygulanır.",
+      "expiryBlankHint": "Faturalandırma ayarları → Anlaşmalar bölümündeki varsayılanı kullanmak için boş bırakın.",
       "label": "Etiket (isteğe bağlı)",
+      "labelHint": "Yalnızca dahili. Müşteriler şablon adını görür.",
       "createDraft": "Taslak oluştur ve önizle",
       "creating": "Oluşturuluyor…",
       "preview": {
@@ -1667,6 +1671,14 @@
         "attachError": "Kanıt dosyası eklenemedi.",
         "downloadError": "Kanıt dosyası indirilemedi.",
         "tooLarge": "Bu dosya 10 MB'tan büyük. Daha küçük bir dosya seçin."
+      },
+      "generatedContracts": {
+        "title_one": "Bu tekliften {{count}} sözleşme oluşturuldu",
+        "title_other": "Bu tekliften {{count}} sözleşme oluşturuldu",
+        "draftHint_one": "{{count}} taslak etkinleştirilene kadar fatura kesmez. Faturalandırmayı başlatmak için inceleyip etkinleştirin.",
+        "draftHint_other": "{{count}} taslak etkinleştirilene kadar fatura kesmez. Faturalandırmayı başlatmak için inceleyip etkinleştirin.",
+        "ready": "Etkinleştirmeye hazır",
+        "unavailable": "Bu teklifin oluşturduğu sözleşmeler yüklenemedi. Tekrar denemek için sayfayı yenileyin."
       }
     },
     "currency": {

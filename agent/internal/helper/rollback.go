@@ -215,7 +215,7 @@ func (m *Manager) untrackedChatActiveLocked() bool {
 // it. Must be called with m.mu held.
 func (m *Manager) restartSessionsLocked(sessions []*sessionState) {
 	for _, state := range sessions {
-		state.watcherGaveUp = false // intentional stop, not a crash
+		state.freshCrashTracking() // intentional stop, not a crash
 		if err := m.ensureRunningSession(state); err != nil {
 			log.Error("failed to restart helper after rollback", "session", state.key, "error", err.Error())
 			continue

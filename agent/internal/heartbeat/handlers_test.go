@@ -24,6 +24,11 @@ var allCommandTypes = []string{
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
 	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,
 	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode, tools.CmdForceReboot, tools.CmdWakeOnLan,
+
+	// handlers_oem.go init()
+	tools.CmdOemUpdateRun,
+	tools.CmdOemUpdateRelease,
+
 	tools.CmdRefreshInventory,
 	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall, tools.CmdSoftwareUpdate,
 
@@ -139,7 +144,7 @@ var allCommandTypes = []string{
 	tools.CmdSupportEnd,
 
 	// handlers_incident_response.go init()
-	tools.CmdCollectEvidence, tools.CmdExecuteContainment,
+	tools.CmdCollectEvidence, tools.CmdExecuteContainment, tools.CmdReleaseContainment,
 
 	// handlers_tunnel.go init()
 	tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,

@@ -4,6 +4,7 @@ import {
   extendNetworkIsolationSchema,
   isolationAllowEntrySchema,
   networkIsolationReportSchema,
+  networkIsolationResultSchema,
   releaseNetworkIsolationSchema,
   startNetworkIsolationSchema,
 } from './networkIsolation';
@@ -118,6 +119,34 @@ describe('containmentDesiredBlockSchema (heartbeat response)', () => {
     expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, allow: allow.slice(0, 64) } }).success).toBe(true);
   });
 
+  describe('policyRevision (#10100)', () => {
+    const permit = { kind: 'host', host: 'edr.example.test', proto: 'tcp', ports: [443], scope: 'any' };
+    const withPolicy = { ...block, allow: [...block.allow, permit], policyRevision: `c1:${'a'.repeat(32)}` };
+    const parse = (networkIsolation: unknown) => containmentDesiredBlockSchema.safeParse({ networkIsolation }).success;
+
+    it('travels with a scope:"any" entry', () => {
+      expect(parse(withPolicy)).toBe(true);
+      expect(parse({ ...withPolicy, policyRevision: `c1i:${'b'.repeat(32)}` })).toBe(true);
+      expect(parse({ ...withPolicy, policyRevision: 'x'.repeat(128) })).toBe(true);
+    });
+
+    it('rejects a revision the agent would refuse', () => {
+      for (const policyRevision of ['', 'has space', 'tab\there', 'x'.repeat(129), 'caf\u00e9', 7, null]) {
+        expect(parse({ ...withPolicy, policyRevision }), String(policyRevision)).toBe(false);
+      }
+    });
+
+    it('is present if and only if the list has a scope:"any" entry', () => {
+      expect(parse({ ...block, allow: [...block.allow, permit] })).toBe(false);
+      expect(parse({ ...block, policyRevision: withPolicy.policyRevision })).toBe(false);
+      expect(parse(block)).toBe(true);
+    });
+
+    it('a tombstone never carries one', () => {
+      expect(parse({ ...block, desired: 'released', allow: [], policyRevision: withPolicy.policyRevision })).toBe(false);
+    });
+  });
+
   it('requires the networkIsolation key: absent never means "no change"', () => {
     expect(containmentDesiredBlockSchema.safeParse({}).success).toBe(false);
   });
@@ -181,5 +210,22 @@ describe('networkIsolationReportSchema (heartbeat request)', () => {
   it('bounds the event list', () => {
     const events = Array.from({ length: 201 }, (_, i) => ({ seq: i, at: '2026-10-30T10:04:00.000Z', type: 'reverify_ok' }));
     expect(networkIsolationReportSchema.safeParse({ ...report, events }).success).toBe(false);
+  });
+});
+
+describe('networkIsolationResultSchema shared evidence contract', () => {
+  const base = { isolationId: ISOLATION_ID, generation: 1, journalSeq: 2 };
+  it.each([['applying', 'provisional'], ['applied', 'committed'], ['verified', 'committed'], ['failed', 'rolled_back'], ['released', 'released'], ['expired', 'released'], ['released_locally', 'released'], ['self_released', 'released']])('assigns the typed phase for %s', (state, phase) => {
+    expect(networkIsolationResultSchema.parse({ ...base, state }).phase).toBe(phase);
+  });
+  it('shares the report closed state vocabulary and ordering bounds', () => {
+    for (const patch of [{ state: 'unknown' }, { state: 'requested' }, { generation: 0 }, { journalSeq: -1 }]) {
+      expect(networkIsolationResultSchema.safeParse({ ...base, state: 'verified', ...patch }).success).toBe(false);
+    }
+  });
+  it('maps verifiedAt to the report timestamp and strips unknown keys', () => {
+    const verifiedAt = '2026-10-31T12:00:00Z';
+    expect(networkIsolationResultSchema.parse({ ...base, state: 'verified', verifiedAt, breakGlassSecret: SECRET_B64 })).toMatchObject({ lastVerifiedAt: verifiedAt });
+    expect(networkIsolationResultSchema.parse({ ...base, state: 'verified', breakGlassSecret: SECRET_B64 })).not.toHaveProperty('breakGlassSecret');
   });
 });

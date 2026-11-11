@@ -526,6 +526,18 @@ const COMMAND_STYLE_HANDLED_KEYS = new Set([
   'status', 'exitCode', 'durationMs', 'error', 'stdout', 'stdoutChars', 'stderr', 'stderrChars', 'data',
 ]);
 
+/**
+ * A `stdoutChars`/`stderrChars` already on the payload: set by an earlier
+ * pass of `compactCommandStylePayload` over the same result (#10411), so it
+ * counts the text before that pass truncated it — re-counting the truncated
+ * string would understate what the tool returned.
+ */
+function priorCharCount(value: unknown, textChars = 0): number | undefined {
+  // Never smaller than the text in hand: a count below it cannot describe that
+  // text's original, so a payload-supplied value cannot understate the output.
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= textChars ? value : undefined;
+}
+
 function compactCommandStylePayload(
   payload: Record<string, unknown>,
   stats: CompactStats,
@@ -583,8 +595,23 @@ function compactCommandStylePayload(
       output.stdoutChars = payload.stdout.length;
     } else {
       output.stdout = truncateText(redactAiToolOutputText(payload.stdout), config.maxStdoutChars, stats);
-      output.stdoutChars = payload.stdout.length;
+      output.stdoutChars = priorCharCount(payload.stdoutChars, payload.stdout.length) ?? payload.stdout.length;
     }
+  } else if (payload.stdout !== undefined && payload.stdout !== null) {
+    // #10411: a structured stdout that an EARLIER pass of this function
+    // already parsed into an object. The chat handler compacts a result for
+    // the model and postToolUse compacts that same string again before
+    // persisting the tool_result row; skipping a non-string stdout here (it
+    // is a handled key, so the passthrough loop below skips it too) left the
+    // transcript with {status, exitCode, commandId} while the model had read
+    // the output. Keep it, bounded and redacted exactly as on the first pass.
+    const redactedStdout = redactToolOutputFields(payload.stdout, redactAiToolOutputText);
+    output.stdout = compactValue(redactedStdout, stats, {
+      ...config,
+      maxArrayItems: Math.min(config.maxArrayItems, 50),
+    });
+    const priorChars = priorCharCount(payload.stdoutChars);
+    if (priorChars !== undefined) output.stdoutChars = priorChars;
   }
 
   if (typeof payload.stderr === 'string') {
@@ -597,7 +624,7 @@ function compactCommandStylePayload(
         stats,
       );
     }
-    output.stderrChars = payload.stderr.length;
+    output.stderrChars = priorCharCount(payload.stderrChars, payload.stderr.length) ?? payload.stderr.length;
   }
 
   if (payload.data !== undefined) {
@@ -1043,6 +1070,24 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Full-control W18 PR B (#6789): portal text is typed by MSP staff and shown to customers; recipient names and
+  // emails are contacts. None becomes instructions.
+  manage_org_portal_settings: new Set(['welcomeMessage', 'footerText', 'customCss', 'supportEmail', 'supportPhone', 'logoUrl', 'partnerInvoiceFooter', 'partnerLogoUrl']),
+  manage_report_recipients: new Set(['name', 'email']),
+  // Full-control W16 PR A (#6786): the service name is the model's (and so a prompt's) text, echoed back; an
+  // admission refusal's sentence, returned as `error`, can quote it.
+  create_operator_task: new Set(['serviceName', 'error']),
+  // Full-control W16 PR B (#6786): a design's labels, names and refs were written by a model from device evidence, and
+  // hostnames by devices; none becomes instructions, and neither does a stored ledger error.
+  manage_fleet_designs: new Set(['label', 'groupName', 'policyName', 'name', 'itemName', 'hostname', 'itemRef', 'functionKey', 'error']),
+  // Full-control W18 PR A (#6789): names and emails are typed by people (contacts, portal invitees, staff), role
+  // names and descriptions by tenant admins, external-link labels by integrations. None becomes instructions.
+  get_org_summary: new Set(['name', 'email', 'phone', 'siteName']),
+  get_account_readiness: new Set(['name', 'email', 'phone', 'mobile', 'label', 'provider']),
+  list_portal_users: new Set(['name', 'email']),
+  list_users: new Set(['name', 'email', 'roleName']),
+  get_user: new Set(['name', 'email', 'roleName']),
+  list_roles: new Set(['name', 'description', 'roleName', 'parentRoleName', 'sourceRoleName', 'email']),
   // W15: vendor/person text never becomes instructions (including provisioned field values).
   get_pax8_status: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'name', 'pax8CompanyName', 'mappedOrgName', 'lastSyncError', 'error']),
   search_pax8_products: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'productName', 'vendorName', 'catalogName', 'catalogDescription', 'label', 'description', 'possibleValues', 'error']),
@@ -1085,6 +1130,17 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_fleet_health: new Set(['label', 'detail']),
   // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
   manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
+  // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
+  // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
+  // fenced as data, never instructions.
+  manage_backup_verification: new Set(['deviceName', 'reason', 'message', 'error']),
+  get_vss_status: new Set(['name', 'state', 'lastError', 'raw', 'error']),
+  // A C2C config's name and target addresses are typed by a person or filled from a mailbox directory.
+  manage_c2c_configs: new Set(['name', 'targetUsers']),
+  // A recovery console reports these, and the columns accept any JSON (`bmrProgressSchema`).
+  list_bmr_recoveries: new Set(['failureReason', 'warnings', 'error']),
+  // Device, computer and customer names, and a provider's label, come from agents and vendors.
+  get_backup_health: new Set(['name', 'computerName', 'orgName', 'providerLabel']),
   // Full-control W08 (#6778). Node labels, roles, vendor / model / OS strings and frontier labels are collected
   // from the network (LLDP / CDP / SNMP / controller strings) or typed by an operator; manual notes and
   // template / policy / target names are operator-authored. They pass sanitizeTopologyAiText where projected and
@@ -1179,13 +1235,15 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.
-  manage_alerts: new Set(['title', 'message']),
+  // #10408: `orgName` (multi-org callers) is a tenant-set name read into a
+  // session that spans other tenants — fenced as data, never instructions.
+  manage_alerts: new Set(['title', 'message', 'orgName']),
   // #10383: manage_alert_rules get_rule returns the rule's recentAlerts[].title, the same
   // device-derived alert title manage_alerts fences.
   manage_alert_rules: new Set(['title']),
   // A device's own hostname/display name are self-reported at enrollment,
   // not admin-assigned.
-  query_devices: new Set(['hostname', 'displayName']),
+  query_devices: new Set(['hostname', 'displayName', 'orgName']),
   get_device_details: new Set(['hostname', 'displayName']),
   // get_device_context's CURRENT result is plain text (device memory —
   // issues/quirks/follow-ups), never a JSON `hostname`/`displayName` field,

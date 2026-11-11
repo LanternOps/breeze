@@ -1,8 +1,10 @@
 package desktop
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +23,8 @@ import (
 // DefaultSessionPolicy() (see session_policy.go) so clipboard defaults are
 // permissive and the IPC/map decoders can't drift on what "default" means.
 type SessionPolicy struct {
+	// RelayOnly is server-decided while the device is isolated (OD9).
+	RelayOnly             bool
 	ClipboardHostToViewer bool
 	ClipboardViewerToHost bool
 	IdleTimeout           time.Duration // 0 = disabled
@@ -35,7 +39,7 @@ type SessionPolicy struct {
 }
 
 // StartSession creates and starts a new remote desktop session.
-// iceServers is optional; if nil, falls back to Google STUN.
+// iceServers is optional outside relay-only mode; if nil, falls back to Google STUN.
 func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig, displayIndex int, policy SessionPolicy) (answer string, err error) {
 	// Serialize concurrent StartSession calls. Without this, two retries
 	// with the same sessionID (e.g. heartbeat-poll + WS fast path delivering
@@ -46,6 +50,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// made this race reachable.
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
+
+	// Validate the ICE configuration before tearing anything down: a relay-only
+	// start with no TURN server must fail without ending the current session.
+	config, err := buildICEConfiguration(iceServers, policy.RelayOnly)
+	if err != nil {
+		return "", err
+	}
 
 	sessionStart := time.Now()
 	// Desktop Duplication and GPU pipelines get unstable with multiple concurrent
@@ -66,14 +77,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		slog.Info("StartSession: stop existing sessions took long", "session", sessionID, "elapsed", elapsed)
 	}
 
-	// Create WebRTC configuration
-	parsedICE := parseICEServers(iceServers)
-	for _, s := range parsedICE {
+	// Create WebRTC configuration (validated above, before any teardown)
+	for _, s := range config.ICEServers {
 		hasCreds := s.Username != ""
 		slog.Info("ICE server configured", "session", sessionID, "urls", s.URLs, "hasCreds", hasCreds)
-	}
-	config := webrtc.Configuration{
-		ICEServers: parsedICE,
 	}
 
 	// Register playout-delay RTP header extension for low-latency screen sharing.
@@ -122,6 +129,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 		onClipboardSummary: m.OnClipboardSummary,
 		trickle:            newICETrickle(),
+
+		// Keep the display on for the session's whole life and wake it
+		// before the first capture (#10874): a locked Mac's lock screen
+		// switches the display off ~30 s after the last input, and a sleeping
+		// display reads as zero displays. Taken here, before the session is
+		// published to m.sessions, so a concurrent stop's doCleanup always
+		// sees it; doCleanup releases it, and a failed start reaches that too.
+		displayWake: acquireDisplayWakeHold(displayPower, sessionID),
 	}
 	session.cursorStreamEnabled.Store(false)
 	session.wireInputEpochHooks()
@@ -225,7 +240,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		capConfig.DisplayIndex = displayIndex
 	}
 	capturerStart := time.Now()
-	capturer, err := NewScreenCapturer(capConfig)
+	capturer, err := openSessionCapturer(capConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
 	}
@@ -249,6 +264,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if err != nil {
 		return "", fmt.Errorf("failed to get screen bounds: %w", err)
 	}
+	// The restore path records hardware-encoder verdicts against
+	// GetScreenBounds, which can differ from the probe-adjusted size below.
+	boundsW, boundsH := w, h
 	probeStart := time.Now()
 	// repaintProbe runs before every attempt: DXGI only produces a frame when
 	// desktop content changes, so an idle-but-healthy desktop would otherwise
@@ -306,6 +324,20 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		preferHardware = false
 	}
 
+	// #10880: a session in this helper process found, within the last
+	// hardwareEncoderVerdictTTL, that the hardware encoder never produces a
+	// frame at this resolution (it stalled at startup and failed a warm-up).
+	// Start on software rather than re-learning that with a 3s frozen startup.
+	// Once the verdict expires, sessions start on hardware again and the normal
+	// stall/warm-up path re-probes (renewing the verdict if it fails again). The verdict comes from the
+	// CPU-input restore path, so it only applies to CPU-capture sessions — not
+	// to D3D11 capturers, whose zero-copy hardware path was never tested by it.
+	if preferHardware && (knownDeadHardwareForCPUCapture(capturer, w, h) || knownDeadHardwareForCPUCapture(capturer, boundsW, boundsH)) {
+		slog.Info("StartSession: hardware encoder produced no frames at this resolution recently in this process, starting on software",
+			"session", sessionID, "verdictTTL", hardwareEncoderVerdictTTL, "dimensions", fmt.Sprintf("%dx%d", w, h))
+		preferHardware = false
+	}
+
 	// Create H264 encoder via factory (will use MFT on Windows).
 	// Always configure the encoder for maxFrameRate so hardware MFT rate control
 	// is correct from first frame. The capture loop throttles if needed.
@@ -324,8 +356,19 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	slog.Info("StartSession: encoder created", "session", sessionID, "backend", enc.BackendName(), "elapsed", time.Since(encoderStart))
 	session.encoder.Store(enc)
 
+	// OpenH264 failed to load, so the software path returned the passthrough
+	// placeholder. On Windows, fall back to the Media Foundation encoder
+	// (hardware MFT, else Microsoft's software MFT) instead of refusing the
+	// session; this is what happens at the sign-in screen, where the encoder
+	// is created with PreferHardware=false (#11392). When that fails too, the
+	// error names the OpenH264 load failure so the operator sees the cause.
+	usedPlaceholderFallback := false
 	if enc.BackendIsPlaceholder() {
-		return "", fmt.Errorf("no H264 encoder available (backend=%s)", enc.BackendName())
+		if err := enc.ReplacePlaceholderBackend(); err != nil {
+			return "", err
+		}
+		usedPlaceholderFallback = true
+		slog.Info("StartSession: encoder replaced placeholder", "session", sessionID, "backend", enc.BackendName())
 	}
 
 	// Pass D3D11 device to encoder for GPU zero-copy pipeline setup.
@@ -341,6 +384,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	if err := enc.SetDimensions(w, h); err != nil {
 		return "", fmt.Errorf("failed to set encoder dimensions: %w", err)
+	}
+	// The fallback MFT activates in SetDimensions, which only logs a failure
+	// (and retries on every Encode). Refuse the session with the cause now
+	// rather than stream nothing.
+	if usedPlaceholderFallback {
+		if err := enc.FallbackActivationError(); err != nil {
+			return "", err
+		}
 	}
 
 	// If the capturer produces BGRA, tell the encoder to skip BGRA→RGBA conversion
@@ -405,7 +456,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		if cbErr != nil {
 			slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", cbErr.Error())
 		} else if clipboardDC != nil {
-			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard(), clipboard.Policy{
+			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, m.clipboardProviderFor(sessionID), clipboard.Policy{
 				HostToViewer: policy.ClipboardHostToViewer,
 				ViewerToHost: policy.ClipboardViewerToHost,
 			})
@@ -625,6 +676,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			})
 
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			// The report does not always end the server session at once: when
+			// the viewer announced a reconnect just before closing its peer,
+			// the API holds this peer_disconnected for a short grace instead of
+			// revoking under the reconnect (#10542).
 			logSelectedPair("failed-or-closed")
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {
@@ -751,4 +806,32 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}
 	slog.Info("StartSession: complete", "session", sessionID, "totalElapsed", time.Since(sessionStart))
 	return ld.SDP, nil
+}
+
+// buildICEConfiguration preserves the normal ICE defaults and confines isolated
+// sessions to TURN, without allowing parseICEServers' STUN fallback to escape.
+func buildICEConfiguration(iceServers []ICEServerConfig, relayOnly bool) (webrtc.Configuration, error) {
+	config := webrtc.Configuration{ICEServers: parseICEServers(iceServers)}
+	if !relayOnly {
+		return config, nil
+	}
+	config.ICETransportPolicy = webrtc.ICETransportPolicyRelay
+	relayServers := make([]webrtc.ICEServer, 0, len(config.ICEServers))
+	for _, server := range config.ICEServers {
+		urls := make([]string, 0, len(server.URLs))
+		for _, url := range server.URLs {
+			if strings.HasPrefix(url, "turn:") || strings.HasPrefix(url, "turns:") {
+				urls = append(urls, url)
+			}
+		}
+		if len(urls) > 0 {
+			server.URLs = urls
+			relayServers = append(relayServers, server)
+		}
+	}
+	if len(relayServers) == 0 {
+		return webrtc.Configuration{}, errors.New("remote desktop needs the TURN relay while this device is isolated: no TURN server in the session offer")
+	}
+	config.ICEServers = relayServers
+	return config, nil
 }

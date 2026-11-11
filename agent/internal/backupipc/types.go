@@ -113,7 +113,16 @@ type BackupProgress struct {
 	Total      int64  `json:"total"`   // bytes total
 	FilesDone  int    `json:"filesDone,omitempty"`
 	FilesTotal int    `json:"filesTotal,omitempty"`
-	Message    string `json:"message,omitempty"`
+	// VerifiedFiles/VerifiedBytes (backup_run only) count files, and their
+	// source bytes, the run has finished checking before deciding whether to
+	// upload them: the resume pass over the checkpoint journal and the
+	// dedupe pre-pass's re-hash of a file whose modification time moved. They
+	// are separate from Current/FilesDone, whose meaning is unchanged; the
+	// API counts their movement as progress so a multi-hour check pass is
+	// not reaped as wedged (#11014). Cumulative for the run.
+	VerifiedFiles int    `json:"verifiedFiles,omitempty"`
+	VerifiedBytes int64  `json:"verifiedBytes,omitempty"`
+	Message       string `json:"message,omitempty"`
 	// SnapshotID is the backup_run snapshot currently being written. Empty
 	// until the snapshot is created (pre-scan keepalives) and always empty for
 	// restore progress. Sent so the server can persist backup_jobs.snapshot_id

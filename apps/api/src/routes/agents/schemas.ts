@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
+import { softwareInventoryReportSchema, networkIsolationReportSchema, ISOLATION_MECHANISMS, truncated, type RestorePointOutcome } from '@breeze/shared';
 import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
@@ -36,6 +36,14 @@ const desktopAccessReasonSchema = z.enum([
   'x11_auth_failed',
 ]);
 
+// #9593: device_hardware.product_sku is varchar(100). One odd firmware string must
+// not fail the whole hardware report on a Postgres length error, and a cut-off
+// product number would misdirect a warranty lookup, so it is dropped instead.
+const productSkuField = z.string().transform((value) => {
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= 100 ? trimmed : undefined;
+}).optional();
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -54,6 +62,7 @@ export const enrollSchema = z.object({
     ramTotalMb: z.number().int().optional(),
     diskTotalGb: z.number().int().optional(),
     serialNumber: z.string().optional(),
+    productSku: productSkuField,
     manufacturer: z.string().optional(),
     model: z.string().optional(),
     motherboardManufacturer: z.string().optional(),
@@ -421,7 +430,13 @@ export const heartbeatSchema = z.object({
   // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad field drops
   // independently rather than 400-ing the heartbeat, since the route treats
   // every omitted/unrecognized value as capability zero anyway.
+  containment: z.object({ networkIsolation: networkIsolationReportSchema.optional().catch(undefined) }).optional().catch(undefined),
   securityCapabilities: z.object({
+    networkIsolationVersion: z.number().int().min(0).optional().catch(undefined),
+    networkIsolationMechanism: z.enum(ISOLATION_MECHANISMS).optional().catch(undefined),
+    networkIsolationUnsupportedReason: truncated(1000).optional().catch(undefined),
+    networkIsolationReady: z.boolean().optional().catch(undefined),
+
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
     // a bad value drops the field rather than 400-ing the heartbeat, since the
@@ -847,6 +862,7 @@ export const securityProviderValues = [
   'webroot',
   'withsecure',
   'cylance',
+  'trend_micro',
   'other',
   'unknown'
 ] as const;
@@ -1035,6 +1051,7 @@ export const updateHardwareSchema = z.object({
   ramTotalMb: z.number().int().optional(),
   diskTotalGb: z.number().int().optional(),
   serialNumber: z.string().optional(),
+  productSku: productSkuField,
   manufacturer: z.string().optional(),
   model: z.string().optional(),
   motherboardManufacturer: z.string().optional(),
@@ -1217,6 +1234,11 @@ const pendingPatchSchema = z.object({
   // is a malformed one (`.catch`), since a bad provenance label must never
   // cost the device its whole patch inventory.
   severitySource: z.string().max(32).optional().catch(undefined),
+  // What this device says the update is (#11073). A free string narrowed at
+  // ingest for the same reason as `severitySource`: an unrecognised or malformed
+  // value is dropped rather than costing the device its whole patch inventory.
+  reportedUpdateType: z.string().max(32).optional().catch(undefined),
+  reportedUpdateOwner: z.string().max(32).optional().catch(undefined),
   size: z.number().int().optional(),
   requiresRestart: z.boolean().optional(),
   releaseDate: z.string().optional(),
@@ -1318,12 +1340,34 @@ export const agentLogIngestSchema = z.object({
 
 export const EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER = '(no message text)';
 
+// device_event_logs.source column width (varchar(255)).
+const EVENT_LOG_SOURCE_MAX = 255;
+
+function truncateToCodePoints(max: number) {
+  return (value: string): string => {
+    // Cheap path: UTF-16 length <= max implies code points <= max.
+    if (value.length <= max) return value;
+    const points = Array.from(value);
+    return points.length <= max ? value : points.slice(0, max).join('');
+  };
+}
+
 export const eventLogRowSchema = z.object({
   timestamp: z.string().min(1),
   level: z.enum(['info', 'warning', 'error', 'critical']),
   category: z.enum(['security', 'hardware', 'application', 'system']),
-  source: z.string().min(1),
-  eventId: z.string().optional(),
+  // device_event_logs.source is varchar(255). An over-long source passed
+  // validation and then failed the whole 100-row insert batch (Postgres
+  // 22001), losing ~99 neighbouring events. It is a display/grouping label, so
+  // truncate to the column width rather than drop the row. Cut by code point
+  // (Postgres counts characters) so a surrogate pair is never split.
+  source: z.string().min(1).transform(truncateToCodePoints(EVENT_LOG_SOURCE_MAX)),
+  // device_event_logs.event_id is varchar(100). Without this bound an
+  // over-long id passed validation and then failed the whole 100-row insert
+  // batch; now only that row is dropped (counted in invalidDropped). The
+  // agent bounds its own ids to 100 characters (#10731,
+  // agent/internal/collectors/eventlogs_ids.go).
+  eventId: z.string().max(100).optional(),
   // The agent truncates every event message to 500 chars on all collector
   // paths (eventlogs_{windows,darwin,linux}.go), but that cap is agent-side
   // only — a compromised or older agent could POST arbitrarily large messages

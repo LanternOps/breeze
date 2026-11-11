@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
-import { buildActionLabel } from './actionLabel';
+import { buildActionLabel, describePax8Submit } from './actionLabel';
 import { checkGuardrails } from '../aiGuardrails';
 
 describe('buildActionLabel', () => {
@@ -187,4 +187,10 @@ describe('buildActionLabel', () => {
     expect(buildActionLabel({ toolName: 'execute_command', input, reason: 'Explicit caller label' })).toBe('Explicit caller label');
   });
 
+});
+
+it('renders new subscriptions as new quantity on the Pax8 approval card', () => {
+  const copy = describePax8Submit({ expectedCompany: { name: 'Fixture', pax8CompanyId: 'company' }, expectedLines: [{ action: 'new_subscription', productName: 'Seats', pax8ProductId: 'product', fromQuantity: null, quantity: '5', unitCost: '8.25', currency: 'USD', billingTerm: 'Monthly', commitmentTerm: 'Annual' }] });
+  expect(copy).toContain('new → 5');
+  expect(copy).not.toContain('? →');
 });

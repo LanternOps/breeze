@@ -26,6 +26,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/procoutput"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -68,6 +69,10 @@ type Client struct {
 	desktopMgr          *helperDesktopManager
 	prompts             *nativePromptRenderer // prompt host renderer (#10190)
 
+	// pamDialogs holds the open PAM elevation dialogs, for pam_close_dialog
+	// (#10370).
+	pamDialogs pamDialogRegistry
+
 	// agentHandlesTCCNotice is this connection's
 	// AuthResponse.AgentHandlesTCCNotice (#10190 W04), set at authentication.
 	agentHandlesTCCNotice bool
@@ -80,6 +85,7 @@ type Client struct {
 	pendingMu    sync.Mutex
 	pending      map[string]chan *ipc.Envelope
 	sasReqSeq    atomic.Uint64
+	clipReadSeq  atomic.Uint64
 
 	// authenticatedAt is set when the broker accepts the helper. Zero when
 	// the client has never completed auth on this Run(). Reset on each Run().
@@ -236,6 +242,8 @@ func (c *Client) Run() error {
 		}
 	}
 
+	c.wireDesktopClipboard(runtime.GOOS)
+
 	// Start TCC permission check loop (macOS only; no-op on other platforms).
 	// It never captures the screen (#8390), so it needs no coordination with
 	// a live session's capturer.
@@ -364,6 +372,7 @@ func (c *Client) authenticate() error {
 		// consentProtocolFromAuth applies the same condition).
 		ConsentProtocolVersion:     consentProtocolForAuth(supportsConsent),
 		SupportsTargetedPamDismiss: supportsTargetedPamDismissForAuth(c.role),
+		SupportsPamDialogClose:     supportsPamDialogCloseForAuth(c.role),
 		// Prompt host (#10190): protocol 1 with zero kinds in W02, so the
 		// broker grants no prompt scope and every prompt stays legacy.
 		PromptProtocolVersion: promptProtocol,
@@ -522,6 +531,9 @@ func (c *Client) commandLoop() error {
 		case ipc.TypePamDismissConsent:
 			safeGo("pam_dismiss_consent", func() { c.handlePamDismissConsent(env) })
 
+		case ipc.TypePamCloseDialog:
+			safeGo("pam_close_dialog", func() { c.handlePamCloseDialog(env) })
+
 		case ipc.TypeConsentRequest:
 			safeGo("consent_request", func() { c.handleConsentRequest(env) })
 
@@ -578,6 +590,9 @@ func (c *Client) commandLoop() error {
 			if !c.resolvePendingResponse(env) {
 				log.Warn("unsolicited sas_response from daemon", "id", env.ID)
 			}
+
+		case ipc.TypeDesktopClipboardReadResult:
+			c.handleDesktopClipboardReadResult(env)
 
 		case ipc.TypePromptShow, ipc.TypePromptUpdate, ipc.TypePromptClose, ipc.TypePromptActionResult, ipc.TypePromptBrandingSync:
 			if c.prompts != nil {
@@ -776,7 +791,7 @@ func (c *Client) handleLaunchProcess(env *ipc.Envelope) {
 		}
 	}
 
-	cmd := osexec.Command(req.BinaryPath, req.Args...)
+	cmd := procspawn.Command(req.BinaryPath, req.Args...)
 	cmd.Dir = filepath.Dir(req.BinaryPath)
 	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
@@ -1057,7 +1072,7 @@ func (c *Client) executeProcess(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	}
 
 	timeoutSec := getIntOrDefault(payload, "timeoutSeconds", 300)
-	proc := osexec.Command(name, args...)
+	proc := procspawn.Command(name, args...)
 	proc.Env = procoutput.ApplyEnv(os.Environ())
 
 	var stdout, stderr bytes.Buffer
@@ -1233,7 +1248,17 @@ func (c *Client) handlePamDialog(env *ipc.Envelope) {
 		return
 	}
 
-	result := showPamDialog(req)
+	// Registered so pam_close_dialog can take the window down before the
+	// agent dismisses consent.exe on a deny (#10370).
+	ctx, cancel := context.WithCancel(context.Background())
+	open := c.pamDialogs.open(env.ID, cancel)
+	result := func() ipc.PamDialogResult {
+		defer func() {
+			c.pamDialogs.finish(env.ID, open)
+			cancel()
+		}()
+		return showPamDialogFn(ctx, req)
+	}()
 	if err := c.conn.SendTyped(env.ID, ipc.TypePamDialogResult, result); err != nil {
 		log.Warn("failed to send PAM dialog result", "id", env.ID, "error", err)
 	}
@@ -1300,7 +1325,7 @@ func (c *Client) handlePamDismissConsent(env *ipc.Envelope) {
 // an actuator that cannot target one consent.exe. Nothing is pressed.
 const reasonTargetedDismissUnsupported = "targeted_dismiss_unsupported"
 
-// dismissPamConsent runs the deny path's untargeted Dismiss, or — when the
+// dismissPamConsent runs the untargeted Dismiss, or — when the
 // agent named a consent.exe instance (#8995) — dismisses only that instance. A
 // targeted request never falls back to the untargeted Escape, which would
 // cancel whichever UAC prompt happened to be found first.

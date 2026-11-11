@@ -2,6 +2,7 @@ import { FileCode, User, Settings, Monitor, AlertCircle, Activity } from 'lucide
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { useAuditActionFormatter } from '@/lib/auditFormat';
+import { useAuditResourceTypeFormatter } from '@/lib/auditResourceType';
 import { useTranslation } from 'react-i18next';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { AuditLogEntry } from './types';
@@ -31,6 +32,7 @@ export default function RecentActivity({
 }) {
   const { t } = useTranslation('common');
   const formatAuditAction = useAuditActionFormatter();
+  const formatResourceType = useAuditResourceTypeFormatter();
 
   // Hidden without audit-read access — the genuine-empty copy ("activity
   // will appear here") would be misleading on a 403.
@@ -114,7 +116,8 @@ export default function RecentActivity({
                 const Icon = typeIcons[targetType] || typeIcons.default;
                 const userName = entry.user?.name || entry.userName || t('shared.scope.system');
                 const targetName = entry.resource?.name || entry.target || entry.targetName;
-                const target = targetName && targetName.trim() ? targetName : (resourceType ?? '-');
+                // A nameless row is labelled by its type, never the raw token (#9856).
+                const target = targetName && targetName.trim() ? targetName : formatResourceType(resourceType);
                 const timestamp = entry.timestamp || entry.createdAt || '';
 
                 return (

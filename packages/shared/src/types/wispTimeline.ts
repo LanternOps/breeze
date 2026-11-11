@@ -13,9 +13,19 @@ export const WISP_TIMELINE_MAX_LIMIT = 100;
  * What kind of proactive output a post carries. Mirrored by the
  * `wisp_thread_posts_kind_chk` CHECK (migration and Drizzle schema); change
  * all together (pinned by apps/api threadPostKinds.contract.test.ts).
+ * `nudge_resolved` (#11427) is the follow-up to a nudge whose concern closed.
  */
-export const WISP_TIMELINE_POST_KINDS = ['brief', 'nudge', 'digest'] as const;
+export const WISP_TIMELINE_POST_KINDS = [
+  'brief', 'nudge', 'digest', 'check_in', 'specialist_result', 'first_look', 'nudge_resolved',
+] as const;
 export type WispTimelinePostKind = (typeof WISP_TIMELINE_POST_KINDS)[number];
+
+/**
+ * A `first_look` post that says no org could be looked at (#11145). Same kind
+ * (it reads and delivers the same) but it is not a first look: the welcome must
+ * not say "I've had a first look" because of it.
+ */
+export type WispTimelinePostVariant = 'couldnt_look';
 
 /** An ai_messages row from one of the thread's sessions. */
 export type WispTimelineMessage = {
@@ -32,11 +42,13 @@ export type WispTimelineMessage = {
   createdAt: string; // ISO
 };
 
-/** Durable proactive Wisp output (brief, nudge, digest) posted on the thread. */
+/** Durable proactive Wisp output (brief, nudge, digest, check-in) posted on the thread. */
 export type WispTimelinePost = {
   source: 'post';
   id: string;
   kind: WispTimelinePostKind;
+  /** Absent on every post but a couldn't-look one. */
+  variant?: WispTimelinePostVariant;
   title: string;
   body: string | null;
   link: string | null;

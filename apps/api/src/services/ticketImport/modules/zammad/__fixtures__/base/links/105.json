@@ -1,0 +1,22 @@
+{
+  "links": [
+    {
+      "link_type": "parent",
+      "link_object": "Ticket",
+      "link_object_value": 106
+    }
+  ],
+  "assets": {
+    "Ticket": {
+      "106": {
+        "id": 106,
+        "number": "31006",
+        "title": "VPN broken",
+        "state_id": 2,
+        "group_id": 2,
+        "created_at": "2026-05-01T11:00:00.000Z",
+        "updated_at": "2026-05-02T09:00:00.000Z"
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { ipClassEnum, organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { aiInitiatorKindEnum } from './aiInitiator';
-import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
+import type { IsolationMechanism, BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending']);
@@ -207,6 +207,13 @@ export const devices = pgTable('devices', {
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),
+  // The watchdog's OWN reported build edition (#4297), written together with
+  // watchdogVersion on every watchdog beat. NULL when the build at
+  // watchdogVersion has not reported one (never beaten, a pre-reporting build,
+  // or the main agent has since reported a different installed watchdog
+  // version). Read via effectiveWatchdogEdition (services/agentEditionCompat),
+  // which falls back to agentEdition when this is NULL.
+  watchdogEdition: varchar('watchdog_edition', { length: 20 }),
   // Installed breeze-backup version, reported by the agent's heartbeat.
   // Nullable: old agents and devices without the backup binary installed
   // never report one.
@@ -233,6 +240,11 @@ export const devices = pgTable('devices', {
   // build correctly reports back down to 0. Task 5 gates managed-software
   // dispatch on this value.
   outboundNetworkPolicyVersion: integer('outbound_network_policy_version').notNull().default(0),
+  // Non-sticky capability truth: written every heartbeat; omission after a downgrade clears it.
+  networkIsolationVersion: integer('network_isolation_version').notNull().default(0),
+  networkIsolationMechanism: text('network_isolation_mechanism').$type<IsolationMechanism>(),
+  networkIsolationUnsupportedReason: text('network_isolation_unsupported_reason'),
+  networkIsolationReady: boolean('network_isolation_ready').notNull().default(false),
   // #3409 PR4 — agent capability for encrypted secret-env delivery. 0 for every
   // agent build predating PR4b and for any heartbeat omitting the field; only
   // the recognized integer version 1 is written as anything else. Non-sticky
@@ -451,6 +463,8 @@ export const deviceHardware = pgTable('device_hardware', {
   diskTotalGb: integer('disk_total_gb'),
   gpuModel: varchar('gpu_model', { length: 255 }),
   serialNumber: varchar('serial_number', { length: 100 }),
+  // #9593: SMBIOS system SKU (HP's product number). NULL until an agent reports one.
+  productSku: varchar('product_sku', { length: 100 }),
   manufacturer: varchar('manufacturer', { length: 255 }),
   model: varchar('model', { length: 255 }),
   motherboardManufacturer: varchar('motherboard_manufacturer', { length: 255 }),
@@ -512,10 +526,11 @@ export const deviceNetwork = pgTable('device_network', {
   publicIp: varchar('public_ip', { length: 45 }),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  // Every reader of this table filters by device_id (device-detail /network,
+  // Device-detail readers filter by device_id (device-detail /network,
   // cascade delete, the Devices-list LAN IP lookup). See migration
   // 2026-08-07-device-network-device-id-index.sql.
   deviceIdIdx: index('device_network_device_id_idx').on(table.deviceId),
+  orgMacIdx: index('device_network_org_mac_idx').on(table.orgId, sql`lower(${table.macAddress})`),
 }));
 
 export const deviceIpHistory = pgTable('device_ip_history', {
@@ -542,6 +557,7 @@ export const deviceIpHistory = pgTable('device_ip_history', {
 }, (table) => ({
   deviceIdIdx: index('device_ip_history_device_id_idx').on(table.deviceId),
   orgIdIdx: index('device_ip_history_org_id_idx').on(table.orgId),
+  orgMacIdx: index('device_ip_history_org_mac_idx').on(table.orgId, sql`lower(${table.macAddress})`),
   ipAddressIdx: index('device_ip_history_ip_address_idx').on(table.ipAddress),
   firstSeenIdx: index('device_ip_history_first_seen_idx').on(table.firstSeen),
   lastSeenIdx: index('device_ip_history_last_seen_idx').on(table.lastSeen),

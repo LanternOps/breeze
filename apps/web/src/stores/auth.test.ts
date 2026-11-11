@@ -261,6 +261,61 @@ describe('auth store fetchWithAuth', () => {
     expect(url).not.toContain('/v1/v1/');
   });
 
+  // #11195: a read that hits a 429 waits out Retry-After and retries once.
+  it('retries a GET once after Retry-After on a 429', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      useAuthStore.getState().login(baseUser, baseTokens);
+      const ok = makeResponse({ data: [] }, true, 200);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '2' } }))
+        .mockResolvedValueOnce(ok);
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices');
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(await pending).toBe(ok);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('retries only once: a second 429 is returned to the caller', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      const fetchMock = vi
+        .fn()
+        .mockImplementation(async () => new Response('{}', { status: 429, headers: { 'Retry-After': '1' } }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await pending).status).toBe(429);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never replays a mutation on a 429', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('{}', { status: 429, headers: { 'Retry-After': '1' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await fetchWithAuth('/devices', { method: 'POST', body: '{}' });
+    expect(res.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes and retries when access token is expired', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const refreshedTokens: Tokens = {
@@ -2279,6 +2334,34 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     expect(useAuthStore.getState().user?.hasPassword).toBe(true);
   });
 
+  // #10650: whether an authenticator app is enrolled (as the primary, or as the
+  // backup beside a primary passkey). Hydrated the same way as hasPassword so
+  // a session persisted before the field picks it up on its next refresh.
+  it.each([true, false])('hydrates totpEnrolled=%s from /users/me', async (totpEnrolled) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        mfaMethod: 'passkey',
+        totpEnrolled,
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBeUndefined();
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(totpEnrolled);
+  });
+
   // A server that has not shipped the field yet must leave the store value
   // ABSENT (unknown), never coerce it to false — false is what flips the UI
   // onto the identity-provider road.
@@ -2307,22 +2390,24 @@ describe('fetchAndApplyPreferences locale wiring', () => {
 
 describe('apiRegisterPartner recovery action', () => {
   it.each([
-    [{ catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual' }, true],
-    [{ catalogVersion: 'launch-2026-10', capacity: 150, billingPeriod: 'annual' }, false],
-    [{ catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual', redirect: '//evil.test' }, false],
-  ])('validates purchase preference from sign-in recovery responses', async (purchaseSelection, accepted) => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ verified: false, status: 'sign_in', purchaseSelection })));
+    [{ intent: 'wisp' }, true],
+    [{ intent: 'wisp', offer: 'founding' }, true],
+    [{ intent: 'x' }, false],
+    [{ intent: 'cloud', redirect: '//evil.test' }, false],
+  ])('validates signup intent from sign-in recovery responses', async (signupIntent, accepted) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ verified: false, status: 'sign_in', signupIntent })));
     const result = await apiVerifyEmail('token');
     expect(result.status).toBe('sign_in');
-    if (accepted) expect(result.purchaseSelection).toEqual(purchaseSelection);
-    else expect(result).not.toHaveProperty('purchaseSelection');
+    if (accepted) expect(result.signupIntent).toEqual(signupIntent);
+    else expect(result).not.toHaveProperty('signupIntent');
   });
-  it('sends optional approved purchase intent to the registration API', async () => {
+  it('sends the signup intent to the registration API and no purchaseSelection', async () => {
     const doFetch = vi.fn().mockResolvedValue(makeResponse({ success: true, message: 'Check email' }));
     vi.stubGlobal('fetch', doFetch);
-    const purchaseSelection = { catalogVersion: 'launch-2026-10' as const, capacity: 250, billingPeriod: 'annual' as const };
-    await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane', purchaseSelection);
-    expect(JSON.parse(doFetch.mock.calls[0]![1].body)).toEqual({ companyName: 'Acme', email: 'jane@acme.test', password: 'pw', name: 'Jane', acceptTerms: true, purchaseSelection });
+    await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane', { intent: 'wisp' });
+    const body = JSON.parse(doFetch.mock.calls[0]![1].body);
+    expect(body).toEqual({ companyName: 'Acme', email: 'jane@acme.test', password: 'pw', name: 'Jane', acceptTerms: true, signupIntent: { intent: 'wisp' } });
+    expect(body).not.toHaveProperty('purchaseSelection');
   });
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2505,6 +2590,44 @@ describe('MFA enrollment session adoption', () => {
     })).toBe(true);
     expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: true, mfaMethod: method });
     expect(useAuthStore.getState().tokens?.accessToken).toBe(`replacement-${method}`);
+  });
+
+  // #10650: totpEnrolled is derived from the primary-state change so the
+  // shared user record never claims an authenticator the account lost (or
+  // misses one it just enrolled).
+  it.each([
+    ['totp', true],
+    ['sms', false],
+  ] as const)('enrolling %s as the first factor sets totpEnrolled=%s', (method, expected) => {
+    useAuthStore.getState().login({ ...baseUser, totpEnrolled: method === 'sms' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, method);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(expected);
+  });
+
+  it('disabling MFA clears totpEnrolled', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp', totpEnrolled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaDisableIfCurrent(generation);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(false);
+  });
+
+  it.each([
+    [{ mfaEnabled: true, mfaMethod: 'totp' } as const, false, true],
+    [{ mfaEnabled: false, mfaMethod: null } as const, true, false],
+    // A passkey add/delete on a passkey primary keeps the backup as it was.
+    [{ mfaEnabled: true, mfaMethod: 'passkey' } as const, true, true],
+  ])('commitMfaStateIfCurrent(%j) with totpEnrolled=%s → %s', (mfa, before, after) => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'passkey', totpEnrolled: before }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaStateIfCurrent(generation, mfa);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(after);
   });
 
   it('records disabled MFA in shared state while adopting the replacement session', () => {
@@ -2824,6 +2947,34 @@ describe('logout() and the stashed SSO re-auth grant (#8862)', () => {
     useAuthStore.getState().logout();
 
     expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
+  });
+});
+
+// #10923: the Add Device modal remembers live enrollment credentials per site in
+// sessionStorage. Web sign-out is same-document, so nothing else removes them.
+describe('logout() and the remembered enrollment credentials (#10923)', () => {
+  it('clears the stored entries and the in-memory enrollment secret', async () => {
+    const {
+      REMEMBERED_ENROLLMENT_ARTIFACTS_KEY,
+      readRememberedEnrollmentArtifacts,
+      rememberCliToken,
+    } = await import('@/lib/rememberedEnrollmentArtifacts');
+    sessionStorage.clear();
+    const token = {
+      value: 'enroll_abc',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      maxUsage: 1,
+      serverUrl: null,
+    };
+    rememberCliToken('user-1', 'site-1', token, 'fleet-secret');
+    expect(sessionStorage.getItem(REMEMBERED_ENROLLMENT_ARTIFACTS_KEY)).toContain('enroll_abc');
+
+    useAuthStore.getState().logout();
+
+    expect(sessionStorage.getItem(REMEMBERED_ENROLLMENT_ARTIFACTS_KEY)).toBeNull();
+    rememberCliToken('user-1', 'site-1', token);
+    expect(readRememberedEnrollmentArtifacts('user-1', 'site-1').cli?.enrollmentSecret).toBeUndefined();
+    sessionStorage.clear();
   });
 });
 

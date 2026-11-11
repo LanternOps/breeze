@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { promoteScriptProposal } from '@/lib/api/scriptProposals';
+import { overrideSaveScriptProposal, promoteScriptProposal } from '@/lib/api/scriptProposals';
 import { ActionError } from '@/lib/runAction';
 
 export interface SaveProposalToLibraryDialogProps {
@@ -8,6 +8,8 @@ export interface SaveProposalToLibraryDialogProps {
   goal: string;
   onClose: () => void;
   onPromoted?: (scriptId: string) => void;
+  /** #10954: saving a `review_failed` proposal, signed by the viewer, with the STRICT hits they acknowledged. */
+  override?: { acknowledgedPatterns: string[] };
 }
 
 /**
@@ -20,6 +22,7 @@ export default function SaveProposalToLibraryDialog({
   goal,
   onClose,
   onPromoted,
+  override,
 }: SaveProposalToLibraryDialogProps) {
   const { t } = useTranslation(['ai', 'common']);
   const [name, setName] = useState(goal);
@@ -36,11 +39,14 @@ export default function SaveProposalToLibraryDialog({
     }
     setSubmitting(true);
     try {
-      const result = await promoteScriptProposal(proposalId, {
+      const input = {
         name: trimmed,
         ...(description.trim() ? { description: description.trim() } : {}),
         ownerScope,
-      });
+      };
+      const result = override
+        ? await overrideSaveScriptProposal(proposalId, { ...input, acknowledgedPatterns: override.acknowledgedPatterns })
+        : await promoteScriptProposal(proposalId, input);
       onPromoted?.(result.scriptId);
       onClose();
     } catch (err) {
@@ -57,6 +63,11 @@ export default function SaveProposalToLibraryDialog({
   return (
     <div className="mt-3 rounded-lg border border-border bg-muted/20 p-3" role="dialog" aria-label={t('ai:scriptProposal.saveToLibrary')}>
       <div className="space-y-2">
+        {override && (
+          <p data-testid="promote-override-notice" className="text-xs text-amber-700 dark:text-amber-300">
+            {t('ai:scriptProposal.overrideSaveNotice')}
+          </p>
+        )}
         <label className="block text-sm font-medium" htmlFor="promote-name">
           {t('common:labels.name')}
         </label>

@@ -130,7 +130,7 @@ func TestHTTPVerifierUsesAFreshConnectionEachTime(t *testing.T) {
 	defer srv.Close()
 
 	verify := NewHTTPVerifier(HTTPVerifierConfig{
-		URL:       DefaultVerifyURL(srv.URL),
+		URL:       DefaultVerifyURL(srv.URL, "agent-id"),
 		Header:    func() http.Header { return http.Header{"Authorization": {"Bearer t0k"}} },
 		TLSConfig: srv.Client().Transport.(*http.Transport).TLSClientConfig,
 		Timeout:   5 * time.Second,
@@ -149,7 +149,7 @@ func TestHTTPVerifierUsesAFreshConnectionEachTime(t *testing.T) {
 	if newConns != 2 {
 		t.Fatalf("%d new connections for 2 probes, want a fresh TLS session each time", newConns)
 	}
-	want := "POST /api/v1/agents/isolation/" + idA + "/verify Bearer t0k"
+	want := "POST /api/v1/agents/agent-id/isolation/" + idA + "/verify Bearer t0k"
 	if paths[0] != want {
 		t.Fatalf("request %q, want %q", paths[0], want)
 	}
@@ -160,7 +160,7 @@ func TestHTTPVerifierRejectsNon2xx(t *testing.T) {
 		http.Error(w, "nope", http.StatusConflict)
 	}))
 	defer srv.Close()
-	verify := NewHTTPVerifier(HTTPVerifierConfig{URL: DefaultVerifyURL(srv.URL), Timeout: 2 * time.Second})
+	verify := NewHTTPVerifier(HTTPVerifierConfig{URL: DefaultVerifyURL(srv.URL, "agent-id"), Timeout: 2 * time.Second})
 	_, err := verify(context.Background(), idA)
 	if err == nil || !strings.Contains(err.Error(), "409") {
 		t.Fatalf("err = %v, want a 409 failure", err)
@@ -173,5 +173,15 @@ func TestProbeFailureCodes(t *testing.T) {
 	}
 	if probeFailureCode(errNegative("x")) != FailEnforcementNotObserved {
 		t.Fatal("negative probe failure code")
+	}
+}
+
+func TestDefaultVerifyURLIncludesEscapedAgentID(t *testing.T) {
+	for _, base := range []string{"https://control.example.test/base", "https://control.example.test/base/"} {
+		got := DefaultVerifyURL(base, "agent/with space")("episode/with space")
+		want := "https://control.example.test/base/api/v1/agents/agent%2Fwith%20space/isolation/episode%2Fwith%20space/verify"
+		if got != want {
+			t.Fatalf("URL = %q, want %q", got, want)
+		}
 	}
 }

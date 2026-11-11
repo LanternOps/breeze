@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } f
 import { Building2, Check, ChevronDown, Mail, MapPin, Phone, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import HashLink from '@/components/shared/HashLink';
-import WispLinkButton from '@/components/wisp/WispLinkButton';
+import WispTalkButton from '@/components/wisp/WispTalkButton';
 import { usePermissions } from '@/lib/permissions';
 import { ENABLE_ENDPOINT_MESSAGING } from '@/lib/featureFlags';
 import { formatDate } from '@/lib/dateTimeFormat';
@@ -311,7 +311,7 @@ export default function OrgRecordHeader({
             </button>
           )}
           {/* An organization is its own org for the link's tenancy check. */}
-          <WispLinkButton kind="organization" id={org.id} orgId={org.id} />
+          <WispTalkButton kind="organization" id={org.id} orgId={org.id} label={org.name} />
           <button
             type="button"
             data-testid="org-record-settings"

@@ -59,6 +59,11 @@ const STATUS_BADGE: Record<
     icon: XCircle,
     className: "bg-red-500/15 text-red-700 border-red-500/30",
   },
+  // #10411: the platform refused the call before it ran — never "pending".
+  refused: {
+    icon: XCircle,
+    className: "bg-slate-500/15 text-slate-700 border-slate-500/30",
+  },
   pending: {
     icon: Clock,
     className: "bg-amber-500/15 text-amber-700 border-amber-500/30",

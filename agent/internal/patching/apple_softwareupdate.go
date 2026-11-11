@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // AppleSoftwareUpdateProvider integrates with macOS softwareupdate.
@@ -30,7 +32,7 @@ func (p *AppleSoftwareUpdateProvider) Name() string {
 }
 
 func (p *AppleSoftwareUpdateProvider) Scan() ([]AvailablePatch, error) {
-	cmd := exec.Command("softwareupdate", "-l")
+	cmd := procspawn.Command("softwareupdate", "-l")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
@@ -61,7 +63,7 @@ func (p *AppleSoftwareUpdateProvider) Install(patchID string) (InstallResult, er
 		}
 	}
 
-	cmd := exec.Command("softwareupdate", "--agree-to-license", "-i", resolvedID)
+	cmd := procspawn.Command("softwareupdate", "--agree-to-license", "-i", resolvedID)
 	output, err := cmd.CombinedOutput()
 	outStr := strings.TrimSpace(string(output))
 	if err != nil {
@@ -167,7 +169,7 @@ func (p *AppleSoftwareUpdateProvider) Uninstall(patchID string) error {
 }
 
 func (p *AppleSoftwareUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
-	cmd := exec.Command("system_profiler", "SPInstallHistoryDataType", "-json")
+	cmd := procspawn.Command("system_profiler", "SPInstallHistoryDataType", "-json")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("system_profiler install history failed: %w", err)
@@ -192,6 +194,11 @@ func parseAppleInstallHistory(output []byte, now time.Time, maxAge time.Duration
 
 	cutoff := now.Add(-maxAge)
 	installed := make([]InstalledPatch, 0, len(result.SPInstallHistoryDataType))
+	// The history lists an item once per install, and every entry is sent
+	// under the same ID. Keep one per ID, the newest dated install, so the
+	// date and version the API stores are the latest install's (#9723).
+	index := make(map[string]int, len(result.SPInstallHistoryDataType))
+	newest := make([]time.Time, 0, len(result.SPInstallHistoryDataType))
 	for _, item := range result.SPInstallHistoryDataType {
 		if item.Name == "" || isIgnoredInstallHistoryItem(item.Name) {
 			continue
@@ -208,11 +215,30 @@ func parseAppleInstallHistory(output []byte, now time.Time, maxAge time.Duration
 			continue
 		}
 
-		installed = append(installed, InstalledPatch{
+		patch := InstalledPatch{
 			ID:      item.Name,
 			Title:   item.Name,
 			Version: item.Version,
-		})
+		}
+		if parseErr == nil {
+			patch.InstalledAt = installTime.UTC().Format(time.RFC3339)
+		} else {
+			installTime = time.Time{}
+		}
+
+		if i, seen := index[patch.ID]; seen {
+			// An undated entry (zero time) never replaces a dated one; on
+			// equal times the later-listed entry wins, as it did when every
+			// entry was sent and the API kept the last.
+			if !installTime.Before(newest[i]) {
+				installed[i] = patch
+				newest[i] = installTime
+			}
+			continue
+		}
+		index[patch.ID] = len(installed)
+		installed = append(installed, patch)
+		newest = append(newest, installTime)
 	}
 
 	return installed, nil

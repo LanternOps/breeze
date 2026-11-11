@@ -11,8 +11,7 @@
 import { z } from 'zod';
 
 /**
- * The specialist kinds an assessment may name in `request_specialist` (W07
- * Task 5). Mirrors the API's code-owned `SPECIALIST_KINDS`
+ * Every specialist kind. Mirrors the API's code-owned `SPECIALIST_KINDS`
  * (`apps/api/src/services/wisp/specialistPolicy.ts`); the parity test in
  * `apps/api/src/services/wisp/specialistDispatch.test.ts` keeps them equal.
  */
@@ -23,8 +22,21 @@ export const WISP_SPECIALIST_KINDS = [
   'patch_plan',
   'remediation_research',
   'bulk_ticket_reply',
+  'device_troubleshooting',
+  'assessment',
 ] as const;
 export type WispSpecialistKind = (typeof WISP_SPECIALIST_KINDS)[number];
+
+/**
+ * The kinds an assessment may name in `request_specialist` (W07 Task 5): every
+ * kind except the chat-only ones (`chatOnly` in the API policy table, pinned
+ * by the same parity test). #10406: an assessment never asks for more
+ * assessments; the coordinator refuses one anyway (`unknown_kind`).
+ */
+export const WISP_ASSESSMENT_REQUEST_KINDS: readonly Exclude<WispSpecialistKind, 'assessment'>[] = WISP_SPECIALIST_KINDS.filter(
+  (k): k is Exclude<WispSpecialistKind, 'assessment'> => k !== 'assessment',
+);
+export type WispAssessmentRequestKind = (typeof WISP_ASSESSMENT_REQUEST_KINDS)[number];
 
 export const BULK_TICKET_REPLY_MAX_TICKETS = 250;
 export const BULK_TICKET_REPLY_MESSAGE_MAX = 4000;

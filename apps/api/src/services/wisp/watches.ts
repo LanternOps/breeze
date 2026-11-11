@@ -111,7 +111,24 @@ type RawWatchRow = {
   last_ran_at: Date | string | null;
   next_due_at: Date | string;
   created_at: Date | string;
+  hit_hash: string | null;
+  hit_count: number | string | null;
 };
+
+/**
+ * A claimed watch plus its last recorded hit-set (#11424, see watchHits.ts):
+ * the scheduler compares a fresh evaluation with these. Scheduler-only — the
+ * shared `Watch` DTO the routes and tools return does not carry them.
+ */
+export type ClaimedWatch = Watch & { hitHash: string | null; hitCount: number | null };
+
+function rawToClaimedWatch(r: RawWatchRow): ClaimedWatch {
+  return {
+    ...rawToWatch(r),
+    hitHash: r.hit_hash ?? null,
+    hitCount: r.hit_count === null || r.hit_count === undefined ? null : Number(r.hit_count),
+  };
+}
 
 function rawToWatch(r: RawWatchRow): Watch {
   return {
@@ -214,9 +231,11 @@ export async function deleteWatch(ceiling: GrantCeiling, watchId: string): Promi
 /**
  * Claim up to `limit` due active watches and advance them in ONE statement:
  * concurrent schedulers skip each other's locked rows, and a claimed watch is
- * not due again until `now + cadence`.
+ * not due again until `now + cadence`. `last_ran_at` is the last time the
+ * watch was claimed and evaluated, whether or not that launched a run
+ * (#11424: an unchanged hit-set launches none).
  */
-export async function claimDueWatches(now: Date, limit: number): Promise<Watch[]> {
+export async function claimDueWatches(now: Date, limit: number): Promise<ClaimedWatch[]> {
   if (!Number.isFinite(limit) || limit < 1) return [];
   const take = Math.min(Math.floor(limit), CLAIM_CAP);
   const at = now.toISOString();
@@ -234,7 +253,33 @@ export async function claimDueWatches(now: Date, limit: number): Promise<Watch[]
           FOR UPDATE SKIP LOCKED
        )
       RETURNING *`)) as unknown as RawWatchRow[];
-    return [...rows].map(rawToWatch);
+    return [...rows].map(rawToClaimedWatch);
+  });
+}
+
+/**
+ * Store the hit-set a run was just queued for (#11424). Compare-and-set on the
+ * hash the claim returned: true when written, false when the row's hash had
+ * already moved (another writer recorded first) or the watch is gone — the
+ * stored state is then left as that writer set it.
+ */
+export async function recordWatchHits(
+  watchId: string,
+  previousHash: string | null,
+  next: { hash: string; count: number },
+  now: Date = new Date(),
+): Promise<boolean> {
+  const at = now.toISOString();
+  return inSystemContext(async () => {
+    const rows = (await db.execute(sql`
+      UPDATE wisp_watches
+         SET hit_hash = ${next.hash},
+             hit_count = ${next.count},
+             updated_at = ${at}::timestamptz
+       WHERE id = ${watchId}
+         AND hit_hash IS NOT DISTINCT FROM ${previousHash}::text
+      RETURNING id`)) as unknown as Array<{ id: string }>;
+    return [...rows].length > 0;
   });
 }
 

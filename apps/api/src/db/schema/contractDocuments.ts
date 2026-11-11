@@ -178,9 +178,22 @@ export const contractDocuments = pgTable('contract_documents', {
   acceptanceMethod: varchar('acceptance_method', { length: 32 }),
   acceptanceReference: text('acceptance_reference'),
   recordedByUserId: uuid('recorded_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // #10513: which wording version of the signature certificate this agreement
+  // renders (services/agreementCertificateVersion.ts). Stamped at signing,
+  // frozen by the append-only trigger. NULL = v1 (signed before the column
+  // existed); contract_documents_certificate_version_chk rejects a stored 1.
+  // The DB default 2 covers an insert from an instance still on older code
+  // during a rolling deploy; freezeSignedAgreement writes it explicitly.
+  certificateVersion: smallint('certificate_version').default(2),
   contentSha256: char('content_sha256', { length: 64 }),
   contentHashVersion: smallint('content_hash_version'),
-  acceptanceRenderLocale: varchar('acceptance_render_locale', { length: 16 })
+  acceptanceRenderLocale: varchar('acceptance_render_locale', { length: 16 }),
+  // The template name AS IT WAS AT SIGNING (#10294 follow-up): the certificate,
+  // the portal list and the signed-copy email name the agreement from this, so
+  // a later template rename never changes signed evidence. NULL only on a row
+  // written before 2027-01-18-188000-contract-documents-template-name-snapshot.sql
+  // by an instance still on older code; readers fall back to the live name.
+  templateNameSnapshot: varchar('template_name_snapshot', { length: 255 })
 }, (t) => [
   index('contract_documents_org_idx').on(t.orgId),
   // #9312: FK target for service_deliverable_evidence (contract_document_id, org_id).

@@ -77,6 +77,7 @@ export default defineConfig({
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',
       'src/jobs/discoveryWorker.bmc.integration.test.ts',
       'src/jobs/discoveryWorker.dispatchAfterCommit.integration.test.ts',
+      'src/jobs/discoveryWorker.autoLinkMac.integration.test.ts',
       'src/services/topology/bmc.integration.test.ts',
       // Suppression-expiry reaper real-DB test: imports `__tests__/integration/setup`
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's
@@ -103,6 +104,9 @@ export default defineConfig({
       // glob above — so the no-DB unit runner would fail it on connect. Belongs
       // to vitest.integration.config.ts (already in its include list).
       'src/routes/agents/enrollmentCollision.integration.test.ts',
+      // Enrollment deadlock real-DB test (#9521): same shape (real pool + real
+      // triggers); belongs to vitest.integration.config.ts.
+      'src/routes/agents/enrollmentDeadlock.integration.test.ts',
       // Software-report re-link real-DB test (BREEZE-3): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate), so the
       // no-DB unit runner would fail it on connect. Belongs to

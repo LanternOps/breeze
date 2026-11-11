@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
+import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel, WispFirstLookState } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
 import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
@@ -13,6 +13,9 @@ import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { WISP_GRANT_UNUSABLE, wispSessionOrgId } from '@/lib/wispSession';
 import { showToast } from '@/components/shared/Toast';
+import { activeThreadFor, type WispTalkTarget } from '@/lib/wispTalk';
+import { WispTalkError } from '@/lib/wispTalkError';
+import { addWispLink } from '@/lib/wispLinksApi';
 import {
   attachAnchorMissing,
   processStreamEvent,
@@ -60,10 +63,28 @@ export type WispState = {
    * does not carry it); `null` = not paused.
    */
   pausedReason?: string | null;
+  /** #11145: how the grant's first look stands, for the surfaces with no timeline. `undefined` = not known. */
+  firstLookState?: WispFirstLookState;
   /** W05 spend meter (w00 A32): cents charged today under the grant, and when the UTC day resets. */
   spentTodayCents?: number;
   budgetResetsAt?: string;
+  /** #10414: the day's spend split into background work and chat (whole cents; they sum to `spentTodayCents`). Absent from an older server. */
+  backgroundCents?: number;
+  chatCents?: number;
+  /** #10973: the grant's unattended-reads switch is effective (the server's pinned AND live answer). */
+  unattendedReads?: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to the daily budget. */
+  summaryRefine?: boolean;
 } | null;
+
+export type WispTalkFocusRequest = {
+  target: WispTalkTarget;
+  from: string;
+  to: string;
+  resolve: (accepted: boolean) => void;
+};
+
+let wispTalkSequence = 0;
 
 interface AiState {
   isOpen: boolean;
@@ -94,6 +115,8 @@ interface AiState {
    * can choose honest copy without parsing `error`. Null on success.
    */
   errorCode: string | null;
+  /** HTTP status of a failed session create, including auth redirects. */
+  errorStatus: number | null;
   /**
    * Topology M4 (#6000): the site the CURRENT session is pinned to when it is
    * an "Explain this" investigation (server-owned pin, echoed here for the
@@ -137,10 +160,17 @@ interface AiState {
    * refused send can put its text back and a move can carry a draft.
    */
   composerDraft: string;
+  /** An explicit header action asks the mounted sidebar composer for focus. */
+  composerFocusRequest: number;
+  /** Transient inline confirmation, owned by the invoking header button. */
+  wispTalkFocusRequest: WispTalkFocusRequest | null;
   /** Wisp mode (W04); null = ordinary chat. Not persisted. */
   wisp: WispState;
 
   // Actions
+  talkToWispAbout: (target: WispTalkTarget) => Promise<'opened' | 'declined_focus' | 'no_grant' | 'superseded' | 'failed'>;
+  openPlainChatAbout: (target: WispTalkTarget) => Promise<'opened' | 'superseded'>;
+  resolveWispTalkFocus: (accepted: boolean) => void;
   toggle: () => void;
   open: () => void;
   close: () => void;
@@ -154,11 +184,13 @@ interface AiState {
   /** Turn Wisp mode on for a granted thread and open a fresh session under the grant. */
   enterWispMode: (w: NonNullable<WispState>) => Promise<void>;
   /** Change the thread's customer focus (PATCH /wisp/thread/:id/focus); the next turn runs in a new session anchored to it. */
-  setWispFocus: (orgId: string | null, orgName: string | null) => Promise<void>;
+  setWispFocus: (orgId: string | null, orgName: string | null, opts?: { throwOnError: boolean }) => Promise<'focused' | 'superseded' | 'failed'>;
   /** Merge server-confirmed grant fields (refresh / settings) into the Wisp state. */
   updateWisp: (patch: Partial<NonNullable<WispState>>) => void;
   /** Close the current session and leave Wisp mode. */
   exitWispMode: () => Promise<void>;
+  /** #10289: close the current session and open a Breeze AI chat with no grant, even while one is active. */
+  startPlainChat: () => Promise<void>;
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
@@ -381,6 +413,53 @@ const claimSessionOwnership = (): (() => boolean) => {
   const token = ++sessionOwnerToken;
   return () => sessionOwnerToken === token;
 };
+
+/**
+ * True while sendMessage re-sends a message after rolling a Wisp session (at
+ * the turn limit, or because the server had expired it): a second refusal on
+ * the fresh session is shown, not retried.
+ */
+let resendingAfterRoll = false;
+
+/**
+ * A Wisp thread is one conversation; its sessions are chunks. Open the next
+ * one under the same grant and focus — what setWispFocus does for a focus
+ * change. True when the store is bound to the new session.
+ *
+ * At the turn limit (`ai_sessions.max_turns`) the spent chunk is closed first
+ * (its summary lands on the thread). `closeOld: false` (#11430) is for a
+ * session the server already expired: it is retired there, and a close would
+ * re-stamp it 'closed'.
+ */
+async function rollWispSession(get: AiGet, model?: AiModelChoice, opts: { closeOld?: boolean } = {}): Promise<boolean> {
+  const w = get().wisp;
+  if (!w) return false;
+  // The thread keeps its model across chunks: the pick for the refused
+  // message, else the model the spent session ran on (when the user may pick).
+  const picker = useAiModelPickerStore.getState().choices;
+  const carried: AiModelChoice | undefined = model
+    ?? (picker?.allowUserChoice && picker.current?.offeringId
+      ? { offeringId: picker.current.offeringId, options: { ...(picker.current.options ?? {}) } }
+      : undefined);
+  const oldSessionId = get().sessionId;
+  if (oldSessionId && opts.closeOld === false) {
+    // What a successful close does to the picker: it belongs to the old session.
+    resetModelPicker();
+  } else if (oldSessionId) {
+    await get().closeSession();
+    // A failed close leaves the old session bound (and open on the server);
+    // the roll goes ahead, but say so rather than letting the next create
+    // wipe the error.
+    if (get().sessionId === oldSessionId) {
+      console.warn(`[AiStore] Could not close Wisp session ${oldSessionId} at the turn limit; rolling anyway:`, get().error);
+    }
+  }
+  useAiStore.setState({ ...CLEARED_SESSION });
+  // Closing reset the picker, so the model is handed to the create (it stamps
+  // the new session) instead of the next chunk falling back to the default.
+  await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined, ...(carried ? { model: carried } : {}) });
+  return get().sessionId !== null && get().wisp?.grantId === w.grantId;
+}
 
 /**
  * #9427: the send stream's reader, held so releaseSession can cancel a parked
@@ -672,6 +751,7 @@ export const useAiStore = create<AiState>()(
   isLoading: false,
   error: null,
   errorCode: null,
+  errorStatus: null,
   topologySiteId: null,
   topologySelection: null,
   topologyPhase: null,
@@ -695,6 +775,8 @@ export const useAiStore = create<AiState>()(
   refusalAlternatives: [],
   joinedMidResponse: false,
   composerDraft: '',
+  composerFocusRequest: 0,
+  wispTalkFocusRequest: null,
   wisp: null,
 
   toggle: () => {
@@ -709,7 +791,7 @@ export const useAiStore = create<AiState>()(
     set({ isOpen: true });
   },
   close: () => set({ isOpen: false }),
-  clearError: () => set({ error: null, errorCode: null }),
+  clearError: () => set({ error: null, errorCode: null, errorStatus: null }),
 
   setPageContext: (ctx) =>
     set((s) =>
@@ -723,7 +805,7 @@ export const useAiStore = create<AiState>()(
     // A different chat begins: the previous chat's pick must not ride along.
     // (A pick handed in via opts.model is the one this create commits.)
     if (!opts?.model) useAiModelPickerStore.getState().clearSelection();
-    set({ isLoading: true, error: null, errorCode: null });
+    set({ isLoading: true, error: null, errorCode: null, errorStatus: null });
     const { pageContext: storeContext, selectedM365ConnectionId, approvalMode } = get();
     const pageContext = opts?.pageContext ?? storeContext;
     const topology = pageContext?.type === 'topology';
@@ -816,7 +898,7 @@ export const useAiStore = create<AiState>()(
           // session; the error banner keeps the server's reason.
           set({ errorCode: code, ...(code && WISP_GRANT_UNUSABLE.has(code) ? { wisp: null } : {}) });
         }
-        throw new Error(extractApiError(data, 'Failed to create session'));
+        throw new ActionError(extractApiError(data, 'Failed to create session'), res.status, typeof data?.code === 'string' ? data.code : undefined);
       }
       const data = await res.json();
       if (!ownsSession()) return;
@@ -847,6 +929,8 @@ export const useAiStore = create<AiState>()(
       if (!ownsSession()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
+        errorCode: err instanceof ActionError ? err.code ?? null : null,
+        errorStatus: err instanceof ActionError ? err.status : null,
         isLoading: false
       });
     }
@@ -1053,6 +1137,66 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
+        if (refusal === 'turn_limit' && get().wisp && !resendingAfterRoll) {
+          // Nothing ran: roll the thread to a fresh session and carry this
+          // message over. The optimistic bubble is re-added by the re-send.
+          set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
+          if (!ownsStream()) return;
+          if (await rollWispSession(get, model)) {
+            resendingAfterRoll = true;
+            try {
+              await get().sendMessage(trimmedContent);
+            } finally {
+              resendingAfterRoll = false;
+            }
+            return;
+          }
+          set({ error: extractApiError(data, 'Failed to send message'), errorCode: code });
+          return;
+        }
+
+        if ((refusal === 'expired' || refusal === 'closed') && get().wisp && !resendingAfterRoll) {
+          // #11430: the server retired this session (idle, 24 h cap, or a
+          // restart left the row behind) before the turn ran. One thread per
+          // grant, so the user never chose this session: open the next one and
+          // carry the message over, as at the turn limit — no banner, no toast.
+          // The old session is not closed: the server already retired it (and
+          // finalizes its thread summary, best effort).
+          set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
+          if (!ownsStream()) return;
+          if (await rollWispSession(get, model, { closeOld: false })) {
+            console.info(`[AiStore] Wisp session ${currentSessionId} was ${refusal === 'closed' ? 'closed elsewhere' : 'expired'}; continuing the thread on a fresh session`);
+            resendingAfterRoll = true;
+            try {
+              await get().sendMessage(trimmedContent);
+            } finally {
+              resendingAfterRoll = false;
+            }
+            return;
+          }
+          // The failed create already said why (keep it); otherwise the 410's own text.
+          set(get().error
+            ? { composerDraft: trimmedContent }
+            : { composerDraft: trimmedContent, error: extractApiError(data, 'Failed to send message'), errorCode: code });
+          return;
+        }
+
+        if (refusal === 'closed') {
+          // #11609: the conversation was closed elsewhere (another tab or the
+          // API) before this turn ran, so nothing was stored. Never lose the
+          // text: it goes back to the composer, and the banner says what
+          // happened in plain words and offers a new session (errorCode drives it).
+          if (!ownsStream()) return;
+          set((s) => ({
+            messages: s.messages.filter((m) => m.id !== userMsgId),
+            composerDraft: trimmedContent,
+            error: i18n.t('ai:sessionClosed.message'),
+            errorCode: code,
+            isStreaming: false,
+          }));
+          return;
+        }
+
         if (refusal === 'credits') {
           // The credit / plan gate refused the turn before it ran (#9450): drop
           // the optimistic bubble like the coded 409s and keep the code so the
@@ -1128,6 +1272,13 @@ export const useAiStore = create<AiState>()(
             }
           }
         }
+      }
+
+      // The turn spent the session's last turns mid-loop: the next send would
+      // be refused, so under Wisp roll to a fresh session now and ask for the
+      // message again (work may have run partway — never re-send by itself).
+      if (ownsStream() && get().errorCode === 'turn_limit_reached' && get().wisp) {
+        if (await rollWispSession(get)) set({ error: i18n.t('ai:wisp.turnLimitRolled'), errorCode: 'turn_limit_reached' });
       }
     } catch (err) {
       // A superseded stream must not raise an error on the session that
@@ -1489,6 +1640,133 @@ export const useAiStore = create<AiState>()(
     return ready === 'not_found' ? 'not_found' : 'ok';
   },
 
+  resolveWispTalkFocus: (accepted) => {
+    const request = get().wispTalkFocusRequest;
+    set({ wispTalkFocusRequest: null });
+    request?.resolve(accepted);
+  },
+
+  openPlainChatAbout: async (target) => {
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    if (get().wisp) await get().exitWispMode();
+    if (sequence !== wispTalkSequence) return 'superseded';
+    // A restored session can still be rehydrating its Wisp grant. Start an
+    // explicitly plain session instead of trusting a temporarily null header.
+    set({ ...CLEARED_SESSION });
+    const creating = get().createSession({ orgId: target.orgId ?? undefined });
+    const owner = sessionOwnerToken; // createSession claims ownership synchronously.
+    await creating;
+    if (sequence !== wispTalkSequence || sessionOwnerToken !== owner) return 'superseded';
+    if (!get().sessionId || get().wisp) {
+      const { error, errorStatus } = get();
+      set({ error: null, errorCode: null, errorStatus: null });
+      throw new WispTalkError('session_create_failed', error ?? 'Failed to create session', { status: errorStatus ?? undefined });
+    }
+    set((state) => ({
+      composerDraft: state.composerDraft || i18n.t('ai:wisp.talk.draft', { label: target.label, defaultValue: 'About {{label}}: ' }),
+      composerFocusRequest: state.composerFocusRequest + 1,
+      showHistory: false,
+    }));
+    // Bind a plain session before opening: the sidebar otherwise auto-enters
+    // an ambient org's grant while its own lookup is in flight.
+    get().open();
+    return 'opened';
+  },
+
+  talkToWispAbout: async (target) => {
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    const initialWisp = get().wisp;
+    const initialSessionId = get().sessionId;
+    const initialOwner = sessionOwnerToken;
+    const unchanged = () => {
+      const current = get().wisp;
+      return sessionOwnerToken === initialOwner && sequence === wispTalkSequence && get().sessionId === initialSessionId
+        && current?.threadId === initialWisp?.threadId && current?.grantId === initialWisp?.grantId
+        && current?.focusOrgId === initialWisp?.focusOrgId && current?.status === initialWisp?.status;
+    };
+    const reusable = isActiveGrant(initialWisp) && (!initialWisp?.scopeOrgId || initialWisp.scopeOrgId === target.orgId);
+    const grant = reusable ? initialWisp : await activeThreadFor(target.orgId);
+    if (!unchanged()) return 'superseded';
+    if (!grant) {
+      const result = await get().openPlainChatAbout(target);
+      return result === 'opened' ? 'no_grant' : 'superseded';
+    }
+    const needsFocusSwitch = !!grant.focusOrgId && !!target.orgId && grant.focusOrgId !== target.orgId;
+    if (needsFocusSwitch) {
+      const { useOrgStore } = await import('./orgStore');
+      if (!unchanged()) return 'superseded';
+      const orgName = (id: string | null) => (useOrgStore.getState().organizations ?? []).find((org) => org.id === id)?.name
+        ?? i18n.t('ai:wisp.header.scopeFallback');
+      const request: WispTalkFocusRequest = {
+        target, from: grant.focusOrgName ?? orgName(grant.focusOrgId), to: orgName(target.orgId), resolve: () => undefined,
+      };
+      const accepted = await new Promise<boolean>((resolve) => {
+        request.resolve = resolve;
+        set({ wispTalkFocusRequest: request });
+      });
+      // Unmount can resolve its own request directly; never clear a newer
+      // button's confirmation while this continuation unwinds.
+      if (get().wispTalkFocusRequest === request) set({ wispTalkFocusRequest: null });
+      if (!unchanged()) return 'superseded';
+      if (!accepted) return 'declined_focus';
+      // A newly discovered grant can be focused before creating its first
+      // session, avoiding a throwaway session anchored to the previous org.
+      if (get().wisp?.grantId !== grant.grantId) set({ wisp: grant, ...CLEARED_SESSION });
+      try {
+        const result = await get().setWispFocus(target.orgId, orgName(target.orgId), { throwOnError: true });
+        if (result === 'superseded') return 'superseded';
+        if (result === 'failed') return 'failed';
+      } catch (err) {
+        if (sequence !== wispTalkSequence) return 'superseded';
+        if (err instanceof WispTalkError && err.alreadyToasted) return 'failed';
+        throw err;
+      }
+      if (sequence !== wispTalkSequence) return 'superseded';
+      // A refused create can clear a dead grant. Preserve that owned failure
+      // for the common error path instead of calling it a cancellation.
+      if (!get().error && (get().wisp?.grantId !== grant.grantId
+        || get().wisp?.threadId !== grant.threadId || get().wisp?.focusOrgId !== target.orgId)) return 'superseded';
+    } else if (get().wisp?.grantId !== grant.grantId || !get().sessionId) {
+      const entering = get().enterWispMode(grant);
+      const owner = sessionOwnerToken;
+      await entering;
+      if (sessionOwnerToken !== owner) return 'superseded';
+    }
+    if (sequence !== wispTalkSequence) return 'superseded';
+    const current = get().wisp;
+    if (!get().sessionId || current?.grantId !== grant.grantId || current.threadId !== grant.threadId || !isActiveGrant(current)) {
+      const { error, errorStatus } = get();
+      set({ error: null, errorCode: null, errorStatus: null });
+      throw new WispTalkError('session_create_failed', error ?? 'Failed to create session', { status: errorStatus ?? undefined });
+    }
+    const sessionId = get().sessionId;
+    const pinOwner = sessionOwnerToken;
+    try {
+      await addWispLink(grant.threadId, { kind: target.kind, id: target.id, orgId: target.orgId });
+    } catch (err) {
+      if (sequence !== wispTalkSequence || sessionOwnerToken !== pinOwner
+        || get().sessionId !== sessionId || get().wisp?.grantId !== grant.grantId) return 'superseded';
+      // Focus/session creation already succeeded. Reveal that conversation
+      // even when the subsequent pin is refused.
+      set({ showHistory: false });
+      get().open();
+      throw new WispTalkError('pin_failed', err instanceof Error ? err.message : i18n.t('ai:wisp.links.addFailed'), {
+        status: err instanceof ActionError ? err.status : undefined, alreadyToasted: err instanceof ActionError,
+      });
+    }
+    if (sequence !== wispTalkSequence || sessionOwnerToken !== pinOwner
+        || get().sessionId !== sessionId || get().wisp?.grantId !== grant.grantId) return 'superseded';
+    set((state) => ({
+      composerDraft: state.composerDraft || i18n.t('ai:wisp.talk.draft', { label: target.label, defaultValue: 'About {{label}}: ' }),
+      composerFocusRequest: state.composerFocusRequest + 1,
+      showHistory: false,
+    }));
+    get().open();
+    return 'opened';
+  },
+
   enterWispMode: async (w) => {
     // A Wisp conversation starts fresh on the grant's thread; the plain chat
     // that was open stays in history (not closed — it is not the thread's).
@@ -1496,9 +1774,10 @@ export const useAiStore = create<AiState>()(
     await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
   },
 
-  setWispFocus: async (orgId, orgName) => {
+  setWispFocus: async (orgId, orgName, opts) => {
     const w = get().wisp;
-    if (!w) return;
+    if (!w) return 'superseded';
+    const focusOwner = sessionOwnerToken;
     const errorFallback = i18n.t('ai:wisp.toast.focusFailed');
     let focus: { focusOrgId: string | null; focusOrgName: string | null };
     try {
@@ -1516,18 +1795,30 @@ export const useAiStore = create<AiState>()(
         focusOrgName: body?.data?.focusOrgName !== undefined ? body.data.focusOrgName : orgName,
       };
     } catch (err) {
+      if (sessionOwnerToken !== focusOwner) return 'superseded';
       handleActionError(err, errorFallback);
-      return;
+      if (opts?.throwOnError) throw new WispTalkError('focus_failed', err instanceof Error ? err.message : errorFallback, {
+        status: err instanceof ActionError ? err.status : undefined, alreadyToasted: true,
+      });
+      return 'failed';
     }
     const live = get().wisp;
-    if (!live || live.threadId !== w.threadId) return;
+    if (sessionOwnerToken !== focusOwner || !live || live.threadId !== w.threadId || live.grantId !== w.grantId) return 'superseded';
     set({ wisp: { ...live, ...focus } });
     // Switching focus is a chat action on the same thread, not a new thread
     // (spec §6.1): close the current session so its summary lands on the
     // thread, then anchor the next turn's session to the new focus.
-    if (get().sessionId) await get().closeSession();
+    if (get().sessionId) {
+      const closing = get().closeSession();
+      const closeOwner = sessionOwnerToken;
+      await closing;
+      if (sessionOwnerToken !== closeOwner) return 'superseded';
+    }
     set({ ...CLEARED_SESSION });
-    await get().createSession({ wispGrantId: w.grantId, orgId: focus.focusOrgId ?? live.scopeOrgId ?? undefined });
+    const creating = get().createSession({ wispGrantId: w.grantId, orgId: focus.focusOrgId ?? live.scopeOrgId ?? undefined });
+    const createOwner = sessionOwnerToken;
+    await creating;
+    return sessionOwnerToken === createOwner ? 'focused' : 'superseded';
   },
 
   updateWisp: (patch) => set((s) => (s.wisp ? { wisp: { ...s.wisp, ...patch } } : {})),
@@ -1538,6 +1829,20 @@ export const useAiStore = create<AiState>()(
     // surfaced over the plain chat the user is returning to.
     if (get().sessionId) await get().closeSession();
     set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
+  },
+
+  startPlainChat: async () => {
+    // A "Talk to Wisp" still in flight must not put the grant back afterwards,
+    // and a newer Talk (or a second pick) during the close wins over this one.
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    if (get().wisp) await get().exitWispMode();
+    else if (get().sessionId) await get().closeSession();
+    if (sequence !== wispTalkSequence) return;
+    // Unbind even after a failed close, or a rehydrating grant could still
+    // claim the old session. createSession sends no grant once `wisp` is null.
+    set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
+    await get().createSession();
   },
     }),
     {
@@ -1564,6 +1869,8 @@ useAiStore.subscribe((state) => {
 // rendered from memory. Reset to the initial state here, before auth.ts clears
 // storage, and stop anything still streaming into the old session.
 registerLogoutHook(() => {
+  ++wispTalkSequence;
+  useAiStore.getState().resolveWispTalkFocus(false);
   claimSessionOwnership();
   ++activeStreamToken;
   const reader = currentSendReader;

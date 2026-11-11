@@ -34,5 +34,13 @@
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Partner-wide device groups can only be targeted by partner configuration policies",
   "PARTNER_GROUP_READ_ONLY": "This partner-wide device group can't be changed here",
   "PARTNER_GROUP_FILTER_UNSUPPORTED": "Partner-wide device groups cannot be used in group filters, and their filters cannot reference groups or organizations",
-  "SCAN_ALREADY_QUEUED": "A scan is already queued for this device."
+  "SCAN_ALREADY_QUEUED": "A scan is already queued for this device.",
+  "PORTAL_INVITE_CONTACT_NOT_FOUND": "That contact no longer exists or is not available to you.",
+  "PORTAL_INVITE_CONTACT_NO_EMAIL": "This contact has no email address. Add one first.",
+  "PORTAL_INVITE_EMAIL_MISMATCH": "The invite email must match the contact's email address.",
+  "PORTAL_INVITE_CONTACT_CONFLICT": "This email address already has a portal login linked to a different contact. Unlink it first.",
+  "PORTAL_INVITE_LOGIN_EMAIL_DIFFERS": "This contact's portal login uses a different email address. Update the contact's email or unlink the login first.",
+  "PORTAL_INVITE_ALREADY_ACTIVE": "This person already has an active portal login.",
+  "PORTAL_INVITE_USER_DISABLED": "This person's portal login is disabled. Re-enable it instead of inviting again.",
+  "PORTAL_INVITE_EXTERNAL_IDENTITY": "This email belongs to a Microsoft Entra sign-in only. A browser portal invite cannot be sent for it."
 }

@@ -28,6 +28,8 @@ import {
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
 const EXPECTED_WORKER_NAMES = [
+  'psaTicketingWorker',
+  'psaTicketingReconciler',
   'topologyReconcileWorker',
   'topologyCollectionRetentionWorker',
   'topologyOutboxWorker',
@@ -48,7 +50,7 @@ const EXPECTED_WORKER_NAMES = [
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker', 'trustPageSnapshotWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'hardwareHealthRetention', 'timeSyncRetention', 'logCorrelationWorker', 'agentLogRetention',
-  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention', 'wispNudgeDigest',
+  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention', 'aiChatSessionExpirySweep', 'wispNudgeDigest',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention',
   'serviceProcessCheckRetention', 'changeLogRetention',
@@ -56,6 +58,8 @@ const EXPECTED_WORKER_NAMES = [
   'filesystemCleanupRunRetention',
   // #8581 — daily prune of device_restore_point_attempts.
   'restorePointAttemptRetention',
+  'wakeAttemptSweep',
+  'wakeAttemptRetention',
   // #9128 — daily prune of terminal webhook_deliveries rows.
   'webhookDeliveryRetention',
   // #10019/#10020 — DNS events/aggregations retention + background integration delete.
@@ -65,6 +69,8 @@ const EXPECTED_WORKER_NAMES = [
   'quoteSendWorker', 'enrollmentKeyCleanup',
   // Ticket migration windows (#8313) — the per-minute window sweep.
   'migrationWindowSweep',
+  // Ticket import framework (#8313 W4) — self-continuing import slices.
+  'ticketImportWorker',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
   'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
@@ -84,19 +90,22 @@ const EXPECTED_WORKER_NAMES = [
   'securityAgentCoverageWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
-  'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
+  'oemUpdatesWorker', 'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
   // YARA/IOC scanning W01 (#6263) — dispatches security.scan agent commands.
   'securityScanWorker',
   'peripheralJobs',
   'deviceGroupJobs',
   'partnerGroupEvaluationJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
-  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
+  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker', 'portalDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
-  'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
+  'softwareDeploymentScheduler', 'pamJobs', 'networkIsolationSweeper', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
-  'ticketAttachmentReaper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper', 'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
+  'ticketAttachmentReaper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper',
+  // Portal registration W3 — daily portal identity drift report.
+  'portalIdentityReconcile',
+  'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
@@ -175,17 +184,14 @@ describe('workerRegistry: losslessness', () => {
     // #9198: first dynamic import of the job's module graph is slow on a loaded runner.
   }, 60_000);
 
-  it('registers the m365 sync worker as a socket-owner-placement entry', () => {
-    // NOTE (deviation from plan text): the plan's Step 1 pins 'global', but
-    // workerEntrypointClosure.contract.test.ts's static import-closure walk
-    // shows jobs/m365SyncWorker.ts -> services/m365Sync/run.ts ->
-    // services/m365ControlPlane/readActionService.ts -> services/aiTools.ts
-    // -> ... -> routes/agentWs.ts — reaching socket-local dispatch, same as
-    // policyEvaluationWorker's flip above. Verified by running the closure
-    // contract, per the plan's own instruction to flip and say so if it fails.
+  it('registers the m365 sync worker as a global-placement entry', () => {
+    // Its import closure used to reach routes/agentWs.ts (m365Sync/run.ts ->
+    // readActionService -> aiTools -> commandQueue); it is clean now, so it is
+    // placed global (#4142). workerEntrypointClosure.contract.test.ts enforces
+    // placement in both directions.
     const entry = WORKER_REGISTRY.find((e) => e.name === 'm365SyncWorker');
     expect(entry).toBeDefined();
-    expect(entry!.placement).toBe('socket-owner');
+    expect(entry!.placement).toBe('global');
   });
 
   it('every entry has a well-formed shape', () => {

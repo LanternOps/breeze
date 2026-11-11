@@ -18,6 +18,12 @@ const { authState } = vi.hoisted(() => {
   return { authState };
 });
 
+// The real module drags in the whole sync stack (and its schema imports); the route only needs the pure predicate,
+// which telemetryReadModel.test.ts exercises against the real implementation.
+vi.mock('../../services/unifi/unifiSyncService', () => ({
+  isUnifiDeviceOnline: (s: string | null | undefined) => ['connected', 'online'].includes((s ?? '').trim().toLowerCase()),
+}));
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -77,9 +83,11 @@ vi.mock('../../db/schema', () => ({
   },
   unifiDeviceTelemetry: {
     siteId: 'unifi_device_telemetry.site_id',
+    orgId: 'unifi_device_telemetry.org_id',
   },
   unifiClients: {
     siteId: 'unifi_clients.site_id',
+    orgId: 'unifi_clients.org_id',
   },
   sites: {
     id: 'sites.id',
@@ -102,8 +110,11 @@ vi.mock('../../services/unifi/unifiConnectionService', () => ({
 vi.mock('../../services/unifi/unifiCollectorService', () => ({
   listCollectors: vi.fn(),
   upsertCollector: vi.fn(),
+  upsertSelfHostedController: vi.fn(),
   deleteCollector: vi.fn(),
 }));
+
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
 vi.mock('../../services/unifi/unifiClient', async (importActual) => {
   // Keep the real UnifiApiError so the route's `err instanceof UnifiApiError`
@@ -136,6 +147,7 @@ import * as collectorSvc from '../../services/unifi/unifiCollectorService';
 import { db, runOutsideDbContext } from '../../db';
 import * as topologyAuthority from '../../services/topology/unifiAuthority';
 import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 describe('unifi routes', () => {
   beforeEach(() => {
@@ -152,6 +164,7 @@ describe('unifi routes', () => {
     vi.mocked(collectorSvc.listCollectors).mockReset();
     vi.mocked(collectorSvc.upsertCollector).mockReset();
     vi.mocked(collectorSvc.deleteCollector).mockReset();
+    vi.mocked(collectorSvc.upsertSelfHostedController).mockReset();
     authState.scope = 'partner';
     authState.partnerId = PARTNER_ID;
     authState.partnerOrgAccess = 'all';
@@ -1025,6 +1038,40 @@ describe('unifi routes', () => {
     await expect(res.json()).resolves.toMatchObject({ devices: [{ id: 'dt1' }], clients: [{ id: 'cl1' }] });
   });
 
+  it('GET /telemetry scopes both reads by the site org as well as the site id', async () => {
+    const devWhere = vi.fn(async () => [] as any[]);
+    const cliWhere = vi.fn(async () => [] as any[]);
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })) })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: devWhere })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: cliWhere })) } as any);
+    const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const dump = (fn: typeof devWhere) => JSON.stringify((fn.mock.calls[0] as unknown[])[0]);
+    expect(dump(devWhere)).toContain('unifi_device_telemetry.org_id');
+    expect(dump(devWhere)).toContain(ORG_ID);
+    expect(dump(cliWhere)).toContain('unifi_clients.org_id');
+    expect(dump(cliWhere)).toContain(ORG_ID);
+  });
+
+  it('GET /telemetry keeps the raw columns and adds the Wi-Fi read model fields', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })) })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{
+        id: 'dt1', siteId: SITE_ID, raw: { a: 1 }, poePorts: [], txBytes: 7, rxBytes: 8, isStale: false,
+        controllerState: 'ONLINE', cpuPct: 0, numClients: 0, uplinkRxRateBps: 0, wifiRadioStatistics: [{ frequencyGHz: 5, txRetriesPct: 0 }],
+        wifiRadioOverview: 'bad', wifiStatisticsObservedAt: new Date('2026-10-15T12:00:00Z'),
+      }]) })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => []) })) } as any);
+    const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
+    const body = await res.json() as { devices: Record<string, unknown>[] };
+    expect(body.devices[0]).toMatchObject({
+      raw: { a: 1 }, txBytes: 7, rxBytes: 8, isStale: false, numClients: 0,
+      online: true, controllerState: 'ONLINE', cpuPct: 0, wirelessClientCount: 0, uplinkRxRateBps: 0, uplinkTxRateBps: null,
+      radioOverview: null, radioStatistics: [{ frequencyGHz: 5, txRetriesPct: 0 }], wifiStatisticsObservedAt: '2026-10-15T12:00:00.000Z',
+    });
+  });
+
   it('GET /telemetry returns 400 when siteId is missing', async () => {
     const res = await unifiRoutes.request('/telemetry', { method: 'GET' });
     expect(res.status).toBe(400);
@@ -1057,5 +1104,210 @@ describe('unifi routes', () => {
     const res = await unifiRoutes.request('/sync-runs', { method: 'GET' });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ runs: mockRuns });
+  });
+
+  describe('mapping and controller audit', () => {
+    const CLOUD_CONN = {
+      id: CONN_ID, partnerId: PARTNER_ID, connectionType: 'cloud', baseUrl: 'https://api.ui.com', accountLabel: null,
+      isActive: true, status: 'connected', lastSyncAt: null, lastSyncStatus: null, lastSyncError: null,
+    } as const;
+    const OTHER_ORG = '77777777-7777-4777-8777-777777777777';
+    const OTHER_SITE = '88888888-8888-4888-8888-888888888888';
+    const snap = (o: { unifiHostId: string; unifiSiteId: string; orgId?: string; siteId?: string }) => ({
+      id: `m-${o.unifiHostId}-${o.unifiSiteId}`, integrationId: CONN_ID, orgId: o.orgId ?? ORG_ID, siteId: o.siteId ?? SITE_ID,
+      unifiHostId: o.unifiHostId, unifiSiteId: o.unifiSiteId,
+    });
+    const collectorRow = (o: Partial<{ id: string; orgId: string; unifiHostId: string | null; controllerUrl: string }> = {}) => ({
+      id: o.id ?? 'c1', integrationId: CONN_ID, orgId: o.orgId ?? ORG_ID, siteId: SITE_ID, unifiHostId: o.unifiHostId ?? null,
+      collectorDeviceId: DEVICE_ID, controllerUrl: o.controllerUrl ?? 'https://controller.example:8443', isEnabled: true, topologyGeneration: 0,
+    });
+    const rowLookup = (row: Record<string, unknown>) => ({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [row]) })) })),
+    }) as any;
+    const upsertInsert = () => ({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })) }) as any;
+    const putMappings = (body: unknown) => unifiRoutes.request('/mappings', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+
+    it('PUT /mappings writes unifi.site.map per changed row', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(CLOUD_CONN as any);
+      vi.mocked(db.select).mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }));
+      vi.mocked(db.insert).mockReturnValueOnce(upsertInsert());
+      vi.mocked(topologyAuthority.snapshotUnifiMappings)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([snap({ unifiHostId: 'host-1', unifiSiteId: 'site-1' })]);
+
+      const res = await putMappings({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }] });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_ID,
+        action: 'unifi.site.map',
+        resourceType: 'unifi_site_mapping',
+        resourceName: 'host-1/site-1',
+        details: expect.objectContaining({
+          integrationId: CONN_ID, siteId: SITE_ID, previousOrgId: null,
+          source: 'manual', sourceVerified: true, matchTier: null, matchKey: null,
+        }),
+      }));
+    });
+
+    it('replace-all delete writes unifi.site.unmap with the previous org', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(CLOUD_CONN as any);
+      vi.mocked(db.select).mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }));
+      vi.mocked(db.insert).mockReturnValueOnce(upsertInsert());
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn(async () => [
+            { id: 'm-host-1-site-1', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-1' },
+            { id: 'm-host-1-site-2', orgId: OTHER_ORG, siteId: OTHER_SITE, unifiHostId: 'host-1', unifiSiteId: 'site-2' },
+          ]),
+        })),
+      } as any);
+      vi.mocked(db.delete).mockReturnValueOnce({ where: vi.fn(async () => undefined) } as any);
+      const kept = snap({ unifiHostId: 'host-1', unifiSiteId: 'site-1' });
+      vi.mocked(topologyAuthority.snapshotUnifiMappings)
+        .mockResolvedValueOnce([kept, snap({ unifiHostId: 'host-1', unifiSiteId: 'site-2', orgId: OTHER_ORG, siteId: OTHER_SITE })])
+        .mockResolvedValueOnce([kept]);
+
+      const res = await putMappings({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], hostIds: ['host-1'] });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: OTHER_ORG,
+        action: 'unifi.site.unmap',
+        resourceName: 'host-1/site-2',
+        details: expect.objectContaining({ siteId: null, previousOrgId: OTHER_ORG, previousSiteId: OTHER_SITE }),
+      }));
+    });
+
+    it('an unchanged resubmit writes no audit', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(CLOUD_CONN as any);
+      vi.mocked(db.select).mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }));
+      vi.mocked(db.insert).mockReturnValueOnce(upsertInsert());
+      const row = snap({ unifiHostId: 'host-1', unifiSiteId: 'site-1' });
+      vi.mocked(topologyAuthority.snapshotUnifiMappings).mockResolvedValueOnce([row]).mockResolvedValueOnce([{ ...row }]);
+
+      const res = await putMappings({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }] });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('a refused PUT /mappings writes no audit', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(CLOUD_CONN as any);
+      vi.mocked(db.select).mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID, partnerId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' }));
+
+      const res = await putMappings({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }] });
+
+      expect(res.status).toBe(403);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('PUT /controllers audits register with the host only', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue({ ...CLOUD_CONN, connectionType: 'self_hosted' } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID }))
+        .mockReturnValueOnce(rowLookup({ id: DEVICE_ID, orgId: ORG_ID }));
+      vi.mocked(collectorSvc.upsertSelfHostedController).mockResolvedValue({ id: 'c1' } as any);
+      vi.mocked(topologyAuthority.snapshotUnifiCollectors)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([collectorRow({ controllerUrl: 'https://controller.example:8443/network' })]);
+
+      const res = await unifiRoutes.request('/controllers', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ siteId: SITE_ID, collectorDeviceId: DEVICE_ID, controllerUrl: 'https://controller.example:8443/network', apiKey: 'SECRET-LOCAL-KEY' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_ID,
+        action: 'unifi.controller.register',
+        resourceType: 'unifi_collector',
+        details: expect.objectContaining({
+          integrationId: CONN_ID, collectorId: 'c1', transport: 'agent', controllerHost: 'controller.example:8443',
+          siteId: SITE_ID, collectorDeviceId: DEVICE_ID,
+        }),
+      }));
+      const auditJson = JSON.stringify(vi.mocked(writeRouteAudit).mock.calls);
+      expect(auditJson).not.toContain('/network');
+      expect(auditJson).not.toContain('SECRET-LOCAL-KEY');
+    });
+
+    it.each([
+      ['PUT', '/collectors', { unifiHostId: 'h1' }, 'cloud'],
+      ['PUT', '/controllers', {}, 'self_hosted'],
+    ])('a refused %s %s (collector agent in another org) writes no audit', async (method, path, extra, connectionType) => {
+      vi.mocked(svc.getConnection).mockResolvedValue({ ...CLOUD_CONN, connectionType } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID }))
+        .mockReturnValueOnce(rowLookup({ id: DEVICE_ID, orgId: OTHER_ORG }));
+
+      const res = await unifiRoutes.request(path, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...extra, siteId: SITE_ID, collectorDeviceId: DEVICE_ID, controllerUrl: 'https://controller.example:8443', apiKey: 'K' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(collectorSvc.upsertCollector).not.toHaveBeenCalled();
+      expect(collectorSvc.upsertSelfHostedController).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('a PUT /mappings refused for a holding org writes no audit', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(CLOUD_CONN as any);
+      vi.mocked(db.select).mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }));
+      vi.mocked(isHoldingOrg).mockResolvedValueOnce(true);
+
+      const res = await putMappings({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }] });
+
+      expect(res.status).toBe(409);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('no audit details contain the api key', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(CLOUD_CONN as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(rowLookup({ id: SITE_ID, orgId: ORG_ID }))
+        .mockReturnValueOnce(rowLookup({ id: DEVICE_ID, orgId: ORG_ID }));
+      vi.mocked(collectorSvc.upsertCollector).mockResolvedValue({ id: 'c1' } as any);
+      const row = collectorRow({ unifiHostId: 'h1' });
+      // Same columns before and after: only the stored API key changed.
+      vi.mocked(topologyAuthority.snapshotUnifiCollectors).mockResolvedValueOnce([row]).mockResolvedValueOnce([{ ...row }]);
+
+      const res = await unifiRoutes.request('/collectors', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ unifiHostId: 'h1', siteId: SITE_ID, collectorDeviceId: DEVICE_ID, controllerUrl: 'https://controller.example:8443', apiKey: 'SECRET-LOCAL-KEY' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'unifi.controller.register', resourceId: 'c1' }));
+      expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain('SECRET-LOCAL-KEY');
+    });
+
+    it('DELETE /collectors/:hostId audits remove once; a second delete audits nothing', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(CLOUD_CONN as any);
+      vi.mocked(collectorSvc.deleteCollector).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      const row = collectorRow({ unifiHostId: 'host-1' });
+      vi.mocked(topologyAuthority.snapshotUnifiCollectors)
+        .mockResolvedValueOnce([row]).mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const first = await unifiRoutes.request('/collectors/host-1', { method: 'DELETE' });
+      expect(first.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ orgId: ORG_ID, action: 'unifi.controller.remove', resourceId: 'c1' }));
+
+      const second = await unifiRoutes.request('/collectors/host-1', { method: 'DELETE' });
+      expect(second.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -9,6 +9,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import IncidentIsolation from '../devices/networkIsolation/IncidentIsolation';
 
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
 type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
@@ -25,6 +26,7 @@ interface Incident {
   containedAt: string | null;
   resolvedAt: string | null;
   closedAt: string | null;
+  affectedDevices?: string[];
 }
 
 interface TimelineEntry {
@@ -211,6 +213,8 @@ export default function IncidentDetailPage({ incidentId }: IncidentDetailProps) 
           )}
         </div>
       </div>
+
+      {Boolean(incident.affectedDevices?.length) && <IncidentIsolation incidentId={incidentId} deviceIds={incident.affectedDevices!} />}
 
       {/* Summary */}
       {incident.summary && (

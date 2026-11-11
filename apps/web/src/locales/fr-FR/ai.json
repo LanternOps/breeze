@@ -35,6 +35,7 @@
     "expired": "Cette demande a expiré avant de pouvoir être traitée.",
     "notSoleApprover": "Un autre approbateur est désormais requis – vous ne pouvez plus approuver votre propre demande.",
     "siteCeiling": "Cette approbation accorde une autorité à l'échelle de l'organisation. Votre accès est limité à des sites spécifiques – un autre approbateur doit donc décider de cette demande.",
+    "approverScopeRequired": "Cette approbation concerne toutes les organisations du partenaire : elle nécessite donc un approbateur au niveau du partenaire ayant accès à toutes les organisations.",
     "noApproverDevice": "Approuver votre propre demande nécessite Touch ID / Windows Hello.",
     "freshFactorRequired": "Cette vérification exige une nouvelle confirmation par clé d'accès (Touch ID, Windows Hello ou une clé matérielle) pour cette approbation. Réessayez.",
     "registerDevice": "Enregistrer cet appareil",
@@ -179,7 +180,8 @@
     "input": "Entrée :",
     "error": "Erreur :",
     "output": "Sortie :",
-    "outputExpired": "Sortie expirée selon la politique de conservation"
+    "outputExpired": "Sortie expirée selon la politique de conservation",
+    "unknownTool": "Outil inconnu · non exécuté"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",
@@ -350,6 +352,7 @@
       "pending": "En attente",
       "approved": "Approuvé",
       "rejected": "Refusé",
+      "stopped": "arrêté",
       "completed": "Achevé",
       "failed": "Échec"
     },
@@ -392,6 +395,7 @@
     "requestedAt": "demandé {{time}}",
     "approvedAt": "approuvé {{time}}",
     "rejectedAt": "refusé {{time}}",
+    "stoppedAt": "arrêté {{time}}",
     "appliedAt": "appliqué {{time}}",
     "flagDialog": {
       "title": "Signaler la session",
@@ -541,7 +545,26 @@
     "promoteDescription": "Description (facultative)",
     "ownerScopeOrganization": "Cette organisation uniquement",
     "ownerScopePartner": "Toutes les organisations de ce partenaire",
-    "nameRequired": "Un nom est obligatoire."
+    "nameRequired": "Un nom est obligatoire.",
+    "reviewFailedTitle": "La revue par l’IA a échoué",
+    "reviewFailureUnknown": "Aucune raison n’a été enregistrée.",
+    "overrideApproved": "Approuvé sans revue par l’IA réussie",
+    "overrideExplain": "La revue n’a abouti à aucun verdict : rien n’a donc vérifié ce script. Vous pouvez le lire ci-dessus et l’approuver vous-même.",
+    "overrideRun": "Exécuter sans revue par l’IA",
+    "overrideRunNotice": "Vous approuvez l’exécution de ce script sur ses appareils sans revue par l’IA réussie. Le journal d’audit l’enregistre à votre nom.",
+    "overrideRunConfirm": "Approuver et exécuter",
+    "overrideRunSuccess": "Script envoyé à ses appareils",
+    "overrideRunUndelivered": "Appareils n’ayant pas accepté le script : {{count}}",
+    "overrideSave": "Enregistrer dans la bibliothèque sans revue par l’IA",
+    "overrideSaveNotice": "Vous enregistrez ce script sans exécution vérifiée ni revue par l’IA réussie. Le journal d’audit l’enregistre à votre nom.",
+    "overrideErrorExpired": "Cette proposition a expiré. Demandez-en une nouvelle.",
+    "overrideErrorState": "Cette proposition a changé. Vérifiez son état actuel.",
+    "overrideErrorNotSoleApprover": "Ce script doit être approuvé par une personne autre que celle qui l’a demandé.",
+    "overrideErrorStepUp": "Votre partenaire exige une approbation plus forte que ce que cet écran permet.",
+    "overrideErrorNoDevice": "Aucun appareil cible n’a accepté le script : rien n’a été exécuté. Vous pouvez réessayer.",
+    "overrideErrorPolicy": "La politique de données d’IA refuse ce script, car il lit un chemin de profil utilisateur.",
+    "overrideErrorStrict": "Reconnaître ces motifs de danger exige l’autorisation d’écriture de scripts et la MFA, et chaque motif doit être coché.",
+    "savedToLibrary": "Enregistré dans la bibliothèque de scripts"
   },
   "aiRunCard": {
     "title": "Exécution d’analyse",
@@ -554,8 +577,24 @@
       "failed": "échec",
       "cancelled": "annulé",
       "expired": "expiré",
-      "skipped": "ignoré"
-    }
+      "skipped": "ignoré",
+      "awaiting_approval": "en attente d'approbation"
+    },
+    "approvals": {
+      "pending_one": "{{count}} étape attend votre approbation",
+      "pending_other": "{{count}} étapes attendent votre approbation",
+      "waiting": "Des étapes attendent votre approbation",
+      "review": "Examiner dans Approbations"
+    },
+    "stepApprovals": {
+      "title": "En attente de votre approbation",
+      "wispFor": "Wisp pour {{name}}",
+      "approve": "Approuver",
+      "deny": "Refuser",
+      "waitingForApprover": "En attente d'un approbateur"
+    },
+    "continue": "Continuer",
+    "continueMessage": "Poursuivre le dépannage de l'exécution {{runId}}."
   },
   "aiModelPicker": {
     "chooseModel": "Choisir un modèle",
@@ -578,7 +617,11 @@
     "thinking": "Réflexion"
   },
   "aiThinking": {
-    "label": "Réflexion en cours… {{seconds}} s"
+    "label": "Réflexion en cours… {{seconds}} s",
+    "waitingApproval": "En attente de votre approbation",
+    "waitingApprovalPhone": "En attente de votre approbation (envoyée sur votre téléphone)",
+    "waitingOthers": "En attente d’un autre approbateur",
+    "openApprovals": "Ouvrir les approbations"
   },
   "aiTurnModel": {
     "answeredBy": "Réponse de {{model}}",
@@ -603,8 +646,13 @@
   "buyCredits": {
     "link": "Acheter des crédits"
   },
+  "sessionClosed": {
+    "message": "Cette conversation a été fermée ailleurs, votre message n'a donc pas été envoyé. Il est toujours dans la zone de saisie. Démarrez une nouvelle session pour continuer.",
+    "startNew": "Démarrer une nouvelle session"
+  },
   "wisp": {
     "title": "Wisp",
+    "turnLimitRolled": "Cette conversation a atteint sa limite de tours, Wisp a donc ouvert une nouvelle session dans ce fil. Renvoyez votre message.",
     "locked": {
       "why": "Wisp est disponible avec les offres Pro et supérieures.",
       "server": "Wisp fonctionne sur Breeze Cloud. Il n’est pas disponible sur ce serveur."
@@ -618,7 +666,7 @@
       "explain": "Wisp agit dans la limite de vos propres droits. Confirmez que c’est bien vous pour continuer.",
       "code": "Code d’authentification",
       "passkey": "Vous confirmerez avec votre clé d’accès.",
-      "noFactor": "Wisp a besoin d’une clé d’accès ou d’une application d’authentification. Configurez-en une d’abord dans votre profil.",
+      "noFactor": "Wisp a besoin d’une clé d’accès ou d’une application d’authentification. Configurez-en une d’abord dans <profileLink>votre profil</profileLink>.",
       "noOrg": "Sélectionnez d’abord une organisation dans l’en-tête.",
       "confirm": "Confirmer",
       "cancel": "Annuler",
@@ -630,7 +678,8 @@
       "alreadyOnPartner": "Wisp est déjà activé pour toutes les organisations.",
       "open": "Ouvrir",
       "opening": "Ouverture…",
-      "grantEnded": "Wisp n’est plus activé pour ce périmètre. Confirmez votre identité pour le réactiver."
+      "grantEnded": "Wisp n’est plus activé pour ce périmètre. Confirmez votre identité pour le réactiver.",
+      "unattendedReadsTitle": "Activer les lectures sans surveillance"
     },
     "header": {
       "scopeAll": "Toutes les organisations",
@@ -653,8 +702,22 @@
     "settings": {
       "title": "Budget et point de suivi",
       "budget": "Budget quotidien",
+      "budgetHelp": "Comprend le chat. Une fois le budget épuisé, les vérifications en arrière-plan sont mises en pause jusqu’à 00:00 UTC et le chat continue de fonctionner avec un avertissement. Le budget d’IA de l’organisation s’applique toujours au chat.",
       "tick": "Point de suivi toutes les (minutes)",
-      "save": "Enregistrer"
+      "save": "Enregistrer",
+      "unattendedReads": {
+        "title": "Lectures sans surveillance",
+        "description": "Lorsque cette option est activée, Wisp et ses exécutions en arrière-plan effectuent les actions suivantes sans demander :",
+        "registryKey": "Lire une clé de registre",
+        "registryValue": "Lire une valeur de registre",
+        "securityLog": "Rechercher dans le journal des événements de sécurité",
+        "deviceNote": "Enregistrer une note sur un appareil",
+        "applies": "S’applique aux nouvelles conversations et aux nouvelles exécutions en arrière-plan."
+      },
+      "summaryRefine": {
+        "title": "Notes de session rédigées par le modèle",
+        "description": "À la fin d’une conversation, le modèle rédige ce qui a été conclu et ce qui reste en suspens. Chaque note représente un appel au modèle et compte dans le budget quotidien de Wisp. Si cette option est désactivée, Wisp conserve plutôt un simple résumé."
+      }
     },
     "focus": {
       "label": "Travaille sur",
@@ -695,10 +758,18 @@
       "paused": "Wisp mis en pause",
       "resumed": "Wisp réactivé",
       "pauseFailed": "Impossible de mettre Wisp en pause",
-      "resumeFailed": "Impossible de réactiver Wisp"
+      "resumeFailed": "Impossible de réactiver Wisp",
+      "unattendedReadsOn": "Lectures sans surveillance activées",
+      "unattendedReadsOnFailed": "Impossible d’activer les lectures sans surveillance",
+      "unattendedReadsOff": "Lectures sans surveillance désactivées",
+      "unattendedReadsOffFailed": "Impossible de désactiver les lectures sans surveillance",
+      "summaryRefineOn": "Notes de session activées",
+      "summaryRefineOff": "Notes de session désactivées",
+      "summaryRefineFailed": "Impossible de modifier les notes de session"
     },
     "spend": {
       "meter": "{{spent}} sur {{budget}} aujourd’hui",
+      "breakdown": "Arrière-plan {{background}} · Chat {{chat}} · {{spent}} sur {{budget}} aujourd’hui",
       "resets": "réinitialisation dans {{hours}} h",
       "raise": "Augmenter le budget du jour",
       "atCeiling": "Le budget du jour a atteint la limite de votre offre.",
@@ -711,8 +782,8 @@
       "byYou": "Vous avez mis Wisp en pause. Il ne fera aucun point de suivi et ne vous enverra aucun rappel tant que vous n’aurez pas repris.",
       "partnerDisabled": "Wisp est désactivé pour votre partenaire. Un administrateur peut le réactiver.",
       "system": {
-        "budgetExhausted": "Mis en pause par Breeze : le budget du jour est épuisé. Le budget sera réinitialisé dans {{hours}} h.",
-        "budgetExhaustedNoTime": "Mis en pause par Breeze : le budget du jour est épuisé.",
+        "budgetExhausted": "Le budget Wisp du jour est dépassé : les vérifications en arrière-plan sont en pause jusqu’à {{time}} UTC. Le chat continue de fonctionner.",
+        "budgetExhaustedNoTime": "Le budget Wisp du jour est dépassé : les vérifications en arrière-plan sont en pause jusqu’à 00:00 UTC. Le chat continue de fonctionner.",
         "grantorAccessLost": "Mis en pause par Breeze : votre accès ne couvre plus cette autorisation. Wisp reprendra de lui-même lorsque votre accès sera rétabli.",
         "grantorSuspended": "Mis en pause par Breeze : votre compte est suspendu. Wisp reprendra de lui-même lorsque la suspension sera levée.",
         "factorExpired": "Mis en pause par Breeze : votre vérification de connexion pour cette autorisation a expiré.",
@@ -787,7 +858,14 @@
       "addedByWisp": "Ajouté par Wisp",
       "added": "Lié à Wisp",
       "addFailed": "Impossible de lier cet élément.",
-      "count": "{{count}} sur {{max}} liés"
+      "count": "{{count}} sur {{max}} liés",
+      "groupPinned": "Épinglés",
+      "groupConcerns": "Préoccupations ouvertes",
+      "groupRecent": "Récents",
+      "pin": "Épingler",
+      "dismiss": "Ignorer",
+      "more": "Plus",
+      "neighbours": "Éléments associés"
     },
     "picker": {
       "title": "Lier un élément à Wisp",
@@ -812,11 +890,6 @@
       "alreadyLinked": "Déjà lié",
       "close": "Fermer"
     },
-    "linkButton": {
-      "link": "Lier à Wisp",
-      "linked": "Lié dans Wisp",
-      "linking": "Liaison en cours…"
-    },
     "sidebar": {
       "openHome": "Ouvrir dans Wisp",
       "meetWisp": "Découvrir Wisp"
@@ -833,14 +906,37 @@
     "post": {
       "brief": "Résumé du matin",
       "nudge": "Rappel",
+      "nudgeResolved": "Résolu",
       "digest": "Condensé",
+      "checkIn": "Point de suivi",
       "summary": "Récapitulatif",
       "open": "Ouvrir",
-      "unread": "Non lu"
+      "unread": "Non lu",
+      "specialistResult": "Rapport du spécialiste",
+      "firstLook": "Premier tour",
+      "couldntLook": "Pas encore de tour"
+    },
+    "checkIn": {
+      "runNow": "Exécuter maintenant",
+      "runNowMessage": "Lance le point de suivi",
+      "scheduledAt": "Wisp refera le point à {{time}}",
+      "cancel": "Annuler le point de suivi",
+      "cancelled": "Point de suivi annulé",
+      "cancelFailed": "Impossible d’annuler le point de suivi."
     },
     "welcome": {
       "title": "Je fais le tour de {{scope}}.",
       "body": "Votre premier résumé arrive chaque matin, une fois que j’ai regardé. D’ici là, posez-moi vos questions.",
+      "firstLookTitle": "J’ai fait un premier tour de {{scope}}.",
+      "firstLookBody": "Ce que j’ai trouvé est dans le message ci-dessus. Posez-moi vos questions à ce sujet.",
+      "couldntLookTitle": "Je n’ai pas encore pu faire le tour de {{scope}}.",
+      "couldntLookBody": "Le message ci-dessus explique pourquoi et quand je réessaierai. En attendant, posez-moi vos questions.",
+      "couldntLookChat": "La page d’accueil de Wisp explique pourquoi et quand je réessaierai.",
+      "progress_one": "Organisations examinées : {{lookedAt}} sur {{count}}",
+      "progress_other": "Organisations examinées : {{lookedAt}} sur {{count}}",
+      "progressQueued": "{{count}} en attente",
+      "progressFailed": "{{count}} en échec",
+      "briefAt": "Votre résumé du matin est envoyé à {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Qu’est-ce qui demande mon attention aujourd’hui ?",
@@ -865,11 +961,52 @@
       "workersEmpty": "Aucun spécialiste en cours.",
       "allRuns": "Toutes les exécutions",
       "details": "Détails",
-      "ended": "Cette autorisation est terminée : ses préoccupations, exécutants et activités ne sont donc plus affichés."
+      "ended": "Cette autorisation est terminée : ses préoccupations, exécutants et activités ne sont donc plus affichés.",
+      "workerStatus": {
+        "queued": "En file d'attente",
+        "running": "En cours",
+        "awaiting_approval": "En attente d'approbation",
+        "completed": "Terminé",
+        "failed": "Échec"
+      }
     },
     "composer": {
       "placeholder": "Message à Wisp",
       "link": "Lier un élément"
+    },
+    "talk": {
+      "openFailed": "Impossible d’ouvrir la discussion : {{message}}",
+      "button": "Parler à Wisp",
+      "buttonPlain": "Interroger l’IA à ce sujet",
+      "draft": "À propos de {{label}}: ",
+      "switchFocus": "Wisp se concentre sur {{from}}. Passer à {{to}} ?"
+    },
+    "plainChat": {
+      "new": "Nouvelle discussion simple",
+      "newDescription": "Breeze AI avec tous les outils auxquels vous avez accès. Pas Wisp.",
+      "wispDescription": "Wisp, selon votre autorisation",
+      "label": "Breeze AI · pas Wisp"
+    },
+    "instruction": {
+      "remembered": "Mémorisé : {{text}}",
+      "conflictBanner": "Entre en conflit avec une consigne mémorisée : « {{text}} »",
+      "enforcedForm": "Wisp ne proposera pas : {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "aucune date de fin",
+      "keep": "Conserver",
+      "keepForOrg": "Conserver pour tous chez {{org}}",
+      "forget": "Oublier",
+      "unmatched": "Enregistré comme note : je n'ai pas pu associer tous les noms d'appareils.",
+      "kept": "Conservé",
+      "keptForOrg": "Conservé pour tous chez {{org}}",
+      "crossOrg": "Ces appareils appartiennent à plusieurs organisations ; l'instruction ne peut donc être conservée que pour vous.",
+      "actionFailed": "Cela n'a pas fonctionné. Réessayez.",
+      "verb": {
+        "reboot": "redémarrer",
+        "shutdown": "éteindre",
+        "run_script": "exécuter un script",
+        "patch_install": "installer des correctifs",
+        "any_change": "effectuer un changement"
+      }
     }
   },
   "wispConcerns": {
@@ -910,7 +1047,8 @@
       "quote": "Devis",
       "invoice": "Facture",
       "contract": "Contrat",
-      "site": "Emplacement"
+      "site": "Emplacement",
+      "readiness": "Préparation"
     },
     "reviewApproval": "Examiner l’approbation",
     "openLink": "Ouvrir",

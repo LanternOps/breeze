@@ -28,7 +28,7 @@ import {
   type FlowValidationResult,
   type PreApprovalEligibility,
 } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { sqlTimestamptz } from '../../db/sqlValues';
 import { flows, flowVersions, organizations, type FlowRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -288,21 +288,25 @@ async function createDraft(auth: AuthContext, input: SaveDraftFlowInput): Promis
 
   let row: FlowRow | undefined;
   try {
-    [row] = await db
-      .insert(flows)
-      .values({
-        orgId: owner.orgId,
-        partnerId: owner.orgId ? null : owner.partnerId,
-        slug,
-        name: document.name,
-        description: document.description ?? null,
-        definition: document as unknown as Record<string, unknown>,
-        definitionVersion: 1,
-        effectiveTier: validation.effectiveTier ?? 3,
-        status: 'draft',
-        createdByUserId: auth.user.id,
-      })
-      .returning();
+    // Savepoint so the caught slug conflict cannot poison the request
+    // transaction (#11203).
+    [row] = await withDbTransaction(async () =>
+      db
+        .insert(flows)
+        .values({
+          orgId: owner.orgId,
+          partnerId: owner.orgId ? null : owner.partnerId,
+          slug,
+          name: document.name,
+          description: document.description ?? null,
+          definition: document as unknown as Record<string, unknown>,
+          definitionVersion: 1,
+          effectiveTier: validation.effectiveTier ?? 3,
+          status: 'draft',
+          createdByUserId: auth.user.id,
+        })
+        .returning()
+    );
   } catch (err) {
     if (isPgUniqueViolation(err)) return { saved: false, error: 'slug_conflict', validation: stripDocument(validation) };
     throw err;

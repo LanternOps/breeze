@@ -52,6 +52,8 @@ export interface FetchAllDevicesOptions {
   /** Whether to include decommissioned devices. Matches the old query
    *  param exactly. */
   includeDecommissioned?: boolean;
+  /** Include warranty fields only when the caller needs the optional column. */
+  includeWarranty?: boolean;
   /** Override the per-page size for tests. Production should leave this
    *  at the module default. */
   pageLimit?: number;
@@ -117,6 +119,7 @@ export async function fetchAllDevices(
 
     const params = new URLSearchParams();
     if (includeDecommissioned) params.set('includeDecommissioned', 'true');
+    if (options.includeWarranty) params.set('includeWarranty', 'true');
     params.set('limit', String(pageLimit));
     if (cursor !== null) params.set('cursor', cursor);
     // includeTotal only on the cursor-less first page — the cursor API

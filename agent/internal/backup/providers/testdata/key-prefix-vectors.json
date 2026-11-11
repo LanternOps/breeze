@@ -1,0 +1,49 @@
+{
+  "_comment": "Shared Go/TS vectors for the S3 destination key prefix (#9441). Read by agent/internal/backup/providers/keyprefix_test.go (NormalizeKeyPrefix, S3Provider key mapping), packages/shared/src/validators/backupDestinationPrefix.test.ts (normalizeBackupDestinationPrefix) and apps/api/src/services/backupKeyLayout.test.ts (physicalKeyFor / logicalKeyFrom). raw is the input; ok=false entries name the reason both sides report. prefix=null means no prefix (legacy_flat).",
+  "normalize": [
+    {"raw": null, "ok": true, "prefix": null, "note": "absent"},
+    {"raw": "", "ok": true, "prefix": null, "note": "empty string"},
+    {"raw": "  /  ", "ok": true, "prefix": null, "note": "whitespace and slashes only"},
+    {"raw": "tenant-a", "ok": true, "prefix": "tenant-a"},
+    {"raw": "/tenant-a/", "ok": true, "prefix": "tenant-a", "note": "leading and trailing slashes trimmed"},
+    {"raw": "//msp/acme//", "ok": true, "prefix": "msp/acme", "note": "repeated edge slashes trimmed"},
+    {"raw": "  msp/acme  ", "ok": true, "prefix": "msp/acme", "note": "surrounding spaces trimmed"},
+    {"raw": "\t\nmsp\r\n", "ok": true, "prefix": "msp", "note": "ASCII control whitespace trimmed"},
+    {"raw": "\u00a0msp\u3000", "ok": true, "prefix": "msp", "note": "NBSP and ideographic space trimmed (JS String.prototype.trim)"},
+    {"raw": "\ufeffmsp", "ok": true, "prefix": "msp", "note": "BOM is whitespace to JS trim"},
+    {"raw": "\u0085msp", "ok": false, "reason": "unsafe_characters", "note": "NEL is NOT whitespace to JS trim (Go unicode.IsSpace says it is)"},
+    {"raw": " / a/b / ", "ok": false, "reason": "unsafe_characters", "note": "trim runs once: spaces inside the slashes stay"},
+    {"raw": "a/b.c/d_e", "ok": true, "prefix": "a/b.c/d_e"},
+    {"raw": "x!_.*'()-y", "ok": true, "prefix": "x!_.*'()-y", "note": "every S3 safe punctuation character"},
+    {"raw": "snapshotsx", "ok": true, "prefix": "snapshotsx", "note": "only a whole segment is reserved"},
+    {"raw": "my-snapshots/x", "ok": true, "prefix": "my-snapshots/x"},
+    {"raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ok": true, "prefix": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "note": "256 characters: the maximum"},
+    {"raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ok": false, "reason": "too_long", "note": "257 characters"},
+    {"raw": "a//b", "ok": false, "reason": "empty_or_dot_segment"},
+    {"raw": "a/./b", "ok": false, "reason": "empty_or_dot_segment"},
+    {"raw": "..", "ok": false, "reason": "empty_or_dot_segment"},
+    {"raw": "a/../b", "ok": false, "reason": "empty_or_dot_segment"},
+    {"raw": "a b", "ok": false, "reason": "unsafe_characters"},
+    {"raw": "\u00e4", "ok": false, "reason": "unsafe_characters", "note": "non-ASCII letter"},
+    {"raw": "a\u0000b", "ok": false, "reason": "unsafe_characters"},
+    {"raw": "a\\b", "ok": false, "reason": "unsafe_characters", "note": "backslash"},
+    {"raw": "a+b", "ok": false, "reason": "unsafe_characters"},
+    {"raw": "snapshots", "ok": false, "reason": "reserved_segment"},
+    {"raw": "x/Snapshots/y", "ok": false, "reason": "reserved_segment", "note": "case-insensitive"},
+    {"raw": "/SNAPSHOTS/", "ok": false, "reason": "reserved_segment"}
+  ],
+  "map": [
+    {"prefix": null, "logical": "snapshots/s1/manifest.json", "physical": "snapshots/s1/manifest.json", "note": "no prefix is the identity"},
+    {"prefix": "msp/acme", "logical": "snapshots/s1/manifest.json", "physical": "msp/acme/snapshots/s1/manifest.json"},
+    {"prefix": "msp/acme", "logical": "snapshots/s1/files/dir with space/f.gz", "physical": "msp/acme/snapshots/s1/files/dir with space/f.gz"},
+    {"prefix": "msp/acme", "logical": "snapshots/", "physical": "msp/acme/snapshots/", "note": "the root a listing uses"},
+    {"prefix": "tenant-a", "logical": "", "physical": "tenant-a/", "note": "an empty listing prefix stays inside the root"}
+  ],
+  "unmap": [
+    {"prefix": null, "physical": "snapshots/s1/x", "logical": "snapshots/s1/x"},
+    {"prefix": "msp/acme", "physical": "msp/acme/snapshots/s1/x", "logical": "snapshots/s1/x"},
+    {"prefix": "msp/acme", "physical": "snapshots/s1/x", "logical": null, "note": "bucket-root key is not under the root"},
+    {"prefix": "msp/acme", "physical": "msp/acmex/snapshots/s1/x", "logical": null, "note": "prefix match is per segment"},
+    {"prefix": "msp/acme", "physical": "other/snapshots/s1/x", "logical": null}
+  ]
+}

@@ -103,6 +103,12 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   // auth.wispGrant, which a flow step never carries, so W05 excludes them from flows
   // (FLOW_EXCLUDED_CORE_TOOLS). Same for the W08 link tools (link_entity.id /
   // link_entity.orgId are id-typed, but link_entity never runs in a flow).
+  // #10396 added search_agent_logs.orgId: resolveReadableToolOrgScope re-checks
+  // it against auth.canAccessOrg at run time and refuses an org outside reach.
+  // #10161: manage_tickets.intoTicketId uses findTicketWithAccess for org +
+  // device/site authorization of the survivor, as ticketId does for the source.
+  // system_cleanup cancel reuses the already-listed cleanupRunId: verifyDeviceAccess
+  // gates the device, then cancelSystemCleanupRun scopes the run by device/org/kind.
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
@@ -146,6 +152,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "get_alert_correlations.alertIds",
         "get_alert_correlations.groupId",
         "get_alert_correlations.orgId",
+        "get_audit_retention.orgId",
+        "get_backup_health.orgId",
         "get_browser_security.orgId",
         "get_catalog_item.catalogItemId",
         "get_cis_compliance.baselineId",
@@ -228,6 +236,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "list_ai_agent_runs.orgId",
         "list_ai_agent_schedules.agentId",
         "list_ai_agent_schedules.orgId",
+        "list_bmr_recoveries.orgId",
+        "list_bmr_recoveries.recoveryId",
         "list_business_calendars.orgId",
         "list_contracts.cursor",
         "list_contracts.orgId",
@@ -269,6 +279,9 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_backup_configs.orgId",
         "manage_backup_profiles.orgId",
         "manage_backup_profiles.profileId",
+        "manage_backup_verification.backupJobId",
+        "manage_backup_verification.orgId",
+        "manage_backup_verification.snapshotId",
         "manage_billing_catalog.catalogId",
         "manage_billing_catalog.orgId",
         "manage_billing_profiles.orgId",
@@ -431,6 +444,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_tickets.assigneeId",
         "manage_tickets.commentId",
         "manage_tickets.expectedTicketId",
+        "manage_tickets.intoTicketId",
         "manage_tickets.linkId",
         "manage_tickets.orgId",
         "manage_tickets.targetOrgId",
@@ -464,6 +478,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "run_script.proposalId",
         "s1_isolate_device.orgId",
         "s1_threat_action.orgId",
+        "search_agent_logs.orgId",
         "search_logs.siteIds",
         "search_pax8_products.partnerId",
         "sync_edr_data.connectionId",

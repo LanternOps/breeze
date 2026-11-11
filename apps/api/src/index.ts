@@ -76,6 +76,7 @@ import { businessCalendarRoutes } from './routes/businessCalendars';
 import { ticketRoutingRuleRoutes } from './routes/tickets/routingRules';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
+import { serviceCatalogRoutes } from './routes/tickets/serviceCatalog';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
@@ -119,6 +120,7 @@ import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
 import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
 import { migrationWindowRoutes } from './routes/migrationWindows';
+import { ticketImportRoutes } from './routes/ticketImports';
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
@@ -134,6 +136,7 @@ import { policyRoutes } from './routes/policyManagement';
 import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
 import { patchRoutes } from './routes/patches/index';
+import { oemUpdatesFleetRoutes } from './routes/oemUpdates/fleet';
 import { thirdPartyCatalogRoutes } from './routes/thirdPartyCatalog';
 import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
@@ -148,6 +151,7 @@ import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
 import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
 import { discoveryAssetPlacementRoutes } from './routes/discoveryAssetPlacement';
+import { discoveryAssetCircuitsRoutes } from './routes/discoveryAssetCircuits';
 import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { topologyRoutes } from './routes/topology';
 import { circuitRoutes } from './routes/circuits';
@@ -323,6 +327,7 @@ import { reconcileDecommissionedDynamicMemberships } from './jobs/decommissioned
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { registerTopologyPhysicalAuthorities } from './services/topology/physicalAuthorities';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
+import { warmBreezeToolSurface } from './services/aiAgentSdkTools';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { getClusterCacheBus } from './services/clusterCacheBus';
@@ -331,9 +336,12 @@ import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
+  claimAgentCommandRelayShard,
   initializeAgentCommandRelayWorker,
+  releaseAgentCommandRelayClaim,
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
+import { shutdownAgentCommandRelayQueue } from './services/agentCommandRelay';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { wispEnabled } from './config/env';
 import { installWispGrantHooks } from './services/wisp/grantLifecycle';
@@ -377,6 +385,7 @@ import {
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
 import { dbSaturationResponse } from './middleware/dbSaturationResponse';
+import { httpExceptionResponse } from './middleware/httpExceptionResponse';
 import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
@@ -895,6 +904,7 @@ api.route('/business-calendars', businessCalendarRoutes);
 api.route('/ticket-routing-rules', ticketRoutingRuleRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
+api.route('/', serviceCatalogRoutes);
 api.route('/', tenantVariableRoutes);
 // Self-contained autopay auth must run before the broad org/portal routers.
 api.route('/autopay/public', publicAutopayRoutes);
@@ -942,6 +952,8 @@ api.route('/service-principals', servicePrincipalRoutes);
 api.route('/partner-service-principals', partnerServicePrincipalRoutes);
 // Ticket migration windows (#8313): partner-wide admin grants of import mode.
 api.route('/migration-windows', migrationWindowRoutes);
+// Ticket import framework (#8313 W4): sources, mappings and import runs.
+api.route('/ticket-imports', ticketImportRoutes);
 api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -1013,6 +1025,7 @@ api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
+api.route('/oem-updates', oemUpdatesFleetRoutes);
 api.route('/third-party-catalog', thirdPartyCatalogRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
 api.route('/update-rings', updateRingRoutes);
@@ -1061,6 +1074,7 @@ api.route('/discovery', discoveryAssetProbeRoutes);
 // GET/PUT/DELETE /discovery/assets/:id/placement — physical placement, #8134.
 // Another sub-router at the same prefix; no path overlap, so order is immaterial.
 api.route('/discovery', discoveryAssetPlacementRoutes);
+api.route('/discovery', discoveryAssetCircuitsRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
@@ -1229,19 +1243,7 @@ app.notFound((c) => {
 app.onError((err, c) => {
   // Handle HTTPException properly (e.g., 401, 403, etc.)
   if (err instanceof HTTPException) {
-    // A typed HTTPException may carry a machine-readable `code` (e.g.
-    // `lease_unavailable`) that callers switch on. This handler builds the body
-    // itself instead of delegating to `err.getResponse()`, so the code has to
-    // be copied across explicitly or it is silently dropped.
-    const typedCode = (err as { code?: unknown }).code;
-    return c.json(
-      {
-        error: err.message || 'Request failed',
-        message: err.message,
-        ...(typeof typedCode === 'string' && typedCode ? { code: typedCode } : {})
-      },
-      err.status
-    );
+    return httpExceptionResponse(err, c);
   }
 
   // W08 (#8147): a pool-acquire timeout (#8229/#8243) or an RLS prologue
@@ -1325,6 +1327,9 @@ async function initializeWorkers(): Promise<void> {
         captureException(error instanceof Error ? error : new Error(String(error)));
       },
     });
+    // #4134: no relay consumer starts, so give up the shard claimed before
+    // serving; producers then answer `offline` instead of enqueuing unread.
+    await releaseAgentCommandRelayClaim();
     return;
   }
 
@@ -1579,6 +1584,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,
+        // #4134: per-instance producer handles (shared connection; hygiene).
+        shutdownAgentCommandRelayQueue,
       ],
     },
     // 3b. W05: the cluster cache subscriber owns its own duplicate connection.
@@ -2055,6 +2062,11 @@ async function bootstrap(): Promise<void> {
   if (clusterCacheOutcome === 'subscribed') console.log('[clusterCache] subscriber subscribed');
   else console.warn(`[clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this instance are TTL-only until it subscribes`);
 
+  // #4134: take this instance's relay shard before any agent socket can name
+  // it in a presence lease (producers answer `offline` for a shard without an
+  // owner). The consumer itself starts in initializeWorkers(). Never throws.
+  if (breezeRole() !== 'worker' && startupChecks.redisOk) await claimAgentCommandRelayShard();
+
   // W08: start sampling only after migrations and boot work, so their stalls
   // never enter the controller's history. Admission never affects /ready.
   startAdmissionControl();
@@ -2267,6 +2279,21 @@ async function bootstrap(): Promise<void> {
   initializeDeviceEventHandlers();
 
   await initializeWorkers();
+
+  // #11004: build the static AI tool surface (~340 Zod tool declarations, their
+  // registry metadata and one throwaway SDK MCP server) now, so the first AI
+  // chat message after a restart does not pay for it on the request path. CPU
+  // only, no I/O.
+  try {
+    const warmed = warmBreezeToolSurface();
+    console.log(`[startup] AI tool surface warmed: ${warmed.tools} chat tools in ${warmed.ms}ms`);
+  } catch (error) {
+    // The template is not cached on failure, so every AI session retries the
+    // same build — and a deterministic failure (e.g. a tool with no registry
+    // description) fails each one until it is fixed.
+    console.error('[startup] AI tool surface warm-up failed; AI chat sessions will retry the build and fail the same way until this is fixed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
 
   // Periodically retry failed audit writes. The in-process queue is bounded
   // (10k entries) and per-entry attempts are capped (3) with exponential

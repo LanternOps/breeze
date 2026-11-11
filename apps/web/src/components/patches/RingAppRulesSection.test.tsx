@@ -186,6 +186,38 @@ describe('RingAppRulesSection', () => {
     ]);
   });
 
+  // #9370: a Linux OS package (apt/dnf) can be blocked or pinned by name.
+  it('adds a manual Linux package as a linux block rule', () => {
+    const onChange = vi.fn();
+    render(<RingAppRulesSection rules={[]} onChange={onChange} />);
+
+    fireEvent.click(screen.getByTestId('app-rules-add'));
+    fireEvent.change(screen.getByTestId('app-rules-manual-source'), { target: { value: 'linux' } });
+    fireEvent.change(screen.getByTestId('app-rules-manual-id'), { target: { value: 'docker-ce' } });
+    fireEvent.click(screen.getByTestId('app-rules-manual-add'));
+
+    expect(onChange).toHaveBeenCalledWith([
+      { source: 'linux', packageId: 'docker-ce', displayName: undefined, action: 'block' },
+    ]);
+  });
+
+  it('labels Linux rules and treats apt:/yum: ids as the same package', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ source: 'linux', packageId: 'docker-ce', vendor: null, displayName: 'docker-ce', inCatalog: false }],
+      }),
+    });
+    const rules: RingAppRule[] = [{ source: 'linux', packageId: 'apt:docker-ce', action: 'block' }];
+    render(<RingAppRulesSection rules={rules} onChange={() => {}} />);
+
+    expect(screen.getByTestId('app-rule-action-linux|docker-ce')).toHaveValue('block');
+    expect(screen.getByTestId('app-rule-linux-tag-linux|docker-ce')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('app-rules-add'));
+    expect(await screen.findByTestId('app-option-linux-docker-ce')).toBeDisabled();
+  });
+
   it('asks the picker for partner-wide options (no orgId)', async () => {
     render(<RingAppRulesSection rules={[]} onChange={() => {}} />);
     fireEvent.click(screen.getByTestId('app-rules-add'));

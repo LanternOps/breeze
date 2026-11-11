@@ -395,7 +395,9 @@
         "message_other": "Supprimer {{count}} contrats brouillon ? Seuls les brouillons sont supprimés{{untouched}} ; cette action est irréversible.",
         "untouchedSuffix": " — les contrats actifs ou suspendus de votre sélection restent inchangés",
         "confirm": "Supprimer les brouillons"
-      }
+      },
+      "fromQuoteReady": "Issu de {{number}} · prêt à activer",
+      "fromQuoteReadyUnnumbered": "Issu d’un devis · prêt à activer"
     },
     "contractPax8Drawer": {
       "title": "Lier un abonnement Pax8",
@@ -861,8 +863,10 @@
       "expiryDefaultHint_other": "Par défaut : {{count}} jours, d’après Paramètres de facturation → Ententes.",
       "autoReminderHint_one": "Les rappels automatiques sont envoyés chaque jour, jusqu’à {{max}} au total.",
       "autoReminderHint_other": "Les rappels automatiques sont envoyés tous les {{count}} jours, jusqu’à {{max}} au total.",
-      "expiryDefaultUnavailable": "Impossible de charger l'expiration par défaut des Paramètres de facturation; la valeur par défaut intégrée est affichée.",
+      "expiryDefaultUnavailable": "Impossible de charger votre échéance par défaut depuis les Paramètres de facturation. Laissez la date vide et votre valeur par défaut s’appliquera à la création de l’entente.",
+      "expiryBlankHint": "Laissez vide pour utiliser votre valeur par défaut de Paramètres de facturation → Ententes.",
       "label": "Libellé (facultatif)",
+      "labelHint": "Usage interne seulement. Les clients voient le nom du modèle.",
       "createDraft": "Créer le brouillon et prévisualiser",
       "creating": "Création…",
       "preview": {
@@ -1667,6 +1671,14 @@
         "attachError": "Impossible de joindre le fichier justificatif.",
         "downloadError": "Impossible de télécharger le fichier justificatif.",
         "tooLarge": "Ce fichier dépasse 10 Mo. Choisissez un fichier plus petit."
+      },
+      "generatedContracts": {
+        "title_one": "Ce devis a créé {{count}} contrat",
+        "title_other": "Ce devis a créé {{count}} contrats",
+        "draftHint_one": "{{count}} brouillon ne facture rien tant qu’il n’est pas activé. Vérifiez-le et activez-le pour lancer la facturation.",
+        "draftHint_other": "{{count}} brouillons ne facturent rien tant qu’ils ne sont pas activés. Vérifiez-les et activez-les pour lancer la facturation.",
+        "ready": "Prêt à activer",
+        "unavailable": "Impossible de charger les contrats créés par ce devis. Rechargez la page pour réessayer."
       }
     },
     "currency": {

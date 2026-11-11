@@ -10,8 +10,8 @@
  * technician resolves them.
  */
 import { and, eq, inArray } from 'drizzle-orm';
-import type { FleetDesignRollbackRefusal, FleetDesignRollbackResult } from '@breeze/shared';
-import { db } from '../../db';
+import type { FleetDesignOutcome, FleetDesignRollbackRefusal, FleetDesignRollbackResult } from '@breeze/shared';
+import { db, withDbTransaction } from '../../db';
 import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
@@ -59,6 +59,8 @@ interface RollbackCtx {
   functionsNotRestored: string[];
   /** Untagging a created script is a script write (W04); the route resolves scripts:write. */
   canWriteScripts: boolean;
+  /** The stored design, for a role row written before the ledger recorded the role it applied. */
+  outcome: FleetDesignOutcome | null;
 }
 
 export interface FleetDesignRollbackOptions {
@@ -80,6 +82,7 @@ export async function rollbackFleetDesign(
   const ctx: RollbackCtx = {
     auth, orgId, reportRunId, userId: auth.user.id, audit, groupsStillTargeted: new Set(), functionsNotRestored: [],
     canWriteScripts: options.canWriteScripts === true,
+    outcome: locked.outcome,
   };
   const rolledBack: string[] = [];
   const refused: Refusal[] = [];
@@ -100,7 +103,7 @@ export async function rollbackFleetDesign(
     if (row.itemKind === 'watch' || row.itemKind === 'rule') continue; // handled with the policy row
     const group = row.itemKind === 'policy' ? itemRowsByPolicy.get(row.createdRefs?.policyId ?? '') ?? [] : [];
     try {
-      await db.transaction(async () => {
+      await withDbTransaction(async () => {
         switch (row.itemKind) {
           case 'role_correction': await rollbackRoleCorrection(ctx, row); break;
           case 'policy': await rollbackPolicy(ctx, row); break;
@@ -142,11 +145,24 @@ async function rollbackRoleCorrection(ctx: RollbackCtx, row: FleetDesignLedgerRo
   const before = row.beforeImage ?? {};
   if (typeof before.deviceRole !== 'string' || typeof before.deviceRoleSource !== 'string') throw new RollbackRefused('modified_since_apply');
   // Restore only while the row still carries the correction; a later manual
-  // or discovery write means the technician has moved on.
+  // or discovery write means the technician has moved on. W16 PR B (#6786): the
+  // source alone cannot say whose correction it is, because a later design also
+  // writes 'ai', so the role must still be the one this design applied. A row from
+  // before the ledger recorded it reads the design's own proposal; with neither there
+  // is no telling, so it is refused rather than matched on the source alone.
+  const appliedRole = row.createdRefs?.deviceRole
+    ?? ctx.outcome?.sections?.unsure?.roleCorrections?.find((r) => r.deviceId === deviceId)?.proposedRole;
+  if (!appliedRole) throw new RollbackRefused('modified_since_apply');
+  // own-device-row-allowlisted: fleet-design-rollback-role-correction
   const [updated] = await db
     .update(devices)
     .set({ deviceRole: before.deviceRole, deviceRoleSource: before.deviceRoleSource, updatedAt: new Date() })
-    .where(and(eq(devices.id, deviceId), eq(devices.orgId, ctx.orgId), eq(devices.deviceRoleSource, 'ai')))
+    .where(and(
+      eq(devices.id, deviceId),
+      eq(devices.orgId, ctx.orgId),
+      eq(devices.deviceRoleSource, 'ai'),
+      eq(devices.deviceRole, appliedRole),
+    ))
     .returning({ id: devices.id });
   if (!updated) throw new RollbackRefused('modified_since_apply');
   // Restoring the role can move the device in/out of role-filtered dynamic groups (#8943).
@@ -218,6 +234,18 @@ async function rollbackPolicy(ctx: RollbackCtx, row: FleetDesignLedgerRow): Prom
       throw new RollbackRefused('modified_since_apply');
     }
   }
+
+  // W16 PR B (#6786): an assignment this design did not create means someone relies
+  // on the policy beyond the design's own group. Archiving would stop monitoring for
+  // devices the approver never saw, so hand it back rather than remove it.
+  const assignments = await db
+    .select({ id: configPolicyAssignments.id, level: configPolicyAssignments.level, targetId: configPolicyAssignments.targetId })
+    .from(configPolicyAssignments)
+    .where(eq(configPolicyAssignments.configPolicyId, policyId));
+  const isOwn = (a: { id: string; level: string; targetId: string }) => (row.createdRefs?.assignmentId
+    ? a.id === row.createdRefs.assignmentId
+    : a.level === 'device_group' && a.targetId === row.createdRefs?.groupId);
+  if (assignments.some((a) => !isOwn(a))) throw new RollbackRefused('modified_since_apply');
 
   const assignmentConditions = [eq(configPolicyAssignments.configPolicyId, policyId)];
   if (row.createdRefs?.assignmentId) assignmentConditions.push(eq(configPolicyAssignments.id, row.createdRefs.assignmentId));

@@ -59,6 +59,8 @@ export const listDevicesSchema = z.object({
    *  count it received on page 1. Default off because the count(*) is the
    *  most expensive part of the query at scale. */
   includeTotal: boolStr,
+  /** Opt in to the warranty projection/join for the list column. */
+  includeWarranty: boolStr,
 
   // Single-value filters (compat).
   orgId: z.string().guid().optional(),
@@ -73,6 +75,7 @@ export const listDevicesSchema = z.object({
 
   status: z.enum(['online', 'offline', 'maintenance', 'decommissioned', 'updating', 'pending']).optional(),
   includeDecommissioned: boolStr,
+  isolated: boolStr,
   osType: z.enum(['windows', 'macos', 'linux']).optional(),
   role: z.enum(DEVICE_ROLES).optional(),
   search: z.string().optional()
@@ -237,6 +240,23 @@ export const updateDeviceSchema = z.object({
 // bulk-remove over a whole fleet (#3986 task 7 — see task-7-brief.md).
 export const decommissionDeviceSchema = z.object({
   uninstallAgent: z.boolean().optional().default(false),
+}).strict();
+
+// DELETE /devices/:id/permanent — optional body (#11153). Without it the purge
+// refuses a device whose agent never confirmed it was uninstalled
+// (409 UNINSTALL_NOT_CONFIRMED). `force: true` is the operator's explicit
+// "delete anyway"; a strict boolean, so `"true"` or a stray key is a 400 rather
+// than a delete the client did not quite ask for.
+export const permanentDeleteDeviceSchema = z.object({
+  force: z.boolean().optional().default(false),
+}).strict();
+
+// POST /devices/:id/remote-access-launch (#10922). `providerId` picks one of
+// the tenant's configured tools; omitted means "the default". Strict, so a
+// misspelled field is a 400 rather than a silent launch of the default tool.
+// The 100-char cap matches the partner-settings provider id limit (orgs.ts).
+export const remoteAccessLaunchSchema = z.object({
+  providerId: z.string().min(1).max(100).optional(),
 }).strict();
 
 export const provisionDeviceSchema = z.object({

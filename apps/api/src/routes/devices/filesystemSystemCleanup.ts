@@ -20,7 +20,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
-import { deviceCommands, deviceFilesystemCleanupRuns } from '../../db/schema';
+import { deviceCommands } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { CommandTypes } from '../../services/commandTypes';
@@ -30,7 +30,7 @@ import { systemCleanupRunBodySchema } from '@breeze/shared/validators';
 import {
   AGENT_UPDATE_REQUIRED_ERROR,
   MIN_AGENT_VERSION_SYSTEM_CLEANUP,
-  failSystemCleanupRunAndCancelCommand,
+  cancelSystemCleanupRun,
   isUnknownCommandTypeError,
   parseAgentJson,
   queueSystemCleanupList,
@@ -39,6 +39,7 @@ import {
   systemCleanupCatalogSchema,
 } from '../../services/systemCleanup';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { checkDeviceRemoteToolsPolicy, REMOTE_TOOLS_DISABLED_BY_POLICY } from '../../services/aiRemoteToolsPolicy';
 
 /**
@@ -133,9 +134,14 @@ filesystemSystemCleanupRoutes.get(
     const auth = c.get('auth');
     const { id: deviceId, commandId } = c.req.valid('param');
 
-    const device = await withAuthDbAccessContext(auth, () => getDeviceWithOrgAndSiteCheck(c, deviceId, auth));
-    if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
-    if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
+    // One context for both reads: this route is polled while the catalogue loads.
+    const scoped = await withAuthDbAccessContext(auth, async () => {
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED || !device) return { device, inCurrentOrg: null };
+      return { device, inCurrentOrg: await deviceCommandsInCurrentOrg(device) };
+    });
+    if (scoped.device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
+    if (!scoped.inCurrentOrg) return c.json({ success: false, error: 'Device not found' }, 404);
 
     const [command] = await db
       .select()
@@ -143,6 +149,7 @@ filesystemSystemCleanupRoutes.get(
       .where(and(
         eq(deviceCommands.id, commandId),
         eq(deviceCommands.deviceId, deviceId),
+        scoped.inCurrentOrg,
         eq(deviceCommands.type, CommandTypes.SYSTEM_CLEANUP_LIST),
       ))
       .limit(1);
@@ -278,7 +285,8 @@ filesystemSystemCleanupRoutes.get(
  * be ended by waiting out its stored `deadlineAt` (up to 70 min, the lazy
  * poll timeout in `resolveSystemCleanupRunStatus`).
  *
- * This CASes on the RUN row instead, and reuses
+ * This CASes on the RUN row instead (`cancelSystemCleanupRun`, shared with the
+ * AI tool's `cancel` action), and reuses
  * `failSystemCleanupRunAndCancelCommand` — the SAME atomic
  * fail-the-run-then-cancel-the-command transaction the lazy timeout uses —
  * so a run can be ended from here whether its command is still `pending` or
@@ -302,40 +310,13 @@ filesystemSystemCleanupRoutes.post(
     if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
     if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
 
-    const [run] = await db
-      .select()
-      .from(deviceFilesystemCleanupRuns)
-      .where(and(
-        eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
-        eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
-        eq(deviceFilesystemCleanupRuns.orgId, device.orgId),
-        eq(deviceFilesystemCleanupRuns.kind, 'system'),
-      ))
-      .limit(1);
-    if (!run) return c.json({ success: false, error: 'Cleanup run not found' }, 404);
-    if (run.status !== 'running') {
-      return c.json({ success: false, error: 'not_running', status: run.status }, 409);
-    }
-
-    const finalised = await failSystemCleanupRunAndCancelCommand({
-      runId: cleanupRunId, deviceId, orgId: device.orgId, error: 'cancelled_by_operator',
-    });
-    if (!finalised) {
-      // Lost the CAS: a real result (or another cancel) landed between the
-      // read above and here. Re-read rather than assume `failed` — the race
-      // winner could just as well be a completed `executed` run, and telling
-      // the operator a successful run "failed" is its own false report.
-      const [current] = await db
-        .select({ status: deviceFilesystemCleanupRuns.status })
-        .from(deviceFilesystemCleanupRuns)
-        .where(and(
-          eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
-          eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
-          eq(deviceFilesystemCleanupRuns.orgId, device.orgId),
-          eq(deviceFilesystemCleanupRuns.kind, 'system'),
-        ))
-        .limit(1);
-      return c.json({ success: false, error: 'not_running', status: current?.status ?? 'failed' }, 409);
+    // Lookup, the not-running 409 and the CAS-loss re-read live in
+    // `cancelSystemCleanupRun`, shared with the AI tool's `cancel` action
+    // (#10161) so the two lanes cannot drift.
+    const cancelled = await cancelSystemCleanupRun({ device: { id: deviceId, orgId: device.orgId }, cleanupRunId });
+    if (!cancelled.ok) {
+      if (cancelled.status === 404) return c.json({ success: false, error: 'Cleanup run not found' }, 404);
+      return c.json({ success: false, error: 'not_running', status: cancelled.runStatus }, 409);
     }
 
     writeRouteAudit(c, {
@@ -344,7 +325,7 @@ filesystemSystemCleanupRoutes.post(
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: device.hostname,
-      details: { cleanupRunId, commandId: run.commandId },
+      details: { cleanupRunId, commandId: cancelled.commandId, commandCancelled: cancelled.commandCancelled },
       result: 'success',
     });
 

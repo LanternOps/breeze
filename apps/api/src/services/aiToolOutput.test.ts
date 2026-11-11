@@ -859,3 +859,44 @@ describe('character-window fields survive compaction intact (A-W05 Q3)', () => {
     expect(out.text.length).toBeLessThan(30_000);
   });
 });
+
+// #10411: the chat handler compacts a tool result for the model, then
+// postToolUse compacts that SAME string again before persisting the
+// tool_result row. A JSON stdout becomes an object on the first pass, and the
+// second pass dropped it — the transcript kept only {status, exitCode,
+// commandId} while the model had read the stdout.
+describe('compactToolResultForChat is stable on its own output (#10411)', () => {
+  it('keeps a structured (JSON) stdout when an already-compacted command result is compacted again', () => {
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      commandId: 'cmd-1',
+      stdout: JSON.stringify({ processes: [{ name: 'svchost.exe', pid: 4 }], total: 1 }),
+    });
+    const once = compactToolResultForChat('execute_command', raw);
+    const twice = compactToolResultForChat('execute_command', once);
+    expect(JSON.parse(once).stdout).toEqual({ processes: [{ name: 'svchost.exe', pid: 4 }], total: 1 });
+    expect(JSON.parse(twice)).toEqual(JSON.parse(once));
+  });
+
+  it('keeps a first pass\'s stdoutChars/stderrChars instead of re-counting the already-shortened text', () => {
+    const firstPass = JSON.stringify({
+      status: 'completed',
+      exitCode: 1,
+      commandId: 'cmd-2',
+      stdout: 'out '.repeat(25),
+      stdoutChars: 30_000,
+      stderr: 'err '.repeat(10),
+      stderrChars: 9_000,
+    });
+    const again = JSON.parse(compactToolResultForChat('execute_command', firstPass));
+    expect(again.stdout).toBe('out '.repeat(25));
+    expect(again.stdoutChars).toBe(30_000);
+    expect(again.stderrChars).toBe(9_000);
+  });
+
+  it('never trusts a supplied stdoutChars smaller than the stdout it describes', () => {
+    const understated = JSON.stringify({ status: 'completed', exitCode: 0, stdout: 'x'.repeat(500), stdoutChars: 3 });
+    expect(JSON.parse(compactToolResultForChat('execute_command', understated)).stdoutChars).toBe(500);
+  });
+});

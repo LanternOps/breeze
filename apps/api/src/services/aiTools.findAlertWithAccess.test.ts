@@ -19,6 +19,7 @@ vi.mock('../db', () => ({
 
 import { db } from '../db';
 import { findAlertWithAccess } from './aiTools';
+import { findAlertRefWithAccess } from './aiToolsAlerts';
 import type { AuthContext } from '../middleware/auth';
 
 const mockDb = db as unknown as { select: ReturnType<typeof vi.fn> };
@@ -132,5 +133,51 @@ describe('single implementation', () => {
   it('is the same function object as the aiToolsAlerts export (no twin)', async () => {
     const alertsModule = await import('./aiToolsAlerts');
     expect(alertsModule.findAlertWithAccess).toBe(findAlertWithAccess);
+  });
+});
+
+// A tool that only checks an alert is reachable (create_operator_task, #6786)
+// must not load `alerts.message`/`context`: they can hold credentials under
+// names the output chokepoint cannot mask (aiToolOutput.encryptedColumns).
+// `findAlertRefWithAccess` selects only the columns the access axes need and
+// applies the SAME axes as `findAlertWithAccess`: one predicate, two projections.
+describe('findAlertRefWithAccess — same axes, no stored text', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const deviceBound = () => makeAuth({
+    allowedDeviceIds: ['dev-1'], allowedSiteIds: ['site-A'], canAccessSite: () => true,
+  } as Partial<AuthContext>);
+  const helperBound = () => makeAuth({ helperDeviceId: 'dev-1' } as Partial<AuthContext>);
+
+  const cases: Array<[string, () => AuthContext, unknown, unknown, boolean]> = [
+    ['site-restricted, forbidden site', siteRestricted, { id: 'a1', orgId: 'org-1', deviceId: 'd1' }, { siteId: 'site-B' }, false],
+    ['site-restricted, allowed site', siteRestricted, { id: 'a1', orgId: 'org-1', deviceId: 'd1' }, { siteId: 'site-A' }, true],
+    ['site-restricted, device-less', siteRestricted, { id: 'a1', orgId: 'org-1', deviceId: null }, undefined, false],
+    ['unrestricted, device-less', makeAuth, { id: 'a1', orgId: 'org-1', deviceId: null }, undefined, true],
+    ['device-bound, sibling device', deviceBound, { id: 'a1', orgId: 'org-1', deviceId: 'dev-2' }, { siteId: 'site-A' }, false],
+    ['device-bound, device-less', deviceBound, { id: 'a1', orgId: 'org-1', deviceId: null }, undefined, false],
+    ['device-bound, own device', deviceBound, { id: 'a1', orgId: 'org-1', deviceId: 'dev-1' }, { siteId: 'site-A' }, true],
+    ['helper, sibling device', helperBound, { id: 'a1', orgId: 'org-1', deviceId: 'dev-2' }, undefined, false],
+    ['helper, own device', helperBound, { id: 'a1', orgId: 'org-1', deviceId: 'dev-1' }, undefined, true],
+    ['topology alert, forbidden topology site', siteRestricted, { id: 'a1', orgId: 'org-1', deviceId: 'd1', topologySiteId: 'site-B' }, { siteId: 'site-A' }, false],
+    ['topology alert, allowed topology site', siteRestricted, { id: 'a1', orgId: 'org-1', deviceId: 'd1', topologySiteId: 'site-A' }, { siteId: 'site-B' }, true],
+    ['missing alert', siteRestricted, null, undefined, false],
+  ];
+
+  it.each(cases)('%s: agrees with findAlertWithAccess', async (_name, auth, alert, deviceRow, allowed) => {
+    mockAlert(alert, deviceRow);
+    const full = await findAlertWithAccess('a1', auth());
+    mockAlert(alert, deviceRow);
+    const ref = await findAlertRefWithAccess('a1', auth());
+    expect(full !== null, 'findAlertWithAccess').toBe(allowed);
+    expect(ref !== null, 'findAlertRefWithAccess').toBe(allowed);
+  });
+
+  it('selects only the columns the access check needs, never message or context', async () => {
+    mockAlert({ id: 'a1', orgId: 'org-1', deviceId: 'd1' });
+    await findAlertRefWithAccess('a1', makeAuth());
+    const projection = mockDb.select.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(projection, 'a full-row select() would load the stored text').toBeDefined();
+    expect(Object.keys(projection!).sort()).toEqual(['deviceId', 'id', 'orgId', 'topologySiteId']);
   });
 });

@@ -5,6 +5,7 @@ import {
   dismissBodySchema,
   listConcernsQuerySchema,
   listConcernsToolSchema,
+  normalizeConcernPattern,
   nudgeSchema,
   proposeActionSchema,
   raiseConcernChatSchema,
@@ -15,8 +16,10 @@ import {
   snoozeBodySchema,
   snoozeConcernToolSchema,
   updateConcernSchema,
+  updateConcernToolShape,
   validateRequestSpecialist,
 } from './wispConcerns';
+import { CONCERN_SUBJECT_KINDS } from '../types/wispConcerns';
 import { WISP_SPECIALIST_KINDS } from './wispSpecialists';
 
 const id = '6f1c2b1e-4a7d-4c55-9a35-2d8f5f0e1a01';
@@ -28,6 +31,11 @@ describe('raiseConcernSchema (record_concern)', () => {
     for (const kind of ['ticket', 'device', 'alert', 'org', 'integration', 'run', 'task', 'incident', 'quote', 'invoice', 'contract', 'site']) {
       expect(raiseConcernSchema.safeParse({ subject: { kind, id }, summary: 's', severity: 'low' }).success, kind).toBe(true);
     }
+  });
+  // #10386: readiness notes are system-written; a run may not mint one.
+  it('rejects the system-only readiness subject kind', () => {
+    expect(CONCERN_SUBJECT_KINDS).toContain('readiness');
+    expect(raiseConcernSchema.safeParse({ subject: { kind: 'readiness', id }, summary: 's', severity: 'info' }).success).toBe(false);
   });
   it('rejects a 2001-char summary, an unknown kind and > 20 evidence keys', () => {
     expect(raiseConcernSchema.safeParse({ subject: { kind: 'ticket', id }, summary: 'x'.repeat(2001), severity: 'low' }).success).toBe(false);
@@ -43,6 +51,29 @@ describe('JSON byte caps', () => {
     expect(raiseConcernSchema.safeParse({ subject: { kind: 'ticket', id }, summary: 's', severity: 'low', evidence: { blob: 'x'.repeat(16_000) } }).success).toBe(true);
     expect(createWatchInputSchema.safeParse({ orgId: null, kind: 'custom_query', params: { q: 'x'.repeat(4_100) }, cadenceMinutes: 60 }).success).toBe(false);
     expect(createWatchInputSchema.safeParse({ orgId: null, kind: 'custom_query', params: { q: 'x'.repeat(4_000) }, cadenceMinutes: 60 }).success).toBe(true);
+  });
+});
+
+// #11426: the shared key the same-org rollup groups device concerns by.
+describe('record_concern pattern + normalizeConcernPattern', () => {
+  it('accepts an optional pattern on record_concern and keeps it out of the chat raise_concern', () => {
+    const base = { subject: { kind: 'device' as const, id }, summary: 's', severity: 'low' as const };
+    expect(raiseConcernSchema.parse({ ...base, pattern: ' phantom_incident_event ' }).pattern).toBe('phantom_incident_event');
+    expect(raiseConcernSchema.safeParse({ ...base, pattern: 'x'.repeat(101) }).success).toBe(false);
+    expect('pattern' in raiseConcernChatSchema.shape).toBe(false);
+    expect(raiseConcernChatSchema.parse({ ...base, orgId: id2, pattern: 'phantom_incident_event' })).not.toHaveProperty('pattern');
+  });
+
+  it('normalises to lowercase snake_case, cut at an underscore, null when too short', () => {
+    expect(normalizeConcernPattern('  Phantom Incident-Event ')).toBe('phantom_incident_event');
+    expect(normalizeConcernPattern('Browser: critical CVEs!')).toBe('browser_critical_cves');
+    const long = normalizeConcernPattern(`${'abcdefghij_'.repeat(7)}tail`)!;
+    expect(long.length).toBeLessThanOrEqual(64);
+    expect(long.endsWith('_')).toBe(false);
+    expect(long).toBe('abcdefghij_'.repeat(4) + 'abcdefghij');
+    expect(normalizeConcernPattern('a-')).toBeNull();
+    expect(normalizeConcernPattern('---')).toBeNull();
+    expect(normalizeConcernPattern(42)).toBeNull();
   });
 });
 
@@ -69,6 +100,23 @@ describe('updateConcernSchema', () => {
   it('rejects a status other than resolved', () => {
     expect(updateConcernSchema.safeParse({ concernId: id, status: 'dismissed', outcome: 'x' }).success).toBe(false);
   });
+  // #11427: the model sent `{ concernId, summary, outcome }` with no status for
+  // a week, which only edited the summary. An outcome is a conclusion: it resolves.
+  it('an outcome without a status parses as a resolve', () => {
+    expect(updateConcernSchema.parse({ concernId: id, outcome: 'Device restarted on its own' })).toEqual({
+      concernId: id, outcome: 'Device restarted on its own', status: 'resolved',
+    });
+    expect(updateConcernSchema.parse({ concernId: id, summary: 'Rebooted', outcome: 'Reboot alert cleared' }).status).toBe('resolved');
+  });
+  it('an edit without an outcome stays an edit (no status added)', () => {
+    expect(updateConcernSchema.parse({ concernId: id, summary: 'Still pending a restart' })).toEqual({
+      concernId: id, summary: 'Still pending a restart',
+    });
+  });
+  it('the tool shape describes status and outcome to the model', () => {
+    expect(updateConcernToolShape.status.description).toMatch(/resolved/);
+    expect(updateConcernToolShape.outcome.description).toMatch(/resolve/i);
+  });
 });
 
 describe('outcome-tool schemas', () => {
@@ -85,9 +133,11 @@ describe('outcome-tool schemas', () => {
     expect(requestSpecialistSchema.safeParse({ kind: 'sweep', params: {}, reason: 'look at all backups' }).success).toBe(true);
   });
   it('request_specialist accepts only the W07 specialist kinds', () => {
-    for (const kind of WISP_SPECIALIST_KINDS) {
+    for (const kind of WISP_SPECIALIST_KINDS.filter((k) => k !== 'assessment')) {
       expect(requestSpecialistSchema.safeParse({ kind, params: {}, reason: 'look at all backups' }).success).toBe(true);
     }
+    // #10406: chat-only — an assessment never asks for more assessments.
+    expect(requestSpecialistSchema.safeParse({ kind: 'assessment', params: {}, reason: 'look at all backups' }).success).toBe(false);
     expect(requestSpecialistSchema.safeParse({ kind: 'run_script', params: {}, reason: 'look at all backups' }).success).toBe(false);
     expect(requestSpecialistSchema.safeParse({ kind: 'backup', params: {}, reason: 'look at all backups' }).success).toBe(false);
   });

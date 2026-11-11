@@ -37,6 +37,8 @@ export interface CoverageRow {
   state: CoverageState | string;
   reasonCode: string | null;
   detail: string | null;
+  /** Where the cause is fixed, when the API can say (#9247: installer_missing). */
+  setupPath?: string | null;
   lastEvaluatedAt: string;
   stateChangedAt: string;
 }
@@ -62,6 +64,7 @@ const VENDOR_LABELS: Record<string, string> = {
   sentinelone: "SentinelOne",
   controld: "Control D",
   nextdns: "NextDNS",
+  bitdefender: "Bitdefender GravityZone",
 };
 
 export function vendorLabel(vendor: string): string {
@@ -136,6 +139,7 @@ const REASON_KEYS: Record<string, string> = {
   platform_not_selected: "platformNotSelected",
   var_missing: "varMissing",
   var_secret: "varSecret",
+  installer_missing: "installerMissing",
   vendor_unavailable: "vendorUnavailable",
   install_failed: "installFailed",
   install_not_armed: "installNotArmed",
@@ -143,9 +147,11 @@ const REASON_KEYS: Record<string, string> = {
   awaiting_vendor_report: "awaitingVendorReport",
   awaiting_evaluation: "awaitingEvaluation",
   vendor_org_mismatch: "vendorOrgMismatch",
+  tenant_ambiguous: "tenantAmbiguous",
+  installer_link_missing: "installerLinkMissing",
 };
 
-type TFn = (key: string) => string;
+type TFn = (key: string, opts?: Record<string, string>) => string;
 
 export function coverageStateLabel(t: TFn, state: string): string {
   const key = isCoverageState(state) ? STATE_KEYS[state] : null;
@@ -153,10 +159,42 @@ export function coverageStateLabel(t: TFn, state: string): string {
 }
 
 /** Translated reason label; an unknown code falls back to the raw code. */
-export function coverageReasonLabel(t: TFn, code: string | null): string {
+export function coverageReasonLabel(t: TFn, code: string | null, vendor?: string): string {
   if (!code) return "";
   const key = REASON_KEYS[code];
-  return key ? t(/* i18n-dynamic */ `security:securityAgentCoverage.reasons.${key}`) : code;
+  // Reasons that name the vendor interpolate the row's own vendor; a fixed brand would be wrong for the other rows.
+  return key
+    ? t(/* i18n-dynamic */ `security:securityAgentCoverage.reasons.${key}`, { vendor: vendor ? vendorLabel(vendor) : "" })
+    : code;
+}
+
+/** Setup-link labels per reason; any other reason with a setup path reads the default. */
+const SETUP_LINK_KEYS: Record<string, string> = {
+  installer_missing: "installerMissing",
+  tenant_ambiguous: "tenantAmbiguous",
+  installer_link_missing: "installerLinkMissing",
+};
+
+/** Translated label for a row's setup link (`setupPath`). */
+export function coverageSetupLinkLabel(t: TFn, code: string | null): string {
+  const key = (code && SETUP_LINK_KEYS[code]) || "default";
+  return t(/* i18n-dynamic */ `security:securityAgentCoverage.setupLink.${key}`);
+}
+
+/**
+ * A row's setup path as a link target, or null. The value comes from the
+ * server, so only a same-site absolute path is used (no protocol-relative or
+ * backslash forms a browser would normalize to another host, and no
+ * whitespace or control characters, which browsers strip: "/\t/x" → "//x").
+ */
+export function coverageSetupPath(row: { setupPath?: unknown }): string | null {
+  const value = row.setupPath;
+  return typeof value === "string" &&
+    /^\/(?![\/\\])/.test(value) &&
+    !value.includes("\\") &&
+    !/[\u0000- \u007f]/.test(value)
+    ? value
+    : null;
 }
 
 const STATE_CLASSES: Record<CoverageState, string> = {

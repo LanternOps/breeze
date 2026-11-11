@@ -1,6 +1,7 @@
 /**
  * Wave F (#9791 F2) — reliability score factors and offenders link to the
- * Event log tab carrying the scoring window (spec §3.7, R2).
+ * Event log tab carrying the scoring window (spec §3.7, R2). #10053: the window
+ * and the scored events' sources come from the API, per factor.
  */
 import '@/lib/i18n';
 
@@ -32,16 +33,22 @@ const json = (payload: unknown): Response =>
   ({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const COMPUTED_AT = '2026-10-24T12:30:45.000Z';
-// 30 days before computedAt, rounded down to the start of its UTC day.
-const WINDOW_FROM = '2026-09-24T00:00:00.000Z';
+// The API's per-factor scoring window (#10053). Deliberately not what the old
+// client-side reconstruction from computedAt would produce, so a link carrying
+// these values proves the panel used the server window.
+const WINDOW_FROM = '2026-09-25T06:00:00.000Z';
+const WINDOW_TO = '2026-10-24T12:00:00.000Z';
 
-const driver = (factor: string, lostPoints: number, weight = 20) => ({
+const driver = (factor: string, lostPoints: number, weight = 20, over: Record<string, unknown> = {}) => ({
   factor,
   label: factor,
   score: 100 - lostPoints * 4,
   weight,
   lostPoints,
   evidence: {},
+  windowStart: WINDOW_FROM,
+  windowEnd: WINDOW_TO,
+  ...over,
 });
 
 function snapshot(over: Record<string, unknown> = {}) {
@@ -103,17 +110,17 @@ describe('DeviceReliabilityPanel event-log links (#9791 F2)', () => {
     route(snapshot());
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
     const link = await screen.findByTestId('reliability-factor-link-serviceFailures');
-    expect(filterOf(link)).toEqual({ source: 'Service Control Manager', from: WINDOW_FROM, to: COMPUTED_AT });
+    expect(filterOf(link)).toEqual({ sources: ['Service Control Manager'], from: WINDOW_FROM, to: WINDOW_TO });
     expect(link).toHaveTextContent('View in event log');
     // R2: never a count.
     expect(link.textContent).not.toMatch(/\d/);
   });
 
-  it.each(['crashes', 'hangs', 'hardwareErrors'])('%s links window-only and says "Open event log"', async (factor) => {
+  it.each(['crashes', 'hangs', 'hardwareErrors'])('%s without scored sources links window-only and says "Open event log"', async (factor) => {
     route(snapshot());
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
     const link = await screen.findByTestId(`reliability-factor-link-${factor}`);
-    expect(filterOf(link)).toEqual({ from: WINDOW_FROM, to: COMPUTED_AT });
+    expect(filterOf(link)).toEqual({ from: WINDOW_FROM, to: WINDOW_TO });
     expect(link).toHaveTextContent('Open event log');
   });
 
@@ -158,7 +165,7 @@ describe('DeviceReliabilityPanel event-log links (#9791 F2)', () => {
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
     fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
     const spooler = await screen.findByTestId('reliability-offender-link-Spooler');
-    expect(filterOf(spooler)).toEqual({ from: WINDOW_FROM, to: COMPUTED_AT });
+    expect(filterOf(spooler)).toEqual({ from: WINDOW_FROM, to: WINDOW_TO });
     expect(spooler).toHaveTextContent('Open event log');
   });
 
@@ -166,29 +173,71 @@ describe('DeviceReliabilityPanel event-log links (#9791 F2)', () => {
     route(snapshot({ osType: 'macos' }));
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
     const link = await screen.findByTestId('reliability-factor-link-serviceFailures');
-    expect(filterOf(link)).toEqual({ from: WINDOW_FROM, to: COMPUTED_AT });
+    expect(filterOf(link)).toEqual({ from: WINDOW_FROM, to: WINDOW_TO });
     expect(link).toHaveTextContent('Open event log');
   });
 
-  it('clamps the window start to the baseline marker and enrolment', async () => {
-    route(snapshot({ baseline: { baselineAt: '2026-10-10T08:00:00.000Z' } }));
-    const { unmount } = render(<DeviceReliabilityPanel deviceId="dev-1" />);
-    expect(filterOf(await screen.findByTestId('reliability-factor-link-crashes'))?.from).toBe(
-      '2026-10-10T08:00:00.000Z',
-    );
-    unmount();
-    route(snapshot({ enrolledAt: '2026-10-20T00:00:00.000Z' }));
+  it.each([
+    ['crashes', ['EventLog', 'Microsoft-Windows-Kernel-Power']],
+    ['hangs', ['Application Hang']],
+    ['hardwareErrors', ['Microsoft-Windows-WHEA-Logger', 'disk']],
+  ])('%s links to every source its scored events came from and says "View in event log" (#10053)', async (factor, sources) => {
+    route(snapshot({ drivers: [driver(factor as string, 3, 20, { eventLogSources: sources })] }));
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
-    expect(filterOf(await screen.findByTestId('reliability-factor-link-crashes'))?.from).toBe(
-      '2026-10-20T00:00:00.000Z',
-    );
+    const link = await screen.findByTestId(`reliability-factor-link-${factor}`);
+    expect(filterOf(link)).toEqual({ sources, from: WINDOW_FROM, to: WINDOW_TO });
+    expect(link).toHaveTextContent('View in event log');
+    for (const source of sources as string[]) expect(link.getAttribute('title')).toContain(source);
   });
 
-  it('renders text, not a link, when computedAt is unparseable', async () => {
-    route(snapshot({ computedAt: 'not-a-date' }));
+  it('an empty scored-source list links window-only (#10053)', async () => {
+    route(snapshot({ drivers: [driver('crashes', 0, 0, { eventLogSources: [] })], crashCount30d: 1 }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    const link = await screen.findByTestId('reliability-factor-link-crashes');
+    expect(filterOf(link)).toEqual({ from: WINDOW_FROM, to: WINDOW_TO });
+    expect(link).toHaveTextContent('Open event log');
+  });
+
+  it('uses each factor\'s own server window, not one reconstructed from computedAt (#10053)', async () => {
+    route(snapshot({
+      drivers: [
+        driver('crashes', 3, 20, { windowStart: '2026-10-10T08:00:00.000Z', windowEnd: '2026-10-24T11:00:00.000Z' }),
+        driver('hangs', 2),
+      ],
+    }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    expect(filterOf(await screen.findByTestId('reliability-factor-link-crashes'))).toEqual({
+      from: '2026-10-10T08:00:00.000Z', to: '2026-10-24T11:00:00.000Z',
+    });
+    expect(filterOf(screen.getByTestId('reliability-factor-link-hangs'))).toEqual({ from: WINDOW_FROM, to: WINDOW_TO });
+  });
+
+  it('renders text, not a link, when the factor carries no usable window', async () => {
+    route(snapshot({
+      drivers: [
+        driver('crashes', 3, 20, { windowStart: undefined, windowEnd: undefined }),
+        driver('hangs', 2, 20, { windowStart: 'not-a-date' }),
+      ],
+    }));
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
     await screen.findByTestId('reliability-factor-crashes');
     expect(screen.queryByTestId('reliability-factor-link-crashes')).toBeNull();
+    expect(screen.queryByTestId('reliability-factor-link-hangs')).toBeNull();
+  });
+
+  it('offender rows take their own factor\'s window (#10053)', async () => {
+    route(snapshot({
+      drivers: [
+        driver('serviceFailures', 5),
+        driver('hardwareErrors', 4, 20, { windowStart: '2026-10-01T00:00:00.000Z' }),
+        driver('hangs', 3),
+      ],
+    }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
+    const whea = await screen.findByTestId('reliability-offender-link-WHEA-Logger');
+    expect(filterOf(whea)?.from).toBe('2026-10-01T00:00:00.000Z');
+    expect(filterOf(screen.getByTestId('reliability-offender-link-Application Hang'))?.from).toBe(WINDOW_FROM);
   });
 
   it('an unweighted fault row with evidence still links', async () => {
@@ -203,11 +252,11 @@ describe('DeviceReliabilityPanel event-log links (#9791 F2)', () => {
     fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
 
     const whea = await screen.findByTestId('reliability-offender-link-WHEA-Logger');
-    expect(filterOf(whea)).toEqual({ source: 'WHEA-Logger', from: WINDOW_FROM, to: COMPUTED_AT });
+    expect(filterOf(whea)).toEqual({ sources: ['WHEA-Logger'], from: WINDOW_FROM, to: WINDOW_TO });
     expect(whea).toHaveTextContent('View in event log');
 
     const hang = screen.getByTestId('reliability-offender-link-Application Hang');
-    expect(filterOf(hang)).toEqual({ source: 'Application Hang', from: WINDOW_FROM, to: COMPUTED_AT });
+    expect(filterOf(hang)).toEqual({ sources: ['Application Hang'], from: WINDOW_FROM, to: WINDOW_TO });
 
     // Windows service names are not event-log sources: same href as the SCM
     // factor row, honestly labelled.
@@ -221,7 +270,7 @@ describe('DeviceReliabilityPanel event-log links (#9791 F2)', () => {
     render(<DeviceReliabilityPanel deviceId="dev-1" />);
     fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
     const spooler = await screen.findByTestId('reliability-offender-link-Spooler');
-    expect(filterOf(spooler)?.source).toBe('Spooler');
+    expect(filterOf(spooler)?.sources).toEqual(['Spooler']);
     expect(spooler).toHaveTextContent('View in event log');
   });
 });

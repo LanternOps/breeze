@@ -92,7 +92,7 @@ import { coreRoutes } from './core';
 import { db } from '../../db';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { eq, type SQL } from 'drizzle-orm';
-import { deviceHardwareHealth, devices } from '../../db/schema';
+import { deviceHardware, deviceHardwareHealth, devices, deviceWarranty } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 
 function rigDeviceListRows(
@@ -106,8 +106,8 @@ function rigDeviceListRows(
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
   const where = vi.fn().mockReturnValue({ orderBy });
-  // Three chained leftJoins (deviceHardware, deviceReliability #1720,
-  // deviceHardwareHealth #6854), so each leftJoin returns an object exposing
+  // Three base joins plus the opt-in deviceWarranty join (#9863).
+  // Each leftJoin returns an object exposing
   // the next leftJoin and the terminal where().
   const chain: Record<string, unknown> = {};
   const leftJoin = vi.fn().mockReturnValue(chain);
@@ -408,6 +408,26 @@ describe('GET /devices — response shape', () => {
     expect(row.lastLogAt).toBeNull();
   });
 
+  it.each(['TEST-SERIAL-01', null])('includes hardware serialNumber %s in list rows', async serialNumber => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', serialNumber }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.serialNumber', serialNumber);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      serialNumber: deviceHardware.serialNumber,
+    });
+  });
+
+  it.each(['5S3F8EA#ABB', null])('includes hardware productSku %s in list rows (#9593)', async productSku => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', productSku }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.productSku', productSku);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      productSku: deviceHardware.productSku,
+    });
+  });
+
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {
     const { leftJoin } = rigDeviceListRows([{
       id: '11111111-1111-4111-8111-111111111111', hostname: 'hardware-host',
@@ -426,6 +446,46 @@ describe('GET /devices — response shape', () => {
     rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', hardwareHealth: null, hardwareHealthSummary: null }]);
     const response = await app.request('/devices');
     expect((await response.json()).data[0]).toMatchObject({ hardwareHealth: null, hardwareHealthSummary: null });
+  });
+  // #9863 — fleet-wide warranty view. The list row carries the device's
+  // warranty end date and stored status from device_warranty, joined on the
+  // device subject only (manual-asset warranty rows have device_id NULL), so
+  // the Warranty column needs no per-row fetch.
+  it.each(['', '?includeWarranty=false'])('keeps warranty off the base list query (%s)', async (query) => {
+    const { leftJoin } = rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111' }]);
+    const response = await app.request(`/devices${query}`);
+    expect(response.status).toBe(200);
+    expect(leftJoin.mock.calls.map(([table]) => table)).not.toContain(deviceWarranty);
+    expect(leftJoin).toHaveBeenCalledTimes(3);
+    const projection = vi.mocked(db.select).mock.calls[0]?.[0];
+    expect(projection).not.toHaveProperty('warrantyEndDate');
+    expect(projection).not.toHaveProperty('warrantyStatus');
+    // No extra query for warranty enrichment on the default hot path.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(db.execute).toHaveBeenCalledTimes(2);
+  });
+  it('projects the warranty end date and status on list rows', async () => {
+    const { leftJoin } = rigDeviceListRows([{
+      id: '11111111-1111-4111-8111-111111111111', hostname: 'warranty-host',
+      warrantyEndDate: '2026-12-31', warrantyStatus: 'expiring',
+    }]);
+    const response = await app.request('/devices?includeWarranty=true');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data[0]).toMatchObject({ warrantyEndDate: '2026-12-31', warrantyStatus: 'expiring' });
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      warrantyEndDate: deviceWarranty.warrantyEndDate, warrantyStatus: deviceWarranty.status,
+    });
+    const warrantyJoin = leftJoin.mock.calls.find(([table]) => table === deviceWarranty);
+    expect(warrantyJoin).toBeDefined();
+    const on = new PgDialect().sqlToQuery(warrantyJoin![1] as SQL);
+    expect(on.sql).toBe('"devices"."id" = "device_warranty"."device_id"');
+  });
+  it('returns null warranty fields when the device has no warranty row', async () => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', warrantyEndDate: null, warrantyStatus: null }]);
+    const row = (await (await app.request('/devices?includeWarranty=true')).json()).data[0];
+    expect(Object.prototype.hasOwnProperty.call(row, 'warrantyEndDate')).toBe(true);
+    expect(row).toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
   });
   // Log-shipping health W01 (#8608): the list row carries ONLY the derived
   // `logShipping` object. The raw columns must never reach the response, so

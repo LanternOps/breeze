@@ -202,8 +202,9 @@ func TestBuildDarwinUninstallScript(t *testing.T) {
 				o.RemoveConfig = false
 				return o
 			}(),
-			wantOrder:  []string{"rm -f '/usr/local/bin/breeze-agent'"},
-			wantAbsent: []string{"rm -rf"},
+			wantOrder: []string{"rm -f '/usr/local/bin/breeze-agent'"},
+			// The isolation recovery directory is always removed; config is not.
+			wantAbsent: []string{"rm -rf '/Library/Application Support/Breeze'"},
 		},
 		{
 			name: "single quotes in paths are escaped for sh",
@@ -292,6 +293,9 @@ func TestBuildLinuxUninstallScript(t *testing.T) {
 // remain installed as a clean uninstall — and no shutdown may be scheduled.
 // On success, the ack says "initiated"/"handed off", never "completed".
 func TestHandleSelfUninstall_ResultContract(t *testing.T) {
+	origRelease := releaseIsolationForUninstallFn
+	releaseIsolationForUninstallFn = func(*Heartbeat) error { return nil }
+	t.Cleanup(func() { releaseIsolationForUninstallFn = origRelease })
 	origPrepare := prepareSelfUninstallFn
 	origSchedule := scheduleSelfUninstallShutdownFn
 	t.Cleanup(func() {
@@ -436,6 +440,9 @@ func TestDarwinUninstallScriptExecutable(t *testing.T) {
 			}
 		}
 		script := buildDarwinUninstallScript(darwinUninstallScriptOptions{Label: "com.breeze.agent", WatchdogLabel: "com.breeze.watchdog", WatchdogProcess: "breeze-watchdog", PlistPath: "/Library/LaunchDaemons/com.breeze.agent.plist", BinaryPath: "/usr/local/bin/breeze-agent", ConfigDir: "/Library/Application Support/Breeze", RemoveConfig: removeConfig, DelaySeconds: 5})
+		// Never consult this host's real isolation journal: if one existed,
+		// the release step would run the installed agent.
+		script = strings.ReplaceAll(script, "/Library/Application Support/Breeze/data", root+"/no-journal")
 		cmd := exec.Command("/bin/sh", "-c", script)
 		cmd.Env = append(os.Environ(), "PATH="+root+":/usr/bin:/bin", "FIXTURE_CALLS="+calls)
 		if out, err := cmd.CombinedOutput(); err != nil {

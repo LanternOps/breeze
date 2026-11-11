@@ -93,6 +93,23 @@ describe('buildContractSpecsFromQuote — contract name (#9778)', () => {
   });
 });
 
+describe('buildContractSpecsFromQuote — source quote link (#10361)', () => {
+  it('stamps the quote id on every cadence contract', () => {
+    const specs = buildContractSpecsFromQuote(
+      { ...quote, quoteId: 'quote-1' },
+      [line({ recurrence: 'monthly' }), line({ sourceQuoteLineId: 'quote-line-2', recurrence: 'annual' })],
+      '2026-11-01', null,
+    );
+    expect(specs.map((s) => s.intervalMonths)).toEqual([1, 12]);
+    expect(specs.map((s) => s.sourceQuoteId)).toEqual(['quote-1', 'quote-1']);
+  });
+
+  it('leaves it null when the caller has no quote id', () => {
+    const [spec] = buildContractSpecsFromQuote(quote, [line({})], '2026-11-01', null);
+    expect(spec!.sourceQuoteId).toBeNull();
+  });
+});
+
 describe('buildContractSpecsFromQuote', () => {
   it('returns no specs when there are no recurring lines', () => {
     const specs = buildContractSpecsFromQuote(

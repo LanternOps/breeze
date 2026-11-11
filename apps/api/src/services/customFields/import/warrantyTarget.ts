@@ -38,7 +38,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../../db';
 import { deviceWarranty } from '../../../db/schema';
-import { computeWarrantyStatus } from '../../warrantySync';
+import { computeWarrantyStatus, requestWarrantyStatusReevaluation } from '../../warrantySync';
 import { normalizeManufacturer } from '../../warrantyProviders';
 import {
   AGENT_OWNED_WARRANTY_SOURCE_LIST,
@@ -263,5 +263,7 @@ export async function applyWarrantyImport(
     .returning({ id: deviceWarranty.id });
 
   // No row means the guard blocked the update. Never report that as applied.
-  return written.length > 0 ? 'applied' : 'skipped-provider-owned';
+  if (written.length === 0) return 'skipped-provider-owned';
+  requestWarrantyStatusReevaluation(write.deviceId, write.orgId, existing?.status ?? null, status);
+  return 'applied';
 }

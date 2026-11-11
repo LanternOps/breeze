@@ -51,6 +51,16 @@ type EnrollRequest struct {
 	IsVirtual              bool          `json:"isVirtual,omitempty"`
 	VirtualizationPlatform string        `json:"virtualizationPlatform,omitempty"`
 	HardwareInfo           *HardwareInfo `json:"hardwareInfo,omitempty"`
+	// SecurityCapabilities a new install declares at enrollment (#8318):
+	// so far only the rebind protocol, since a freshly enrolled install is
+	// the device a reinstall reattach makes the source.
+	SecurityCapabilities *EnrollSecurityCapabilities `json:"securityCapabilities,omitempty"`
+}
+
+// EnrollSecurityCapabilities is EnrollRequest.SecurityCapabilities. The API
+// records rebind_protocol_version from it (exactly 1 counts).
+type EnrollSecurityCapabilities struct {
+	RebindProtocolVersion int `json:"rebindProtocolVersion,omitempty"`
 }
 
 type HardwareInfo struct {
@@ -61,6 +71,7 @@ type HardwareInfo struct {
 	DiskTotalGB             uint64 `json:"diskTotalGb,omitempty"`
 	GPUModel                string `json:"gpuModel,omitempty"`
 	SerialNumber            string `json:"serialNumber,omitempty"`
+	ProductSKU              string `json:"productSku,omitempty"`
 	Manufacturer            string `json:"manufacturer,omitempty"`
 	Model                   string `json:"model,omitempty"`
 	MotherboardManufacturer string `json:"motherboardManufacturer,omitempty"`

@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 var linuxNeedsRestarting = &nrCache{ttl: 30 * time.Minute, run: runNeedsRestarting}
@@ -24,7 +26,7 @@ func runNeedsRestarting() (bool, bool) {
 	if err != nil {
 		return false, false
 	}
-	runErr := exec.Command(path, "-r").Run()
+	runErr := procspawn.Command(path, "-r").Run()
 	if runErr == nil {
 		return false, true
 	}

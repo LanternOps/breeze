@@ -4,13 +4,12 @@ import { HTTPException } from 'hono/http-exception';
 import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
 import { z } from 'zod';
 import { and, or, eq, ne, sql, desc, gte, lte, inArray, isNull, notExists, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import {
   aiAlertVerdicts,
   alertCorrelationGroups,
   alertCorrelationMembers,
   alertRules,
-  alertTemplates,
   alerts,
   notificationChannels,
   alertNotifications,
@@ -22,6 +21,7 @@ import {
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { isAutomationPrincipal, isFlowPrincipal } from '../../middleware/principalKind';
 import { setCooldown } from '../../services/alertCooldown';
+import { lifecycleForAlert } from '../../services/alertLifecycle/resolve';
 import {
   ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
   ALERT_CAS_LOST_MESSAGE,
@@ -42,6 +42,7 @@ import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../ser
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, unsuppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
 import { fillStoredAlertCopy } from './alertCopy';
+import { enrichAlertSubjects } from '../../services/alertSubject';
 import { withAlertActorNames } from './actorNames';
 import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
@@ -356,6 +357,9 @@ alertsRoutes.get(
         // being named here.
         monitorId: alerts.monitorId,
         deviceId: alerts.deviceId,
+        ownerKind: alerts.ownerKind,
+        ownerRef: alerts.ownerRef,
+        topologySiteId: alerts.topologySiteId,
         orgId: alerts.orgId,
         status: alerts.status,
         severity: alerts.severity,
@@ -378,7 +382,7 @@ alertsRoutes.get(
         orgName: organizations.name
       })
       .from(alerts)
-      .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .leftJoin(devices, and(eq(alerts.deviceId, devices.id), eq(alerts.orgId, devices.orgId)))
       .leftJoin(alertRules, eq(alerts.ruleId, alertRules.id))
       .leftJoin(organizations, eq(alerts.orgId, organizations.id))
       .where(whereCondition)
@@ -440,7 +444,10 @@ alertsRoutes.get(
       verdictFeedbackRows.map((row) => [row.id, row.feedbackByName ?? null])
     );
 
-    const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows);
+    const alertsWithSubjects = await enrichAlertSubjects(alertsWithActorNames.map(alert => ({
+      ...alert, deviceName: alert.deviceDisplayName || alert.deviceHostname,
+    })));
+    const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithSubjects, correlationRows);
     const data = correlatedAlerts.map((alert) => {
       const verdict = verdictMap.get(alert.id);
       const { deviceDisplayName, ...rest } = alert;
@@ -452,7 +459,7 @@ alertsRoutes.get(
             feedbackByName: feedbackByNameByVerdictId.get(verdict.id) ?? null,
           }
           : null,
-      }, deviceDisplayName || rest.deviceHostname);
+      }, deviceDisplayName || rest.deviceHostname || rest.subjectName);
     });
 
     return c.json({
@@ -740,7 +747,8 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          // Savepoint so a failed UPDATE rolls back and later iterations still run (#11203).
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'acknowledged',
@@ -748,7 +756,7 @@ alertsRoutes.post(
               acknowledgedBy: auth.user.id,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else if (action === 'suppress') {
           // A resolved or dismissed alert can't be suppressed (matches the single endpoint).
           if (alert.status === 'resolved' || alert.status === 'dismissed') {
@@ -756,14 +764,14 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'suppressed',
               suppressedUntil,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else if (action === 'dismiss') {
           // Dismiss is terminal and valid from ANY other status — it exists
           // precisely so already-resolved alerts can be cleared for good.
@@ -772,7 +780,7 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'dismissed',
@@ -780,14 +788,14 @@ alertsRoutes.post(
               dismissedBy: auth.user.id,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else {
           if (alert.status === 'resolved' || alert.status === 'dismissed') {
             results.skipped++;
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'resolved',
@@ -796,7 +804,7 @@ alertsRoutes.post(
               resolutionReason: 'manual',
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         }
         if (written.length === 0) {
           // Status changed between our snapshot and the write — don't emit
@@ -1035,23 +1043,9 @@ alertsRoutes.post(
     }
     try {
       if (alert.ruleId && isDeviceOwned(alert)) {
-        const [rule] = await db
-          .select()
-          .from(alertRules)
-          .where(eq(alertRules.id, alert.ruleId))
-          .limit(1);
-
-        if (rule) {
-          const [template] = await db
-            .select()
-            .from(alertTemplates)
-            .where(eq(alertTemplates.id, rule.templateId))
-            .limit(1);
-
-          const overrides = rule.overrideSettings as Record<string, unknown> | null;
-          const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-            template?.cooldownMinutes ?? 15;
-          await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+        const lifecycle = await lifecycleForAlert(alert);
+        if (lifecycle) {
+          await setCooldown(alert.ruleId, alert.deviceId, lifecycle.cooldownMinutes, alert.subjectKey ?? undefined);
         }
       }
     } catch (error) {
@@ -1359,7 +1353,7 @@ alertsRoutes.get(
     const [device] = alert.deviceId === null ? [] : await db
       .select()
       .from(devices)
-      .where(eq(devices.id, alert.deviceId))
+      .where(and(eq(devices.id, alert.deviceId), eq(devices.orgId, alert.orgId)))
       .limit(1);
 
     const [rule] = alert.ruleId ? await db
@@ -1411,8 +1405,13 @@ alertsRoutes.get(
       ? await withAlertActorNames([{ id: verdict.id, feedbackBy: verdict.feedbackBy }])
       : [];
 
+    const [alertWithSubject] = await enrichAlertSubjects([{
+      ...alertWithActorNames, deviceName: device?.displayName || device?.hostname,
+    }]);
+
     return c.json(withMlAlertContext(fillStoredAlertCopy({
       ...alertWithActorNames,
+      ...alertWithSubject,
       device: device ? {
         id: device.id,
         hostname: device.hostname,
@@ -1434,7 +1433,7 @@ alertsRoutes.get(
           feedbackByName: feedbackByNameRow?.feedbackByName ?? null,
         }
         : null,
-    }, device?.displayName || device?.hostname)));
+    }, device?.displayName || device?.hostname || alertWithSubject?.subjectName)));
   }
 );
 

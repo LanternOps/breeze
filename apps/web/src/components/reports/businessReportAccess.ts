@@ -1,4 +1,10 @@
-import { BUSINESS_REPORT_REQUIRED_PERMISSIONS, BUSINESS_REPORT_TYPES, type BusinessReportType } from '@breeze/shared';
+import {
+  BUSINESS_REPORT_REQUIRED_PERMISSIONS,
+  BUSINESS_REPORT_TYPES,
+  REPORT_TYPE_REQUIRED_PERMISSIONS,
+  type BusinessReportType,
+  type ReportType,
+} from '@breeze/shared';
 import { usePermissions } from '@/lib/permissions';
 
 /**
@@ -15,14 +21,14 @@ export function isBusinessReportType(type: string | undefined): type is Business
 }
 
 /**
- * Returns a `canUse(type)` checker: true for any non-business type (nothing to
- * gate), and for a business type only when the current user holds every
- * permission that type requires.
+ * Returns a `canUse(type)` checker: true for a type that requires no underlying
+ * read grant, and otherwise only when the current user holds every permission
+ * the type requires (the business types, plus ticket_sla_performance).
  */
 export function useCanUseBusinessReportType(): (type: string | undefined) => boolean {
   const { can } = usePermissions();
   return (type: string | undefined) => {
-    if (!isBusinessReportType(type)) return true;
-    return BUSINESS_REPORT_REQUIRED_PERMISSIONS[type].every(({ resource, action }) => can(resource, action));
+    const required = type ? REPORT_TYPE_REQUIRED_PERMISSIONS[type as ReportType] : undefined;
+    return !required || required.every(({ resource, action }) => can(resource, action));
   };
 }

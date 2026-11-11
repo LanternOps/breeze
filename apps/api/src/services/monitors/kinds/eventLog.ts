@@ -18,6 +18,7 @@ export const eventLogKind: MonitorKindSpec<C> = {
   overridableKeys: ['countThreshold', 'windowMinutes', 'level'],
   defaultSeverity: 'medium',
   agentDelivered: false,
+  recoverySupported: true,
   titleTemplate: '{{ruleName}} on {{deviceName}}',
   messageTemplate: '{{count}} matching {{category}} events on {{deviceName}} within {{windowMinutes}} minutes',
   toAlertCondition: (c) => ({

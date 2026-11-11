@@ -44,13 +44,19 @@ const (
 	pamDialogTitle = "Breeze — Elevation Request"
 )
 
-func showPamDialog(req ipc.PamRequestDialog) ipc.PamDialogResult {
+// showPamDialog shows the elevation dialog. Ending ctx (pam_close_dialog,
+// #10370) closes the custom window; the MessageBox fallback cannot be closed
+// from outside, so it is skipped once ctx has ended.
+func showPamDialog(ctx context.Context, req ipc.PamRequestDialog) ipc.PamDialogResult {
 	return showPamDialogOnInputDesktop(windowsPamDesktopOps{}, func(_ string) ipc.PamDialogResult {
 		// The custom window is the primary rendering; the plain MessageBox
 		// stays as a fallback so a class-registration or window-creation
 		// failure can never swallow an elevation prompt.
-		if result, ok := showPamDialogWindow(req); ok {
+		if result, ok := showPamDialogWindow(ctx, req); ok {
 			return result
+		}
+		if ctx.Err() != nil {
+			return ipc.PamDialogResult{Approved: false, DismissedByUser: true}
 		}
 		log.Warn("pam: custom elevation dialog unavailable; falling back to MessageBox")
 		return showPamMessageBox(req)

@@ -117,6 +117,45 @@ export function joinRemotePath(basePath: string, name: string): string {
   return `${normalized}/${name}`;
 }
 
+/**
+ * Windows DOS device names (CON, PRN, AUX, NUL, COM0-9, LPT0-9 incl. the
+ * superscript forms, CONIN$/CONOUT$), with or without an extension, in any case.
+ * Mirrors isReservedWindowsName in
+ * agent/internal/remote/tools/software_install_archive.go; keep the two in step.
+ */
+function isReservedWindowsName(name: string): boolean {
+  const dot = name.indexOf('.');
+  const base = (dot >= 0 ? name.slice(0, dot) : name).replace(/ +$/, '').toUpperCase();
+  if (['CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$'].includes(base)) return true;
+  return /^(COM|LPT)[0-9¹²³]$/.test(base);
+}
+
+/**
+ * Why a new folder name cannot be used in `parentPath`, or null when it can.
+ *
+ * The clash check is not cosmetic: the agent runs MkdirAll, so creating a folder
+ * that already exists reports success and creates nothing. Windows refuses its
+ * reserved characters and silently drops a trailing dot, so those rules apply
+ * only under a Windows path. Windows and macOS volumes ignore case by default,
+ * so a case-only difference counts as a clash there (a rare case-sensitive macOS
+ * volume is refused a legal name, which is the cheaper mistake).
+ */
+export function validateFolderName(
+  name: string,
+  parentPath: string,
+  existingNames: readonly string[],
+  osType?: string,
+): 'invalid' | 'exists' | null {
+  const windows = isWindowsPath(parentPath);
+  if (name === '.' || name === '..' || /[\u0000-\u001f/\\]/.test(name)) return 'invalid';
+  if (windows && (/[<>:"|?*]|[. ]$/.test(name) || isReservedWindowsName(name))) return 'invalid';
+
+  const ignoreCase = windows || osType === 'macos' || osType === 'darwin';
+  const comparable = (value: string) => (ignoreCase ? value.toLowerCase() : value);
+  const taken = existingNames.some((existing) => comparable(existing) === comparable(name));
+  return taken ? 'exists' : null;
+}
+
 export function buildBreadcrumbs(path: string): PathBreadcrumbModel {
   if (isWindowsPath(path)) {
     const normalized = normalizeWindowsPath(path);

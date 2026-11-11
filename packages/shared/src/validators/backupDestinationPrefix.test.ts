@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   BACKUP_DESTINATION_PREFIX_MAX_LENGTH,
@@ -27,5 +30,25 @@ describe('normalizeBackupDestinationPrefix', () => {
 
   it('is exported from the validators barrel', () => {
     expect(fromBarrel('/acme/')).toEqual({ ok: true, prefix: 'acme' });
+  });
+});
+
+// The agent's Go port (NormalizeKeyPrefix, agent/internal/backup/providers/
+// keyprefix.go) reads the same vectors, so the two cannot drift apart (#9441).
+type NormalizeVector = { raw: string | null; ok: boolean; prefix?: string | null; reason?: string; note?: string };
+const sharedVectors: { normalize: NormalizeVector[] } = JSON.parse(
+  readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../../../agent/internal/backup/providers/testdata/key-prefix-vectors.json'),
+    'utf8',
+  ),
+);
+
+describe('normalizeBackupDestinationPrefix shared Go/TS vectors', () => {
+  it('loaded the shared fixture', () => {
+    expect(sharedVectors.normalize.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it.each(sharedVectors.normalize.map((v) => [JSON.stringify(v.raw), v] as const))('%s', (_label, v) => {
+    expect(n(v.raw)).toEqual(v.ok ? { ok: true, prefix: v.prefix ?? null } : { ok: false, reason: v.reason });
   });
 });

@@ -1,6 +1,7 @@
 package systemstate
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -40,6 +40,11 @@ func modeFromInfo(info os.FileInfo) uint32 {
 // package in the dependency graph (backup imports systemstate) so it cannot
 // reuse that one directly.
 func sha256File(path string) (string, error) {
+	return sha256FileContext(context.Background(), path)
+}
+
+// sha256FileContext is sha256File, abandoned when ctx ends.
+func sha256FileContext(ctx context.Context, path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -49,7 +54,7 @@ func sha256File(path string) (string, error) {
 	// propagating — discard explicitly rather than leaving it unchecked.
 	defer func() { _ = f.Close() }()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, contextReader{ctx: ctx, r: f}); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
@@ -94,10 +99,14 @@ func artifactFromFile(name, category, absPath, stagingDir string) Artifact {
 // preserve mode/ownership on the link itself in a way worth restoring
 // separately from recreating the link). Any other non-regular, non-symlink
 // entry (socket, FIFO, device) is skipped entirely, matching copyTree's own
-// choice not to stage them.
-func collectArtifactsInDir(category, dir, stagingDir string) ([]Artifact, error) {
+// choice not to stage them. When ctx ends it returns the artifacts listed so
+// far with ctx's error.
+func collectArtifactsInDir(ctx context.Context, category, dir, stagingDir string) ([]Artifact, error) {
 	var artifacts []Artifact
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return nil // skip errors
 		}
@@ -130,7 +139,10 @@ func collectArtifactsInDir(category, dir, stagingDir string) ([]Artifact, error)
 		if err != nil {
 			return nil
 		}
-		checksum, sumErr := sha256File(path)
+		checksum, sumErr := sha256FileContext(ctx, path)
+		if err := ctx.Err(); err != nil {
+			return err // not a bad file: no artifact, and no checksum warning
+		}
 		if sumErr != nil {
 			slog.Warn("systemstate: checksum failed, artifact recorded without one",
 				"path", path, "error", sumErr.Error())
@@ -167,7 +179,9 @@ func collectArtifactsInDir(category, dir, stagingDir string) ([]Artifact, error)
 //     is rejected — callers that walk a tree (copyTree) are expected to
 //     filter those out themselves with an info-level log, since "not a
 //     regular file" from here reads like a plain error otherwise.
-func copyFile(src, dst string) error {
+//
+// When ctx ends mid-copy the partial dst is removed.
+func copyFile(ctx context.Context, src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
 		return fmt.Errorf("lstat %s: %w", src, err)
@@ -186,6 +200,13 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
+	// A step left behind by runBounded resumes here when its blocked open
+	// returns, possibly after the run removed the staging dir: it must not
+	// recreate that tree below.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
@@ -195,11 +216,14 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
 
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, contextReader{ctx: ctx, r: in}); err != nil {
 		// Best-effort cleanup on the failure path: the io.Copy error below is
 		// already the meaningful one to return, and a Close failure here
 		// would just be noise on top of it — discard explicitly.
 		_ = out.Close()
+		if ctx.Err() != nil {
+			_ = os.Remove(dst)
+		}
 		return fmt.Errorf("copy %s → %s: %w", src, dst, err)
 	}
 	if err := out.Close(); err != nil {
@@ -278,10 +302,17 @@ type dirFixup struct {
 // NOT touched by this function and keeps its own 0700 regardless — it holds
 // secret material (registry hives, /etc/shadow-adjacent copies, etc.)
 // unrelated to whatever mode any individual copied source directory had.
-func copyTree(srcRoot, dstRoot string) error {
+//
+// When ctx ends the walk stops and copyTree returns ctx's error: unlike an
+// unreadable file, running out of time must reach the caller, because the tree
+// is then incomplete.
+func copyTree(ctx context.Context, srcRoot, dstRoot string) error {
 	var dirFixups []dirFixup
 
 	walkErr := filepath.WalkDir(srcRoot, func(path string, d fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return nil // skip inaccessible entries
 		}
@@ -308,7 +339,10 @@ func copyTree(srcRoot, dstRoot string) error {
 		}
 
 		if d.Type()&os.ModeSymlink != 0 || d.Type().IsRegular() {
-			if err := copyFile(path, dstPath); err != nil {
+			if err := copyFile(ctx, path, dstPath); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
 				// Non-fatal: skip files we can't read (e.g. /etc/shadow).
 				slog.Warn("systemstate: skipping unreadable file during tree copy",
 					"path", path, "error", err.Error())
@@ -324,6 +358,9 @@ func copyTree(srcRoot, dstRoot string) error {
 			"path", path, "mode", d.Type().String())
 		return nil
 	})
+	if walkErr != nil {
+		return walkErr // cut short: skip the dir fixups; the partial tree is in no artifact and the step reports the failure
+	}
 
 	// Fix up every staged directory's real permissions/mtime/ownership now
 	// that everything underneath has been written. Order among fixups
@@ -339,7 +376,7 @@ func copyTree(srcRoot, dstRoot string) error {
 		lchownBestEffort(fx.path, fx.info)
 	}
 
-	return walkErr
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -356,8 +393,8 @@ func copyTree(srcRoot, dstRoot string) error {
 // output for diagnostics. It is a package-level var (rather than a direct
 // exec.Command call in collectRegistryHives) purely so tests can substitute a
 // fake.
-var runRegSave = func(hive, outPath string) ([]byte, error) {
-	return exec.Command("reg", "save", `HKLM\`+hive, outPath, "/y").CombinedOutput()
+var runRegSave = func(ctx context.Context, hive, outPath string) ([]byte, error) {
+	return collectorCommand(ctx, "reg", "save", `HKLM\`+hive, outPath, "/y").CombinedOutput()
 }
 
 // registrySaveError reports that one or more registry hives failed to save.
@@ -385,13 +422,13 @@ func (e *registrySaveError) Unwrap() error { return e.Err }
 // registry capture is more useful for diagnosis than none — while a non-nil
 // *registrySaveError tells the caller exactly which hive(s) are missing so it
 // can decide whether that's acceptable.
-func collectRegistryHives(dir, stagingDir string, hives []string) ([]Artifact, error) {
+func collectRegistryHives(ctx context.Context, dir, stagingDir string, hives []string) ([]Artifact, error) {
 	var artifacts []Artifact
 	var failed []string
 	var firstErr error
 	for _, hive := range hives {
 		outPath := filepath.Join(dir, hive)
-		out, err := runRegSave(hive, outPath)
+		out, err := runRegSave(ctx, hive, outPath)
 		if err != nil {
 			slog.Warn("systemstate: reg save failed", "hive", hive, "error", err.Error(), "output", string(out))
 			failed = append(failed, hive)

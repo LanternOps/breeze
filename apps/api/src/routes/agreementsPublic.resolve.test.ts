@@ -39,6 +39,10 @@ vi.mock('../services/agreementRequestAcceptService', () => ({
   declineAgreementRequest: vi.fn(),
   markAgreementRequestViewed: vi.fn(),
 }));
+vi.mock('../services/agreementCertificate', () => ({
+  loadCertifiedAgreementInput: vi.fn(),
+  renderCertifiedAgreementPdf: vi.fn(),
+}));
 vi.mock('../services/agreementOutcomeNotify', () => ({ notifyAgreementOutcome: vi.fn() }));
 vi.mock('../services/agreementSignedCopyEmail', () => ({ sendSignedAgreementCopy: vi.fn() }));
 vi.mock('../services/redis', () => ({ getRedis: vi.fn(() => null) }));
@@ -53,6 +57,7 @@ import {
   declineAgreementRequest,
   markAgreementRequestViewed,
 } from '../services/agreementRequestAcceptService';
+import { loadCertifiedAgreementInput, renderCertifiedAgreementPdf } from '../services/agreementCertificate';
 import { agreementsPublicRoutes } from './agreementsPublic';
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
@@ -67,6 +72,7 @@ interface TokenRoute { method: 'GET' | 'POST'; path: string; body?: Record<strin
 const TOKEN_ROUTES: TokenRoute[] = [
   { method: 'GET', path: '/:token' },
   { method: 'GET', path: '/:token/file' },
+  { method: 'GET', path: '/:token/signed-copy' },
   { method: 'POST', path: '/:token/accept', body: { signerName: 'Dana Buyer', signerEmail: 'dana@example.com' } },
   { method: 'POST', path: '/:token/decline', body: { reason: 'Not now' } },
 ];
@@ -100,6 +106,8 @@ function expectNoServiceWork() {
   expect(acceptAgreementRequest).not.toHaveBeenCalled();
   expect(declineAgreementRequest).not.toHaveBeenCalled();
   expect(markAgreementRequestViewed).not.toHaveBeenCalled();
+  expect(loadCertifiedAgreementInput).not.toHaveBeenCalled();
+  expect(renderCertifiedAgreementPdf).not.toHaveBeenCalled();
 }
 
 beforeEach(() => {
@@ -162,14 +170,27 @@ describe('agreementsPublic token-route enumeration', () => {
     // a side explicitly: GETs view, POSTs respond.
     it(`${route.method} ${route.path}: answered link (marker armed, row signed) → ${route.method === 'GET' ? 'viewable' : '401, never answers twice'}`, async () => {
       vi.mocked(isAgreementAcceptJtiRevoked).mockResolvedValue(true);
-      vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(live({ status: 'signed', signedAt: new Date() }) as never);
+      // Signed through this link (#10695: the signed copy is served only then).
+      vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(live({
+        status: 'signed', signedAt: new Date(), publicResponseJti: JTI, publicResponseOutcome: 'accepted',
+      }) as never);
+      const doc = { id: 'doc', mime: 'application/pdf', pdfData: Buffer.from('%PDF-1.7'), acceptanceOrigin: 'customer' };
+      // FIFO db reads: the view reads branding twice before the document; the
+      // download reads only the document; /file reads nothing.
+      if (route.path === '/:token') dbResults.push([], [], [doc]);
+      else if (route.path === '/:token/signed-copy') dbResults.push([doc]);
+      vi.mocked(loadCertifiedAgreementInput).mockResolvedValue({} as never);
+      vi.mocked(renderCertifiedAgreementPdf).mockResolvedValue(Buffer.from('%PDF-1.7 certified'));
       vi.mocked(loadTemplateVersionRenderData).mockResolvedValue({
         templateId: 'tpl', templateVersionId: 'v', sourceType: 'uploaded', bodyHtml: null,
         fileData: Buffer.from('%PDF-1.7'), versionSha256: 'sha', declaredVariables: [],
         templateName: 'Agreement', versionNumber: 1,
       } as never);
       const res = await send(route);
-      if (route.method === 'GET') {
+      if (route.path === '/:token/signed-copy') {
+        expect(res.status).toBe(200);
+        expect(renderCertifiedAgreementPdf).toHaveBeenCalled();
+      } else if (route.method === 'GET') {
         expect(res.status).toBe(200);
         expect(loadTemplateVersionRenderData).toHaveBeenCalled();
       } else {

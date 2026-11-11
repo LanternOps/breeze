@@ -161,6 +161,25 @@ describe('GET /invoices/public/:token', () => {
     expect(data.chargeNow).toMatchObject({ amount: '100.00' }); // amounts still shown
   });
 
+  // #3803 item 8: the mint refuses a balance the currency cannot express, so the
+  // view must not offer a Pay CTA for it (the page shows "online payment
+  // unavailable" instead). The exact amount owed is still displayed.
+  it('is NOT payable for a legacy JPY balance the currency cannot express', async () => {
+    resolveMock.mockResolvedValue(invoice({ currencyCode: 'JPY', total: '1000.50', balance: '1000.50' }));
+    dbResults.push([{ id: 'l1', name: 'RMM seat', quantity: '5' }], PARTNER_ROW, BRAND_ROW);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.payable).toBe(false);
+    expect(data.chargeNow).toMatchObject({ amount: '1000.50', isDeposit: false });
+  });
+
+  it('shows the amount the Checkout will charge for a zero-decimal invoice (currency-aware, not USD rounding)', async () => {
+    resolveMock.mockResolvedValue(invoice({ currencyCode: 'JPY', total: '2000.00', balance: '2000.00', depositDue: '1000.50' }));
+    dbResults.push([{ id: 'l1', name: 'RMM seat', quantity: '5' }], PARTNER_ROW, BRAND_ROW);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.payable).toBe(true);
+    expect(data.chargeNow).toMatchObject({ amount: '1001.00', isDeposit: true });
+  });
+
   it('reads online-payment availability on the view\'s own system-context connection, never a nested one (#9585)', async () => {
     resolveMock.mockResolvedValue(invoice());
     dbResults.push([{ id: 'l1', name: 'RMM seat', quantity: '5' }], PARTNER_ROW, BRAND_ROW);
@@ -646,7 +665,7 @@ it('public invoice pay forwards only explicit card authorization', async () => {
   expect(res.status).toBe(200);
   expect(payLinkMock).toHaveBeenCalledWith(INV_ID, expect.anything(), expect.objectContaining({
     saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64),
-  }));
+  }), { billingGate: false });
 });
 it('public invoice pay refuses an unaccepted save request before Checkout', async () => {
   resolveMock.mockResolvedValue(invoice());

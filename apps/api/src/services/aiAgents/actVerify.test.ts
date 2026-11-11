@@ -1,20 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const dbMockState = vi.hoisted(() => ({
   ambientContext: undefined as { scope: string } | undefined,
-  insertedRows: [] as unknown[],
-  insertShouldThrow: false,
+  /** Rows the open-alert dedupe probe in recordActVerifyFailureAlert returns. */
+  openAlertRows: [] as Array<{ id: string }>,
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    insert: vi.fn(() => ({
-      values: vi.fn(async (row: unknown) => {
-        if (dbMockState.insertShouldThrow) throw new Error('alerts table unavailable');
-        dbMockState.insertedRows.push(row);
-      }),
+    insert: vi.fn(),
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => dbMockState.openAlertRows),
+        })),
+      })),
     })),
   },
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
@@ -36,6 +41,11 @@ const executeCommandWithSystemPrecheck = vi.hoisted(() =>
   vi.fn<(deviceId: string, type: string, payload: Record<string, unknown>, options: Record<string, unknown>) =>
     Promise<{ status: string; stdout?: string; error?: string }>>());
 vi.mock('../commandQueue', () => ({ executeCommandWithSystemPrecheck }));
+// #11328 — the alert goes through the shared create + `alert.triggered` path.
+const createSourcedAlert = vi.hoisted(() => vi.fn<(params: Record<string, unknown>) => Promise<string | null>>());
+vi.mock('../alertService', () => ({ createSourcedAlert }));
+const captureException = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException }));
 // The verify lane runs the remote-tools policy check itself.
 const checkAiRemoteToolsPolicy = vi.hoisted(() => vi.fn());
 vi.mock('../aiRemoteToolsPolicy', () => ({ checkAiRemoteToolsPolicy }));
@@ -50,6 +60,7 @@ import {
   verifyServiceRunningForTask,
 } from './actVerify';
 import type { ActAssetPin } from './actRevalidation';
+import { db } from '../../db';
 
 const RUN = { id: 'run-1', orgId: 'org-1', agentId: 'agent-1', deviceId: 'device-1' };
 const RUN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -81,8 +92,9 @@ function pin(op: typeof restartOp, target: ActAssetPin['target']): ActAssetPin {
 beforeEach(() => {
   vi.clearAllMocks();
   dbMockState.ambientContext = undefined;
-  dbMockState.insertedRows = [];
-  dbMockState.insertShouldThrow = false;
+  dbMockState.openAlertRows = [];
+  createSourcedAlert.mockReset();
+  createSourcedAlert.mockResolvedValue('alert-1');
   checkAiRemoteToolsPolicy.mockReset();
   checkAiRemoteToolsPolicy.mockResolvedValue({ allowed: true });
 });
@@ -345,21 +357,28 @@ describe('actTargetSummary — sanitized identity, never a full input/output blo
 });
 
 describe('recordActVerifyFailureAlert', () => {
-  it('inserts a rule-less, high-severity alert carrying the run/op/target context', async () => {
-    await recordActVerifyFailureAlert({
-      run: RUN,
-      op: { key: 'manage_services.restart' },
-      target: { kind: 'service', serviceName: 'Spooler' },
-      detail: 'service status is "stopped"',
-    });
+  const failure = {
+    run: RUN,
+    op: { key: 'manage_services.restart' },
+    target: { kind: 'service' as const, serviceName: 'Spooler' },
+    detail: 'service status is "stopped"',
+  };
 
-    expect(dbMockState.insertedRows).toHaveLength(1);
-    expect(dbMockState.insertedRows[0]).toMatchObject({
-      ruleId: null,
+  // #11328 — a raw insert made the alert visible in the inbox but never
+  // published `alert.triggered`: no channel, routing rule or escalation ever
+  // saw a failed unattended action. createSourcedAlert stages the event with
+  // the row and announces it after COMMIT.
+  it('raises a rule-less, high-severity device alert through createSourcedAlert so alert.triggered publishes', async () => {
+    await recordActVerifyFailureAlert(failure);
+
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(createSourcedAlert).toHaveBeenCalledTimes(1);
+    expect(createSourcedAlert.mock.calls[0]![0]).toMatchObject({
       deviceId: RUN.deviceId,
       orgId: RUN.orgId,
       severity: 'high',
-      status: 'active',
+      configItemName: 'ai_agent_act_verify_manage_services.restart',
+      publisher: 'ai-agent-act-verify',
       context: {
         source: 'ai_agent_act_verify',
         runId: RUN.id,
@@ -368,15 +387,47 @@ describe('recordActVerifyFailureAlert', () => {
         target: { kind: 'service', serviceName: 'Spooler' },
       },
     });
+    expect(createSourcedAlert.mock.calls[0]![0]).not.toHaveProperty('owner');
   });
 
-  it('is best-effort — a DB failure is logged and swallowed, never thrown', async () => {
-    dbMockState.insertShouldThrow = true;
+  it('does not raise (or re-publish) a second alert while one is open for the same run, op and target', async () => {
+    dbMockState.openAlertRows = [{ id: 'alert-existing' }];
+
+    await recordActVerifyFailureAlert(failure);
+
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+  });
+
+  it('keys the open-alert probe on this device, op, run and exact target', async () => {
+    await recordActVerifyFailureAlert(failure);
+
+    const selectResult = vi.mocked(db.select).mock.results[0]!.value as {
+      from: { mock: { results: Array<{ value: { where: { mock: { calls: unknown[][] } } } }> } };
+    };
+    const where = selectResult.from.mock.results[0]!.value.where.mock.calls[0]![0] as SQL;
+    const { sql: text, params } = new PgDialect().sqlToQuery(where);
+    expect(text).toContain('"device_id"');
+    expect(text).toContain('"config_item_name"');
+    expect(text).toContain(`->>'runId'`);
+    expect(text).toContain(`->'target'`);
+    expect(params).toEqual(expect.arrayContaining([
+      RUN.orgId, RUN.deviceId, 'ai_agent_act_verify_manage_services.restart', RUN.id,
+      JSON.stringify({ kind: 'service', serviceName: 'Spooler' }),
+      // Only an OPEN alert dedupes: a resolved one must not block a later real failure.
+      'active', 'acknowledged', 'suppressed',
+    ]));
+    expect(params).not.toContain('resolved');
+  });
+
+  it('is best-effort — a create failure is logged, captured and swallowed, never thrown', async () => {
+    const failure = new Error('alerts table unavailable');
+    createSourcedAlert.mockRejectedValueOnce(failure);
     await expect(recordActVerifyFailureAlert({
       run: RUN,
       op: { key: 'manage_services.restart' },
       target: { kind: 'service', serviceName: 'Spooler' },
     })).resolves.toBeUndefined();
+    expect(captureException).toHaveBeenCalledWith(failure, undefined, expect.objectContaining({ runId: RUN.id }));
   });
 });
 

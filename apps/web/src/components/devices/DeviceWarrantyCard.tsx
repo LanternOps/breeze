@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { parseDateOnly } from '@/lib/dateOnly';
 import { loginPathWithNext } from '../../lib/authScope';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -40,7 +41,9 @@ type DeviceWarrantyCardProps = {
   pollTimeoutMs?: number;
 };
 
-const statusConfig: Record<string, { label: string; color: string }> = {
+// Shared with the device list's Warranty column (#9863) so a status reads the
+// same in both places.
+export const WARRANTY_STATUS_BADGE: Record<string, { label: string; color: string }> = {
   active: { label: 'active', color: 'bg-success/15 text-success border-success/30' },
   expiring: { label: 'expiring', color: 'bg-warning/15 text-warning border-warning/30' },
   expired: { label: 'expired', color: 'bg-destructive/15 text-destructive border-destructive/30' },
@@ -52,7 +55,9 @@ const statusConfig: Record<string, { label: string; color: string }> = {
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '\u2014';
-  const d = new Date(dateStr);
+  // A bare YYYY-MM-DD is a calendar date: parseDateOnly keeps it on its own day
+  // west of UTC (new Date() would read it as UTC midnight and render the day before).
+  const d = parseDateOnly(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
@@ -312,7 +317,7 @@ export default function DeviceWarrantyCard({
     return null;
   }
 
-  const cfg = statusConfig[warranty.status] ?? statusConfig.unknown;
+  const cfg = WARRANTY_STATUS_BADGE[warranty.status] ?? WARRANTY_STATUS_BADGE.unknown;
   const vendorEarlier = vendorReportsEarlierEnd(warranty);
   // The vendor's service level describes the vendor's (shorter) coverage, not
   // the imported end date shown beside it, so it is not paired with it.

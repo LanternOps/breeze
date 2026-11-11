@@ -155,6 +155,8 @@ async function forcedPamFailureBeatRaw(device: EnrolledDevice, retain?: unknown)
  * retain-state builder now owns must keep their old values AND positions.
  */
 const LEGACY_KEY_ORDER = [
+  // #4618: every heartbeat includes the additive containment block.
+  'containment',
   'commands', 'configUpdate', 'upgradeTo', 'manageRemoteManagement', 'manifestTrustKeys',
   'manifestKeyDelegations', 'uacInterceptionEnabled', 'helperEnabled', 'helperSettings',
   // #10190: the prompt-host kill switch is server config, recomputed on EVERY
@@ -197,6 +199,7 @@ describe('heartbeat retainState (#8616) — real PostgreSQL', () => {
     // every value but exactly 1: the legacy payload, byte for byte.
     const legacyRaw = await forcedPamFailureBeatRaw(device);
     const legacy = JSON.parse(legacyRaw) as Record<string, unknown>;
+    expect(legacy.containment).toEqual({ networkIsolation: null });
     expect(legacy.uacInterceptionEnabled).toBe(false);
     expect('retainState' in legacy).toBe(false);
     expect(Object.keys(legacy)).toEqual(LEGACY_KEY_ORDER);

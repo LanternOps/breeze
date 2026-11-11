@@ -4,6 +4,7 @@ import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import DeviceDetails, { METRIC_SAMPLE_FRESH_MS, metricsAreCurrent } from './DeviceDetails';
 import type { Device } from './DeviceList';
+import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
@@ -26,9 +27,9 @@ vi.mock('../extensions/ExtensionSlotHost', () => ({
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 // The real button self-gates on the Wisp flag + grant (its own suite covers that).
-vi.mock('@/components/wisp/WispLinkButton', () => ({
-  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
-    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
   ),
 }));
 
@@ -112,12 +113,28 @@ describe('DeviceDetails header state (#9026)', () => {
     expect(screen.getByTestId('device-status-pill')).toHaveTextContent('Offline · last seen 25 minutes ago');
   });
 
-  it('mounts the Link-to-Wisp button in the header with the device and its org (W08 Task 10)', () => {
+  it('mounts the Talk-to-Wisp button in the header with the device and its org (W08 Task 10)', () => {
     render(<DeviceDetails device={base} />);
-    const button = screen.getByTestId('wisp-link-button-mock');
+    const button = screen.getByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
     expect(button).toHaveAttribute('data-kind', 'device');
     expect(button).toHaveAttribute('data-id', 'device-1');
     expect(button).toHaveAttribute('data-org', 'org-1');
+  });
+
+  it('mounts the Backup running badge in the header (#11027)', async () => {
+    const notFound = { ok: false, status: 404, statusText: 'NOT FOUND', json: vi.fn().mockResolvedValue({}) };
+    const running = { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: [{ id: 'job-1' }] }) };
+    const fetchMock = vi.mocked(fetchWithAuth);
+    fetchMock.mockImplementation(async (input) =>
+      (String(input).includes('status=running') ? running : notFound) as unknown as Response,
+    );
+    try {
+      render(<DeviceDetails device={base} />);
+      expect((await screen.findByTestId('device-backup-running-badge')).textContent).toContain('Backup running');
+    } finally {
+      fetchMock.mockResolvedValue(notFound as unknown as Response);
+    }
   });
 
   it('keeps the plain status label when the device is online', () => {

@@ -27,6 +27,18 @@ describe('billing growth admission', () => {
   });
 });
 
+describe('beta offers: admission limit pinned', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  const betaPartner = { plan: 'community', billingSubscriptionStatus: 'active',
+    billingAdmissionLimit: null, billingAdmissionExpiresAt: null };
+  it('monthly beta (max_devices NULL, per-device) is unlimited', () => {
+    expect(effectivePartnerAdmissionLimit({ maxDevices: null, ...betaPartner }, now)).toBeNull();
+  });
+  it('prepaid beta of 5 units keeps its 1250 cap above the 1,100 widening ceiling', () => {
+    expect(effectivePartnerAdmissionLimit({ maxDevices: 1250, ...betaPartner }, now)).toBe(1250);
+  });
+});
+
 function transactionFixture(input: {
   orgPartnerId?: string | null;
   maxDevices?: number | null;

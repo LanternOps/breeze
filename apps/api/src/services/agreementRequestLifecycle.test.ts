@@ -428,7 +428,9 @@ describe('sendAgreementRequest', () => {
       expect(env.purpose).toBe('agreement.sent');
       expect(env.partnerId).toBe(PARTNER);
       expect(env.replyTo).toBe('billing@example.com');
-      expect(env.subject).toContain('BAA 2027');
+      // #10294: the label is staff-internal; the customer sees the template name.
+      expect(env.subject).toContain('BAA');
+      for (const part of [env.subject, env.html, env.text]) expect(part).not.toContain('BAA 2027');
       expect(env.html).toContain(res.link.replace(/&/g, '&amp;'));
       expect(env.html).toContain('Please sign by Friday');
       expect(env.text).toContain('The Best MSP team');
@@ -594,6 +596,8 @@ describe('remindAgreementRequest (#9075 W3b)', () => {
     expect(env.purpose).toBe('agreement.sent');
     expect(env.to).toEqual(['jane@example.com', 'ops@example.com']);
     expect(env.html).toContain(sent.link.replace(/&/g, '&amp;'));
+    // #10294: a reminder names the template, never the staff-internal label.
+    for (const part of [env.subject, env.html, env.text]) expect(part).not.toContain('BAA 2027');
   });
 
   it('a draft → 409 (send it first)', async () => {

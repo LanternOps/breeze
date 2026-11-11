@@ -160,3 +160,12 @@ describe('AiChatInput composer keys', () => {
     expect(screen.getByRole('button', { name: 'Stop response' })).toBeTruthy();
   });
 });
+
+it('focuses a requested composer after loading completes without sending', () => {
+  const send = vi.fn();
+  const view = render(<AiChatInput onSend={send} focusRequest={1} disabled value="About Printer: " onValueChange={vi.fn()} />);
+  expect(screen.getByTestId('ai-chat-input')).not.toHaveFocus();
+  view.rerender(<AiChatInput onSend={send} focusRequest={1} value="About Printer: " onValueChange={vi.fn()} />);
+  expect(screen.getByTestId('ai-chat-input')).toHaveFocus();
+  expect(send).not.toHaveBeenCalled();
+});

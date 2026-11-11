@@ -20,6 +20,7 @@ import {
   TIME_SYNC_HEALTH,
 } from '@breeze/shared';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { orgNameOf, readReachSpansOrgs, splitOrgLegend } from './aiToolOrgLegend';
 import { db } from '../db';
 import {
   devices,
@@ -175,12 +176,16 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           siteId: { type: 'string', description: 'Filter by site UUID' },
           search: { type: 'string', description: 'Search by hostname or display name (partial match)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Filter by tags (devices must have all specified tags)' },
-          ...pageParamSchema(25, 100),
+          // Default 20 (was 25): the 25-row budget-fixture page (DEVICE_ROW in
+          // aiToolsDevice.outputShape.test.ts) sat within ~100 chars of
+          // MAX_TOOL_RESULT_CHARS, leaving no room for the org fields a
+          // multi-org caller gets (#10408).
+          ...pageParamSchema(20, 100),
         }
       }
     },
     handler: async (input, auth) => {
-      const page = readPageArgs('query_devices', input, { defaultLimit: 25, maxLimit: 100 });
+      const page = readPageArgs('query_devices', input, { defaultLimit: 20, maxLimit: 100 });
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, offset, fingerprint } = page;
 
@@ -231,6 +236,9 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const frozenDeviceIds = runFrozenDeviceIds(auth);
       if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
+      // #10408: a caller reaching several orgs gets each row's org, or it mixes
+      // customers (wrong-org narration, cross-org proposals the write path refuses).
+      const spansOrgs = readReachSpansOrgs(auth);
       const results = await db
         .select({
           id: devices.id,
@@ -242,7 +250,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           agentVersion: devices.agentVersion,
           lastSeenAt: devices.lastSeenAt,
           tags: devices.tags,
-          siteName: sites.name
+          siteName: sites.name,
+          ...(spansOrgs ? { orgId: devices.orgId, orgName: orgNameOf(devices.orgId) } : {}),
         })
         .from(devices)
         .leftJoin(sites, eq(devices.siteId, sites.id))
@@ -264,7 +273,14 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
       const total = Number(countResult[0]?.count ?? 0);
 
-      return JSON.stringify(pageEnvelope({ key: 'devices', items: results, limit, offset, fingerprint, total }));
+      if (!spansOrgs) {
+        return JSON.stringify(pageEnvelope({ key: 'devices', items: results, limit, offset, fingerprint, total }));
+      }
+      const legend = splitOrgLegend(results as Array<(typeof results)[number] & { orgId: string; orgName: string | null }>);
+      return JSON.stringify({
+        ...pageEnvelope({ key: 'devices', items: legend.rows, limit, offset, fingerprint, total }),
+        organizations: legend.organizations,
+      });
     }
   });
 

@@ -40,6 +40,7 @@ const h = vi.hoisted(() => ({
   freezeTargetAccount: vi.fn(),
   upsertContactExternalLinks: vi.fn(),
   bumpPlanRevisionInTx: vi.fn(),
+  lockAndCheckAccountReservations: vi.fn(async () => null),
   dir: null as any,
   /** Module-db select results, queued per table name. */
   queue: {} as Record<string, Row[][]>,
@@ -58,6 +59,10 @@ vi.mock('../googleClient', async (importOriginal) => ({
   getDirectoryClient: () => h.dir,
 }));
 vi.mock('./humanWorkService', () => ({ readHumanWorkStep: h.readHumanWorkStep }));
+vi.mock('./accountReservations', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  lockAndCheckAccountReservations: h.lockAndCheckAccountReservations,
+}));
 vi.mock('./targetService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./targetService')>()),
   freezeTargetAccount: h.freezeTargetAccount,
@@ -637,6 +642,25 @@ describe('commitOnboardingStageTransition — one transaction, in B2’s order',
     expect(h.upsertContactExternalLinks).not.toHaveBeenCalled();
     expect(calls.updates).toEqual([]);
     expect(calls.inserts).toEqual([]);
+  });
+
+  it('#9981: an account another task holds aborts as account_reserved before the bump, naming the holder; nothing is written', async () => {
+    h.lockAndCheckAccountReservations.mockResolvedValueOnce({
+      taskId: 'task-holder', orgId: ORG, provider: 'm365', externalId: USER_ID, principalLabel: 'priya@customer.example',
+      taskState: 'running', taskOutcome: null, fromMergedOrg: false,
+    } as never);
+    const { tx, calls } = makeTx();
+    const err = await commitOnboardingStageTransition(tx as never, commitArgs()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OnboardingStageTransitionAbort);
+    expect((err as OnboardingStageTransitionAbort).guard).toBe('account_reserved');
+    expect((err as Error).message).toContain('task-holder');
+    // The accounts this transition is about to freeze, on the caller's handle, excluding itself.
+    expect(h.lockAndCheckAccountReservations).toHaveBeenCalledWith(tx, ORG, [
+      { provider: 'google', externalId: '900100' }, { provider: 'm365', externalId: USER_ID },
+    ], { excludeTaskId: TASK });
+    expect(h.bumpPlanRevisionInTx).not.toHaveBeenCalled();
+    expect(h.freezeTargetAccount).not.toHaveBeenCalled();
+    expect(calls.updates).toEqual([]);
   });
 
   it('a bump that is not `bumped: true` throws, and nothing is frozen or written after it', async () => {

@@ -7,7 +7,7 @@
  * the REST handlers and the tools run the same code.
  */
 import { z } from 'zod';
-import { and, eq, sql, or, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, sql, or, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   softwareCatalog,
@@ -17,6 +17,12 @@ import {
   softwareInstallMethods,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import {
+  getBuiltinPackage,
+  installArgPlaceholders,
+  installArgsCarryPlaceholders,
+  isBuiltinProvider,
+} from './builtinDeploymentPackages';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { deleteObjects } from './s3Storage';
 import { captureMessage } from './sentry';
@@ -46,6 +52,28 @@ export function isImmutableBuiltin(row: { builtinPackageKey?: string | null }, a
   return row.builtinPackageKey != null && auth.scope !== 'system';
 }
 export const BUILTIN_PACKAGE_IMMUTABLE = 'Built-in packages are managed by Breeze and cannot be changed';
+
+/**
+ * The NULL-org (partner-owned) catalog rows that a catalog list or search ORs
+ * in next to the caller's own org rows. RLS backs each branch, so none can
+ * reach another partner's rows:
+ * - integration built-ins (Huntress/S1), for every scope (2026-07-02 policy);
+ * - partner scope: every partner-wide row of its own partner (#2135);
+ * - org scope: its own partner's keyed built-ins (#10036). Their rows are
+ *   visible through software_catalog_partner_wide_select, and their versions
+ *   through software_versions_builtin_keyed_select. Un-keyed partner-wide
+ *   custom packages stay out of org-scope lists. Their versions are
+ *   partner-axis only, so the card would be a dead end.
+ */
+export function nullOrgCatalogBranches(auth: Pick<AuthContext, 'scope' | 'partnerId'>): SQL[] {
+  const branches: SQL[] = [isNotNull(softwareCatalog.integrationProvider)];
+  if (auth.scope === 'partner' && auth.partnerId) {
+    branches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
+  } else if (auth.scope === 'organization' && auth.partnerId) {
+    branches.push(and(isNotNull(softwareCatalog.builtinPackageKey), eq(softwareCatalog.partnerId, auth.partnerId))!);
+  }
+  return branches;
+}
 
 export type ResolveCatalogListScopeResult =
   | { orgCondition?: SQL }
@@ -104,6 +132,68 @@ export function authorizeCatalogItemWrite(
         error: 'Modifying a partner-wide package requires full partner org access (orgAccess must be "all")',
         status: 403,
       };
+}
+
+/**
+ * The built-in integration package definition a version's install args are
+ * judged against, or null. Only when the catalog row is a built-in integration
+ * package (Huntress, SentinelOne, …) AND the version's file type is the
+ * package's own: an `.exe` uploaded to the SentinelOne (MSI) package is not
+ * that package's installer, so its args follow the ordinary rules.
+ */
+function builtinPackageForFileType(
+  item: { integrationProvider: string | null },
+  fileType: string | null | undefined,
+) {
+  if (!isBuiltinProvider(item.integrationProvider)) return null;
+  const normalized = typeof fileType === 'string' ? fileType.trim().toLowerCase() : '';
+  const pkg = getBuiltinPackage(item.integrationProvider);
+  return normalized !== '' && normalized === pkg.fileType.toLowerCase() ? pkg : null;
+}
+
+/**
+ * Silent-args defaults for a new version of `item` (#9246). A built-in
+ * integration package's own installer type gets the package's argument
+ * template (SentinelOne MSI → `SITE_TOKEN={s1_site_token} /q /NORESTART`), so
+ * blank args never fall through to the generic `msiexec` line that dispatch
+ * refuses for lack of the per-org placeholder. Uninstall args keep the
+ * file-type default. Everything else gets defaultSilentArgsForFileType.
+ * Used by all three version-create paths (JSON, legacy multipart, chunked
+ * complete).
+ */
+export function defaultSilentArgsForCatalogItem(
+  item: { integrationProvider: string | null },
+  fileType: string | null | undefined,
+): { install: string | null; uninstall: string | null } | null {
+  const generic = defaultSilentArgsForFileType(fileType);
+  const pkg = builtinPackageForFileType(item, fileType);
+  if (!pkg) return generic;
+  return { install: pkg.silentInstallArgsTemplate, uninstall: generic?.uninstall ?? null };
+}
+
+/**
+ * Write-time refusal (#9246, plan OD2) of install args that drop a built-in
+ * integration package's per-org placeholder(s). Dispatch already refuses
+ * SentinelOne args without `{s1_site_token}` and the security-agents readiness
+ * check reports such a version not deployable; this surfaces it when the
+ * version is written instead. Non-null only for the package's own file type
+ * on a template that substitutes something. `{{name}}` (the tenant-variable
+ * form) does not count — see installArgsCarryPlaceholders.
+ */
+export function integrationInstallArgsError(
+  item: { integrationProvider: string | null },
+  fileType: string | null | undefined,
+  silentInstallArgs: string | null | undefined,
+): { error: string; issues: ['install_args_missing_placeholders'] } | null {
+  const pkg = builtinPackageForFileType(item, fileType);
+  if (!pkg) return null;
+  const placeholders = installArgPlaceholders(pkg.provider);
+  if (placeholders.length === 0) return null;
+  if (installArgsCarryPlaceholders(pkg.provider, silentInstallArgs)) return null;
+  return {
+    error: `Install arguments for ${pkg.name} must include ${placeholders.join(' and ')}`,
+    issues: ['install_args_missing_placeholders'],
+  };
 }
 
 export type CatalogDeleteIdentity = {
@@ -342,8 +432,11 @@ export async function prepareSoftwareVersionCreate<D>(params: {
   // operator's msiexec command into the MSI's own argv. Prefer an explicit
   // fileType, otherwise infer from the URL; null keeps prior behavior.
   const fileType = payload.fileType ?? deriveSoftwareFileTypeFromUrl(payload.downloadUrl);
-  const silentDefaults = defaultSilentArgsForFileType(fileType);
+  const silentDefaults = defaultSilentArgsForCatalogItem(catalogItem, fileType);
   const silentInstallArgs = payload.silentInstallArgs || silentDefaults?.install || null;
+
+  const placeholderError = integrationInstallArgsError(catalogItem, fileType, silentInstallArgs);
+  if (placeholderError) return { ok: false, status: 400, body: placeholderError };
 
   const specError = installSpecError({
     fileType,
@@ -475,6 +568,15 @@ export async function prepareSoftwareVersionUpdate<D>(params: {
       postInstallScript: null,
     });
     if (specError) return { ok: false, status: 400, body: specError };
+  }
+  // #9246: on a built-in integration package's own installer, any args write
+  // (including clearing them) must keep the per-org placeholder(s). A PATCH
+  // that leaves silentInstallArgs alone is not judged.
+  if (payload.silentInstallArgs !== undefined) {
+    const placeholderError = integrationInstallArgsError(
+      catalogItem, existingVersion.fileType, payload.silentInstallArgs,
+    );
+    if (placeholderError) return { ok: false, status: 400, body: placeholderError };
   }
 
   const updates: Record<string, unknown> = {};

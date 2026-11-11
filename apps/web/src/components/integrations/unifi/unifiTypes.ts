@@ -33,6 +33,7 @@ export interface BreezeSiteOption {
 export interface OrgOption {
   id: string;
   name: string;
+  type?: string;
 }
 // Currently-saved mappings (from GET /unifi/mappings).
 export interface SavedMapping {
@@ -57,6 +58,10 @@ export interface SyncRun {
   devicesUnchanged: number;
   devicesRemoved: number;
   error: string | null;
+  // Cloud sites listed with no mapping when the run read them; null = not
+  // recorded (older runs, failed runs, runs with zero mappings or an
+  // incomplete site list).
+  sitesUnmapped?: number | null;
 }
 
 // Per-console deep-telemetry collector config (from GET /unifi/collectors).
@@ -86,6 +91,17 @@ export interface AgentDevice {
   status?: string | null;
 }
 
+export interface RadioOverview {
+  frequencyGHz: number;
+  channel: number | null;
+  channelWidthMHz: number | null;
+  wlanStandard: string | null;
+}
+export interface RadioStatistics {
+  frequencyGHz: number;
+  txRetriesPct: number | null;
+}
+
 // Deep telemetry rows (from GET /unifi/telemetry?siteId=).
 export interface TelemetryDevice {
   id: string;
@@ -95,6 +111,23 @@ export interface TelemetryDevice {
   uptimeSeconds: number | null;
   numClients: number | null;
   isStale: boolean;
+  // Wi-Fi additions (all optional: the API may omit them).
+  online?: boolean | null;
+  controllerState?: string | null;
+  wifiCapable?: boolean | null;
+  cpuPct?: number | null;
+  memPct?: number | null;
+  wirelessClientCount?: number | null;
+  uplinkRxRateBps?: number | null;
+  uplinkTxRateBps?: number | null;
+  radioOverview?: RadioOverview[] | null;
+  radioStatistics?: RadioStatistics[] | null;
+  deviceInventoryObservedAt?: string | null;
+  wifiDetailObservedAt?: string | null;
+  wifiStatisticsObservedAt?: string | null;
+  wifiClientsObservedAt?: string | null;
+  statisticsLastHeartbeatAt?: string | null;
+  statisticsNextHeartbeatAt?: string | null;
   poePorts: Array<{
     port_idx?: number;
     name?: string;
@@ -142,6 +175,7 @@ export interface ControllerDraft {
 export interface SiteGroup {
   id: string;
   name: string;
+  isInternal: boolean;
   sites: BreezeSiteOption[];
 }
 

@@ -114,6 +114,7 @@ var (
 	_ providers.DigestUploader       = (*WriteProvider)(nil)
 	_ providers.SnapshotIDIssuer     = (*WriteProvider)(nil)
 	_ providers.StoredObjectDigester = (*WriteProvider)(nil)
+	_ providers.SessionWindow        = (*WriteProvider)(nil)
 	_ providers.JournalIdentity      = (*WriteProvider)(nil)
 	_ providers.JournalScoper        = (*WriteProvider)(nil)
 	_ providers.WriterFence          = (*WriteProvider)(nil)

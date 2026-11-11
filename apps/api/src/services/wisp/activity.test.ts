@@ -280,12 +280,64 @@ describe('listActivity — keyset pagination', () => {
   });
 });
 
+describe('listActivity — specialist runs (#11084)', () => {
+  const specialistRow = (n: number, orgId: string, at: Date, over: Record<string, unknown> = {}) => runRow(n, orgId, at, {
+    profile: 'device_troubleshooting', triggerSource: 'wisp_specialist', deviceHostname: 'FRONT-DESK-01',
+    status: 'running', summary: null, finishedAt: null, ...over,
+  });
+
+  it("lists the grant's specialist runs as kind specialist, with status, device and run link", async () => {
+    h.rows.ai_agent_runs = [
+      specialistRow(1, O1, t(1), { status: 'awaiting_approval', finishedAt: t(3), summary: 'Asked to rebuild the Outlook profile' }),
+      specialistRow(2, O1, t(2)),
+      runRow(3, O1, t(4)),
+    ];
+    const { items } = await listActivity(ceiling());
+    const specialists = items.filter((i) => i.kind === 'specialist');
+    expect(specialists.map((i) => i.id)).toEqual([uid(1), uid(2)]);
+    expect(specialists[0]).toEqual({
+      id: uid(1), at: t(3).toISOString(), kind: 'specialist', orgId: O1, title: 'Device troubleshooting · FRONT-DESK-01',
+      detail: 'Asked to rebuild the Outlook profile', href: `/ai-agents/runs/${uid(1)}`, costCents: 7, runStatus: 'awaiting_approval',
+    });
+    expect(specialists[1]).toMatchObject({ runStatus: 'running', at: t(2).toISOString() });
+    // The assessment row is still an assessment.
+    expect(items.find((i) => i.id === uid(3))).toMatchObject({ kind: 'assessment' });
+    // The run query is pinned to the grant and selects both shapes.
+    const q = render(h.wheres.ai_agent_runs![0]);
+    expect(q.params).toEqual(expect.arrayContaining([G1, 'assessment', 'wisp_specialist']));
+  });
+
+  it('a specialist run in an org outside the ceiling is dropped (SQL org filter + belt)', async () => {
+    h.rows.ai_agent_runs = [specialistRow(1, O1, t(1)), specialistRow(2, O2, t(2))];
+    const { items } = await listActivity(ceiling());
+    expect(items.map((i) => i.id)).toEqual([uid(1)]);
+    expect(render(h.wheres.ai_agent_runs![0]).params).not.toContain(O2);
+  });
+
+  it('a specialist without a device names the org instead', async () => {
+    h.rows.ai_agent_runs = [specialistRow(1, O1, t(1), { profile: 'patch', deviceHostname: null })];
+    const { items } = await listActivity(ceiling());
+    expect(items[0]).toMatchObject({ kind: 'specialist', title: 'Patch plan · Greenwood' });
+  });
+
+  it('keyset pagination is intact across specialist and assessment items', async () => {
+    h.rows.ai_agent_runs = [specialistRow(1, O1, t(5)), runRow(2, O1, t(3)), specialistRow(3, O1, t(1))];
+    const page1 = await listActivity(ceiling(), { limit: 2 });
+    expect(page1.items.map((i) => i.id)).toEqual([uid(1), uid(2)]);
+    expect(page1.nextCursor).not.toBeNull();
+    const page2 = await listActivity(ceiling(), { limit: 2, cursor: page1.nextCursor! });
+    expect(page2.items.map((i) => i.id)).toEqual([uid(3)]);
+  });
+});
+
 describe('currentActivity', () => {
   it('is null when nothing is queued or running', async () => {
     h.rows.ai_agent_runs = [];
     await expect(currentActivity(G1)).resolves.toBeNull();
     const q = render(h.wheres.ai_agent_runs![0]);
     expect(q.params).toEqual(expect.arrayContaining([G1, 'assessment', 'queued', 'running']));
+    // #11084: a queued/running specialist counts as current work too.
+    expect(q.params).toEqual(expect.arrayContaining(['wisp_specialist']));
   });
 
   it('returns the oldest queued/running assessment with its org name', async () => {

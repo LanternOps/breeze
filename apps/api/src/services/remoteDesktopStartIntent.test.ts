@@ -57,6 +57,7 @@ vi.mock('../db/schema', () => ({
     webrtcAnswer: 'remoteSessions.webrtcAnswer',
     endedAt: 'remoteSessions.endedAt',
     startedAt: 'remoteSessions.startedAt',
+    lastStartAttemptAt: 'remoteSessions.lastStartAttemptAt',
     desktopStartCommandId: 'remoteSessions.desktopStartCommandId',
     desktopPromptMode: 'remoteSessions.desktopPromptMode',
     desktopConsentUnavailableBehavior: 'remoteSessions.desktopConsentUnavailableBehavior',
@@ -185,10 +186,23 @@ describe('remoteDesktopStartIntent', () => {
       iceCandidates: [],
     });
     // Activation belongs to the agent's accepted result, never to the start
-    // decision. startedAt marks this start attempt: the stale-session cutoff
-    // for a connecting row and the lease hard deadline are measured from it,
-    // so a start waiting on its consent prompt is not expired as stale.
-    expect(written.startedAt).toBeInstanceOf(Date);
+    // decision. startedAt marks the first start, and the lease hard deadline is
+    // measured from it. It is never a bare timestamp, because a reconnect must
+    // not restart the max duration (#11113). lastStartAttemptAt moves on every
+    // start: the stale cutoff runs from it, so a start waiting on its consent
+    // prompt is not expired as stale (#11149). Real-Postgres proof of both:
+    // remoteSessionMaxDuration.integration.test.ts.
+    expect(written.startedAt).toBeDefined();
+    expect(written.startedAt).not.toBeInstanceOf(Date);
+    expect(written.lastStartAttemptAt).toBeInstanceOf(Date);
+  });
+
+  it('WebRTC: every offer stamps the latest start attempt and leaves the original start alone (#11149)', async () => {
+    returningMock.mockResolvedValue([{ generation: 3n }]);
+    await commitDesktopStartIntent(INPUT);
+    const written = setMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(written.lastStartAttemptAt).toBeInstanceOf(Date);
+    expect(written).not.toHaveProperty('startedAt');
   });
 
   // #9182: trickled candidates belong to one start. A new offer starts a new

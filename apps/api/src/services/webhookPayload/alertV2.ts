@@ -9,6 +9,7 @@ export function isAlertV2EventType(type: string): type is AlertV2EventType {
 
 const nullableString = z.string().nullable();
 const nullableTimestamp = z.string().datetime({ offset: true }).nullable();
+const ownerKind = z.enum(['device', 'topology_site', 'backup_workload']);
 
 /** Every top-level key is part of the stable v2 contract, including nulls. */
 export const alertWebhookDataV2Schema = z.object({
@@ -16,6 +17,10 @@ export const alertWebhookDataV2Schema = z.object({
   ruleId: nullableString,
   monitorId: nullableString,
   deviceId: nullableString,
+  owner: z.object({ kind: ownerKind, ref: nullableString }).strict().nullable(),
+  ownerKind: ownerKind.nullable(),
+  ownerLabel: nullableString,
+  subjectName: nullableString,
   episodeId: nullableString,
   status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']),
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).nullable(),

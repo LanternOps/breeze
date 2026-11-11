@@ -174,6 +174,22 @@ Registered redirect URIs must be **HTTPS**, with one exception: native/CLI clien
 
 OAuth sessions use the `mcp:read`, `mcp:write`, and `mcp:execute` scopes (plus `openid` and `offline_access`), which map to the same Tier 1 / 2 / 3 model as the `ai:*` API-key scopes. Access tokens are short-lived (30 minutes) and signed with EdDSA; refresh tokens last 14 days and **rotate on every use**. Revoking a grant invalidates all of its sibling access and refresh tokens immediately.
 
+#### Refresh-token rotation
+
+Each refresh returns a new refresh token, and the one the client sent stops working. Presenting a refresh token that has already been used is treated as theft: Breeze revokes the whole grant, every access and refresh token issued under it, and the user has to reconnect the AI client.
+
+Clients that run in two processes sharing one credential store, or that retry a refresh request, can present the old token moments after it was rotated. To keep those clients connected, Breeze applies a short **grace window** (10 seconds by default, `OAUTH_REFRESH_ROTATION_GRACE_MS`):
+
+- If the **same client** presents a refresh token that was rotated within the window, Breeze returns the refresh token that rotation issued, together with a new access token, and revokes nothing. Two refreshes sent at the same moment both succeed and end with one valid refresh token.
+- If the token was rotated longer ago than the window, or a **different client** presents it, it is still treated as reuse and the grant is revoked.
+- A refresh token that was revoked for any other reason (signed out, revoked by an administrator, expired) is not affected by the window.
+
+The trade-off: AI clients that register themselves are public clients with no secret, so inside the window Breeze cannot tell the client apart from someone else who holds the same refresh token and client ID. Such a caller receives the same new refresh token as the client. The second of them to refresh then presents a token that has already been rotated, which is reuse and revokes the grant. Set `OAUTH_REFRESH_ROTATION_GRACE_MS=0` to turn the window off.
+
+To let a retry receive the same token, Breeze stores the new refresh token on the old one, encrypted with a key that needs both the old token itself (which Breeze never stores) and the server's `OAUTH_COOKIE_SECRET`. Each refresh by a client clears that client's stored copies older than 30 seconds; the copy from a client's last refresh stays until the expired token rows are cleaned up.
+
+Grace-window hits are logged once per client per 10 minutes as `OAUTH_REFRESH_GRACE_HIT` with the client ID and the delay in milliseconds (`reuse_ms`). While the window is on, the Prometheus counter `oauth_refresh_rotation_grace_total{outcome}` counts presentations of an already-rotated token to the token endpoint: `hit` (a retry) and `concurrent_hit` (a simultaneous refresh) were allowed, and `outside_window`, `client_mismatch`, `successor_inactive` and `unsealable` were treated as reuse. The histogram `oauth_refresh_rotation_reuse_seconds{outcome}` records how long after the rotation each one arrived.
+
 When OAuth is enabled, the MCP endpoints accept an `Authorization: Bearer <access_token>` header and return a `WWW-Authenticate` challenge pointing OAuth-capable clients at the protected-resource metadata.
 
 <Aside>
@@ -387,7 +403,7 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `file_operations` | 2/3 | List directory contents (Tier 2, auto-execute + audit). Read, write, delete, mkdir, rename (Tier 3 — reading file contents requires approval because the agent reads as root/LocalSystem). |
 | `analyze_disk_usage` | 1/2 | Filesystem analysis with cleanup candidate detection, for any fixed volume on the device (`path`), from the latest stored scan (Tier 1). `refresh: true` runs a fresh scan on an online device (Tier 2: needs `ai:write` and the `devices:execute` permission). |
 | `disk_cleanup` | 1/3 | Preview cleanup candidates for a volume (Tier 1). Execute cleanup by deleting selected paths from a previewed run (Tier 3). |
-| `system_cleanup` | 1/2/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 2: `list` asks the device live, so it needs `ai:write` and `devices:execute`). Run the selected actions (Tier 3); `run` returns a `cleanupRunId` immediately and `status` (Tier 1) reads the run's progress and result. |
+| `system_cleanup` | 1/2/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 2: `list` asks the device live, so it needs `ai:write` and `devices:execute`). Run the selected actions (Tier 3); `run` returns a `cleanupRunId` immediately and `status` (Tier 1) reads the run's progress and result; `cancel` (Tier 3) ends a running run. |
 
 <Aside type="caution">
   **By default, Tier 3 actions cannot be executed over MCP.** (With `MCP_TIER3_INTENTS_ENABLED=true` they are filed for human approval instead; see [Approvals over MCP](#approvals-over-mcp).) This transport has no interactive approval surface, so `tools/call` answers a Tier 3 action with a structured `MCP_APPROVAL_REQUIRED` error *before* it checks scopes, RBAC, rate limits or the production allowlist — holding `ai:execute` does not change the outcome. `disk_cleanup` and `system_cleanup` stay listed because their read-only actions still work; `tools/list` appends a note to each one's description:
@@ -421,13 +437,20 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `configuration_policy_compliance` | 1 | Compliance status: org-wide summary across all configuration policies, or per-device status for one policy. |
 | `manage_deployments` | 1/2/3 | Staged software deployments: list, get, device status, create, start, pause, resume, cancel. |
 | `manage_patches` | 1/2/3 | Patch management. List and compliance are Tier 1. Scan, approve/decline/defer, and bulk approve are Tier 2. Install and rollback are Tier 3. |
-| `manage_groups` | 1/2/3 | Device group lifecycle: list, get, preview dynamic filters, membership log, create, update, delete, add/remove devices. |
+| `manage_groups` | 1/3 | Device group lifecycle: list, get, preview dynamic filters, membership log, create, update, delete, add/remove devices. |
 | `manage_maintenance_windows` | 1/2/3 | Maintenance windows: list, get, check active, create, update, delete. |
 | `manage_automations` | 1/2/3 | Automation lifecycle: list, get, history, create, update, delete, enable, disable, manual run. |
 | `generate_report` | 1/2 | Reports: list, generate, get report data, create/update/delete definitions, view history. |
 | `list_org_contacts` | 1 | List an organization's contacts by site or role, respecting organization and site access. |
 | `list_sites` | 1 | List accessible sites with device counts, optionally filtered by organization or name. |
 | `get_site` | 1 | Retrieve one accessible site's details by site ID. |
+| `get_org_summary` | 1 | One organization at a glance: devices online, open alerts and tickets, active contracts, outstanding invoices, sites, primary contact, portal users and last activity. Sections you lack permission for are omitted. Requires `organizations:read` and partner scope; not offered to AI agents. |
+| `get_account_readiness` | 1 | Setup readiness for up to 50 organizations: contacts, billing address, policy, pending portal invites, overdue invoices, integrations and backup. Requires `organizations:read` and partner scope; not offered to AI agents. |
+| `list_portal_users` | 1 | An organization's customer-portal logins and their status (active, pending setup, disabled). Requires `organizations:read` and partner scope; not offered to AI agents. |
+| `list_users` | 1 | Breeze staff logins (technicians and admins) with role, MFA status and last login. Requires `users:read` and full partner access; not offered to AI agents. |
+| `get_user` | 1 | One Breeze login with its role and organization and site access. Requires `users:read` and full partner access; not offered to AI agents. |
+| `list_roles` | 1 | Breeze roles: `list`, `get` (one role's permissions), `users` (who holds it) and `effective_permissions` (including inherited). Read-only; requires `users:read` (partner callers also need full partner access); not offered to AI agents. |
+| `get_partner_settings_inheritance` | 1 | Which organizations have their own value for a partner setting, override it, or are shadowed by it: per-setting counts for one partner settings tab, or the organizations behind one count. Secret settings show set or not set only. Partner scope with full partner organization access only. |
 | `list_ai_agents` | 1 | List accessible AI agents and their enabled state, optionally including disabled agents. |
 | `list_ai_agent_runs` | 1 | List recent accessible AI agent runs with status, verdict, and cost, filtered by agent or organization. |
 | `get_ai_agent_run` | 1 | Retrieve one accessible AI agent run's trace by run ID. |
@@ -447,6 +470,9 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `search_agent_logs` | 1 | Search agent diagnostic logs with filters for device, level, component, time range, and message text. |
 | `set_agent_log_level` | 2 | Temporarily increase agent log shipping verbosity for debugging. Auto-reverts after a set duration. |
 | `query_audit_log` | 1 | Search the audit log for recent actions, filterable by action, resource, actor type, and time range. |
+| `get_audit_retention` | 1 | An organization's audit-log retention policy: whether one is configured, retention days and last cleanup. Requires `audit:read`. Also offered to AI agents. |
+| `manage_org_portal_settings` | 1/3 | An organization's customer portal settings. `get` is tier 1 (`organizations:read`). `update` (sections, contact, text, logo, colours; never custom CSS or a sensitive flag) is supervised, and `set_sensitive_access` (patch, vulnerability, rack, hours, network alerts, trust-page editing) needs two approvers; both require `organizations:write`, partner scope and an MFA session. Not offered to AI agents. |
+| `manage_report_recipients` | 1/3 | The contacts a scheduled report is emailed to. `list` is tier 1 (`reports:read`); `add`, `remove` and `convert` are supervised (`reports:write`). `add` and `convert` also need `reports:export` and an MFA session, and `convert` only takes an address already in the report's email list. Not offered to AI agents. |
 | `read_artifact` | 1 | Page through a stored large tool-result artifact by byte offset, using the `artifact.handle` from an earlier result. Scoped to your own session or agent run; see the note above "Available tools". |
 
 ### Configuration policy tools
@@ -491,6 +517,10 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `get_device_ai_activity` | 1 | Count the AI-dispatched scripts and commands on one device in a window (`days`, 1 to 30) and, with `source` and `sourceId`, who started one action. Requires `devices:read`; a device outside your sites is reported as not found. |
 | `list_operator_tasks` | 1 | List AI operator tasks, newest first (`deviceId`, `state`, `limit`, `cursor`). Requires `ai_agents:read`; refused for a site- or device-restricted session; not offered to AI agents. |
 | `get_operator_task` | 1 | One operator task with its steps, timeline and plan. Requires `ai_agents:read`; credential hand-over details are never returned; refused for a site- or device-restricted session; not offered to AI agents. |
+| `run_patch_plan` | 3 | Run an organization's patch agent now (`orgId`). Supervised. It proposes installs, each its own approval, and installs nothing itself. Requires `ai_agents:write` and an MFA session; refused for a site- or device-restricted session; not offered to AI agents. |
+| `create_operator_task` | 3 | Start an AI task that gets a stopped service running again on one device (`orgId`, `deviceId`, `serviceName`, optional `alertId`). Supervised. Each change the task makes asks for its own approval. Service recovery only: the identity recipes stay on the Recipe Library page. Requires `ai_agents:write` and an MFA session; a device outside your sites is reported as not found; not offered to AI agents. |
+| `manage_ai_agent_schedules` | 3 | AI agent schedules. `create` (a partner baseline for every organization, or one organization's tighter override) and `update` (may set act mode only to false) are supervised. `delete` needs two approvers and a digest; deleting a baseline deletes every organization's override and cannot be undone, so the second approver must be a partner-level user with access to all organizations. While a baseline is armed, a change that widens what runs unattended or changes the cadence is refused, and deleting an override that narrows it is refused. Requires `ai_agents:write` and an MFA session; refused for a site- or device-restricted session; not offered to AI agents. It cannot turn on act mode. |
+| `manage_fleet_designs` | 1/3 | Fleet Designs. `applied` is tier 1 (`ai_agents:read`). `preview` is tier 1 (`devices:write` and MFA, plus `scripts:write` when the approval has automation refs). `run` (uses AI credits, may notify people, applies nothing) needs `ai_agents:write` and MFA. `document` needs `documents:write` and links as deliverable evidence only with `contracts:write`. `apply` and `rollback` need two approvers and a digest, plus `devices:write` and MFA (`scripts:write` for apply with automation refs); `apply` refuses if anything it touches changed after approval, and `rollback` leaves items changed since the apply as they are. Refused for a site- or device-restricted session; not offered to AI agents. |
 | `list_ai_agent_schedules` | 1 | AI agent schedules and their effective state (`agentId`, `orgId`). Requires `ai_agents:read`. |
 | `list_fleet_designs` | 1 | Completed Fleet Design reports (`orgId`). Requires `ai_agents:read`; refused for a site- or device-restricted session. |
 | `get_fleet_design` | 1 | One Fleet Design report as markdown. Requires `ai_agents:read`; refused for a site- or device-restricted session. |
@@ -526,7 +556,7 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `get_pax8_status` | 1 | Integration health and companies; full partner access. |
 | `search_pax8_products` | 1 | Mapped products and product-only provisioning, commitment and live pricing reads. |
 | `manage_pax8_subscriptions` | 1/3 | `list` and `drift` are reads; `sync`, `link`, `unlink` are supervised and MFA-gated. Full partner access on every action. |
-| `manage_pax8_orders` | 1/2/3 | `list`, `get`, `preview` are reads; draft and line edits are Tier 2; `preflight` is supervised and sends staged content for an isMock dry run. Writes need MFA and whole-org access. |
+| `manage_pax8_orders` | 1/2/3 | `list`, `get`, `preview` are reads; draft and line edits are Tier 2; `preflight` and `reconcile` are supervised. `submit` requires two-person approval bound to a preview; the estimated live rate and commitment terms are rechecked before submission. Cancellations are terminal. Writes need MFA and whole-org access. |
 | `manage_billing_profiles` | 1/3 | Rate cards, work types and an organization's card. `list`, `get`, `list_work_types`, `get_org_profile` are Tier 1 (`billing_profiles:read`); every write is Tier 3, supervised (`billing_profiles:write`, MFA; rate-card and work-type writes also need full partner access). Partner scope only. |
 | `manage_billing_settings` | 1/3 | `get_partner` and `get_org` are Tier 1 (`organizations:read`), `currency_impact` Tier 1 (`invoices:write`), `reporting_totals` Tier 1 (`invoices:read`); `update_partner` and `update_org` Tier 3, supervised (`invoices:write`, MFA). Partner scope only. |
 | `manage_contract_templates` | 1/2/3 | `list`, `get`, `get_version`, `usage` are Tier 1 (`agreements:read`); `create` and `update` Tier 2 for an organization's template, supervised with `ownerScope: partner` (`agreements:write`); `create_version`, `publish`, `archive` Tier 3, supervised, organization templates only. Not offered to AI agents for writes. |
@@ -576,6 +606,11 @@ These write tools follow the same per-action tiers as in-product chat. Every Tie
 | Tool | Tier | Description |
 |---|---|---|
 | `manage_backup_profiles` | 1/2/3 | List and get are Tier 1, and creating an organization profile is Tier 2. Creating a partner-wide profile (`ownerScope: partner`), updating a profile and deleting a profile are Tier 3: a profile may be partner-wide, and narrowing one stops protecting data in every organization. |
+| `manage_backup_verification` | 1/3 | `health`, `list` and `readiness` are Tier 1. `run` is Tier 3: it queues an integrity check or test restore on the device. |
+| `get_vss_status` | 2 | Read the Volume Shadow Copy writers on one online Windows device, live from its agent. Read-only, but it runs a command on the machine, so it needs a session with MFA. |
+| `list_bmr_recoveries` | 1 | Read bare-metal recoveries (`list`, `get`): status, phase times, failure reason and warnings. Whether a target, plan or result exists, not their contents. |
+| `get_backup_health` | 1 | Backup health per device across the organizations you reach, from Breeze jobs and connected backup providers together. |
+| `manage_c2c_configs` | 1/3 | `list` is Tier 1. `create`, `update` and `delete` are Tier 3 and need a session with MFA; a config with backup history cannot be deleted. Not available to AI agents. |
 | `configure_backup_sla` | 2 | Create or update a backup SLA. |
 | `manage_dr_plan` | 2/3 | Plan and group create/update are Tier 2, and refused while one of the plan's executions is pending or running. Deleting a group is Tier 3. |
 | `configure_vault` | 3 | Create or update a device's local vault (path, type, retention); the device is reconfigured. |
@@ -1279,4 +1314,6 @@ The tool name in `tools/call` does not match any registered tool. Use `tools/lis
 
 SSE sessions expire after 30 minutes. If you see errors about missing sessions, the client should reconnect to `/api/v1/mcp/sse` to obtain a new session.
 
-Pax8 tools require `billing:manage` and partner or system scope (system callers pass `partnerId`). Device-bound sessions are refused. Supervised actions return `MCP_APPROVAL_REQUIRED` by default over MCP. Credential save/test and company mapping remain in the web app.
+Pax8 tools require `billing:manage` and partner or system scope (system callers pass `partnerId`). Device-bound sessions are refused. Supervised actions return `MCP_APPROVAL_REQUIRED` by default over MCP. `manage_pax8_orders:submit` creates a four-eyes intent with a mandatory pinned digest; it is never offered to headless agents. Preview first and copy `submitWith` unchanged. A timeout requires `reconcile`, never a blind retry. Reconciliation records vendor evidence, preserves conflicting billing edits as `billing_conflict`, and leaves ambiguous outcomes unknown. Credential save/test and company mapping remain in the web app.
+
+Pax8 submission refusal codes (the `PAX8_SUBMIT_REFUSAL_CODES` contract): `PREVIEW_MISMATCH`, `PRICE_CHANGED`, `COMMITMENT_CHANGED`, `COST_UNKNOWN`, `COMMITMENT_AMBIGUOUS`, `TOO_MANY_LINES`, `NOT_PENDING`, `COMPANY_UNRESOLVED`, `TERM_UNKNOWN`, `QUANTITY_UNKNOWN`, `SUBSCRIPTION_NOT_FOUND`, `PRODUCT_UNKNOWN`, `CONTRACT_LINE_MISSING`, `CLAIM_LOST`, `INTEGRATION_UNAVAILABLE`, `BASELINE_NOT_CAPTURED`, `INTEGRATION_CHANGED`, `PREFLIGHT_FAILED`, `CONFLICT`. Claim refusals mean nothing was sent by that attempt; preview and approve again. Post-send persistence conflicts require inspection and reconciliation of unknown writes. A successful vendor write with `billingConflicts` requires a person to resolve billing without resubmitting it.

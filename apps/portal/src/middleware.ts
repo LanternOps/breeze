@@ -104,7 +104,12 @@ export const onRequest = defineMiddleware(async (context, next) => {
     }
   }
 
-  if (hasSession && authOnlyPaths.has(pathname)) {
+  // The Microsoft sign-in callback (W4 #11381, D3) sets the session cookie and
+  // lands here on /login?sso=signed_in. That page must render: its island reads
+  // the `next` path kept in sessionStorage (which the server cannot see) and
+  // navigates there through safeNextPath. Every other signed-in /login bounces.
+  const oidcSignedInLanding = pathname === '/login' && context.url.searchParams.get('sso') === 'signed_in';
+  if (hasSession && authOnlyPaths.has(pathname) && !oidcSignedInLanding) {
     return context.redirect(
       withBase(await authenticatedLanding(context.request)),
       302

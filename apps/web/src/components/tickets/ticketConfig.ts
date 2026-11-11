@@ -21,6 +21,9 @@ export interface TicketSummary {
   deviceHostname: string | null;
   assignedTo: string | null;
   assigneeName: string | null;
+  /** Requester display name. The detail endpoint always carries it; the list
+   *  endpoint does not yet, so queue rows render it only when present. */
+  submitterName?: string | null;
   categoryId: string | null;
   dueDate: string | null;
   tags?: string[];
@@ -56,6 +59,9 @@ export interface TicketComment {
   portalUserId: string | null;
   authorName: string | null;
   authorType: string | null;
+  /** Who wrote the row: 'user', 'ai_agent', 'service_principal', 'system', …
+   *  'system' marks a note Breeze posted itself (#9960). Absent on older payloads. */
+  originPrincipalKind?: string | null;
   commentType: 'comment' | 'internal' | 'status_change' | 'assignment' | 'time_entry' | 'system';
   content: string;
   isPublic: boolean;
@@ -95,26 +101,47 @@ export interface TicketDetail extends TicketSummary {
   alertLinks: Array<{ id: string; alertId: string; linkType: string; alertTitle: string | null; alertSeverity: string | null; alertStatus: string | null }>;
 }
 
+/** Up to two initials for an owner avatar: "Todd Hebebrand" → "TH",
+ *  "todd@example.com" → "T". */
+export function nameInitials(name: string): string {
+  const words = name.replace(/@.*$/, '').split(/[\s._-]+/).filter(Boolean);
+  if (words.length === 0) return '?';
+  const first = words[0]!.charAt(0);
+  const last = words.length > 1 ? words[words.length - 1]!.charAt(0) : '';
+  return (first + last).toLocaleUpperCase();
+}
+
 /** The number a technician reads for a ticket: internal number, then the
  *  legacy ticket number, then a short id. */
 export function ticketDisplayNumber(t: { id: string; internalNumber?: string | null; ticketNumber?: string | null }): string {
   return t.internalNumber ?? t.ticketNumber ?? t.id.slice(0, 8);
 }
 
+/** Text for a neutral (muted) chip. --muted-foreground is 4.2:1 on --muted in
+ *  light — under AA for text-xs — so light reads from the foreground instead;
+ *  dark keeps the muted ink, which clears 4.7:1 there. Scoped to chips: the
+ *  global --muted-foreground is unchanged. */
+export const NEUTRAL_CHIP_TEXT = 'text-foreground/70 dark:text-muted-foreground';
+
+// Chip text uses the *-ink tokens: the fill tokens measure 1.8–4.0:1 as
+// text-xs on their own tint (ticketChipContrast.test.tsx guards every chip).
 export const statusConfig: Record<TicketStatus, { label: string; color: string }> = {
-  new: { label: 'New', color: 'bg-primary/15 text-primary border-primary/30' },
-  open: { label: 'Open', color: 'bg-success/15 text-success border-success/30' },
-  pending: { label: 'Pending', color: 'bg-warning/15 text-warning border-warning/30' },
-  on_hold: { label: 'On hold', color: 'bg-muted text-muted-foreground border-border' },
-  resolved: { label: 'Resolved', color: 'bg-success/15 text-success border-success/30' },
-  closed: { label: 'Closed', color: 'bg-muted text-muted-foreground border-border' },
+  new: { label: 'New', color: 'bg-primary/15 text-primary-ink border-primary/30' },
+  open: { label: 'Open', color: 'bg-success/15 text-success-ink border-success/30' },
+  pending: { label: 'Pending', color: 'bg-warning/15 text-warning-ink border-warning/30' },
+  on_hold: { label: 'On hold', color: `bg-muted ${NEUTRAL_CHIP_TEXT} border-border` },
+  resolved: { label: 'Resolved', color: 'bg-success/15 text-success-ink border-success/30' },
+  closed: { label: 'Closed', color: `bg-muted ${NEUTRAL_CHIP_TEXT} border-border` },
 };
 
+// Priority is not status, so it carries no status colour: red on the board
+// means a breach and amber means pending or at risk. Weight and fill rank it
+// instead: Urgent is a solid foreground pill, High an outline, Low faint.
 export const priorityConfig: Record<TicketPriority, { label: string; color: string; weight: number }> = {
-  urgent: { label: 'Urgent', color: 'text-red-700 dark:text-red-400 bg-red-500/10 border-red-500/30', weight: 0 },
-  high: { label: 'High', color: 'text-orange-700 dark:text-orange-400 bg-orange-500/10 border-orange-500/30', weight: 1 },
-  normal: { label: 'Normal', color: 'text-muted-foreground bg-muted border-border', weight: 2 },
-  low: { label: 'Low', color: 'text-muted-foreground bg-muted/50 border-border', weight: 3 },
+  urgent: { label: 'Urgent', color: 'bg-foreground text-background border-foreground font-semibold', weight: 0 },
+  high: { label: 'High', color: 'bg-background text-foreground border-foreground/50', weight: 1 },
+  normal: { label: 'Normal', color: `${NEUTRAL_CHIP_TEXT} bg-muted border-border`, weight: 2 },
+  low: { label: 'Low', color: `${NEUTRAL_CHIP_TEXT} bg-muted/50 border-border`, weight: 3 },
 };
 
 export function formatRelative(totalMinutes: number): string {

@@ -35,17 +35,18 @@ import {
 } from './alertMlContext';
 import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
+import AlertSubjectChip, { isDeviceAlert, type AlertSubjectFields } from './AlertSubjectChip';
 import { EntityLink } from '@/components/shared/EntityLink';
 
 export type { AlertSeverity, AlertStatus };
 
-export type Alert = {
+export type Alert = AlertSubjectFields & {
   id: string;
   title: string;
   message: string;
   severity: AlertSeverity;
   status: AlertStatus;
-  deviceId: string;
+  deviceId: string | null;
   deviceName: string;
   ruleId?: string;
   ruleName?: string;
@@ -172,12 +173,12 @@ export default function AlertList({
           ? true
           : alert.title.toLowerCase().includes(normalizedQuery) ||
             alert.message.toLowerCase().includes(normalizedQuery) ||
-            alert.deviceName.toLowerCase().includes(normalizedQuery);
+            (alert.subjectName || alert.ownerLabel || alert.deviceName || '').toLowerCase().includes(normalizedQuery);
       // "All Status" still hides dismissed alerts — they're permanently closed
       // and only show when the Dismissed filter is selected explicitly.
       const matchesStatus = statusFilter === 'all' ? alert.status !== 'dismissed' : alert.status === statusFilter;
       const matchesSeverity = severityFilter.length === 0 ? true : severityFilter.includes(alert.severity);
-      const matchesDevice = deviceFilter === 'all' ? true : alert.deviceId === deviceFilter;
+      const matchesDevice = deviceFilter === 'all' ? true : isDeviceAlert(alert) && alert.deviceId === deviceFilter;
 
       let matchesDateRange = true;
       if (dateRangeFilter !== 'all') {
@@ -258,10 +259,11 @@ export default function AlertList({
   const someSelected = paginatedAlerts.some(a => selectedIds.has(a.id));
 
   const availableDevices = useMemo(() => {
+    if (!alerts.some(isDeviceAlert)) return [];
     if (devices.length > 0) return devices;
     const deviceMap = new Map<string, string>();
     alerts.forEach(a => {
-      if (!deviceMap.has(a.deviceId)) {
+      if (isDeviceAlert(a) && !deviceMap.has(a.deviceId)) {
         deviceMap.set(a.deviceId, a.deviceName);
       }
     });
@@ -532,7 +534,7 @@ export default function AlertList({
                   className="h-4 w-4 rounded border-border"
                 />
               </th>
-              <th className="px-4 py-3">{t('alertList.device')}</th>
+              <th className="px-4 py-3">{t('subject.label')}</th>
               {showOrgColumn && <th className="px-4 py-3">{t('common:labels.organization')}</th>}
               <th className="px-4 py-3">{t('alertList.title')}</th>
               <th className="px-4 py-3">{t('alertList.severity')}</th>
@@ -586,7 +588,7 @@ export default function AlertList({
                       />
                     </td>
                     <td className="max-w-[160px] px-4 py-3">
-                      <a
+                      {isDeviceAlert(alert) ? <a
                         href={`/devices/${alert.deviceId}`}
                         onClick={e => e.stopPropagation()}
                         className="flex items-center gap-1 text-sm font-medium hover:underline min-w-0"
@@ -594,7 +596,7 @@ export default function AlertList({
                       >
                         <span className="truncate">{alert.deviceName}</span>
                         <ExternalLink className="h-3 w-3 shrink-0" />
-                      </a>
+                      </a> : <AlertSubjectChip {...alert} />}
                     </td>
                     {showOrgColumn && (
                       <td className="max-w-[140px] px-4 py-3">

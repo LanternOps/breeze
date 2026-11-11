@@ -134,6 +134,78 @@ describe('invoice payment audit logging', () => {
     }));
   });
 
+  describe('idempotency key (#3803)', () => {
+    const recorded = {
+      invoice: { id: INV_ID, status: 'partial' },
+      audit: { orgId: ORG_ID, paymentId: PAY_ID, invoiceId: INV_ID, amount: '40.00', method: 'check', reference: null, recordedBy: 'u1' },
+      replayed: false,
+    };
+    const post = (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+      app().request(`/${INV_ID}/payments`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ amount: 40, method: 'check', receivedAt: '2026-06-14', ...body }),
+      });
+    const keyPassed = () => (svc.recordPayment as any).mock.calls[0][1].idempotencyKey;
+
+    it('passes the Idempotency-Key header to the service', async () => {
+      (svc.recordPayment as any).mockResolvedValue(recorded);
+      const res = await post({}, { 'Idempotency-Key': 'hdr-key-1' });
+      expect(res.status).toBe(200);
+      expect(keyPassed()).toBe('hdr-key-1');
+    });
+
+    it('passes a body idempotencyKey to the service', async () => {
+      (svc.recordPayment as any).mockResolvedValue(recorded);
+      const res = await post({ idempotencyKey: 'body-key-1' });
+      expect(res.status).toBe(200);
+      expect(keyPassed()).toBe('body-key-1');
+    });
+
+    it('accepts a header and body key that agree', async () => {
+      (svc.recordPayment as any).mockResolvedValue(recorded);
+      const res = await post({ idempotencyKey: 'same-key' }, { 'Idempotency-Key': 'same-key' });
+      expect(res.status).toBe(200);
+      expect(keyPassed()).toBe('same-key');
+    });
+
+    it('refuses a header and body key that disagree, before the service runs', async () => {
+      const res = await post({ idempotencyKey: 'body-key' }, { 'Idempotency-Key': 'header-key' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('IDEMPOTENCY_KEY_MISMATCH');
+      expect(svc.recordPayment).not.toHaveBeenCalled();
+    });
+
+    it('refuses a malformed Idempotency-Key header, before the service runs', async () => {
+      const res = await post({}, { 'Idempotency-Key': 'has space' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('INVALID_IDEMPOTENCY_KEY');
+      expect(svc.recordPayment).not.toHaveBeenCalled();
+    });
+
+    it('sends no key when the caller sends none', async () => {
+      (svc.recordPayment as any).mockResolvedValue(recorded);
+      await post({});
+      expect(keyPassed()).toBeUndefined();
+    });
+
+    it('a replay returns the invoice, marks the response, and writes no second audit entry', async () => {
+      (svc.recordPayment as any).mockResolvedValue({ ...recorded, replayed: true });
+      const res = await post({ idempotencyKey: 'replayed-key' });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Idempotent-Replayed')).toBe('true');
+      expect((await res.json()).data.id).toBe(INV_ID);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('a first recording is not marked as a replay', async () => {
+      (svc.recordPayment as any).mockResolvedValue(recorded);
+      const res = await post({ idempotencyKey: 'fresh-key' });
+      expect(res.headers.get('Idempotent-Replayed')).toBeNull();
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('does not write an audit entry when the service throws', async () => {
     (svc.recordPayment as any).mockRejectedValue(new InvoiceServiceError('Payment exceeds balance', 409, 'OVERPAYMENT'));
     const res = await app().request(`/${INV_ID}/payments`, {

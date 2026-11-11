@@ -42,6 +42,7 @@ func (p *proxyProvider) GetContent() (Content, error) {
 	var data struct {
 		Type        string `json:"type"`
 		Text        string `json:"text,omitempty"`
+		RTF         []byte `json:"rtf,omitempty"`
 		Image       []byte `json:"image,omitempty"`
 		ImageFormat string `json:"imageFormat,omitempty"`
 	}
@@ -52,6 +53,7 @@ func (p *proxyProvider) GetContent() (Content, error) {
 	content := Content{
 		Type:        ContentType(data.Type),
 		Text:        data.Text,
+		RTF:         data.RTF,
 		Image:       data.Image,
 		ImageFormat: data.ImageFormat,
 	}

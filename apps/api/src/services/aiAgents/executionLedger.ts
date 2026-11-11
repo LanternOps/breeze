@@ -14,7 +14,9 @@
  * Tool OUTPUT is deliberately not persisted here: `ai_tool_executions.tool_output`
  * stays NULL. Redaction rules for what is safe to store land with Part B's
  * closed operation manifest — storing raw outputs now would put unredacted
- * command results into a table with no redaction contract yet.
+ * command results into a table with no redaction contract yet. A FAILED row
+ * does keep its reason (#10411): the result's own `error` string, bounded,
+ * never the output itself (`toolErrorTextForLedger`).
  *
  * All writes run in a SYSTEM db context (matching the pattern already used by
  * `runService.transitionRunStatus`): `ai_tool_executions` has no `org_id` of
@@ -151,6 +153,37 @@ export interface CompleteToolExecutionArgs {
   executionId: string;
   isError: boolean;
   durationMs: number;
+  /**
+   * The result the tool returned, as the post hook received it. Read ONLY on
+   * a failed call, and only for its `error` string (`toolErrorTextForLedger`,
+   * #10411) — the output itself is never written.
+   */
+  output?: string;
+}
+
+/** Stored when a failed call's result carried no `error` string of its own. */
+export const LEDGER_ERROR_WITHOUT_TEXT = 'tool reported an error without an error message';
+
+const LEDGER_ERROR_MAX_CHARS = 1_000;
+
+/**
+ * The error text a failed call's ledger row keeps (#10411). Only the result's
+ * own `error` string — already scrubbed and redacted by
+ * `compactToolResultForChat`, which every handler runs before the post hook —
+ * and bounded. It never falls back to the raw output: `tool_output` stays
+ * unpersisted (module docstring), and a failed command's stdout must not
+ * reach this table through the error column instead.
+ */
+export function toolErrorTextForLedger(output: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return LEDGER_ERROR_WITHOUT_TEXT;
+  }
+  const error = parsed && typeof parsed === 'object' ? (parsed as { error?: unknown }).error : undefined;
+  if (typeof error !== 'string' || error.trim().length === 0) return LEDGER_ERROR_WITHOUT_TEXT;
+  return error.length > LEDGER_ERROR_MAX_CHARS ? `${error.slice(0, LEDGER_ERROR_MAX_CHARS - 1)}…` : error;
 }
 
 /** Terminal-marks a tool-execution row. `tool_output` is deliberately never written — see module docstring. */
@@ -160,6 +193,9 @@ export async function completeToolExecution(args: CompleteToolExecutionArgs): Pr
       .update(aiToolExecutions)
       .set({
         status: args.isError ? 'failed' : 'completed',
+        ...(args.isError
+          ? { errorMessage: args.output === undefined ? LEDGER_ERROR_WITHOUT_TEXT : toolErrorTextForLedger(args.output) }
+          : {}),
         durationMs: args.durationMs,
         completedAt: new Date(),
       })

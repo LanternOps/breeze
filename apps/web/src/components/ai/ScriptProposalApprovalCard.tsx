@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import type { EditorProps } from '@monaco-editor/react';
 import { useTranslation } from 'react-i18next';
 import { useScriptProposal } from '@/hooks/useScriptProposal';
-import { requestScriptProposalChanges } from '@/lib/api/scriptProposals';
+import { overrideRunScriptProposal, requestScriptProposalChanges } from '@/lib/api/scriptProposals';
 import { ActionError } from '@/lib/runAction';
 import { configureMonacoLoader } from '@/lib/monacoLoader';
 import SaveProposalToLibraryDialog from './SaveProposalToLibraryDialog';
@@ -178,6 +178,9 @@ export default function ScriptProposalApprovalCard({
   const [noteError, setNoteError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [promoteOpen, setPromoteOpen] = useState(false);
+  const [overrideConfirmOpen, setOverrideConfirmOpen] = useState(false);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
+  const [undeliveredCount, setUndeliveredCount] = useState(0);
 
   const strictHits = data?.proposal.strictHits ?? [];
   const lineCount = useMemo(() => data?.proposal.content.split('\n').length ?? 0, [data?.proposal.content]);
@@ -214,6 +217,29 @@ export default function ScriptProposalApprovalCard({
     }
   };
 
+  const submitOverrideRun = async () => {
+    setSubmitting(true);
+    setOverrideError(null);
+    try {
+      const result = await overrideRunScriptProposal(proposalId, strictHits.filter((h) => acked.has(h)));
+      setOverrideConfirmOpen(false);
+      setUndeliveredCount(result.results.filter((r) => !r.ok).length);
+      reload();
+      onChanged?.();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (err instanceof ActionError) {
+        // Already toasted. The proposal may have moved under this card.
+        setOverrideConfirmOpen(false);
+        reload();
+        return;
+      }
+      setOverrideError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (loading) return <div data-testid="script-proposal-loading">{t('common:states.loading')}</div>;
   if (error || !data) {
     return (
@@ -227,16 +253,32 @@ export default function ScriptProposalApprovalCard({
   const runState = runStateLine(data.proposal.status, data.executions.length, data.verification.outcome);
   const verdict = data.review?.recommendedAction ?? null;
   const verdictKey = verdict ? REVIEW_VERDICT_KEY[verdict] : undefined;
+  // #10954: no verdict exists, so there is no risk tier or summary to show, and
+  // the normal decision footer has no intent behind it.
+  const reviewFailure = data.reviewFailure ?? null;
+  const reviewFailed = data.proposal.status === 'review_failed';
+  const canOverrideRun = reviewFailed && data.viewer.canOverrideRun;
+  const canOverrideSave = reviewFailed && data.viewer.canOverrideSave;
+  const overrideBlockedByStrict = strictHits.length > 0 && (!allAcked || !data.viewer.canAcknowledge);
 
   return (
     <section data-testid="script-proposal-card" className="rounded-lg border border-border p-4">
       {/* Risk band + reviewer summary */}
-      <div
-        data-testid={`script-proposal-risk-${tier}`}
-        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${RISK_CLASS[tier] ?? RISK_CLASS.medium}`}
-      >
-        {t(/* i18n-dynamic */ `approvals:risk.${tier}`)}
-      </div>
+      {reviewFailure ? (
+        <div
+          data-testid="script-proposal-review-failed-band"
+          className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-800 dark:bg-red-900/40 dark:text-red-200"
+        >
+          {reviewFailure.humanApproved ? t('ai:scriptProposal.overrideApproved') : t('ai:scriptProposal.reviewFailedTitle')}
+        </div>
+      ) : (
+        <div
+          data-testid={`script-proposal-risk-${tier}`}
+          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${RISK_CLASS[tier] ?? RISK_CLASS.medium}`}
+        >
+          {t(/* i18n-dynamic */ `approvals:risk.${tier}`)}
+        </div>
+      )}
       {verdict && verdictKey && (
         // #10399: the reviewer's recommendation in words. Without it a
         // "changes" verdict was visible only by inference from the findings.
@@ -244,7 +286,7 @@ export default function ScriptProposalApprovalCard({
           {t(/* i18n-dynamic */ verdictKey)}
         </p>
       )}
-      {data.review?.summary && (
+      {data.review?.summary && !reviewFailure && (
         <p data-testid="script-proposal-summary" className="mt-2 text-sm">
           {data.review.summary}
         </p>
@@ -389,7 +431,85 @@ export default function ScriptProposalApprovalCard({
         {t(/* i18n-dynamic */ runState.key)}
       </p>
 
-      {!readOnly && data.viewer.canDecide && (
+      {/* #10954: the failure, next to what a person may do about it. Not gated
+          on readOnly: the deep link is exactly where such a proposal is opened,
+          and with no intent there is no other surface to decide it on. */}
+      {reviewFailure && (
+        <div
+          data-testid="script-proposal-review-failure"
+          className="mt-3 rounded-md border border-red-300 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30"
+        >
+          <p className="text-sm font-medium">{t('ai:scriptProposal.reviewFailedTitle')}</p>
+          <p data-testid="script-proposal-review-failure-reason" className="mt-1 text-xs">
+            {reviewFailure.reason ?? t('ai:scriptProposal.reviewFailureUnknown')}
+          </p>
+          {(canOverrideRun || canOverrideSave) && (
+            <>
+              <p className="mt-2 text-xs text-muted-foreground">{t('ai:scriptProposal.overrideExplain')}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {canOverrideRun && (
+                  <button
+                    type="button"
+                    data-testid="script-proposal-override-run"
+                    disabled={submitting || overrideBlockedByStrict}
+                    onClick={() => setOverrideConfirmOpen(true)}
+                    className="rounded-md border border-red-400 px-3 py-1.5 text-xs font-medium transition-colors hover:bg-red-100 disabled:opacity-50 dark:hover:bg-red-900/40"
+                  >
+                    {t('ai:scriptProposal.overrideRun')}
+                  </button>
+                )}
+                {canOverrideSave && (
+                  <button
+                    type="button"
+                    data-testid="script-proposal-override-save"
+                    disabled={submitting || overrideBlockedByStrict}
+                    onClick={() => setPromoteOpen(true)}
+                    className="rounded-md border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted disabled:opacity-50"
+                  >
+                    {t('ai:scriptProposal.overrideSave')}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+          {overrideConfirmOpen && canOverrideRun && (
+            <div data-testid="script-proposal-override-confirm" className="mt-2 rounded-md border border-border bg-background p-2">
+              <p className="text-xs">{t('ai:scriptProposal.overrideRunNotice')}</p>
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setOverrideConfirmOpen(false)}
+                  className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                >
+                  {t('common:actions.cancel')}
+                </button>
+                <button
+                  type="button"
+                  data-testid="script-proposal-override-confirm-submit"
+                  disabled={submitting}
+                  onClick={() => void submitOverrideRun()}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
+                >
+                  {t('ai:scriptProposal.overrideRunConfirm')}
+                </button>
+              </div>
+            </div>
+          )}
+          {overrideError && (
+            <p data-testid="script-proposal-override-error" className="mt-2 text-xs text-destructive">
+              {overrideError}
+            </p>
+          )}
+        </div>
+      )}
+      {undeliveredCount > 0 && (
+        <p data-testid="script-proposal-override-undelivered" className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+          {t('ai:scriptProposal.overrideRunUndelivered', { count: undeliveredCount })}
+        </p>
+      )}
+
+      {!readOnly && !reviewFailed && data.viewer.canDecide && (
         <div className="mt-3 flex gap-2">
           <button
             type="button"
@@ -470,7 +590,11 @@ export default function ScriptProposalApprovalCard({
           proposalId={proposalId}
           goal={data.proposal.goal}
           onClose={() => setPromoteOpen(false)}
-          onPromoted={() => reload()}
+          onPromoted={() => {
+            reload();
+            onChanged?.();
+          }}
+          override={canOverrideSave ? { acknowledgedPatterns: strictHits.filter((h) => acked.has(h)) } : undefined}
         />
       )}
     </section>

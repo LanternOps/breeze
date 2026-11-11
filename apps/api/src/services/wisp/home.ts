@@ -14,17 +14,21 @@ import type { BriefSection, Concern, WispHomePayload } from '@breeze/shared';
 import { db } from '../../db';
 import { userNotifications } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
+import { captureException } from '../sentry';
 import { currentActivity, listActivity } from './activity';
 import { listConcernsForCeiling } from './concerns';
 import { assertWithinCeiling, CeilingViolationError, inSystemContext, type GrantCeiling } from './grantAuthority';
+import { loadBriefSchedule } from './nudgePreferences';
 import { getPartnerSettings } from './partnerSettings';
+import { firstLookProgressFrom, loadFirstLookCounts } from './standingLoop';
 import { listWorkingSet } from './threadLinks';
+import { FIRST_LOOK_WINDOW_MS, firstLookPostTimes, type FirstLookPostTimes } from './threadPosts';
 
 export const BRIEF_MAX_AGE_HOURS = 36;
 export const NEEDS_YOU_LIMIT = 50;
 export const HOME_ACTIVITY_LIMIT = 20;
 
-export type HomeSections = Pick<WispHomePayload, 'brief' | 'needsYou' | 'activity' | 'current' | 'links' | 'partner'>;
+export type HomeSections = Pick<WispHomePayload, 'brief' | 'needsYou' | 'activity' | 'current' | 'links' | 'partner' | 'briefSchedule' | 'firstLookAt' | 'firstLookProgress'>;
 
 const SEVERITY_RANK: Record<Concern['severity'], number> = { high: 0, medium: 1, low: 2, info: 3 };
 
@@ -80,28 +84,55 @@ function currentWithinCeiling(ceiling: GrantCeiling, current: HomeSections['curr
   }
 }
 
+/**
+ * The welcome card's "N of M orgs looked at" (#11146). No read at all once a
+ * post has said how it went, on a paused or ended grant, or past the grant's
+ * first day (no post is coming, so the count would stay up for good). A failed
+ * read loses the line, not the page.
+ */
+async function firstLookProgress(
+  ceiling: GrantCeiling | null,
+  grantCreatedAt: Date,
+  times: FirstLookPostTimes,
+): Promise<HomeSections['firstLookProgress']> {
+  if (!ceiling || times.firstLookAt || times.couldntLookAt) return null;
+  if (Date.now() - grantCreatedAt.getTime() > FIRST_LOOK_WINDOW_MS) return null;
+  try {
+    return firstLookProgressFrom(await loadFirstLookCounts(ceiling));
+  } catch (err) {
+    console.warn('[wisp.home] the first-look counts could not be read; the welcome shows no progress', { grantId: ceiling.grantId, err });
+    captureException(err, undefined, { op: 'wisp.home.firstLookProgress', grantId: ceiling.grantId });
+    return null;
+  }
+}
+
 export async function buildHomeSections(input: {
   auth: AuthContext;
   partnerId: string;
   grantId: string;
   grantorUserId: string;
   threadId: string;
+  grantCreatedAt: Date;
   /** The grant's live ceiling; null when the grant is paused / ended. */
   ceiling: GrantCeiling | null;
 }): Promise<HomeSections> {
   const { ceiling } = input;
-  const [brief, settings] = await Promise.all([
+  const [brief, settings, briefSchedule, postTimes] = await Promise.all([
     latestBrief(input.grantorUserId, input.grantId),
     getPartnerSettings(input.partnerId),
+    loadBriefSchedule(input.grantorUserId, input.partnerId),
+    firstLookPostTimes(input.threadId),
   ]);
   const partner = { enabled: settings.enabled };
+  const { firstLookAt } = postTimes;
   if (!ceiling) {
-    return { brief, needsYou: [], activity: { items: [], nextCursor: null }, current: null, links: [], partner };
+    return { brief, needsYou: [], activity: { items: [], nextCursor: null }, current: null, links: [], partner, briefSchedule, firstLookAt, firstLookProgress: null };
   }
   // Sequential: each reads through its own context; the links resolve one by one.
   const concerns = await listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'] });
   const activity = await listActivity(ceiling, { limit: HOME_ACTIVITY_LIMIT, threadId: input.threadId });
   const current = currentWithinCeiling(ceiling, await currentActivity(input.grantId));
   const links = await listWorkingSet({ auth: input.auth, ceiling }, input.threadId, { concerns });
-  return { brief, needsYou: needsYouOrder(concerns), activity, current, links, partner };
+  const progress = await firstLookProgress(ceiling, input.grantCreatedAt, postTimes);
+  return { brief, needsYou: needsYouOrder(concerns), activity, current, links, partner, briefSchedule, firstLookAt, firstLookProgress: progress };
 }

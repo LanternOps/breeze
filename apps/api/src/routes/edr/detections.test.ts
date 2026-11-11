@@ -162,6 +162,14 @@ describe('EDR detection read routes', () => {
       );
     });
 
+    it('accepts a framework vendor as a filter (#8170)', async () => {
+      await app.request(`/edr/security-agents/coverage?orgId=${ORG_ID}&vendor=bitdefender`);
+      expect(coverageMock).toHaveBeenCalledWith(
+        expect.objectContaining({ auth }),
+        expect.objectContaining({ orgId: ORG_ID, vendor: 'bitdefender' }),
+      );
+    });
+
     it('rejects malformed filters with 400', async () => {
       for (const q of ['state=nope', 'vendor=acme', 'deviceId=x', 'orgId=x', 'limit=0']) {
         expect((await app.request(`/edr/security-agents/coverage?${q}`)).status, q).toBe(400);

@@ -1,11 +1,12 @@
 import { useId, useMemo } from 'react';
-import { LAUNCH_MONTHLY_PRICES_USD, LAUNCH_ANNUAL_TOTALS_USD, launchPurchaseHandoffQuery, type LaunchPurchaseSelection } from '@breeze/shared';
+import { DEFAULT_SIGNUP_INTENT, signupIntentHandoffQuery, type SignupIntent } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import PasswordInput from './PasswordInput';
 import PasswordStrength from './PasswordStrength';
+import { formatCents, type SignupOffer } from '../../lib/signupOffer';
 
 type PartnerRegisterFormValues = {
   companyName: string;
@@ -24,7 +25,9 @@ type PartnerRegisterFormProps = {
   // scheme; this component only renders it.
   errorAction?: { url: string; label: string };
   loading?: boolean;
-  purchaseSelection?: LaunchPurchaseSelection;
+  signupIntent?: SignupIntent;
+  // Billing's quote for the intent. Null or absent means no price is shown.
+  offer?: SignupOffer | null;
 };
 
 export default function PartnerRegisterForm({
@@ -32,10 +35,13 @@ export default function PartnerRegisterForm({
   errorMessage,
   errorAction,
   loading,
-  purchaseSelection
+  signupIntent = DEFAULT_SIGNUP_INTENT,
+  offer = null
 }: PartnerRegisterFormProps) {
   const { t, i18n } = useTranslation('auth');
-  const money = (amount: number) => new Intl.NumberFormat(i18n.language || 'en', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(amount);
+  const locale = i18n.language || 'en';
+  const money = (cents: number) => formatCents(cents, locale);
+  const count = (n: number) => new Intl.NumberFormat(locale).format(n);
   const partnerRegisterSchema = useMemo(
     () =>
       z
@@ -89,14 +95,46 @@ export default function PartnerRegisterForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
-      {purchaseSelection && (
+      {(offer || signupIntent.intent === 'wisp') && (
         <section data-testid="register-purchase-selection" className="space-y-1 rounded-md border bg-muted/40 p-4">
-          <h2 className="font-semibold">{t('partnerRegister.purchase.capacity', { defaultValue: '{{capacity}} managed devices', capacity: purchaseSelection.capacity })}</h2>
-          <p className="text-sm text-muted-foreground">
-            {purchaseSelection.billingPeriod === 'annual'
-              ? t('partnerRegister.purchase.annual', { defaultValue: '{{total}} USD billed annually', total: money(LAUNCH_ANNUAL_TOTALS_USD[purchaseSelection.capacity]!) })
-              : t('partnerRegister.purchase.monthly', { defaultValue: '{{total}} USD billed monthly', total: money(LAUNCH_MONTHLY_PRICES_USD[purchaseSelection.capacity]!) })}
-          </p>
+          <h2 className="font-semibold">{t('partnerRegister.purchase.title', { defaultValue: 'Breeze Cloud' })}</h2>
+          {offer?.kind === 'cloud_beta' && (
+            <p className="text-sm text-muted-foreground">
+              {t('partnerRegister.purchase.beta', {
+                defaultValue: 'Beta pricing: {{monthly}} a month for each {{devices}} devices. Or {{annual}} a year, or {{twoYear}} for two years. Price held {{holdMonths}} months ({{holdMonthsTwoYear}} on two years).',
+                monthly: money(offer.terms.monthly),
+                devices: count(offer.perDevices),
+                annual: money(offer.terms.annual),
+                twoYear: money(offer.terms.two_year),
+                holdMonths: offer.holdMonths.monthly,
+                holdMonthsTwoYear: offer.holdMonths.two_year,
+              })}
+            </p>
+          )}
+          {offer?.kind === 'cloud_per_device' && (
+            <p className="text-sm text-muted-foreground">
+              {offer.tiers.map(([from, cents], i) => i === 0 && from === 1
+                ? t('partnerRegister.purchase.perDeviceRate', {
+                  defaultValue: '{{price}} a device a month',
+                  price: money(cents),
+                })
+                : t('partnerRegister.purchase.perDeviceTier', {
+                  defaultValue: '{{price}} from {{from}} devices',
+                  from: count(from),
+                  price: money(cents),
+                })).join(', ')}.{' '}
+              {t('partnerRegister.purchase.perDeviceFloor', {
+                defaultValue: '{{floor}} a month minimum under {{devices}} devices.',
+                floor: money(offer.floorCents),
+                devices: count(offer.floorUnder),
+              })}
+            </p>
+          )}
+          {signupIntent.intent === 'wisp' && (
+            <p data-testid="register-wisp-note" className="text-sm text-muted-foreground">
+              {t('partnerRegister.purchase.wispNote', { defaultValue: 'Wisp is not open for checkout yet. Your account starts on Breeze Cloud, and we will tell you when Wisp seats open.' })}
+            </p>
+          )}
         </section>
       )}
       {/* Company section */}
@@ -275,7 +313,7 @@ export default function PartnerRegisterForm({
 
       <p className="text-center text-sm text-muted-foreground">
         {t('common.alreadyHaveAccount', { defaultValue: 'Already have an account?' })}{' '}
-        <a href={purchaseSelection ? `/login?next=${encodeURIComponent(`/billing/plans?${launchPurchaseHandoffQuery(purchaseSelection)}`)}` : "/login"} className="font-medium text-primary hover:underline">
+        <a href={`/login?next=${encodeURIComponent(`/billing/plans?${signupIntentHandoffQuery(signupIntent)}`)}`} className="font-medium text-primary hover:underline">
           {t('common.signIn', { defaultValue: 'Sign in' })}
         </a>
       </p>

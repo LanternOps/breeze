@@ -27,10 +27,10 @@ vi.mock('./DeviceScriptHistory', () => ({
 }));
 
 vi.mock('./DeviceLogsTab', () => ({
-  default: ({ linkedFilter }: { linkedFilter?: { source?: string; from: string; to: string } }) => (
+  default: ({ linkedFilter }: { linkedFilter?: { sources?: string[]; from: string; to: string } }) => (
     <div
       data-testid="device-logs-tab-stub"
-      data-source={linkedFilter?.source ?? ''}
+      data-source={linkedFilter?.sources?.join(',') ?? ''}
       data-from={linkedFilter?.from ?? ''}
       data-to={linkedFilter?.to ?? ''}
       data-has-filter={linkedFilter ? 'yes' : 'no'}
@@ -132,7 +132,7 @@ describe('DeviceDetails #eventlog live navigation (#9791 F1)', () => {
     expect(screen.queryByTestId('device-logs-tab-stub')).not.toBeInTheDocument();
 
     await act(async () => {
-      window.location.hash = `#${deviceEventLogHash({ source: 'Service Control Manager', from, to })}`;
+      window.location.hash = `#${deviceEventLogHash({ sources: ['Service Control Manager'], from, to })}`;
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
     const stub = await screen.findByTestId('device-logs-tab-stub');
@@ -141,7 +141,7 @@ describe('DeviceDetails #eventlog live navigation (#9791 F1)', () => {
   });
 
   it('leaving the tab clears the linked filter', async () => {
-    window.location.hash = `#${deviceEventLogHash({ source: 'disk', from, to })}`;
+    window.location.hash = `#${deviceEventLogHash({ sources: ['disk'], from, to })}`;
     render(<DeviceDetails device={device} />);
     await screen.findByTestId('device-logs-tab-stub');
 

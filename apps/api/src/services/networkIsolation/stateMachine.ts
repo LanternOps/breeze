@@ -5,6 +5,7 @@ import {
   type IsolationFailureCode,
   type IsolationReleaseKind,
   type IsolationState,
+  type IsolationOrderingKey,
 } from '@breeze/shared';
 
 /**
@@ -15,8 +16,8 @@ import {
  * Three things stay apart: the server's intent (`desiredState` + `generation`), what the agent reports
  * (`state`), and ordering (`lastJournalSeq`).
  *
- * - `generation` changes only when intent changes: isolate = 1; extend, a release tombstone and a
- *   server-side `not_delivered` are last + 1; a retransmission keeps it.
+ * - `generation` changes only when intent changes: isolate = 1; extend, a containment-policy change, a
+ *   release tombstone and a server-side `not_delivered` are last + 1; a retransmission keeps it.
  * - An event below the row's generation is `stale_generation`; one above it was never issued, so it is
  *   `invalid_transition` (never adopted). An agent event whose `journalSeq` is at or below
  *   `lastJournalSeq` is `stale_seq`.
@@ -58,9 +59,7 @@ interface EventBase {
 }
 
 /** From the agent: every report and command result carries its journal sequence (plan "Ordering key"). */
-interface AgentEventBase extends EventBase {
-  journalSeq: number;
-}
+interface AgentEventBase extends EventBase, IsolationOrderingKey {}
 
 /** Decided by the server; no journal sequence. */
 interface ServerEventBase extends EventBase {
@@ -82,10 +81,14 @@ export type EpisodeEvent =
   | (EventBase & { type: 'agent_absent'; journalSeq?: number })
   | (ServerEventBase & (
     | { type: 'dispatched' }
+    | { type: 'server_probe_verified' }
     | { type: 'release_requested'; kind: IsolationReleaseKind }
     | { type: 'uninstalled' }
     | { type: 'not_delivered' }
     | { type: 'extend'; expiresAt: Date }
+    // The allow snapshot's policy revision changed; the agent refuses a different revision or added
+    // permits at a generation it has already adopted.
+    | { type: 'policy_changed' }
     // The human who resolved it; the audit trail for the one human gate.
     | { type: 'acknowledge'; userId: string }
   ));
@@ -176,6 +179,10 @@ export function applyEpisodeEvent(row: EpisodeSnapshot, ev: EpisodeEvent): Episo
 
   // 3. Transitions.
   switch (ev.type) {
+    // A successful server round trip is only the positive probe. It never advances agent state.
+    case 'server_probe_verified':
+      return isolating ? { next: withSeq(row, ev, { verifiedAt: row.verifiedAt ?? at }) } : INVALID;
+
     case 'dispatched':
       if (row.state === 'requested') return { next: withSeq(row, ev, { state: 'dispatched', dispatchedAt: row.dispatchedAt ?? at }) };
       // Re-sending the same intent: no change, same generation.
@@ -223,6 +230,9 @@ export function applyEpisodeEvent(row: EpisodeSnapshot, ev: EpisodeEvent): Episo
     case 'extend':
       if (!isolating || Number.isNaN(ev.expiresAt.getTime())) return INVALID;
       return { next: withSeq(row, ev, { generation: row.generation + 1, expiresAt: ev.expiresAt }) };
+
+    case 'policy_changed':
+      return isolating ? { next: withSeq(row, ev, { generation: row.generation + 1 }) } : INVALID;
 
     case 'agent_released':
     case 'agent_absent':

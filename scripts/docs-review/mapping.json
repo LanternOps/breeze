@@ -5167,6 +5167,105 @@
       "docs": [
         "features/ai.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/alertWorker.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/connections.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/network-connections.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/promptHostConfig.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/networkIsolation/**",
+      "docs": [
+        "features/network-isolation.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/wakeAttempts.ts",
+      "docs": [
+        "features/remote-access.mdx",
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/wakeAttempt*.ts",
+      "docs": [
+        "features/remote-access.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/globalRateLimit.ts",
+      "docs": [
+        "security/hardening.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/rateLimitBudget.ts",
+      "docs": [
+        "security/hardening.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/oemUpdates/**",
+      "docs": [
+        "features/vendor-updates.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/oemUpdatesWorker.ts",
+      "docs": [
+        "features/vendor-updates.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/remote/FileManager.tsx",
+      "docs": [
+        "features/system-tools.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/remote/ServicesManager.tsx",
+      "docs": [
+        "features/system-tools.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/remote/ProcessManager.tsx",
+      "docs": [
+        "features/system-tools.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/migrationAdvisoryLock.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/backupRetention.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
     }
   ]
 }

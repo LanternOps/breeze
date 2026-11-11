@@ -596,7 +596,7 @@
   },
   "backupProviders": {
     "title": "Fournisseurs de sauvegarde",
-    "subtitle": "Consultez dans Breeze l’état des sauvegardes de Cove Data Protection et de NinjaOne SaaS Backup (Dropsuite).",
+    "subtitle": "Consultez dans Breeze l’état des sauvegardes de Cove Data Protection, de NinjaOne SaaS Backup (Dropsuite) et d’Axcient x360Recover.",
     "partnerOnly": "Les connexions aux fournisseurs de sauvegarde sont réservées aux comptes partenaires.",
     "addConnection": "Ajouter une connexion",
     "providerLabel": "Fournisseur",
@@ -604,6 +604,7 @@
     "nameLabel": "Nom de la connexion",
     "namePlaceholder": "Compte Cove principal",
     "namePlaceholderDropsuite": "Compte principal NinjaOne SaaS Backup",
+    "namePlaceholderAxcient": "Compte principal Axcient",
     "partnerNameLabel": "Nom du partenaire Cove",
     "usernameLabel": "Nom de connexion de l'utilisateur API",
     "passwordLabel": "Jeton de l'utilisateur API",
@@ -651,6 +652,10 @@
     "errorDelete": "Impossible de supprimer la connexion de sauvegarde",
     "errorMap": "Impossible de mettre à jour l'association",
     "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "axcient": "Axcient x360Recover",
+    "apiKeyLabel": "Clé API",
+    "axcientCredentialsHelp": "Créez une clé API dans x360Portal → Settings → API Keys en cochant à la fois x360Recover et Billing. Breeze ne fait que lire l’état ; il ne modifie jamais rien dans Axcient.",
+    "axcientReentryHelp": "Laissez la clé API vide pour conserver la clé enregistrée, ou saisissez-en une nouvelle pour la remplacer.",
     "resellerTokenLabel": "Jeton de revendeur",
     "authTokenLabel": "Jeton d’authentification",
     "baseUrlLabel": "URL de l’API",
@@ -953,6 +958,8 @@
     "integrationUpdated": "Mise à jour de l’intégration Pax8",
     "integrationConnected": "Intégration Pax8 connectée",
     "companyMapped": "Société Pax8 cartographiée",
+    "companiesRefreshFailed": "La liste des entreprises n’a pas pu être actualisée et n’est peut-être pas à jour. Rechargez pour voir la version la plus récente.",
+    "syncStillRunning": "La synchronisation est toujours en cours ou son statut est indisponible. Revérifiez dans quelques minutes.",
     "companyUnmapped": "Entreprise Pax8 non associée",
     "observationsPaused": "Observations de quantité Pax8 mises en pause",
     "observationsResumed": "Observations de quantité Pax8 reprises",
@@ -1067,7 +1074,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossible d’enregistrer les associations de sites.",
     "siteMappingsSaved": "Cartographies du site enregistrées",
-    "pickTheSiteThisControllerServesACollector": "Choisissez le site desservi par ce contrôleur et un agent collecteur, puis saisissez l’URL du contrôleur et la clé API locale.",
+    "pickTheSiteThisControllerServesACollector": "Choisissez l'emplacement de l'agent collecteur et un agent collecteur, puis saisissez l'URL du contrôleur et la clé API locale.",
     "failedToRegisterTheController": "Impossible d’enregistrer le contrôleur.",
     "controllerRegistered": "Contrôleur enregistré",
     "pickABreezeSiteACollectorAgentAnd": "Choisissez un site Breeze et un agent collecteur, puis saisissez l’URL du contrôleur et la clé API locale.",
@@ -1110,7 +1117,8 @@
     "controllers": "Contrôleurs",
     "registerEachSelfHostedUniFiNetworkControllerA": "Enregistrez chaque contrôleur UniFi Network auto-hébergé. Un agent Breeze présent sur le réseau du contrôleur interroge directement son API Integration locale (firmware ≥ 9.3) ; aucun compte cloud UniFi n’est requis. Breeze chiffre la clé API locale et la transmet à l’agent choisi.",
     "controllerURL": "URL du contrôleur",
-    "siteThisControllerServes": "Site desservi par ce contrôleur",
+    "collectorAgentLocation": "Emplacement de l'agent collecteur",
+    "collectorAgentLocationHelp": "L'endroit où se trouve l'agent qui interroge ce contrôleur, souvent votre propre organisation interne. Vous associez les sites du contrôleur aux clients après l'avoir enregistré.",
     "selectSite": "— Sélectionner le site —",
     "collectorAgent": "Agent de recouvrement",
     "localAPIKey": "Clé locale API",
@@ -1149,6 +1157,7 @@
     "started": "Démarré",
     "trigger": "Déclencheur",
     "hostsSeen": "Hôtes vus",
+    "sitesUnmapped": "Sites non associés",
     "hosts": "Animateurs",
     "devicesCreated": "Les appareils ont ajouté cette synchronisation",
     "new": "Ajouté",
@@ -1174,7 +1183,22 @@
     "updateCollector": "Collecteur de mises à jour",
     "enableDeepTelemetry": "Activer la télémétrie profonde",
     "wired": "Filaire",
-    "agentListTruncated": "Cette liste d’agents a été tronquée à une limite de sécurité et peut être incomplète."
+    "agentListTruncated": "Cette liste d’agents a été tronquée à une limite de sécurité et peut être incomplète.",
+    "online": "En ligne",
+    "offline": "Hors ligne",
+    "controllerState": "État du contrôleur",
+    "uptime": "Disponibilité",
+    "wirelessClients": "clients sans fil",
+    "cpu": "CPU",
+    "memory": "Mémoire",
+    "uplinkRx": "Liaison montante RX",
+    "uplinkTx": "Liaison montante TX",
+    "lastReportedStale": "Dernier rapport / périmé",
+    "asOf": "En date du",
+    "channel": "Canal",
+    "width": "Largeur",
+    "wlanStandard": "Norme WLAN",
+    "txRetries": "Retransmissions TX"
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Impossible d’enregistrer le webhook",
@@ -1458,7 +1482,8 @@
     "status": {
       "connected": "Connecté",
       "error": "Erreur",
-      "reauth_required": "Nouvelle authentification requise"
+      "reauth_required": "Nouvelle authentification requise",
+      "inactive": "Inactif"
     },
     "syncStatus": {
       "running": "En cours",
@@ -1502,6 +1527,16 @@
       "manual": "Manuelle",
       "auto_external_code": "Automatique",
       "manual_unmapped": "Volontairement non associé"
+    },
+    "installer": {
+      "ready": "Programme d'installation : prêt (récupéré {{time}})",
+      "packagesApiDisabled": "Programme d'installation : l'API Packages n'est pas activée sur la clé d'API",
+      "noPackage": "Programme d'installation : cette entreprise n'a aucun package d'installation",
+      "multiplePackages": "Programme d'installation : cette entreprise a plus d'un package d'installation. Conservez-en un dans la console du fournisseur",
+      "malformedResponse": "Programme d'installation : le fournisseur a renvoyé un lien que Breeze ne peut pas utiliser",
+      "urlRejected": "Programme d'installation : le lien du fournisseur pointe vers un hôte que Breeze n'autorise pas",
+      "vendorError": "Programme d'installation : la dernière actualisation du lien a échoué. Breeze réessaiera à la prochaine synchronisation",
+      "unavailable": "Lien du programme d'installation indisponible"
     },
     "endpointsTitle": "Terminaux non liés",
     "endpointsHelp": "Liez les terminaux EDR qui n'ont pas pu être associés automatiquement à un appareil Breeze.",
@@ -1550,5 +1585,28 @@
     "pushTestNote": "L’événement de test peut mettre quelques minutes à arriver.",
     "pushLast": "Dernier événement push : {{relative}}",
     "pushNone": "Aucun événement push reçu pour le moment"
+  },
+  "externalMatch": {
+    "suggested": "Suggestion : {{target}}",
+    "matchedOn": "correspondance sur « {{key}} »",
+    "accept": "Accepter",
+    "possibleMatches_one": "{{count}} correspondance possible",
+    "possibleMatches_other": "{{count}} correspondances possibles",
+    "alsoMatches": "Correspond aussi à {{names}}",
+    "pickSite": "Choisissez un site dans {{org}}",
+    "reviewButton_one": "Examiner {{count}} correspondance suggérée",
+    "reviewButton_other": "Examiner {{count}} correspondances suggérées",
+    "reviewTitle": "Examiner les correspondances suggérées",
+    "confirm_one": "Associer {{count}} élément sélectionné",
+    "confirm_other": "Associer {{count}} éléments sélectionnés",
+    "resolveInTable": "À résoudre dans le tableau",
+    "tierExact": "Même nom",
+    "tierNormalized": "Même nom, sans les suffixes",
+    "summary": "{{unmapped}} non associés · {{suggested}} suggérés",
+    "staleReview": "Certaines lignes ont changé depuis l’ouverture de cet examen. La liste a été rechargée.",
+    "newSinceSync_one": "{{count}} nouveau depuis la dernière synchronisation",
+    "newSinceSync_other": "{{count}} nouveaux depuis la dernière synchronisation",
+    "bulkMapped_one": "{{count}} société cartographiée",
+    "bulkMapped_other": "{{count}} sociétés cartographiées"
   }
 }

@@ -9,6 +9,7 @@ import {
   checkAgentGuardrails,
   checkGuardrails,
   isNeverAgentTool,
+  resolveApprovalScope,
   TIER1_ACTIONS,
   TIER2_ACTIONS,
   TIER2_READONLY_ACTIONS,
@@ -195,6 +196,8 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_active_users',
   'get_ai_agent_run', // A-W06 Tier-1 read
   'get_alert_correlations', // W07 (#6777) Tier-1 read: org-scoped correlation views, refused to exact-device runs in the handler
+  'get_audit_retention', // W18 (#6789): tier-1 retention days for one org; the only agent-reachable W18 read
+  'get_backup_health', // W17 (#6788) Tier-1 read: refused to exact-device runs in the handler
   // W01 (#6755)
   'get_backup_status',
   // W01 (#6755) follow-up
@@ -259,6 +262,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_network_asset_reachability',
   // W01 (#6755)
   'get_network_changes',
+  'get_partner_settings_inheritance', // #9763 Tier-1 read: partner settings inheritance counts + org drill-down
   'get_pax8_status', // W15 (#6785): tier-1 metadata; handler additionally requires partner scope and full access
   'get_peripheral_activity',
   'get_playbook_history',
@@ -294,6 +298,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   // W01 (#6755)
   'get_vault_status',
   'get_vm_restore_estimate',
+  'get_vss_status', // W17 (#6788) TIER2_READONLY: a read-only command on one device, MFA and device axes in the handler
   'get_vulnerability_report',
   'google_email_report',
   'google_list_licenses',
@@ -303,7 +308,9 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_ai_agent_runs', // A-W06 Tier-1 read
   'list_ai_agent_schedules', // W10 (#6780) Tier-1 read
   'list_ai_agents', // A-W06 Tier-1 read
+  'list_bmr_recoveries', // W17 (#6788) Tier-1 read: scalars only, device and site axes enforced in the handler
   'list_business_calendars', // #8973 W4 Tier-1 read
+  'list_check_ins', // Wisp check-ins (#10991 W03): Tier 1 read of the grant's own thread; refuses without auth.wispGrant
   'list_concerns', // Wisp W05a: Tier 1 concern read; refuses without auth.wispGrant, ceiling-filtered by the service
   'list_configuration_policies',
   'list_contracts',
@@ -928,6 +935,13 @@ describe('Task 2 — act disposition matrix', () => {
  */
 const EXPECTED_AGENT_DENIED_READ_TOOLS = [
   'get_operator_task', // W10 (#6780, QW5)
+  // W18 PR A (#6789, Decision 4): identity reads, and the partner-scope summary / readiness reads.
+  'get_account_readiness',
+  'get_org_summary',
+  'get_user',
+  'list_portal_users',
+  'list_roles',
+  'list_users',
   'get_user_risk_detail',
   'get_sensitive_data_overview',
   'get_user_risk_scores',
@@ -953,6 +967,13 @@ describe('AGENT_DENIED_READ_TOOLS (W01-D5 / WQ1 / WQ2, #6755)', () => {
       expect(aiTools.has(name), `${name}: not a registered tool`).toBe(true);
       expect(reason.trim().length, `${name}: reason must say why (>= 20 chars)`).toBeGreaterThanOrEqual(20);
     }
+  });
+
+  it('every W18 identity read stays in AGENT_DENIED_READ_TOOLS; get_audit_retention alone stays reachable (#6789)', () => {
+    for (const name of ['list_users', 'get_user', 'list_roles', 'list_portal_users', 'get_org_summary', 'get_account_readiness']) {
+      expect(AGENT_DENIED_READ_TOOLS.has(name), name).toBe(true);
+    }
+    expect(AGENT_DENIED_READ_TOOLS.has('get_audit_retention')).toBe(false);
   });
 
   it('is disjoint from AGENT_HUMAN_ONLY_TOOLS', () => {
@@ -1010,7 +1031,7 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('is exactly manage_tags add/remove, manage_groups add_devices/remove_devices (both feed run scope), the two W11 audit-baseline writes, the W12 uninstall, the W13 device-function set and the W14 legal-document writes, each with a real reason', () => {
+  it('is exactly manage_tags add/remove, the two W11 audit-baseline writes, the W12 uninstall, the W13 device-function set and the W14 legal-document writes, each with a real reason', () => {
     expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual([
       // W14 PR B (#6784): accounting writes leave the tenant (and overwrite the provider's records).
       'manage_accounting_sync:link_mapping', 'manage_accounting_sync:push', 'manage_accounting_sync:push_bulk',
@@ -1027,8 +1048,8 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
       'manage_device_function:set',
       // W12 (#6782, quorum QW6): irreversible removal on a customer machine (conservative D4 exception).
       'manage_device_software:uninstall',
-      // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
-      'manage_groups:add_devices', 'manage_groups:remove_devices',
+      // W15: billable orders and terminal cancellations require a person.
+      'manage_pax8_orders:submit',
       'manage_tags:add', 'manage_tags:remove',
       // W13 PR B (#6783): tenant-variable values are script inputs.
       'manage_tenant_variables:create', 'manage_tenant_variables:delete', 'manage_tenant_variables:update',
@@ -1071,17 +1092,34 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     expect(check.disposition).toBe('allow');
   });
 
-  // W04-D8 (#6758): membership is a live read at run admission and before
-  // tool use (runResourceScope.ts), so an allowlisted add puts a device inside
-  // any agent whose triggers.deviceGroupIds names the group.
+  // #10149 (QW9, lifting W04-D8): add_devices/remove_devices are supervised,
+  // so an allowlisted call becomes a proposal a person approves — never an
+  // unattended membership write. Membership still feeds run scope
+  // (triggers.deviceGroupIds, runResourceScope.ts), which is why they are not
+  // act-eligible and why an unallowlisted call still denies.
   const groupPolicy = policyWith({
     mode: 'act', toolAllowlist: ['manage_groups', 'manage_groups:add_devices', 'manage_groups:remove_devices'],
   });
 
-  it.each(['add_devices', 'remove_devices'])('denies an allowlisted manage_groups:%s (group membership feeds run scope)', (action) => {
+  it.each(['add_devices', 'remove_devices'])('an allowlisted manage_groups:%s is a tier-3 proposal, not a deny and not an act', (action) => {
     const check = checkAgentGuardrails('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] }, groupPolicy);
+    expect(check.disposition).toBe('propose');
+    expect(check.tier).toBe(3);
+    expect(check.allowed).toBe(false);
+    expect(check.reason ?? '').not.toMatch(/human-only/);
+  });
+
+  it.each(['add_devices', 'remove_devices'])('manage_groups:%s resolves to the supervised approval class and is not act-eligible', (action) => {
+    expect(resolveApprovalScope('manage_groups', action, { action, groupId: 'g-1', deviceIds: ['dev-1'] })).toBe('supervised');
+    expect(ACT_MANIFEST.some((op) => op.key.startsWith("manage_groups"))).toBe(false);
+    expect(resolveActOperation('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] })).toBeNull();
+  });
+
+  it.each(['add_devices', 'remove_devices'])('an unallowlisted manage_groups:%s still denies on the allowlist', (action) => {
+    const check = checkAgentGuardrails('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] },
+      policyWith({ mode: 'act', toolAllowlist: ['manage_groups:list'] }));
     expect(check.disposition).toBe('deny');
-    expect(check.reason).toMatch(/never available to agents/);
+    expect(check.reason).toMatch(/not in the agent's allowlist/);
   });
 
   it('control: manage_groups:list still reaches an agent', () => {
@@ -1243,6 +1281,45 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_recovery_keys', 'manage_recovery_keys:rotate'] });
     expect(checkAgentGuardrails('manage_recovery_keys', { action: 'list', deviceId: 'dev-1' }, policy).disposition).toBe('allow');
     expect(checkAgentGuardrails('manage_recovery_keys', { action: 'rotate', deviceId: 'dev-1' }, policy).disposition).not.toBe('allow');
+  });
+});
+
+// Network-isolation W13 (#10101, spec §2): lifting a containment is a four-eyes
+// human decision. An agent principal is denied outright — not even a proposal —
+// whatever its allowlist or mode says.
+describe('release_containment never reaches an agent principal (W13 #10101)', () => {
+  beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const input = {
+    deviceId: 'dev-1',
+    isolationId: '33333333-3333-4333-8333-333333333333',
+    reason: 'Incident contained and cleaned',
+  };
+
+  it('is a registered Tier-3 four-eyes tool (so this suite is not vacuous)', () => {
+    expect(TOOL_TIERS.release_containment).toBe(3);
+    expect(resolveApprovalScope('release_containment', undefined, input)).toBe('four_eyes');
+  });
+
+  it.each(['act', 'shadow'] as const)('%s mode, explicitly allowlisted: deny — never allow, act or propose', (mode) => {
+    for (const toolAllowlist of [['release_containment'], ['release_containment', 'execute_containment']]) {
+      const check = checkAgentGuardrails('release_containment', input, policyWith({ mode, toolAllowlist }));
+      expect(check.disposition).toBe('deny');
+      expect(check.allowed).toBe(false);
+      expect(check.reason).toMatch(/human-only and is never available to agents/);
+    }
+  });
+
+  it('is never offered to an agent in the catalog', () => {
+    expect(isNeverAgentTool('release_containment')).toBe(true);
+    expect(aiTools.has('release_containment')).toBe(true);
+    expect(listAgentReachableTools()).not.toContain('release_containment');
   });
 });
 

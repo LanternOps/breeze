@@ -72,6 +72,7 @@ vi.mock('../../db', () => ({
   db: dbMock,
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
 }));
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),

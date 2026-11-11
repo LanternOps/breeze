@@ -41,7 +41,7 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
       <DeviceLogsTab
         deviceId="d1"
         osType="windows"
-        linkedFilter={{ source: 'Service Control Manager', from, to }}
+        linkedFilter={{ sources: ['Service Control Manager'], from, to }}
       />,
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -54,7 +54,7 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
   });
 
   it('shows the banner and populated inputs', async () => {
-    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'disk', from, to }} />);
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['disk'], from, to }} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(screen.getByTestId('device-logs-linked-filter')).toHaveTextContent('disk');
     expect(screen.getByTestId('device-logs-source-input')).toHaveValue('disk');
@@ -75,8 +75,8 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
 
   it('clearing resets to the bare #eventlog hash and drops the filter params', async () => {
     const user = userEvent.setup();
-    window.location.hash = `#${deviceEventLogHash({ source: 'disk', from, to })}`;
-    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'disk', from, to }} />);
+    window.location.hash = `#${deviceEventLogHash({ sources: ['disk'], from, to })}`;
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['disk'], from, to }} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await user.click(screen.getByTestId('device-logs-linked-filter-clear'));
     expect(window.location.hash).toBe('#eventlog');
@@ -91,8 +91,8 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
 
   it('a manual edit drops the linked state and the hash params', async () => {
     const user = userEvent.setup();
-    window.location.hash = `#${deviceEventLogHash({ source: 'disk', from, to })}`;
-    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'disk', from, to }} />);
+    window.location.hash = `#${deviceEventLogHash({ sources: ['disk'], from, to })}`;
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['disk'], from, to }} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await user.selectOptions(screen.getByTestId('device-logs-level-select'), 'error');
     expect(window.location.hash).toBe('#eventlog');
@@ -110,8 +110,8 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
       fireEvent.change(screen.getByTestId('device-logs-end-date'), { target: { value: '2026-10-02T00:00' } })],
   ])('a manual edit of the %s drops the linked state and hash', async (_name, edit) => {
     const user = userEvent.setup();
-    window.location.hash = `#${deviceEventLogHash({ source: 'disk', from, to })}`;
-    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'disk', from, to }} />);
+    window.location.hash = `#${deviceEventLogHash({ sources: ['disk'], from, to })}`;
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['disk'], from, to }} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await edit(user);
     expect(window.location.hash).toBe('#eventlog');
@@ -123,7 +123,7 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
 
   it('re-clicking the same link after an edit re-seeds it', async () => {
     const user = userEvent.setup();
-    const filter = { source: 'disk', from, to };
+    const filter = { sources: ['disk'], from, to };
     window.location.hash = `#${deviceEventLogHash(filter)}`;
     const { rerender } = render(<DeviceLogsTab deviceId="d1" linkedFilter={filter} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -140,7 +140,7 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
 
   it('a window-only link after a sourced one clears the source', async () => {
     const { rerender } = render(
-      <DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'disk', from, to }} />,
+      <DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['disk'], from, to }} />,
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await act(async () => rerender(<DeviceLogsTab deviceId="d1" linkedFilter={{ from, to }} />));
@@ -150,13 +150,65 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
 
   it('re-seeds when the linked filter changes while mounted', async () => {
     const { rerender } = render(
-      <DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'disk', from, to }} />,
+      <DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['disk'], from, to }} />,
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await act(async () => {
-      rerender(<DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'Ntfs', from, to }} />);
+      rerender(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['Ntfs'], from, to }} />);
     });
     await waitFor(() => expect(lastParams().get('source')).toBe('Ntfs'));
+  });
+
+  // #10053: a factor link can carry several sources; each is sent as a
+  // repeated `source` param (the list matches any of them).
+  it('sends every linked source as a repeated source param and names them all in the banner', async () => {
+    render(
+      <DeviceLogsTab
+        deviceId="d1"
+        osType="windows"
+        linkedFilter={{ sources: ['EventLog', 'Microsoft-Windows-Kernel-Power'], from, to }}
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const p = lastParams();
+    expect(p.getAll('source')).toEqual(['EventLog', 'Microsoft-Windows-Kernel-Power']);
+    expect(p.get('startDate')).toBe(from);
+    const banner = screen.getByTestId('device-logs-linked-filter');
+    expect(banner).toHaveTextContent('EventLog');
+    expect(banner).toHaveTextContent('Microsoft-Windows-Kernel-Power');
+  });
+
+  it('a manual source edit after a multi-source link sends only the typed source', async () => {
+    const user = userEvent.setup();
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['EventLog', 'Ntfs'], from, to }} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const input = screen.getByTestId('device-logs-source-input');
+    await user.clear(input);
+    await user.type(input, 'disk');
+    await waitFor(() => expect(lastParams().getAll('source')).toEqual(['disk']));
+    expect(screen.queryByTestId('device-logs-linked-filter')).not.toBeInTheDocument();
+  });
+
+  it('another manual edit after a multi-source link keeps sending every source, not the joined text', async () => {
+    const user = userEvent.setup();
+    window.location.hash = `#${deviceEventLogHash({ sources: ['EventLog', 'Ntfs'], from, to })}`;
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['EventLog', 'Ntfs'], from, to }} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await user.selectOptions(screen.getByTestId('device-logs-level-select'), 'error');
+    expect(screen.queryByTestId('device-logs-linked-filter')).not.toBeInTheDocument();
+    await waitFor(() => expect(lastParams().get('level')).toBe('error'));
+    expect(lastParams().getAll('source')).toEqual(['EventLog', 'Ntfs']);
+  });
+
+  it('clearing after a multi-source link drops every source', async () => {
+    const user = userEvent.setup();
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['EventLog', 'Ntfs'], from, to }} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await user.selectOptions(screen.getByTestId('device-logs-level-select'), 'error');
+    await user.click(screen.getByTestId('device-logs-clear-filters'));
+    await waitFor(() => expect(lastParams().has('level')).toBe(false));
+    expect(lastParams().has('source')).toBe(false);
   });
 
   it('without a linked filter nothing is seeded', async () => {

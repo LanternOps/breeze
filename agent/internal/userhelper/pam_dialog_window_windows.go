@@ -322,11 +322,12 @@ func pamEnsureClass(hInstance uintptr) bool {
 }
 
 // showPamDialogWindow renders the custom elevation prompt on the calling
-// thread's current desktop. ok=false means the window could not be created
-// and the caller should fall back to the MessageBox rendering.
-func showPamDialogWindow(req ipc.PamRequestDialog) (result ipc.PamDialogResult, ok bool) {
+// thread's current desktop; ending ctx closes it. ok=false means the window
+// could not be created and the caller should fall back to the MessageBox
+// rendering.
+func showPamDialogWindow(ctx context.Context, req ipc.PamRequestDialog) (result ipc.PamDialogResult, ok bool) {
 	c := pamDialogContentFromRequest(req)
-	return showPamDialogWindowContent(context.Background(), c, "Expires in ", nil)
+	return showPamDialogWindowContent(ctx, c, "Expires in ", nil)
 }
 
 // showPamDialogWindowContent draws the PAM window with c. countPrefix

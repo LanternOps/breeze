@@ -31,23 +31,44 @@ import (
 	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/spf13/cobra"
 )
 
 var version = "dev"
 
-var rootCmd = &cobra.Command{
-	Use:   "breeze-backup",
-	Short: "Breeze RMM Backup Helper",
-	Long:  "Backup helper binary spawned by the Breeze agent for backup operations.",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if protocolInfo {
-			return printProtocolInfo(cmd.OutOrStdout())
-		}
-		runBackupHelper()
-		return nil
-	},
+// newRootCmd builds a fresh command tree. main uses one per process; tests
+// build their own so cobra flag state (--version, --protocol-info) cannot leak
+// between runs on a shared package-level command (#11122).
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "breeze-backup",
+		Short: "Breeze RMM Backup Helper",
+		Long:  "Backup helper binary spawned by the Breeze agent for backup operations.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if protocolInfo {
+				return printProtocolInfo(cmd.OutOrStdout())
+			}
+			runBackupHelper()
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
+	cmd.Flags().BoolVar(&protocolInfo, backupipc.ProtocolInfoFlag, false, "print the storage protocol versions this helper implements as JSON and exit")
+
+	// Stable, parseable `breeze-backup --version` output, mirroring the
+	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
+	// installedBackupVersion() execs this binary and parses the same prefix.
+	cmd.Version = version
+	cmd.SetVersionTemplate("Breeze Backup Version: {{.Version}}\n")
+
+	cmd.AddCommand(newBMRRecoverCommand())
+	cmd.AddCommand(newRecoveryConsoleCommand())
+	cmd.AddCommand(newRebuildCommand())
+	cmd.AddCommand(newSnapshotDirCommand())
+	return cmd
 }
 
 var socketPath string
@@ -169,19 +190,8 @@ func (c *activeCommandCanceller) cancelAll() bool {
 	return true
 }
 
-func init() {
-	rootCmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
-	rootCmd.Flags().BoolVar(&protocolInfo, backupipc.ProtocolInfoFlag, false, "print the storage protocol versions this helper implements as JSON and exit")
-
-	// Stable, parseable `breeze-backup --version` output, mirroring the
-	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
-	// installedBackupVersion() execs this binary and parses the same prefix.
-	rootCmd.Version = version
-	rootCmd.SetVersionTemplate("Breeze Backup Version: {{.Version}}\n")
-}
-
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
@@ -276,6 +286,12 @@ func runBackupHelper() {
 	if cfgErr != nil {
 		log.Warn("failed to load config, using defaults", "error", cfgErr.Error())
 	}
+	// On an isolated Linux host the agent starts this helper in its own
+	// cgroup, which carries the management-plane permit (backup server, log
+	// shipping). The helper's own children must not share it.
+	if err := procspawn.EnableInAgentCgroup(); err != nil {
+		log.Error("cannot place backup child processes outside the agent cgroup", "error", err.Error())
+	}
 	helperStagingDir = resolveBackupStagingDir(cfg.BackupStagingDir)
 	// #5460: a helper killed mid-export never ran its deferred cleanup; reclaim
 	// those VM-sized dirs from both places they could have been staged.
@@ -308,6 +324,9 @@ func runBackupHelper() {
 
 	// Initialize backup manager
 	mgr := initBackupManager(cfg)
+	if err := agentYAMLBackupConfigError(cfg); err != nil {
+		agentYAMLBackupDisabledReason = err.Error()
+	}
 
 	// Initialize vault if configured
 	vaultMgr := initVaultManager(cfg, mgr)
@@ -402,6 +421,27 @@ func authenticate(conn *ipc.Conn) error {
 	return nil
 }
 
+// agentYAMLBackupConfigError reports why agent.yaml configures an S3 backup
+// manager that cannot be built (#9441: an invalid backup_s3_prefix), or nil.
+// It is derived from cfg alone so every consumer — initBackupManager, the
+// vault's primary-provider choice, the "not configured" command answer —
+// reaches the same verdict, including after a config reload.
+func agentYAMLBackupConfigError(cfg *config.Config) error {
+	if cfg == nil || !cfg.BackupEnabled || len(cfg.BackupPaths) == 0 || cfg.BackupProvider != "s3" {
+		return nil
+	}
+	if _, err := providers.NormalizeKeyPrefix(cfg.BackupS3Prefix); err != nil {
+		return fmt.Errorf("agent.yaml backup manager is disabled: backup_s3_prefix: %w", err)
+	}
+	return nil
+}
+
+// agentYAMLBackupDisabledReason is agentYAMLBackupConfigError's message for
+// the startup config ("" = none), set by runBackupHelper. A command that
+// needs the agent.yaml manager answers with it instead of the generic
+// "backup not configured", which would be false.
+var agentYAMLBackupDisabledReason string
+
 func initBackupManager(cfg *config.Config) *backup.BackupManager {
 	if cfg == nil || !cfg.BackupEnabled || len(cfg.BackupPaths) == 0 {
 		return nil
@@ -410,10 +450,20 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 	var backupProvider providers.BackupProvider
 	switch cfg.BackupProvider {
 	case "s3":
-		backupProvider = providers.NewS3Provider(
+		s3Provider := providers.NewS3Provider(
 			cfg.BackupS3Bucket, cfg.BackupS3Region,
 			cfg.BackupS3AccessKey, cfg.BackupS3SecretKey, "",
 		)
+		// #9441: backup_s3_prefix puts this manager's snapshots under
+		// <prefix>/snapshots/, the layout the API uses for a prefixed
+		// destination. An invalid prefix disables the manager instead of
+		// writing at the bucket root, which the operator did not ask for.
+		if err := s3Provider.SetKeyPrefix(cfg.BackupS3Prefix); err != nil {
+			slog.Error("agent.yaml backup manager disabled: backup_s3_prefix is invalid", "error", err.Error())
+			return nil
+		}
+		// agentYAMLBackupConfigError must agree with the check above.
+		backupProvider = s3Provider
 	default:
 		localPath := cfg.BackupLocalPath
 		if localPath == "" {
@@ -476,6 +526,10 @@ func buildVaultManager(cfg *config.Config, mgr *backup.BackupManager) (*backup.V
 	var primary providers.BackupProvider
 	if mgr != nil {
 		primary = mgr.GetProvider()
+	} else if err := agentYAMLBackupConfigError(cfg); err != nil {
+		// The configured S3 primary was refused; a local primary would
+		// silently sync the vault from the wrong storage.
+		return nil, err
 	} else {
 		// Vault can still be initialized with a local provider for standalone use
 		localPath := cfg.BackupLocalPath
@@ -897,6 +951,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		case "hyperv_vm_state":
 			return execHypervVMState(req.Payload)
 		default:
+			if agentYAMLBackupDisabledReason != "" {
+				return fail(agentYAMLBackupDisabledReason)
+			}
 			return fail("backup not configured on this device")
 		}
 	}
@@ -1002,15 +1059,8 @@ func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest
 	// mgr here may be the ephemeral payload-built manager resolved above
 	// (not the long-lived agent.yaml manager), so the progress fn is set
 	// on it directly, right before the run that actually uses it.
-	mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
-		sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
-			CommandID: req.CommandID, Phase: "uploading",
-			Current: bytesDone, Total: bytesTotal,
-			FilesDone: filesDone, FilesTotal: filesTotal,
-			// Forwarded so the server records backup_jobs.snapshot_id
-			// mid-run (#3006). Empty on pre-snapshot keepalives.
-			SnapshotID: snapshotID,
-		})
+	mgr.SetProgressFn(func(p backup.RunProgress) {
+		sendBackupRunProgress(conn, req.CommandID, backupRunProgressFrame(req.CommandID, p))
 	})
 	result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
 	// Auto-sync to vault after successful backup (async — don't block command response)
@@ -1018,6 +1068,21 @@ func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest
 		go autoSyncToVault(result.Stdout, vaultState, conn, mgr.GetProvider())
 	}
 	return result
+}
+
+// backupRunProgressFrame is the wire frame for one backup_run progress report.
+func backupRunProgressFrame(commandID string, p backup.RunProgress) backupipc.BackupProgress {
+	return backupipc.BackupProgress{
+		CommandID: commandID, Phase: "uploading",
+		Current: p.BytesDone, Total: p.BytesTotal,
+		FilesDone: p.FilesDone, FilesTotal: p.FilesTotal,
+		// The resume/dedupe check counters (#11014): the server counts their
+		// movement as progress, so a long check pass is not reaped as wedged.
+		VerifiedFiles: p.VerifiedFiles, VerifiedBytes: p.VerifiedBytes,
+		// Forwarded so the server records backup_jobs.snapshot_id mid-run
+		// (#3006). Empty on pre-snapshot keepalives.
+		SnapshotID: p.SnapshotID,
+	}
 }
 
 // --- helpers ---

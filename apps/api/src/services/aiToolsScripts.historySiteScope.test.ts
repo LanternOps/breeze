@@ -54,7 +54,7 @@ describe('get_script_execution_history site projection', () => {
       } as any)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ leftJoin: vi.fn().mockReturnValue({
             where: vi.fn((condition) => {
               executionWhere = condition;
               return {
@@ -69,7 +69,7 @@ describe('get_script_execution_history site projection', () => {
                 }),
               };
             }),
-          }),
+          }) }),
         }),
       } as any);
 
@@ -95,12 +95,12 @@ describe('get_script_execution_history site projection', () => {
       } as any)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ leftJoin: vi.fn().mockReturnValue({
             where: vi.fn((condition) => {
               executionWhere = condition;
               return { orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) };
             }),
-          }),
+          }) }),
         }),
       } as any);
 

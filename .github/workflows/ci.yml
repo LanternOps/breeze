@@ -66,7 +66,8 @@ jobs:
   # whole stack, so they take api OR web OR portal). The rules fail OPEN: a
   # shared input (packages/**, root manifests/lockfile, ci.yml, .github/scripts,
   # docker, scripts/**, ee/**) or any code path matching no area sets EVERY
-  # area, and an area whose tests read another area's files is set when those
+  # area (packages/shared/** sets `rust` only for files the Rust sources read),
+  # and an area whose tests read another area's files is set when those
   # change (test-api carries repo-wide contract suites, so web/portal/viewer
   # and every app's Dockerfile/package.json also set `api`). `ci-success`
   # asserts each gated job with the AGENT_CHANGED three-branch pattern: area
@@ -86,7 +87,18 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
+      selection_mode: ${{ steps.queue_thin.outputs.selection_mode || (github.event_name == 'pull_request' && 'pr' || 'full') }}
+      selection_reason: ${{ steps.queue_thin.outputs.selection_reason || (steps.queue_thin.outcome == 'failure' && 'thin_step_failed') || '' }}
+      # W05 (#10749): the jobs the pinned CI Gate's selection lets this queue entry
+      # skip, as ",a,b,", or '' (skip nothing). Only the 27 thinnable jobs read it, each
+      # for its own id, and CI Success counts a listed job that was skipped as
+      # satisfied. Empty on every PR, on a failed or skipped step, when the
+      # CI_THIN_QUEUE repository variable is unset or `off`, and whenever the gate's
+      # published selection is not `mode=thin` (the gate publishes that only under
+      # `enforce`; an entry already running when the variable flips keeps its list).
+      thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}
       code: ${{ steps.classify.outputs.code }}
       docs: ${{ steps.classify.outputs.docs }}
       agent: ${{ steps.classify.outputs.agent }}
@@ -101,10 +113,9 @@ jobs:
       # the production web bundle and drives it in a real Chromium. Same
       # fail-safe shape as `code` — anything unresolvable turns it on.
       topology_browser: ${{ steps.classify.outputs.topology_browser }}
-      # "Agent code (or its CI) changed" — agent/**, ci.yml, the classifier.
-      # NOT the same as `agent` above (the QEMU gate). Gates the temporary
-      # Test Agent (Windows) waiver in ci-success (#6943). Fail-safe: anything
-      # unresolvable turns it on, so the waiver is never granted on no evidence.
+      # Agent area: agent/**, shared/global inputs and files read by Go tests.
+      # Separate from the QEMU gate above; gates seven agent jobs. Unknown
+      # paths and unresolved change lists fail open to include this area.
       agent_code: ${{ steps.classify.outputs.agent_code }}
       # Gate for the 16-shard `integration-test` job (#5936). Path-gated on
       # `pull_request` ONLY (the classifier gets `--pull-request` there and
@@ -112,6 +123,14 @@ jobs:
       # any code change, so the queue always runs the full integration suite.
       # Fail-safe like the rest: anything unresolvable turns it on.
       integration: ${{ steps.classify.outputs.integration }}
+      # Named integration suites the PR's change selects (W07b2, #10751): `all`
+      # or a comma list. Shadow: integration-test logs it, every file still runs.
+      # `all` for every other event, and whenever the step fails.
+      integration_suites: ${{ steps.suites.outputs.integration_suites || 'all' }}
+      # Docs-only PRs can break tests reading docs by path; the map declares them.
+      # path_readers=true with an empty reader_tests list runs every mapped test.
+      path_readers: ${{ steps.classify.outputs.path_readers }}
+      reader_tests: ${{ steps.classify.outputs.reader_tests }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -144,7 +163,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nagent=true\napp=true\napi=true\nweb=true\nportal=true\naddins=true\nm365=true\nrust=true\ntopology_browser=true\nagent_code=true\nintegration=true\npath_readers=true\nreader_tests=\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too; a
@@ -180,6 +199,67 @@ jobs:
           fi
           printf '%s\n' "${classified}" | tee -a "${GITHUB_OUTPUT}"
 
+      - name: Integration suite selection (shadow)
+        # W07b2 (#10751): the named integration suites this PR selects, from
+        # the same PR files list the classifier gates `integration` on (the PR
+        # checkout is shallow, so no git diff). Shadow only: integration-test
+        # logs what it would run and still runs every file. Fails open: any
+        # error is `all`, and continue-on-error keeps this job's result to the
+        # classifier. Layout is load-bearing: the classifier tests extract the
+        # text up to the job's second `run: |` (so `run` precedes `env` here),
+        # and queue-selection.test pins the CI Gate's selection read as the job's
+        # last step.
+        id: suites
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -uo pipefail
+          suites=all
+          if ! files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'); then
+            echo "::warning title=Integration suites::Cannot list the PR's files, so every suite is selected."
+          elif (( $(printf '%s\n' "${files}" | wc -l) >= 3000 )); then
+            # The PR files API stops at 3000 files without saying so; a
+            # truncated list could select a subset.
+            echo "::warning title=Integration suites::The PR lists 3000 or more paths, the files API's cap, so every suite is selected."
+          elif ! suites=$(printf '%s\n' "${files}" | node .github/scripts/integration-suites.mjs select); then
+            echo "::warning title=Integration suites::The selector failed, so every suite is selected."
+            suites=all
+          fi
+          # Only a well-formed value reaches GITHUB_OUTPUT.
+          if [[ ! "${suites}" =~ ^(all|[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*)$ ]]; then
+            echo "::warning title=Integration suites::The selector printed an invalid value, so every suite is selected."
+            suites=all
+          fi
+          echo "integration_suites=${suites}" | tee -a "${GITHUB_OUTPUT}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: Read the CI Gate's queue selection (W05)
+        # W05 (#10749): the pinned CI Gate decides which jobs this entry may skip and
+        # publishes it as an artifact; this reads it into `thin_skip`. Advice only: the
+        # gate judges the entry against its own copy, so a wrong read can only skip a
+        # job the gate still requires, which ejects the entry. Any doubt (kill switch
+        # off, no pinned gate run in 60 s, no selection in 180 s, a selection for
+        # another entry) is '' and runs everything. Replaces W04's candidate-side
+        # shadow, whose line the gate now logs (`ci-gate-selection:`).
+        id: queue_thin
+        if: github.event_name == 'merge_group'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          node .github/scripts/queue-selection.mjs consume
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          THIN_QUEUE: ${{ vars.CI_THIN_QUEUE }}
+          GATE_WORKFLOW: .github/workflows/ci-gate.yml
+          GATE_SELECTION_ARTIFACT: ci-gate-selection-attempt-1
+          GATE_SELECTION_FILE: ci-gate-selection.json
+
   # ─── Docs check ─────────────────────────────────────────────────────
   # Was `docs-ci.yml`, whose job was ALSO named `CI Success` — the third
   # reporter of that check name. It is now a plain job here, gated on the
@@ -198,7 +278,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -282,7 +362,7 @@ jobs:
         run: bash scripts/security/check-env-example-version-pin.sh
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -327,15 +407,49 @@ jobs:
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
 
+      - name: Test reader-test runner
+        run: node --test .github/scripts/run-reader-tests.test.mjs
+
+      - name: Test PR selection contract (W3)
+        run: node --test .github/scripts/ci-pr-selection.test.mjs
+
+      - name: Test queue selection contract (W4)
+        run: node --test .github/scripts/queue-selection.test.mjs
+
+      - name: Test CI policy manifest (W02)
+        run: node --test .github/scripts/ci-policy.test.mjs
+
+      - name: Test CI gate verdict core (W02)
+        run: node --test .github/scripts/ci-gate.test.mjs
+
       - name: CI cache policy contract
         run: node --test .github/scripts/ci-cache-policy.test.mjs
 
       - name: Test shard retry wrapper
         run: node --test .github/scripts/retry-shard.test.mjs
 
+      # Timing-based integration sharding: the refresh script (W07a, #10751).
+      # The partition suite runs after `pnpm install` (it drives vitest).
+      - name: Test integration timing refresh
+        run: node --test .github/scripts/test-timings.test.mjs
+
+      # Named integration suite map and its import evidence (W07b1, #10751).
+      - name: Test integration suite map
+        run: node --test .github/scripts/integration-suites.test.mjs
+
+      # postgres-versions.json ↔ ci.yml's Postgres 18 smoke ↔ the scheduled
+      # postgres-compat.yml (parity with integration-test) (#11417).
+      - name: Test Postgres compatibility contract
+        run: node --test .github/scripts/postgres-compat.test.mjs
+
       # Also validates the committed .github/flaky-tests.json (W1, #10744).
       - name: Test flaky-test ledger
         run: node --test .github/scripts/flaky-ledger.test.mjs
+
+      # The merge-queue shepherd (W06, #10750). One glob: a suite under
+      # scripts/ci-shepherd/ runs only through this step.
+      - name: Test CI shepherd
+        run: node --test scripts/ci-shepherd/*.test.mjs
 
       # security-audit's base/head advisory comparison (W1, #10744).
       - name: Test dependency audit comparison
@@ -357,11 +471,20 @@ jobs:
       - name: Verify temporary CI apt source isolation
         run: node --test .github/scripts/prepare-ci-apt-sources.test.mjs
 
+      - name: Test Tauri apt closure script
+        run: node --test .github/scripts/tauri-apt.test.mjs
+
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Timing-based integration sharding and its committed table (W07a,
+      # #10751). After the install: one case drives the real TimingSequencer
+      # through apps/api's vitest, offline.
+      - name: Test integration shard partition
+        run: node --test .github/scripts/shard-partition.test.mjs
 
       - name: Run ESLint
         run: pnpm lint
@@ -394,7 +517,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -431,7 +554,7 @@ jobs:
     name: Test API (shard ${{ matrix.shard }}/8)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-api,')
     # ~2470 vitest files, import-time dominated, 26-34 min unsharded. Only the
     # main `test:run` invocation below is split across shards (mirrors
     # integration-test's sharding); every other named step here is a
@@ -476,7 +599,7 @@ jobs:
           echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -615,7 +738,7 @@ jobs:
     name: Test M365 Graph Read Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-m365-graph-read-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -623,7 +746,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -645,7 +768,7 @@ jobs:
     name: Test M365 Graph Actions Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-m365-graph-actions-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -653,7 +776,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -675,7 +798,7 @@ jobs:
     name: Test M365 Communications Executor
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-m365-communications-executor,')
     services:
       postgres:
         image: postgres:16-alpine
@@ -697,7 +820,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -741,6 +864,24 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      # Postgres 18 smoke (#11417): the newest supported major, on :5434. Its
+      # tag must equal `prSmoke` in .github/scripts/postgres-versions.json, and
+      # every step that talks to it is suffixed "(Postgres 18)" and re-points
+      # every :5432 URL (postgres-compat.test.mjs). The stock 16 service above
+      # stays exactly as it is until the default moves (#11416 W3).
+      postgres-newest:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: breeze
+          POSTGRES_PASSWORD: breeze
+          POSTGRES_DB: breeze
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U breeze"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       DATABASE_URL: postgresql://breeze:breeze@localhost:5432/breeze
       POSTGRES_PASSWORD: breeze
@@ -759,7 +900,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -815,6 +956,38 @@ jobs:
       - name: Check for schema drift
         run: pnpm --filter @breeze/api run db:check-drift
 
+      # ── Postgres 18 smoke (#11417) ──────────────────────────────────────
+      # The same replay (multi-tenant fixture included) and drift check on an
+      # empty Postgres 18, so a migration that breaks the newest supported
+      # major is blocked here rather than found by the scheduled
+      # postgres-compat.yml run the next morning. The assertion comes first so
+      # a moved image tag can never silently test 16.
+      - name: Assert the server major (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://breeze:breeze@localhost:5434/breeze
+        run: pnpm --filter @breeze/api exec tsx scripts/assert-postgres-major.ts 18
+
+      - name: Apply migrations against empty Postgres (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://breeze:breeze@localhost:5434/breeze
+        run: pnpm --filter @breeze/api run check:migrations
+
+      - name: Check for schema drift (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://breeze:breeze@localhost:5434/breeze
+        run: pnpm --filter @breeze/api run db:check-drift
+
+      # The pg_catalog RLS contract on the database just migrated (~3 s of
+      # tests). On 16 it runs in integration shard 1. breeze_app was created by
+      # the replay with POSTGRES_PASSWORD (ensureAppRole), hence its password.
+      - name: Run RLS coverage contract test (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://breeze:breeze@localhost:5434/breeze
+          DATABASE_URL_APP: postgresql://breeze_app:breeze@localhost:5434/breeze
+          NODE_ENV: test
+          DB_CONTEXTLESS_WRITE_STRICT: 'true'
+        run: pnpm --filter=@breeze/api test:rls-coverage
+
   # Real-Postgres apply of every migration as a NON-SUPERUSER role that mirrors
   # a managed-Postgres admin (DigitalOcean doadmin / AWS RDS). The class-complete
   # guard against superuser-only DDL: `check-migrations` above (and every
@@ -837,6 +1010,22 @@ jobs:
           POSTGRES_DB: postgres
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      # Postgres 18 smoke (#11417), its own cluster on :5434: roles are
+      # cluster-wide, and a breeze_app left by the 16 run would be one the
+      # migrator holds no ADMIN option on. See check-migrations above.
+      postgres-newest:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5434:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -868,7 +1057,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -886,11 +1075,25 @@ jobs:
       - name: Apply migrations as a non-superuser role
         run: pnpm --filter @breeze/api run check:migrations:nonsuperuser
 
+      # Postgres 18 smoke (#11417). The assertion connects as the superuser:
+      # the migrator role does not exist until the next step creates it.
+      - name: Assert the server major (Postgres 18)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5434/postgres
+        run: pnpm --filter @breeze/api exec tsx scripts/assert-postgres-major.ts 18
+
+      - name: Apply migrations as a non-superuser role (Postgres 18)
+        env:
+          SUPERUSER_DATABASE_URL: postgresql://postgres:postgres@localhost:5434/postgres
+          DATABASE_URL: postgresql://breeze_migrator:migrator@localhost:5434/breeze
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_app_ci@localhost:5434/breeze
+        run: pnpm --filter @breeze/api run check:migrations:nonsuperuser
+
   test-web:
     name: Test Web (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-web,')
     # ~1030 jsdom vitest files, 17 min unsharded — the longest job on an
     # api-only queue entry once the iOS build is gated. Split like test-api;
     # vitest partitions by file so `clearMocks`/`restoreMocks` in
@@ -934,7 +1137,7 @@ jobs:
           echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -973,7 +1176,7 @@ jobs:
     name: Test Mobile
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-mobile,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -981,7 +1184,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1119,7 +1322,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1189,7 +1392,7 @@ jobs:
     name: Test Portal
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-portal,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1197,7 +1400,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1226,7 +1429,7 @@ jobs:
     name: Test Viewer
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-viewer,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1234,7 +1437,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1265,7 +1468,7 @@ jobs:
     name: Test Shared
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-shared,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1273,7 +1476,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1295,7 +1498,7 @@ jobs:
     name: Test Office Add-in Core
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-office-addin-core,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1303,7 +1506,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1331,7 +1534,7 @@ jobs:
     name: Test Document UI
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-document-ui,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1339,7 +1542,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1364,7 +1567,7 @@ jobs:
     name: Test Excel Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-excel-addin,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1372,7 +1575,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1394,7 +1597,7 @@ jobs:
     name: Test Word Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-word-addin,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1402,7 +1605,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1427,7 +1630,7 @@ jobs:
     name: Test PowerPoint Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-powerpoint-addin,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1435,7 +1638,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1469,7 +1672,7 @@ jobs:
     name: Test Outlook Add-in
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.addins == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-outlook-addin,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1477,7 +1680,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1575,7 +1778,7 @@ jobs:
           echo "::warning title=Audit comparison disabled::Could not fetch base ${CI_BASE_SHA}; every blocking advisory blocks this run."
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1604,7 +1807,20 @@ jobs:
       # HIGH advisory blocks PRs until patched or until a reviewed, expiring
       # entry is added to scripts/security/npm-audit-exceptions.json (the bar
       # and the enforced rules are in that file's header).
+      #
+      # The installer is tested before it runs, because it decides which binary
+      # the audit trusts. A cached copy restored here is re-checked against the
+      # pinned SHA-256 and used before any download is tried. A miss retries
+      # two GitHub sources with backoff, and the step still fails closed when no
+      # verified binary can be had (#11367).
+      - name: Test osv-scanner installer (digest pin, retry, cache fallback)
+        run: pnpm test:osv-scanner-install
+
+      - name: Restore osv-scanner binary
+        uses: ./.github/actions/restore-osv-scanner
+
       - name: Install osv-scanner
+        timeout-minutes: 25
         run: bash scripts/security/install-osv-scanner.sh
 
       # The exceptions logic is tested first, deliberately: a regression in it
@@ -1712,7 +1928,7 @@ jobs:
     name: Build API
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.api == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-api,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1720,7 +1936,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1760,7 +1976,7 @@ jobs:
     name: Build M365 Graph Read Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-m365-graph-read-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1768,7 +1984,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1796,7 +2012,7 @@ jobs:
     name: Build M365 Graph Actions Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-m365-graph-actions-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1804,7 +2020,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1834,7 +2050,7 @@ jobs:
     name: Build M365 Communications Executor
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.m365 == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-m365-communications-executor,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1842,7 +2058,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1872,7 +2088,7 @@ jobs:
     name: Build Web
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.web == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-web,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1880,7 +2096,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1917,7 +2133,7 @@ jobs:
     name: Build Portal
     runs-on: ubuntu-latest
     needs: [lint, typecheck, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.portal == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-portal,')
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1925,7 +2141,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1958,7 +2174,7 @@ jobs:
     name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true' && !contains(needs.changes.outputs.thin_skip, ',build-agent,')
     strategy:
       fail-fast: false
       matrix:
@@ -2094,7 +2310,7 @@ jobs:
     name: Agent Windows manifest guard
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2144,7 +2360,7 @@ jobs:
     name: Test Agent
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-agent,')
     # Room for a package retry (W1, #10744): "Run Go tests" measured 5.8 min
     # median / 5.9 max, setup + loopback/edition steps ≤ 1.5 min, across six
     # CI runs 2026-10-29..30. Explicit so retry-shard's --budget-minutes (this
@@ -2248,7 +2464,7 @@ jobs:
     name: Test Agent (Windows)
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true' && !contains(needs.changes.outputs.thin_skip, ',test-agent-windows,')
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -2414,11 +2630,22 @@ jobs:
       # directory sync) and the corrupt-file quarantine rename. Its
       # GOOS=windows CGO_ENABLED=0 test binary compiles and its dependency
       # graph is atomicrename and logging only.
+      #
+      # ./internal/authenticode and ./internal/flashguard (#11065) guard running
+      # and flashing vendor tools. authenticode's signer read and flashguard's
+      # LockFileEx path exist only on Windows, so this is the one place either
+      # executes before a lab. Neither depends on remote/desktop or cgo.
+      #
+      # ./internal/oemupdates (#11065 W02) is the vendor-update runner: its
+      # Windows build reads GetSystemPowerStatus, PE file versions and the BIOS
+      # registry key, and its tests run the real flash guard. It pulls
+      # remote/desktop in through privilege -> remote/tools, and its test binary
+      # still builds with CGO_ENABLED=0.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./internal/pamdecline ./cmd/breeze-watchdog
+        run: go test ./internal/authenticode ./internal/flashguard ./internal/oemupdates ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./internal/pamdecline ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -2613,7 +2840,7 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the reclaim tests SKIPPED - the runner token is not elevated" }
-          if ($passes -ne 19) { throw "expected exactly 19 top-level PASS lines, got $passes - a reclaim test was renamed, removed, or added without updating this count" }
+          if ($passes -ne 20) { throw "expected exactly 20 top-level PASS lines, got $passes - a reclaim test was renamed, removed, or added without updating this count" }
 
       # The helper-scoped token must never sit in a file a standard Windows user
       # can read: it reaches the console-session Breeze Assist over IPC only,
@@ -3155,7 +3382,7 @@ jobs:
     name: Lint Agent (Go)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     # CGO off (matches test-agent): the agent's only cgo files are the linux
     # X11/pcap capture backends, whose C headers are not on the runner. vet +
     # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
@@ -3255,7 +3482,7 @@ jobs:
     name: Test Agent (race)
     runs-on: macos-latest
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     # Room for a package retry (W1, #10744): "go test -race" measured 16.5 min
     # median / 19.2 max, setup ≤ 2.1 min, across six CI runs 2026-10-29..30
     # (macOS runners vary ~2×). 2 × 19.2 + 5 ≈ 43. retry-shard's
@@ -3348,7 +3575,7 @@ jobs:
     name: Windows Runtime Smoke
     runs-on: windows-latest
     needs: [lint, changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.agent_code == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -3496,9 +3723,11 @@ jobs:
   # promote it once its runtime/caching is proven.
   rust-check:
     name: Rust Check (Tauri apps)
-    runs-on: ubuntu-latest
+    # Same label as seed-tauri-apt in ci-cache-seed.yml (the policy test pins it):
+    # the cache key carries ImageOS, so the two must land on one distro release.
+    runs-on: ubuntu-26.04
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.rust == 'true' && !contains(needs.changes.outputs.thin_skip, ',rust-check,')
     timeout-minutes: 35
 
     steps:
@@ -3507,114 +3736,27 @@ jobs:
         with:
           persist-credentials: false
 
-      # Restore the cached .deb closure so a normal run never touches the Ubuntu
-      # mirror (#9753). The key lives in the shared composite action. Caches
-      # are ref-scoped and CI does not run on push to main, so this job only
-      # READS what `ci-cache-seed.yml` saves from main; a run that
-      # misses falls back to the network path below (and its own save is
-      # visible only to that ref).
+      # Restore the newest apt closure so a normal run never touches the Ubuntu
+      # mirror (#9753, #9847). The key lives in the shared composite action. Caches
+      # are ref-scoped and CI does not run on push to main, so this job only READS
+      # what `ci-cache-seed.yml` saves from main.
       - name: Cache Tauri apt packages
         id: tauri-apt-cache
         uses: ./.github/actions/tauri-apt-cache
 
       - name: Install Tauri system dependencies
-        # Bound the STEP, not just the commands inside it. The old network path
-        # retried 3 times (~27.75m worst case) under a step with no timeout, which
-        # on a 35m JOB-wide budget left ~7m for Rust toolchain setup, a cold
-        # `cargo check` on two webkit2gtk-linked crates, and the viewer tests. On a
-        # cache miss that is not enough, and the job would die on GitHub's generic
-        # "job timed out" with no diagnostic: the exact failure #3730 reported and
-        # this step exists to prevent, merely relocated from apt to whatever ran
-        # last.
+        # Bound the STEP, not just the commands inside it: a stalled apt must fire
+        # a labelled step timeout and leave 23m of the 35m job for the Rust work,
+        # not die on GitHub's generic "job timed out" with no diagnostic (#3730).
         #
-        # Worst case inside the 12m step: a failed cached `dpkg -i` (<= 1m45s +
-        # 45s recovery = 2.5m), then ONE network attempt (2m update + 5m install,
-        # +15s/30s kill-after = ~8m) = ~10.5m. The network path is a single attempt
-        # (#9847): attempt 2 of the old loop could never complete inside 12m, so
-        # the retries were dead weight. It fails fast with a real error; re-run to
-        # land on a fresh runner. The cache (keyed on distro + package list) is
-        # what keeps normal runs off this path.
-        #
-        # 12m caps apt at roughly a third of the budget and fires as a labelled
-        # step timeout, leaving 23m for the Rust work regardless of how badly
-        # the mirror behaves.
+        # Worst case inside the 12m (tauri-apt.sh has the phase bounds): a closure
+        # that does not fit this image (1m15s, changes nothing), then ONE network
+        # attempt (2m update + 5m install, +30s kill-after each) = ~9m15s. A failed
+        # install from the closure stops the step instead: dpkg has run by then.
         timeout-minutes: 12
         env:
           TAURI_DEBS_DIR: ${{ steps.tauri-apt-cache.outputs.dir }}
-          TAURI_CACHE_HIT: ${{ steps.tauri-apt-cache.outputs.cache-hit }}
-        run: |
-          # Cache hit: install the saved .deb closure with dpkg. No apt-get
-          # update, no mirror traffic (#9753). Any failure here falls through to
-          # the network path below, which is also the cache-miss path.
-          if [ "${TAURI_CACHE_HIT}" = "true" ] && ls "${TAURI_DEBS_DIR}"/*.deb >/dev/null 2>&1; then
-            if sudo timeout --kill-after=15s 90s dpkg -i "${TAURI_DEBS_DIR}"/*.deb; then
-              echo "Tauri system dependencies installed from cache (no mirror access)."
-              exit 0
-            fi
-            echo "::warning::cached .deb install failed; falling back to the network install"
-            sudo timeout --kill-after=15s 30s dpkg --configure -a || true
-          fi
-          # Network path. Download into a private archives dir so the .debs can
-          # be copied into the cache dir once the install succeeds.
-          TAURI_PKGS=($(grep -v '^#' .github/tauri-apt-packages.txt))
-          TAURI_ARCHIVES=$(mktemp -d)
-          chmod 755 "$TAURI_ARCHIVES"  # let apt's sandbox user traverse it
-          # The Azure apt mirror (azure.archive.ubuntu.com) is intermittently
-          # degraded and can crawl at 1-4 min/package, blowing this job's
-          # timeout before Rust ever compiles — a transient infra flake that
-          # reds `main` and fires main-red-alert with zero code signal (#1605).
-          # Switch to the canonical mirror so a slow mirror doesn't masquerade as
-          # a build failure.
-          #
-          # Observed failures STALL rather than exit non-zero: apt stops
-          # emitting output right after the InRelease fetches and never
-          # returns, and the job burns its full 35-minute budget without
-          # logging anything (#3730). Give each phase its own deadline so a
-          # stall fails fast with a real error.
-          #
-          # `timeout` is invoked under sudo (not `timeout sudo ...`) so it
-          # signals apt-get itself as root; wrapping sudo would kill the wrapper
-          # and leave a root apt-get orphaned holding the dpkg lock.
-          #
-          # Deadlines bound each apt phase so a stall fails fast with a real
-          # message instead of consuming the job. Counting the --kill-after
-          # grace on every bound (each deadline can run to deadline + 30s),
-          # the single network attempt comes to ~8m (~10.5m after a failed cached
-          # install), inside the 12m step timeout above.
-          # Normal runs finish in well under a minute, so these are roughly
-          # 10x headroom rather than tight.
-          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
-            /etc/apt/sources.list \
-            /etc/apt/sources.list.d/*.list \
-            /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-          CI_APT_DIR=$(mktemp -d)
-          trap 'rm -rf -- "$CI_APT_DIR"' EXIT
-          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
-          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
-                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
-          install_deps() {
-            sudo timeout --kill-after=30s 2m apt-get update "${APT_SOURCES[@]}" \
-              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
-            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends "${APT_SOURCES[@]}" \
-              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
-              -o "Dir::Cache::archives=$TAURI_ARCHIVES" "${TAURI_PKGS[@]}"
-          }
-          if install_deps; then
-            echo "Tauri system dependencies installed."
-            # Seed the cache (saved by the post step only on a cache miss).
-            # Never leave a partial/empty dir behind: cache keys are immutable,
-            # so saving one would poison every later run for this key.
-            rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
-            if ! { ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1 \
-                   && sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/ \
-                   && sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"; }; then
-              echo "::warning::could not seed the Tauri apt cache; next run will use the network path"
-              sudo rm -rf "${TAURI_DEBS_DIR}"
-            fi
-            exit 0
-          fi
-          echo "::error::Failed to install Tauri system dependencies (apt error or phase deadline); re-run to land on a fresh runner (#9847)."
-          exit 1
+        run: bash .github/scripts/tauri-apt.sh ensure "${TAURI_DEBS_DIR}"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -3747,7 +3889,7 @@ jobs:
     # web/portal/viewer/agent-only PR sets `api` (test-api reads those files)
     # but cannot affect this suite. PR-only — the merge queue reports
     # integration=true for every code entry, so the queue always runs it.
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.integration == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true' && needs.changes.outputs.integration == 'true' && !contains(needs.changes.outputs.thin_skip, ',integration-test,')
     strategy:
       # Report every shard's result — a red shard must not cancel the others
       # (same rationale as the no-bail rule inside the suite: masking stacked
@@ -3773,6 +3915,14 @@ jobs:
     # nothing quarantined.
     env:
       CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      # Named-suite selection (W07b2, #10751), read by the timing sequencer in
+      # apps/api/vitest.integration.config.ts. Every shard logs
+      # `integration-suites: mode=… suites=… would_run=n/total`. MODE=enforce
+      # only asks: the sequencer enforces when ENFORCE_PR_SUITES in
+      # .github/scripts/integration-suites.mjs is also true. It is false, so
+      # every run is shadow and runs every file. The queue never asks.
+      BREEZE_INTEGRATION_SUITES: ${{ needs.changes.outputs.integration_suites || 'all' }}
+      BREEZE_INTEGRATION_SUITES_MODE: ${{ github.event_name == 'pull_request' && 'enforce' || 'shadow' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -3798,7 +3948,7 @@ jobs:
           echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -3878,6 +4028,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
           # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
+
+      # The timing sequencer's plan for this shard (W07a, #10751): its files and
+      # the digest of the whole 16-shard plan, which must match across shards.
+      # Absent when the table was unusable and vitest's own sharding ran.
+      - name: Upload shard plan
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: shard-plan-integration-${{ matrix.shard }}
+          path: apps/api/shard-plan-*.json
+          if-no-files-found: ignore
+          retention-days: 14
           overwrite: true
 
       # ee/workspace's integration suite expects its own tables
@@ -4149,7 +4312,7 @@ jobs:
           # self-hoster who later flips the flag needs no database swap, which
           # is exactly the shape .env.example ships.
           POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
-          REDIS_IMAGE_REF=redis:7-alpine
+          REDIS_IMAGE_REF=redis:8-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           # Required in production by config/validate.ts (#625) — without
           # this, agents would accept unsigned release manifests. CI uses
@@ -4542,7 +4705,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
       redis:
-        image: redis:7-alpine
+        image: redis:8-alpine
         ports:
           - 6379:6379
         options: >-
@@ -4580,7 +4743,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -4667,7 +4830,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -4712,6 +4875,39 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  path-read-contracts:
+    name: Path-read contracts
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.path_readers == 'true' && !contains(needs.changes.outputs.thin_skip, ',path-read-contracts,')
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run reader tests
+        env:
+          READER_TESTS: ${{ needs.changes.outputs.reader_tests }}
+        run: node .github/scripts/run-reader-tests.mjs
+
   # ─── Portal dev-mode hydration guard (#3906) ─────────────────────────────
   # Regression cover for #3906: every portal React island SSR'd correctly
   # behind Caddy in a dev-mode stack and then silently failed to hydrate, so
@@ -4747,7 +4943,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -4844,7 +5040,7 @@ jobs:
           BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
           CADDY_IMAGE_REF=caddy:2-alpine
           POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
-          REDIS_IMAGE_REF=redis:7-alpine
+          REDIS_IMAGE_REF=redis:8-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           EOF
 
@@ -5031,9 +5227,31 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
+    needs: [path-read-contracts, changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
+      # W02 (#10746): what this job saw as needs.<job>.result, for the gate's
+      # replay to compare with. Written by the candidate, so it is advisory and
+      # never authority. Neither step can fail CI Success, and each is capped.
+      - name: Record needs oracle (W02, advisory)
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: printf '%s\n' "${NEEDS_JSON}" > ci-needs-oracle.json
+
+      - name: Upload needs oracle (W02, advisory)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        # An artifact-service outage must not hold up the required check.
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ci-needs-oracle-attempt-${{ github.run_attempt }}
+          path: ci-needs-oracle.json
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Check all jobs passed
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
@@ -5096,6 +5314,9 @@ jobs:
           TOPOLOGY_BROWSER_CHANGED: ${{ needs.changes.outputs.topology_browser }}
           AGENT_CODE_CHANGED: ${{ needs.changes.outputs.agent_code }}
           INTEGRATION_CHANGED: ${{ needs.changes.outputs.integration }}
+          PATH_READERS_CHANGED: ${{ needs.changes.outputs.path_readers }}
+          PATH_READ_CONTRACTS_RESULT: ${{ needs.path-read-contracts.result }}
+          THIN_SKIP: ${{ needs.changes.outputs.thin_skip }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           # Fail closed: only a successful path check may skip native compilation. The
@@ -5117,8 +5338,47 @@ jobs:
           case " ${API_CHANGED} ${WEB_CHANGED} ${PORTAL_CHANGED} " in
             *" true "*) STACK_CHANGED=true ;;
           esac
+          # W05 (#10749): a job the thin queue selection skipped counts as satisfied.
+          # Only jobs with a label below can be thinned; a skipped job the gate did not
+          # list stays `skipped` and fails its own leg. Running it anyway keeps its result.
+          # The pinned CI Gate runs this script from the base revision with its own list,
+          # so a candidate's edit here changes only its own CI Success, never the gate's.
+          for thin_job in ${THIN_SKIP//,/ }; do
+            case "${thin_job}" in
+              build-api) [[ "${BUILD_API_RESULT}" != "skipped" ]] || BUILD_API_RESULT=success ;;
+              build-web) [[ "${BUILD_WEB_RESULT}" != "skipped" ]] || BUILD_WEB_RESULT=success ;;
+              build-portal) [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]] || BUILD_PORTAL_RESULT=success ;;
+              build-agent) [[ "${BUILD_AGENT_RESULT}" != "skipped" ]] || BUILD_AGENT_RESULT=success ;;
+              build-m365-graph-read-executor) [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]] || BUILD_M365_GRAPH_READ_EXECUTOR_RESULT=success ;;
+              build-m365-graph-actions-executor) [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "skipped" ]] || BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT=success ;;
+              build-m365-communications-executor) [[ "${BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "skipped" ]] || BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT=success ;;
+              rust-check) [[ "${RUST_CHECK_RESULT}" != "skipped" ]] || RUST_CHECK_RESULT=success ;;
+              test-api) [[ "${TEST_API_RESULT}" != "skipped" ]] || TEST_API_RESULT=success ;;
+              test-web) [[ "${TEST_WEB_RESULT}" != "skipped" ]] || TEST_WEB_RESULT=success ;;
+              test-portal) [[ "${TEST_PORTAL_RESULT}" != "skipped" ]] || TEST_PORTAL_RESULT=success ;;
+              test-mobile) [[ "${TEST_MOBILE_RESULT}" != "skipped" ]] || TEST_MOBILE_RESULT=success ;;
+              test-viewer) [[ "${TEST_VIEWER_RESULT}" != "skipped" ]] || TEST_VIEWER_RESULT=success ;;
+              test-shared) [[ "${TEST_SHARED_RESULT}" != "skipped" ]] || TEST_SHARED_RESULT=success ;;
+              test-document-ui) [[ "${TEST_DOCUMENT_UI_RESULT}" != "skipped" ]] || TEST_DOCUMENT_UI_RESULT=success ;;
+              test-office-addin-core) [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]] || TEST_OFFICE_ADDIN_CORE_RESULT=success ;;
+              test-excel-addin) [[ "${TEST_EXCEL_ADDIN_RESULT}" != "skipped" ]] || TEST_EXCEL_ADDIN_RESULT=success ;;
+              test-word-addin) [[ "${TEST_WORD_ADDIN_RESULT}" != "skipped" ]] || TEST_WORD_ADDIN_RESULT=success ;;
+              test-powerpoint-addin) [[ "${TEST_POWERPOINT_ADDIN_RESULT}" != "skipped" ]] || TEST_POWERPOINT_ADDIN_RESULT=success ;;
+              test-outlook-addin) [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "skipped" ]] || TEST_OUTLOOK_ADDIN_RESULT=success ;;
+              test-m365-graph-read-executor) [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]] || TEST_M365_GRAPH_READ_EXECUTOR_RESULT=success ;;
+              test-m365-graph-actions-executor) [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "skipped" ]] || TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT=success ;;
+              test-m365-communications-executor) [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "skipped" ]] || TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT=success ;;
+              test-agent) [[ "${TEST_AGENT_RESULT}" != "skipped" ]] || TEST_AGENT_RESULT=success ;;
+              test-agent-windows) [[ "${TEST_AGENT_WINDOWS_RESULT}" != "skipped" ]] || TEST_AGENT_WINDOWS_RESULT=success ;;
+              integration-test) [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]] || INTEGRATION_TEST_RESULT=success ;;
+              path-read-contracts) [[ "${PATH_READ_CONTRACTS_RESULT}" != "skipped" ]] || PATH_READ_CONTRACTS_RESULT=success ;;
+            esac
+          done
           if [[ "${CHANGES_RESULT}" != "success" ]] || \
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" == "true" ]] && [[ "${PATH_READ_CONTRACTS_RESULT}" != "success" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" != "true" ]] && [[ "${PATH_READERS_CHANGED}" != "false" ]]; } || \
+             { [[ "${PATH_READERS_CHANGED}" == "false" ]] && [[ "${PATH_READ_CONTRACTS_RESULT}" != "skipped" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
              [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${RELEASE_LEDGER_RESULT}" != "success" ]] || \
@@ -5184,12 +5444,24 @@ jobs:
              { [[ "${PORTAL_CHANGED}" == "true" ]] && [[ "${BUILD_PORTAL_RESULT}" != "success" ]]; } || \
              { [[ "${PORTAL_CHANGED}" != "true" ]] && [[ "${PORTAL_CHANGED}" != "false" ]]; } || \
              { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]]; } || \
-             [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
-             [[ "${LINT_AGENT_RESULT}" != "success" ]] || \
-             [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
-             [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "success" ]] || \
-             { [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] && ! { [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]] && [[ "${AGENT_CODE_CHANGED}" == "false" ]]; }; } || \
-             [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${BUILD_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${BUILD_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${LINT_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${LINT_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${TEST_AGENT_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${TEST_AGENT_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${TEST_AGENT_WINDOWS_RESULT}" != "skipped" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "true" ]] && [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" != "true" ]] && [[ "${AGENT_CODE_CHANGED}" != "false" ]]; } || \
+             { [[ "${AGENT_CODE_CHANGED}" == "false" ]] && [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "skipped" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" == "true" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "success" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" != "true" ]] && [[ "${INTEGRATION_CHANGED}" != "false" ]]; } || \
              { [[ "${INTEGRATION_CHANGED}" == "false" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]]; } || \
@@ -5256,6 +5528,9 @@ jobs:
             echo "One or more required jobs failed"
             exit 1
           fi
+          if [[ -n "${THIN_SKIP}" ]]; then
+            echo "Thin queue run: skipped as the CI Gate's selection allowed, counted as satisfied:${THIN_SKIP//,/ }"
+          fi
           if [[ "${CODE_CHANGED}" == "false" ]]; then
             echo "Docs-only PR: code jobs skipped, docs-check passed; the merge queue runs the full suite before merge."
             exit 0
@@ -5287,16 +5562,6 @@ jobs:
           if [[ "${IS_PR}" != "true" ]] && [[ "${STACK_CHANGED}" == "true" ]] && [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then
             echo "Guided setup smoke failed on main branch push"
             exit 1
-          fi
-          # TEMPORARY (#6943): a Go runtime crash flakes `Test Agent (Windows)`
-          # and dequeues unrelated PRs. The job still runs; its FAILURE is waived
-          # only when the classifier positively reported agent_code=false (no
-          # agent/** / ci.yml / classifier change) — empty or `true` never waives.
-          # `cancelled`/`skipped` are unchanged (still blocking above).
-          # Remove this block and the waiver clause in the condition once #6943
-          # is fixed. Applies to pull_request and merge_group alike.
-          if [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]]; then
-            echo "::warning::Test Agent (Windows) failed but is waived: no agent code changed. Known Go runtime crash, see #6943 (temporary waiver)."
           fi
           echo "All required jobs passed!"
 
@@ -5429,3 +5694,82 @@ jobs:
               echo "ci-success result is '$RESULT' (cancelled/skipped) — no signal about main health, doing nothing."
               ;;
           esac
+
+  # W4 (#10748): advisory provenance for the PR-gated suites in this attempt.
+  provenance-record:
+    name: Record CI Provenance
+    runs-on: ubuntu-latest
+    needs: [changes, ci-success]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.result == 'success' && needs.ci-success.result == 'success' }}
+    continue-on-error: true
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tested merge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/workflows
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.23.4'
+
+      - name: Record successful PR attempt
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CI_SUCCESS_RESULT: ${{ needs.ci-success.result }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          FULL_SELECTION: ${{ toJSON(needs.changes.outputs) }}
+        run: node .github/scripts/queue-selection.mjs record
+
+      - name: Upload provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ci-provenance-attempt-${{ github.run_attempt }}
+          path: provenance.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # W02 (#10746): replays the gate verdict (ci-gate.mjs) against recent real
+  # merge-queue runs and their recorded CI Success, with mutation controls.
+  # Dispatch-only and outside ci-success: it reports, it never gates.
+  ci-gate-replay:
+    name: CI Gate Replay
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout (gate scripts, full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/workflows
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.23.4'
+
+      # The token reaches git and gh only; ci-gate.mjs runs base-revision
+      # scripts with PATH alone.
+      - name: Replay the gate verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/ci-gate.mjs replay

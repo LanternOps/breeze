@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PsaConnectionsPage from './PsaConnectionsPage';
@@ -83,6 +83,58 @@ function installFetchRouter(routes: Record<string, unknown>, recorded: RecordedR
   });
 }
 
+/**
+ * Fill the Jira create form with one synchronous `change` per field instead of
+ * ~70 awaited `userEvent.type` keystrokes. Every keystroke yields to the event loop,
+ * so on a loaded CI runner the typing alone can exhaust the 5 s test timeout (#11350);
+ * the controlled inputs only read the resulting value either way.
+ */
+function fillJiraForm(name: string) {
+  const fill = (field: HTMLElement, value: string) => fireEvent.change(field, { target: { value } });
+  fill(screen.getByLabelText(/connection name/i), name);
+  fill(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
+  fill(screen.getByLabelText(/username or email/i), 'admin@acme.com');
+  fill(screen.getByLabelText(/api token/i), 'tok-123');
+}
+
+describe('PsaConnectionsPage alert tickets', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps the connection list up with a ledger ticket row and names its provider from the connection', async () => {
+    installFetchRouter(
+      {
+        'GET /psa/connections': {
+          data: [{ id: 'c-1', provider: 'connectwise', name: 'CW Prod', status: 'active' }],
+        },
+        'GET /psa/tickets?limit=25': {
+          data: [{
+            id: 'm-1',
+            psaId: 'c-1',
+            title: 'Ticket 8841',
+            status: null,
+            syncedAt: '2026-11-02T10:00:00.000Z',
+            connectionId: 'c-1',
+            alertId: 'alert-1',
+            createState: 'created',
+            externalTicketNumber: 'CW-8841',
+            externalTicketUrl: 'https://psa.example/tickets/8841',
+            raw: { externalTicketId: '8841' },
+          }],
+        },
+      },
+      []
+    );
+
+    render(<PsaConnectionsPage />);
+
+    const ticketLink = await screen.findByRole('link', { name: 'CW-8841' });
+    expect(screen.getByText('CW Prod')).toBeInTheDocument();
+    expect(within(ticketLink.closest('tr') as HTMLElement).getByText('ConnectWise')).toBeInTheDocument();
+  });
+});
+
 describe('PsaConnectionsPage round-trip contract', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -103,14 +155,11 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     await user.click(await screen.findByRole('button', { name: /add connection/i }));
 
-    await user.type(screen.getByLabelText(/connection name/i), 'Jira Prod');
-    await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
-    await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
-    await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+    fillJiraForm('Jira Prod');
 
     await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const request = recorded[0]!;
     expect(request.url).toBe('/psa/connections');
     expect(request.method).toBe('POST');
@@ -189,7 +238,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
     await user.type(nameInput, 'Renamed');
     await user.click(screen.getByRole('button', { name: /save changes/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const request = recorded[0]!;
     expect(request.url).toBe('/psa/connections/c1');
     expect(request.method).toBe('PATCH');
@@ -243,7 +292,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const body = recorded[0]!.body as { provider: string; credentials: Record<string, string> };
     expect(body.provider).toBe('connectwise');
     expect(body.credentials).toEqual({
@@ -287,7 +336,11 @@ describe('PsaConnectionsPage round-trip contract', () => {
     expect(testButton).toBeEnabled();
     expect(screen.queryByTestId('psa-test-dirty-hint')).toBeNull();
 
+    // Dialog autofocus runs on the next animation frame; let it finish before
+    // typing so it cannot move focus away from the token mid-keystroke.
+    await waitFor(() => expect(screen.getByLabelText(/connection name/i)).toHaveFocus());
     await user.type(screen.getByTestId('psa-credential-apiToken'), 'rotated-token');
+    expect(screen.getByTestId('psa-credential-apiToken')).toHaveValue('rotated-token');
 
     await waitFor(() => expect(testButton).toBeDisabled());
     expect(screen.getByTestId('psa-test-dirty-hint')).toBeInTheDocument();
@@ -364,13 +417,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
       expect(screen.getByTestId('psa-connection-owner-partner')).toBeChecked();
       expect(screen.getByTestId('psa-connection-owner-org')).not.toBeChecked();
 
-      await user.type(screen.getByLabelText(/connection name/i), 'MSP Jira');
-      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
-      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
-      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      fillJiraForm('MSP Jira');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('partner');
     });
 
@@ -390,13 +440,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
       await user.click(await screen.findByRole('button', { name: /add connection/i }));
 
       await user.click(screen.getByTestId('psa-connection-owner-org'));
-      await user.type(screen.getByLabelText(/connection name/i), 'Cust Jira');
-      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
-      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
-      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      fillJiraForm('Cust Jira');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('organization');
     });
 
@@ -445,13 +492,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
       const picker = await screen.findByTestId('psa-connection-owner-org-select');
       await user.selectOptions(picker, 'org-2');
 
-      await user.type(screen.getByLabelText(/connection name/i), 'Globex Jira');
-      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
-      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
-      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      fillJiraForm('Globex Jira');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       const body = recorded[0]!.body as Record<string, unknown>;
       expect(body.ownerScope).toBe('organization');
       expect(body.orgId).toBe('org-2');
@@ -586,7 +630,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     render(<PsaConnectionsPage />);
 
-    expect(await screen.findByRole('heading', { name: /^psa tickets$/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^alert tickets$/i })).toBeTruthy();
     expect(screen.queryByText(/synced tickets/i)).toBeNull();
   });
 });

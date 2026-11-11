@@ -1,4 +1,13 @@
 import {beforeEach,describe,expect,expectTypeOf,it,vi} from 'vitest';
+// Partner billing master switch: tests flip billingSwitch.enabled to simulate billing_enabled=false.
+const billingSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../billingEnabled', () => {
+  const assertOn = async (_id: unknown, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
+    if (!billingSwitch.enabled) throw make('Not found', 404, 'BILLING_DISABLED');
+  };
+  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn };
+});
+beforeEach(() => { billingSwitch.enabled = true; });
 import type { Tx } from './types';
 import {NON_TERMINAL_SCHEDULE_STATES,nextEnrollmentRequest,requestAutopay,pauseAutopay,resumeAutopay,turnOffAutopay,stopAutopayByClient} from './enrollmentLifecycle';
 describe('enrollment lifecycle',()=>{
@@ -117,6 +126,23 @@ describe('lifecycle behavior',()=>{
   await resumeAutopay(db,actor,orgId);
   expect(h.calls.filter(c=>c.op==='update').map(c=>c.value)).toEqual([orgAutopayEnrollments]);
   expect(h.calls.find(c=>c.op==='set')!.value).toEqual({status:'active',effectiveFrom:expect.any(Date),pausedBy:null,pausedAt:null});
+ });
+ it('billing off: requestAutopay and resumeAutopay answer 404 BILLING_DISABLED without writes',async()=>{
+  billingSwitch.enabled=false;
+  h.rows.push([org]);
+  await expect(requestAutopay(db,actor,{orgIds:[orgId]})).rejects.toMatchObject({status:404,code:'BILLING_DISABLED',message:'Not found'});
+  h.rows.push([org]);
+  await expect(resumeAutopay(db,actor,orgId)).rejects.toMatchObject({status:404,code:'BILLING_DISABLED'});
+  expect(h.calls.some(c=>c.op==='update'||c.op==='insert')).toBe(false);
+ });
+ it.each(['pause','stop'] as const)('billing off: %s stays allowed (turning off is never gated)',async action=>{
+  billingSwitch.enabled=false;
+  h.rows.push([org],[enrollment],[{...enrollment,status:action==='pause'?'paused':'cancelled'}],[]);
+  if(action==='pause')h.rows.push([],[]);
+  if(action==='pause') h.rows.push([]); else h.rows.push([{id:'method'}]);
+  h.rows.push([invoice]); noticeRows(action==='pause'?'autopay_paused':'autopay_stopped');
+  await (action==='pause'?pauseAutopay(db,actor,orgId):turnOffAutopay(db,actor,orgId));
+  expect(h.calls.filter(c=>c.op==='update').map(c=>c.value)[0]).toBe(orgAutopayEnrollments);
  });
  it.each(['pending_verification','unusable'])('cannot resume with a %s method',async status=>{
   h.rows.push([org],[{...enrollment,status:'paused'}]);h.method.mockResolvedValue({status});

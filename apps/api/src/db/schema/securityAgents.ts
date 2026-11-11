@@ -10,13 +10,25 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
+import type { SecurityAgentVendorKey } from '@breeze/shared/validators';
 import { devices } from './devices';
 import { organizations } from './orgs';
 import { softwarePolicies } from './softwarePolicies';
 
-/** Vendors a status row may name. Mirrors the registry (`services/securityAgents/securityAgentVendors.ts`). */
-export const SECURITY_AGENT_STATUS_VENDORS = ['huntress', 'sentinelone', 'controld', 'nextdns'] as const;
-export type SecurityAgentStatusVendor = (typeof SECURITY_AGENT_STATUS_VENDORS)[number];
+/**
+ * The vendors `security_agent_device_status_vendor_chk` admits (hand-synced
+ * with the CHECK below and its newest migration, which
+ * `securityAgentStatusVendorBitdefender.migration.test.ts` pins). A refused row
+ * fails the insert shared by every vendor in a policy, so
+ * `securityAgentVendors.test.ts` fails if an enableable vendor falls outside
+ * this list.
+ */
+export const SECURITY_AGENT_STATUS_VENDORS = ['huntress', 'sentinelone', 'controld', 'nextdns', 'bitdefender'] as const;
+/**
+ * Any registry vendor, so readers and writers need no casts. The type does not
+ * promise an insert succeeds for a vendor outside `SECURITY_AGENT_STATUS_VENDORS`.
+ */
+export type SecurityAgentStatusVendor = SecurityAgentVendorKey;
 
 export const SECURITY_AGENT_COVERAGE_STATES = [
   'covered',
@@ -79,7 +91,7 @@ export const securityAgentDeviceStatus = pgTable('security_agent_device_status',
     .where(sql`${table.policyId} IS NOT NULL`),
   check(
     'security_agent_device_status_vendor_chk',
-    sql`${table.vendor} IN ('huntress', 'sentinelone', 'controld', 'nextdns')`,
+    sql`${table.vendor} IN ('huntress', 'sentinelone', 'controld', 'nextdns', 'bitdefender')`,
   ),
   check(
     'security_agent_device_status_state_chk',

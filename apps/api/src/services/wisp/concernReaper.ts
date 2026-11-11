@@ -90,6 +90,8 @@ const SUBJECT_TABLES: Record<ConcernSubjectKind, SubjectTable | null> = {
   invoice: { table: invoices, id: invoices.id, orgId: invoices.orgId },
   contract: { table: contracts, id: contracts.id, orgId: contracts.orgId },
   site: { table: sites, id: sites.id, orgId: sites.orgId },
+  // Wisp's readiness note about the org itself (#10386): subject id = org id.
+  readiness: { table: organizations, id: organizations.id, orgId: organizations.id, present: sql`${organizations.deletedAt} IS NULL` },
   // Names the concern itself (correlator-minted); the correlator auto-closes it.
   incident: null,
 };

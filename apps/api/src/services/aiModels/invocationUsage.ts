@@ -11,7 +11,9 @@
  *   per-key delta against the last snapshot persisted for the breeze session.
  * - `result.usage` is main-loop only and was verified per-turn only for the
  *   first result of a freshly created/resumed query. It is used only when
- *   there is no snapshot, capped by modelUsage.
+ *   there is no snapshot, capped by modelUsage — except for a query known to
+ *   start at zero (no resume, no persisted transcript: an agent-run hop),
+ *   whose first result is billed per key from an empty baseline (#10413).
  * - `total_cost_usd` / `costUSD` are cumulative estimates: telemetry only.
  * - The CLI can switch the session model on its own (refusal fallback, even
  *   with no `fallbackModel` configured) and silently retries fast mode as
@@ -84,10 +86,12 @@ export interface SdkTurnObservation {
   providerFailure: { cause: ProviderFailureCause; status: number | null; retries: number; terminal: boolean } | null;
   /** W09: assistant content (text / thinking / tool_use) was produced this turn: never fail over after it. */
   sawOutput: boolean;
+  /** #10577: the model gateway refused a request of this turn because its prompt does not fit the model's context window. */
+  contextWindowExceeded: boolean;
 }
 
 export function newSdkTurnObservation(): SdkTurnObservation {
-  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false };
+  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false, contextWindowExceeded: false };
 }
 
 const OUTPUT_BLOCKS = new Set(['text', 'thinking', 'redacted_thinking', 'tool_use', 'server_tool_use']);
@@ -214,7 +218,8 @@ export type SdkUsageNote =
   | 'first_result'        // no snapshot: result.usage billed, capped by modelUsage
   | 'snapshot_regressed'  // a component decreased (counters restarted): snapshot re-baselined to the current reading, this turn's result.usage billed capped by modelUsage, unconfirmed (Sentry: ai_usage_snapshot_regressed)
   | 'no_result'           // aborted / untrustworthy result: billed ZERO, snapshot unchanged
-  | 'empty_usage';        // the turn made no model call: nothing billed, snapshot unchanged
+  | 'empty_usage'         // the turn made no model call: nothing billed, snapshot unchanged
+  | 'context_window_exceeded'; // #10577: the prompt did not fit the model and no call was served: nothing billed, snapshot unchanged, confirmed
 
 export interface SdkTurnUsageResult {
   usage: BilledUsage[];
@@ -350,7 +355,8 @@ function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkRe
   // row in the ledger).
   const nothingServed = errored && !obs.sawOutput && obs.refusalFallback === null;
   const servedModel = nothingServed ? binding.wireModel : observedServed;
-  const stopReason = refused ? 'refusal' : errored ? 'error' : sdkStop ?? 'end_turn';
+  const failedStop = obs.contextWindowExceeded ? 'context_window_exceeded' : 'error';
+  const stopReason = refused ? 'refusal' : errored ? failedStop : sdkStop ?? 'end_turn';
   const category = obs.refusalNoFallback?.category ?? obs.refusalFallback?.category ?? null;
   const fallbackUsed = obs.refusalFallback !== null || servedModel !== binding.wireModel;
   const cost = result?.total_cost_usd;
@@ -395,20 +401,47 @@ export function sdkTurnUsage(input: {
   result: SdkResultLike | null;
   /** The session's last persisted snapshot (parseSdkUsageSnapshot), or null. */
   previousSnapshot: SdkUsageSnapshot | null;
+  /**
+   * #10413: the query was created fresh (no `resume`, `persistSession: false`),
+   * so its cumulative `modelUsage` started at zero and counts nothing from an
+   * earlier transcript. With no snapshot, the first result is then billed as an
+   * exact per-key delta from zero — every key at its own rate, including the
+   * CLI's background call — instead of `result.usage` capped by modelUsage,
+   * which leaves a second key unbilled. Never set it for a query that resumed.
+   */
+  queryStartedAtZero?: boolean;
 }): SdkTurnUsageResult {
-  const { binding, observation: obs, result, previousSnapshot: prev } = input;
+  const { binding, observation: obs, result, previousSnapshot: snapshot } = input;
+  // A fresh query's baseline is an empty snapshot: its counters start at zero.
+  const fromZero = snapshot === null && input.queryStartedAtZero === true;
+  const prev: SdkUsageSnapshot | null = fromZero ? { version: 1, models: {} } : snapshot;
   const errored = !result || result.subtype !== 'success' || result.is_error === true;
 
   const untrusted = (): SdkTurnUsageResult => ({
     usage: [],
     outcome: sdkOutcome(binding, obs, result, obs.refusalFallback?.fallbackModel ?? binding.wireModel),
-    nextSnapshot: prev,
+    nextSnapshot: snapshot,
     usageConfirmed: false,
     usageNote: 'no_result',
   });
 
+  // #10577: the gateway knows why this turn failed and that the refused call
+  // was served by nobody. With no output seen from any other call either, an
+  // empty reading is a confirmed zero, not a gap. Output means an earlier call
+  // was served, so an empty reading stays untrusted.
+  const windowRefused = errored && obs.contextWindowExceeded && !obs.sawOutput;
+  const stoppedAtWindow = (): SdkTurnUsageResult => ({
+    usage: [],
+    outcome: sdkOutcome(binding, obs, result, binding.wireModel),
+    nextSnapshot: snapshot,
+    usageConfirmed: true,
+    usageNote: 'context_window_exceeded',
+  });
+
+  if (!result && windowRefused) return stoppedAtWindow();
   if (!result || result.startup_failure_reason !== undefined) return untrusted();
   const current = readModelUsage(result.modelUsage);
+  if (current === null && windowRefused) return stoppedAtWindow();
   if (current === null || current === 'invalid') return untrusted();
 
   const entries = Object.entries(current.models);
@@ -416,11 +449,12 @@ export function sdkTurnUsage(input: {
     // No model call recorded. An error result here is the SDK's zeroed crash
     // result; a success is a turn that never reached the model. Either way
     // nothing to bill and the snapshot must not be reset to zero.
+    if (windowRefused) return stoppedAtWindow();
     if (errored) return untrusted();
     return {
       usage: [],
       outcome: sdkOutcome(binding, obs, result, obs.refusalFallback?.fallbackModel ?? binding.wireModel),
-      nextSnapshot: prev,
+      nextSnapshot: snapshot,
       usageConfirmed: true,
       usageNote: 'empty_usage',
     };
@@ -456,7 +490,10 @@ export function sdkTurnUsage(input: {
         usageNote: 'snapshot_regressed',
       };
     }
-    const newKeys = new Set(entries.map(([k]) => k).filter((k) => !Object.hasOwn(prev.models, k)));
+    if (windowRefused && deltas.length === 0) return stoppedAtWindow();
+    // From zero every key is "new", so newness says nothing about a swap: the
+    // served model is read the way a first result reads it (no newKeys).
+    const newKeys = fromZero ? null : new Set(entries.map(([k]) => k).filter((k) => !Object.hasOwn(prev.models, k)));
     const servedModel = servedModelOf(binding, obs, deltas, newKeys);
     const fastServed = sdkFastServed(binding, obs, result, servedModel);
     return {

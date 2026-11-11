@@ -350,6 +350,10 @@ function BackupDashboardInner() {
     if (normalized.includes('success') || normalized.includes('complete')) return 'success';
     if (normalized.includes('run') || normalized.includes('progress')) return 'running';
     if (normalized.includes('fail') || normalized.includes('error')) return 'failed';
+    // A pending job is a queued run (e.g. a catch-up waiting for its device),
+    // the same row BackupJobList labels "Queued" (#11036).
+    if (normalized.includes('pending') || normalized.includes('queue')) return 'pending';
+    if (normalized.includes('cancel')) return 'cancelled';
     return 'warning';
   };
 

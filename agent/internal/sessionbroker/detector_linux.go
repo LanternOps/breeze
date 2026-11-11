@@ -5,9 +5,10 @@ package sessionbroker
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // logindSessionProperties is the property list asked of `loginctl
@@ -32,7 +33,7 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 func (d *linuxDetector) listSessionsCounted() ([]DetectedSession, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
+	out, err := procspawn.CommandContext(ctx, "loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
 	if err != nil {
 		return nil, 0, fmt.Errorf("loginctl list-sessions: %w", err)
 	}
@@ -56,7 +57,7 @@ func (d *linuxDetector) listSessionsCounted() ([]DetectedSession, int, error) {
 		// at their defaults; flag it so callers never read those defaults as
 		// "nobody is at a desktop" (the consent gate's occupancy check).
 		propCtx, propCancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
-		propOut, propErr := exec.CommandContext(propCtx, "loginctl", "show-session", sessionID,
+		propOut, propErr := procspawn.CommandContext(propCtx, "loginctl", "show-session", sessionID,
 			logindSessionProperties).Output()
 		propCancel()
 		if propErr != nil {

@@ -1,6 +1,6 @@
 import { MIGRATION_WINDOW_MAX_ORGS } from '../../services/migrationWindowLimits';
 import { z } from 'zod';
-import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, newPartnerPurchaseSelectionSchema } from '@breeze/shared';
+import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, launchPurchaseSelectionSchema, signupIntentSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -39,7 +39,10 @@ export const registerSchema = z.object({
 
 export const registerPartnerSchema = z.object({
   companyName: z.string().min(2).max(255),
-  purchaseSelection: newPartnerPurchaseSelectionSchema,
+  // What the signup is for. `purchaseSelection` is the legacy launch tuple, accepted
+  // only so an old cached client does not break; it normalizes to the default intent.
+  signupIntent: signupIntentSchema.optional(),
+  purchaseSelection: launchPurchaseSelectionSchema.optional(),
   email: z.string().email(),
   password: z.string().min(8),
   name: z.string().min(1).max(255),
@@ -163,6 +166,10 @@ const STEP_UP_OPERATIONS = [
   'add_factor',
   'rotate_recovery_codes',
   'delete_passkey',
+  // #10650: POST /auth/mfa/totp/remove. Provable by passkey or TOTP only —
+  // /mfa/step-up refuses SMS for it, and the recovery variant below stays
+  // limited to delete_passkey.
+  'remove_totp',
   'register_approver_device',
   'agent_rollback',
   'device_maintenance',

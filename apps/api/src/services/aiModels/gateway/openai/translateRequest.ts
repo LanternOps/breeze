@@ -94,7 +94,7 @@ function collapse(parts: OaiContentPart[]): string | OaiContentPart[] {
   return parts.every((p) => p.type === 'text') ? parts.map((p) => (p as { text: string }).text).join('\n') : parts;
 }
 
-export interface TranslatedRequest { body: OaiChatRequest; tools: ToolNameMap; requestedModel: string; stream: boolean }
+export interface TranslatedRequest { body: OaiChatRequest; tools: ToolNameMap; requestedModel: string; stream: boolean; maxTokens: number }
 
 export function translateMessagesRequest(input: unknown, wireModel: string): TranslatedRequest {
   const parsed = requestSchema.safeParse(input);
@@ -193,5 +193,5 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
     stream,
     ...(stream ? { stream_options: { include_usage: true as const } } : {}),
   };
-  return { body, tools: { toOai, fromOai, schemas }, requestedModel: req.model, stream };
+  return { body, tools: { toOai, fromOai, schemas }, requestedModel: req.model, stream, maxTokens: req.max_tokens };
 }

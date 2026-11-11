@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+const isolation = vi.hoisted(() => ({ owner: vi.fn(async () => null as unknown), journal: vi.fn() }));
+vi.mock('./networkIsolation/episodeStore', () => ({ findEpisodeByCommand: isolation.owner }));
+vi.mock('./networkIsolation/reconcile', () => ({ journalIsolationEvent: isolation.journal }));
 
 const { finalizeMock } = vi.hoisted(() => ({ finalizeMock: vi.fn() }));
 
@@ -43,6 +46,18 @@ describe('execute_containment cancel propagation (#9662)', () => {
     await expect(propagateCancelledDeviceCommand({
       commandId: 'cmd-1', type: 'execute_containment', payload, completedAt,
     })).rejects.toThrow('db down');
+  });
+
+  it('never changes the isolation episode or its action when a transport command is cancelled', async () => {
+    isolation.owner.mockResolvedValueOnce({ id: 'episode' });
+    await propagateCancelledDeviceCommand({ commandId: 'cmd-1', type: 'execute_containment', payload: { ...payload, actionType: 'network_isolation' }, completedAt });
+    expect(isolation.journal).toHaveBeenCalledWith(expect.anything(), { id: 'episode' }, 'isolate_command_cancelled', completedAt);
+    expect(finalizeMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to generic cancellation for legacy network isolation without an episode', async () => {
+    await propagateCancelledDeviceCommand({ commandId: 'cmd-1', type: 'execute_containment', payload: { ...payload, actionType: 'network_isolation' }, completedAt });
+    expect(finalizeMock).toHaveBeenCalledTimes(1);
   });
 
   it('is not consulted for other command types', async () => {

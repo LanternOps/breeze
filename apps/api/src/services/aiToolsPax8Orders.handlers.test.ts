@@ -24,7 +24,7 @@ describe('Pax8 orders', () => {
     auditToolWrite(auth(), { orgId: ORG, action: 'pax8.order.preflight', resourceType: 'pax8_order', result });
     expect(h.auditLog).toHaveBeenCalledWith(expect.objectContaining({ result }));
   });
-  it('action enum is exactly PR A', () => expect(pax8ToolSchemas.manage_pax8_orders.shape.action.options).toEqual(['list','get','create_draft','add_line','update_line','remove_line','preview','preflight']));
+  it('action enum is exactly PR B', () => expect(pax8ToolSchemas.manage_pax8_orders.shape.action.options).toEqual(['list','get','create_draft','add_line','update_line','remove_line','preview','preflight','submit','reconcile']));
   it('refuses organization scope and device-bound sessions', async () => {
     expect((await run({ action: 'list' }, auth({ scope: 'organization' }))).code).toBe('PARTNER_SCOPE_REQUIRED');
     expect((await run({ action: 'get', orderId: ID }, auth({ allowedDeviceIds: [ID] }))).code).toBe('ACCESS_DENIED');

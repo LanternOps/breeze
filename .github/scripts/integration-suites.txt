@@ -1,0 +1,471 @@
+# Named integration suites (W07b1, #10751). Nothing reads this to change what
+# runs yet: W07b2 logs PR-run selection in shadow; enforcement is its own PR.
+#
+#   suite <name> tests <glob>     integration tests the suite owns
+#   suite <name> sources <glob>   API sources whose change selects the suite
+#
+# Globs are repo-relative, bash semantics (`*` crosses `/`, `[!a-z0-9]` is a
+# negated class). A test belongs to the FIRST suite whose `tests` glob matches
+# it, else to `core`, which always runs. `core` owns no sources. A floor path
+# (integration-floor-paths.txt) or a changed API path no `sources` glob matches
+# selects every suite.
+#
+# Contract (integration-suites.test.mjs): every test a suite owns may import,
+# directly, only files its own `sources` match or that no suite owns (changing
+# an unowned file selects every suite). When it fails, either add the import
+# to the suite (`suite <s> sources <file>`) or move the test to core
+# (`suite core tests <file>`, above the suite's own tests glob).
+#
+# Drafted 2026-11-08 from filename prefixes with >= 15 integration tests; the
+# "import evidence" lines were added until the contract held. Direct imports
+# only: through db/index.ts the API's import graph is a single component, so
+# the transitive closure of any test is nearly all of apps/api/src.
+# ── accounting ──
+suite accounting tests apps/api/src/__tests__/integration/accounting[!a-z0-9]*
+suite accounting tests apps/api/src/services/accounting/accountingFeePush.integration.test.ts
+suite accounting sources apps/api/src/services/accounting*
+suite accounting sources apps/api/src/routes/accounting*
+suite accounting sources apps/api/src/jobs/accounting*
+
+# ── agent ──
+suite agent tests apps/api/src/__tests__/integration/agent[!a-z0-9]*
+suite agent tests apps/api/src/routes/agents/changes.integration.test.ts
+suite agent tests apps/api/src/routes/agents/enrollmentCollision.integration.test.ts
+suite agent tests apps/api/src/routes/agents/inventorySoftwareRelink.integration.test.ts
+suite agent tests apps/api/src/routes/agents/patches.integration.test.ts
+suite agent tests apps/api/src/services/agentRollback.integration.test.ts
+suite agent tests apps/api/src/services/agentRollbackResult.integration.test.ts
+suite agent sources apps/api/src/services/agent*
+suite agent sources apps/api/src/routes/agent*
+suite agent sources apps/api/src/jobs/agent*
+# import evidence: owned by another suite and imported by a test here
+suite agent sources apps/api/src/routes/devices/diagnosticLogs.ts
+suite agent sources apps/api/src/routes/devices/moveOrg.ts
+suite agent sources apps/api/src/routes/devices/watchdogLogs.ts
+suite agent sources apps/api/src/services/aiAgents/agentAuthContext.ts
+suite agent sources apps/api/src/services/aiAgents/agentCircuit.ts
+suite agent sources apps/api/src/services/aiAgents/agentService.ts
+suite agent sources apps/api/src/services/aiAgents/recipients.ts
+suite agent sources apps/api/src/services/aiAgents/runService.ts
+suite agent sources apps/api/src/services/aiGuardrails.ts
+suite agent sources apps/api/src/services/deviceHierarchy.ts
+suite agent sources apps/api/src/services/devicePolicyCache.ts
+suite agent sources apps/api/src/services/devicePolicySet.ts
+suite agent sources apps/api/src/services/m365DirectGraph.ts
+
+# ── ai ──
+suite ai tests apps/api/src/__tests__/integration/ai[!a-z0-9]*
+suite ai tests apps/api/src/services/aiToolsVulnerability.integration.test.ts
+suite ai sources apps/api/src/services/ai*
+suite ai sources apps/api/src/routes/ai*
+suite ai sources apps/api/src/jobs/ai*
+# import evidence: owned by another suite and imported by a test here
+suite ai sources apps/api/src/jobs/automationWorker.ts
+suite ai sources apps/api/src/jobs/backupEnqueue.ts
+suite ai sources apps/api/src/jobs/deviceGroupJobs.ts
+suite ai sources apps/api/src/jobs/patchScheduleBackfill.ts
+suite ai sources apps/api/src/jobs/softwareComplianceWorker.ts
+suite ai sources apps/api/src/jobs/softwareRemediationWorker.ts
+suite ai sources apps/api/src/routes/agents/helpers.ts
+suite ai sources apps/api/src/routes/backup/verificationService.ts
+suite ai sources apps/api/src/services/accounting/accountingConnectionService.ts
+suite ai sources apps/api/src/services/accounting/accountingInvoicePush.ts
+suite ai sources apps/api/src/services/accounting/providerRegistry.ts
+suite ai sources apps/api/src/services/automationRuntime.ts
+suite ai sources apps/api/src/services/automationTerminalEvidence.ts
+suite ai sources apps/api/src/services/backupProviderConfig.ts
+suite ai sources apps/api/src/services/contractService.ts
+suite ai sources apps/api/src/services/contractTypes.ts
+suite ai sources apps/api/src/services/deviceDeletion.ts
+suite ai sources apps/api/src/services/deviceOwnershipEpoch.ts
+suite ai sources apps/api/src/services/orgMerge.ts
+suite ai sources apps/api/src/services/orgMergeCustomExecutors.ts
+suite ai sources apps/api/src/services/orgMergeExecutors.ts
+suite ai sources apps/api/src/services/orgMergeRegistry.ts
+suite ai sources apps/api/src/services/partnerStripe.ts
+suite ai sources apps/api/src/services/patchEligibility.ts
+suite ai sources apps/api/src/services/patchJobFinalizer.ts
+suite ai sources apps/api/src/services/reportGenerationService.ts
+suite ai sources apps/api/src/services/reportScope.ts
+suite ai sources apps/api/src/services/scriptProposals/policy.ts
+suite ai sources apps/api/src/services/softwareDependencyIdentity.ts
+suite ai sources apps/api/src/services/ticketChecklistService.ts
+suite ai sources apps/api/src/services/ticketChecklistTemplateService.ts
+suite ai sources apps/api/src/services/ticketService.ts
+suite ai sources apps/api/src/services/topology/templateApplicationTypes.ts
+suite ai sources apps/api/src/services/wisp/budget.ts
+suite ai sources apps/api/src/services/wisp/memoryService.ts
+
+# ── alert ──
+suite alert tests apps/api/src/__tests__/integration/alert[!a-z0-9]*
+suite alert tests apps/api/src/services/alertSubjects.integration.test.ts
+suite alert sources apps/api/src/services/alert*
+suite alert sources apps/api/src/routes/alert*
+suite alert sources apps/api/src/jobs/alert*
+# import evidence: owned by another suite and imported by a test here
+suite alert sources apps/api/src/jobs/automationWorker.ts
+suite alert sources apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts
+suite alert sources apps/api/src/services/flows/flowExecutionContext.ts
+suite alert sources apps/api/src/services/metricAnomalyPromotion.ts
+suite alert sources apps/api/src/services/orgMerge.ts
+suite alert sources apps/api/src/services/patchAlerts.ts
+
+# ── automation ──
+suite automation tests apps/api/src/__tests__/integration/automation[!a-z0-9]*
+suite automation sources apps/api/src/services/automation*
+suite automation sources apps/api/src/routes/automation*
+suite automation sources apps/api/src/jobs/automation*
+# import evidence: owned by another suite and imported by a test here
+suite automation sources apps/api/src/jobs/flowRunQueue.ts
+suite automation sources apps/api/src/jobs/flowRunner.ts
+suite automation sources apps/api/src/jobs/flowScheduleTick.ts
+suite automation sources apps/api/src/routes/devices/core.ts
+suite automation sources apps/api/src/routes/devices/moveOrg.ts
+suite automation sources apps/api/src/services/aiTools.ts
+suite automation sources apps/api/src/services/aiToolsScripts.ts
+suite automation sources apps/api/src/services/alertCreation.ts
+suite automation sources apps/api/src/services/flows/conversion/claims.ts
+suite automation sources apps/api/src/services/flows/conversion/context.ts
+suite automation sources apps/api/src/services/flows/conversion/convertAutomation.ts
+suite automation sources apps/api/src/services/flows/conversion/revert.ts
+suite automation sources apps/api/src/services/flows/conversion/service.ts
+suite automation sources apps/api/src/services/flows/conversion/switch.ts
+suite automation sources apps/api/src/services/flows/eventTrigger.ts
+suite automation sources apps/api/src/services/flows/runService.ts
+suite automation sources apps/api/src/services/orgMerge.ts
+suite automation sources apps/api/src/services/scriptDispatch.ts
+suite automation sources apps/api/src/services/scriptRunTargets.ts
+suite automation sources apps/api/src/services/softwareDeploymentResult.ts
+
+# ── backup ──
+suite backup tests apps/api/src/__tests__/integration/backup[!a-z0-9]*
+suite backup tests apps/api/src/services/backupProgress.integration.test.ts
+suite backup sources apps/api/src/services/backup*
+suite backup sources apps/api/src/routes/backup*
+suite backup sources apps/api/src/jobs/backup*
+# import evidence: owned by another suite and imported by a test here
+suite backup sources apps/api/src/routes/agentWs.ts
+suite backup sources apps/api/src/routes/agents.ts
+suite backup sources apps/api/src/routes/devices/moveOrg.ts
+suite backup sources apps/api/src/services/agentCommandRelay.ts
+suite backup sources apps/api/src/services/agentWorkExpectation.ts
+suite backup sources apps/api/src/services/orgMerge.ts
+
+# ── contract ──
+suite contract tests apps/api/src/__tests__/integration/contract[!a-z0-9]*
+suite contract tests apps/api/src/jobs/contractWorker.renewal.integration.test.ts
+suite contract tests apps/api/src/services/contractRenewal.integration.test.ts
+suite contract sources apps/api/src/services/contract*
+suite contract sources apps/api/src/routes/contract*
+suite contract sources apps/api/src/jobs/contract*
+# import evidence: owned by another suite and imported by a test here
+suite contract sources apps/api/src/services/quoteAcceptService.ts
+suite contract sources apps/api/src/services/quoteLifecycle.ts
+suite contract sources apps/api/src/services/quoteService.ts
+
+# ── device ──
+suite device tests apps/api/src/__tests__/integration/device[!a-z0-9]*
+suite device sources apps/api/src/services/device*
+suite device sources apps/api/src/routes/device*
+suite device sources apps/api/src/jobs/device*
+# import evidence: owned by another suite and imported by a test here
+suite device sources apps/api/src/jobs/alertCorrelation.ts
+suite device sources apps/api/src/jobs/automationWorker.ts
+suite device sources apps/api/src/jobs/backupRetention.ts
+suite device sources apps/api/src/jobs/backupSlaWorker.ts
+suite device sources apps/api/src/jobs/patchJobExecutor.ts
+suite device sources apps/api/src/routes/agents.ts
+suite device sources apps/api/src/routes/agents/enrollment.ts
+suite device sources apps/api/src/routes/agents/helpers.ts
+suite device sources apps/api/src/routes/agents/index.ts
+suite device sources apps/api/src/routes/alerts.ts
+suite device sources apps/api/src/routes/partnerApi/alerts.ts
+suite device sources apps/api/src/routes/partnerApi/configuration.ts
+suite device sources apps/api/src/routes/partnerApi/schemas.ts
+suite device sources apps/api/src/services/agentCredentialUse.ts
+suite device sources apps/api/src/services/agentOwnDeviceRow.ts
+suite device sources apps/api/src/services/agentPresence.ts
+suite device sources apps/api/src/services/aiAgents/alertVerdictSubscriber.ts
+suite device sources apps/api/src/services/aiAgents/runService.ts
+suite device sources apps/api/src/services/aiAgents/skipVisibility.ts
+suite device sources apps/api/src/services/alertService.ts
+suite device sources apps/api/src/services/contractCoverage.ts
+suite device sources apps/api/src/services/contractQuantities.ts
+suite device sources apps/api/src/services/orgMerge.ts
+suite device sources apps/api/src/services/orgMergeRegistry.ts
+suite device sources apps/api/src/services/partnerServicePrincipalKeys.ts
+
+# ── flow ──
+suite flow tests apps/api/src/__tests__/integration/flow[!a-z0-9]*
+suite flow sources apps/api/src/services/flow*
+suite flow sources apps/api/src/routes/flow*
+suite flow sources apps/api/src/jobs/flow*
+# import evidence: owned by another suite and imported by a test here
+suite flow sources apps/api/src/jobs/automationWorker.ts
+suite flow sources apps/api/src/routes/agentWs.ts
+suite flow sources apps/api/src/routes/automations.ts
+suite flow sources apps/api/src/services/aiModels/__fixtures__/resolvedModel.ts
+suite flow sources apps/api/src/services/aiModels/connectionFactory.ts
+suite flow sources apps/api/src/services/aiModels/resolveModel.ts
+suite flow sources apps/api/src/services/aiTools.ts
+suite flow sources apps/api/src/services/automationRuntime.ts
+suite flow sources apps/api/src/services/orgMergeCustomExecutors.ts
+suite flow sources apps/api/src/services/orgMergeExecutors.ts
+
+# ── m365 ──
+suite m365 tests apps/api/src/__tests__/integration/m365[!a-z0-9]*
+suite m365 sources apps/api/src/services/m365*
+suite m365 sources apps/api/src/routes/m365*
+suite m365 sources apps/api/src/jobs/m365*
+# import evidence: owned by another suite and imported by a test here
+suite m365 sources apps/api/src/jobs/ticketMailboxPollWorker.ts
+suite m365 sources apps/api/src/services/orgMerge.ts
+suite m365 sources apps/api/src/services/ticketMailbox/arcSeal.ts
+suite m365 sources apps/api/src/services/ticketMailbox/connectionService.ts
+suite m365 sources apps/api/src/services/ticketMailbox/graphMailClient.ts
+suite m365 sources apps/api/src/services/ticketMailbox/normalizeGraphMessage.ts
+
+# ── metric ──
+suite metric tests apps/api/src/__tests__/integration/metric[!a-z0-9]*
+suite metric sources apps/api/src/services/metric*
+suite metric sources apps/api/src/routes/metric*
+suite metric sources apps/api/src/jobs/metric*
+# import evidence: owned by another suite and imported by a test here
+suite metric sources apps/api/src/routes/devices/anomalies.ts
+suite metric sources apps/api/src/services/aiAgents/metricAnomalySubscriber.ts
+suite metric sources apps/api/src/services/aiAgents/runService.ts
+
+# ── network ──
+suite network tests apps/api/src/__tests__/integration/network[!a-z0-9]*
+suite network sources apps/api/src/services/network*
+suite network sources apps/api/src/routes/network*
+suite network sources apps/api/src/jobs/network*
+# import evidence: owned by another suite and imported by a test here
+suite network sources apps/api/src/jobs/alertWorker.ts
+suite network sources apps/api/src/routes/devices/network.ts
+suite network sources apps/api/src/services/alertConditions/handlers/networkCheck.ts
+suite network sources apps/api/src/services/alertService.ts
+suite network sources apps/api/src/services/orgMerge.ts
+suite network sources apps/api/src/services/partnerTrust.commands.ts
+
+# ── org ──
+suite org tests apps/api/src/__tests__/integration/org[!a-z0-9]*
+suite org sources apps/api/src/services/org*
+suite org sources apps/api/src/routes/org*
+suite org sources apps/api/src/jobs/org*
+# import evidence: owned by another suite and imported by a test here
+suite org sources apps/api/src/jobs/deviceGroupJobs.ts
+suite org sources apps/api/src/routes/patches/index.ts
+suite org sources apps/api/src/routes/portal/helpers.ts
+suite org sources apps/api/src/routes/quotesPublic.ts
+suite org sources apps/api/src/services/contractService.ts
+suite org sources apps/api/src/services/contractTypes.ts
+suite org sources apps/api/src/services/deviceGroupDelete.ts
+suite org sources apps/api/src/services/quoteAcceptToken.ts
+suite org sources apps/api/src/services/quoteService.ts
+suite org sources apps/api/src/services/quoteTypes.ts
+suite org sources apps/api/src/services/ticketConfigService.ts
+suite org sources apps/api/src/services/ticketService.ts
+
+# ── pam ──
+suite pam tests apps/api/src/__tests__/integration/pam[!a-z0-9]*
+suite pam sources apps/api/src/services/pam*
+suite pam sources apps/api/src/routes/pam*
+suite pam sources apps/api/src/jobs/pam*
+# import evidence: owned by another suite and imported by a test here
+suite pam sources apps/api/src/routes/agents.ts
+suite pam sources apps/api/src/routes/agents/commands.ts
+suite pam sources apps/api/src/routes/agents/pamObservations.ts
+suite pam sources apps/api/src/routes/agents/pamReconciliation.ts
+suite pam sources apps/api/src/routes/devices/core.ts
+suite pam sources apps/api/src/routes/devices/moveOrg.ts
+suite pam sources apps/api/src/services/agentIdentityAssertion.ts
+suite pam sources apps/api/src/services/deviceDeletion.ts
+suite pam sources apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts
+suite pam sources apps/api/src/services/deviceOwnershipEpoch.ts
+suite pam sources apps/api/src/services/orgEvidenceHold.ts
+suite pam sources apps/api/src/services/orgMerge.ts
+
+# ── partner ──
+suite partner tests apps/api/src/__tests__/integration/partner[!a-z0-9]*
+suite partner sources apps/api/src/services/partner*
+suite partner sources apps/api/src/routes/partner*
+suite partner sources apps/api/src/jobs/partner*
+# import evidence: owned by another suite and imported by a test here
+suite partner sources apps/api/src/jobs/automationWorker.ts
+suite partner sources apps/api/src/jobs/deviceGroupJobs.ts
+suite partner sources apps/api/src/routes/agents/enrollment.ts
+suite partner sources apps/api/src/routes/agents/helpers.ts
+suite partner sources apps/api/src/routes/contracts/index.ts
+suite partner sources apps/api/src/routes/devices/moveOrg.ts
+suite partner sources apps/api/src/routes/orgs.ts
+suite partner sources apps/api/src/services/alertExternalTickets.ts
+suite partner sources apps/api/src/services/deviceGroupOwnership.ts
+suite partner sources apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts
+suite partner sources apps/api/src/services/flows/flowLimits.ts
+suite partner sources apps/api/src/services/softwareInventoryObservations.ts
+suite partner sources apps/api/src/services/ticketMerge/index.ts
+suite partner sources apps/api/src/services/ticketService.ts
+
+# ── patch ──
+suite patch tests apps/api/src/__tests__/integration/patch[!a-z0-9]*
+suite patch sources apps/api/src/services/patch*
+suite patch sources apps/api/src/routes/patch*
+suite patch sources apps/api/src/jobs/patch*
+# import evidence: owned by another suite and imported by a test here
+suite patch sources apps/api/src/routes/agents/patches.ts
+suite patch sources apps/api/src/routes/devices/patches.ts
+suite patch sources apps/api/src/routes/partnerApi/configuration.ts
+suite patch sources apps/api/src/services/aiTools.ts
+suite patch sources apps/api/src/services/aiToolsFleet.ts
+suite patch sources apps/api/src/services/devicePatchApprovalView.ts
+suite patch sources apps/api/src/services/deviceStats.ts
+
+# ── portal ──
+suite portal tests apps/api/src/__tests__/integration/portal[!a-z0-9]*
+suite portal tests apps/api/src/services/portal/hardwareHealthReadModel.integration.test.ts
+suite portal tests apps/api/src/services/portal/hardwareInventoryReadModel.integration.test.ts
+suite portal tests apps/api/src/services/portal/networkVisibilityReadModel.integration.test.ts
+suite portal tests apps/api/src/services/portal/performanceReadModel.integration.test.ts
+suite portal sources apps/api/src/services/portal*
+suite portal sources apps/api/src/routes/portal*
+# import evidence: owned by another suite and imported by a test here
+suite portal sources apps/api/src/routes/orgPortalEntraTenant.ts
+suite portal sources apps/api/src/routes/orgPortalAccessPolicy.ts
+suite portal sources apps/api/src/routes/orgPortalAccessRequests.ts
+suite portal sources apps/api/src/routes/orgPortalUsers.ts
+suite portal sources apps/api/src/services/orgMerge.ts
+suite portal sources apps/api/src/services/orgMergeRegistry.ts
+suite portal sources apps/api/src/services/quoteAcceptService.ts
+suite portal sources apps/api/src/services/quoteLifecycle.ts
+suite portal sources apps/api/src/services/quoteService.ts
+suite portal sources apps/api/src/services/quoteTypes.ts
+suite portal sources apps/api/src/services/ticketEvents.ts
+suite portal sources apps/api/src/routes/orgCustomerDomains.ts
+suite portal sources apps/api/src/services/ticketConfigService.ts
+suite portal sources apps/api/src/services/ticketMerge/index.ts
+
+# ── quote ──
+suite quote tests apps/api/src/__tests__/integration/quote[!a-z0-9]*
+suite quote tests apps/api/src/jobs/quoteSendQueue.integration.test.ts
+suite quote sources apps/api/src/services/quote*
+suite quote sources apps/api/src/routes/quote*
+suite quote sources apps/api/src/jobs/quote*
+# import evidence: owned by another suite and imported by a test here
+suite quote sources apps/api/src/services/contractDocumentService.ts
+suite quote sources apps/api/src/services/contractQuantities.ts
+suite quote sources apps/api/src/services/contractService.ts
+suite quote sources apps/api/src/services/contractTemplateRender.ts
+suite quote sources apps/api/src/services/contractTypes.ts
+suite quote sources apps/api/src/services/deviceGroupDelete.ts
+suite quote sources apps/api/src/services/reportGenerationService.ts
+suite quote sources apps/api/src/services/reportScope.ts
+
+# ── report ──
+suite report tests apps/api/src/__tests__/integration/report[!a-z0-9]*
+suite report sources apps/api/src/services/report*
+suite report sources apps/api/src/routes/report*
+suite report sources apps/api/src/jobs/report*
+# import evidence: owned by another suite and imported by a test here
+suite report sources apps/api/src/routes/devices.ts
+suite report sources apps/api/src/services/orgMerge.ts
+suite report sources apps/api/src/services/orgMergeCustomExecutors.ts
+suite report sources apps/api/src/services/orgMergeExecutors.ts
+suite report sources apps/api/src/services/orgMergeRegistry.ts
+
+# ── script ──
+suite script tests apps/api/src/__tests__/integration/script[!a-z0-9]*
+suite script tests apps/api/src/jobs/scriptVerifyReconciliation.integration.test.ts
+suite script tests apps/api/src/services/scriptProposals/reviewConcurrency.integration.test.ts
+suite script sources apps/api/src/services/script*
+suite script sources apps/api/src/routes/script*
+suite script sources apps/api/src/jobs/script*
+# import evidence: owned by another suite and imported by a test here
+suite script sources apps/api/src/routes/ai/scriptProposals.ts
+suite script sources apps/api/src/routes/devices/events.ts
+suite script sources apps/api/src/services/aiModels/connectionFactory.ts
+suite script sources apps/api/src/services/aiToolsScripts.ts
+suite script sources apps/api/src/services/orgMerge.ts
+
+# ── software ──
+suite software tests apps/api/src/__tests__/integration/software[!a-z0-9]*
+suite software sources apps/api/src/services/software*
+suite software sources apps/api/src/routes/software*
+suite software sources apps/api/src/jobs/software*
+# import evidence: owned by another suite and imported by a test here
+suite software sources apps/api/src/routes/agents/helpers.ts
+suite software sources apps/api/src/services/deviceDeletion.ts
+suite software sources apps/api/src/services/deviceHierarchy.ts
+suite software sources apps/api/src/services/devicePolicySet.ts
+
+# ── ticket ──
+suite ticket tests apps/api/src/__tests__/integration/ticket[!a-z0-9]*
+suite ticket sources apps/api/src/services/ticket*
+suite ticket sources apps/api/src/routes/ticket*
+suite ticket sources apps/api/src/jobs/ticket*
+# import evidence: owned by another suite and imported by a test here
+suite ticket sources apps/api/src/routes/partnerApi/dbContext.ts
+suite ticket sources apps/api/src/routes/portal/index.ts
+suite ticket sources apps/api/src/routes/portal/portalDbContext.ts
+suite ticket sources apps/api/src/routes/portal/tickets.ts
+suite ticket sources apps/api/src/services/aiAgents/agentAuthContext.ts
+suite ticket sources apps/api/src/services/contractHourBlockClose.ts
+suite ticket sources apps/api/src/services/contractService.ts
+suite ticket sources apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts
+suite ticket sources apps/api/src/services/orgCurrencyService.ts
+suite ticket sources apps/api/src/services/orgMerge.ts
+suite ticket sources apps/api/src/services/orgMergeRegistry.ts
+suite ticket sources apps/api/src/services/partnerServicePrincipalKeys.ts
+suite ticket sources apps/api/src/services/portal/reportsSelfService.ts
+suite ticket sources apps/api/src/services/reportGenerationService.ts
+suite ticket sources apps/api/src/services/reportScope.ts
+
+# ── topology ──
+suite topology tests apps/api/src/__tests__/integration/topology[!a-z0-9]*
+suite topology tests apps/api/src/services/topology/bmc.integration.test.ts
+suite topology sources apps/api/src/services/topology*
+suite topology sources apps/api/src/routes/topology*
+suite topology sources apps/api/src/jobs/topology*
+# import evidence: owned by another suite and imported by a test here
+suite topology sources apps/api/src/routes/agents/topologyAdjacency.ts
+suite topology sources apps/api/src/routes/agents/unifiTelemetry.ts
+suite topology sources apps/api/src/routes/ai.ts
+suite topology sources apps/api/src/routes/alerts.ts
+suite topology sources apps/api/src/routes/alerts/helpers.ts
+suite topology sources apps/api/src/routes/devices.ts
+suite topology sources apps/api/src/routes/devices/core.ts
+suite topology sources apps/api/src/routes/devices/moveOrg.ts
+suite topology sources apps/api/src/routes/orgs.ts
+suite topology sources apps/api/src/routes/reports.ts
+suite topology sources apps/api/src/routes/tickets/siteScope.ts
+suite topology sources apps/api/src/services/aiAgent.ts
+suite topology sources apps/api/src/services/aiBudgetReservations.ts
+suite topology sources apps/api/src/services/aiCostTracker.ts
+suite topology sources apps/api/src/services/aiModels/pricing.ts
+suite topology sources apps/api/src/services/aiModels/sessionModel.ts
+suite topology sources apps/api/src/services/aiTools.ts
+suite topology sources apps/api/src/services/aiToolsAlerts.ts
+suite topology sources apps/api/src/services/aiToolsFleet.ts
+suite topology sources apps/api/src/services/deviceDeletion.ts
+suite topology sources apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts
+suite topology sources apps/api/src/services/metricsRegistry.ts
+suite topology sources apps/api/src/services/orgMerge.ts
+suite topology sources apps/api/src/services/orgMergeRegistry.ts
+suite topology sources apps/api/src/services/partnerTrust.commands.ts
+suite topology sources apps/api/src/services/reportGenerationService.ts
+
+# ── wisp ──
+suite wisp tests apps/api/src/__tests__/integration/wisp[!a-z0-9]*
+suite wisp sources apps/api/src/services/wisp*
+suite wisp sources apps/api/src/routes/wisp*
+suite wisp sources apps/api/src/jobs/wisp*
+# import evidence: owned by another suite and imported by a test here
+suite wisp sources apps/api/src/services/aiAgentSdk.ts
+suite wisp sources apps/api/src/services/aiAgents/agentAuthContext.ts
+suite wisp sources apps/api/src/services/aiAgents/runIntentsForCaller.ts
+suite wisp sources apps/api/src/services/aiAgents/runService.ts
+suite wisp sources apps/api/src/services/aiAgents/troubleshootProfile.ts
+suite wisp sources apps/api/src/services/aiGuardrails.ts
+suite wisp sources apps/api/src/services/aiTools.ts
+suite wisp sources apps/api/src/services/aiToolsWisp.ts
+suite wisp sources apps/api/src/services/orgMerge.ts

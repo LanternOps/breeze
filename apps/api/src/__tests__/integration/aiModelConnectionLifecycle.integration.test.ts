@@ -3,9 +3,10 @@
  * (replaces W03's aiProviderAuthority.integration.test.ts; its still-relevant
  * cases are ported here). The key probe and the discovery queue are stubbed;
  * everything else is real.
- *  - connect moves every platform reference except patch_test onto the key,
- *    keeps options, rows and explicit choices, and disables the platform
- *    offerings left routing nothing;
+ *  - connect moves every platform reference onto the key, keeps options, rows
+ *    and explicit choices, and disables the platform offerings left routing
+ *    nothing (patch_test has no partner row since #9496: it runs on the
+ *    partnerless platform default whatever the partner connects);
  *  - rotate is in place by id; assignments do not move;
  *  - a connection id of another partner is refused and writes nothing;
  *  - disconnect moves only that connection's references back to the platform
@@ -108,7 +109,7 @@ afterEach(() => {
 });
 
 describe.skipIf(!RUN)('Anthropic connection lifecycle (W08)', () => {
-  it('connect moves platform references except patch_test onto the key; rotate is in place', async () => {
+  it('connect moves every platform reference onto the key; rotate is in place', async () => {
     const { partnerId, userId } = await bootstrappedPartner();
     const before = await partnerRows(partnerId);
     const platformOffering = before.find((r) => r.surface === 'chat')!.defaultOfferingId;
@@ -117,13 +118,11 @@ describe.skipIf(!RUN)('Anthropic connection lifecycle (W08)', () => {
     expect(configVersion).toBe(1);
     const after = await partnerRows(partnerId);
     expect(after.map((r) => r.surface).sort()).toEqual(before.map((r) => r.surface).sort());
-    for (const r of after) {
-      const o = await offering(r.defaultOfferingId);
-      if (r.surface === 'patch_test') expect(o!.connectionId).toBeNull();
-      else expect(o!.connectionId).toBe(connectionId);
-    }
-    // The platform offering still serves patch_test, so it stays enabled.
-    expect((await offering(platformOffering))!.enabled).toBe(true);
+    expect(after.map((r) => r.surface)).not.toContain('patch_test');
+    for (const r of after) expect((await offering(r.defaultOfferingId))!.connectionId).toBe(connectionId);
+    // Nothing routes to the platform offering any more, so it is not left enabled
+    // (an inert patch_test row used to pin it, #9496).
+    expect((await offering(platformOffering))!.enabled).toBe(false);
 
     const rotated = await rotateAnthropicKey({ partnerId, connectionId, apiKey: 'sk-ant-test-2222222222', userId });
     expect(rotated).toEqual({ last4: '2222', configVersion: 2 });

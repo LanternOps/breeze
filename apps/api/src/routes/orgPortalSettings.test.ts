@@ -100,7 +100,9 @@ vi.mock('../db/schema', () => ({
     supportPhone: 'supportPhone',
     welcomeMessage: 'welcomeMessage',
     footerText: 'footerText',
+    logoUrl: 'logoUrl',
     primaryColor: 'primaryColor',
+    secondaryColor: 'secondaryColor',
     customCss: 'customCss',
     updatedAt: 'updatedAt'
   },
@@ -144,11 +146,13 @@ const FULL_ROW = {
   supportPhone: null,
   welcomeMessage: 'Welcome',
   footerText: null,
+  logoUrl: 'https://x/logo.png',
   primaryColor: '#c2410c',
+  secondaryColor: '#0b1b2d',
   customCss: 'body{}',
   // Read-only columns that must never leak into the response payload:
   customDomain: 'portal.customer.example',
-  logoUrl: 'https://x/logo.png'
+  faviconUrl: 'https://x/favicon.ico'
 };
 
 const DEFAULT_AUTH = {
@@ -175,11 +179,11 @@ function resetAuth(overrides: Partial<typeof DEFAULT_AUTH> = {}) {
 describe('GET /organizations/:id/portal-settings', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
-  it('returns the managed subset when a row exists (including customCss, never visual branding columns)', async () => {
+  it('returns the managed subset when a row exists (never customDomain or favicon)', async () => {
     dbSelectResult
       .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }]) // org existence check
       .mockResolvedValueOnce([FULL_ROW])       // portal_branding row
-      .mockResolvedValueOnce([{ invoiceFooter: 'Partner footer', settings: { branding: { primaryColor: '#0ea5e9' } } }]); // partner defaults
+      .mockResolvedValueOnce([{ invoiceFooter: 'Partner footer', settings: { branding: { logoUrl: 'https://x/partner.png', primaryColor: '#0ea5e9', secondaryColor: '#123456' } } }]); // partner defaults
     const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -209,13 +213,17 @@ describe('GET /organizations/:id/portal-settings', () => {
       supportPhone: null,
       welcomeMessage: 'Welcome',
       footerText: null,
+      logoUrl: 'https://x/logo.png',
       primaryColor: '#c2410c',
+      secondaryColor: '#0b1b2d',
       customCss: 'body{}',
       partnerInvoiceFooter: 'Partner footer',
-      partnerPrimaryColor: '#0ea5e9'
+      partnerLogoUrl: 'https://x/partner.png',
+      partnerPrimaryColor: '#0ea5e9',
+      partnerSecondaryColor: '#123456'
     });
     expect(JSON.stringify(body)).not.toContain('customDomain');
-    expect(JSON.stringify(body)).not.toContain('logo.png');
+    expect(JSON.stringify(body)).not.toContain('favicon');
   });
 
   it('returns schema defaults when no row exists', async () => {
@@ -258,10 +266,14 @@ describe('GET /organizations/:id/portal-settings', () => {
       supportPhone: null,
       welcomeMessage: null,
       footerText: null,
+      logoUrl: null,
       primaryColor: null,
+      secondaryColor: null,
       customCss: null,
       partnerInvoiceFooter: null,
-      partnerPrimaryColor: null
+      partnerLogoUrl: null,
+      partnerPrimaryColor: null,
+      partnerSecondaryColor: null
     });
   });
 
@@ -292,6 +304,29 @@ describe('GET /organizations/:id/portal-settings', () => {
     const data = (await res.json()).data;
     expect(data.primaryColor).toBeNull();
     expect(data.partnerPrimaryColor).toBe('#7c3aed');
+  });
+
+  // #9673 (settings rule 4): the same inherited read for the logo + secondary colour.
+  it("reports the partner's Branding logo and secondary colour as the inherited values", async () => {
+    dbSelectResult
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ ...FULL_ROW, logoUrl: null, secondaryColor: null }])
+      .mockResolvedValueOnce([{ invoiceFooter: null, settings: { branding: { logoUrl: 'https://x/partner.png', secondaryColor: '#7c3aed' } } }]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
+    const data = (await res.json()).data;
+    expect(data.logoUrl).toBeNull();
+    expect(data.secondaryColor).toBeNull();
+    expect(data.partnerLogoUrl).toBe('https://x/partner.png');
+    expect(data.partnerSecondaryColor).toBe('#7c3aed');
+  });
+
+  it('reports no inherited logo when the partner value is one the renderers refuse', async () => {
+    dbSelectResult
+      .mockResolvedValueOnce([{ id: ORG_ID, partnerId: 'p-1' }])
+      .mockResolvedValueOnce([FULL_ROW])
+      .mockResolvedValueOnce([{ invoiceFooter: null, settings: { branding: { logoUrl: 'http://insecure.example.com/l.png' } } }]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-settings`);
+    expect((await res.json()).data.partnerLogoUrl).toBeNull();
   });
 
   it('reports no inherited colour when the partner value is not a hex colour (renderers ignore it too)', async () => {
@@ -551,6 +586,70 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     const res = await patch({ primaryColor: null });
     expect(res.status).toBe(200);
     expect((await res.json()).data.primaryColor).toBeNull();
+  });
+
+  it('persists the org logo and secondary colour overrides (#9673)', async () => {
+    const logoUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, logoUrl, secondaryColor: '#0f766e' }]);
+    const res = await patch({ logoUrl, secondaryColor: '#0f766e' });
+    expect(res.status).toBe(200);
+    const data = (await res.json()).data;
+    expect(data.logoUrl).toBe(logoUrl);
+    expect(data.secondaryColor).toBe('#0f766e');
+
+    const { db } = await import('../db');
+    const conflictArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.calls[0]?.[0];
+    expect(conflictArg.set.logoUrl).toBe(logoUrl);
+    expect(conflictArg.set.secondaryColor).toBe('#0f766e');
+  });
+
+  it('a PATCH without a logo leaves the stored logo untouched (#9673)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([FULL_ROW]);
+    await patch({ customCss: null });
+
+    const { db } = await import('../db');
+    const conflictArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.calls[0]?.[0];
+    expect('logoUrl' in conflictArg.set).toBe(false);
+    expect('secondaryColor' in conflictArg.set).toBe(false);
+  });
+
+  it('accepts null to clear the logo and secondary colour back to the partner values (#9673)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, logoUrl: null, secondaryColor: null }]);
+    const res = await patch({ logoUrl: null, secondaryColor: null });
+    expect(res.status).toBe(200);
+    const data = (await res.json()).data;
+    expect(data.logoUrl).toBeNull();
+    expect(data.secondaryColor).toBeNull();
+  });
+
+  it('400 on a logoUrl a customer browser must not load, with no write (#9673)', async () => {
+    const res = await patch({ logoUrl: 'javascript:alert(1)' });
+    expect(res.status).toBe(400);
+    const { db } = await import('../db');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('never writes the inherited partner values (#9673)', async () => {
+    for (const body of [{ partnerLogoUrl: 'https://x/l.png' }, { partnerSecondaryColor: '#000000' }]) {
+      expect((await patch(body)).status).toBe(400);
+    }
+    const { db } = await import('../db');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('the audit record names the changed fields, never the logo itself (#9673)', async () => {
+    const logoUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, logoUrl }]);
+    await patch({ logoUrl });
+    const audit = auditSpy.mock.calls.at(-1)?.[1] as { details: { changedFields: string[] } };
+    expect(audit.details.changedFields).toEqual(['logoUrl']);
+    expect(JSON.stringify(audit)).not.toContain('iVBORw0KGgo');
   });
 
   it('400 on a primaryColor that is not a hex colour, with no write (#9962)', async () => {

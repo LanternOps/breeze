@@ -155,12 +155,14 @@ for (const [label, detector, required, result, passes] of [
       encoding: 'utf8',
       env: {
         ...process.env, ...passingResults, IS_PR: 'true',
-        // These three non-`_RESULT` classifier outputs are not covered by
+        // These non-`_RESULT` classifier outputs are not covered by
         // `passingResults` (auto-discovered only from `*_RESULT:` env lines),
         // but ci-success's fail-closed gates require them to be exactly
         // 'true'/'false' or the whole check goes red regardless of the
         // mobile-specific fixture below.
         AGENT_CHANGED: 'true',
+        AGENT_CODE_CHANGED: 'true',
+        PATH_READERS_CHANGED: 'true',
         APP_CHANGED: 'true',
         // Every per-area flag true (same fail-closed tri-state as AGENT_CHANGED).
         API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',

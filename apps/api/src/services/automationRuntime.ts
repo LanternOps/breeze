@@ -72,11 +72,11 @@ import {
 import { notHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 // scriptCancellation is imported LAZILY (see cancelDispatchIfRunCancelled) for
-// the same reason softwareDeployment is below: it pulls the
-// agentWs → commandQueue → configurationPolicy chain in at module load.
+// the same reason softwareDeployment is below: it pulls the command-queue /
+// relay-facade import graph in at module load.
 // softwareDeployment and softwareCurrency are imported lazily inside
-// executeDeploySoftwareActions to avoid pulling the agentWs→configurationPolicy
-// import chain into partial-mock test suites at module-load time.
+// executeDeploySoftwareActions to avoid pulling the command-queue / relay-facade
+// import graph into partial-mock test suites at module-load time.
 
 const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 /** What a runner reports back to its caller (#3525 W05 added `cancelled`). */
@@ -482,10 +482,18 @@ const QUEUED_OFFLINE_MESSAGE = 'Queued — device offline';
  */
 const QUEUED_UNDELIVERED_MESSAGE = 'Queued — delivery to the agent failed; will retry on its next check-in';
 
+/**
+ * #4142 — the relay could not confirm delivery ('indeterminate'). The command
+ * may already be running and is NOT retried (the claim is kept), so neither
+ * "device offline" nor "will retry" is true.
+ */
+const QUEUED_UNCONFIRMED_MESSAGE = 'Queued — delivery to the agent is unconfirmed; the step completes when the agent reports, or times out';
+
 function queuedMessageFor(deliveryOutcome: string | undefined): string {
   // `undefined` is treated as the offline case: it is what the pre-W4 result
   // shape carried, and 'no_agent' is overwhelmingly the reason a dispatch is
   // undelivered.
+  if (deliveryOutcome === 'indeterminate') return QUEUED_UNCONFIRMED_MESSAGE;
   return deliveryOutcome === undefined || deliveryOutcome === 'no_agent'
     ? QUEUED_OFFLINE_MESSAGE
     : QUEUED_UNDELIVERED_MESSAGE;
@@ -1658,6 +1666,11 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   max_concurrent_assessment_runs: false,
   assessment_rate: false,
   assessment_requires_grant: false,
+  // Wisp delegation W1 (#11084): device_troubleshooting volume guards and its
+  // grant precondition. Unreachable — automations never admit that profile.
+  max_concurrent_troubleshoot_runs: false,
+  troubleshoot_rate: false,
+  troubleshoot_requires_grant: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation
@@ -2121,8 +2134,10 @@ async function executeCreateAlertAction(
   );
   const message = interpolateAlertTemplate(action.alertMessage, templateContext);
 
-  // Tool Catalog W06 (#5221): the row + event writer is shared with the flow
-  // `create_alert` built-in (services/alertCreation.ts), moved verbatim.
+  // Tool Catalog W06 (#5221): the row writer is shared with the flow
+  // `create_alert` built-in (services/alertCreation.ts). It stages
+  // `alert.triggered`, which the outbox publishes after this action's
+  // transaction commits (#11348).
   const createdAlert = await createAutomationStyleAlert({
     orgId: context.device.orgId,
     deviceId: context.device.id,
@@ -2826,8 +2841,8 @@ export async function executeDeploySoftwareActions(args: {
   let failed = false;
   if (deployActions.length === 0) return { logs, deployedDeviceIds, failedDeviceIds, replayed, failed };
 
-  // Lazy imports — avoid pulling the agentWs→configurationPolicy chain into
-  // partial-mock test suites at module-load time.
+  // Lazy imports — avoid pulling the command-queue / relay-facade import graph
+  // into partial-mock test suites at module-load time.
   const { createSoftwareDeployment } = await import('./softwareDeployment');
   const {
     isDeviceSoftwareCurrent,

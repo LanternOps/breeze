@@ -90,6 +90,10 @@ vi.mock('../../services/aiRemoteToolsPolicy', () => ({
 // seam and the shared run-status resolver (with its cancel-and-fail
 // transaction) all run for real against the mocked db above.
 
+vi.mock('./commandOrgScope', () => ({
+  deviceCommandsInCurrentOrg: vi.fn(async () => ({ type: 'commandOrgScope' })),
+}));
+
 vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol.for('site-access-denied'),
   getDeviceWithOrgAndSiteCheck: getDeviceWithOrgAndSiteCheckMock,
@@ -435,6 +439,19 @@ describe('POST /devices/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel',
     expect(updateMock.mock.calls[0]![0]).toMatchObject({ id: 'runs.id' });
     expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'device.filesystem.system_cleanup.cancel',
+      details: { cleanupRunId: RUN_ID, commandId: COMMAND_ID, commandCancelled: true },
+    }));
+  });
+
+  it('records that the command was NOT cancelled when the device had already claimed it (#10161 review)', async () => {
+    selectMock.mockReturnValueOnce(selectReturning([{ id: RUN_ID, deviceId: DEVICE_ID, orgId: 'org-1', kind: 'system', status: 'running', commandId: COMMAND_ID }]));
+    updateReturning([{ id: RUN_ID, commandId: COMMAND_ID }], []); // the command CAS (status = 'pending') matched nothing
+
+    const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}/cancel`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: { cleanupRunId: RUN_ID, commandId: COMMAND_ID, commandCancelled: false },
     }));
   });
 

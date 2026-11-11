@@ -190,6 +190,14 @@ vi.mock('../wisp/grantAuthority', async (importOriginal) => ({
 const dispatchSpecialistRequests = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../wisp/specialistDispatch', () => ({ dispatchSpecialistRequests }));
 
+// #10402 — the first-look post (its own rules: firstLook.test.ts + wispFirstLook.integration.test.ts).
+const postFirstLookIfDone = vi.hoisted(() => vi.fn<(grantId: string) => Promise<unknown>>(async () => ({ posted: false, reason: 'in_progress' })));
+vi.mock('../wisp/firstLook', () => ({ postFirstLookIfDone }));
+
+// W07 (#11496) — a run check-in's result post (its own rules: wispCheckInRuns.integration.test.ts).
+const postCheckInRunResult = vi.hoisted(() => vi.fn<(runId: string) => Promise<unknown>>(async () => 'posted'));
+vi.mock('../wisp/checkInRuns', () => ({ postCheckInRunResult }));
+
 import { executeAgentRun, resolveRunProfileLimits, resolveRunProfileToolAllowlist } from './runLoop';
 import { assessmentToolAllowlist } from './assessmentProfile';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
@@ -222,7 +230,7 @@ function snapshot(effective: AiAgentPolicy): AiAgentPolicySnapshot {
   };
 }
 
-function seedRows(run: { profile: 'assessment' | 'triage'; grant: boolean }) {
+function seedRows(run: { profile: 'assessment' | 'triage'; grant: boolean; reason?: Record<string, unknown> }) {
   const effective = policy();
   dbMockState.rowQueues.ai_agent_runs = [[{
     id: RUN_ID, agentId: AGENT_ID, orgId: ORG_ID, deviceId: null, alertId: null,
@@ -230,7 +238,7 @@ function seedRows(run: { profile: 'assessment' | 'triage'; grant: boolean }) {
     anomalyIncidentId: null, status: 'queued', modeAtStart: 'shadow',
     triggerKind: run.profile === 'triage' ? 'ticket' : 'schedule',
     policySnapshot: snapshot(effective), profile: run.profile, correlationGroupId: null, scheduleId: null,
-    triggerRef: run.grant ? { wisp: { grantId: GRANT_ID, grantRevisionId: REVISION_ID, reason: { kind: 'tick' }, watermark: null } } : {},
+    triggerRef: run.grant ? { wisp: { grantId: GRANT_ID, grantRevisionId: REVISION_ID, reason: run.reason ?? { kind: 'tick' }, watermark: null } } : {},
     taskId: null, taskStepKey: null, taskAttemptOrdinal: null,
     grantId: run.grant ? GRANT_ID : null,
     grantRevisionId: run.grant ? REVISION_ID : null,
@@ -256,8 +264,8 @@ function assessmentCtx(): AssessmentRunContext {
   return {
     grantId: GRANT_ID, grantRevisionId: REVISION_ID, grantorUserId: GRANTOR, threadId: THREAD_ID,
     threadSummary: 'Wisp picture', openConcerns: [], changedSince: null,
-    digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [] },
-    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false,
+    digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [], anomalies: [] },
+    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false, noEarlierAssessment: false,
   };
 }
 
@@ -491,6 +499,60 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     seedRows({ profile: 'triage', grant: false });
     await executeAgentRun(RUN_ID);
     expect(dispatchSpecialistRequests).not.toHaveBeenCalled();
+  });
+
+  it('#10402: a finished assessment asks for the first-look post, after its final status is written', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    let statusAtPost: string | undefined;
+    postFirstLookIfDone.mockImplementationOnce(async () => { statusAtPost = finalTransition()?.to; return { posted: true }; });
+    await executeAgentRun(RUN_ID);
+    expect(postFirstLookIfDone).toHaveBeenCalledTimes(1);
+    expect(postFirstLookIfDone).toHaveBeenCalledWith(GRANT_ID);
+    expect(statusAtPost).toBe('completed');
+  });
+
+  it('#10402: a failing first-look post never changes the run outcome (the reconciler re-sweeps it)', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    seedRows({ profile: 'assessment', grant: true });
+    postFirstLookIfDone.mockRejectedValueOnce(new Error('notify down'));
+    await expect(executeAgentRun(RUN_ID)).resolves.not.toThrow();
+    expect(finalTransition()?.to).toBe('completed');
+    consoleError.mockRestore();
+  });
+
+  const CHECK_IN_REASON = { kind: 'check_in', checkInId: '00000000-0000-4000-8000-0000000000c7', instruction: 'Check WS-01.', evidence: null };
+
+  it('W07: a check-in assessment posts its result once, after its final status is written', async () => {
+    seedRows({ profile: 'assessment', grant: true, reason: CHECK_IN_REASON });
+    let statusAtPost: string | undefined;
+    postCheckInRunResult.mockImplementationOnce(async () => { statusAtPost = finalTransition()?.to; return 'posted'; });
+    await executeAgentRun(RUN_ID);
+    expect(postCheckInRunResult).toHaveBeenCalledTimes(1);
+    expect(postCheckInRunResult).toHaveBeenCalledWith(RUN_ID);
+    expect(statusAtPost).toBe('completed');
+  });
+
+  it('W07: a failing check-in post never changes the run outcome (the wake tick re-sweeps it)', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    seedRows({ profile: 'assessment', grant: true, reason: CHECK_IN_REASON });
+    postCheckInRunResult.mockRejectedValueOnce(new Error('notify down'));
+    await expect(executeAgentRun(RUN_ID)).resolves.not.toThrow();
+    expect(finalTransition()?.to).toBe('completed');
+    consoleError.mockRestore();
+  });
+
+  it('W07: an assessment for any other reason, or a non-assessment run, never asks for the check-in post', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    await executeAgentRun(RUN_ID);
+    seedRows({ profile: 'triage', grant: false });
+    await executeAgentRun(RUN_ID);
+    expect(postCheckInRunResult).not.toHaveBeenCalled();
+  });
+
+  it('#10402: a non-assessment run never asks for the first-look post', async () => {
+    seedRows({ profile: 'triage', grant: false });
+    await executeAgentRun(RUN_ID);
+    expect(postFirstLookIfDone).not.toHaveBeenCalled();
   });
 
   it('a non-assessment run cannot record an assessment outcome', async () => {

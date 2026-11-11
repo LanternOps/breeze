@@ -95,23 +95,35 @@ describe('pendingRegistration service', () => {
     expect(typeof stored?.rawToken).toBe('string');
   });
 
-  it('retains selection through server-side storage and consumption without browser storage', async () => {
-    const purchaseSelection = { catalogVersion: 'launch-2026-10' as const, capacity: 500, billingPeriod: 'annual' as const };
-    const { tokenHash } = await createPendingRegistration({ ...baseRecord, purchaseSelection });
-    expect((await peekPendingRegistration(tokenHash))?.purchaseSelection).toEqual(purchaseSelection);
-    expect((await consumePendingRegistration(tokenHash))?.purchaseSelection).toEqual(purchaseSelection);
-  });
-
-  it('stores the fresh-business default when a caller omits intent and preserves it on consumption', async () => {
-    const { tokenHash } = await createPendingRegistration(baseRecord);
+  it('drops a smuggled legacy launch tuple at runtime', async () => {
     const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' };
-    expect((await peekPendingRegistration(tokenHash))?.purchaseSelection).toEqual(purchaseSelection);
-    expect((await consumePendingRegistration(tokenHash))?.purchaseSelection).toEqual(purchaseSelection);
+    await createPendingRegistration({ ...baseRecord, purchaseSelection } as never);
+    const stored = JSON.parse([...store.values()][0]!);
+    expect(Object.hasOwn(stored, 'purchaseSelection')).toBe(false);
   });
 
-  it.each([null, {}, { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly', priceId: 'price_untrusted' }])(
-    'rejects invalid service input without parking or superseding a pending signup: %j', async (purchaseSelection) => {
-      await expect(createPendingRegistration({ ...baseRecord, purchaseSelection: purchaseSelection as never })).rejects.toThrow();
+  it('retains the signup intent through storage and consumption, and never writes a purchaseSelection key', async () => {
+    const signupIntent = { intent: 'cloud' as const, offer: 'founding' };
+    const { tokenHash } = await createPendingRegistration({ ...baseRecord, signupIntent });
+    const stored = JSON.parse([...store.values()][0]!);
+    expect(stored.signupIntent).toEqual(signupIntent);
+    // Rollback safety (plan 3.7): an older deploy reading this record must not see a launch tuple.
+    expect(Object.hasOwn(stored, 'purchaseSelection')).toBe(false);
+    expect((await peekPendingRegistration(tokenHash))?.signupIntent).toEqual(signupIntent);
+    expect((await consumePendingRegistration(tokenHash))?.signupIntent).toEqual(signupIntent);
+  });
+
+  it('stores the cloud default when a caller omits intent', async () => {
+    const { tokenHash } = await createPendingRegistration(baseRecord);
+    const stored = JSON.parse([...store.values()][0]!);
+    expect(stored.signupIntent).toEqual({ intent: 'cloud' });
+    expect(Object.hasOwn(stored, 'purchaseSelection')).toBe(false);
+    expect((await consumePendingRegistration(tokenHash))?.signupIntent).toEqual({ intent: 'cloud' });
+  });
+
+  it.each([null, {}, { intent: 'hosting' }, { intent: 'cloud', priceId: 'price_untrusted' }])(
+    'rejects invalid signup intent without parking or superseding a pending signup: %j', async (signupIntent) => {
+      await expect(createPendingRegistration({ ...baseRecord, signupIntent: signupIntent as never })).rejects.toThrow();
       expect(fakeRedis.eval).not.toHaveBeenCalled();
       expect(store.size).toBe(0);
     },

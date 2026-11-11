@@ -3,13 +3,21 @@ import type { IpClass } from '../db/schema/orgs';
 
 const {
   readTrust, setTrustState, getSettledCardCharge, getSignupRiskHold,
-  hasFraudulentRefundMatch, select, execute, runOutside, withSystem, sendEvidenceCard,
+  hasFraudulentRefundMatch, closeOpenCheckouts, createAuditLog, getBillingClient,
+  partnerTrustMode, sendOpsAlert, captureException,
+  select, execute, runOutside, withSystem, sendEvidenceCard,
 } = vi.hoisted(() => ({
+  partnerTrustMode: vi.fn(() => 'enforce'),
+  sendOpsAlert: vi.fn(),
+  captureException: vi.fn(),
   readTrust: vi.fn(),
   setTrustState: vi.fn(),
   getSettledCardCharge: vi.fn(),
   getSignupRiskHold: vi.fn(),
   hasFraudulentRefundMatch: vi.fn(),
+  closeOpenCheckouts: vi.fn(),
+  createAuditLog: vi.fn(),
+  getBillingClient: vi.fn(),
   select: vi.fn(),
   execute: vi.fn(),
   runOutside: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -30,12 +38,16 @@ vi.mock('../db/schema', () => ({
 }));
 vi.mock('./partnerTrust.repo', () => ({ readTrust }));
 vi.mock('./partnerTrust', () => ({ setTrustState }));
-vi.mock('./breezeBillingClient', () => ({
-  getBreezeBillingClient: () => ({
-    getSettledCardCharge, getSignupRiskHold, hasFraudulentRefundMatch,
-  }),
-}));
+vi.mock('./breezeBillingClient', () => ({ getBreezeBillingClient: getBillingClient }));
 vi.mock('./partnerTrustEvidenceCard', () => ({ sendEvidenceCard }));
+vi.mock('./auditService', () => ({ createAuditLogAsync: createAuditLog }));
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
+vi.mock('./opsAlerts', () => ({ sendOpsAlert }));
+vi.mock('./sentry', () => ({ captureException }));
+
+const billingClient = () => ({
+  getSettledCardCharge, getSignupRiskHold, hasFraudulentRefundMatch, closeOpenCheckouts,
+});
 
 import {
   evaluateHardDenies, gatherPromotionFacts, promotionDecision, restrictOnHardDeny,
@@ -65,12 +77,40 @@ const hardDenyRow = (overrides: Record<string, unknown> = {}) => ({
   prefix_length: null,
   corroboration_type: null,
   corroboration_value: null,
+  recidivist_partner_id: null,
+  card_testing_signal_id: null,
+  card_testing_score: null,
+  card_testing_evidence: null,
   ...overrides,
 });
+
+/** Flattens a drizzle `sql` template into its literal text plus bound params. */
+function renderSql(query: unknown): { text: string; params: unknown[] } {
+  const params: unknown[] = [];
+  const walk = (node: unknown): string => {
+    if (node === null || node === undefined) return '';
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) return node.map(walk).join('');
+    if (typeof node === 'object') {
+      const n = node as { queryChunks?: unknown[]; value?: unknown };
+      if (Array.isArray(n.queryChunks)) return n.queryChunks.map(walk).join('');
+      if ('value' in n) {
+        if (Array.isArray(n.value)) return n.value.map(walk).join('');
+        params.push(n.value);
+        return '$';
+      }
+    }
+    params.push(node);
+    return '$';
+  };
+  return { text: walk(query), params };
+}
 
 describe('evaluateHardDenies', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.ABUSE_SIGNAL_OVERRIDES;
+    getBillingClient.mockImplementation(billingClient);
     execute.mockResolvedValue([hardDenyRow()]);
     hasFraudulentRefundMatch.mockResolvedValue(false);
   });
@@ -137,13 +177,90 @@ describe('evaluateHardDenies', () => {
     });
   });
 
+  it('restricts on an open card_testing signal at alert score and carries its evidence', async () => {
+    execute.mockResolvedValue([hardDenyRow({
+      card_testing_signal_id: 'sig-1',
+      card_testing_score: 100,
+      card_testing_evidence: {
+        partnerName: 'Example MSP',
+        distinctPaymentMethods: 17,
+        failedAttempts: 11,
+        spanMinutes: 42.5,
+        paymentMethodsFirstSeenAt: '2026-11-07T18:00:00.000Z',
+        paymentMethodsLastSeenAt: '2026-11-07T18:42:30.000Z',
+        identitySyncedAt: '2026-11-07T18:45:00.000Z',
+      },
+    })]);
+
+    await expect(evaluateHardDenies('p1')).resolves.toEqual({
+      restrict: true,
+      reason: 'auto:card_testing',
+      evidence: {
+        matchedAxes: ['billing.card_testing'],
+        signalId: 'sig-1',
+        score: 100,
+        alertScore: 70,
+        distinctPaymentMethods: 17,
+        failedAttempts: 11,
+        spanMinutes: 42.5,
+        paymentMethodsFirstSeenAt: '2026-11-07T18:00:00.000Z',
+        paymentMethodsLastSeenAt: '2026-11-07T18:42:30.000Z',
+      },
+    });
+    // A local, independently sufficient signal: no remote billing lookup.
+    expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
+  });
+
+  it('gates card_testing on the configured alert score, not a separate constant', async () => {
+    process.env.ABUSE_SIGNAL_OVERRIDES = JSON.stringify({ 'severity.alert_score': 85 });
+
+    await evaluateHardDenies('p1');
+
+    const { text, params } = renderSql(execute.mock.calls[0]![0]);
+    expect(text).toContain("signal_key = 'billing.card_testing'");
+    expect(text).toMatch(/pas\.score >= \$/);
+    expect(params).toContain(85);
+    delete process.env.ABUSE_SIGNAL_OVERRIDES;
+  });
+
+  it('restricts on a remote-tool instance match with a suspended-for-abuse partner', async () => {
+    execute.mockResolvedValue([hardDenyRow({ recidivist_partner_id: 'suspended-9' })]);
+
+    await expect(evaluateHardDenies('p1')).resolves.toEqual({
+      restrict: true,
+      reason: 'auto:recidivist_endpoint',
+      evidence: {
+        matchedAxes: ['remote_tool_guid', 'suspended_for_abuse'],
+        matchedSuspendedPartnerId: 'suspended-9',
+      },
+    });
+    expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
+  });
+
+  it('only matches the recidivist axis on the stable remote-tool instance id behind an open signal', async () => {
+    await evaluateHardDenies('p1');
+
+    const { text } = renderSql(execute.mock.calls[0]![0]);
+    expect(text).toContain("sf.kind = 'remote_tool_guid'");
+    expect(text).toContain("tf.kind = 'remote_tool_guid'");
+    expect(text).toContain("signal_key = 'rmm.recidivist_endpoint'");
+    // Bounded to recent abuse suspensions, like the network axis.
+    expect(text).toMatch(/FROM recent_suspended_abuse s\s+JOIN abuse_endpoint_fingerprints sf/);
+  });
+
   it.each(['trusted', 'restricted'] as const)('never restricts an already-%s partner', async (trustState) => {
     // In production the SQL target CTE's WHERE clause already excludes
     // non-probation partners, so this row would never come back at all. Set
     // it on the mocked row anyway (rather than an unconditional empty array
     // for both cases) to exercise evaluateHardDenies' own belt-and-suspenders
     // trust_state check independently of the SQL filter.
-    execute.mockResolvedValue([hardDenyRow({ trust_state: trustState })]);
+    execute.mockResolvedValue([hardDenyRow({
+      trust_state: trustState,
+      card_testing_signal_id: 'sig-1',
+      card_testing_score: 100,
+      card_testing_evidence: { distinctPaymentMethods: 17 },
+      recidivist_partner_id: 'suspended-9',
+    })]);
 
     await expect(evaluateHardDenies('p1')).resolves.toEqual({ restrict: false });
     expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
@@ -192,6 +309,9 @@ describe('promotionDecision', () => {
 describe('tryAutoPromote', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getBillingClient.mockImplementation(billingClient);
+    closeOpenCheckouts.mockResolvedValue({ status: 'closed', expiredCheckoutSessionIds: [], canceledSubscriptionIds: [] });
+    createAuditLog.mockResolvedValue(undefined);
     readTrust.mockResolvedValue({ trustState: 'probation', probationEnrollments: 0 });
     getSettledCardCharge.mockResolvedValue({
       chargeId: 'ch_1', settledAt: hoursAgo(24), paymentMethodType: 'card',
@@ -349,9 +469,177 @@ describe('tryAutoPromote', () => {
   });
 });
 
+describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', () => {
+  const cardTestingRow = () => hardDenyRow({
+    card_testing_signal_id: 'sig-1',
+    card_testing_score: 100,
+    card_testing_evidence: { distinctPaymentMethods: 17, failedAttempts: 11, spanMinutes: 42.5 },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.ABUSE_SIGNAL_OVERRIDES;
+    getBillingClient.mockImplementation(billingClient);
+    partnerTrustMode.mockReturnValue('enforce');
+    sendOpsAlert.mockResolvedValue(true);
+    hasFraudulentRefundMatch.mockResolvedValue(false);
+    setTrustState.mockResolvedValue(true);
+    sendEvidenceCard.mockResolvedValue(undefined);
+    createAuditLog.mockResolvedValue(undefined);
+    closeOpenCheckouts.mockResolvedValue({
+      status: 'closed',
+      expiredCheckoutSessionIds: ['cs_1', 'cs_2'],
+      canceledSubscriptionIds: ['sub_1'],
+    });
+  });
+
+  it('restricts, then expires open checkouts and records what was closed in an audit row', async () => {
+    execute.mockResolvedValue([cardTestingRow()]);
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
+
+    expect(setTrustState).toHaveBeenCalledWith(
+      'p1', 'restricted', 'auto:card_testing', null,
+      expect.objectContaining({ matchedAxes: ['billing.card_testing'], score: 100 }),
+      { expectedFrom: 'probation' },
+    );
+    expect(closeOpenCheckouts).toHaveBeenCalledWith({ partnerId: 'p1', reason: 'auto:card_testing' });
+    // The restriction lands before any billing call is made.
+    expect(setTrustState.mock.invocationCallOrder[0]!).toBeLessThan(closeOpenCheckouts.mock.invocationCallOrder[0]!);
+    expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: null,
+      actorType: 'system',
+      action: 'partner.trust.checkouts_closed',
+      resourceType: 'partner',
+      resourceId: 'p1',
+      result: 'success',
+      details: {
+        trigger: 'auto:card_testing',
+        status: 'closed',
+        expiredCheckoutSessionIds: ['cs_1', 'cs_2'],
+        canceledSubscriptionIds: ['sub_1'],
+      },
+    }));
+    expect(sendOpsAlert).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['tor signup', { signup_ip_class: 'tor' }, 'auto:tor_signup'],
+    ['card fingerprint match', { card_partner_id: 'suspended-1' }, 'auto:fraud_identity_match'],
+    ['corroborated network', {
+      network_partner_id: 'suspended-1', corroboration_type: 'email_domain', corroboration_value: 'example.com',
+    }, 'auto:corroborated_suspended_network'],
+    ['recidivist endpoint', { recidivist_partner_id: 'suspended-9' }, 'auto:recidivist_endpoint'],
+  ] as const)('closes checkouts on every auto-restrict reason (%s)', async (_name, overrides, reason) => {
+    execute.mockResolvedValue([hardDenyRow(overrides)]);
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
+    expect(closeOpenCheckouts).toHaveBeenCalledWith({ partnerId: 'p1', reason });
+  });
+
+  it('keeps the restriction and records the failure when the billing service cannot close checkouts', async () => {
+    execute.mockResolvedValue([cardTestingRow()]);
+    closeOpenCheckouts.mockResolvedValue({ status: 'failed', detail: 'Billing service returned 502' });
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
+
+    expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'partner.trust.checkouts_closed',
+      result: 'failure',
+      details: { trigger: 'auto:card_testing', status: 'failed', detail: 'Billing service returned 502' },
+    }));
+    // Evidence card still goes out after a billing failure.
+    expect(sendEvidenceCard).toHaveBeenCalledWith('p1', 'restricted');
+    // Nothing retries a failed close, so an operator is told to do it by hand.
+    expect(sendOpsAlert).toHaveBeenCalledWith(expect.objectContaining({
+      title: expect.stringContaining('checkouts not closed'),
+      body: expect.stringContaining('p1'),
+    }));
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('alerts an operator (without a Sentry event) when the billing endpoint is unavailable', async () => {
+    execute.mockResolvedValue([cardTestingRow()]);
+    closeOpenCheckouts.mockResolvedValue({ status: 'unavailable', detail: 'Billing service returned 404: Not Found' });
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
+
+    expect(sendOpsAlert).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('unavailable'),
+    }));
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the restriction when the ops alert throws', async () => {
+    execute.mockResolvedValue([cardTestingRow()]);
+    closeOpenCheckouts.mockResolvedValue({ status: 'failed', detail: 'timeout' });
+    sendOpsAlert.mockRejectedValue(new Error('webhook down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
+    expect(sendEvidenceCard).toHaveBeenCalledWith('p1', 'restricted');
+    warn.mockRestore();
+  });
+
+  it('restricts but never closes checkouts in shadow mode (the restriction is not enforced there)', async () => {
+    execute.mockResolvedValue([cardTestingRow()]);
+    partnerTrustMode.mockReturnValue('shadow');
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
+
+    expect(setTrustState).toHaveBeenCalledWith(
+      'p1', 'restricted', 'auto:card_testing', null, expect.anything(), { expectedFrom: 'probation' },
+    );
+    expect(getBillingClient).not.toHaveBeenCalled();
+    expect(closeOpenCheckouts).not.toHaveBeenCalled();
+    expect(createAuditLog).not.toHaveBeenCalled();
+    expect(sendEvidenceCard).toHaveBeenCalledWith('p1', 'restricted');
+  });
+
+  it('records a failure (and still reports the restriction) when billing is not configured', async () => {
+    execute.mockResolvedValue([cardTestingRow()]);
+    getBillingClient.mockImplementation(() => { throw new Error('BREEZE_BILLING_URL not configured.'); });
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
+
+    expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'partner.trust.checkouts_closed',
+      result: 'failure',
+      details: { trigger: 'auto:card_testing', status: 'failed', detail: 'BREEZE_BILLING_URL not configured.' },
+    }));
+  });
+
+  it('never touches billing when the restrict CAS loses (already moved out of probation)', async () => {
+    execute.mockResolvedValue([cardTestingRow()]);
+    setTrustState.mockResolvedValue(false);
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(false);
+    expect(closeOpenCheckouts).not.toHaveBeenCalled();
+    expect(createAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('never touches billing or trust state when nothing matches', async () => {
+    execute.mockResolvedValue([hardDenyRow()]);
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(false);
+    expect(setTrustState).not.toHaveBeenCalled();
+    expect(closeOpenCheckouts).not.toHaveBeenCalled();
+  });
+
+  it.each(['trusted', 'restricted'] as const)('never touches an already-%s partner', async (trustState) => {
+    execute.mockResolvedValue([{ ...cardTestingRow(), trust_state: trustState }]);
+
+    await expect(restrictOnHardDeny('p1')).resolves.toBe(false);
+    expect(setTrustState).not.toHaveBeenCalled();
+    expect(closeOpenCheckouts).not.toHaveBeenCalled();
+  });
+});
+
 describe('gatherPromotionFacts billing hold mapping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getBillingClient.mockImplementation(billingClient);
     getSettledCardCharge.mockResolvedValue(null);
     select.mockImplementation((fields: Record<string, unknown>) => {
       if ('createdAt' in fields) {

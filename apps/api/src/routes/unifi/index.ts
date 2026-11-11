@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { db, runOutsideDbContext } from '../../db';
@@ -11,13 +11,21 @@ import { buildMappingHostList } from '../../services/unifi/unifiMappingHosts';
 import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
 import { listControllerSitesForIntegration } from '../../services/unifi/unifiControllerSiteService';
 import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
+import { toUnifiTelemetryDevice } from './telemetryReadModel';
 import { enqueueUnifiSync } from '../../jobs/unifiWorker';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import { revokeUnifiCollectorDrift, revokeUnifiMappingDrift, snapshotUnifiCollectors, snapshotUnifiMappings } from '../../services/topology/unifiAuthority';
+import {
+  diffUnifiMappings,
+  resolveUnifiMappingTargets,
+  writeUnifiControllerAudits,
+  writeUnifiMappingAudits,
+  type UnifiMappingAuditMeta,
+} from '../../services/unifi/unifiMappingWrites';
 
-import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
-import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const unifiRoutes = new Hono();
+
+const MANUAL_MAPPING_AUDIT: UnifiMappingAuditMeta = { source: 'manual', sourceVerified: true, matchTier: null, matchKey: null };
 
 type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'partnerOrgAccess' | 'canAccessOrg'>;
 
@@ -217,36 +225,13 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
   const { mappings, hostIds } = c.req.valid('json');
-  // Resolve + authorize EVERY target site before any write. Doing this inline
-  // per-iteration would leave earlier mappings persisted when a later cross-org
-  // entry hits the 403, so the client sees a failure on a partially-applied batch.
-  const resolved: Array<{ m: (typeof mappings)[number]; orgId: string; siteId: string }> = [];
-  for (const m of mappings) {
-    const [site] = await db
-      .select({
-        id: sites.id,
-        orgId: sites.orgId,
-        partnerId: sql<string | null>`(SELECT o.partner_id FROM organizations o WHERE o.id = ${sites.orgId})`,
-      })
-      .from(sites)
-      .where(eq(sites.id, m.siteId))
-      .limit(1);
-    if (!site) return c.json({ success: false, message: `Unknown Breeze site: ${m.siteId}` }, 400);
-    if (!auth.canAccessOrg(site.orgId)) {
-      return c.json({ success: false, message: 'Access to target organization denied' }, 403);
-    }
-    // The site must belong to the connection's own partner. canAccessOrg is
-    // true for system scope, so without this a platform admin acting for one
-    // partner could map another partner's site.
-    if (site.partnerId !== conn.partnerId) {
-      return c.json({ success: false, message: 'Target site does not belong to this partner' }, 403);
-    }
-    // canAccessOrg is true for system scope: the holding org is never a target.
-    if (await isHoldingOrg(site.orgId)) {
-      return c.json({ success: false, message: PROTECTED_ORG_ERROR.error, code: PROTECTED_ORG_ERROR.code }, 409);
-    }
-    resolved.push({ m, orgId: site.orgId, siteId: site.id });
+  // Every target is authorized before any write (see resolveUnifiMappingTargets).
+  const targets = await resolveUnifiMappingTargets(auth, conn.partnerId, mappings);
+  if (!targets.ok) {
+    const { status, message, code } = targets.error;
+    return c.json({ success: false, message, ...(code ? { code } : {}) }, status);
   }
+  const resolved = mappings.map((m, i) => ({ m, ...targets.targets[i]! }));
   // M2 D1: a remapped or deleted controller site revokes the UniFi topology
   // sources its old mapping authorized (revokeUnifiMappingDrift below).
   const mappingsBefore = await snapshotUnifiMappings(conn.id);
@@ -311,6 +296,8 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
     }
   }
   await revokeUnifiMappingDrift(conn.id, mappingsBefore);
+  const mappingsAfter = await snapshotUnifiMappings(conn.id);
+  writeUnifiMappingAudits(c, conn.id, diffUnifiMappings(mappingsBefore, mappingsAfter), () => MANUAL_MAPPING_AUDIT);
   return c.json({ success: true });
 });
 
@@ -380,6 +367,7 @@ unifiRoutes.put('/collectors', partnerScopes, writePerm, requireMfa(), zValidato
   });
   // A reassigned collector (device/site/controller) revokes its old topology sources.
   await revokeUnifiCollectorDrift(conn.id, collectorsBefore);
+  writeUnifiControllerAudits(c, conn.id, collectorsBefore, await snapshotUnifiCollectors(conn.id), collector.id);
   return c.json({ success: true, collectorId: collector.id });
 });
 
@@ -420,6 +408,7 @@ unifiRoutes.put('/controllers', partnerScopes, writePerm, requireMfa(), zValidat
     createdBy: auth.user.id,
   });
   await revokeUnifiCollectorDrift(conn.id, collectorsBefore);
+  writeUnifiControllerAudits(c, conn.id, collectorsBefore, await snapshotUnifiCollectors(conn.id), collector.id);
   return c.json({ success: true, collectorId: collector.id });
 });
 
@@ -436,6 +425,8 @@ unifiRoutes.delete('/collectors/:hostId', partnerScopes, writePerm, requireMfa()
   const collectorsBefore = await snapshotUnifiCollectors(conn.id);
   await deleteCollector(db, conn.id, hostId);
   await revokeUnifiCollectorDrift(conn.id, collectorsBefore);
+  // A delete that matched nothing leaves the snapshots equal: no audit.
+  writeUnifiControllerAudits(c, conn.id, collectorsBefore, await snapshotUnifiCollectors(conn.id));
   return c.json({ success: true });
 });
 
@@ -457,9 +448,9 @@ unifiRoutes.get('/telemetry', partnerScopes, readPerm, async (c) => {
   // site outside their allowlist even within an org they can access. Unrestricted
   // (partner-wide) callers have canAccessSite undefined → no-op.
   if (auth.canAccessSite && !auth.canAccessSite(siteId)) return c.json({ error: 'Access to this site denied' }, 403);
-  const devicesOut = await db.select().from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.siteId, siteId));
-  const clientsOut = await db.select().from(unifiClients).where(eq(unifiClients.siteId, siteId));
-  return c.json({ devices: devicesOut, clients: clientsOut });
+  const devicesOut = await db.select().from(unifiDeviceTelemetry).where(and(eq(unifiDeviceTelemetry.siteId, siteId), eq(unifiDeviceTelemetry.orgId, site.orgId)));
+  const clientsOut = await db.select().from(unifiClients).where(and(eq(unifiClients.siteId, siteId), eq(unifiClients.orgId, site.orgId)));
+  return c.json({ devices: devicesOut.map(toUnifiTelemetryDevice), clients: clientsOut });
 });
 
 // POST /unifi/sync — manual sync trigger

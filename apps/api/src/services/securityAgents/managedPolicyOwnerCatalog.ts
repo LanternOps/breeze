@@ -8,6 +8,7 @@ import {
   getBuiltinPackage,
   installArgsCarryPlaceholders,
   type BuiltinPackageKey,
+  type BuiltinProvider,
 } from '../builtinDeploymentPackages';
 import { getVendor, listVendors, type VendorKey } from './securityAgentVendors';
 
@@ -19,8 +20,8 @@ import { getVendor, listVendors, type VendorKey } from './securityAgentVendors';
  */
 
 /**
- * One catalog row a vendor installs from. EDR vendors have exactly one (their
- * integration package, `builtinPackageKey` null). Tenant-variable vendors have
+ * One catalog row a vendor installs from. EDR vendors, framework ones included,
+ * have exactly one (their integration package, `builtinPackageKey` null). Tenant-variable vendors have
  * one per OS they support and the link selects (#6958 D1: a `software_versions`
  * row has one `is_latest` per catalog, so each OS is its own catalog row), and
  * the generator writes one rule per row.
@@ -85,7 +86,7 @@ export async function readOwnerCatalog(
   const enabledAgents = settings.agents.filter((agent) => agent.enabled);
   const providers = enabledAgents
     .map((agent) => getVendor(agent.vendor).integrationProvider)
-    .filter((provider): provider is 'huntress' | 'sentinelone' => provider !== null);
+    .filter((provider): provider is BuiltinProvider => provider !== null);
   const tenantVarAgents = enabledAgents.filter((agent) => {
     const vendor = getVendor(agent.vendor);
     return vendor.orgSource === 'tenant_var' && vendor.enableable;
@@ -137,15 +138,33 @@ export async function readOwnerCatalog(
 
   const needsBinary = Array.from(result.entries())
     .filter(([vendor]) => vendorRequiresUploadedBinary(vendor))
-    .map(([vendor, rows]) => [vendor, rows[0]!.catalogId] as const);
-  if (needsBinary.length > 0) {
-    const deployable = await readDeployableVersionCatalogIds(executor, needsBinary.map(([, catalogId]) => catalogId));
-    for (const [vendor, catalogId] of needsBinary) {
-      const version = deployable.get(catalogId);
-      if (version && versionIsDeployableFor(version, vendor)) uploadedBinaryVendors.add(vendor);
-    }
+    .map(([vendor, rows]) => ({ vendor, catalogId: rows[0]!.catalogId }));
+  const deployable = await readDeployableUploadedBinaryCatalogIds(executor, needsBinary);
+  for (const { vendor, catalogId } of needsBinary) {
+    if (deployable.has(catalogId)) uploadedBinaryVendors.add(vendor);
   }
   return { catalogByVendor: result, uploadedBinaryVendors };
+}
+
+/**
+ * Of the given (catalog row, vendor) pairs, the catalog ids whose latest
+ * version is a deployable partner-uploaded installer for that vendor (see
+ * {@link versionIsDeployableFor}). One query, none for an empty list. Shared
+ * by the generator (which vendors are fully set up) and the per-pass readiness
+ * preflight (#9247: a rule whose package has none is `installer_missing`).
+ */
+export async function readDeployableUploadedBinaryCatalogIds(
+  executor: DbExecutor,
+  entries: ReadonlyArray<{ catalogId: string; vendor: VendorKey }>,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (entries.length === 0) return out;
+  const versions = await readDeployableVersionCatalogIds(executor, Array.from(new Set(entries.map((e) => e.catalogId))));
+  for (const { catalogId, vendor } of entries) {
+    const version = versions.get(catalogId);
+    if (version && versionIsDeployableFor(version, vendor)) out.add(catalogId);
+  }
+  return out;
 }
 
 /** The fields of a latest version that decide whether it can be dispatched. */

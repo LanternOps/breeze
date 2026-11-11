@@ -56,8 +56,9 @@ import { db } from '../db';
 import { contacts, devices, sites } from '../db/schema';
 import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
-import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
-import { admitServiceRecoveryTask, admitTask, recipeEnabled } from '../services/aiOperator/taskService';
+import { aiOperatorTasksEnabled } from '../config/env';
+import { admitTask, recipeEnabled } from '../services/aiOperator/taskService';
+import { launchServiceRecoveryTask } from '../services/aiOperator/serviceRecoveryLaunch';
 import { canMutateOrgWideGovernance } from '../services/siteCeilingAccess';
 import {
   RECIPE_AGENT_KINDS,
@@ -85,18 +86,9 @@ import { normalizeContactEmail } from '../services/contacts/crud';
 import type { AnyRecipeDefinition, PlannedEffect } from '../services/aiOperator/recipes/types';
 import { RECIPE_KEYS, resolveAdmissionRecipe } from '../services/aiOperator/recipes';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
-import { listOperatorTasks, loadOperatorTaskDetail } from '../services/aiOperator/taskReadQueries';
-
-/**
- * The agent kind an operator task is delegated to. The effective agent is
- * resolved per (org, kind), so admission has to name one: task runs are later
- * admitted against the task's frozen `agentKind` (`taskCoordinator`) on the
- * default full profile. The service-recovery recipe is an investigate-and-
- * remediate workflow, which is the triage agent's lane; a `designer` never
- * runs on the full profile (`ownership_mismatch`). Before #7015 the route
- * took any enabled row regardless of kind.
- */
-const OPERATOR_TASK_AGENT_KIND = 'triage' as const;
+import { findVisibleTask, listOperatorTasks, loadOperatorTaskDetail } from '../services/aiOperator/taskReadQueries';
+import { releaseTaskAccountReservations } from '../services/aiOperator/accountReservations';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const aiOperatorTasksRoutes = new Hono();
 aiOperatorTasksRoutes.use('*', authMiddleware);
@@ -126,7 +118,11 @@ function uuidParam(c: Context, name: string): string | null {
  * `POST /api/v1/ai/operator/tasks` — the only door that creates a task
  * (#5205 W08, #5246; spec §12's `POST /tasks` row).
  *
- * ORDER OF CHECKS IS THE CONTRACT, not a style choice:
+ * ORDER OF CHECKS IS THE CONTRACT, not a style choice. For a device-targeted
+ * recipe, steps 2-5 run in `launchServiceRecoveryTask`
+ * (services/aiOperator/serviceRecoveryLaunch.ts, W16 #6786), which the
+ * `create_operator_task` AI tool also calls; this route maps its codes to the
+ * statuses named below.
  *
  *  1. `.strict()` body (400). Spec §12: "Requests cannot supply a principal,
  *     effective policy, approval result, or trusted continuation token." A
@@ -139,9 +135,10 @@ function uuidParam(c: Context, name: string): string | null {
  *     for devices a read cannot see.
  *  4. Readiness recompute (422). Spec §12: "Recompute readiness on launch...
  *     A cached catalog or draft is never authority." Flags and recipe version
- *     are re-read here even though `admitServiceRecoveryTask` checks the flags
- *     again — the second check is the one that actually gates the insert; this
- *     one exists to produce an ACTIONABLE reason instead of a bare refusal.
+ *     are re-read before admission even though `admitServiceRecoveryTask`
+ *     checks the flags again — the second check is the one that actually gates
+ *     the insert; the first exists to produce an ACTIONABLE reason instead of a
+ *     bare refusal.
  *  5. Admission, which is idempotent on `clientIdempotencyKey` and enforces
  *     the task-wide policy ceilings (#6590) — including the pending cap,
  *     which it answers as `pending_cap_reached` and this route turns into
@@ -187,146 +184,45 @@ aiOperatorTasksRoutes.post(
       return c.json(formatZodError(deviceFields.error), 400);
     }
 
-    // (2) Explicit org from the body. `canAccessOrg` is the same closure the
-    // org-scoping predicate is built from, so this cannot drift from what a
-    // read would allow. 404 rather than 403: confirming the org exists is
-    // itself a cross-tenant disclosure.
-    if (!auth.canAccessOrg(body.orgId)) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-
-    // A contact-targeted recipe (R1a) takes its own path; every other key —
-    // service_recovery and an unknown one alike — continues exactly as before.
+    // A contact-targeted recipe (R1a) takes its own path after the org check;
+    // every other key (service_recovery and an unknown one alike) is admitted
+    // by the shared operation, which runs the org check first itself.
     if (isContactTargeted || !deviceFields) {
+      // 404 rather than 403: confirming the org exists is itself a
+      // cross-tenant disclosure.
+      if (!auth.canAccessOrg(body.orgId)) {
+        return c.json({ error: 'Device not found' }, 404);
+      }
       return admitIdentityOffboardingFromRoute(c, body);
     }
-    const deviceId = deviceFields.data.deviceId;
-    const serviceName = deviceFields.data.inputs.serviceName;
 
-
-    // (3) Resolve the target under the caller's own visibility. Note this
-    // read runs in the REQUEST's db context (RLS-scoped), unlike admission,
-    // which runs as system — so the device must be visible to the caller
-    // before any system-scoped work happens on their behalf.
-    const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname })
-      .from(devices)
-      .where(and(eq(devices.id, deviceId), eq(devices.orgId, body.orgId)))
-      .limit(1);
-    // A site-restricted caller may not delegate against a device outside their
-    // sites. Same non-enumerating 404 as the W07 detail route.
-    if (!device || (auth.canAccessSite && !auth.canAccessSite(device.siteId))) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-
-    // (4) Readiness, recomputed now.
-    if (!aiOperatorTasksEnabled()) {
-      return c.json({
-        error: 'AI Operator tasks are not enabled for this deployment',
-        code: 'OPERATOR_TASKS_DISABLED',
-      }, 422);
-    }
-    if (!aiOperatorServiceRecoveryEnabled()) {
-      return c.json({
-        error: 'The service recovery workflow is not enabled for this deployment',
-        code: 'OPERATOR_RECIPE_DISABLED',
-      }, 422);
-    }
-    // Two different answers to the caller (Recipe Library spec §6.1):
-    //  - an unknown key is a malformed request — no such workflow exists at
-    //    any version, so the response names the ones that do (400);
-    //  - a known key at an unreleased version is a stale client that reviewed
-    //    a workflow this deployment has moved past (422 — spec §12's
-    //    "422 for unsupported workflow/criteria/setup", and the shipped
-    //    behaviour this route already had).
-    const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
-    if (!resolution.ok && resolution.reason === 'unknown_recipe') {
-      return c.json({
-        error: resolution.detail,
-        code: 'OPERATOR_UNKNOWN_RECIPE',
-        supportedRecipeKeys: [...RECIPE_KEYS],
-      }, 400);
-    }
-    if (!resolution.ok) {
-      return c.json({
-        error: resolution.detail,
-        code: 'OPERATOR_RECIPE_VERSION_MISMATCH',
-      }, 422);
-    }
-    const recipe = resolution.recipe;
-
-    // The SERVER picks the agent (spec §5.1 — the request cannot name a
-    // principal): the org's EFFECTIVE agent of the operator kind, resolved
-    // the same way run admission resolves it (#7015). That is always the
-    // partner baseline's id; an org-owned row of the kind is an override
-    // merged onto the baseline's policy, never an agent of its own. Pinning
-    // the override made every run of the task skip `ownership_mismatch`
-    // (`runService`: `task.agentId !== resolved.agentId`) and made admission
-    // ignore the org's tightened task limits. No baseline, or an effective
-    // agent that is disabled (by the partner, the org override, or the AI
-    // agents kill switch), means no run could ever be admitted — refuse now
-    // rather than admit a task that can only stall.
-    const effectiveAgent = await resolveEffectiveAgent(auth, body.orgId, OPERATOR_TASK_AGENT_KIND);
-    const agent = effectiveAgent?.effective.enabled ? { id: effectiveAgent.agentId } : null;
-    if (!agent) {
-      return c.json({
-        error: 'No enabled AI agent is available for this organization. '
-          + 'Enable an agent in Settings → AI Agents before delegating a task.',
-        code: 'OPERATOR_NO_AGENT',
-      }, 422);
-    }
-
-    // (5) Admit. The requester's authorized ceiling is what was just checked
-    // above (org + site + write permission + MFA); `requesterUserId` records
-    // WHOSE ceiling it is, which is what spec §5.1's "loss of that access
-    // pauses delegated execution" is later evaluated against.
-    const result = await admitServiceRecoveryTask({
+    // (2)–(5): org access, device + site access, readiness, the server-picked
+    // agent and admission, in that order (W16 #6786: the same operation the
+    // `create_operator_task` AI tool calls, so the tool cannot ask for less).
+    const result = await launchServiceRecoveryTask(auth, {
       orgId: body.orgId,
-      agentId: agent.id,
-      // The RESOLVED pair. Admission re-resolves it — the two checks are not
-      // redundant: this route is not the only admission caller, and admission
-      // is the layer that writes the row.
-      workflowKey: recipe.key,
-      workflowVersion: recipe.version,
-      objective: `Restore the ${serviceName} service on ${device.hostname ?? deviceId}`,
-      // Provenance, not authority (spec §5.1: origins are explicit and never
-      // silently converted). A delegate from alert detail is origin 'alert';
-      // everything else through this route is a manual delegation.
-      originKind: body.sourceKind === 'alert' ? 'alert' : 'manual',
-      requesterUserId: auth.user?.id ?? null,
-      recipeInput: {
-        deviceId,
-        serviceName,
-        // The alert is the recurrence signal the verification criterion needs
-        // (W06: with no alertId the best achievable outcome is
-        // `investigation_complete`, never `verified_resolved`).
-        triggeringAlertId: body.sourceKind === 'alert' ? body.sourceId ?? null : null,
-      },
+      recipeKey: body.recipeKey,
+      recipeVersion: body.recipeVersion,
+      deviceId: deviceFields.data.deviceId,
+      serviceName: deviceFields.data.inputs.serviceName,
+      ...(body.sourceKind === 'alert' ? { sourceKind: 'alert' as const, sourceId: body.sourceId } : {}),
       clientIdempotencyKey: body.clientIdempotencyKey,
     });
 
     if (!result.ok) {
-      // Every refusal here is a readiness/scope problem, not a client format
-      // error: 422 per spec §12 ("422 for unsupported workflow/criteria/
-      // setup"), except the two target refusals, which stay non-enumerating.
-      if (result.refusal === 'device_not_in_org') {
-        return c.json({ error: 'Device not found' }, 404);
-      }
-      if (result.refusal === 'pending_cap_reached') {
-        return c.json({
-          error: `${result.detail}. Wait for tasks to finish, or stop ones that are no longer needed, `
-            + 'before delegating more.',
-          code: 'OPERATOR_PENDING_CAP_REACHED',
-        }, 429);
-      }
-      if (result.refusal === 'unknown_recipe') {
-        return c.json({
-          error: result.detail,
-          code: 'OPERATOR_UNKNOWN_RECIPE',
-          supportedRecipeKeys: [...RECIPE_KEYS],
-        }, 400);
-      }
-      return c.json({ error: result.detail, code: result.refusal.toUpperCase() }, 422);
+      // Every refusal is a readiness/scope problem, not a client format error:
+      // 422 per spec §12, except the non-enumerating target refusal (404), the
+      // visible pending cap (429) and an unknown workflow (400, naming the
+      // ones that exist).
+      if (result.code === 'NOT_FOUND') return c.json({ error: 'Device not found' }, 404);
+      const status = result.code === 'OPERATOR_PENDING_CAP_REACHED' ? 429
+        : result.code === 'OPERATOR_UNKNOWN_RECIPE' ? 400
+          : 422;
+      return c.json({
+        error: result.detail,
+        code: result.code,
+        ...(result.supportedRecipeKeys ? { supportedRecipeKeys: result.supportedRecipeKeys } : {}),
+      }, status);
     }
 
     // A replay is a success, not a conflict: the caller asked for a task with
@@ -557,6 +453,10 @@ async function admitIdentityOffboardingFromRoute(c: Context, body: CreateOperato
           code: 'OPERATOR_DUPLICATE_LIVE_TASK',
           taskId: result.existingTaskId ?? null,
         }, 409);
+      // #9981: another task holds one of the person's provider accounts. The
+      // detail names the account, the task and why it is still held.
+      case 'account_reserved':
+        return c.json({ error: result.detail, code: 'OPERATOR_ACCOUNT_RESERVED', taskId: result.existingTaskId ?? null }, 409);
       case 'pending_cap_reached':
         return c.json({ error: result.detail, code: 'OPERATOR_PENDING_CAP_REACHED' }, 429);
       case 'unknown_recipe':
@@ -586,6 +486,74 @@ aiOperatorTasksRoutes.get(
     if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Organization not found' }, 404);
     const readiness = await listWorkflowReadiness(orgId, auth);
     return c.json({ data: readiness.map(toWorkflowDto) });
+  },
+);
+
+/**
+ * `POST /api/v1/ai/operator/tasks/:id/account-reservations/release` (#9981).
+ *
+ * A task reserves every provider account it acts on, and a task that ended
+ * `unknown_effect` keeps them: an action it sent may still land. The
+ * reconciler releases them once the operation settles; when it never will
+ * (a result that stays `unknown`), a person who checked the provider releases
+ * them here. Terminal tasks only — a live task is still acting, and the way
+ * to free its accounts is to stop it.
+ *
+ * Same gates as starting an offboarding (it re-opens the accounts to one):
+ * `ai_agents:write` + MFA, `organizations:write`, no site ceiling, and the
+ * task visible to the caller (non-enumerating 404). Audited.
+ */
+const releaseReservationsSchema = z.object({ note: z.string().trim().max(1000).optional() }).strict();
+
+aiOperatorTasksRoutes.post(
+  '/tasks/:id/account-reservations/release',
+  scopes,
+  requireAiWrite,
+  requireMfa(),
+  zValidator('json', releaseReservationsSchema),
+  async (c) => {
+    const taskId = uuidParam(c, 'id');
+    if (!taskId) return c.json({ error: 'Task not found' }, 404);
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+      return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+    }
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({
+        error: 'Provider accounts are organization-wide; site-restricted users cannot release them.',
+        code: 'SITE_RESTRICTED',
+      }, 403);
+    }
+    const task = await findVisibleTask(auth, taskId);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    const note = c.req.valid('json').note || null;
+    const result = await releaseTaskAccountReservations({
+      orgId: task.orgId, taskId: task.id, userId: auth.user?.id ?? null, note,
+    });
+    if (!result.ok) {
+      switch (result.reason) {
+        case 'task_live':
+          return c.json({
+            error: 'This task is still running. Stop it to release the accounts it holds.',
+            code: 'OPERATOR_TASK_LIVE',
+          }, 409);
+        case 'task_not_found':
+          return c.json({ error: 'Task not found' }, 404);
+        default: {
+          const unhandled: never = result.reason;
+          throw new Error(`unhandled release refusal ${String(unhandled)}`);
+        }
+      }
+    }
+    writeRouteAudit(c, {
+      orgId: task.orgId,
+      action: 'ai_operator.account_reservations.release',
+      resourceType: 'ai_operator_task',
+      resourceId: task.id,
+      details: { released: result.released, ...(note ? { note } : {}) },
+    });
+    return c.json({ released: result.released });
   },
 );
 

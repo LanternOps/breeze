@@ -1,6 +1,9 @@
 import { and, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { huntressIntegrations, huntressOrgMappings, organizations, s1Integrations, s1OrgMappings } from '../../db/schema';
+import { getBuiltinPackage } from '../builtinDeploymentPackages';
+import { loadInstallerTenantSelections, type InstallerTenantReadiness } from '../edrProviders/installerTenant';
+import { isEdrInstallerProviderKey, type EdrInstallerProviderKey } from '../edrProviders/providerKeys';
 import { loadTenantVariableScope, resolveForOrg, unreadableForOrg } from '../tenantVariableResolution';
 import { getVendor, type VendorKey } from './securityAgentVendors';
 
@@ -18,7 +21,8 @@ import { getVendor, type VendorKey } from './securityAgentVendors';
  *
  * Exhaustive over vendors: Huntress and SentinelOne check their EDR
  * integration and org mapping; the DNS vendors (W05) check the tenant variable
- * their install script substitutes. A vendor without its own check fails
+ * their install script substitutes; EDR framework vendors (#8170) ask the
+ * tenant selection dispatch itself uses. A vendor without its own check fails
  * closed (`vendor_unavailable`) rather than borrowing another vendor's.
  */
 
@@ -44,7 +48,26 @@ export type ReadinessReason =
    * values are non-secret by design).
    */
   | 'var_secret'
-  /** The vendor's readiness checks are not wired yet; never ready. */
+  /**
+   * Vendors whose built-in package needs a partner-uploaded installer
+   * (SentinelOne's MSI): the package the rule installs from has no deployable
+   * latest version (#9247). Partner-level, so every reached device of the
+   * vendor reads it. Remedy: upload the installer on the package's Versions
+   * tab (`/software#versions=<catalogId>`).
+   */
+  | 'installer_missing'
+  /**
+   * EDR framework vendors: the org maps to more than one vendor tenant, and
+   * nothing ever picks one. Remedy: map it to one (Integrations).
+   */
+  | 'tenant_ambiguous'
+  /**
+   * EDR framework vendors: the org's one tenant has no installer link dispatch
+   * may use (never fetched, cleared by a credential change, or expired).
+   * Remedy: the next inventory run refetches it (Sync in Integrations).
+   */
+  | 'installer_link_missing'
+  /** The vendor's readiness checks are not wired yet, or its package is not released; never ready. */
   | 'vendor_unavailable';
 
 export type ReadinessResult = { ok: true } | { ok: false; reason: ReadinessReason };
@@ -74,7 +97,8 @@ export function evaluatePlatformReadiness(
 }
 
 /**
- * Org half of readiness for many orgs at once (at most three queries per
+ * Org half of readiness for many orgs at once (one batched selection for a
+ * framework vendor; otherwise at most three queries per
  * vendor, whatever the org count). Every requested org gets an answer.
  *
  * Runs in its own system context: the vendor integration/mapping tables are
@@ -89,6 +113,8 @@ export async function loadOrgInstallerReadiness(
   const unique = Array.from(new Set(orgIds.filter((id) => typeof id === 'string' && id.length > 0)));
   const result = new Map<string, ReadinessResult>();
   if (unique.length === 0) return result;
+
+  if (isEdrInstallerProviderKey(vendor)) return loadFrameworkReadiness(vendor, unique);
 
   switch (vendor) {
     case 'huntress':
@@ -295,6 +321,49 @@ async function loadTenantVarReadiness(vendor: VendorKey, orgIds: string[]): Prom
     result.set(orgId, verdict);
   }
   return result;
+}
+
+/**
+ * EDR framework vendors: the same selection dispatch uses, so "ready" and "would
+ * dispatch" cannot disagree on which tenant an org installs into. The readiness
+ * form of the selection never loads the sealed material, and an unreleased
+ * package reads no tenant at all.
+ */
+async function loadFrameworkReadiness(
+  provider: EdrInstallerProviderKey,
+  orgIds: string[],
+): Promise<Map<string, ReadinessResult>> {
+  const result = new Map<string, ReadinessResult>();
+  if (!getBuiltinPackage(provider).released) {
+    for (const orgId of orgIds) result.set(orgId, notReady('vendor_unavailable'));
+    return result;
+  }
+  const selections = await loadInstallerTenantSelections(provider, orgIds);
+  for (const orgId of orgIds) {
+    result.set(orgId, readinessFromSelection(selections.get(orgId) ?? { kind: 'not_mapped' }));
+  }
+  return result;
+}
+
+function readinessFromSelection(selection: InstallerTenantReadiness): ReadinessResult {
+  switch (selection.kind) {
+    case 'ok':
+      return READY;
+    case 'not_mapped':
+      return notReady('org_not_mapped');
+    case 'ambiguous':
+      return notReady('tenant_ambiguous');
+    case 'inactive':
+      return notReady('integration_inactive');
+    case 'material_missing':
+    case 'material_expired':
+      return notReady('installer_link_missing');
+    default: {
+      const unreachable: never = selection;
+      void unreachable;
+      return notReady('vendor_unavailable');
+    }
+  }
 }
 
 /** Single-device form: platform first (no I/O), then the device org's integration. */

@@ -10,6 +10,18 @@ import path from 'node:path';
 // full module graph.
 // -------------------------------------------------------------------
 
+// Existing route cases exercise the non-isolated ICE plan.
+vi.mock('./remote/desktopRelayPolicy', async () => {
+  const { getIceServers } = await import('./remote/helpers');
+  return {
+    resolveDesktopIcePlan: async (_deviceId: string, scope: import('./remote/helpers').TurnCredentialScope) => ({
+      ok: true,
+      relayOnly: false,
+      iceServers: getIceServers(scope),
+    }),
+  };
+});
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),

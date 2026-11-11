@@ -733,3 +733,39 @@ describe('TURN credential helpers', () => {
     expect(scoped.some((server) => Boolean(server.username && server.credential))).toBe(true);
   });
 });
+
+
+describe('relay-only ICE servers', () => {
+  const scope = { sessionId: 'session', userId: 'user', deviceId: 'device' };
+  beforeEach(() => {
+    vi.stubEnv('TURN_HOST', 'relay.example.test');
+    vi.stubEnv('TURN_SECRET', 'test-secret');
+    vi.stubEnv('TURN_TLS_HOST', 'relay.example.test');
+    vi.stubEnv('TURN_PORT', '3478');
+    vi.stubEnv('TURN_TLS_PORT', '5349');
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('returns only credentialed TURN/TURNS URLs when relay is required', () => {
+    expect(getIceServers(scope, { relayOnly: true })).toEqual([{
+      urls: [
+        'turn:relay.example.test:3478?transport=udp',
+        'turn:relay.example.test:3478?transport=tcp',
+        'turns:relay.example.test:5349?transport=tcp',
+      ],
+      username: expect.any(String), credential: expect.any(String),
+    }]);
+  });
+  it.each(['TURN_HOST', 'TURN_SECRET'])('returns empty without %s', (key) => {
+    vi.stubEnv(key, '');
+    expect(getIceServers(scope, { relayOnly: true })).toEqual([]);
+  });
+  it('returns empty without a credential scope', () => {
+    expect(getIceServers(undefined, { relayOnly: true })).toEqual([]);
+  });
+  it('keeps the legacy STUN default without options or with relayOnly false', () => {
+    vi.stubEnv('TURN_HOST', '');
+    expect(getIceServers(scope)).toEqual([{ urls: 'stun:stun.l.google.com:19302' }]);
+    expect(getIceServers(scope, { relayOnly: false })).toEqual(getIceServers(scope));
+  });
+});

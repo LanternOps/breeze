@@ -5,7 +5,9 @@ import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
 import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
+import type { ApprovalBinding } from './networkIsolation/service';
 import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+import type { WispUnattendedRead } from './wisp/unattendedReads';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 
 /**
@@ -205,6 +207,27 @@ export type ToolExecutionContext = {
    */
   verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
   /**
+   * Network-isolation W13 (#10101, spec §3.8 "Approval binding"): the episode
+   * a four-eyes `release_containment` approval was pinned over —
+   * `(orgId, deviceId, isolationId, generation)` as of approval time. Set ONLY
+   * from the release path's effect-digest recompute on a MATCH (so it equals
+   * what the approver saw), never from model arguments, and travels with
+   * `actionIntentId`. The handler refuses without both and passes it to
+   * `releaseNetworkIsolation`, which re-checks it under the episode lock: an
+   * extend (a new generation) or an org move after approval refuses the release.
+   */
+  verifiedIsolationRelease?: Readonly<ApprovalBinding>;
+  /**
+   * Full-control W16 PR B (#6786, Fact 8): the digest a four-eyes
+   * `manage_fleet_designs:apply` or `:rollback` release verified. Set ONLY from the
+   * release path's effect-digest recompute on a MATCH, never from model arguments,
+   * and travels with `actionIntentId`. Both release paths verify in an earlier
+   * transaction than the one that writes, so the handler refuses without both and
+   * re-derives the digest under the report-run lock: a change committed in between
+   * refuses (`CONTENT_CHANGED`) instead of applying to what the approver never saw.
+   */
+  verifiedFleetDesignBinding?: Readonly<{ digest: string }>;
+  /**
    * #7906: the strictly-parsed `event_logs_query` payload the chat gate
    * classified as Tier-2 read-only (System/Setup, no XPath). Set ONLY by
    * `createSessionPreToolUse` from `checkGuardrails`' own parse — never from
@@ -213,6 +236,14 @@ export type ToolExecutionContext = {
    * the call that was classified.
    */
   pinnedEventLogsQuery?: PinnedEventLogsQuery;
+  /**
+   * #10973: the call a gate classified as one of the four unattended reads. Set
+   * ONLY by `createSessionPreToolUse` and the troubleshooting run's pre-tool hook.
+   * The SDK handler dispatches `pinned` in place of the model's arguments
+   * (`dispatchArgs`, aiAgentSdkTools.ts), so the call that runs is the call that
+   * was classified.
+   */
+  pinnedWispUnattendedRead?: WispUnattendedRead;
   /**
    * W5 PR C (#5220): the flow tool the chat gate resolved LIVE and gated at
    * its invocation tier, with the validated call. Set ONLY by

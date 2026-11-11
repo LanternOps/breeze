@@ -19,7 +19,7 @@ import {
 import { project } from './readActions';
 import {
   isUnlicensedSigninEventsError,
-  signinEventsFilter,
+  signinEventsQuery,
   signinEventsTruncated,
   resolveSigninEventsWindow,
   SIGNIN_EVENTS_PATH,
@@ -520,16 +520,14 @@ async function syncSigninEvents(
     pageSet = await context.graphClient.readSyncCollection({
       accessToken: context.accessToken,
       path: SIGNIN_EVENTS_PATH,
-      query: {
-        '$filter': signinEventsFilter(window),
-        // Ascending: a continuation must resume where the last page stopped,
-        // and Graph's default ordering on this endpoint is not guaranteed.
-        '$orderby': 'createdDateTime',
-        '$top': '1000',
-      },
+      query: signinEventsQuery(window, context.limits.signinEventsPageSize),
       ...(startUrl === undefined ? {} : { startUrl }),
       limits: limitsFor(context, context.limits.maxItemsSigninEvents),
       beforePage: () => context.signinEventsLimiter.tryTake(),
+      // #9394: a page that times out or stays throttled after earlier pages
+      // came back ends the walk with those pages and a continuation at the
+      // failed page, so the next run resumes there instead of re-reading them.
+      keepPagesOnTransientFailure: true,
     });
   } catch (error) {
     // No Entra ID P1: a COMPLETE, zero-item success, not a retryable failure.
@@ -545,11 +543,15 @@ async function syncSigninEvents(
   const continuation = resumeLink === undefined
     ? undefined
     : context.continuations.seal({ tenantId: context.tenantId, action: action.type, nextLink: resumeLink });
+  // An `interrupted` walk always carries a continuation, so the API stores the
+  // cursor and re-claims; this source state is only ever read on a walk that
+  // ended without one.
+  const stoppedEarly = pageSet.stopReason === 'paused' || pageSet.stopReason === 'interrupted';
 
   return succeed(action, pageSet.items, {
     truncated: signinEventsTruncated(pageSet),
     fetchedAt,
-    sources: { signinEvents: pageSet.stopReason === 'paused' ? 'throttled' : 'ok' },
+    sources: { signinEvents: stoppedEarly ? 'throttled' : 'ok' },
     ...(continuation === undefined ? {} : { continuation }),
   });
 }

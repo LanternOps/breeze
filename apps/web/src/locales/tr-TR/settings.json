@@ -69,7 +69,8 @@
           "executing": "Yürütülüyor",
           "completed": "Tamamlandı",
           "failed": "Başarısız",
-          "rejected": "Reddedildi"
+          "rejected": "Reddedildi",
+          "stopped": "Durduruldu"
         }
       },
       "intents": {
@@ -263,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Yapay zeka bütçesinin uygulanmasını etkinleştirin",
+    "aiAccess": "Tüm kuruluşlar için yapay zeka",
+    "aiAccessOptions": {
+      "notSet": "Ayarlanmadı, her kuruluş kendisi karar verir",
+      "on": "Her kuruluş için açık",
+      "off": "Her kuruluş için kapalı"
+    },
+    "aiAccessHelp": "Bu, müşterilerinizin yapay zeka açma/kapama anahtarıdır, bir bütçe ayarı değildir. Ayarlandığında her kuruluşun kendi yapay zeka anahtarının yerine geçer. Aşağıdaki bütçe alanları her durumda geçerlidir.",
+    "offWarning": "Bu iş ortağının altındaki her kuruluş için yapay zeka kapalı. Sohbet, helper, Office eklentileri, yapay zeka ajanları ve zenginleştirme siz bunu değiştirene kadar reddedilir.",
+    "offConfirmTitle": "Yapay zeka her kuruluş için kapatılsın mı?",
+    "offConfirmMessage": "Bu iş ortağının altındaki her kuruluş yapay zekayı kaybeder: sohbet, helper, Office eklentileri, yapay zeka ajanları ve zenginleştirme reddedilir ve kuruluşlar onu kendileri yeniden açamaz. Kaydedene kadar hiçbir şey değişmez.",
+    "offConfirmAction": "Yapay zekayı kapat",
     "monthlyBudget": "Aylık Bütçe ($)",
     "dailyBudget": "Günlük Bütçe ($)",
     "approvalMode": "Onay Modu",
@@ -273,7 +284,7 @@
     "alertThresholds": "Uyar (bütçenin %'si)",
     "alertThresholdsHelp": "Faturalama erişimine sahip partner yöneticileri her eşikte uygulama içi bir uyarı ve aylık ile limit aşımı uyarıları için e-posta alır. 50, 80, 95 değerlerini devralmak için boş bırakın.",
     "notSet": "Ayarlanmadı, kuruluşlar ayrı ayrı yapılandırılır",
-    "description": "Bütçe değerleri tüm alt kuruluşlarda uygulanır. Dolar tutarları dahili olarak sent cinsinden saklanır.",
+    "description": "Burada ayarladığınız değer tüm kuruluşlara uygulanır ve onları kilitler. Boş bıraktığınız alan kuruluş başına yapılandırılır. Dolar tutarları dahili olarak sent cinsinden saklanır.",
     "modes": {
       "perStep": "Adım Başına",
       "actionPlan": "Eylem Planı",
@@ -1084,8 +1095,8 @@
         "description": "E-postaları kendi alan adınızdan gönderin"
       },
       "aiBudgets": {
-        "label": "Yapay Zeka Bütçeleri",
-        "description": "AI harcama sınırları"
+        "label": "Yapay Zeka bütçeleri ve sınırları",
+        "description": "Yapay Zeka harcama sınırları, uyarılar ve hız sınırları"
       },
       "aiProvider": {
         "label": "Yapay Zeka Sağlayıcıları ve Modelleri",
@@ -1108,8 +1119,8 @@
         "description": "Servis masası, faturalandırma ve topoloji açık/kapalı"
       },
       "aiApprovals": {
-        "label": "Yapay Zeka Onay Zaman Aşımı",
-        "description": "Breeze AI'ın kısıtlı bir eylemin onaylanmasını ne kadar bekleyeceği"
+        "label": "Yapay Zeka onayları",
+        "description": "Onay modu ve Breeze AI'ın onay için ne kadar beklediği"
       },
       "callerVerification": {
         "label": "Arayan doğrulama",
@@ -1118,6 +1129,10 @@
       "knownGuests": {
         "label": "Bilinen konuklar",
         "description": "MAC adresine göre onaylı ziyaretçi ve teknisyen cihazları"
+      },
+      "customerPortal": {
+        "label": "Müşteri portalı",
+        "description": "Müşterilerinizin portalları için varsayılan oturum açma ve kayıt kuralları ile karar bekleyen erişim talepleri"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -1187,6 +1202,7 @@
       "badge": {
         "locks": "Kuruluşları kilitler",
         "locksConditional": "Etkinken kuruluşları kilitler",
+        "locksWhenSet": "Ayarlandığında kuruluşları kilitler",
         "overridable": "Kuruluş değiştirebilir",
         "overridableCap": "Kuruluş değiştirebilir, en fazla {{limit}}",
         "partnerOnly": "İş ortağı geneli"
@@ -1194,6 +1210,7 @@
       "badgeHelp": {
         "locks": "Bu ayarlıyken her kuruluş sizin değerinizi kullanır. Kuruluşun kendi değeri yok sayılır.",
         "locksConditional": "Etkinken her kuruluş kendi değeri yerine sizinkini kullanır. Devre dışıyken kuruluşlar kendi değerlerini kullanır.",
+        "locksWhenSet": "Bir değer ayarladığınızda her kuruluş onu kullanır ve kendi değeri yok sayılır. Boşken her kuruluş kendi değerini yapılandırır.",
         "overridable": "Sizin değeriniz varsayılandır. Kendi değerini belirleyen bir kuruluş onun yerine kendi değerini kullanır.",
         "overridableCap": "Sizin değeriniz varsayılandır. Bir kuruluş en fazla {{limit}} olmak üzere kendi değerini belirleyebilir.",
         "partnerOnly": "Kuruluşların bunun için kendi ayarı yoktur. Sizin değeriniz hepsine uygulanır."
@@ -1729,7 +1746,20 @@
     "scopeMailbox": "Bu posta kutusunun kapsamını belirleyin (Uygulama Erişim Politikası)",
     "reauthRequired": "Microsoft 365 yoklama ve yanıtlara devam edilmeden önce yöneticinin yeniden onayı gereklidir.",
     "pollFailing": "Bu posta kutusunun son {{failures}} denetimi geçici bir Microsoft 365 hatasıyla başarısız oldu. Breeze yeniden denemeye devam ediyor; Microsoft 365 yeniden yanıt verdiğinde yeni postalar alınacak.",
+    "baselineRunning": "Başlangıç noktası belirlemek için bu posta kutusu okunuyor. İçindeki mevcut postalar içe aktarılmayacak; yalnızca bağlantıdan sonra alınan postalar destek bildirimine dönüşecek.",
+    "baselineSkipped_one": "Bu posta kutusunda zaten bulunan {{count}} ileti içe aktarılmayacak. Yalnızca bağlantıdan sonra alınan postalar destek bildirimine dönüşecek.",
+    "baselineSkipped_other": "Bu posta kutusunda zaten bulunan {{count}} ileti içe aktarılmayacak. Yalnızca bağlantıdan sonra alınan postalar destek bildirimine dönüşecek.",
     "retest": "Yeniden test edin",
+    "gatewayTitle": "Posta ağ geçidi (isteğe bağlı)",
+    "gatewayHint": "Posta bu kutuya Avanan, Mimecast, Proofpoint veya Barracuda gibi satır içi bir ağ geçidinden ulaşıyorsa Microsoft'un kendi denetimi meşru postaları reddeder. Ağ geçidinin ARC mühürleme etki alanını, yani teslim ettiği bir iletinin ARC-Seal üstbilgisindeki d= değerini girin; Breeze bunun yerine ağ geçidinin kararını kullanır. Ağ geçidiniz yoksa boş bırakın.",
+    "gatewayWarning": "Yalnızca bu kiracının tüm gelen postasının geçmek zorunda olduğu bir ağ geçidi ekleyin: önce Exchange'de gelen teslimi bir bağlayıcıyla bu ağ geçidiyle sınırlayın. Aksi takdirde Breeze, ağ geçidinin teslim ettiği postayı doğrudan Exchange'e gönderilen postadan ayıramaz.",
+    "gatewayLabel": "Güvenilen ARC mühürleme etki alanları",
+    "gatewayPlaceholder": "gateway.ornek.com",
+    "gatewaySave": "Ağ geçidi listesini kaydet",
+    "gatewaySaved": "Posta ağ geçidi listesi kaydedildi",
+    "gatewaySaveFailed": "Posta ağ geçidi listesi kaydedilemedi.",
+    "gatewayInvalid": "\"{{value}}\" bir etki alanı adı değil.",
+    "gatewayTooMany": "En fazla {{max}} etki alanı girin.",
     "reconnect": "Yeniden bağlan",
     "disconnect": "Bağlantıyı kes",
     "empty": "Henüz bağlı bir posta kutusu yok.",
@@ -1827,7 +1857,8 @@
       "load": "Onay güvenliği politikası yüklenemedi.",
       "save": "Onay güvenliği politikası kaydedilemedi.",
       "unavailable": "Politika mevcut değil."
-    }
+    },
+    "scopeNote": "Bu ayarlar, iş ortağı hesabınızdaki tüm kuruluşlar için geçerlidir."
   },
   "orgAuditRetentionSettings": {
     "title": "Denetim Günlüğü Saklama",
@@ -1853,16 +1884,21 @@
   },
   "orgBrandingEditor": {
     "title": "Markalama",
-    "description": "{{organization}} için portal deneyimini özelleştirin.",
+    "description": "{{organization}} müşteri portalı ve belgeleri için logo, renkler ve özel CSS.",
     "save": "Marka bilinci oluşturmayı koruyun",
     "saved": "Markalama ayarları kaydedildi.",
+    "saveError": "Marka ayarları kaydedilemedi.",
     "managedByPartner": "İş ortağı tarafından yönetiliyor",
     "logo": {
       "title": "Logosu",
       "previewAlt": "Kuruluş logosu önizlemesi",
       "uploadNew": "Yeni bir logo yükleyin",
-      "recommendation": "SVG veya PNG, önerilen 512x512",
-      "selected": "Seçilen: {{name}}"
+      "selected": "Seçilen: {{name}}",
+      "help": "Bu kuruluşun müşteri portalında ve tekliflerinde, faturalarında ve raporlarında gösterilir. İş ortağının logosunu kullanmak için boş bırakın.",
+      "inheritedSource": "İş ortağı logosu",
+      "remove": "Kaldır",
+      "loadError": "Kaydedilen logo yüklenemedi. Yüklenene kadar logo yükleme devre dışı.",
+      "legacyNotice": "Bu logo daha önce kaydedildi ancak müşterilere hiç gösterilmedi. Kullanmaya başlamak için kaydedin veya kaldırın."
     },
     "colors": {
       "primary": "Ana renk",
@@ -1870,42 +1906,16 @@
       "primaryInheritedSource": "İş ortağı marka rengi",
       "primaryHelp": "Bu kuruluşun tekliflerinde, faturalarında ve diğer müşteri belgelerinde kullanılan vurgu rengi. İş ortağının marka rengini kullanmak için boş bırakın.",
       "primaryInvalid": "#2563eb gibi bir onaltılık renk girin.",
-      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "Sistem, mümkün olduğunda kullanıcının işletim sistemi tercihine saygı duyar.",
-      "options": {
-        "light": "Işık",
-        "dark": "Karanlık",
-        "system": "Sistem"
-      }
-    },
-    "subdomain": {
-      "title": "Portal alt alanı",
-      "previewUrl": "Mevcut önizleme URL'si: {{url}}"
+      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı.",
+      "secondaryInheritedSource": "İş ortağı ikincil rengi",
+      "secondaryHelp": "Bu kuruluşun teklif PDF'lerinde, okunacak kadar koyuysa başlık rengi; rapor PDF'lerinde vurgu rengi. İş ortağının ikincil rengini kullanmak için boş bırakın.",
+      "secondaryLoadError": "Kaydedilen ikincil renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
     },
     "customCss": {
       "title": "Özel CSS (gelişmiş)",
       "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın.",
-      "saveError": "Özel CSS kaydedilemedi.",
       "loadError": "Şu anda kayıtlı özel CSS yüklenemedi. Bu yüklenene kadar düzenleme devre dışı.",
       "saveBlockedByLoadError": "Özel CSS kaydedilmedi: mevcut değer doğrulanamadı. Sayfayı yeniden yükleyip tekrar deneyin."
-    },
-    "preview": {
-      "action": "Önizleme",
-      "title": "Portal önizlemesi",
-      "description": "Mevcut markalama girdilerine dayalı canlı taslak",
-      "close": "Önizlemeyi kapat",
-      "logoAlt": "Logoyu önizleyin",
-      "portalName": "{{organization}} Portalı",
-      "welcome": "Tekrar hoş geldiniz",
-      "body": "Bu önizleme, renkler ve logo seçenekleri de dahil olmak üzere mevcut portal markalama taslağınızı yansıtır.",
-      "openTicket": "Destek bildirimini aç",
-      "viewDevices": "Cihaz listesini görüntüle",
-      "urlLabel": "Önizleme URL'si",
-      "cssPayload": "Özel CSS verisi",
-      "noCustomCss": "/* Özel CSS yok */"
     }
   },
   "orgDefaultsEditor": {
@@ -2318,7 +2328,8 @@
     "actions": {
       "resend": "Tekrar gönder",
       "reactivate": "Yeniden Etkinleştir",
-      "sendInvite": "Davet gönder"
+      "sendInvite": "Davet gönder",
+      "grantBrowserAccess": "Tarayıcı erişimi ver"
     },
     "fields": {
       "nameOptional": "Ad (isteğe bağlı)",
@@ -2340,13 +2351,19 @@
       "inviteResent": "Yeniden davet et",
       "reactivated": "Kullanıcı yeniden etkinleştirildi",
       "disabled": "Kullanıcı devre dışı bırakıldı",
-      "removed": "Kullanıcı kaldırıldı"
+      "removed": "Kullanıcı kaldırıldı",
+      "browserAccessGranted": "Tarayıcı erişimi verildi"
     },
     "errors": {
       "load": "Portal kullanıcıları yüklenemedi.",
       "sendInvite": "Davet gönderilemedi",
       "action": "İşlem başarısız oldu",
       "invalidEmail": "Geçerli bir e-posta adresi girin"
+    },
+    "badges": {
+      "noBrowserAccess": "Tarayıcı erişimi yok",
+      "microsoft": "Microsoft ile oturum açma",
+      "google": "Google ile oturum açma"
     }
   },
   "orgRemoteAccessSettings": {
@@ -2744,6 +2761,7 @@
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
       "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
       "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+      "troubleshoot": "Yerleşiktir. Wisp devrettiğinde arka planda tek bir cihaz üzerinde çalışır. İstediği her değişiklik, bir kişinin onayladığı bir istektir.",
       "researchLink": "Düzeltme belleğini aç",
       "designerLink": "Filo tasarımını aç"
     },
@@ -2892,7 +2910,8 @@
       "patch": "Yama yönetimi",
       "helpdesk": "Yardım masası",
       "designer": "Filo tasarımcısı",
-      "research": "Çözüm araştırması"
+      "research": "Çözüm araştırması",
+      "troubleshoot": "Cihaz sorun giderme"
     },
     "modes": {
       "off": "Kapalı",
@@ -2963,7 +2982,8 @@
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
       "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
-      "recipientRoleNoMembers": "etkin üye yok"
+      "recipientRoleNoMembers": "etkin üye yok",
+      "enabledHintNoMode": "Bu kapalıyken aracı çalışmaz."
     },
     "policyKeys": {
       "tools": {
@@ -3160,6 +3180,7 @@
           "blocked_by_source": "Politikanın güncelleme kaynakları tarafından hariç tutuldu",
           "held_by_deferral": "Erteleme penceresi tarafından tutuluyor",
           "blocked_by_category": "Halkanın kategori kuralları tarafından hariç tutuldu",
+          "managed_by_vendor_updates": "Üretici güncellemeleri tarafından yönetiliyor",
           "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
           "blocked_by_feature_update_policy": "Halkanın Windows özellik güncellemesi ilkesi tarafından dışlandı",
           "awaiting_manual_approval": "Manuel onay bekleniyor",
@@ -3686,6 +3707,7 @@
         }
       },
       "tools": {
+        "acknowledge_network_device": "Bir ağ değişikliğini onayla",
         "analyze_boot_performance": "Önyükleme performansı analizi",
         "analyze_disk_usage": "Disk kullanımı analizi",
         "analyze_fleet_metrics": "Filo metrikleri analizi",
@@ -3693,55 +3715,160 @@
         "analyze_screen": "Ekran analizi",
         "apply_cis_remediation": "CIS düzeltmesi",
         "apply_configuration_policy": "Yapılandırma politikası uygula",
+        "assign_security_training": "Güvenlik eğitimi ata",
+        "browse_device_event_log": "Bir cihazın olay günlüğüne göz at",
+        "browse_snapshots": "Yedekleme anlık görüntüleri",
+        "cancel_check_in": "Bir Wisp kontrolünü iptal et",
         "cancel_script_execution": "Betik çalıştırmayı iptal et",
         "capture_agent_pprof": "Aracı tanılama verisi yakala",
+        "collect_evidence": "Olay kanıtlarını topla",
         "computer_control": "Uzaktan denetim",
         "configuration_policy_compliance": "Yapılandırma politikası uyumluluğu",
+        "configure_backup_sla": "Yedekleme SLA'larını yapılandır",
+        "configure_network_baseline": "Bir ağ taban çizgisini yapılandır",
+        "configure_vault": "Yerel kasaları yapılandır",
+        "create_incident": "Bir güvenlik olayı oluştur",
+        "create_remote_session": "Bir uzak oturum başlat",
+        "create_watch": "Bir Wisp izleme kaydı oluştur",
         "delete_tenant": "Bir organizasyonu sil",
         "detect_log_correlations": "Günlük korelasyonlarını tespit et",
+        "diagnose_connectivity": "Bir bağlantı denetimi çalıştır",
         "disk_cleanup": "Disk temizliği",
         "edr_endpoint_action": "EDR: cihazı yalıt, serbest bırak veya tara",
         "execute_command": "Bir sistem komutu çalıştır",
+        "execute_containment": "Bir cihazı kısıtla",
+        "execute_dr_plan": "Bir DR planı çalıştır",
         "execute_playbook": "Bir playbook çalıştır",
+        "export_dataset": "Bir veri kümesini dışa aktar",
         "file_operations": "Dosya işlemleri",
+        "find_proven_fixes": "Kanıtlanmış düzeltmeleri bul",
+        "generate_incident_report": "Olay raporu",
         "generate_report": "Raporlar",
         "get_active_users": "Etkin kullanıcılar",
+        "get_ai_agent_run": "Yapay zeka aracısı çalıştırma ayrıntıları",
+        "get_alert_correlations": "Uyarı korelasyonları",
+        "get_audit_retention": "Denetim günlüğü saklama süresini oku",
+        "get_backup_health": "Yedekleme durumu",
+        "get_backup_status": "Yedekleme durumu",
+        "get_browser_security": "Tarayıcı güvenliği",
         "get_catalog_item": "Katalog öğesi arama",
         "get_cis_compliance": "CIS uyumluluk raporu",
         "get_cis_device_report": "CIS cihaz raporu",
+        "get_compliance_status": "Cihaz uyumluluk durumu",
         "get_configuration_policy": "Yapılandırma politikası ayrıntıları",
         "get_contract": "Sözleşme ayrıntıları",
+        "get_device_ai_activity": "Bir cihazdaki yapay zeka etkinliği",
+        "get_device_billing": "Cihaz faturalama kalemleri",
         "get_device_context": "Cihaz bağlamı",
         "get_device_details": "Cihaz ayrıntıları",
+        "get_device_events": "Cihaz etkinlik zaman çizelgesi",
+        "get_device_hardware_health": "Donanım sağlığı",
+        "get_device_health": "Aracının bildirdiği cihaz sağlığı",
+        "get_device_software": "Yüklü yazılımlar",
+        "get_device_time_status": "Saat eşitleme durumu",
         "get_device_vulnerabilities": "Cihaz güvenlik açıkları",
+        "get_diagnostic_run": "Topoloji tanılama çalıştırması",
         "get_dns_security": "DNS güvenlik etkinliği",
+        "get_dr_execution_status": "DR yürütme durumu",
+        "get_dr_plan_details": "DR planı ayrıntıları",
+        "get_edr_status": "EDR durumu",
         "get_effective_configuration": "Etkin yapılandırma",
+        "get_elevation_history": "Yetki yükseltme isteği geçmişi",
+        "get_executive_summary": "Yönetici özeti",
+        "get_fleet_design": "Fleet Design raporu",
+        "get_fleet_device_stats": "Filo cihaz sayıları",
         "get_fleet_findings": "Filo bulguları",
         "get_fleet_health": "Filo sağlığı",
+        "get_flow": "Akış ayrıntıları",
+        "get_flow_run": "Akış çalıştırma ayrıntıları",
+        "get_huntress_agents": "Huntress ajanları",
         "get_huntress_incidents": "Huntress olayları",
         "get_huntress_status": "Huntress durumu",
+        "get_hyperv_vm_details": "Hyper-V VM ayrıntıları",
+        "get_incident_timeline": "Olay zaman çizelgesi",
+        "get_interface_history": "Ağ arayüzü geçmişi",
         "get_invite_funnel": "Dağıtım davet hunisi",
         "get_invoice": "Fatura ayrıntıları",
+        "get_ip_history": "IP adresi geçmişi",
+        "get_link_evidence": "Ağ bağlantısı kanıtı",
+        "get_link_health": "Ağ bağlantısı sağlığı",
         "get_log_trends": "Günlük eğilimleri",
+        "get_management_posture": "Yönetim aracı kapsamı",
+        "get_monitor": "İzleyici ayrıntıları",
+        "get_monitor_activity": "İzleyici eşik aşımı etkinliği",
+        "get_mssql_backup_status": "MSSQL yedekleme durumu",
+        "get_network_asset": "Ağ varlığı ayrıntıları",
+        "get_network_asset_reachability": "Ağ varlığı erişilebilirliği",
+        "get_network_changes": "Ağ değişiklikleri",
+        "get_partner_settings_inheritance": "İş ortağı ayarlarının devralınması",
+        "get_pax8_status": "Pax8 durumu",
+        "get_peripheral_activity": "USB ve çevre birimi etkinliği",
         "get_playbook_history": "Playbook çalıştırma geçmişi",
+        "get_process_samples": "Süreç anlık görüntüsü",
         "get_quote": "Teklif ayrıntıları",
+        "get_recent_network_changes": "Son topoloji değişiklikleri",
+        "get_running_timer": "Çalışan zamanlayıcı",
         "get_s1_status": "SentinelOne durumu",
         "get_s1_threats": "SentinelOne tehditleri",
         "get_script_details": "Betik ayrıntıları",
         "get_script_execution": "Betik çalıştırma ayrıntıları",
         "get_script_execution_history": "Betik çalıştırma geçmişi",
+        "get_script_proposal": "Betik önerisi ayrıntıları",
+        "get_security_compliance": "Güvenlik uyumluluğu görünümleri",
         "get_security_posture": "Güvenlik duruşu",
         "get_service_monitoring_status": "Hizmet izleme durumu",
+        "get_site": "Site ayrıntıları",
+        "get_sla_breaches": "Yedekleme SLA ihlalleri",
+        "get_sla_compliance_report": "Yedekleme SLA uyumluluk raporu",
+        "get_snmp_metrics": "SNMP metrikleri",
+        "get_software_compliance": "Yazılım uyumluluğu",
+        "get_ticket_approval_status": "Bilet onay durumu",
+        "get_timesheet": "Zaman çizelgesi",
+        "get_topology": "Ağ topolojisi",
+        "get_topology_impact": "Topoloji arıza etkisi",
+        "get_topology_monitoring_status": "Topoloji izleme durumu",
+        "get_trust_page_status": "Güven sayfası durumu",
         "get_user_experience_metrics": "Kullanıcı deneyimi metrikleri",
+        "get_vault_status": "Kasa durumu",
+        "get_vm_restore_estimate": "VM geri yükleme tahmini",
+        "get_vss_status": "VSS yazıcı durumu",
         "get_vulnerability_report": "Güvenlik açığı raporu",
+        "instant_boot_vm": "Bir yedeği VM olarak anında başlat",
+        "link_entity": "Bir öğeyi Wisp konuşmasına bağla",
+        "list_ai_agent_runs": "Yapay zeka aracısı çalıştırmaları",
+        "list_ai_agent_schedules": "Yapay zeka aracısı zamanlamaları",
+        "list_ai_agents": "Yapay zeka aracıları listesi",
+        "list_bmr_recoveries": "Çıplak metal kurtarmaları",
+        "list_business_calendars": "Çalışma saati takvimleri",
+        "list_check_ins": "Wisp kontrolleri",
+        "list_concerns": "Wisp endişeleri",
         "list_configuration_policies": "Yapılandırma politikaları listesi",
         "list_contracts": "Sözleşme listesi",
+        "list_deliverable_templates": "Teslimat şablonları",
+        "list_deliverables": "Hizmet teslimatları",
+        "list_device_restore_point_attempts": "Geri yükleme noktası denemeleri",
+        "list_edr_detections": "EDR tespitleri",
+        "list_fleet_designs": "Fleet Design raporları",
+        "list_flow_runs": "Akış çalıştırmaları",
+        "list_flows": "Akışlar listesi",
+        "list_incidents": "Güvenlik olayları",
         "list_invoices": "Fatura listesi",
+        "list_links": "Wisp konuşma bağlantıları",
+        "list_monitors": "İzleyiciler listesi",
+        "list_network_assets": "Ağ varlıkları",
+        "list_org_contacts": "Organizasyon kişileri",
+        "list_org_documents": "Organizasyon belgeleri",
         "list_organizations": "Organizasyon listesi",
         "list_playbooks": "Playbook listesi",
         "list_quotes": "Teklif listesi",
+        "list_remediation_suggestions": "Düzeltme önerileri",
+        "list_remote_sessions": "Uzak oturumlar",
         "list_script_templates": "Betik şablonları listesi",
         "list_scripts": "Betik listesi",
+        "list_sites": "Siteler listesi",
+        "list_ticket_routing_rules": "Bilet yönlendirme kuralları",
+        "list_time_entries": "Zaman girişleri",
+        "list_time_sync_issues": "Saat eşitleme sorunları",
         "lookup_distributor_product": "Distribütör ürünü arama",
         "m365_query_groups": "Microsoft 365 grupları",
         "m365_query_intune_devices": "Microsoft Intune cihazları",
@@ -3749,54 +3876,168 @@
         "m365_query_signins": "Microsoft 365 oturum açmaları",
         "m365_query_sites": "Microsoft 365 siteleri",
         "m365_query_users": "Microsoft 365 kullanıcıları",
+        "manage_accounting_sync": "Muhasebe senkronizasyonunu yönet",
         "manage_alert_rules": "Uyarı kurallarını yönet",
         "manage_alerts": "Uyarıları yönet",
+        "manage_audit_baselines": "Denetim taban çizgilerini yönet",
         "manage_automations": "Otomasyonları yönet",
         "manage_backup_configs": "Yedekleme yapılandırmalarını yönet",
+        "manage_backup_profiles": "Yedekleme profillerini yönet",
+        "manage_backup_verification": "Yedekleme doğrulaması",
+        "manage_billing_catalog": "Faturalama fiyat listesini yönet",
+        "manage_billing_profiles": "Faturalama ücret çizelgelerini yönet",
+        "manage_billing_settings": "Faturalama ayarlarını yönet",
+        "manage_browser_policy": "Tarayıcı politikalarını yönet",
+        "manage_compliance_policies": "Uyumluluk politikalarını yönet",
         "manage_configuration_policy": "Yapılandırma politikalarını yönet",
+        "manage_contract_documents": "İmzalı sözleşmeleri yönet",
+        "manage_contract_templates": "Sözleşme şablonlarını yönet",
         "manage_contracts": "Sözleşmeleri yönet",
+        "manage_deliverables": "Hizmet teslimatlarını yönet",
+        "manage_delivery": "Uyarı iletimini yönet",
         "manage_deployments": "Dağıtımları yönet",
+        "manage_device_anomalies": "Cihaz anormalliklerini yönet",
+        "manage_device_function": "Bir cihazın işlevini yönet",
+        "manage_device_links": "Bağlı cihaz kayıtlarını yönet",
+        "manage_device_software": "Yüklü yazılımları yönet",
+        "manage_device_warranty": "Cihaz garantisini yönet",
         "manage_dns_policy": "DNS politikasını yönet",
+        "manage_dr_plan": "DR planlarını yönet",
+        "manage_fleet_findings": "Filo bulgularını yönet",
         "manage_groups": "Cihaz gruplarını yönet",
+        "manage_hyperv_checkpoints": "Hyper-V kontrol noktalarını yönet",
+        "manage_hyperv_vm": "Hyper-V VM'lerini yönet",
         "manage_invoices": "Faturaları yönet",
+        "manage_key_dates": "Önemli tarihleri yönet",
         "manage_maintenance_windows": "Bakım pencerelerini yönet",
+        "manage_manual_assets": "Manuel varlıkları yönet",
+        "manage_monitor_definitions": "İzleyici tanımlarını yönet",
         "manage_monitors": "Çalışma süresi izleyicilerini yönet",
+        "manage_notification_channels": "Bildirim kanallarını yönet",
+        "manage_org_documents": "Organizasyon belgelerini yönet",
         "manage_organizations": "Organizasyonları yönet",
         "manage_patches": "Yamaları yönet",
+        "manage_pax8_orders": "Pax8 siparişlerini yönet",
+        "manage_pax8_subscriptions": "Pax8 aboneliklerini yönet",
         "manage_peripheral_policies": "Çevre birimi politikalarını yönet",
+        "manage_peripheral_policy": "Çevre birimi politikalarını ve istisnalarını düzenle",
         "manage_policy_feature_link": "Bir politikayı bir özelliğe bağla",
+        "manage_processes": "Süreçleri yönet",
+        "manage_quotes": "Teklifleri yönet",
+        "manage_recovery_keys": "Kurtarma anahtarlarını yönet",
+        "manage_saved_filters": "Kayıtlı filtreleri yönet",
+        "manage_scheduled_tasks": "Zamanlanmış görevleri yönet",
+        "manage_security_policies": "Güvenlik politikalarını yönet",
+        "manage_security_recommendations": "Güvenlik önerilerini yönet",
         "manage_service_monitors": "Hizmet izleyicilerini yönet",
         "manage_services": "Hizmetleri yönet",
+        "manage_snmp_templates": "SNMP şablonlarını yönet",
+        "manage_software_catalog": "Yazılım kataloğunu yönet",
+        "manage_software_deployments": "Yazılım dağıtımlarını yönet",
+        "manage_software_inventory": "Yazılım envanterini yönet",
         "manage_software_policies": "Yazılım politikalarını yönet",
+        "manage_software_policy": "Yazılım izin ve engelleme listelerini yönet",
         "manage_startup_items": "Başlangıç öğelerini yönet",
+        "manage_support_sessions": "Quick Support oturumlarını yönet",
+        "manage_tags": "Cihaz etiketlerini yönet",
+        "manage_tenant_variables": "Betik değişkenlerini yönet",
+        "manage_ticket_attachments": "Bilet eklerini yönet",
+        "manage_ticket_checklist": "Bilet kontrol listelerini yönet",
+        "manage_ticket_checklist_templates": "Biletler için kontrol listesi şablonlarını yönet",
+        "manage_ticket_config": "Bilet ayarlarını yönet",
+        "manage_ticket_forms": "Bilet formlarını yönet",
+        "manage_ticket_inbox": "Bilet e-posta gelen kutusunu yönet",
+        "manage_ticket_response_templates": "Bilet yanıt şablonlarını yönet",
+        "manage_ticket_routing_rules": "Biletler için yönlendirme kurallarını yönet",
+        "manage_tickets": "Biletleri yönet",
+        "manage_time_suggestions": "Zaman önerilerini yönet",
         "manage_update_rings": "Güncelleme halkalarını yönet",
         "network_discovery": "Ağ keşfi",
         "preview_configuration_change": "Bir yapılandırma değişikliğini önizle",
+        "probe_network_asset": "Bir ağ varlığına ping at",
+        "propose_script": "Bir betik öner",
+        "query_agent_versions": "Aracı sürümleri",
+        "query_analytics": "Analizler",
         "query_audit_log": "Denetim günlüğünü sorgula",
+        "query_backup_sla": "Yedekleme SLA yapılandırmaları",
+        "query_backups": "Yedeklemeler",
+        "query_c2c_connections": "Buluttan buluta bağlantılar",
         "query_change_log": "Değişiklik günlüğünü sorgula",
+        "query_compliance_policies": "Uyumluluk politikaları",
+        "query_custom_fields": "Özel alanlar",
+        "query_device_workloads": "Bir cihazdaki kapsayıcılar ve VM'ler",
         "query_devices": "Cihazları sorgula",
+        "query_dr_plans": "DR planları listesi",
+        "query_hyperv_vms": "Hyper-V VM listesi",
         "query_monitors": "İzleyicileri sorgula",
+        "query_mssql_instances": "MSSQL örnekleri",
+        "query_psa_status": "PSA bağlantı durumu",
+        "query_vaults": "Yerel kasalar",
+        "query_webhooks": "Web kancaları listesi",
+        "raise_concern": "Bir Wisp endişesi bildir",
+        "read_artifact": "Saklanan bir sonucu oku",
+        "recall": "Wisp belleği",
+        "registry_operations": "Windows kayıt defteri",
+        "reliability_feedback": "Güvenilirlik puanı geri bildirimi",
+        "remediate_sensitive_data": "Hassas verileri düzelt",
+        "remediate_software_violation": "Bir yazılım ihlalini düzelt",
         "remediate_vulnerability": "Bir güvenlik açığını düzelt",
+        "remember": "Bir Wisp belleği kaydet",
         "remove_configuration_policy_assignment": "Bir yapılandırma politikası atamasını kaldır",
+        "request_elevation": "PAM yetki yükseltme iste",
+        "reset_monitor_escalation": "İzleyici yükseltmesini sıfırla",
+        "resolve_concern": "Bir Wisp endişesini çözümle",
         "resolve_device_context": "Bir cihazı çözümle",
+        "restore_as_vm": "Bir anlık görüntüyü VM olarak geri yükle",
+        "restore_c2c_items": "Buluttan buluta öğeleri geri yükle",
+        "restore_hyperv_vm": "Bir Hyper-V VM'sini geri yükle",
+        "restore_mssql_database": "Bir MSSQL veritabanını geri yükle",
+        "restore_snapshot": "Bir anlık görüntüyü geri yükle",
+        "revoke_elevation": "PAM yetki yükseltmeyi iptal et",
         "run_script": "Bir betik çalıştır",
         "s1_isolate_device": "SentinelOne: cihazı izole et",
         "s1_threat_action": "SentinelOne tehdit eylemleri",
+        "schedule_check_in": "Bir Wisp kontrolü planla",
         "search_agent_logs": "Aracı günlüklerinde ara",
         "search_catalog": "Ürün kataloğunda ara",
+        "search_documentation": "Belgelerde ara",
         "search_logs": "Cihaz günlüklerinde ara",
+        "search_packages": "Yazılım paketlerinde ara",
+        "search_pax8_products": "Pax8 ürünlerini ara",
+        "search_script_library": "Betik kütüphanesinde ara",
         "security_scan": "Güvenlik taraması",
         "set_agent_log_level": "Aracı günlük düzeyini ayarla",
         "set_device_context": "Cihaz bağlamını ayarla",
+        "snooze_concern": "Bir Wisp endişesini ertele",
         "sync_edr_data": "EDR verilerini eşitle",
         "sync_huntress_data": "Huntress verilerini eşitle",
         "system_cleanup": "Sistem temizliği",
-        "take_screenshot": "Ekran görüntüsü al"
+        "take_screenshot": "Ekran görüntüsü al",
+        "test_ticket_routing_rule": "Bir bilet yönlendirme kuralını test et",
+        "test_webhook": "Bir test web kancası gönder",
+        "trigger_agent_restart": "Bir aracıyı yeniden başlat",
+        "trigger_agent_upgrade": "Bir aracıyı yükselt",
+        "trigger_backup": "Bir yedekleme çalıştır",
+        "trigger_c2c_sync": "Bir buluttan buluta eşitleme çalıştır",
+        "trigger_hyperv_backup": "Bir Hyper-V VM'sini yedekle",
+        "trigger_mssql_backup": "Bir MSSQL veritabanını yedekle",
+        "trigger_vault_sync": "Bir yerel kasayı eşitle",
+        "validate_flow": "Bir akışı doğrula",
+        "verify_mssql_backup": "Bir MSSQL yedeğini doğrula",
+        "workspace_cancel": "Analiz korumalı alanını iptal et",
+        "workspace_collect": "Korumalı alan dosyalarını topla",
+        "workspace_run": "Bir korumalı alan betiği çalıştır",
+        "workspace_stage": "Dosyaları korumalı alanda hazırla"
       },
       "actions": {
         "apply_cis_remediation": {
           "apply": "CIS düzeltmesini uygula",
           "rollback": "CIS düzeltmesini geri al"
+        },
+        "browse_device_event_log": {
+          "get_event": "Olay ayrıntıları",
+          "list_logs": "Olay günlüklerini listele",
+          "query": "Olay günlüğü girişlerini sorgula"
         },
         "computer_control": {
           "double_click": "Çift tıkla",
@@ -3813,9 +4054,22 @@
           "status": "Uyumluluk durumu",
           "summary": "Uyumluluk özeti"
         },
+        "configure_backup_sla": {
+          "create": "Bir yedekleme SLA'sı oluştur",
+          "update": "Bir yedekleme SLA'sını güncelle"
+        },
+        "configure_vault": {
+          "create": "Bir yerel kasa oluştur",
+          "update": "Bir yerel kasayı güncelle"
+        },
         "disk_cleanup": {
           "execute": "Disk temizliğini çalıştır",
           "preview": "Disk temizliğini önizle"
+        },
+        "edr_endpoint_action": {
+          "isolate": "Bir cihazı yalıt",
+          "scan": "Bir EDR taraması çalıştır",
+          "unisolate": "Bir cihazı yalıtımdan çıkar"
         },
         "execute_command": {
           "event_logs_list": "Olay günlüklerini listele",
@@ -3847,16 +4101,48 @@
           "list": "Raporları listele",
           "update": "Bir raporu güncelle"
         },
+        "get_alert_correlations": {
+          "analyze": "Uyarıları korelasyon için analiz et",
+          "by_alert": "Bir uyarının korelasyonları",
+          "evaluation": "Korelasyon kalitesi",
+          "explain": "Bir korelasyon grubunu açıkla",
+          "get": "Korelasyon grubu ayrıntıları",
+          "groups": "Korelasyon gruplarını listele",
+          "links": "Korelasyon bağlantıları"
+        },
         "get_dns_security": {
           "allowed": "İzin verilen DNS etkinliği",
           "blocked": "Engellenen DNS etkinliği",
           "redirected": "Yönlendirilen DNS etkinliği"
+        },
+        "get_fleet_health": {
+          "evaluation": "Güvenilirlik değerlendirmesi",
+          "history": "Güvenilirlik geçmişi",
+          "list": "Cihaz güvenilirlik puanlarını listele",
+          "offenders": "Güvenilirliği düşük cihazlar",
+          "org_summary": "Organizasyon güvenilirlik özeti"
         },
         "get_service_monitoring_status": {
           "known_services": "Bilinen hizmetler",
           "results": "İzleme sonuçları",
           "status": "İzleme durumu",
           "summary": "İzleme özeti"
+        },
+        "get_snmp_metrics": {
+          "dashboard": "SNMP panosu",
+          "history": "SNMP metrik geçmişi"
+        },
+        "list_bmr_recoveries": {
+          "get": "Çıplak metal kurtarma ayrıntıları",
+          "list": "Çıplak metal kurtarmalarını listele"
+        },
+        "manage_accounting_sync": {
+          "customers": "Muhasebe müşterilerini listele",
+          "income_accounts": "Gelir hesaplarını listele",
+          "mappings": "Muhasebe eşlemelerini listele",
+          "owed_operations": "Bekleyen senkronizasyon işlemlerini listele",
+          "remote_candidates": "Bağlanacak sağlayıcı kayıtlarını ara",
+          "status": "Muhasebe senkronizasyon durumunu göster"
         },
         "manage_alert_rules": {
           "alert_summary": "Uyarı özeti",
@@ -3876,6 +4162,11 @@
           "resolve": "Bir uyarıyı çözümle",
           "suppress": "Bir uyarıyı bastır"
         },
+        "manage_audit_baselines": {
+          "compliance": "Denetim taban çizgisi uyumluluğu",
+          "device_results": "Cihaz denetim sonuçları",
+          "list": "Denetim taban çizgilerini listele"
+        },
         "manage_automations": {
           "create": "Bir otomasyon oluştur",
           "delete": "Bir otomasyonu sil",
@@ -3893,12 +4184,76 @@
           "list": "Yedekleme yapılandırmalarını listele",
           "update": "Bir yedekleme yapılandırmasını güncelle"
         },
+        "manage_backup_profiles": {
+          "create": "Bir yedekleme profili oluştur",
+          "delete": "Bir yedekleme profilini sil",
+          "get": "Yedekleme profili ayrıntıları",
+          "list": "Yedekleme profillerini listele",
+          "update": "Bir yedekleme profilini güncelle"
+        },
+        "manage_backup_verification": {
+          "health": "Doğrulama durumu",
+          "list": "Yedekleme doğrulamalarını listele",
+          "readiness": "Kurtarma hazırlığı",
+          "run": "Yedekleme doğrulaması çalıştır"
+        },
+        "manage_billing_catalog": {
+          "archive_item": "Bir fiyat listesi öğesini arşivle",
+          "create_item": "Bir fiyat listesi öğesi oluştur",
+          "remove_org_price": "Bir organizasyon fiyatını kaldır",
+          "remove_price": "Bir fiyatı kaldır",
+          "set_bundle_components": "Paket bileşenlerini ayarla",
+          "set_org_price": "Bir organizasyon fiyatı ayarla",
+          "set_price": "Bir fiyat ayarla",
+          "update_item": "Bir fiyat listesi öğesini güncelle"
+        },
+        "manage_billing_profiles": {
+          "archive": "Bir ücret çizelgesini arşivle",
+          "clear_org_profile": "Bir organizasyonun ücret çizelgesini temizle",
+          "clone": "Bir ücret çizelgesini kopyala",
+          "create": "Bir ücret çizelgesi oluştur",
+          "create_work_type": "Bir iş türü oluştur",
+          "get": "Ücret çizelgesi ayrıntıları",
+          "get_org_profile": "Organizasyon ücret çizelgesi",
+          "list": "Ücret çizelgelerini listele",
+          "list_work_types": "İş türlerini listele",
+          "set_org_profile": "Bir organizasyonun ücret çizelgesini ayarla",
+          "set_rows": "Ücret çizelgesi satırlarını ayarla",
+          "update": "Bir ücret çizelgesini güncelle",
+          "update_work_type": "Bir iş türünü güncelle"
+        },
+        "manage_billing_settings": {
+          "currency_impact": "Para birimi değişikliğini önizle",
+          "get_org": "Organizasyon faturalama ayarları",
+          "get_partner": "Partner faturalama ayarları",
+          "reporting_totals": "Faturalama rapor toplamları",
+          "update_org": "Organizasyon faturalama ayarlarını güncelle",
+          "update_partner": "Partner faturalama ayarlarını güncelle"
+        },
+        "manage_browser_policy": {
+          "apply": "Bir tarayıcı politikası uygula",
+          "create": "Bir tarayıcı politikası oluştur",
+          "list": "Tarayıcı politikalarını listele",
+          "update": "Bir tarayıcı politikasını güncelle"
+        },
+        "manage_compliance_policies": {
+          "deactivate": "Bir uyumluluk politikasını devre dışı bırak"
+        },
         "manage_configuration_policy": {
           "activate": "Bir yapılandırma politikasını etkinleştir",
           "create": "Bir yapılandırma politikası oluştur",
           "deactivate": "Bir yapılandırma politikasını devre dışı bırak",
           "delete": "Bir yapılandırma politikasını sil",
           "update": "Bir yapılandırma politikasını güncelle"
+        },
+        "manage_contract_documents": {
+          "list": "İmzalı sözleşmeleri listele"
+        },
+        "manage_contract_templates": {
+          "get": "Sözleşme şablonu ayrıntıları",
+          "get_version": "Sözleşme şablonu sürümü",
+          "list": "Sözleşme şablonlarını listele",
+          "usage": "Sözleşme şablonu kullanımı"
         },
         "manage_contracts": {
           "activate": "Bir sözleşmeyi etkinleştir",
@@ -3907,10 +4262,34 @@
           "create_draft": "Bir sözleşme taslağı oluştur",
           "delete_draft": "Bir sözleşme taslağını sil",
           "pause": "Bir sözleşmeyi duraklat",
+          "preview_invoice": "Sonraki sözleşme faturasını önizle",
           "remove_line": "Bir sözleşme kalemini kaldır",
           "resume": "Bir sözleşmeyi sürdür",
           "update": "Bir sözleşmeyi güncelle",
           "update_line": "Bir sözleşme kalemini güncelle"
+        },
+        "manage_deliverables": {
+          "apply_template": "Bir teslimat şablonu uygula",
+          "create": "Bir teslimat oluştur",
+          "deactivate": "Bir teslimatı devre dışı bırak",
+          "deliver": "Bir teslimatı teslim edildi olarak işaretle",
+          "link_evidence": "Teslimat kanıtını bağla",
+          "reopen": "Bir teslimatı yeniden aç",
+          "reschedule": "Bir teslimatı yeniden zamanla",
+          "update": "Bir teslimatı güncelle",
+          "waive": "Bir teslimattan feragat et"
+        },
+        "manage_delivery": {
+          "create_escalation": "Bir eskalasyon kuralı oluştur",
+          "create_routing": "Bir iletim rotası oluştur",
+          "delete_escalation": "Bir eskalasyon kuralını sil",
+          "delete_routing": "Bir iletim rotasını sil",
+          "list_escalation": "Eskalasyon kurallarını listele",
+          "list_routing": "İletim rotalarını listele",
+          "resolve": "Uyarı iletimini çözümle",
+          "set_default": "Varsayılan iletim rotasını ayarla",
+          "update_escalation": "Bir eskalasyon kuralını güncelle",
+          "update_routing": "Bir iletim rotasını güncelle"
         },
         "manage_deployments": {
           "cancel": "Bir dağıtımı iptal et",
@@ -3922,11 +4301,48 @@
           "resume": "Bir dağıtımı sürdür",
           "start": "Bir dağıtımı başlat"
         },
+        "manage_device_anomalies": {
+          "dismiss": "Bir anormalliği yoksay",
+          "list": "Anormallikleri listele",
+          "promote": "Bir anormalliği uyarıya dönüştür",
+          "resolve": "Bir anormalliği çözümle"
+        },
+        "manage_device_function": {
+          "get": "Cihaz işlevi"
+        },
+        "manage_device_links": {
+          "create": "Cihaz kayıtlarını bağla",
+          "dissolve": "Bir cihaz bağlantısını kaldır",
+          "for_device": "Bir cihazın bağlantıları",
+          "get": "Cihaz bağlantısı ayrıntıları",
+          "list": "Cihaz bağlantılarını listele",
+          "update": "Bir cihaz bağlantısını güncelle"
+        },
+        "manage_device_software": {
+          "update": "Bir uygulamayı güncelle"
+        },
+        "manage_device_warranty": {
+          "expiring": "Süresi dolmak üzere olan garantileri listele",
+          "get": "Cihaz garantisi",
+          "refresh": "Bir cihaz garantisini yenile"
+        },
         "manage_dns_policy": {
           "add_allow": "Bir alan adına izin ver",
           "add_block": "Bir alan adını engelle",
           "remove_allow": "İzin verilen bir alan adını kaldır",
           "remove_block": "Engellenen bir alan adını kaldır"
+        },
+        "manage_dr_plan": {
+          "add_group": "Bir plan grubu ekle",
+          "create_plan": "Bir DR planı oluştur",
+          "delete_group": "Bir plan grubunu sil",
+          "update_group": "Bir plan grubunu güncelle",
+          "update_plan": "Bir DR planını güncelle"
+        },
+        "manage_fleet_findings": {
+          "acknowledge": "Bir filo bulgusunu onayla",
+          "dismiss": "Bir filo bulgusunu yoksay",
+          "reopen": "Bir filo bulgusunu yeniden aç"
         },
         "manage_groups": {
           "add_devices": "Bir gruba cihaz ekle",
@@ -3938,6 +4354,19 @@
           "preview": "Grup üyeliğini önizle",
           "remove_devices": "Bir gruptan cihaz kaldır",
           "update": "Bir cihaz grubunu güncelle"
+        },
+        "manage_hyperv_checkpoints": {
+          "apply": "Bir kontrol noktası uygula",
+          "create": "Bir kontrol noktası oluştur",
+          "delete": "Bir kontrol noktasını sil"
+        },
+        "manage_hyperv_vm": {
+          "force_stop": "Bir VM'yi zorla durdur",
+          "pause": "Bir VM'yi duraklat",
+          "resume": "Bir VM'yi sürdür",
+          "save": "Bir VM'nin durumunu kaydet",
+          "start": "Bir VM'yi başlat",
+          "stop": "Bir VM'yi durdur"
         },
         "manage_invoices": {
           "add_bundle_line": "Bir paket kalemi ekle",
@@ -3951,11 +4380,18 @@
           "delete_draft": "Bir fatura taslağını sil",
           "issue": "Bir fatura düzenle",
           "record_payment": "Bir ödemeyi kaydet",
+          "refresh_time_lines": "Zaman kalemlerini yenile",
           "remove_line": "Bir fatura kalemini kaldır",
           "update_header": "Fatura ayrıntılarını güncelle",
           "update_line": "Bir fatura kalemini güncelle",
           "void": "Bir faturayı iptal et",
           "void_payment": "Bir ödemeyi iptal et"
+        },
+        "manage_key_dates": {
+          "create": "Bir önemli tarih oluştur",
+          "delete": "Bir önemli tarihi sil",
+          "list": "Önemli tarihleri listele",
+          "update": "Bir önemli tarihi güncelle"
         },
         "manage_maintenance_windows": {
           "active_now": "Etkin bakım pencereleri",
@@ -3965,11 +4401,41 @@
           "list": "Bakım pencerelerini listele",
           "update": "Bir bakım penceresini güncelle"
         },
+        "manage_manual_assets": {
+          "create": "Bir manuel varlık oluştur",
+          "delete": "Bir manuel varlığı sil",
+          "link": "Bir manuel varlığı bağla",
+          "list": "Manuel varlıkları listele",
+          "unlink": "Bir manuel varlığın bağlantısını kaldır",
+          "update": "Bir manuel varlığı güncelle"
+        },
+        "manage_monitor_definitions": {
+          "attach": "Bir izleyici tanımı iliştir",
+          "create": "Bir izleyici tanımı oluştur",
+          "delete": "Bir izleyici tanımını sil",
+          "describe": "İzleyici tanımı seçeneklerini açıkla",
+          "detach": "Bir izleyici tanımını ayır",
+          "disable": "Bir izleyici tanımını devre dışı bırak",
+          "enable": "Bir izleyici tanımını etkinleştir",
+          "update": "Bir izleyici tanımını güncelle"
+        },
         "manage_monitors": {
           "create": "Bir izleyici oluştur",
           "delete": "Bir izleyiciyi sil",
           "get": "İzleyici ayrıntıları",
           "update": "Bir izleyiciyi güncelle"
+        },
+        "manage_notification_channels": {
+          "create": "Bir bildirim kanalı oluştur",
+          "delete": "Bir bildirim kanalını sil",
+          "list": "Bildirim kanallarını listele",
+          "test": "Bir bildirim kanalını test et",
+          "update": "Bir bildirim kanalını güncelle"
+        },
+        "manage_org_documents": {
+          "set_portal_visibility": "Portal görünürlüğünü ayarla",
+          "supersede": "Bir belgenin yerine yenisini koy",
+          "update_metadata": "Belge ayrıntılarını güncelle"
         },
         "manage_organizations": {
           "add_contact": "Bir organizasyon kişisi ekle",
@@ -3983,6 +4449,7 @@
           "compliance": "Yama uyumluluğu",
           "decline": "Bir yamayı reddet",
           "defer": "Bir yamayı ertele",
+          "device_history": "Cihaz yama geçmişi",
           "install": "Bir yama yükle",
           "list": "Yamaları listele",
           "rollback": "Bir yamayı geri al",
@@ -3995,11 +4462,68 @@
           "list": "Çevre birimi politikalarını listele",
           "update": "Bir çevre birimi politikasını güncelle"
         },
+        "manage_peripheral_policy": {
+          "add_exception": "Bir çevre birimi istisnası ekle",
+          "create": "Bir çevre birimi politikası oluştur",
+          "disable": "Bir çevre birimi politikasını devre dışı bırak",
+          "remove_exception": "Bir çevre birimi istisnasını kaldır",
+          "update": "Bir çevre birimi politikasını güncelle"
+        },
         "manage_policy_feature_link": {
           "add": "Bir politikayı bir özelliğe bağla",
+          "describe": "Politika bağlantılarını açıkla",
           "list": "Politika bağlantılarını listele",
           "remove": "Bir politika bağlantısını kaldır",
           "update": "Bir politika bağlantısını güncelle"
+        },
+        "manage_processes": {
+          "kill": "Bir süreci sonlandır",
+          "list": "Süreçleri listele"
+        },
+        "manage_quotes": {
+          "add_block": "Bir teklif bloğu ekle",
+          "add_catalog_line": "Bir katalog kalemi ekle",
+          "add_manual_line": "Bir manuel kalem ekle",
+          "create_draft": "Bir teklif taslağı oluştur",
+          "create_pay_link": "Bir ödeme bağlantısı oluştur",
+          "decline": "Bir teklifi reddet",
+          "delete_block": "Bir teklif bloğunu sil",
+          "delete_draft": "Bir teklif taslağını sil",
+          "move_line": "Bir teklif kalemini taşı",
+          "remove_line": "Bir teklif kalemini kaldır",
+          "reorder_blocks": "Teklif bloklarını yeniden sırala",
+          "reorder_lines": "Teklif kalemlerini yeniden sırala",
+          "send": "Bir teklif gönder",
+          "update": "Bir teklifi güncelle",
+          "update_block": "Bir teklif bloğunu güncelle",
+          "update_line": "Bir teklif kalemini güncelle"
+        },
+        "manage_recovery_keys": {
+          "collect": "Kurtarma anahtarlarını topla",
+          "list": "Kurtarma anahtarlarını listele",
+          "rotate": "Bir kurtarma anahtarını döndür"
+        },
+        "manage_saved_filters": {
+          "create": "Bir kayıtlı filtre oluştur",
+          "delete": "Bir kayıtlı filtreyi sil",
+          "get": "Kayıtlı filtre ayrıntıları",
+          "list": "Kayıtlı filtreleri listele"
+        },
+        "manage_scheduled_tasks": {
+          "disable": "Bir zamanlanmış görevi devre dışı bırak",
+          "enable": "Bir zamanlanmış görevi etkinleştir",
+          "list": "Zamanlanmış görevleri listele",
+          "run": "Bir zamanlanmış görevi çalıştır"
+        },
+        "manage_security_policies": {
+          "create": "Bir güvenlik politikası oluştur",
+          "list": "Güvenlik politikalarını listele",
+          "update": "Bir güvenlik politikasını güncelle"
+        },
+        "manage_security_recommendations": {
+          "complete": "Bir öneriyi tamamla",
+          "dismiss": "Bir öneriyi yoksay",
+          "list": "Önerileri listele"
         },
         "manage_service_monitors": {
           "list": "Hizmet izleyicilerini listele"
@@ -4010,8 +4534,55 @@
           "start": "Hizmeti başlat",
           "stop": "Hizmeti durdur"
         },
+        "manage_snmp_templates": {
+          "browse_oids": "SNMP OID'lerine göz at",
+          "create": "Bir SNMP şablonu oluştur",
+          "delete": "Bir SNMP şablonunu sil",
+          "get": "SNMP şablonu ayrıntıları",
+          "list": "SNMP şablonlarını listele",
+          "update": "Bir SNMP şablonunu güncelle",
+          "validate_oids": "SNMP OID'lerini doğrula"
+        },
+        "manage_software_catalog": {
+          "add_install_method": "Bir yükleme yöntemi ekle",
+          "add_version": "Bir sürüm ekle",
+          "archive": "Bir katalog öğesini arşivle",
+          "create": "Bir katalog öğesi oluştur",
+          "delete_install_method": "Bir yükleme yöntemini sil",
+          "get": "Katalog öğesi ayrıntıları",
+          "import_package": "Bir paketi içe aktar",
+          "list": "Katalog öğelerini listele",
+          "promote_version": "Bir sürümü yükselt",
+          "update": "Bir katalog öğesini güncelle",
+          "update_install_method": "Bir yükleme yöntemini güncelle",
+          "update_version": "Bir sürümü güncelle"
+        },
+        "manage_software_deployments": {
+          "cancel": "Bir yazılım dağıtımını iptal et",
+          "create": "Bir yazılım dağıtımı oluştur",
+          "get": "Yazılım dağıtımı ayrıntıları",
+          "list": "Yazılım dağıtımlarını listele",
+          "results": "Yazılım dağıtımı sonuçları",
+          "retry": "Bir yazılım dağıtımını yeniden dene",
+          "summary": "Yazılım dağıtımı özeti"
+        },
+        "manage_software_inventory": {
+          "approve": "Yazılımı onayla",
+          "clear": "Bir yazılım kararını temizle",
+          "deny": "Yazılımı engelle",
+          "devices": "Yazılım bulunan cihazlar",
+          "list": "Yazılım envanterini listele",
+          "names": "Yazılım adlarında ara"
+        },
         "manage_software_policies": {
           "create": "Bir yazılım politikası oluştur",
+          "get": "Yazılım politikası ayrıntıları",
+          "list": "Yazılım politikalarını listele",
+          "update": "Bir yazılım politikasını güncelle"
+        },
+        "manage_software_policy": {
+          "create": "Bir yazılım politikası oluştur",
+          "delete": "Bir yazılım politikasını sil",
           "get": "Yazılım politikası ayrıntıları",
           "list": "Yazılım politikalarını listele",
           "update": "Bir yazılım politikasını güncelle"
@@ -4020,11 +4591,160 @@
           "disable": "Başlangıç öğesini devre dışı bırak",
           "enable": "Başlangıç öğesini etkinleştir"
         },
+        "manage_support_sessions": {
+          "end": "Bir destek oturumunu sonlandır",
+          "get": "Destek oturumu ayrıntıları",
+          "list": "Destek oturumlarını listele"
+        },
+        "manage_tags": {
+          "list": "Cihaz etiketlerini listele"
+        },
+        "manage_tenant_variables": {
+          "list": "Betik değişkenlerini listele"
+        },
+        "manage_ticket_attachments": {
+          "attach_from_artifact": "Saklanan bir sonucu ekle",
+          "delete": "Bir eki sil",
+          "list": "Ekleri listele",
+          "read_content": "Bir eki oku"
+        },
+        "manage_ticket_checklist": {
+          "add_item": "Bir kontrol listesi öğesi ekle",
+          "apply_template": "Bir kontrol listesi şablonu uygula",
+          "delete_item": "Bir kontrol listesi öğesini sil",
+          "duplicate_template": "Bir kontrol listesi şablonunu çoğalt",
+          "get_template": "Kontrol listesi şablonu ayrıntıları",
+          "list": "Kontrol listesi öğelerini listele",
+          "list_templates": "Kontrol listesi şablonlarını listele",
+          "reorder": "Kontrol listesi öğelerini yeniden sırala",
+          "save_as_template": "Kontrol listesi şablonu olarak kaydet",
+          "update_item": "Bir kontrol listesi öğesini güncelle"
+        },
+        "manage_ticket_checklist_templates": {
+          "add_item": "Bir şablon öğesi ekle",
+          "create": "Bir kontrol listesi şablonu oluştur",
+          "delete": "Bir kontrol listesi şablonunu sil",
+          "get": "Kontrol listesi şablonu ayrıntıları",
+          "list": "Kontrol listesi şablonlarını listele",
+          "remove_item": "Bir şablon öğesini kaldır",
+          "reorder_items": "Şablon öğelerini yeniden sırala",
+          "update": "Bir kontrol listesi şablonunu güncelle",
+          "update_item": "Bir şablon öğesini güncelle"
+        },
+        "manage_ticket_config": {
+          "create_category": "Bir bilet kategorisi oluştur",
+          "create_domain": "Bir bilet alanı oluştur",
+          "create_status": "Bir bilet durumu oluştur",
+          "delete_category": "Bir bilet kategorisini sil",
+          "delete_domain": "Bir bilet alanını sil",
+          "get_config": "Bilet yapılandırması",
+          "get_org_settings": "Organizasyon bilet ayarları",
+          "list_categories": "Bilet kategorilerini listele",
+          "list_domains": "Bilet alanlarını listele",
+          "reorder_categories": "Bilet kategorilerini yeniden sırala",
+          "reorder_statuses": "Bilet durumlarını yeniden sırala",
+          "set_priorities": "Bilet önceliklerini ayarla",
+          "update_category": "Bir bilet kategorisini güncelle",
+          "update_domain": "Bir bilet alanını güncelle",
+          "update_org_settings": "Organizasyon bilet ayarlarını güncelle",
+          "update_status": "Bir bilet durumunu güncelle"
+        },
+        "manage_ticket_forms": {
+          "available": "Kullanılabilir bilet formları",
+          "create": "Bir bilet formu oluştur",
+          "delete": "Bir bilet formunu sil",
+          "list": "Bilet formlarını listele",
+          "update": "Bir bilet formunu güncelle"
+        },
+        "manage_ticket_inbox": {
+          "convert": "Bir e-postayı bilete dönüştür",
+          "dismiss": "Bir e-postayı yoksay",
+          "list": "Yerleştirilmemiş e-postaları listele"
+        },
+        "manage_ticket_response_templates": {
+          "create": "Bir yanıt şablonu oluştur",
+          "delete": "Bir yanıt şablonunu sil",
+          "list": "Yanıt şablonlarını listele",
+          "update": "Bir yanıt şablonunu güncelle"
+        },
+        "manage_ticket_routing_rules": {
+          "create": "Bir yönlendirme kuralı oluştur",
+          "delete": "Bir yönlendirme kuralını sil",
+          "reorder": "Yönlendirme kurallarını yeniden sırala",
+          "update": "Bir yönlendirme kuralını güncelle"
+        },
+        "manage_tickets": {
+          "assign": "Bir bilet ata",
+          "bulk_update": "Biletleri toplu güncelle",
+          "comment": "Bir bilete yorum yap",
+          "create": "Bir bilet oluştur",
+          "create_from_alert": "Bir uyarıdan bilet oluştur",
+          "delete_comment": "Bir bilet yorumunu sil",
+          "draft": "Bir bilet taslağı hazırla",
+          "edit_comment": "Bir bilet yorumunu düzenle",
+          "get": "Bilet ayrıntıları",
+          "link_alert": "Bir uyarıyı bilete bağla",
+          "link_device": "Bir cihazı bilete bağla",
+          "link_ticket": "İlişkili biletleri bağla",
+          "list": "Biletleri listele",
+          "list_links": "Bilet bağlantılarını listele",
+          "list_work_types": "İş türlerini listele",
+          "log_time_entry": "Bir zaman girişi kaydet",
+          "merge": "Biletleri birleştir",
+          "merge_preview": "Bir bilet birleştirmesini önizle",
+          "move_org": "Bir bileti başka bir organizasyona taşı",
+          "start_timer": "Bir bilet zamanlayıcısı başlat",
+          "stop_timer": "Bir bilet zamanlayıcısını durdur",
+          "unlink_alert": "Bir uyarının bilet bağlantısını kaldır",
+          "unlink_ticket": "İlişkili biletlerin bağlantısını kaldır",
+          "update_fields": "Bilet alanlarını güncelle",
+          "update_status": "Bilet durumunu güncelle",
+          "update_time_entry": "Bir zaman girişini güncelle"
+        },
+        "manage_time_suggestions": {
+          "confirm": "Bir zaman önerisini onayla",
+          "dismiss": "Bir zaman önerisini yoksay",
+          "list": "Zaman önerilerini listele",
+          "undo": "Yoksayılan bir öneriyi geri al"
+        },
         "manage_update_rings": {
           "create": "Bir güncelleme halkası oluştur",
           "get": "Güncelleme halkası ayrıntıları",
           "list": "Güncelleme halkalarını listele",
           "update": "Bir güncelleme halkasını güncelle"
+        },
+        "query_agent_versions": {
+          "check_upgrades": "Cihazlarda yükseltmeleri denetle",
+          "list_versions": "Aracı sürümlerini listele"
+        },
+        "query_analytics": {
+          "capacity_predictions": "Kapasite tahminleri",
+          "sla_compliance": "SLA uyumluluğu",
+          "sla_definitions": "SLA tanımları"
+        },
+        "query_backups": {
+          "list_configs": "Yedekleme yapılandırmalarını listele",
+          "list_jobs": "Yedekleme işlerini listele",
+          "list_policies": "Yedekleme politikalarını listele"
+        },
+        "query_custom_fields": {
+          "get_device_values": "Bir cihazın özel alan değerleri",
+          "list_definitions": "Özel alan tanımlarını listele"
+        },
+        "registry_operations": {
+          "create_key": "Bir kayıt defteri anahtarı oluştur",
+          "delete_key": "Bir kayıt defteri anahtarını sil",
+          "get_value": "Bir kayıt defteri değerini oku",
+          "read_key": "Bir kayıt defteri anahtarını oku",
+          "set_value": "Bir kayıt defteri değeri ayarla"
+        },
+        "remediate_sensitive_data": {
+          "accept_risk": "Riski kabul et",
+          "encrypt": "Bir dosyayı şifrele",
+          "false_positive": "Yanlış pozitif olarak işaretle",
+          "mark_remediated": "Düzeltildi olarak işaretle",
+          "quarantine": "Bir dosyayı karantinaya al",
+          "secure_delete": "Bir dosyayı güvenli şekilde sil"
         },
         "s1_threat_action": {
           "kill": "Tehdit sürecini sonlandır",
@@ -4042,7 +4762,32 @@
         "system_cleanup": {
           "list": "Sistem temizleme eylemlerini listele",
           "run": "Sistem temizliğini çalıştır",
-          "status": "Sistem temizliği durumu"
+          "status": "Sistem temizliği durumu",
+          "cancel": "Sistem temizliği çalıştırmasını iptal et"
+        },
+        "manage_pax8_orders": {
+          "list": "Pax8 siparişlerini listele",
+          "get": "Pax8 siparişini getir",
+          "create_draft": "Pax8 taslak siparişi oluştur",
+          "add_line": "Pax8 siparişine satır ekle",
+          "update_line": "Pax8 sipariş satırını güncelle",
+          "remove_line": "Pax8 sipariş satırını kaldır",
+          "preview": "Pax8 siparişini önizle",
+          "preflight": "Pax8 sipariş ön kontrolünü çalıştır",
+          "reconcile": "Pax8 siparişini mutabık kıl"
+        },
+        "manage_pax8_subscriptions": {
+          "list": "Pax8 aboneliklerini listele",
+          "drift": "Pax8 abonelik sapmalarını denetle",
+          "sync": "Pax8 aboneliklerini senkronize et",
+          "link": "Pax8 aboneliğini bağla",
+          "unlink": "Pax8 aboneliğinin bağlantısını kaldır"
+        },
+        "search_pax8_products": {
+          "search": "Pax8 ürünlerini ara",
+          "provision_details": "Pax8 sağlama ayrıntılarını getir",
+          "dependencies": "Pax8 ürün bağımlılıklarını getir",
+          "pricing": "Pax8 ürün fiyatlarını getir"
         }
       },
       "alwaysOnCount_one": "{{count}} salt okunur araç",
@@ -4439,7 +5184,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Kayıt olurken şifrenizle (Touch ID / Windows Hello) onaylayacaksınız.",
     "authenticatorCode": "Kimlik doğrulayıcı kodu",
-    "confirmYourPassword": "Şifrenizi doğrulayın"
+    "confirmYourPassword": "Şifrenizi doğrulayın",
+    "switchToAuthenticatorCode": "Bunun yerine kimlik doğrulama uygulamasını kullanın",
+    "usePasskeyInstead": "Bunun yerine geçiş anahtarınızı kullanın"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Hazır yanıtlar",
@@ -4782,7 +5529,21 @@
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
     "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın.",
     "ssoReauthManageHint": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Bu değişikliği onaylamak için sağlayıcınızla doğrulayın.",
-    "ssoReauthManageVerified": "Kimliğiniz sağlayıcınızla doğrulandı. Bu değişikliği onaylamak için aşağıdaki adımı tamamlayın."
+    "ssoReauthManageVerified": "Kimliğiniz sağlayıcınızla doğrulandı. Bu değişikliği onaylamak için aşağıdaki adımı tamamlayın.",
+    "notSetUp": "Kurulmadı",
+    "notAvailable": "Kullanılamıyor",
+    "backup": "Yedek",
+    "addBackup": "Yedek ekle",
+    "totpBackupAddHint": "Geçiş anahtarınız kullanılamadığında yine de oturum açabilmek için yedek olarak bir kimlik doğrulama uygulaması ekleyin.",
+    "totpPolicyDisallowed": "Kuruluşunuzun ilkesi kimlik doğrulama uygulamalarına izin vermiyor.",
+    "totpBackupActiveHint": "Geçiş anahtarınız kullanılamıyorsa kimlik doğrulama uygulamanızdaki bir kodu kullanın.",
+    "totpBackupVerifyNote": "Doğrula düğmesine bastığınızda geçiş anahtarınızla onaylayacaksınız.",
+    "confirmBackupButton": "Doğrulayın ve yedek ekleyin",
+    "removeTotpTitle": "Kimlik doğrulama uygulamasını kaldır",
+    "removeTotpBackupDescription": "Geçiş anahtarınızla oturum açmaya devam edeceksiniz. Kurtarma kodlarınız aynı kalır.",
+    "removeTotpPrimaryDescription": "Geçiş anahtarınız birincil oturum açma yönteminiz olur. Kurtarma kodlarınız aynı kalır.",
+    "removeTotpConfirmWithPasskey": "Geçiş anahtarınızla onaylayacaksınız.",
+    "removing": "Kaldırılıyor..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Pax8'den içe aktar",
@@ -4799,15 +5560,17 @@
     "recoveryCode": "Kurtarma kodu",
     "useRecoveryCode": "Geçiş anahtarınıza erişemiyor musunuz? Kurtarma kodu kullanın",
     "usePasskeyVerification": "Bunun yerine geçiş anahtarıyla doğrulayın",
-    "nameMustBeAtLeast2Characters": "Ad en az 2 karakterden oluşmalıdır",
+    "nameIsRequired": "Ad gereklidir.",
+    "nameMustBeAtMost255Characters": "Ad en fazla 255 karakter olabilir",
     "loadingProfile": "Profil yükleniyor...",
     "profileSettings": "Profil ayarları",
     "manageYourAccountSettingsAndSecurityPreferences": "Hesap ayarlarınızı ve güvenlik tercihlerinizi yönetin.",
     "profileInformation": "Profil bilgileri",
     "updateYourPersonalDetails": "Kişisel bilgilerinizi güncelleyin.",
     "avatar": "Avatarı",
-    "uploadNewPicture": "Yeni resim yükle",
-    "pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload": "PNG, JPG veya WebP. Maksimum 5 MB. Dairenin üzerine sürükleyip bırakın veya Yükle'ye tıklayın.",
+    "changePicture": "Fotoğrafı değiştir",
+    "undoAvatarChange": "Geri al",
+    "pictureRemovalPending": "Profil fotoğrafının kaldırılması beklemede",
     "cancel": "İptal",
     "name": "İsim",
     "yourName": "Adınız",
@@ -4830,8 +5593,7 @@
     "failedToFetchUserData": "Kullanıcı verileri getirilemedi",
     "failedToLoadProfileData": "Profil verileri yüklenemedi",
     "profileUpdatedSuccessfully": "Profil başarıyla güncellendi",
-    "avatarUpdated": "Avatar güncellendi.",
-    "avatarRemoved": "Avatar kaldırıldı.",
+    "avatarSavedButNameUpdateFailed": "Profil fotoğrafı değişikliği kaydedildi ancak adınız güncellenemedi: {{error}}",
     "passwordChangedSuccessfully": "Şifre başarıyla değiştirildi",
     "multiFactorAuthenticationEnabledSuccessfully": "Çok faktörlü kimlik doğrulama başarıyla etkinleştirildi",
     "multiFactorAuthenticationDisabled": "Çok faktörlü kimlik doğrulama devre dışı",
@@ -4862,10 +5624,7 @@
     "fileIsEmpty": "Dosya boş.",
     "failedToRenamePasskeyHttp": "Şifre yeniden adlandırılamadı (HTTP {{status}})",
     "failedToDeletePasskeyHttp": "Şifre silinemedi (HTTP {{status}})",
-    "removing": "Kaldırılıyor...",
     "remove": "Kaldır",
-    "uploading": "Yükleniyor...",
-    "upload": "Yükle",
     "saving": "Kaydediliyor...",
     "saveChanges": "Değişiklikleri kaydet",
     "passkey": "Şifre",
@@ -4909,7 +5668,13 @@
     "ssoReauthManageProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Bu değişikliği onaylamak için yeniden doğrulayın.",
     "verifyWithIdpToDeletePasskey": "Bu hesabın parolası yok. Bir geçiş anahtarını kaldırmadan önce kimlik sağlayıcınızla doğrulayın.",
     "deletePasskeySsoReauth": "Bir geçiş anahtarını kaldırmak için kimliği doğrulayın",
-    "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin."
+    "deletePasskeySsoVerified": "Kimlik doğrulandı. Kaldırmak istediğiniz geçiş anahtarında Sil seçeneğini seçin.",
+    "authenticatorBackupAdded": "Kimlik doğrulama uygulaması yedek olarak eklendi. Kurtarma kodlarınız değişmedi",
+    "authenticatorAppRemoved": "Kimlik doğrulama uygulaması kaldırıldı. Geçiş anahtarınızla oturum açacaksınız",
+    "authenticatorCodeRejectedWaitForNext": "Bu kod kabul edilmedi. Her kod yalnızca bir kez çalışır; az önce kullandıysanız kimlik doğrulama uygulamanızdaki bir sonraki kodu bekleyin.",
+    "passkeyConfirmationCanceled": "Geçiş anahtarı onayı iptal edildi veya zaman aşımına uğradı.",
+    "passkeyProofRejected": "Geçiş anahtarınız doğrulanamadı. Lütfen tekrar deneyin.",
+    "failedToRemoveAuthenticatorApp": "Kimlik doğrulama uygulaması kaldırılamadı"
   },
   "roleManager": {
     "roles": "Roller",
@@ -5636,8 +6401,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Yapay zeka bütçesi",
-    "description": "Bu kuruluşta Breeze AI için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "title": "Yapay Zeka bütçesi ve sınırları",
+    "description": "Bu kuruluşta Breeze AI için harcama sınırları, uyarılar ve hız sınırları. İş ortağınızın ayarladığı alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
     "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
   },
   "orgSettingsPage": {
@@ -5665,6 +6430,8 @@
       "generalDescription": "Profil ve varsayılanlar",
       "contacts": "Kişiler",
       "contactsDescription": "Bu müşteride ulaşılacak kişiler; siteye göre veya kuruluş genelinde",
+      "domains": "Alan adları",
+      "domainsDescription": "Müşteri e-posta alan adları ve sahiplik kanıtı",
       "contracts": "Sözleşmeler",
       "contractsDescription": "Yinelenen anlaşmalar",
       "billing": "Faturalandırma",
@@ -5677,7 +6444,7 @@
       "extensionsDescription": "Üçüncü taraf uzantı bölümleri",
       "portalBranding": "Portal ve Markalama",
       "branding": "Markalama",
-      "brandingDescription": "Portal teması ve görselleri",
+      "brandingDescription": "Logo, renkler ve özel CSS",
       "portal": "Müşteri Portalı",
       "portalDescription": "Özellikler ve destek",
       "securityAccess": "Güvenlik ve Erişim",
@@ -6179,7 +6946,8 @@
         "pam_open_actuation": "Birleştirilerek kapatılacak kuruluşta temizliği henüz tamamlanmamış ayrıcalıklı erişim (PAM) oturumları var. Oturumların kapanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
         "pam_evidence": "Birleştirilerek kapatılacak kuruluşun ayrıcalıklı erişim (PAM) geçmişi var ve PAM geçmişinin kuruluşlar arasında taşınması bu dağıtımda etkin değil. Ters yönde birleştirin veya bu kuruluşları birleştirmeyin.",
         "payment_in_flight": "Birleştirilerek kapatılacak kuruluşun işlemdeki bir ödemesi var. Ödemenin tamamlanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
-        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak."
+        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak.",
+        "entra_tenant_conflict": "Birleştirilerek kapatılacak kuruluşun kanıtlanmış bir Microsoft kiracısı var ve kalan kuruluş da bir Microsoft kiracısına bağlı. Kiracı bağlantılarından birini kaldırın, ardından birleştirmeyi yeniden deneyin."
       }
     },
     "archive": {
@@ -6354,28 +7122,166 @@
   },
   "customerDomainsCard": {
     "title": "Müşteri e-posta alanları",
-    "description": "Doğrulanmış müşteri e-posta alan adlarını doğru kuruluşa yönlendirin.",
+    "managedPerOrg": "Alan adları kuruluş başına yönetilir. Alan adlarını eklemek, doğrulamak, taşımak veya kaldırmak için bir kuruluşu açın.",
+    "emptySummary": "Henüz müşteri e-posta alan adı yok. Bunları her kuruluşun Alan adları sekmesinden ekleyin.",
     "errors": {
-      "load": "Müşteri etki alanı eşlemeleri yüklenemedi.",
-      "save": "Müşteri etki alanı eşlemesi kaydedilemedi. Tekrar dene."
-    },
-    "toasts": {
-      "added": "Müşteri alanı eşlemesi eklendi",
-      "saved": "Müşteri alanı eşlemesi kaydedildi",
-      "deleted": "Müşteri alanı eşlemesi silindi"
+      "load": "Müşteri etki alanı eşlemeleri yüklenemedi."
     },
     "columns": {
       "domain": "Alan Adı",
+      "status": "Durum"
+    },
+    "actions": {
+      "manage": "Yönet"
+    }
+  },
+  "orgDomains": {
+    "title": "Alan adları",
+    "description": "Bu müşteriye ait e-posta alan adları. Bildirilmiş bir alan adı, gelen e-postayı bu kuruluşa yönlendirir. Doğrulanmış bir alan adı, müşterinin onun sahibi olduğunun kanıtıdır; portal kendi kendine kaydı ve Google ile oturum açma buna dayanır.",
+    "forbidden": "Müşteri alan adlarını yönetmek, tüm kuruluşlara erişimi olan bir yönetici rolü gerektirir.",
+    "partnerOnly": "Müşteri alan adları hizmet sağlayıcınız tarafından yönetilir.",
+    "checkingAccess": "Erişim denetleniyor…",
+    "empty": "Henüz alan adı yok. Müşterinin e-posta alan adını aşağıdan ekleyin.",
+    "neverChecked": "Hiçbir zaman",
+    "notCurrent": "Bu doğrulamanın dayandığı kanıt artık geçerli değil. Yeniden geçmediği sürece günlük yeniden denetim onu kaldıracak.",
+    "inactiveSuspended": "Pasif: yeniden açılana kadar e-posta yönlendirme veya oturum açma için kullanılmaz.",
+    "stale": "Liste güncel olmayabilir: değişikliğinizden sonra yeniden yüklenemedi.",
+    "columns": {
+      "domain": "Alan adı",
+      "status": "Durum",
+      "lastChecked": "Son denetim",
       "autoCreateContact": "Kişiyi otomatik oluştur"
     },
-    "empty": "Henüz müşteri alanı eşlemesi yok.",
-    "placeholders": {
-      "domain": "müşteri.example.com",
-      "organization": "Kuruluşu seçin..."
+    "aria": {
+      "active": "{{domain}} etkin",
+      "autoCreateContact": "{{domain}} için kişileri otomatik oluştur",
+      "verify": "{{domain}} doğrulaması",
+      "move": "{{domain}} taşı",
+      "delete": "{{domain}} sil"
     },
-    "new": "Yeni",
+    "states": {
+      "declared": "Bildirilmiş — yalnızca e-posta yönlendirme",
+      "pending_dns": "DNS bekleniyor",
+      "verified": "Doğrulandı · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "DNS TXT kaydı",
+      "entra_tenant": "Microsoft (kuruluşun kanıtlanmış Entra tenant’ı)",
+      "google_directory": "Google Workspace dizini"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "Kuruluşun Microsoft tenant’ı henüz kanıtlanmadı.",
+        "connection_missing": "Kanıtlanmış tenant için bir Microsoft 365 bağlantısı gerekir. Bu kuruluş için Microsoft 365’i bağlayın veya DNS kullanın.",
+        "not_enabled": "Microsoft doğrulaması bu sunucuda kullanılamıyor."
+      },
+      "google_directory": {
+        "connection_missing": "Bu kuruluş için bir Google Workspace bağlantısı gerekir.",
+        "not_enabled": "Google Workspace bu sunucuda etkin değil."
+      }
+    },
+    "cleared": {
+      "record_missing": "Doğrulama kayboldu: DNS kaydı bulunamadı.",
+      "not_in_directory": "Doğrulama kayboldu: alan adı artık dizinde değil.",
+      "tenant_not_proven": "Doğrulama kayboldu: Microsoft tenant’ı artık kanıtlanmış değil.",
+      "connection_missing": "Doğrulama kayboldu: dizin bağlantısı kaldırıldı.",
+      "stale": "Doğrulama kayboldu: 7 gün boyunca yeniden denetlenemedi.",
+      "repointed": "Doğrulama kayboldu: alan adı başka bir kuruluşa taşındı.",
+      "msp_removed": "Doğrulama kaldırıldı.",
+      "displaced": "Doğrulama kayboldu: alan adı başka bir kuruluş tarafından doğrulandı."
+    },
+    "checkReasons": {
+      "record_missing": "DNS kaydı bulunamadı. DNS değişikliklerinin görünmesi biraz zaman alabilir; daha sonra yeniden denetleyin.",
+      "not_in_directory": "Alan adı, dizinde doğrulanmış bir alan adı değil.",
+      "tenant_not_proven": "Kuruluşun Microsoft tenant’ı kanıtlanmadı.",
+      "connection_missing": "Kuruluşun eşleşen bir dizin bağlantısı yok.",
+      "dns_error": "DNS sorgulanamadı. Daha sonra yeniden deneyin.",
+      "timeout": "Denetim zaman aşımına uğradı. Daha sonra yeniden deneyin.",
+      "graph_unavailable": "Microsoft 365’e ulaşılamadı. Daha sonra yeniden deneyin.",
+      "graph_tenant_mismatch": "Microsoft 365, kanıtlanmış olandan farklı bir tenant için yanıt verdi.",
+      "google_scope_missing": "Google Workspace yetki devrinde {{scope}} kapsamı eksik. Bunu Google Admin konsolunda ekleyin, ardından yeniden denetleyin.",
+      "google_access_denied": "Google Workspace erişimi reddetti. Yönetici e-postasını ve yetki devrini kontrol edin.",
+      "google_unavailable": "Google Workspace’e ulaşılamadı. Daha sonra yeniden deneyin.",
+      "unknown": "Denetim geçmedi."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "Bu alan adı artık bu kuruluşta değil. Sayfayı yeniden yükleyin.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "Bu alan adı başka bir kuruluş için doğrulanmış. Önce o kuruluşun sahibi diğer doğrulamayı (DNS kaydı veya dizin bağlantısı) kaldırmalıdır.",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "Bu denetim çalışırken alan adının doğrulaması değişti. Yeniden denetleyin.",
+      "DOMAIN_INACTIVE": "Doğrulamadan önce alan adını açın.",
+      "DOMAIN_DNS_NOT_STARTED": "Önce DNS kaydını alın.",
+      "DOMAIN_ALREADY_VERIFIED": "Bu alan adı başka bir yöntemle doğrulanmış. Önce o doğrulamayı kaldırın."
+    },
+    "verify": {
+      "methodLegend": "Doğrulama yöntemi",
+      "panelTitle": "{{domain}} alan adını doğrula",
+      "methodLocked": "Yöntemi değiştirmek için önce mevcut doğrulamayı kaldırın.",
+      "openPortalTab": "Tenant’ı Müşteri Portalı › Oturum açma ve kayıt altında kanıtlayın.",
+      "dnsStartHint": "Müşterinin DNS yöneticisinin yayımlaması için bir TXT kaydı alın.",
+      "startDns": "DNS kaydını al",
+      "starting": "Kayıt alınıyor…",
+      "dnsInstructions": "Müşterinin DNS yöneticisinden bu TXT kaydını eklemesini isteyin, ardından denetleyin.",
+      "recordName": "Kayıt adı (ana bilgisayar)",
+      "recordValue": "Kayıt değeri",
+      "copy": "Kopyala",
+      "copied": "Kopyalandı",
+      "googleScopeHint": "Kuruluşun Google Workspace yetki devri {{scope}} kapsamını içermelidir.",
+      "inactive": "Bu alan adı kapalı. Doğrulamak için açın.",
+      "verify": "Doğrula",
+      "checkNow": "Şimdi denetle",
+      "checking": "Denetleniyor…",
+      "resultFailed": "Doğrulanmadı. {{reason}}",
+      "resultUnavailable": "Denetim tamamlanamadı. {{reason}}",
+      "removeVerification": "Doğrulamayı kaldır",
+      "removeTitle": "{{domain}} doğrulaması kaldırılsın mı?",
+      "removeMessage": "Alan adı, e-posta yönlendirme için bu kuruluşta kalır. Kendi kendine kayıt ve Google ile oturum açma, yeniden doğrulanana kadar ona güvenmeyi bırakır."
+    },
     "actions": {
-      "addDomain": "Alan adı ekle"
+      "verify": "Doğrula",
+      "manageVerification": "Doğrulama",
+      "move": "Taşı"
+    },
+    "add": {
+      "label": "Alan adı ekle",
+      "placeholder": "contoso.com",
+      "submit": "Alan adı ekle"
+    },
+    "move": {
+      "title": "{{domain}} başka bir kuruluşa taşınsın mı?",
+      "message": "Bu alan adından gelen e-postalar seçtiğiniz kuruluşa yönlendirilir.",
+      "messageVerified": "Alan adı doğrulamasını kaybeder. Yeni kuruluşun onu yeniden doğrulaması gerekir ve yeni bir değerle bir DNS kaydı yeniden yayımlanmalıdır.",
+      "targetLabel": "Kuruluş",
+      "targetPlaceholder": "Bir kuruluş seçin…",
+      "orgsFailed": "Kuruluşlar yüklenemedi. Bunu kapatıp yeniden deneyin."
+    },
+    "delete": {
+      "title": "{{domain}} silinsin mi?",
+      "message": "Bu alan adından gelen e-postalar artık bu kuruluşa yönlendirilmez.",
+      "messageVerified": "Bu alan adından gelen e-postalar artık bu kuruluşa yönlendirilmez ve doğrulaması kaldırılır."
+    },
+    "toasts": {
+      "added": "{{domain}} eklendi",
+      "saved": "{{domain}} kaydedildi",
+      "deleted": "{{domain}} silindi",
+      "moved": "{{domain}}, {{org}} kuruluşuna taşındı",
+      "verified": "{{domain}} doğrulandı",
+      "verificationRemoved": "{{domain}} doğrulaması kaldırıldı",
+      "copyFailed": "Kopyalanamadı. Metni seçip elle kopyalayın."
+    },
+    "errors": {
+      "load": "Alan adları yüklenemedi.",
+      "save": "Alan adı kaydedilemedi. Yeniden deneyin.",
+      "delete": "Alan adı silinemedi. Yeniden deneyin.",
+      "add": "Alan adı eklenemedi. Yeniden deneyin.",
+      "alreadyMapped": "Bu alan adı hesabınızdaki bir kuruluşa zaten eklenmiş.",
+      "startDns": "DNS kaydı alınamadı. Yeniden deneyin.",
+      "check": "Denetim çalıştırılamadı. Yeniden deneyin.",
+      "removeVerification": "Doğrulama kaldırılamadı. Yeniden deneyin."
     }
   },
   "customFieldsPage": {
@@ -6838,6 +7744,45 @@
       "create": "Kişi eklenemedi.",
       "update": "Kişi kaydedilemedi.",
       "delete": "Kişi silinemedi."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Erişim yok",
+        "invited": "Davet edildi",
+        "active": "Etkin",
+        "disabled": "Devre dışı",
+        "requested": "Talep edildi"
+      },
+      "actions": {
+        "give": "Portal erişimi ver",
+        "resend": "Daveti yeniden gönder",
+        "bulkGive": "Portal erişimi ver ({{count}})",
+        "selectAll": "Bu sayfadaki tüm kişileri seç",
+        "selectRow": "{{name}} kişisini seç"
+      },
+      "form": {
+        "giveAccess": "Portal erişimi ver (bu e-posta adresine davet gönderir)",
+        "needsEmail": "Portal erişimi vermek için bir e-posta adresi ekleyin."
+      },
+      "toasts": {
+        "invited": "Portal daveti gönderildi",
+        "inviteEmailFailed": "Portal girişi oluşturuldu ancak davet e-postası gönderilemedi. Daveti yeniden gönder seçeneğini kullanın.",
+        "bulkSummary": "Portal erişimi: {{details}}",
+        "resendEmailFailed": "Davet e-postası gönderilemedi. Daha sonra Daveti yeniden gönder seçeneğini tekrar deneyin."
+      },
+      "outcomes": {
+        "invited": "Davet edilen: {{count}}",
+        "already_has_access": "Zaten erişimi olan: {{count}}",
+        "no_email": "E-posta adresi olmayan: {{count}}",
+        "email_bound_to_other_contact": "E-postası başka bir kişide kullanılan: {{count}}",
+        "duplicate_email_in_batch": "Seçimde yinelenen e-posta: {{count}}",
+        "emailNotSent": "Gönderilmeyen davet e-postaları: {{count}}"
+      },
+      "errors": {
+        "invite": "Portal erişimi verilemedi.",
+        "bulkInvite": "Seçilen kişilere portal erişimi verilemedi."
+      }
     }
   },
   "bulkContactImport": {
@@ -7107,7 +8052,8 @@
     "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
     "description": "Canlı bir Breeze AI turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği.",
-    "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
+    "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer.",
+    "modeDescription": "Breeze AI sohbetinin korumalı eylemleri çalıştırmadan önce nasıl onay istediği. Harcama sınırı ayarlanmış olsun ya da olmasın uygulanır."
   },
   "orgAiApprovalTimeout": {
     "title": "Yapay Zeka Onay Zaman Aşımı",
@@ -7493,5 +8439,246 @@
     "hideContent": "İçeriği gizle",
     "conversationUnavailable": "Bu konuşma artık kullanılamıyor.",
     "usersLoadFailed": "Teknisyenler yüklenemedi."
+  },
+  "orgAiApprovalMode": {
+    "title": "Yapay Zeka onay modu",
+    "description": "Breeze AI sohbetinin bu kuruluşta korumalı (Tier 2/3) eylemleri çalıştırmadan önce nasıl onay istediği. Harcama sınırı ayarlanmış olsun ya da olmasın uygulanır.",
+    "save": "Kaydet"
+  },
+  "portalAccessPolicy": {
+    "title": "Oturum açma ve kayıt",
+    "orgDescription": "Bu kuruluştaki kişilerin müşteri portalında nasıl oturum açtığı ve yeni kişilerin tarayıcı erişimini nasıl aldığı. Devral olarak bırakılan bir alan, iş ortağı varsayılanını izler.",
+    "partnerDescription": "Tüm müşteri kuruluşları için varsayılan. Her kuruluş, Müşteri Portalı sekmesinde herhangi bir alanı geçersiz kılabilir.",
+    "loading": "Oturum açma ayarları yükleniyor…",
+    "readOnly": "Bu ayarları görüntüleyebilir ancak değiştiremezsiniz. İş ortağı varsayılanını değiştirmek için tam iş ortağı erişimi gerekir.",
+    "save": "Oturum açma ayarlarını kaydet",
+    "sources": {
+      "partner": "İş ortağı varsayılanı",
+      "default": "Breeze varsayılanı"
+    },
+    "signIn": {
+      "title": "Kişiler nasıl oturum açar"
+    },
+    "newPeople": {
+      "title": "Yeni kişiler tarayıcı erişimini nasıl alır"
+    },
+    "options": {
+      "on": "Açık",
+      "off": "Kapalı"
+    },
+    "microsoft": {
+      "label": "Microsoft ile oturum açma"
+    },
+    "google": {
+      "label": "Google ile oturum açma"
+    },
+    "password": {
+      "label": "Şifreyle oturum açma",
+      "allowed": "İzinli",
+      "ssoOnly": "Kapalı — yalnızca Microsoft/Google",
+      "ssoOnlyNeedsSso": "Microsoft veya Google ile oturum açma etkinleştirildiğinde kullanılabilir."
+    },
+    "fallback": "Microsoft veya Google ile oturum açma etkin olmadığı için şifreyle oturum açma açık.",
+    "invites": {
+      "label": "MSP davetleri",
+      "value": "Her zaman açık"
+    },
+    "selfRegistration": {
+      "label": "Kendi kendine kayıt",
+      "off": "Kapalı",
+      "approval": "Onay gerekli",
+      "instant": "Anında"
+    },
+    "ssoNewPerson": {
+      "label": "İlk Microsoft / Google ile oturum açma",
+      "invitedOnly": "Yalnızca davet edilen kişiler",
+      "approval": "Onay gerekli",
+      "instant": "Anında"
+    },
+    "requests": "Talepler ({{count}})",
+    "errors": {
+      "load": "Oturum açma ayarları yüklenemedi.",
+      "save": "Oturum açma ayarları kaydedilemedi.",
+      "methodUnavailable": "Bu oturum açma yöntemi bu Breeze dağıtımında henüz kullanılamıyor.",
+      "ssoOnlyNeedsSso": "Şifreyle oturum açmayı kapatmadan önce Microsoft veya Google ile oturum açmayı etkinleştirin.",
+      "tenantNotProven": "Microsoft ile oturum açmayı açmadan önce bu kuruluşun Microsoft kiracısını kanıtlayın.",
+      "sessionHours": "1 ile 168 arasında tam sayı olarak saat girin."
+    },
+    "toasts": {
+      "saved": "Oturum açma ayarları kaydedildi."
+    },
+    "sessionHours": {
+      "label": "Microsoft / Google oturum süresi (saat)",
+      "help": "Microsoft ve Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında."
+    },
+    "entraTenant": {
+      "title": "Microsoft kiracısı",
+      "loading": "Microsoft kiracısı yükleniyor…",
+      "loadError": "Microsoft kiracısı yüklenemedi.",
+      "status": {
+        "none": "Henüz bağlı bir Microsoft kiracısı yok. Kiracısı kanıtlanana kadar bu kuruluş için Microsoft ile oturum açma kapalı kalır.",
+        "unproven": "{{tenantId}} kiracısı bağlı ancak kanıtlanmamış. Kanıtlanana kadar bu kuruluş için Microsoft ile oturum açma kapalı kalır.",
+        "proven": "{{tenantId}} kiracısı {{date}} tarihinde {{method}} ile kanıtlandı."
+      },
+      "via": {
+        "m365_connection": "Microsoft 365 bağlantısı",
+        "proof_run": "bir yönetici oturum açması"
+      },
+      "proveConnection": "Microsoft 365 bağlantısını kullan (kiracı {{tenantId}})",
+      "tenantLabel": "Kiracı kimliği veya etki alanı",
+      "tenantHelp": "Bir bağlantı oluşturun ve müşterinin kiracısının Genel Yöneticisine veya Ayrıcalıklı Rol Yöneticisine gönderin. Bağlantı 72 saat geçerlidir.",
+      "createLink": "Kanıt bağlantısı oluştur",
+      "linkLabel": "Kanıt bağlantısı",
+      "linkExpires": "Son geçerlilik: {{date}}. Yalnızca {{tenantId}} kiracısı için çalışır.",
+      "consentLabel": "Yönetici onay bağlantısı",
+      "consentHelp": "Kiracının yöneticisi bunu bir kez açar; böylece kuruluştaki herkes oturum açabilir.",
+      "copy": "Kopyala",
+      "copied": "Kopyalandı",
+      "remove": "Kiracı bağlantısını kaldır",
+      "removeConfirm": {
+        "title": "Microsoft kiracı bağlantısı kaldırılsın mı?",
+        "message": "Bu kuruluş için Microsoft ile oturum açma durur ve Microsoft oturumları sona erer. Bu işlem kuruluşun AI for Office kiracı eşlemesini de kaldırır; bir kiracı yeniden bağlanana kadar AI for Office burada çalışmaz."
+      },
+      "toasts": {
+        "proven": "Microsoft kiracısı kanıtlandı.",
+        "linkCreated": "Kanıt bağlantısı oluşturuldu.",
+        "removed": "Microsoft kiracı bağlantısı kaldırıldı.",
+        "copyFailed": "Bağlantı kopyalanamadı. Bağlantıyı seçip kendiniz kopyalayın."
+      },
+      "errors": {
+        "prove": "Kiracı, Microsoft 365 bağlantısından kanıtlanamadı.",
+        "createLink": "Kanıt bağlantısı oluşturulamadı.",
+        "remove": "Kiracı bağlantısı kaldırılamadı.",
+        "provenElsewhere": "Bu Microsoft kiracısı başka bir kuruluş için zaten kanıtlanmış. Onu yalnızca kiracının yöneticisi tarafından tamamlanan bir kanıt bağlantısı taşıyabilir.",
+        "orgHasOtherTenant": "Bu kuruluş farklı bir Microsoft kiracısına bağlı. Önce bu bağlantıyı kaldırın.",
+        "noVerifiedConnection": "Bu kuruluşun, kiracısı bir yönetici oturum açmasıyla doğrulanmış bir Microsoft 365 bağlantısı yok.",
+        "hintRequired": "Müşterinin Microsoft kiracı kimliğini veya doğrulanmış etki alanlarından birini girin.",
+        "hintInvalid": "Bu, bir Microsoft kiracı kimliği ya da bir Microsoft kiracısı tarafından doğrulanmış bir etki alanı değil.",
+        "hintLookupFailed": "Bu etki alanını aramak için Microsoft'a ulaşılamadı. Yeniden deneyin veya kiracı kimliğini girin.",
+        "protectedOrg": "Bu kuruluş bir Microsoft kiracısına bağlanamaz."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "Portal oturum açma şifreye geri döndü",
+      "body": "Bu kuruluşun portalında Microsoft ile oturum açma kapalı. Kiracı yeniden kanıtlanana kadar kullanıcılar şifreyle oturum açar.",
+      "tenant": "(Kiracı {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Microsoft kiracı bağlantısı {{date}} tarihinde kaldırıldı.",
+        "ai_for_office_mapping_removed": "Kanıtı tutan AI for Office kiracı eşlemesi {{date}} tarihinde kaldırıldı.",
+        "ai_for_office_mapping_changed": "AI for Office kiracı eşlemesi {{date}} tarihinde başka bir kiracıyla değiştirildi ve kanıt silindi.",
+        "tenant_displaced": "Başka bir kuruluş bu Microsoft kiracısını {{date}} tarihinde kanıtladı.",
+        "unknown": "Microsoft kiracı kanıtı {{date}} tarihinde kayboldu."
+      },
+      "rerun": "Kiracı kanıtını yeniden çalıştır",
+      "dismiss": "Kapat",
+      "toasts": {
+        "dismissed": "Bildirim kapatıldı."
+      },
+      "errors": {
+        "dismiss": "Bildirim kapatılamadı."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Şifreyle oturum açma kapatılsın mı?",
+      "intro": "Kaydetmek, aşağıdaki kuruluşlar için şifreyle oturum açmayı kapatır.",
+      "partnerIntro": "Bu iş ortağı varsayılanını kaydetmek, bu kuruluşlar için şifreyle oturum açmayı kapatır. Her kuruluşun sayfasında henüz oturum açamayan hesaplar listelenir.",
+      "explain": "Microsoft'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Microsoft bağlantısı olmayan kişiler, Microsoft ile oturum açma davetini kabul edene kadar oturum açamaz.",
+      "columns": {
+        "org": "Kuruluş",
+        "passwordsToClear": "Kaldırılan şifreler",
+        "strandedTotal": "Henüz oturum açamayanlar"
+      },
+      "openOrg": "Aç",
+      "strandedTitle": "Henüz oturum açamayanlar",
+      "strandedMore": "ve {{count}} tane daha",
+      "strandedLoadError": "Bu hesapların adları yüklenemedi.",
+      "sendInvites": "Kaydettikten sonra bu hesaplara Microsoft ile oturum açma davetleri gönder",
+      "confirm": "Şifreyle oturum açmayı kapat",
+      "changed": "Etki, siz bunu açtığınızdan beri değişti. Yeni sayıları gözden geçirin."
+    },
+    "stranded": {
+      "title": "Henüz oturum açamayanlar ({{count}})",
+      "description": "Bu hesapların Microsoft bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir Microsoft ile oturum açma daveti gönderin.",
+      "loadError": "Oturum açamayan hesaplar yüklenemedi.",
+      "invite": "Microsoft ile oturum açma daveti gönder",
+      "inviteAll": "Hepsini davet et",
+      "more": "{{count}} içinden {{shown}} gösteriliyor.",
+      "toasts": {
+        "invited": "Gönderilen Microsoft ile oturum açma davetleri: {{count}}.",
+        "partial": "Gönderilen Microsoft ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
+        "emailFailed": "{{count}} hesap davet edildi durumuna geçti ancak davet e-postası gönderilemedi. Portal kullanıcıları listesinde Yeniden gönder'i kullanın."
+      },
+      "errors": {
+        "invite": "Microsoft ile oturum açma davetleri gönderilemedi.",
+        "unavailable": "Bu kuruluş için Microsoft ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok."
+      }
+    },
+    "domains": {
+      "label": "Alan adları",
+      "none": "Henüz alan adı yok",
+      "manage": "Kuruluş › Alan adları altında yönetin",
+      "loadFailed": "Alan adları yüklenemedi."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Erişim talepleri",
+    "description": "Bu kuruluşun portalına erişim bekleyen kişiler. Erişim vermek için onaylayın veya talebi kapatmak için reddedin.",
+    "columns": {
+      "person": "Kişi",
+      "source": "Nasıl talep ettiler",
+      "requested": "Talep edildi"
+    },
+    "sources": {
+      "self": "Kendi kendine kayıt",
+      "entra": "Microsoft ile oturum açma",
+      "google": "Google ile oturum açma",
+      "addin_user": "AI for Office eklentisi"
+    },
+    "selectAll": "Tüm talepleri seç",
+    "selectOne": "{{email}} kişisinin talebini seç",
+    "accountExists": "Zaten bir hesabı var — Kapatmak için reddedin",
+    "actions": {
+      "approve": "Onayla",
+      "deny": "Reddet",
+      "approveSelected": "Seçilenleri onayla ({{count}})",
+      "denySelected": "Seçilenleri reddet ({{count}})"
+    },
+    "results": {
+      "accountExists": "Zaten bir hesabı var",
+      "notPending": "Artık beklemede değil",
+      "notFound": "Talep bulunamadı",
+      "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
+      "failed": "Bu talebe karar verilemedi",
+      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil"
+    },
+    "denyDialog": {
+      "title": "Erişim talebini reddet",
+      "message": "{{email}} kişisinin talebi reddedilsin mi? Kişiye talebin onaylanmadığını bildiren bir e-posta gönderilir.",
+      "bulkMessage_one": "{{count}} talep reddedilsin mi? Kişiye talebin onaylanmadığını bildiren bir e-posta gönderilir.",
+      "bulkMessage_other": "{{count}} talep reddedilsin mi? Her kişiye talebin onaylanmadığını bildiren bir e-posta gönderilir."
+    },
+    "toasts": {
+      "approved": "{{email}} için erişim onaylandı.",
+      "denied": "{{email}} kişisinin talebi reddedildi.",
+      "bulkDone_one": "{{count}} talebe karar verildi.",
+      "bulkDone_other": "{{count}} talebe karar verildi.",
+      "bulkPartial": "{{total}} talepten {{succeeded}} tanesine karar verildi. Diğerleri listede işaretlendi."
+    },
+    "errors": {
+      "load": "Erişim talepleri yüklenemedi.",
+      "action": "Erişim talebi güncellenemedi.",
+      "bulk": "Seçilen taleplere karar verilemedi."
+    },
+    "summary": {
+      "title": "Bekleyen erişim talepleri",
+      "description": "Müşteri kuruluşlarınızda bekleyen talepler. Onaylamak veya reddetmek için bir kuruluşu açın.",
+      "empty": "Bekleyen talep yok",
+      "orgPending_one": "{{count}} bekliyor",
+      "orgPending_other": "{{count}} bekliyor",
+      "review": "Talepleri incele",
+      "loadError": "Bekleyen erişim talepleri yüklenemedi."
+    },
+    "refreshFailed": "Erişim istekleri yenilenemedi; bu liste güncel olmayabilir.",
+    "more": "İlk {{count}} istek gösteriliyor. Kalanları görmek için bunlar hakkında karar verin."
   }
 }

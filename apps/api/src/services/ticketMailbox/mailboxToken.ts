@@ -8,6 +8,8 @@ interface CachedToken {
 const cache = new Map<string, CachedToken>();
 const FRESH_BUFFER_MS = 5 * 60 * 1000;
 
+import { MailboxPlatformNotConfiguredError } from './mailboxErrors';
+
 export function _clearMailboxTokenCache(): void {
   cache.clear();
 }
@@ -36,7 +38,7 @@ export async function getMailboxToken(tenantId: string): Promise<string> {
   if (cached && cached.expiresAt - Date.now() > FRESH_BUFFER_MS) return cached.token;
 
   const cfg = getMailboxPlatformConfig();
-  if (!cfg) throw new Error('TICKET_MAILBOX_M365_CLIENT_ID/SECRET not configured');
+  if (!cfg) throw new MailboxPlatformNotConfiguredError();
 
   const res = await acquireClientCredentialsToken({
     tenantId: tenantId as Parameters<typeof acquireClientCredentialsToken>[0]['tenantId'],

@@ -3,6 +3,8 @@
 // An ALLOW-LIST, built field by field: the request id is the only internal id
 // that reaches the token holder. Never spread the row — a new column (token
 // bookkeeping, variable values, internal reasons) must not leak by default.
+// The request `label` is staff-internal and deliberately absent: the customer
+// sees the template name (#10294).
 
 import { documentSellerLines } from '@breeze/shared/documents';
 import type { AgreementRequestRow } from '../db/schema/contractDocuments';
@@ -15,7 +17,6 @@ export interface PublicAgreementPresentation {
   request: {
     id: string;
     status: PublicAgreementStatus;
-    label: string | null;
     coverMessage: string | null;
     expiresAt: string;
     effectiveDate: string | null;
@@ -84,7 +85,6 @@ export function toPublicAgreementPresentation(input: PublicAgreementPresentation
     request: {
       id: row.id,
       status: input.status,
-      label: row.label ?? null,
       coverMessage: row.coverMessage ?? null,
       expiresAt: row.expiresAt.toISOString(),
       effectiveDate: row.effectiveDate ?? null,

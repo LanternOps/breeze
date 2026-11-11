@@ -56,6 +56,11 @@ import {
 } from '../../services/partnerDeviceCapacity';
 import { markTopologyIdentityDirty } from '../../services/topology/identityDirty';
 import { applyOrgDefaultDeviceGroup } from '../../services/enrollmentDefaultGroup';
+import { lockPartnerExportOrg } from '../../db/partnerExportLock';
+import { isTransientLockError, pgErrorCode, retryOnTransientLockError } from '../../utils/pgErrors';
+
+/** Seconds an agent is told to wait after the device write lost every lock race. */
+const ENROLLMENT_CONTENDED_RETRY_AFTER_SECONDS = 2;
 
 export const enrollmentRoutes = new Hono();
 
@@ -718,7 +723,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     const ENROLLMENT_KEY_RACE_LOST = Symbol('enrollment_key_race_lost');
     let device;
     try {
-      device = await db.transaction(async (tx) => {
+      // #9521: a lost lock race (deadlock, or the admission's lock_timeout)
+      // re-runs the device transaction, logged at WARN per attempt. Bounded,
+      // and idempotent: this transaction is a savepoint inside the enrollment
+      // context, so a failed attempt rolls back its device row and key claim
+      // and leaves the context usable. The agent id and credentials above are
+      // minted once and reused by every attempt. Each attempt re-runs the
+      // admission and trust gates; in trust shadow mode a retried attempt can
+      // write the gate's shadow-denial audit row again.
+      device = await retryOnTransientLockError('enrollment', () => db.transaction(async (tx) => {
       if (insertFreshRow && !isSupportEnrollment) {
         if (!deviceLimitPartnerId) {
           throw new PartnerDeviceCapacityError(
@@ -817,6 +830,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             .where(eq(partners.id, deviceLimitPartnerId));
         }
       }
+
+      // #9521: the org's partner-export lock BEFORE the first devices write.
+      // Left to the devices triggers, it was taken after the INSERT's row
+      // trigger had already locked the site's topology_site_state row, while
+      // a device that enrolled a moment earlier sends its first inventory with
+      // the org lock held and then updates that same row: a deadlock under a
+      // cold enrollment ramp. After the admission and trust gates on purpose:
+      // they take partner row locks, which precede the org lock.
+      await lockPartnerExportOrg(tx, key.orgId);
 
       // #914 decom-bypass: rename the prior decommissioned row's hostname
       // so the new INSERT can claim the original. There is no DB-level
@@ -998,6 +1020,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             diskTotalGb: data.hardwareInfo.diskTotalGb,
             gpuModel: data.hardwareInfo.gpuModel,
             serialNumber: data.hardwareInfo.serialNumber,
+            productSku: data.hardwareInfo.productSku,
             manufacturer: data.hardwareInfo.manufacturer,
             model: data.hardwareInfo.model,
             motherboardManufacturer: data.hardwareInfo.motherboardManufacturer,
@@ -1015,6 +1038,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
               diskTotalGb: data.hardwareInfo.diskTotalGb,
               gpuModel: data.hardwareInfo.gpuModel,
               serialNumber: data.hardwareInfo.serialNumber,
+              productSku: data.hardwareInfo.productSku,
               manufacturer: data.hardwareInfo.manufacturer,
               model: data.hardwareInfo.model,
               motherboardManufacturer: data.hardwareInfo.motherboardManufacturer,
@@ -1072,8 +1096,39 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       }
 
       return dev;
-    });
+    }));
     } catch (err) {
+      if (isTransientLockError(err)) {
+        // #9521: every attempt lost a lock race (a deadlock, a serialization
+        // failure, or the admission's lock_timeout). Each attempt was a
+        // savepoint, so its device row and key claim are gone, and the race is
+        // not the agent's fault: answer "busy, retry" rather than a 500. Still
+        // reported: exhausting the retry points at a lock-order regression or
+        // sustained contention, and either needs a look.
+        const sqlState = pgErrorCode(err) ?? 'unknown';
+        captureException(
+          err,
+          c,
+          { route: 'agent_enroll', reason: 'enrollment_contended', org_id: key.orgId },
+          { fingerprint: ['agent-enroll', 'enrollment_contended', sqlState] },
+        );
+        writeAuditEvent(c, {
+          orgId: key.orgId,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: { reason: 'enrollment_contended', enrollmentKeyId: key.id, sqlState },
+          result: 'failure',
+          errorMessage: 'Enrollment lost every lock race; the agent was told to retry',
+        });
+        recordAgentEnrollment('error', enrollmentPartnerId);
+        c.header('Retry-After', String(ENROLLMENT_CONTENDED_RETRY_AFTER_SECONDS));
+        return c.json({
+          error: 'Enrollment is busy on the server; retry shortly',
+          reason: 'enrollment_contended',
+        }, 503);
+      }
       if (err === ENROLLMENT_KEY_RACE_LOST) {
         // The device INSERT was rolled back along with the failed key
         // claim. Surface the same `enrollment_key_race_lost` reason the

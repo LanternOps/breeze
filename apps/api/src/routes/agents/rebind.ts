@@ -24,6 +24,7 @@ import { readAgentCertificateAssertion } from '../../services/agentCertificateBi
 import { SHA256_HEX_DIGEST } from '../../services/agentCredentialHashes';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { confirmRebindIntent } from '../../services/deviceReattach/confirm';
+import { NetworkIsolationUnresolvedError } from '../../services/networkIsolation/lifecycle';
 import { parseConfirmationBearer } from '../../services/deviceReattach/confirmationToken';
 import { refusalBody } from '../../services/deviceReattach/errors';
 import { stageRebindIntent } from '../../services/deviceReattach/stage';
@@ -139,11 +140,19 @@ rebindRoutes.post('/:id/rebind-confirm', async (c) => {
   const token = parseConfirmationBearer(c.req.header('authorization'));
   if (!token) return failedVerification();
 
-  const result = await confirmRebindIntent({
-    sourceAgentId,
-    token,
-    assertion: readAgentCertificateAssertion(c),
-  });
+  let result: Awaited<ReturnType<typeof confirmRebindIntent>>;
+  try {
+    result = await confirmRebindIntent({
+      sourceAgentId,
+      token,
+      assertion: readAgentCertificateAssertion(c),
+    });
+  } catch (err) {
+    if (err instanceof NetworkIsolationUnresolvedError) {
+      return c.json({ error: err.code, message: err.message }, 409);
+    }
+    throw err;
+  }
   if (!result.ok) {
     if (result.code === 'invalid_confirmation') return failedVerification();
     return c.json(refusalBody(result), result.status);

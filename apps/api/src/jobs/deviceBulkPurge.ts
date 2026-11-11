@@ -15,8 +15,12 @@
  * here and nothing else would catch a device that moved orgs between confirm
  * and execution. Such a device is SKIPPED (`ORG_CHANGED`), never deleted under
  * stale authorisation. A device that was restored in the same window is refused
- * by `purgeRemovedDevice`'s own status re-check (`NOT_REMOVED`), and one whose
- * agent uninstall is still collectable by its `UNINSTALL_PENDING` refusal.
+ * by `purgeRemovedDevice`'s own status re-check (`NOT_REMOVED`), one whose
+ * agent uninstall is still collectable by its `UNINSTALL_PENDING` refusal, and
+ * one whose agent never confirmed it came off by `UNINSTALL_NOT_CONFIRMED`
+ * (#11153). Bulk never passes `force`: there is no per-device "delete anyway"
+ * in a 500-device run, so such a device is skipped and named in the result,
+ * and the operator deletes it from its own page if they mean to.
  *
  * Module shape mirrors `jobs/orgMerge.ts`: lazy Queue/Worker singletons,
  * `enqueueOrReplaceStale` (a bare `queue.add` under a dedup'd jobId silently
@@ -32,7 +36,7 @@ import { getBullMQConnection, getRedis } from '../services/redis';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { createAuditLog } from '../services/auditService';
 import { invalidateOrgDeviceCount } from '../services/agentOrgRateLimit';
-import { purgeRemovedDevice, DeviceLifecycleError } from '../services/deviceLifecycle';
+import { purgeRemovedDevice, DeviceLifecycleError, type PurgeResult } from '../services/deviceLifecycle';
 import { listDeviceScreenshotStorageKeys } from '../services/screenshotStorage';
 import { removeScreenshotFiles } from '../services/screenshotFiles';
 import { attachWorkerObservability } from './workerObservability';
@@ -84,6 +88,7 @@ export type BulkPurgeSkipCode =
   | 'NOT_FOUND'
   | 'NOT_REMOVED'
   | 'UNINSTALL_PENDING'
+  | 'UNINSTALL_NOT_CONFIRMED'
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
   | 'BACKUP_PROTECTED'
@@ -150,7 +155,9 @@ interface PurgeOneOutcome {
   linkGroupId: string | null;
   linkGroupDissolved: boolean;
   /** From `PurgeResult`; 0 when nothing was purged. */
-  removedTopologyAlerts?: number;
+  detachedTopologyAlerts?: number;
+  /** From `PurgeResult` (#11153); absent when nothing was purged. */
+  uninstallState?: PurgeResult['uninstallState'];
 }
 
 /**
@@ -196,7 +203,8 @@ async function purgeOne(
             code: null,
             linkGroupId: purged.linkGroupId,
             linkGroupDissolved: purged.linkGroupDissolved,
-            removedTopologyAlerts: purged.removedTopologyAlerts,
+            detachedTopologyAlerts: purged.detachedTopologyAlerts,
+            uninstallState: purged.uninstallState,
             screenshotStorageKeys: keys,
           };
         });
@@ -293,7 +301,10 @@ export async function processDeviceBulkPurgeJob(
                   linkGroupDissolved: outcome.linkGroupDissolved,
                 }
               : {}),
-            ...(outcome.removedTopologyAlerts ? { removedTopologyAlerts: outcome.removedTopologyAlerts } : {}),
+            ...(outcome.detachedTopologyAlerts ? { detachedTopologyAlerts: outcome.detachedTopologyAlerts } : {}),
+            // #11153 — bulk never forces; the state is what let it through.
+            force: false,
+            ...(outcome.uninstallState ? { uninstallState: outcome.uninstallState } : {}),
           },
           result: 'success',
         });

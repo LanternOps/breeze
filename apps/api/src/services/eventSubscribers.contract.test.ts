@@ -32,6 +32,7 @@ const PRODUCTION_MODULES = [
   './policyAlertBridge.ts',
   './notificationDispatcher.ts',
   './dnsThreatAlerts.ts',
+  './psaAlertTicketing/subscriber.ts',
 ] as const;
 
 /** Any `.subscribe(` call, regardless of receiver variable name. */

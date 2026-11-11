@@ -209,13 +209,14 @@ describe('W04 security/device-ops writes in the agent catalog (#6758)', () => {
     expect(decidable.sort()).toEqual(['manage_scheduled_tasks:disable', 'manage_scheduled_tasks:enable', 'manage_scheduled_tasks:run']);
   });
 
-  it('W04-D8: the picker never offers manage_groups add_devices/remove_devices (agent human-only actions)', () => {
+  it('#10149: the picker offers manage_groups add_devices/remove_devices as supervised, non-act operations', () => {
     const groups = buildAgentToolCatalog().tools.find((t) => t.name === 'manage_groups');
     expect(groups, 'manage_groups is agent-reachable').toBeDefined();
-    const keys = groups!.operations.map((op) => op.key);
-    expect(keys).not.toContain('manage_groups:add_devices');
-    expect(keys).not.toContain('manage_groups:remove_devices');
-    expect(keys).toContain('manage_groups:list');
+    const byKey = Object.fromEntries(groups!.operations.map((op) => [op.key, op]));
+    for (const key of ['manage_groups:add_devices', 'manage_groups:remove_devices']) {
+      expect(byKey[key], key).toMatchObject({ tier: 3, readOnly: false, actEligible: false, policyDecidable: false });
+    }
+    expect(byKey['manage_groups:list']).toBeDefined();
   });
 });
 
@@ -305,6 +306,33 @@ describe('W03 backup/DR writes in the agent catalog (#6757)', () => {
     const w03 = new Set<string>(W03_AGENT_REACHABLE);
     const decidable = POLICY_DECIDABLE_TIER3.map((e) => e.key).filter((key) => w03.has(key.split(':')[0]!));
     expect(decidable).toEqual([]);
+  });
+});
+
+/** W17 (#6788): backup verification, VSS and recovery reads are agent-reachable; every W17 agent write is a proposal.
+ * manage_c2c_configs is human-only: list returns target mailboxes and its writes choose what is copied. */
+describe('W17 backup tools in the agent catalog (#6788)', () => {
+  it.each(['manage_backup_verification', 'get_vss_status', 'list_bmr_recoveries', 'get_backup_health'])(
+    '%s is agent-reachable under backup_recovery',
+    (name) => {
+      expect(listAgentReachableTools()).toContain(name);
+      expect(listUnreachableRegisteredTools()).not.toContain(name);
+      expect(TOOL_CAPABILITY[name]).toBe('backup_recovery');
+    },
+  );
+
+  it('manage_c2c_configs is never offered to an agent', () => {
+    expect(listAgentReachableTools()).not.toContain('manage_c2c_configs');
+    expect(listUnreachableRegisteredTools()).toContain('manage_c2c_configs');
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain('manage_c2c_configs');
+  });
+
+  it('run is tier 3 and not pre-authorisable; the reads are read-only operations', () => {
+    const op = (tool: string, action: string) => buildAgentToolCatalog().tools.find((t) => t.name === tool)!.operations.find((o) => o.key === `${tool}:${action}`)!;
+    for (const action of ['health', 'list', 'readiness']) expect(op('manage_backup_verification', action)).toMatchObject({ tier: 1, readOnly: true });
+    expect(op('manage_backup_verification', 'run').tier).toBe(3);
+    expect(POLICY_DECIDABLE_TIER3.map((e) => e.key)).not.toContain('manage_backup_verification:run');
+    for (const action of ['list', 'get']) expect(op('list_bmr_recoveries', action)).toMatchObject({ tier: 1, readOnly: true });
   });
 });
 

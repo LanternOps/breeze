@@ -2,7 +2,7 @@ import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator, optionalJsonValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, sql, desc, like, or, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, sql, desc, like, or, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   softwareCatalog,
@@ -53,7 +53,6 @@ import {
   detectionRulesSchema,
   successExitCodesSchema,
   softwareDownloadPolicySchema,
-  defaultSilentArgsForFileType,
 } from '@breeze/shared';
 import {
   ALLOWED_EXTENSIONS,
@@ -74,8 +73,11 @@ import {
   authorizeCatalogItemWrite,
   createCatalogSchema,
   createVersionSchema,
+  defaultSilentArgsForCatalogItem,
   deleteCatalogAndUploadedObjects,
+  integrationInstallArgsError,
   isImmutableBuiltin,
+  nullOrgCatalogBranches,
   platformSchema,
   prepareSoftwareVersionCreate,
   prepareSoftwareVersionUpdate,
@@ -83,6 +85,7 @@ import {
   updateCatalogSchema,
   updateVersionSchema,
 } from '../services/softwareCatalogOps';
+import { softwarePackageObjectKey, uploadOwnerOf } from '../services/softwareUploadOwner';
 import {
   DEPLOYMENT_RESULT_STATUSES,
   cancelDeploymentSchema,
@@ -255,18 +258,12 @@ softwareRoutes.get(
     }
 
     const conditions: SQL[] = [activeCatalog];
-    // Include partner-scoped built-in (integration) packages alongside the caller's
-    // own org packages. RLS scopes built-ins to the caller's partner, so widening
-    // the WHERE here cannot leak another partner's rows. Partner-scope callers
-    // additionally see their own partner-wide custom packages (#2135) — gated on
-    // scope === 'partner' because org tokens never pass breeze_has_partner_access
-    // and must not get an app-layer condition RLS won't back.
+    // Include the caller's partner-owned rows (built-ins; for partner scope also
+    // its partner-wide custom packages, #2135) alongside its own org packages.
+    // RLS backs every branch, so widening the WHERE cannot leak another
+    // partner's rows — see nullOrgCatalogBranches.
     if (scopeResult.orgCondition) {
-      const branches: SQL[] = [scopeResult.orgCondition, isNotNull(softwareCatalog.integrationProvider)];
-      if (auth.scope === 'partner' && auth.partnerId) {
-        branches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
-      }
-      conditions.push(or(...branches)!);
+      conditions.push(or(scopeResult.orgCondition, ...nullOrgCatalogBranches(auth))!);
     }
     if (searchTerm) {
       const term = `%${searchTerm}%`;
@@ -404,16 +401,11 @@ softwareRoutes.get(
 
     const query = c.req.valid('query');
     const term = `%${query.q}%`;
-    // Same dual-axis widening as GET /catalog: built-ins for everyone, the
-    // caller's own partner-wide custom packages for partner scope (#2135) —
-    // search must not return a narrower set than the list it searches.
-    const scopeBranches: SQL[] = [eq(softwareCatalog.orgId, orgId), isNotNull(softwareCatalog.integrationProvider)];
-    if (auth.scope === 'partner' && auth.partnerId) {
-      scopeBranches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
-    }
+    // Same widening as GET /catalog — search must not return a narrower set
+    // than the list it searches.
     const conditions = [
       activeCatalog,
-      or(...scopeBranches)!,
+      or(eq(softwareCatalog.orgId, orgId), ...nullOrgCatalogBranches(auth))!,
       or(
         like(softwareCatalog.name, term),
         like(softwareCatalog.vendor, term),
@@ -440,10 +432,10 @@ softwareRoutes.get(
 
     const { id } = c.req.valid('param');
     // Look up by id alone, then authorize in JS. RLS bounds what is visible:
-    // the caller's org rows, plus NULL-org partner rows — built-ins for any
-    // caller, but partner-wide custom packages only for partner-scope tokens
-    // (org tokens never pass breeze_has_partner_access, so those rows are
-    // simply invisible here and 404). Partner rows have org_id NULL, so an
+    // the caller's org rows, plus its OWN partner's NULL-org rows (built-ins,
+    // and through software_catalog_partner_wide_select every partner-wide
+    // row, though an org token cannot read an un-keyed partner-wide row's
+    // versions — see #10036). Partner rows have org_id NULL, so an
     // `eq(orgId)` filter would exclude them — matching the /deploy route (#1957).
     // authorizeCatalogItemRead narrows org-owned rows to the request's resolved
     // org (a partner caller acting as org A must not read sibling org B's
@@ -659,18 +651,30 @@ softwareRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     if (!isS3Configured()) {
       return c.json({ error: 'S3 storage is not configured' }, 503);
     }
 
+    // Dual-axis fetch + write authorization (#2135, #9246): partner-wide
+    // packages (org_id NULL) take uploads from system scope or a full-partner
+    // admin of the owning partner; an org-owned row must belong to the org this
+    // request resolves to. A partner-owned row ignores `?orgId` entirely.
     const catalogId = c.req.param('id')!;
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId), activeCatalog));
+      .where(and(eq(softwareCatalog.id, catalogId), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const writeError = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (writeError) return c.json({ error: writeError.error }, writeError.status);
+    if (catalogItem.orgId !== null) {
+      // Org-owned uploads keep their historical ?orgId resolution exactly: the
+      // request must resolve to the package's org (no All-organizations
+      // fallback, unlike authorizeCatalogItemWrite above, whose org-row branch
+      // delegates to the read check's canAccessOrg fallback).
+      const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+      if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+      if (orgResult.orgId !== catalogItem.orgId) return c.json({ error: 'Catalog item not found' }, 404);
+    }
     if (isImmutableBuiltin(catalogItem, auth)) {
       return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
     }
@@ -793,13 +797,18 @@ softwareRoutes.post(
       const supportedOs = normalizedOs.value ?? null;
 
       // Auto-detect MSI silent args
-      const silentDefaults = defaultSilentArgsForFileType(fileType);
+      const silentDefaults = defaultSilentArgsForCatalogItem(catalogItem, fileType);
       if (silentDefaults && !silentInstallArgs) {
         silentInstallArgs = silentDefaults.install;
       }
       if (silentDefaults && !silentUninstallArgs) {
         silentUninstallArgs = silentDefaults.uninstall;
       }
+
+      // #9246: refuse args that drop a built-in package's per-org placeholder
+      // before a byte reaches object storage.
+      const placeholderError = integrationInstallArgsError(catalogItem, fileType, silentInstallArgs);
+      if (placeholderError) return c.json(placeholderError, 400);
 
       // #6958: a script runs as SYSTEM/root (devices.execute), and the install
       // spec is checked before any bytes reach object storage.
@@ -828,7 +837,7 @@ softwareRoutes.post(
 
       // Generate version ID for S3 key path
       const versionId = randomUUID();
-      const s3Key = `software/${orgId}/${catalogId}/${versionId}/${originalFileName}`;
+      const s3Key = softwarePackageObjectKey(uploadOwnerOf(catalogItem), catalogId, versionId, originalFileName);
 
       // Upload to S3. Previously a bare call, so any storage fault (bad
       // credentials, missing bucket, unreachable endpoint, MinIO TLS mismatch,
@@ -892,7 +901,7 @@ softwareRoutes.post(
       }
 
       writeRouteAudit(c, {
-        orgId,
+        orgId: catalogItem.orgId,
         action: 'software.catalog.version.upload',
         resourceType: 'software_version',
         resourceId: versionRecord.id,

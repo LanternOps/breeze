@@ -166,6 +166,8 @@ describe('reapConcerns — pass 2: subject reconciliation (Review Focus 3)', () 
       ticket: 'tickets', device: 'devices', alert: 'alerts', org: 'organizations',
       integration: 'connection_health_incidents', run: 'ai_agent_runs', task: 'ai_operator_tasks',
       quote: 'quotes', invoice: 'invoices', contract: 'contracts', site: 'sites',
+      // #10386: a readiness note's subject id is its org.
+      readiness: 'organizations',
     };
     expect([...RECONCILED_SUBJECT_KINDS].sort()).toEqual(Object.keys(expected).sort());
     expect(reconciliations()).toHaveLength(Object.keys(expected).length);

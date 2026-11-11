@@ -240,6 +240,79 @@ describe('public agreement signing (HTTP, real Postgres + Redis)', () => {
     expect(await documentsFor(l2.requestId)).toHaveLength(0);
   });
 
+  // #10695: the signer reopens the link and downloads the certified copy it
+  // signed — the real document lookup, certificate render and headers.
+  runDb('reopened after signing: the link downloads ITS certified copy; another link and a revoked link get nothing', async () => {
+    const s = await seed();
+    const { requestId, token } = await createAndSend(s);
+    const unsigned = await createAndSend(s);
+    // Before signing there is nothing to download.
+    expect((await get(token, '/signed-copy')).status).toBe(404);
+    expect((await post(token, 'accept', SIGN)).status).toBe(200);
+    const [doc] = await documentsFor(requestId);
+
+    const reopened = await get(token);
+    expect(reopened.status).toBe(200);
+    const reopenedBody = await reopened.json() as { data: { signedCopyUrl: string | null } };
+    expect(reopenedBody.data.signedCopyUrl).toBe(`/agreements/public/${encodeURIComponent(token)}/signed-copy`);
+    expect(JSON.stringify(reopenedBody)).not.toContain(doc!.id as string);
+
+    const res = await get(token, '/signed-copy');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('content-type')).toBe('application/pdf');
+    expect(res.headers.get('x-agreement-copy')).toBe('certified');
+    expect(res.headers.get('content-disposition')).toMatch(new RegExp(`^attachment;.*signed-agreement-${doc!.id as string}\\.pdf`));
+    const stored = Buffer.from(doc!.pdf_data as Buffer);
+    const served = Buffer.from(await res.arrayBuffer());
+    // The certified copy: the frozen original plus one certificate page.
+    expect((await PDFDocument.load(served)).getPageCount()).toBe((await PDFDocument.load(stored)).getPageCount() + 1);
+
+    // Scoped to its own agreement: another live link of the same org has none.
+    expect((await get(unsigned.token, '/signed-copy')).status).toBe(404);
+    expect((await get(unsigned.token)).status).toBe(200);
+    expect((await (await get(unsigned.token)).json() as { data: { signedCopyUrl: string | null } }).data.signedCopyUrl).toBeNull();
+
+    // Two signed links in one org: each downloads ITS own document.
+    expect((await post(unsigned.token, 'accept', SIGN)).status).toBe(200);
+    const [otherDoc] = await documentsFor(unsigned.requestId);
+    const otherRes = await get(unsigned.token, '/signed-copy');
+    expect(otherRes.status).toBe(200);
+    expect(otherRes.headers.get('content-disposition')).toContain(`signed-agreement-${otherDoc!.id as string}.pdf`);
+    expect(otherRes.headers.get('content-disposition')).not.toContain(doc!.id as string);
+
+    // The MSP killing the link kills the download (isAgreementLinkDead).
+    await sys(() => db.execute(sql`UPDATE agreement_requests SET public_link_revoked_at = now() WHERE id = ${requestId}::uuid`));
+    const revoked = await get(token, '/signed-copy');
+    expect(revoked.status).toBe(410);
+    expect((await revoked.json() as { code: string }).code).toBe('LINK_REVOKED');
+
+    // Tenant gate: an archived org's link serves nothing (the reopened view's rule).
+    await sys(() => db.update(organizations).set({ status: 'archived' as never }).where(eq(organizations.id, s.org.id)));
+    const archived = await get(unsigned.token, '/signed-copy');
+    expect(archived.status).toBe(410);
+    expect((await archived.json() as { code: string }).code).toBe('ORG_UNAVAILABLE');
+  });
+
+  // The link-consumption rule on real rows: a signed request with no link
+  // consumption (how a portal or on-behalf signing looks) is never served by
+  // the link, and the view offers no button. (An on-behalf document on a
+  // link-signed request cannot exist: contract_documents is append-only and
+  // its acceptance_origin frozen, so that leg is unit-tested only.)
+  runDb('reopened link never serves a copy it did not sign (#10695)', async () => {
+    const s = await seed();
+    const { requestId, token } = await createAndSend(s);
+    expect((await post(token, 'accept', SIGN)).status).toBe(200);
+    expect((await get(token, '/signed-copy')).status).toBe(200);
+    const offered = async () => (await (await get(token)).json() as { data: { signedCopyUrl: string | null } }).data.signedCopyUrl;
+    expect(await offered()).not.toBeNull();
+
+    await sys(() => db.execute(sql`UPDATE agreement_requests SET public_response_jti = NULL, public_response_outcome = NULL WHERE id = ${requestId}::uuid`));
+    expect((await get(token, '/signed-copy')).status).toBe(404);
+    expect(await offered()).toBeNull();
+  });
+
   runDb('post-commit mail runs its real SQL: signed copy to signer + recipients with the stored bytes; creator told', async () => {
     const s = await seed();
     const { requestId, token } = await createAndSend(s);
@@ -262,7 +335,9 @@ describe('public agreement signing (HTTP, real Postgres + Redis)', () => {
     expect(copy.attachments![0]!.contentType).toBe('application/pdf');
     const [after] = await documentsFor(requestId);
     expect(Buffer.compare(Buffer.from(after!.pdf_data as Buffer), stored)).toBe(0);
-    expect(copy.attachments![0]!.filename).toBe('BAA 2027 (signed).pdf');
+    // Named by the template frozen at signing, never the staff-internal label (#10294).
+    expect(copy.attachments![0]!.filename).toBe('Business Associate Agreement (signed).pdf');
+    expect(after!.template_name_snapshot).toBe('Business Associate Agreement');
     const staff = mailsFor('staff.agreement_outcome')[0]!;
     expect(staff.to).toBe(s.tech.email);
     expect(staff.text).toContain('Dana Buyer at Example Clinic');

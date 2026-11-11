@@ -47,9 +47,17 @@ export const contracts = pgTable('contracts', {
   terms: text('terms'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  // #10361: the quote whose accept created this contract; NULL for hand-built
+  // and adopted contracts, and again once that quote is deleted. Composite FK
+  // (source_quote_id, org_id) -> quotes(id, org_id) ON DELETE SET NULL
+  // (source_quote_id) DEFERRABLE is SQL-only (2027-01-17-150000) — quotes.ts
+  // imports this file, so a .references() here would be an import cycle.
+  sourceQuoteId: uuid('source_quote_id')
 }, (t) => [
   index('contracts_org_status_idx').on(t.orgId, t.status),
+  // Partial (WHERE source_quote_id IS NOT NULL), mirrored from SQL for drift.
+  index('contracts_source_quote_idx').on(t.sourceQuoteId).where(sql`${t.sourceQuoteId} IS NOT NULL`),
   index('contracts_partner_status_idx').on(t.partnerId, t.status),
   // Real partial index (status='active') created in SQL; drizzle-kit only needs the column for drift.
   index('contracts_next_billing_idx').on(t.nextBillingAt),

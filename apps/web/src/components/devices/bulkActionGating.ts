@@ -126,6 +126,11 @@ export const DECOMMISSION_BLOCKED_BULK_ACTIONS: ReadonlySet<string> = new Set([
  *                     agent command; the API refuses no device status. Its own
  *                     per-SELECTION rule (agents only, one org, at most the
  *                     cap) is {@link bulkMoveSiteBlock} below.
+ *   add-to-group /  — a DB write on static-group membership (#9866), not an
+ *   remove-from-group  agent command; the membership routes refuse no device
+ *                     status, and removing a retired device from a group is a
+ *                     legitimate cleanup. Same per-SELECTION rule as
+ *                     move-site, own cap: {@link bulkGroupMembershipBlock}.
  *
  * NOTE (follow-up, deliberately out of scope): the API *also* refuses
  * `decommissioned` for bulk wake (`commands.ts:89`) and for maintenance
@@ -145,6 +150,8 @@ export const INTENTIONALLY_UNGATED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'link-vm-host',
   'compare',
   'move-site',
+  'add-to-group',
+  'remove-from-group',
 ]);
 
 /**
@@ -176,11 +183,40 @@ export function bulkMoveSiteAgents<T extends MoveSiteCandidate>(selection: reado
  * reported before the cap: it is the reason the user can act on first.
  */
 export function bulkMoveSiteBlock<T extends MoveSiteCandidate>(selection: readonly T[]): BulkMoveSiteBlock | null {
+  return oneOrgAgentSelectionBlock(selection, BULK_SITE_MOVE_CAP);
+}
+
+function oneOrgAgentSelectionBlock<T extends MoveSiteCandidate>(
+  selection: readonly T[],
+  cap: number,
+): BulkMoveSiteBlock | null {
   const agents = bulkMoveSiteAgents(selection);
   if (agents.length === 0) return 'no_agents';
   if (new Set(agents.map((d) => d.orgId)).size > 1) return 'mixed_org';
-  if (agents.length > BULK_SITE_MOVE_CAP) return 'over_cap';
+  if (agents.length > cap) return 'over_cap';
   return null;
+}
+
+/**
+ * Per-request cap of POST /device-groups/:id/devices/remove. MIRRORS
+ * `BULK_GROUP_MEMBERSHIP_CAP` in apps/api/src/routes/groups.ts — change both
+ * together. Applied to the bulk ADD too (POST /device-groups/:id/devices has no
+ * cap of its own), so the two items behave alike; above it they are disabled
+ * with a reason, never chunked.
+ */
+export const BULK_GROUP_MEMBERSHIP_CAP = 500;
+
+/**
+ * Can the bulk "Add to group" / "Remove from group" items act on this
+ * selection? `null` = yes. Agents only (a network or manual row's id is not a
+ * `devices.id`), ONE org (a static group belongs to one org and the membership
+ * API refuses a device from another), at most the cap. The groups offered are
+ * narrowed further by BulkGroupMembershipDialog.
+ */
+export type BulkGroupMembershipBlock = BulkMoveSiteBlock;
+
+export function bulkGroupMembershipBlock<T extends MoveSiteCandidate>(selection: readonly T[]): BulkGroupMembershipBlock | null {
+  return oneOrgAgentSelectionBlock(selection, BULK_GROUP_MEMBERSHIP_CAP);
 }
 
 /**

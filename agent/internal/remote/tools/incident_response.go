@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/wire"
 	"github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 )
@@ -188,7 +189,7 @@ func ExecuteContainment(payload map[string]any) CommandResult {
 
 	case "network_isolation":
 		return NewErrorResult(
-			fmt.Errorf("network_isolation requires platform-specific implementation (current: %s)", runtime.GOOS),
+			withErrorCode(wire.ErrCodeIsolationInvalidSpec, fmt.Errorf("network_isolation dispatched outside the isolation manager")),
 			time.Since(startTime).Milliseconds(),
 		)
 

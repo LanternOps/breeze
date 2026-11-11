@@ -22,6 +22,7 @@ import { insertEmailAuthoredComment } from './emailComments';
 import { hasStoredAttachments, persistInboundAttachments, withInboundAttachmentNote } from './inboundAttachments';
 import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
+import { portalLoginEmailEquals, soleCaseInsensitiveMatch } from '../portalLoginEmail';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import {
   POLLED_MAILBOX_PROVIDERS,
@@ -402,9 +403,11 @@ export async function processInboundEmail(
     // known-portal-user match must NOT be trusted to append a PUBLIC comment, reopen a
     // ticket, or create a ticket as a trusted sender unless the sender's domain is
     // authenticated. We rely on the verdicts the provider already computed at its MX
-    // boundary (aligned SPF+DKIM, or DMARC pass). On a Microsoft 365 mailbox, mail the
-    // tenant's own Exchange stamped as intra-tenant also counts (senderAuth.source
-    // 'exchange-internal', normalizeGraphMessage, #8299). When NOT verified, route the
+    // boundary (aligned SPF+DKIM, or DMARC pass). On a Microsoft 365 mailbox three more
+    // sources count (senderAuth.source, normalizeGraphMessage): Exchange's intra-tenant
+    // stamp ('exchange-internal', #8299), Exchange's own DMARC stamp on external mail
+    // ('exchange-online') and a trusted ARC sealer's verdict ('trusted-arc-sealer',
+    // #10862). When NOT verified, route the
     // message to the EXISTING quarantine/review path instead of auto-acting — mail is
     // never dropped.
     if (!n.senderAuth?.verified) {
@@ -424,8 +427,9 @@ export async function processInboundEmail(
           }
         );
       }
-      const reason = gap
-        ? `unverified sender (SPF/DKIM/DMARC): ${gap}`
+      const reasonDetail = gap ?? n.senderAuthConsulted;
+      const reason = reasonDetail
+        ? `unverified sender (SPF/DKIM/DMARC): ${reasonDetail}`
         : 'unverified sender (SPF/DKIM/DMARC)';
       // Default: route to the review queue. If the partner opted into dropping
       // unverified mail, silently ignore it instead (audit row only, no review
@@ -746,14 +750,19 @@ function unlinkedRequesterNote(
 
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
 // portal_users has no partner_id; a same-email user under a DIFFERENT partner must not match.
+// The address matches case-insensitively (#11541). The match decides which org a
+// ticket is filed in, so an address that names more than one login (case
+// variants, or one address in several of this partner's orgs) is ambiguous and
+// resolves to no portal user: the message falls through to domain routing,
+// exactly as an unknown sender would, instead of filing into an arbitrary org.
 async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null; contactId: string | null } | null> {
   const rows = await db
     .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name, contactId: portalUsers.contactId })
     .from(portalUsers)
     .innerJoin(organizations, eq(portalUsers.orgId, organizations.id))
-    .where(and(eq(portalUsers.email, email.toLowerCase()), eq(organizations.partnerId, partnerId)))
-    .limit(1);
-  return rows[0] ?? null;
+    .where(and(portalLoginEmailEquals(email), eq(organizations.partnerId, partnerId)))
+    .limit(2);
+  return soleCaseInsensitiveMatch(rows, 'inbound email sender lookup', { partnerId });
 }
 
 // Resolve TICKETS_INBOUND_DOMAIN defensively. The inbound worker runs `getConfig()`

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { assertNoUnresolvedIsolation, NetworkIsolationUnresolvedError } from '../../services/networkIsolation/lifecycle';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, runAfterDbContextCommit } from '../../db';
@@ -28,6 +29,7 @@ import {
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { PsaTicketingMoveBlockedError } from '../../services/deviceOrgMove/psaTicketingGuard';
 import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
@@ -246,6 +248,9 @@ moveOrgRoutes.post(
     let moved: MoveDeviceOrgResult | undefined;
     try {
       await db.transaction(async (tx) => {
+        // Keep the engine's actor/org/device lock order. The existing W1a
+        // BEFORE org_id trigger fences a racing isolation under the device lock.
+        await assertNoUnresolvedIsolation(tx, { deviceId }, 'move_device_org', { lockDevices: false });
         moved = await moveDeviceOrgInTransaction(tx, {
           deviceId,
           sourceOrgId,
@@ -261,6 +266,11 @@ moveOrgRoutes.post(
       });
     } catch (err) {
       const pgNode = pgErrorNode(err);
+      if (err instanceof NetworkIsolationUnresolvedError
+        // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node unwrapped by the existing cause-chain mapper.
+        || (pgNode?.code === '55000' && typeof pgNode.message === 'string' && pgNode.message.startsWith('isolation_unresolved:'))) {
+        return c.json({ error: 'isolation_unresolved', message: 'Release network isolation first' }, 409);
+      }
       // PAM ownership epochs W6 (#8208): transfer on + a departing actuation
       // not closed yet (typed precondition, or the trigger's own constraint
       // when the race was lost) → wait-and-retry ACTIVE; transfer off + any
@@ -305,6 +315,9 @@ moveOrgRoutes.post(
       // A currency-policy block is not a failure: the transaction rolled back
       // (device + tickets untouched), so report it and skip Sentry / the
       // failed-move audit.
+      if (err instanceof PsaTicketingMoveBlockedError) {
+        return c.json({ error: err.message, code: err.code }, 409);
+      }
       if (err instanceof TicketMoveCurrencyBlockedError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }

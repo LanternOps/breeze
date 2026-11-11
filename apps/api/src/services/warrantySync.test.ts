@@ -10,7 +10,9 @@ const updateMock = vi.fn();
 vi.mock('../db', () => ({
   db: {
     insert: (...args: unknown[]) => insertMock(...args),
-    select: (...args: unknown[]) => selectMock(...args),
+    // An unqueued read (the pre-write status read, #10804) finds no row.
+    select: (...args: unknown[]) => selectMock(...args)
+      ?? { from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) },
     update: (...args: unknown[]) => updateMock(...args),
   },
 }));
@@ -51,7 +53,10 @@ vi.mock('./warrantyAlertEvaluator', () => ({
   evaluateWarrantyAlerts: (...args: unknown[]) => evaluateWarrantyAlertsMock(...args),
 }));
 
+vi.mock('../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
+
 import { syncWarrantyForDevice, syncWarrantyForSubject, upsertAgentWarranty } from './warrantySync';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 
 const DEVICE_ID = '44444444-4444-4444-4444-444444444444';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -662,5 +667,79 @@ describe('a sync with nothing better never erases imported or agent data (#9862)
     expect(compiled.sql).toContain('is null');
     expect(compiled.params).toEqual(expect.arrayContaining(['deviceWarranty.dataSource', 'provider']));
     expect(compiled.params).not.toContain('agent_plist');
+  });
+});
+
+describe('a status change re-evaluates warranty.status dynamic groups (#10804)', () => {
+  const reevaluate = vi.mocked(requestDeviceGroupReevaluationAfterCommit);
+
+  function storedStatus(status: string | null) {
+    selectMock.mockImplementation(() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve(status ? [{ status }] : []) }) }),
+    }));
+  }
+
+  const agentReport = (coverageEndDate: string) => ({
+    source: 'agent_plist',
+    manufacturer: 'Apple',
+    serialNumber: 'SN1',
+    coverageEndDate,
+    coverageStartDate: inDays(-400),
+    coverageType: 'Limited Warranty',
+    coverageKind: 'fixed' as const,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    providerMock.mockReset();
+    captureUpsert();
+  });
+
+  it('agent report: expiring → expired requests a warranty.status re-evaluation', async () => {
+    storedStatus('expiring');
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, agentReport(inDays(-1)));
+
+    expect(reevaluate).toHaveBeenCalledTimes(1);
+    expect(reevaluate).toHaveBeenCalledWith({
+      deviceId: DEVICE_ID,
+      orgId: ORG_ID,
+      eventType: 'device.updated',
+      changedFields: ['warranty.status'],
+      reason: 'warranty_status_change',
+    });
+  });
+
+  it('agent report: an unchanged status enqueues nothing', async () => {
+    storedStatus('active');
+    await upsertAgentWarranty(DEVICE_ID, ORG_ID, agentReport(inDays(400)));
+    expect(reevaluate).not.toHaveBeenCalled();
+  });
+
+  it('vendor sync: a new row only re-evaluates when its status is not unknown', async () => {
+    storedStatus(null);
+    providerMock.mockReturnValue(null);
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Acme', serialNumber: 'SN1', subject: { kind: 'device', deviceId: DEVICE_ID } });
+    // A missing row already reads as unknown in the filter.
+    expect(reevaluate).not.toHaveBeenCalled();
+
+    providerMock.mockReturnValue({
+      lookup: vi.fn().mockResolvedValue(new Map([['SN1', {
+        found: true, entitlements: [], warrantyStartDate: null, warrantyEndDate: inDays(30),
+      }]])),
+    });
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: { kind: 'device', deviceId: DEVICE_ID } });
+    expect(reevaluate).toHaveBeenCalledTimes(1);
+    expect(reevaluate).toHaveBeenCalledWith(expect.objectContaining({ deviceId: DEVICE_ID, changedFields: ['warranty.status'] }));
+  });
+
+  it('vendor sync: a manual asset never requests device group re-evaluation', async () => {
+    providerMock.mockReturnValue({
+      lookup: vi.fn().mockResolvedValue(new Map([['SN1', {
+        found: true, entitlements: [], warrantyStartDate: null, warrantyEndDate: inDays(-5),
+      }]])),
+    });
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: { kind: 'manualAsset', manualAssetId: 'ma-1' } });
+    expect(reevaluate).not.toHaveBeenCalled();
   });
 });

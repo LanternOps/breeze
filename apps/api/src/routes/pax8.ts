@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { optionalQueryBoolean } from '@breeze/shared';
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import {
   contractLines,
   organizations,
@@ -17,7 +17,7 @@ import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
 import { DEFAULT_PAX8_API_BASE_URL, DEFAULT_PAX8_TOKEN_URL } from '../services/pax8Client';
-import { createPax8ClientForIntegration, linkPax8SubscriptionToContractLine, mapPax8Company, unlinkPax8Subscription } from '../services/pax8SyncService';
+import { createPax8ClientForIntegration, linkPax8SubscriptionToContractLine, mapPax8Company, Pax8MapRefusedError, unlinkPax8Subscription } from '../services/pax8SyncService';
 import { enqueuePax8Sync } from '../jobs/pax8SyncWorker';
 import { captureException } from '../services/sentry';
 import { pax8CompanyOrderReadiness } from '../services/pax8CompanyReadiness';
@@ -27,6 +27,18 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
 import { urlOriginChanged } from '../services/credentialOriginBinding';
+import { loadMappableOrgs } from '../services/mappableOrgs';
+import {
+  buildPax8CompanySuggestions,
+  loadPax8CompanyRowsForMatch,
+  mapPax8CompaniesBulk,
+  Pax8BulkMapError,
+  summarizePax8Companies,
+  verifyPax8SuggestionSource,
+  type Pax8BulkMapResult,
+  type Pax8CompanyRowForMatch,
+  type VerifiedPax8MapSource,
+} from '../services/pax8CompanyMapping';
 
 export const pax8Routes = new Hono();
 
@@ -87,6 +99,20 @@ const companyMapSchema = z.object({
   pax8CompanyId: z.string().min(1).max(64),
   orgId: z.string().guid().nullable(),
   ignored: z.boolean().optional(),
+  source: z.enum(['manual', 'suggestion']).optional(),
+});
+
+/** Bulk review confirm. `expectedOrgId` is the org the reviewer saw (null = unmapped). */
+const companyBulkMapSchema = z.object({
+  integrationId: z.string().guid(),
+  items: z.array(z.object({
+    pax8CompanyId: z.string().min(1).max(64),
+    orgId: z.string().guid(),
+    expectedOrgId: z.string().guid().nullable(),
+  }))
+    .min(1)
+    .max(200)
+    .refine((items) => new Set(items.map((item) => item.pax8CompanyId)).size === items.length, 'Duplicate company'),
 });
 
 const subscriptionQuerySchema = z.object({
@@ -343,18 +369,32 @@ pax8Routes.get('/companies', partnerScopes, readPerm, zValidator('query', compan
       ignored: pax8CompanyMappings.ignored,
       lastSeenAt: pax8CompanyMappings.lastSeenAt,
       updatedAt: pax8CompanyMappings.updatedAt,
+      createdAt: pax8CompanyMappings.createdAt,
       metadata: pax8CompanyMappings.metadata,
     })
     .from(pax8CompanyMappings)
     .leftJoin(organizations, eq(pax8CompanyMappings.orgId, organizations.id))
     .where(eq(pax8CompanyMappings.integrationId, integration.id))
     .orderBy(pax8CompanyMappings.pax8CompanyName, pax8CompanyMappings.pax8CompanyId);
+  // Suggestions are read-only: nothing here writes a mapping.
+  const orgs = await loadMappableOrgs(db, partner.partnerId);
+  const matchRows: Pax8CompanyRowForMatch[] = rows.map((row) => ({
+    pax8CompanyId: row.pax8CompanyId,
+    pax8CompanyName: row.pax8CompanyName,
+    mappedOrgId: row.mappedOrgId,
+    ignored: row.ignored,
+    createdAt: row.createdAt,
+  }));
+  const suggestions = buildPax8CompanySuggestions(matchRows, orgs);
   return c.json({
-    data: rows.map(({ metadata, ...row }) => ({
+    data: rows.map(({ metadata, createdAt, ...row }) => ({
       ...row,
+      firstSeenAt: createdAt ? createdAt.toISOString() : null,
+      suggestion: suggestions.get(row.pax8CompanyId) ?? null,
       ...pax8CompanyOrderReadiness(row.status, metadata),
     })),
     integrationId: integration.id,
+    summary: summarizePax8Companies(matchRows, suggestions, new Date()),
   });
 });
 
@@ -371,25 +411,118 @@ pax8Routes.post('/companies/map', partnerScopes, writePerm, requireMfa(), zValid
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   if (body.orgId && !auth.canAccessOrg(body.orgId)) return c.json({ error: 'Access to target organization denied' }, 403);
 
+  // The lookups and the write run in one savepoint, so a refused map is answered
+  // here as a 400 instead of failing the request transaction on commit. Any
+  // other failure is unexpected and goes to the error handler as a 500.
+  let outcome: { mapped: Awaited<ReturnType<typeof mapPax8Company>>; previousOrgId: string | null; verified: VerifiedPax8MapSource };
   try {
-    const mapped = await mapPax8Company({
+    outcome = await withDbTransaction(async () => {
+      const [previous] = await db
+        .select({ orgId: pax8CompanyMappings.orgId })
+        .from(pax8CompanyMappings)
+        .where(and(
+          eq(pax8CompanyMappings.integrationId, integration.id),
+          eq(pax8CompanyMappings.partnerId, integration.partnerId),
+          eq(pax8CompanyMappings.pax8CompanyId, body.pax8CompanyId),
+        ))
+        .limit(1);
+
+      let verified = verifyPax8SuggestionSource(undefined, body.pax8CompanyId, body.orgId, new Map());
+      if (body.source === 'suggestion' && body.orgId) {
+        const companyRows = await loadPax8CompanyRowsForMatch(integration.id, integration.partnerId);
+        const orgs = await loadMappableOrgs(db, integration.partnerId);
+        verified = verifyPax8SuggestionSource(
+          body.source,
+          body.pax8CompanyId,
+          body.orgId,
+          buildPax8CompanySuggestions(companyRows, orgs),
+        );
+      }
+
+      const mapped = await mapPax8Company({
+        integrationId: integration.id,
+        partnerId: integration.partnerId,
+        pax8CompanyId: body.pax8CompanyId,
+        orgId: body.orgId,
+        ignored: body.ignored,
+      });
+      return { mapped, previousOrgId: previous?.orgId ?? null, verified };
+    });
+  } catch (err) {
+    if (err instanceof Pax8MapRefusedError) return c.json({ error: err.message }, 400);
+    throw err;
+  }
+
+  const { mapped, previousOrgId, verified } = outcome;
+  writeRouteAudit(c, {
+    // An unmap is filed under the org that lost the company.
+    orgId: body.orgId ?? previousOrgId,
+    action: body.orgId ? 'pax8.company.map' : 'pax8.company.unmap',
+    resourceType: 'pax8_company_mapping',
+    resourceName: body.pax8CompanyId,
+    details: {
       integrationId: integration.id,
       partnerId: integration.partnerId,
-      pax8CompanyId: body.pax8CompanyId,
-      orgId: body.orgId,
-      ignored: body.ignored,
-    });
-    writeRouteAudit(c, {
-      orgId: body.orgId,
-      action: body.orgId ? 'pax8.company.map' : 'pax8.company.unmap',
-      resourceType: 'pax8_company_mapping',
-      resourceName: body.pax8CompanyId,
-      details: { integrationId: integration.id, partnerId: integration.partnerId, ignored: body.ignored ?? false },
-    });
-    return c.json({ data: mapped });
-  } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      ignored: body.ignored ?? false,
+      previousOrgId,
+      source: verified.source,
+      matchTier: verified.matchTier,
+      matchKey: verified.matchKey,
+    },
+  });
+  return c.json({ data: mapped });
+});
+
+pax8Routes.post('/companies/map-bulk', partnerScopes, writePerm, requireMfa(), zValidator('json', companyBulkMapSchema), async (c) => {
+  const auth = c.get('auth');
+  const body = c.req.valid('json');
+  const [integration] = await db
+    .select({ id: pax8Integrations.id, partnerId: pax8Integrations.partnerId, name: pax8Integrations.name })
+    .from(pax8Integrations)
+    .where(and(...integrationScopeConditions(auth, body.integrationId)))
+    .limit(1);
+  if (!integration) return c.json({ error: 'Pax8 integration not found' }, 404);
+  const partner = resolvePartnerId(auth, integration.partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+  // Every target is authorized before anything is read for writing.
+  const denied = body.items.filter((item) => !auth.canAccessOrg(item.orgId)).map((item) => item.pax8CompanyId);
+  if (denied.length > 0) {
+    return c.json({ error: 'Access to target organization denied', pax8CompanyIds: denied }, 403);
   }
+
+  let results: Pax8BulkMapResult[];
+  try {
+    results = await mapPax8CompaniesBulk({
+      integrationId: integration.id,
+      partnerId: integration.partnerId,
+      items: body.items,
+    });
+  } catch (err) {
+    if (err instanceof Pax8BulkMapError) {
+      return c.json({ error: err.message, code: err.code, pax8CompanyIds: err.pax8CompanyIds }, err.status);
+    }
+    throw err;
+  }
+
+  for (const result of results) {
+    writeRouteAudit(c, {
+      orgId: result.orgId,
+      action: 'pax8.company.map',
+      resourceType: 'pax8_company_mapping',
+      resourceName: result.pax8CompanyId,
+      details: {
+        integrationId: integration.id,
+        partnerId: integration.partnerId,
+        ignored: false,
+        previousOrgId: result.previousOrgId,
+        source: result.source,
+        matchTier: result.matchTier,
+        matchKey: result.matchKey,
+      },
+    });
+  }
+  return c.json({ data: { mapped: results.length } });
 });
 
 pax8Routes.get('/subscriptions', partnerScopes, readPerm, zValidator('query', subscriptionQuerySchema), async (c) => {

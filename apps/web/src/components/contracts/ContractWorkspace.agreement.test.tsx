@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 import '@/lib/i18n';
@@ -105,6 +105,32 @@ describe('ContractWorkspace created-from-quote pill', () => {
     ] }));
     render(<ContractWorkspace contractId="ct-1" />);
     await screen.findByTestId('contract-under-agreement-pill');
+    expect(screen.queryByTestId('contract-from-quote-pill')).not.toBeInTheDocument();
+  });
+
+  // #10361: a quote with no agreement block leaves no executed document, so the
+  // pill falls back to the contract's own source_quote_id link.
+  it('names the source quote from the contract itself when the quote carried no agreement', async () => {
+    api.getContract.mockResolvedValue(resp({ data: {
+      contract: { id: 'ct-1', name: 'Q-2026-0009 — Annual', status: 'draft' },
+      sourceQuote: { id: 'q-99', quoteNumber: 'Q-2026-0009' },
+    } }));
+    api.listContractDocuments.mockResolvedValue(resp({ data: [] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    const pill = await screen.findByTestId('contract-from-quote-pill');
+    expect(pill).toHaveTextContent('From quote Q-2026-0009');
+    expect(pill).toHaveAttribute('href', '/billing/quotes/q-99');
+  });
+
+  it('shows no fallback pill for a quote that was never numbered', async () => {
+    api.getContract.mockResolvedValue(resp({ data: {
+      contract: { id: 'ct-1', name: 'Draft', status: 'draft' },
+      sourceQuote: { id: 'q-99', quoteNumber: null },
+    } }));
+    api.listContractDocuments.mockResolvedValue(resp({ data: [] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    await screen.findByTestId('contract-workspace');
+    await waitFor(() => expect(api.listContractDocuments).toHaveBeenCalled());
     expect(screen.queryByTestId('contract-from-quote-pill')).not.toBeInTheDocument();
   });
 });

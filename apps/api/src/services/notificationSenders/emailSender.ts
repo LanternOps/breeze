@@ -4,6 +4,8 @@
  * Sends alert notifications via email using the EmailService.
  */
 
+import type { AlertOwnerKind } from '@breeze/shared';
+
 import { getEmailService, AlertSeverity } from '../email';
 
 export interface EmailNotificationPayload {
@@ -12,6 +14,8 @@ export interface EmailNotificationPayload {
   severity: AlertSeverity;
   summary: string;
   deviceName?: string;
+  subjectName?: string;
+  ownerKind?: AlertOwnerKind;
   occurredAt?: Date | string;
   dashboardUrl?: string;
   orgName?: string;
@@ -42,6 +46,8 @@ export async function sendEmailNotification(payload: EmailNotificationPayload): 
       severity: payload.severity,
       summary: payload.summary,
       deviceName: payload.deviceName,
+      subjectName: payload.subjectName,
+      ownerKind: payload.ownerKind,
       occurredAt: payload.occurredAt,
       dashboardUrl: payload.dashboardUrl,
       orgName: payload.orgName

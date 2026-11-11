@@ -135,26 +135,61 @@ it('sweep creates two alerts, keeps acknowledged sibling, and resolves only reco
   expect((await alertRows(f.device.id)).find(a => a.subjectKey === 'a')?.status).toBe('acknowledged');
 });
 
-it('autoResolve off preserves recovered subjects, and exempt/stale rows never alert', async () => {
+const recoverAllComponents = (deviceId: string) => db.update(deviceHardwareComponents).set({
+  health: 'ok', state: 'online', criticalStreak: 0, unhealthyStreak: 0, healthyStreak: 2, belowCriticalStreak: 2,
+}).where(eq(deviceHardwareComponents.deviceId, deviceId));
+
+const exemptComponentB = (deviceId: string) => db.update(deviceHardwareComponents).set({ alertExempt: true }).where(and(
+  eq(deviceHardwareComponents.deviceId, deviceId), eq(deviceHardwareComponents.componentKey, 'b'),
+));
+
+// A monitor-managed rule resolves monitor -> org -> partner (spec §6.3): auto-resolve
+// is off on the monitor row, not in alert_rules.override_settings, which no writer
+// sets for a managed rule (the compiler stores delivery fields only; rule writes 410).
+it('autoResolve off preserves recovered subjects, and exempt rows never alert', async () => {
   const f = await fixture();
   await withSystemDbAccessContext(async () => {
-    await db.update(deviceHardwareComponents).set({ alertExempt: true }).where(and(
-      eq(deviceHardwareComponents.deviceId, f.device.id), eq(deviceHardwareComponents.componentKey, 'b'),
-    ));
+    await db.update(monitorDefinitions).set({ autoResolve: false }).where(eq(monitorDefinitions.id, f.monitor.id));
+    await exemptComponentB(f.device.id);
     expect(await evaluateDeviceAlerts(f.device.id)).toHaveLength(1);
-    await db.update(alertRules).set({ overrideSettings: { autoResolve: false } }).where(eq(alertRules.id, f.rule.id));
-    await db.update(deviceHardwareComponents).set({
-      health: 'ok', state: 'online', criticalStreak: 0, unhealthyStreak: 0, healthyStreak: 2, belowCriticalStreak: 2,
-    }).where(eq(deviceHardwareComponents.deviceId, f.device.id));
+    await recoverAllComponents(f.device.id);
     await evaluateDeviceAlerts(f.device.id);
   });
-  expect((await alertRows(f.device.id)).map(a => a.status)).toEqual(['active']);
+  const rows = await alertRows(f.device.id);
+  expect(rows.map(a => a.status)).toEqual(['active']);
+  expect((rows[0]!.context as { lifecycle?: unknown }).lifecycle).toMatchObject({
+    autoResolve: false, sources: { autoResolve: 'monitor' },
+  });
+});
+
+it('a stale recovered row never resolves an auto-resolving subject alert', async () => {
+  const f = await fixture();
   await withSystemDbAccessContext(async () => {
-    await db.update(alertRules).set({ overrideSettings: { autoResolve: true } }).where(eq(alertRules.id, f.rule.id));
+    await exemptComponentB(f.device.id);
+    expect(await evaluateDeviceAlerts(f.device.id)).toHaveLength(1);
+    await recoverAllComponents(f.device.id);
     await db.update(deviceHardwareComponents).set({ stale: true }).where(eq(deviceHardwareComponents.deviceId, f.device.id));
     await evaluateDeviceAlerts(f.device.id);
   });
   expect((await alertRows(f.device.id)).map(a => a.status)).toEqual(['active']);
+});
+
+// Spec §6.4: a later settings change affects the next episode, not an open one.
+it.each([
+  { opened: true, changedTo: false, expected: 'resolved' },
+  { opened: false, changedTo: true, expected: 'active' },
+])('an alert opened with autoResolve=$opened ignores a change to $changedTo: $expected', async ({ opened, changedTo, expected }) => {
+  const f = await fixture();
+  const setMonitorAutoResolve = (autoResolve: boolean) => db.update(monitorDefinitions).set({ autoResolve }).where(eq(monitorDefinitions.id, f.monitor.id));
+  await withSystemDbAccessContext(async () => {
+    await setMonitorAutoResolve(opened);
+    await exemptComponentB(f.device.id);
+    expect(await evaluateDeviceAlerts(f.device.id)).toHaveLength(1);
+    await setMonitorAutoResolve(changedTo);
+    await recoverAllComponents(f.device.id);
+    await evaluateDeviceAlerts(f.device.id);
+  });
+  expect((await alertRows(f.device.id)).map(a => a.status)).toEqual([expected]);
 });
 
 it.each(['disk:race', undefined])('concurrent createAlert collapses subject %s to one row', async subjectKey => {
@@ -194,6 +229,26 @@ it('publishes only after commit and subscribers can read the owner', async () =>
   await Promise.all([drainSubjectAlertOutbox(f.device.id), drainSubjectAlertOutbox(f.device.id)]);
   expect(m.publish).toHaveBeenCalledTimes(2);
   expect(m.cooldown).toHaveBeenCalledTimes(2);
+});
+
+it('evaluates with NO ambient context, the way the alert worker calls it, and drains after commit (#10859)', async () => {
+  const f = await fixture();
+  // No wrapper: the evaluator opens its own short system contexts (prelude,
+  // one per rule, detach). Every read must still see the seeded rows, so a
+  // forgotten bare-pool read would show up here as zero alerts.
+  expect(hasDbAccessContext()).toBe(false);
+  const ids = await evaluateDeviceAlerts(f.device.id);
+  expect(ids).toHaveLength(2);
+  expect(hasDbAccessContext()).toBe(false);
+  // Committed already: visible from a fresh context, and nothing published yet.
+  expect((await alertRows(f.device.id)).map(a => a.subjectKey).sort()).toEqual(['a', 'b']);
+  expect(m.publish).not.toHaveBeenCalled();
+  // The worker's drain runs right after, with no ambient context.
+  await drainSubjectAlertOutbox(f.device.id);
+  expect(m.publish.mock.calls.filter(c => c[0] === 'alert.triggered')).toHaveLength(2);
+  // Re-evaluating the same evidence adopts the open alerts: no duplicates.
+  expect(await evaluateDeviceAlerts(f.device.id)).toHaveLength(0);
+  expect(await alertRows(f.device.id)).toHaveLength(2);
 });
 
 it('outer rollback discards alerts, ownership and pending publication together', async () => {

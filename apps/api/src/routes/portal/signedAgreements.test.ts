@@ -79,7 +79,7 @@ beforeEach(() => {
 });
 
 describe('GET /signed-agreements', () => {
-  it('lists both source kinds as metadata, named by request label → template, with the proposal number', async () => {
+  it('lists both source kinds as metadata, named by the template (never the staff-internal request label, #10294), with the proposal number', async () => {
     h.rows.set(contractDocuments, [
       {
         id: DOC, sourceKind: 'request', templateVersionId: VERSION, agreementRequestId: REQ, quoteId: null,
@@ -101,7 +101,7 @@ describe('GET /signed-agreements', () => {
     expect(body.timezone).toBe('America/Denver'); // #10291
     expect(body.data).toEqual([
       {
-        id: DOC, name: 'HIPAA BAA 2026', templateName: 'BAA', versionNumber: 3, sourceKind: 'request', quoteNumber: null,
+        id: DOC, name: 'BAA', templateName: 'BAA', versionNumber: 3, sourceKind: 'request', quoteNumber: null,
         mime: 'application/pdf', byteSize: 1200, signerName: 'Dana Buyer', signedAt: '2026-10-21T09:00:00.000Z',
         acceptanceOrigin: 'customer', createdAt: '2026-10-21T09:00:01.000Z',
       },
@@ -111,6 +111,26 @@ describe('GET /signed-agreements', () => {
         acceptanceOrigin: null, createdAt: '2026-09-01T00:00:00.000Z',
       },
     ]);
+  });
+
+  it('#10294: names a signed agreement by the template name frozen at signing, not the renamed live template', async () => {
+    h.rows.set(contractDocuments, [
+      {
+        id: DOC, sourceKind: 'request', templateVersionId: VERSION, agreementRequestId: REQ, quoteId: null,
+        mime: 'application/pdf', byteSize: 1200, signerName: 'Dana Buyer', signedAt: new Date('2026-10-21T09:00:00Z'),
+        acceptanceOrigin: 'customer', createdAt: new Date('2026-10-21T09:00:01Z'), templateNameSnapshot: 'BAA',
+      },
+      {
+        // Signed before snapshots existed: the live name stands in.
+        id: 'doc-2', sourceKind: 'quote', templateVersionId: VERSION, agreementRequestId: null, quoteId: null,
+        mime: 'application/pdf', byteSize: 800, signerName: null, signedAt: null,
+        acceptanceOrigin: null, createdAt: new Date('2026-09-01T00:00:00Z'), templateNameSnapshot: null,
+      },
+    ]);
+    h.rows.set(contractTemplateVersions, [{ versionId: VERSION, versionNumber: 3, templateName: 'BAA (renamed)' }]);
+    const data = (await (await app().request('/signed-agreements')).json()).data;
+    expect(data[0]).toMatchObject({ name: 'BAA', templateName: 'BAA' });
+    expect(data[1]).toMatchObject({ name: 'BAA (renamed)', templateName: 'BAA (renamed)' });
   });
 
   it('never carries the MSP evidence trail (IP, user agent, on-behalf method/reference, recorder)', async () => {

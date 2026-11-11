@@ -72,7 +72,7 @@ export async function processAiOperatorCoordinatorJob(
     return {
       handled: `tick: queued=${pass.queuedPastWake} waiting=${pass.waitingPastWake} `
         + `lease=${pass.runningPastLease} unsettled=${pass.terminalUnsettled} `
-        + `reminders=${pass.humanWorkReminders}`,
+        + `reminders=${pass.humanWorkReminders} reservations=${pass.accountReservationsReleased}`,
     };
   }
 

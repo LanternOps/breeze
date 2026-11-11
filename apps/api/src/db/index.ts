@@ -41,21 +41,13 @@ import {
   type PoolSlot,
 } from './poolAdmission';
 import { createAbandonedSlotReclaimScheduler } from './abandonedSlotReclaim';
+import { getDbPoolMax } from './poolSize';
 
 const requestDatabaseConfig = resolveRequestDatabaseConfig();
 logRequestDatabaseConfigSource(requestDatabaseConfig);
 
-// Pool sizing: postgres-js defaults to max=10, which causes cascading 504s
-// under heartbeat storms (e.g. a 1000-agent fleet reconnecting at once).
-// Default to 30 and allow tuning via DB_POOL_MAX.
-function getDbPoolMax(): number {
-  const raw = Number.parseInt(process.env.DB_POOL_MAX ?? '', 10);
-  if (!Number.isFinite(raw) || raw <= 0) {
-    return 30;
-  }
-  return raw;
-}
-
+// Pool sizing (default 30, DB_POOL_MAX to tune) lives in ./poolSize so the
+// alert worker can size its concurrency against it (#10859).
 const requestPoolMax = getDbPoolMax();
 
 const client = postgres(requestDatabaseConfig.url, {
@@ -1195,11 +1187,42 @@ export function assertInTransaction(label: string): void {
  * only the executor: the caller's RLS GUCs and access metadata are unchanged.
  * Using raw SQL SAVEPOINT here is insufficient: postgres.js also tracks errors
  * in its transaction callback, so a caught SQL failure would poison the outer
- * commit even after an explicit ROLLBACK TO. */
+ * commit even after an explicit ROLLBACK TO.
+ *
+ * Catch outside this call, and do not start it beside sibling statements in a
+ * Promise.all: they share one connection, so a sibling's next statement can land
+ * in the aborted transaction before the rollback runs, and fail on the outer
+ * scope (#11203). */
 export async function withDbTransaction<T>(fn: () => Promise<T>): Promise<T> {
   assertInTransaction('withDbTransaction');
   const executor = dbContextStorage.getStore()!;
   return executor.transaction(tx => dbContextStorage.run(tx as unknown as typeof baseDb, fn));
+}
+
+/**
+ * `withDbTransaction` for code that may run with no context held, such as a
+ * helper shared by routes and workers. With none held, statements autocommit on
+ * the bare pool, so a caught failure poisons nothing and `fn` just runs. It never
+ * opens a context, so contextless code keeps its RLS scope: use
+ * `withSystemDbAccessContextIsolated` where the caller wants system scope then.
+ */
+export async function withDbTransactionIfHeld<T>(fn: () => Promise<T>): Promise<T> {
+  return hasDbAccessContext() ? withDbTransaction(fn) : fn();
+}
+
+/**
+ * `withSystemDbAccessContext` for a statement whose failure the caller catches.
+ * The scope is the same in both cases: with none held it opens a system context
+ * (its own transaction, so the catch already worked); with one held it stays in
+ * that context's scope and never escalates. The difference is that with one held
+ * `fn` runs in a savepoint, so the failure stops there instead of rethrowing when
+ * the held transaction ends (#11203, #11225).
+ *
+ * Catch outside this call. The `withDbTransaction` rules apply: do not start it
+ * beside sibling statements in a Promise.all.
+ */
+export async function withSystemDbAccessContextIsolated<T>(fn: () => Promise<T>): Promise<T> {
+  return hasDbAccessContext() ? withDbTransaction(fn) : withSystemDbAccessContext(fn);
 }
 
 /**

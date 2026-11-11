@@ -172,7 +172,7 @@ export class ClusterCacheBus {
       } else {
         const message = encodeInvalidation({ v: 1, cache, key: wireKey, origin: this.origin, sentAtMs: this.now() });
         outcome = await this.boundedPublish(publisher, message);
-        if (outcome === 'failed') detail = `timed out after ${this.publishTimeoutMs}ms`;
+        if (outcome === 'timeout') detail = `timed out after ${this.publishTimeoutMs}ms`;
       }
     } catch (err) {
       outcome = 'failed';
@@ -402,7 +402,7 @@ export class ClusterCacheBus {
     });
     try {
       const result = await Promise.race([publisher.publish(CLUSTER_CACHE_CHANNEL, message).then(() => 'ok' as const), timeout]);
-      return result === 'ok' ? 'published' : 'failed';
+      return result === 'ok' ? 'published' : 'timeout';
     } finally {
       clearTimeout(timer);
     }

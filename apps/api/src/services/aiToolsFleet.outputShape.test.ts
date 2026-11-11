@@ -29,6 +29,8 @@ const dbMock = vi.hoisted(() => {
   };
 });
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -44,7 +46,7 @@ const PATCH_ROW = {
 } as const;
 const auth = () => ({
   scope: 'organization', partnerId: null, orgId: 'o1', accessibleOrgIds: ['o1'],
-  orgCondition: () => undefined, allowedSiteIds: undefined, allowedDeviceIds: null,
+  orgCondition: () => undefined, canAccessOrg: (id: string) => id === 'o1', allowedSiteIds: undefined, allowedDeviceIds: null,
   user: { id: 'u1' },
 }) as never;
 

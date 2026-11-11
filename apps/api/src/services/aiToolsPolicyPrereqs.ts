@@ -6,7 +6,7 @@
  * and backup configs. These must be created before they can be linked to a config policy.
  */
 
-import { db, withDbTransaction } from '../db';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { pgErrorCode } from '../utils/pgErrors';
 import { patchPolicies } from '../db/schema/patches';
 import { softwarePolicies } from '../db/schema/softwarePolicies';
@@ -214,7 +214,8 @@ function backupProfileWhere(auth: AuthContext): SQL | undefined {
 function safeHandler(toolName: string, fn: Handler): Handler {
   return async (input, auth, context) => {
     try {
-      return await fn(input, auth, context);
+      // In a savepoint, or the error JSON below is lost to the commit (#11203).
+      return await (hasDbAccessContext() ? withDbTransaction(() => fn(input, auth, context)) : fn(input, auth, context));
     } catch (err: unknown) {
       const code = pgErrorCode(err);
       // Log BEFORE the pg-code early returns — those branches return without
@@ -263,7 +264,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
-          appRules: { type: 'array', items: { type: 'object' }, description: 'Per-app rules [{source:"third_party"|"custom",packageId,action:"block"|"pin",pinnedVersion (pin only),displayName?}]. Max 200, unique; update replaces.' },
+          appRules: { type: 'array', items: { type: 'object' }, description: '[{source:"third_party"|"custom"|"linux",packageId,action:"block"|"pin",pinnedVersion (pin),displayName?}]. Linux: apt/dnf name. 200 unique max; update replaces.' },
           featureUpdates: { type: 'object', description: '{mode:"block"|"allow"|"pin", product:"windows-11"|"windows-10", targetVersion:"25H2"} (pin needs both). Default block. Pin sets WUfB target release.' },
           autoApprove: { type: 'object', description: "enabled, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays. Enabled needs severities or thirdPartyApps; omitted third-party fields persist." },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },

@@ -4,6 +4,8 @@ import (
 	"image"
 	"testing"
 	"time"
+
+	"github.com/pion/webrtc/v4"
 )
 
 // staticTestCapturer is a minimal ScreenCapturer that returns a fixed frame. It
@@ -140,4 +142,72 @@ func TestMaybeResendCachedFrameOnIdle_DoesNotAdvanceSampleClock(t *testing.T) {
 	if got := s.lastVideoWriteUnixNano.Load(); got <= idleSince.UnixNano() {
 		t.Fatalf("idle heartbeat did not bump lastVideoWriteUnixNano (still %d)", got)
 	}
+}
+
+// bgraTestCapturer returns a fresh, distinct frame each call (so the differ
+// never skips it) and reports BGRA so the cursor-compositing step is skipped.
+type bgraTestCapturer struct{ n byte }
+
+func (c *bgraTestCapturer) Capture() (*image.RGBA, error) {
+	c.n++
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for i := range img.Pix {
+		img.Pix[i] = c.n
+	}
+	return img, nil
+}
+func (c *bgraTestCapturer) CaptureRegion(int, int, int, int) (*image.RGBA, error) {
+	return c.Capture()
+}
+func (c *bgraTestCapturer) GetScreenBounds() (int, int, error) { return 4, 4, nil }
+func (c *bgraTestCapturer) Close() error                       { return nil }
+func (c *bgraTestCapturer) IsBGRA() bool                       { return true }
+
+// #10880: captureAndSendFrame feeds the watchdog's three signals separately —
+// capture-alive on every delivered frame, encoder-output only when the encoder
+// returns data — and records that a hardware encoder has produced output.
+func TestCaptureAndSendFrameRecordsStallSignals(t *testing.T) {
+	newSession := func(encode func(int) ([]byte, error)) (*Session, *warmupStubEncoder) {
+		s := &Session{id: "signals", isActive: true}
+		s.capturer = &bgraTestCapturer{}
+		stub := newWarmupStub(encode)
+		s.encoder.Store(&VideoEncoder{backend: stub})
+		s.metrics = newStreamMetrics()
+		s.differ = newFrameDiffer()
+		s.encoderPF = PixelFormatBGRA
+		track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.videoTrack = track
+		return s, stub
+	}
+
+	t.Run("encoder error: capture alive, no encoder output", func(t *testing.T) {
+		s, _ := newSession(encodeTimeout)
+		s.captureAndSendFrame(16 * time.Millisecond)
+		if s.lastCaptureUnixNano.Load() == 0 {
+			t.Fatalf("a delivered frame must bump the capture-alive signal")
+		}
+		if s.lastEncodeOutputUnixNano.Load() != 0 {
+			t.Fatalf("an encode error must not count as encoder output")
+		}
+		if s.hwRestore.hardwareProducedOutput {
+			t.Fatalf("an encode error must not count as hardware output")
+		}
+	})
+
+	t.Run("hardware output: all signals advance", func(t *testing.T) {
+		s, _ := newSession(encodeOK)
+		s.captureAndSendFrame(16 * time.Millisecond)
+		if s.lastCaptureUnixNano.Load() == 0 || s.lastEncodeOutputUnixNano.Load() == 0 {
+			t.Fatalf("capture and encoder-output signals must both advance")
+		}
+		if !s.hwRestore.hardwareProducedOutput {
+			t.Fatalf("hardware output must be recorded on the restore policy")
+		}
+		if s.lastVideoWriteUnixNano.Load() == 0 {
+			t.Fatalf("the sample must have been written")
+		}
+	})
 }

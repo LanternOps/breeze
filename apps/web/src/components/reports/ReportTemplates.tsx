@@ -56,6 +56,12 @@ import {
   type IdentityAccessOptions,
 } from './IdentityAccessOptionsForm';
 import {
+  DEFAULT_TICKET_SLA_PERFORMANCE_OPTIONS,
+  ticketSlaPerformanceConfigFromOptions,
+  TicketSlaPerformanceOptionsForm,
+  type TicketSlaPerformanceOptions,
+} from './TicketSlaPerformanceOptionsForm';
+import {
   DEFAULT_TICKET_SLA_OPTIONS,
   TicketSlaOptionsForm,
   ticketSlaConfigFromOptions,
@@ -116,6 +122,7 @@ import {
   type TemplateDeliveryValue,
 } from './TemplateDeliveryFields';
 import { hasTemplateOptionsForm } from './templateReportTypes';
+import { isSelectorlessOrgReportType } from './businessReportConfig';
 import { showToast } from '../shared/Toast';
 import { ActionError, runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -194,6 +201,7 @@ const reportTypeValues: TemplateReportType[] = [
   'mrr_renewals',
   'quote_win_rate',
   'client_profitability',
+  'ticket_sla_performance',
   'devices',
   'alerts',
   'patches',
@@ -445,6 +453,20 @@ const defaultTemplates: ReportTemplate[] = [
     group: 'general'
   },
   {
+    id: 'ticket_sla_performance',
+    name: 'SLA performance',
+    description: 'Customer-ready response and resolution times against SLA, by priority, with breaches.',
+    defaults: {
+      name: 'SLA performance',
+      type: 'ticket_sla_performance',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Timer,
+    tone: { iconBg: 'bg-teal-500/15', iconColor: 'text-teal-600' },
+    group: 'general'
+  },
+  {
     id: 'executive_summary',
     name: 'Executive Summary',
     description: 'High-level KPIs, risk posture, and strategic trends for leadership.',
@@ -666,7 +688,7 @@ function businessDefaultRange(template: ReportTemplate, t: (key: string) => stri
       ? saved.asOf
       : t('reports.reportTemplates.spec.asOfRunDate');
   }
-  if (type === 'ticket_sla_attainment' || type === 'technician_time_billability' || type === 'ai_usage_by_client' || type === 'quote_win_rate' || type === 'client_profitability') {
+  if (type === 'ticket_sla_attainment' || type === 'technician_time_billability' || type === 'ai_usage_by_client' || type === 'quote_win_rate' || type === 'client_profitability' || type === 'ticket_sla_performance') {
     switch (periodKind) {
       case 'last_full_month': return t('reports.reportPeriod.kinds.last_full_month');
       case 'last_30_days': return t('reports.reportPeriod.kinds.last_30_days');
@@ -744,6 +766,8 @@ export default function ReportTemplates() {
   const [backupStatusOptions, setBackupStatusOptions] = useState<BackupStatusOptions>(DEFAULT_BACKUP_STATUS_OPTIONS);
   const [identityTemplate, setIdentityTemplate] = useState<ReportTemplate | null>(null);
   const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
+  const [slaPerformanceTemplate, setSlaPerformanceTemplate] = useState<ReportTemplate | null>(null);
+  const [slaPerformanceOptions, setSlaPerformanceOptions] = useState<TicketSlaPerformanceOptions>(DEFAULT_TICKET_SLA_PERFORMANCE_OPTIONS);
   // One options modal for the three business report types (#3198 W03); the
   // template's type picks which form it renders.
   const [businessTemplate, setBusinessTemplate] = useState<ReportTemplate | null>(null);
@@ -922,7 +946,10 @@ export default function ReportTemplates() {
                 config: isBusiness
                   ? { ...postureConfig }
                   : {
-                      dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' },
+                      // The same refusal, on an org-owned type that keeps its delivery keys.
+                      ...(isSelectorlessOrgReportType(template.defaults.type)
+                        ? {}
+                        : { dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' } }),
                       ...postureConfig,
                       ...(singleOrg && singleOrg.emailRecipients.length > 0
                         ? { emailRecipients: singleOrg.emailRecipients }
@@ -1025,6 +1052,11 @@ export default function ReportTemplates() {
       if (type === 'identity_access_review') {
         setIdentityOptions(DEFAULT_IDENTITY_ACCESS_OPTIONS);
         setIdentityTemplate(template);
+        return;
+      }
+      if (type === 'ticket_sla_performance') {
+        setSlaPerformanceOptions(DEFAULT_TICKET_SLA_PERFORMANCE_OPTIONS);
+        setSlaPerformanceTemplate(template);
         return;
       }
       if (isBusinessReportType(type)) {
@@ -1230,7 +1262,10 @@ export default function ReportTemplates() {
         : templates.filter(t => t.group === 'business' && canUseBusinessReportType(t.defaults.type)),
     [templates, isPartnerScope, canUseBusinessReportType]
   );
-  const generalTemplates = useMemo(() => templates.filter(t => t.group !== 'business'), [templates]);
+  const generalTemplates = useMemo(
+    () => templates.filter(t => t.group !== 'business' && canUseBusinessReportType(t.defaults.type)),
+    [templates, canUseBusinessReportType]
+  );
 
   const renderCard = (template: ReportTemplate) => {
     const Icon = template.icon;
@@ -1487,6 +1522,20 @@ export default function ReportTemplates() {
           onCancel={() => setIdentityTemplate(null)}
           onSubmit={() => {
             void handleCreateDirect(identityTemplate, { ...identityOptions }, 'organization', templateDelivery);
+          }}
+        />
+      )}
+
+      {slaPerformanceTemplate && renderTemplateModal(
+        slaPerformanceTemplate,
+        <TicketSlaPerformanceOptionsForm
+          value={slaPerformanceOptions}
+          onChange={setSlaPerformanceOptions}
+          busy={creatingId === slaPerformanceTemplate.id}
+          submitLabel={t('reports.ticketSlaPerformanceOptions.createReport')}
+          onCancel={() => setSlaPerformanceTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(slaPerformanceTemplate, ticketSlaPerformanceConfigFromOptions(slaPerformanceOptions), 'organization', templateDelivery);
           }}
         />
       )}

@@ -2,6 +2,7 @@ import { PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import { z } from 'zod';
 import { PORTAL_REPORT_TYPES } from '../../services/portal/reportsSelfService';
 import { PORTAL_RATE_LIMIT_REDIS_KEYS } from '../../services/portal/rateLimit';
+import type { PortalSessionMethod } from './browserSession';
 
 // ============================================
 // Types
@@ -12,6 +13,18 @@ export type PortalSession = {
   portalUserId: string;
   orgId: string;
   authEpoch: number;
+  /**
+   * The sign-in method that minted the session (W3, plan D6). Every mint site
+   * writes it; absent means a pre-W3 session, which `parseStoredPortalSession`
+   * reads as `'password'`, exactly like a Redis payload without the field.
+   */
+  method?: PortalSessionMethod;
+  /**
+   * The org's proven Entra tenant at mint (W4, plan D9). Set for, and only
+   * for, an `entra` session; `parseStoredPortalSession` refuses an entra
+   * session without it.
+   */
+  entraTenantId?: string;
   createdAt: Date;
   expiresAt: Date;
 };
@@ -104,6 +117,10 @@ export const PORTAL_REDIS_KEYS = {
   userSessions: (userId: string) => `portal:user-sessions:${userId}`,
   resetToken: (hash: string) => `portal:reset:${hash}`,
   inviteToken: (hash: string) => `portal:invite:${hash}`,
+  /** Portal OIDC flow state (W4), keyed by sha256(state); TTL 600 s. */
+  oidcState: (hash: string) => `portal:oidc:state:${hash}`,
+  /** Entra tenant proof-run link (W4), keyed by sha256(run token); TTL 72 h. */
+  entraProofRun: (hash: string) => `portal:entra:proof-run:${hash}`,
   rlAttempts: PORTAL_RATE_LIMIT_REDIS_KEYS.attempts,
   rlBlock: PORTAL_RATE_LIMIT_REDIS_KEYS.block,
 };

@@ -263,8 +263,13 @@ func (s *Session) captureLoop() {
 // last Win32 error the capturer swallowed as a nil frame — the same detail
 // describeCaptureFailure attaches on the startup probe path — and falls back
 // to a generic description when the capturer recorded none (e.g. DXGI).
-func noVideoStopReason(capturer ScreenCapturer) string {
+func noVideoStopReason(capturer ScreenCapturer, wake *displayWakeHold) string {
 	if reason := swallowedCaptureError(capturer); reason != "" {
+		return reason
+	}
+	// #10874: a display that is asleep or gone explains the outage better
+	// than the generic text, and the two need opposite fixes.
+	if reason := wake.stopReason(displayPower); reason != "" {
 		return reason
 	}
 	return noVideoStopReasonFallback
@@ -356,7 +361,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 					s.mu.RLock()
 					capturer := s.capturer
 					s.mu.RUnlock()
-					go s.StopWithReason(noVideoStopReason(capturer))
+					go s.StopWithReason(noVideoStopReason(capturer, s.displayWake))
 					return captureModeStopped
 				}
 				wd.recordAttempt(lastWriteNanos)
@@ -367,6 +372,8 @@ func (s *Session) captureLoopDXGI() captureMode {
 				s.mu.RLock()
 				capForReattach := s.capturer
 				s.mu.RUnlock()
+				// Wake the display before the rebuild (#10874).
+				s.displayWake.nudge()
 				if r, ok := capForReattach.(interface{ ForceReattach() }); ok {
 					r.ForceReattach()
 					// Reset GPU path state so the encoder rebinds to the new
@@ -652,16 +659,34 @@ func (s *Session) captureLoopTicker() captureMode {
 	var wd reattachWatchdog
 	const noVideoReattachTimeout = 3 * time.Second
 	const reattachCooldown = 5 * time.Second
+	// Encoder/sink stalls are handled at the encoder, not by re-attaching;
+	// they have their own cooldown and termination budget.
+	var lastNonCaptureStall time.Time
+	var stallBudget nonCaptureStallBudget
 
 	for {
 		select {
 		case <-s.done:
 			return captureModeStopped
 		case <-ticker.C:
-			// No-video watchdog: force desktop re-attach if video has been stalled for >3s.
+			// No-video watchdog: if video has been stalled for >3s, find out
+			// which stage stopped (#10880). Only a capture stall re-attaches
+			// the desktop / rebuilds the capturer; an encoder stall is handled
+			// at the encoder.
 			if lastWriteNanos := s.lastVideoWriteUnixNano.Load(); lastWriteNanos != 0 {
 				lastWrite := time.Unix(0, lastWriteNanos)
-				if time.Since(lastWrite) > noVideoReattachTimeout &&
+				now := time.Now()
+				kind, action := s.noVideoDecision(now, noVideoReattachTimeout)
+				if (action == noVideoActionDemoteEncoder || action == noVideoActionLogOnly) &&
+					now.Sub(lastNonCaptureStall) > reattachCooldown {
+					lastNonCaptureStall = now
+					if reason := s.handleNonCaptureStall(kind, action, &stallBudget, lastWriteNanos, now); reason != "" {
+						// Same goroutine rationale as the re-attach budget below.
+						go s.StopWithReason(reason)
+						return captureModeStopped
+					}
+				}
+				if action == noVideoActionReattach &&
 					time.Since(wd.lastAttempt) > reattachCooldown {
 					if wd.evaluate(s.id, lastWriteNanos) {
 						// Spawn StopWithReason() in a goroutine because it waits on the capture goroutine via s.wg — calling inline would deadlock.
@@ -669,17 +694,19 @@ func (s *Session) captureLoopTicker() captureMode {
 						s.mu.RLock()
 						capturer := s.capturer
 						s.mu.RUnlock()
-						go s.StopWithReason(noVideoStopReason(capturer))
+						go s.StopWithReason(noVideoStopReason(capturer, s.displayWake))
 						return captureModeStopped
 					}
 					wd.recordAttempt(lastWriteNanos)
 					slog.Warn("Capture watchdog (ticker): no video output, forcing desktop re-attach",
-						"session", s.id,
+						"session", s.id, "stalledStage", kind.String(),
 						"sinceLastWrite", time.Since(lastWrite).Round(time.Millisecond))
 					switchThreadToInputDesktop()
 					s.mu.RLock()
 					capForReattach := s.capturer
 					s.mu.RUnlock()
+					// Wake the display before the rebuild (#10874).
+					s.displayWake.nudge()
 					if r, ok := capForReattach.(interface{ ForceReattach() }); ok {
 						r.ForceReattach()
 						// Rebind the encoder to whatever D3D11 device
@@ -721,6 +748,8 @@ func (s *Session) captureLoopTicker() captureMode {
 			}
 			if h, ok := currentCap.(TightLoopHint); ok && h.TightLoop() {
 				slog.Info("Capturer supports tight loop again, switching to DXGI loop", "session", s.id)
+				// The DXGI loop never collects warm-up results.
+				s.abandonHardwareWarmup()
 				return captureModeDXGI
 			}
 
@@ -826,14 +855,19 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 	if img == nil {
 		// DXGI: no new frame available (AccumulatedFrames==0)
-		resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
-		if !resent {
-			s.maybeResendCachedFrameOnIdle(frameDuration)
+		if !s.catchUpIdleEncoder(enc, frameDuration) {
+			resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+			if !resent {
+				s.maybeResendCachedFrameOnIdle(frameDuration)
+			}
 		}
 		s.metrics.RecordSkip()
 		return
 	}
 	s.metrics.RecordCapture(time.Since(t0))
+	// Capture-alive signal for the no-video watchdog: the capturer delivered a
+	// frame, whatever the differ and encoder do with it next.
+	s.lastCaptureUnixNano.Store(time.Now().UnixNano())
 
 	s.frameIdx++
 	if enableFramePixelDiagnostics && (s.frameIdx <= 5 || s.frameIdx%300 == 0) {
@@ -889,9 +923,11 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 			// frames indefinitely. Mirrors the DXGI "no new frame" path above.
 			// maybeResendCachedFrameOnIdle only bumps when the last write is older
 			// than staticDesktopResendInterval, so it can't mask a dead capture.
-			resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
-			if !resent {
-				s.maybeResendCachedFrameOnIdle(frameDuration)
+			if !s.catchUpIdleEncoder(enc, frameDuration) {
+				resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+				if !resent {
+					s.maybeResendCachedFrameOnIdle(frameDuration)
+				}
 			}
 			s.metrics.RecordSkip()
 			return
@@ -932,6 +968,17 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		return
 	}
 
+	s.deliverEncodedFrame(enc, h264Data, encodeTime, frameDuration)
+}
+
+// deliverEncodedFrame records and sends one CPU-path encoder output: the
+// encoder-output signal, metrics, the oversized P-frame guard, the WebRTC
+// write and the cached-frame copy. It reports whether the sample was written.
+func (s *Session) deliverEncodedFrame(enc *VideoEncoder, h264Data []byte, encodeTime, frameDuration time.Duration) bool {
+	s.lastEncodeOutputUnixNano.Store(time.Now().UnixNano())
+	if !s.hwRestore.hardwareProducedOutput && enc.BackendIsHardware() {
+		s.hwRestore.noteHardwareOutput()
+	}
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 	s.metrics.RecordConvert(enc.LastConvertDuration())
 
@@ -944,7 +991,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		s.metrics.RecordDrop()
 		// Force a keyframe so the encoder produces a fresh IDR for decoder recovery.
 		_ = enc.ForceKeyframe()
-		return
+		return false
 	}
 
 	// 5. Write as pion media.Sample
@@ -955,13 +1002,32 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	if err := s.videoTrack.WriteSample(sample); err != nil {
 		slog.Debug("Failed to write H264 sample", "session", s.id, "error", err.Error())
 		s.metrics.RecordDrop()
-		return
+		return false
 	}
 
 	s.cacheEncodedFrame(h264Data)
 	s.noteVideoWrite()
 	s.noteSampleWrite()
 	s.metrics.RecordSend(len(h264Data))
+	return true
+}
+
+// catchUpIdleEncoder runs on a capture iteration that had no new frame. An
+// encoder that holds input frames (#11622) re-submits its last frame while the
+// newest screen change is still inside it, and the output that comes out is
+// sent like any other frame. Encoders that do not hold frames return nothing,
+// so this is a no-op for them. It reports whether a frame was sent.
+func (s *Session) catchUpIdleEncoder(enc *VideoEncoder, frameDuration time.Duration) bool {
+	t0 := time.Now()
+	h264Data, err := enc.CatchUpIdle()
+	if err != nil {
+		slog.Debug("Idle encoder catch-up failed", "session", s.id, "error", err.Error())
+		return false
+	}
+	if h264Data == nil {
+		return false
+	}
+	return s.deliverEncodedFrame(enc, h264Data, time.Since(t0), frameDuration)
 }
 
 // captureAndSendFrameGPU captures a GPU texture and encodes via the zero-copy pipeline.
@@ -989,10 +1055,14 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		return false, true, false
 	}
 	if texture == 0 {
-		s.mu.RLock()
-		cap := s.capturer
-		s.mu.RUnlock()
-		_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+		// A frame pushed out by the idle catch-up is still an idle iteration
+		// (sent=false), so it does not reset the loop's idle tracking.
+		if !s.catchUpIdleEncoder(enc, frameDuration) {
+			s.mu.RLock()
+			cap := s.capturer
+			s.mu.RUnlock()
+			_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+		}
 		s.metrics.RecordSkip()
 		return true, false, false
 	}
@@ -1029,6 +1099,9 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 		return true, false, false
 	}
 
+	if !s.hwRestore.hardwareProducedOutput && enc.BackendIsHardware() {
+		s.hwRestore.noteHardwareOutput()
+	}
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
 	// Zero-copy: no CPU colour conversion on this path. Reset so convertMs
 	// doesn't carry a stale value from an earlier CPU frame in the same session.
@@ -1290,6 +1363,33 @@ func (s *Session) restoreHardwareEncoder(tp TextureProvider) {
 		"dimensions", fmt.Sprintf("%dx%d", w, h))
 }
 
+// newSoftwareSwapCandidate builds swapToSoftwareEncoder's replacement
+// encoder; a var so tests can stand in a placeholder (OpenH264 missing).
+var newSoftwareSwapCandidate = NewVideoEncoder
+
+// discardSwapCandidate closes a software-swap candidate encoder that will not
+// be installed. A Close failure cannot change the outcome (the current encoder
+// stays), so it is logged rather than returned.
+func (s *Session) discardSwapCandidate(enc *VideoEncoder) {
+	if err := enc.Close(); err != nil {
+		slog.Warn("Failed to close discarded software encoder candidate",
+			"session", s.id, "backend", enc.BackendName(), "error", err.Error())
+	}
+}
+
+// softwareSwapRetryBackoff is how long swapToSoftwareEncoder waits after
+// finding no usable software encoder before it builds another candidate.
+const softwareSwapRetryBackoff = 30 * time.Second
+
+// backOffSoftwareSwap records that no usable software encoder exists right
+// now: it logs the cause once and suppresses swap attempts for the backoff.
+func (s *Session) backOffSoftwareSwap(cur *VideoEncoder, reason error) {
+	s.softwareSwapRetryAt.Store(time.Now().Add(softwareSwapRetryBackoff).UnixNano())
+	slog.Error("No software encoder to swap to; keeping the current encoder",
+		"session", s.id, "backend", cur.BackendName(),
+		"retryIn", softwareSwapRetryBackoff, "error", reason.Error())
+}
+
 // swapToSoftwareEncoder replaces the current hardware encoder with a software
 // encoder (OpenH264) mid-session. Called when the hardware encoder stalls
 // (e.g., VideoToolbox on older Intel Macs).
@@ -1297,6 +1397,11 @@ func (s *Session) restoreHardwareEncoder(tp TextureProvider) {
 func (s *Session) swapToSoftwareEncoder() {
 	enc := s.encoder.Load()
 	if enc == nil {
+		return
+	}
+	// A recent attempt found no usable software encoder. The stall checks call
+	// this on every frame, so back off instead of rebuilding one per frame.
+	if retryAt := s.softwareSwapRetryAt.Load(); retryAt != 0 && time.Now().UnixNano() < retryAt {
 		return
 	}
 	fromHardware := enc.BackendIsHardware()
@@ -1321,7 +1426,7 @@ func (s *Session) swapToSoftwareEncoder() {
 	if fps <= 0 {
 		fps = 30
 	}
-	newEnc, err := NewVideoEncoder(EncoderConfig{
+	newEnc, err := newSoftwareSwapCandidate(EncoderConfig{
 		Codec:          CodecH264,
 		Quality:        QualityAuto,
 		Bitrate:        2_500_000,
@@ -1334,18 +1439,44 @@ func (s *Session) swapToSoftwareEncoder() {
 		return
 	}
 
+	// OpenH264 is unavailable: try the placeholder fallback (Windows: Microsoft's
+	// software H264 MFT first, since PreferHardware is false — #11392).
+	usedPlaceholderFallback := false
 	if newEnc.BackendIsPlaceholder() {
-		slog.Error("Software encoder fallback is placeholder — OpenH264 not available",
-			"session", s.id)
-		newEnc.Close()
-		return
+		if err := newEnc.ReplacePlaceholderBackend(); err != nil {
+			s.discardSwapCandidate(newEnc)
+			s.backOffSoftwareSwap(enc, err)
+			return
+		}
+		usedPlaceholderFallback = true
 	}
 
 	if w > 0 && h > 0 {
 		if err := newEnc.SetDimensions(w, h); err != nil {
 			slog.Error("Failed to set dimensions on software encoder",
 				"session", s.id, "error", err.Error())
-			newEnc.Close()
+			s.discardSwapCandidate(newEnc)
+			return
+		}
+	}
+
+	if usedPlaceholderFallback {
+		// The fallback activates in SetDimensions (only logging a failure). Its
+		// last resort is a hardware MFT, which may be the encoder that just
+		// stalled, and a software MFT replacing a stalled software MFT gains
+		// nothing — keep the current encoder in all three cases.
+		reason := newEnc.FallbackActivationError()
+		if reason == nil && newEnc.BackendIsHardware() {
+			reason = fmt.Errorf("%w: %s; the fallback found only a hardware encoder (%s)",
+				ErrNoH264Encoder, openH264Cause(), newEnc.BackendName())
+		}
+		if reason == nil && newEnc.BackendName() == enc.BackendName() {
+			reason = fmt.Errorf("%w: %s; the fallback is the same encoder as the stalled one (%s)",
+				ErrNoH264Encoder, openH264Cause(), newEnc.BackendName())
+		}
+		if reason != nil {
+			s.discardSwapCandidate(newEnc)
+			s.backOffSoftwareSwap(enc, reason)
 			return
 		}
 	}

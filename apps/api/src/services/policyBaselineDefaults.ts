@@ -48,7 +48,13 @@ export function getRemoteAccessBaseline(): RemoteAccessSettings {
     defaultAllowedPorts: [],
     autoEnableProxy: false,
     maxConcurrentTunnels: 5,
-    idleTimeoutMinutes: 5,
+    // 30 min, not 5: watching an install, a reboot-pending dialog or a long
+    // script routinely goes 5 min without viewer input, and every device with
+    // no Remote Access policy (or a policy that omits this field) gets this
+    // value (#10422).
+    // The resolution-failure FAILSAFE_DESKTOP_POLICY in remoteAccessPolicy.ts
+    // stays at 5 min on purpose.
+    idleTimeoutMinutes: 30,
     maxSessionDurationHours: 8,
   };
 }
@@ -83,7 +89,9 @@ const NOT_ENFORCED: Record<
   // Describes the platform default (beforePatching true, the other two false),
   // which is the agent's existing behaviour — not "nothing happens".
   system_protection: { label: 'System Protection',  behavior: 'Not enforced — patch installs still attempt a Windows restore point; scripts and software installs do not.' },
+  containment:       { label: 'Containment', behavior: 'Not enforced — isolation uses the fixed defaults: 72 h TTL, remote relay on, no extra permits, no dead-man.' },
   security_agents:   { label: 'Security Agents',    behavior: 'Not enforced — no third-party security agents are installed from policy.' },
+  oem_updates:       { label: 'Vendor Updates',     behavior: 'Not enforced — no vendor (Dell, Surface, HP, Lenovo) updates are scheduled for these devices.' },
 };
 
 export function getPolicyBaselineDefaults(): BaselineEntry[] {

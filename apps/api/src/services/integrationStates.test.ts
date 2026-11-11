@@ -87,6 +87,12 @@ describe('connection health verdicts (W2 Sources table)', () => {
     ['dns truncated', dnsFilterHealth({ isActive: true, lastSyncStatus: 'truncated' }), healthy],
     ['dns never synced', dnsFilterHealth({ isActive: true, lastSyncStatus: null }), unknown],
     ['dns inactive', dnsFilterHealth({ isActive: false, lastSyncStatus: 'error' }), retired],
+    // #10021: success is not enough once last_sync stops advancing.
+    ['dns stale', dnsFilterHealth({ isActive: true, lastSyncStatus: 'success', stale: true }), transient('sync_stale')],
+    ['dns stale never synced', dnsFilterHealth({ isActive: true, lastSyncStatus: null, stale: true }), transient('sync_stale')],
+    ['dns error beats stale', dnsFilterHealth({ isActive: true, lastSyncStatus: 'error', stale: true }), transient('sync_failed')],
+    ['dns inactive stale', dnsFilterHealth({ isActive: false, lastSyncStatus: 'success', stale: true }), retired],
+    ['dns never synced, not stale', dnsFilterHealth({ isActive: true, lastSyncStatus: null, stale: false }), unknown],
   ])('%s', (_name, actual, expected) => expect(actual).toEqual(expected));
 
   it.each([
@@ -110,6 +116,15 @@ describe('connection health verdicts (W2 Sources table)', () => {
     ['sync with a degraded parent', m365SyncHealth('degraded', ['needs_consent']), unknown],
     ['sync with a missing parent', m365SyncHealth(null, ['error']), unknown],
     ['sync without rows', m365SyncHealth('active', []), retired],
+    // #10021: staleness (D7). Flag off retires everything.
+    ['sync flag off retires', m365SyncHealth('active', ['error'], { syncEnabled: false }), retired],
+    ['sync flag off, stale', m365SyncHealth('active', ['success'], { syncEnabled: false, anyStale: true }), retired],
+    ['sync stale, degraded parent', m365SyncHealth('degraded', ['success'], { anyStale: true }), unknown],
+    ['sync stale, needs consent', m365SyncHealth('active', ['needs_consent', 'success'], { anyStale: true }), permanent('needs_consent')],
+    ['sync stale, error', m365SyncHealth('active', ['error', 'success'], { anyStale: true }), transient('sync_failed')],
+    ['sync stale, all success', m365SyncHealth('active', ['success', 'success'], { anyStale: true }), transient('sync_stale')],
+    ['sync stale, never succeeded', m365SyncHealth('active', [null], { anyStale: true }), transient('sync_stale')],
+    ['sync not stale, no rows', m365SyncHealth('active', [], { anyStale: true }), retired],
   ])('%s', (_name, actual, expected) => expect(actual).toEqual(expected));
 
   it.each([

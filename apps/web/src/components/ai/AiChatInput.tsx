@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, type ReactNode } from "react";
+import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import { ArrowUp, Loader2, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -17,6 +17,8 @@ interface AiChatInputProps {
   onValueChange?: (value: string) => void;
   /** Overrides the idle placeholder (the Wisp home says "Message Wisp"). */
   placeholder?: string;
+  /** Focus once for a new external draft request, after the input is enabled. */
+  focusRequest?: number;
   /** Rendered inside the field, left of the text (the Wisp home's Link an item button). */
   leftSlot?: ReactNode;
 }
@@ -32,6 +34,7 @@ export default function AiChatInput({
   value: controlledValue,
   onValueChange,
   placeholder,
+  focusRequest,
   leftSlot,
 }: AiChatInputProps) {
   const { t } = useTranslation("ai");
@@ -40,6 +43,12 @@ export default function AiChatInput({
   const value = controlled ? controlledValue : localValue;
   const setValue = controlled ? onValueChange : setLocalValue;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const focusedRequest = useRef(0);
+  useEffect(() => {
+    if (!focusRequest || focusedRequest.current === focusRequest || disabled || isStreaming) return;
+    textareaRef.current?.focus();
+    focusedRequest.current = focusRequest;
+  }, [focusRequest, disabled, isStreaming]);
 
   const handleSubmit = useCallback(() => {
     const trimmed = value.trim();

@@ -22,8 +22,9 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
-const { legalHoldMock, findEvidenceHoldMock } = vi.hoisted(() => ({
+const { legalHoldMock, isolationMock, findEvidenceHoldMock } = vi.hoisted(() => ({
   legalHoldMock: vi.fn(async () => false),
+  isolationMock: vi.fn(async () => false),
   findEvidenceHoldMock: vi.fn(async (_orgId: string): Promise<null | { survivorOrgId: string; mergeEventId: string; reason: string }> => null),
 }));
 
@@ -34,6 +35,7 @@ vi.mock('../../services/orgEvidenceHold', () => ({
 
 vi.mock('../../services/tenantCascade', () => ({
   hasActiveBackupLegalHold: legalHoldMock,
+  hasUnresolvedNetworkIsolations: isolationMock,
   LEGAL_HOLD_ACTIVE_MESSAGE:
     'This organization has one or more backup snapshots under legal hold. '
     + 'Release the hold before erasing the organization.',
@@ -150,6 +152,7 @@ describe('POST /admin/tenant-erasure', () => {
     vi.clearAllMocks();
     orgLookup.current = { id: ORG_ID, name: 'Acme Inc', partnerId: 'p-1' };
     legalHoldMock.mockResolvedValue(false);
+    isolationMock.mockResolvedValue(false);
     findEvidenceHoldMock.mockResolvedValue(null);
   });
 
@@ -186,6 +189,17 @@ describe('POST /admin/tenant-erasure', () => {
         details: expect.objectContaining({ evidenceHoldScoped: true }),
       }),
     );
+  });
+
+  it('returns 409 and does not enqueue while network isolation is unresolved', async () => {
+    isolationMock.mockResolvedValue(true);
+    const res = await buildApp(platformAdminAuth).request('/admin/tenant-erasure', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, confirmEmail: 'admin@breeze.test' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+    expect(enqueueMock).not.toHaveBeenCalled();
   });
 
   it('returns 409 and does not enqueue when the org has a snapshot under legal hold', async () => {

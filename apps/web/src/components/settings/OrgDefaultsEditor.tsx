@@ -96,8 +96,8 @@ type OrgDefaultsEditorProps = {
 };
 
 // Lockable `defaults` fields. `agentVersionPins` is deliberately absent: it is
-// INHERIT-WITH-OVERRIDE, not partner-locked (issue #2124), even though the
-// `locked` array still advertises it when the partner has pinned a version.
+// INHERIT-WITH-OVERRIDE, not partner-locked (issue #2124); a partner pin is
+// reported in the effective-settings `partnerDefaults` list, not in `locked` (#9762).
 const LOCKABLE_FIELDS = [
   'policyDefaults',
   'autoEnrollment',

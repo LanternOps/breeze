@@ -3678,7 +3678,7 @@ describe('editTicketComment', () => {
     expect(result.content).toBe('compat');
   });
 
-  it('rejects editing a system-type comment (400)', async () => {
+  it('rejects editing a system-type comment (409 SYSTEM_COMMENT_READ_ONLY)', async () => {
     const sysComment = { ...BASE_COMMENT, id: 'c-sys', commentType: 'system' };
     dbMocks.selectResult
       .mockResolvedValueOnce([sysComment])
@@ -3686,7 +3686,42 @@ describe('editTicketComment', () => {
 
     const err = await editTicketComment('c-sys', { content: 'x' }, { kind: 'user' as const, userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
     expect(err).toBeInstanceOf(TicketServiceError);
-    expect(err.status).toBe(400);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
+  });
+
+  // #9960: the deliverable notes (instructions, awaiting-evidence, auto-evidence)
+  // are commentType 'internal' but system-authored — a tickets:manage user must
+  // still not be able to rewrite them.
+  it('rejects editing a system-authored internal note even with canManageAny (409)', async () => {
+    const sysNote = { ...BASE_COMMENT, id: 'c-note', userId: null, commentType: 'internal', authorType: 'system', authorName: 'Breeze', originPrincipalKind: 'system', isPublic: false };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([sysNote])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await editTicketComment('c-note', { content: 'x' }, { kind: 'user' as const, userId: 'admin' }, { canManageAny: true }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
+    expect(setMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  // Each marker alone must be enough — dropping any clause of
+  // isSystemAuthoredComment fails one of these.
+  it.each([
+    ['originPrincipalKind', { authorType: 'internal', originPrincipalKind: 'system' }],
+    ['authorType', { authorType: 'system', originPrincipalKind: null }],
+  ])('rejects editing a note whose only system marker is %s (409)', async (_marker, markers) => {
+    const sysNote = { ...BASE_COMMENT, id: 'c-note', userId: null, commentType: 'internal', ...markers };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([sysNote])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await editTicketComment('c-note', { content: 'x' }, { kind: 'user' as const, userId: 'admin' }, { canManageAny: true }).catch(e => e);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
+    expect(setMock).not.toHaveBeenCalled();
   });
 
   it('rejects editing an already-deleted comment (409)', async () => {
@@ -3717,7 +3752,7 @@ describe('editTicketComment', () => {
         .mockResolvedValueOnce([BASE_TICKET]);
 
       const err = await editTicketComment('c1', { content: 'x' }, { kind: 'user' as const, userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
-      expect(err.status).toBe(400);
+      expect(err.status).toBe(409);
     }
   });
 });
@@ -3806,14 +3841,45 @@ describe('deleteTicketComment', () => {
     expect(res.id).toBe('c1');
   });
 
-  it('rejects deleting a system-type comment (400)', async () => {
+  it('rejects deleting a system-type comment (409)', async () => {
     const sysComment = { ...BASE_COMMENT, commentType: 'status_change' };
     dbMocks.selectResult
       .mockResolvedValueOnce([sysComment])
       .mockResolvedValueOnce([BASE_TICKET]);
 
     const err = await deleteTicketComment('c1', { kind: 'user' as const, userId: 'tech-1' }, { canManageAny: true }).catch(e => e);
-    expect(err.status).toBe(400);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
+  });
+
+  // #9960: the deliverable system note must not be deletable by a tickets:manage user.
+  it('rejects deleting a system-authored internal note even with canManageAny (409)', async () => {
+    const sysNote = { ...BASE_COMMENT, userId: null, commentType: 'internal', authorType: 'system', authorName: 'Breeze', originPrincipalKind: 'system', isPublic: false };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([sysNote])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await deleteTicketComment('c1', { kind: 'user' as const, userId: 'admin' }, { canManageAny: true }).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
+    expect(setMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['originPrincipalKind', { authorType: 'internal', originPrincipalKind: 'system' }],
+    ['authorType', { authorType: 'system', originPrincipalKind: null }],
+  ])('rejects deleting a note whose only system marker is %s (409)', async (_marker, markers) => {
+    const sysNote = { ...BASE_COMMENT, userId: null, commentType: 'internal', ...markers };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([sysNote])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await deleteTicketComment('c1', { kind: 'user' as const, userId: 'admin' }, { canManageAny: true }).catch(e => e);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
+    expect(setMock).not.toHaveBeenCalled();
   });
 
   it('rejects deleting an already-deleted comment (409)', async () => {

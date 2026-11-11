@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
-import { computeChargeNow, ERROR_CODES } from '@breeze/shared';
+import { computeChargeNow, computeCheckoutCharge, ERROR_CODES } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
 import { partners } from '../db/schema/orgs';
@@ -147,9 +147,14 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       console.error('[invoicesPublic] markViewed failed', { invoiceId: inv.id, err });
     }
 
-    const chargeNow = computeChargeNow({
-      depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
-    });
+    // The Checkout rule the Pay button mints with (#3803 item 8), so the amount
+    // shown is the amount charged. A balance the currency cannot express gets no
+    // Pay CTA (the mint refuses it) and is displayed exactly, never rounded.
+    const depositInput = { depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance };
+    const checkoutCharge = computeCheckoutCharge(depositInput, inv.currencyCode);
+    const chargeNow = checkoutCharge.kind === 'charge'
+      ? { amount: checkoutCharge.amount, isDeposit: checkoutCharge.isDeposit }
+      : computeChargeNow(depositInput);
     // #7824: advisory in-flight autopay state (the pay route's 409 is the gate).
     let collectionInProgress: { amount: string; actionRequired: boolean } | null = null;
     try {
@@ -180,7 +185,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       // #7509: no Pay CTA unless the partner can actually take online payment.
       // #9585: read on THIS handler's system-context connection — the default
       // variant would open a second connection inside this open transaction.
-      payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
+      payable: PAYABLE.has(inv.status) && checkoutCharge.kind === 'charge'
         && await isPartnerOnlinePaymentAvailableOnCallerConnection(inv.partnerId),
       autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(inv.orgId, inv.id),
       bankAutopay: autopayKnown ? await getBankAutopayOffer(inv.id,inv.orgId) : null,
@@ -277,7 +282,7 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
       // family, so the two never mint competing sessions for the same charge.
       ...publicInvoiceCheckoutUrls(),
       ...body, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
-    });
+    }, { billingGate: false });
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof InvoiceServiceError) {

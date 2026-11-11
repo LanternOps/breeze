@@ -150,7 +150,6 @@ export async function sendSignedAgreementCopy(input: {
       const [req] = await db
         .select({
           orgId: agreementRequests.orgId,
-          label: agreementRequests.label,
           templateName: contractTemplates.name,
           partnerId: organizations.partnerId,
           partnerName: partners.name,
@@ -169,7 +168,11 @@ export async function sendSignedAgreementCopy(input: {
         .from(agreementRequestRecipients)
         .where(eq(agreementRequestRecipients.requestId, input.requestId));
       const [doc] = await db
-        .select({ signerName: contractDocuments.signerName, signedAt: contractDocuments.signedAt })
+        .select({
+          signerName: contractDocuments.signerName,
+          signedAt: contractDocuments.signedAt,
+          templateNameSnapshot: contractDocuments.templateNameSnapshot,
+        })
         .from(contractDocuments)
         .where(eq(contractDocuments.id, input.signedAgreementId))
         .limit(1);
@@ -232,7 +235,9 @@ export async function sendSignedAgreementCopy(input: {
     const partnerName = req.partnerName?.trim() || 'your provider';
     const template = buildSignedCopyTemplate({
       partnerName,
-      agreementName: req.label?.trim() || req.templateName?.trim() || 'Agreement',
+      // The template name as it was at signing (the attachment's certificate
+      // says the same), never the staff-internal request label (#10294).
+      agreementName: doc?.templateNameSnapshot?.trim() || req.templateName?.trim() || 'Agreement',
       signerName: doc?.signerName ?? null,
       signedDate: formatSignedDate(doc?.signedAt ?? null),
       attached: attachment !== null,

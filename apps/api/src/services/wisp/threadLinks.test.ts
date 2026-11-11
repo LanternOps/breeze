@@ -158,6 +158,31 @@ describe('listWorkingSet', () => {
 });
 
 describe('listLinks', () => {
+  it.each(['forbidden', 'outside_ceiling', 'outside_token_scope'])(
+    'logs omitted %s rows at most once per minute without changing them', async (reason) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const now = vi.spyOn(Date, 'now').mockReturnValue(1_900_000_000_000);
+      h.rows = [row('refused-' + reason, 'auto', 9)];
+      h.resolve.mockResolvedValue({ reason });
+      try {
+        expect(await listLinks(ctx, 'thread')).toEqual([]);
+        expect(await listLinks(ctx, 'thread')).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith('[wisp.threadLinks] stored link omitted', {
+          partnerId: 'partner', threadId: 'thread', linkId: 'link-refused-' + reason,
+          kind: 'ticket', entityId: 'refused-' + reason, reason,
+        });
+        now.mockReturnValue(1_900_000_060_000);
+        await listLinks(ctx, 'thread');
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(h.delete).not.toHaveBeenCalled();
+        expect(h.update).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+        now.mockRestore();
+      }
+    },
+  );
   it('keeps all 50 pins before 20 newer autos without losing the auto count', async () => {
     h.rows = [
       ...Array.from({ length: 20 }, (_, i) => row('auto-' + i, 'auto', 9)),

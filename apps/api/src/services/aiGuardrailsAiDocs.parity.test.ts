@@ -1,3 +1,4 @@
+import { PAX8_SUBMIT_REFUSAL_CODES } from './pax8OrderSubmit';
 /**
  * Contract test: the published AI docs page
  * (apps/docs/src/content/docs/features/ai.mdx) must agree with the real
@@ -193,6 +194,10 @@ const W03_DOCUMENTED_TOOLS = [
 ] as const;
 
 describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
+  it.each(['submit', 'reconcile'])('W15: documents manage_pax8_orders:%s at Tier 3', (action) => {
+    expect(claims.filter((entry) => entry.tool === 'manage_pax8_orders' && entry.actions.includes(action))
+      .map((entry) => entry.claimedTier)).toEqual([3]);
+  });
   it.each(W04_DOCUMENTED)('W04 (#6758): %s is documented in a tool table with every action', (tool) => {
     const rows = claims.filter((c) => c.tool === tool);
     expect(rows.length, `${tool} needs a \`| Tool | Tier | Description |\` row in ${DOC_REL}`).toBeGreaterThan(0);
@@ -274,4 +279,12 @@ describe('W15 Pax8 documentation', () => {
     const documented = rows.flatMap((c) => c.actions);
     expect(actions.filter((a) => !documented.includes(a))).toEqual([]);
   });
+});
+
+it('Pax8 submit refusal codes stay documented in both client guides', () => {
+  for (const file of ['ai.mdx', 'mcp-server.mdx']) {
+    const guide = readFileSync(path.resolve(process.cwd(), `../docs/src/content/docs/features/${file}`), 'utf8');
+    expect(guide).toContain('PAX8_SUBMIT_REFUSAL_CODES');
+    for (const code of PAX8_SUBMIT_REFUSAL_CODES) expect(guide, `${file}: ${code}`).toContain(`\`${code}\``);
+  }
 });

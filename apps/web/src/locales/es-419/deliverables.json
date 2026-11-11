@@ -231,7 +231,13 @@
       "submit": "Aplicar",
       "created_one": "Se creó {{count}} entregable",
       "created_other": "Se crearon {{count}} entregables",
-      "skipped": "Omitidos (ya existentes): {{names}}"
+      "skipped": "Omitidos (ya existentes): {{names}}",
+      "items": "Entregables de este conjunto",
+      "noItems": "Este conjunto aún no tiene entregables."
+    },
+    "portal": {
+      "shown": "Visible en el portal",
+      "hidden": "Oculto en el portal"
     },
     "errors": {
       "collision": "Estos entregables ya existen en el destino: {{names}}",

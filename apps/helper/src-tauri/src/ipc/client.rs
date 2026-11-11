@@ -2463,7 +2463,10 @@ mod prompt_auth_tests {
     #[test]
     fn session_end_empties_the_notification_list() {
         const SHOW_NOTICE: &str = include_str!("../../../../../packages/shared/src/fixtures/prompt-host/show.notice.json");
-        let now = now_unix_ms();
+        // A fixed clock before the fixture's `listEntry.expiresAtUnixMs`
+        // (2026-11-02T12:00Z), as the prompt/notifications tests use: the
+        // wall clock passed it and the notice dropped out of the list.
+        let now: i64 = 1_793_000_000_000;
         let messages = std::sync::Arc::new(super::super::message::MessageBridge::default());
         let prompts = std::sync::Arc::new(PromptBridge::default());
         let exp = chrono::DateTime::from_timestamp_millis(now + 3_600_000).unwrap().to_rfc3339();

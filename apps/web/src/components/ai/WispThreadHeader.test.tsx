@@ -278,6 +278,48 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
     expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Budget reached');
   });
 
+  it('over budget shows the chat-keeps-working warning, never "Paused by Breeze" (#10414)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 201, budgetResetsAt: '2099-01-01T05:30:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    const warning = screen.getByTestId('wisp-budget-warning');
+    expect(warning).toHaveTextContent('background checks are paused until 05:30 UTC');
+    expect(warning).toHaveTextContent('Chat keeps working');
+    expect(screen.getByTestId('wisp-thread-header').textContent).not.toContain('Paused by Breeze');
+    expect(screen.getByTestId('wisp-spend-raise')).toBeTruthy();
+  });
+
+  it('over budget with no parseable reset falls back to 00:00 UTC (#10414)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 201, budgetResetsAt: 'garbage' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.getByTestId('wisp-budget-warning')).toHaveTextContent('until 00:00 UTC');
+  });
+
+  it('no budget warning under budget (#10414)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.queryByTestId('wisp-budget-warning')).toBeNull();
+  });
+
+  it('the settings panel explains that the budget includes chat (#10414)', () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    expect(screen.getByTestId('wisp-settings-budget-help')).toHaveTextContent('Includes chat.');
+  });
+
+  it('passes the breakdown to the meter (#10414)', () => {
+    render(
+      <WispThreadHeader
+        wisp={wisp({ spentTodayCents: 100, backgroundCents: 40, chatCents: 60, budgetResetsAt: '2099-01-01T00:00:00.000Z' })}
+        orgName={null}
+        wideningAvailable={false}
+      />,
+    );
+    expect(screen.getByTestId('wisp-spend-meter').textContent).toContain('Background $0.40 · Chat $0.60');
+  });
+
   it('under budget the badge stays Active (#10145)', () => {
     render(
       <WispThreadHeader wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
@@ -294,7 +336,7 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
         wideningAvailable={false}
       />,
     );
-    expect(screen.getByTestId('wisp-paused-system')).toHaveTextContent('20 h');
+    expect(screen.getByTestId('wisp-paused-system')).toHaveTextContent('until');
     expect((screen.getByTestId('wisp-resume') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
     expect(screen.getByTestId('wisp-spend-at-ceiling')).toBeTruthy();
@@ -389,5 +431,170 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
       expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull();
       expect(h.enterWispMode).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('WispThreadHeader — model-written session notes switch (#10390)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.modalProps = null;
+    h.chat = { sessionId: null, wisp: null };
+    h.runAction.mockImplementation(async (o: { request: () => Promise<Response> }) => (await o.request()).json());
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', summaryRefine: true }) });
+  });
+
+  const open = (w = wisp()) => {
+    render(<WispThreadHeader wisp={w} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    return screen.getByTestId('wisp-settings-summary-refine');
+  };
+
+  it('sits in its own section, outside the budget/tick form, off by default, and says it spends budget', () => {
+    const section = open();
+    expect(screen.getByTestId('wisp-summary-refine-switch')).toHaveAttribute('aria-checked', 'false');
+    expect(section.contains(screen.getByTestId('wisp-settings-save'))).toBe(false);
+    expect(section.textContent).toMatch(/daily budget/i);
+  });
+
+  it('turning it on autosaves through runAction with a toast and no step-up, and the store follows', async () => {
+    open();
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-summary-refine-switch')); });
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/grants/g-1/settings', { method: 'PATCH', body: JSON.stringify({ summaryRefine: true }) });
+    const action = h.runAction.mock.calls[0]![0] as { successMessage?: string; errorFallback?: string };
+    expect(action.successMessage).toBe('Session notes turned on');
+    expect(action.errorFallback).toBe("Couldn't change session notes");
+    expect(h.updateWisp).toHaveBeenCalledWith({ summaryRefine: true });
+    expect(screen.queryByTestId('wisp-refresh-modal-mock')).toBeNull();
+  });
+
+  it('turning it off autosaves the same way', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', summaryRefine: false }) });
+    open(wisp({ summaryRefine: true }));
+    expect(screen.getByTestId('wisp-summary-refine-switch')).toHaveAttribute('aria-checked', 'true');
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-summary-refine-switch')); });
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/grants/g-1/settings', { method: 'PATCH', body: JSON.stringify({ summaryRefine: false }) });
+    const action = h.runAction.mock.calls[0]![0] as { successMessage?: string };
+    expect(action.successMessage).toBe('Session notes turned off');
+    expect(h.updateWisp).toHaveBeenCalledWith({ summaryRefine: false });
+  });
+
+  it('a failure toasts once, leaves the store alone, and the switch keeps its value', async () => {
+    const { showToast } = await import('@/components/shared/Toast');
+    h.runAction.mockRejectedValueOnce(new Error('network'));
+    open();
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-summary-refine-switch')); });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: "Couldn't change session notes" }));
+    expect(h.updateWisp).not.toHaveBeenCalled();
+    expect(screen.getByTestId('wisp-summary-refine-switch')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('a 401 is silent: the auth redirect handles it', async () => {
+    const { ActionError } = await import('@/lib/runAction');
+    const { showToast } = await import('@/components/shared/Toast');
+    const unauthorized = Object.assign(new (ActionError as unknown as new (message: string) => Error)('unauthorized'), { status: 401 });
+    h.runAction.mockRejectedValueOnce(unauthorized);
+    open();
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-summary-refine-switch')); });
+    expect(showToast).not.toHaveBeenCalled();
+    expect(h.updateWisp).not.toHaveBeenCalled();
+  });
+});
+
+describe('WispThreadHeader — unattended reads switch (#10973)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.modalProps = null;
+    h.chat = { sessionId: null, wisp: null };
+    h.runAction.mockImplementation(async (o: { request: () => Promise<Response> }) => (await o.request()).json());
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', unattendedReads: false, unattendedReadsPinned: true }) });
+  });
+
+  const open = (w = wisp()) => {
+    render(<WispThreadHeader wisp={w} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    return screen.getByTestId('wisp-settings-unattended-reads');
+  };
+
+  it('sits in its own section, outside the budget/tick form, off by default, and names the four reads', () => {
+    const section = open();
+    const toggle = screen.getByTestId('wisp-unattended-reads-switch');
+    expect(toggle).toHaveAttribute('role', 'switch');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(section).not.toContainElement(screen.getByTestId('wisp-settings-save'));
+    expect(section).not.toContainElement(screen.getByTestId('wisp-settings-budget'));
+    for (const text of ['Read a registry key', 'Read a registry value', 'Search the Security event log', 'Save a note about a device']) {
+      expect(section).toHaveTextContent(text);
+    }
+    expect(section).toHaveTextContent('Applies to new conversations and new background runs.');
+  });
+
+  it('turning it on opens the step-up modal in refresh mode with the flag, and PATCHes nothing', () => {
+    open(wisp({ scopeOrgId: 'org-a' }));
+    fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch'));
+    expect(screen.getByTestId('wisp-refresh-modal-mock')).toBeInTheDocument();
+    expect(h.modalProps?.refresh).toEqual({ grantId: 'g-1', orgId: 'org-a', unattendedReads: true });
+    expect(h.runAction).not.toHaveBeenCalled();
+  });
+
+  it('the modal granting merges the switched-on grant into the store', async () => {
+    open();
+    fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch'));
+    const fresh = wisp({ unattendedReads: true });
+    await act(async () => { (h.modalProps!.onGranted as (w: unknown) => void)(fresh); });
+    expect(h.updateWisp).toHaveBeenCalledWith(fresh);
+  });
+
+  it('a committed refresh merges the switch at once, before the thread read can fail', async () => {
+    open();
+    fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch'));
+    await act(async () => { (h.modalProps!.onRefreshed as (g: unknown) => void)({ unattendedReads: true }); });
+    expect(h.updateWisp).toHaveBeenCalledWith({ unattendedReads: true });
+  });
+
+  it('a cancelled turn-on leaves no flag behind for the next plain refresh', () => {
+    open();
+    fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch'));
+    expect(h.modalProps?.refresh).toMatchObject({ unattendedReads: true });
+    act(() => { (h.modalProps!.onClose as () => void)(); });
+    fireEvent.click(screen.getByTestId('wisp-refresh-grant'));
+    expect(h.modalProps?.refresh).toEqual({ grantId: 'g-1', orgId: null });
+  });
+
+  it('the plain Refresh button carries no flag: the server keeps the switch as it is', () => {
+    render(<WispThreadHeader wisp={wisp({ unattendedReads: true })} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-refresh-grant'));
+    expect(h.modalProps?.refresh).toEqual({ grantId: 'g-1', orgId: null });
+  });
+
+  it('turning it off autosaves through runAction with a toast, and the store follows', async () => {
+    open(wisp({ unattendedReads: true }));
+    expect(screen.getByTestId('wisp-unattended-reads-switch')).toHaveAttribute('aria-checked', 'true');
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch')); });
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/grants/g-1/settings', { method: 'PATCH', body: JSON.stringify({ unattendedReads: false }) });
+    const action = h.runAction.mock.calls[0]![0] as { successMessage?: string; errorFallback?: string };
+    expect(action.successMessage).toBe('Unattended reads turned off');
+    expect(action.errorFallback).toBe("Couldn't turn off unattended reads");
+    expect(h.updateWisp).toHaveBeenCalledWith({ unattendedReads: false });
+    expect(screen.queryByTestId('wisp-refresh-modal-mock')).toBeNull();
+  });
+
+  it('a 401 while turning it off is silent (the auth redirect handles it) and changes nothing', async () => {
+    const { ActionError } = await import('@/lib/runAction');
+    const { showToast } = await import('@/components/shared/Toast');
+    const unauthorized = Object.assign(new (ActionError as unknown as new (message: string) => Error)('unauthorized'), { status: 401 });
+    h.runAction.mockRejectedValueOnce(unauthorized);
+    open(wisp({ unattendedReads: true }));
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch')); });
+    expect(showToast).not.toHaveBeenCalled();
+    expect(h.updateWisp).not.toHaveBeenCalled();
+  });
+
+  it('a non-ActionError failure while turning it off toasts once', async () => {
+    const { showToast } = await import('@/components/shared/Toast');
+    h.runAction.mockRejectedValueOnce(new Error('network'));
+    open(wisp({ unattendedReads: true }));
+    await act(async () => { fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch')); });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: "Couldn't turn off unattended reads" }));
+    expect(h.updateWisp).not.toHaveBeenCalled();
   });
 });

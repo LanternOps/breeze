@@ -91,6 +91,10 @@ export const commandsRoutes = new Hono();
  * receive — a behaviour change beyond this PR's one intentional one.
  */
 const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
+  'wake_on_lan',
+  // Vendor updates (#11065): both transports reach the same handler.
+  'oem_update_run',
+  'oem_update_release',
   // Disk Cleanup v2 W04. Listed here because this route has NO inline block
   // for it — the handler is registry-only precisely so both transports run
   // exactly the same code.
@@ -129,6 +133,7 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   // #9662: the incident action follows the execute_containment result.
   // Registry-only, so both transports apply the same leaf handler.
   'execute_containment',
+  'release_containment',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
@@ -519,7 +524,7 @@ commandsRoutes.post(
     // the terminal pre-read above usually short-circuits first — which is
     // itself a useful signal.
     const terminalCompletedAt = new Date();
-    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout);
+    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout, command.payload);
     const commandPayload =
       command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
         ? command.payload as Record<string, unknown>

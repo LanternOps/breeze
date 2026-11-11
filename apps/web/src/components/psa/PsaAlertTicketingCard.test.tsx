@@ -76,11 +76,17 @@ function install(opts: {
       const v = typeof opts.view === 'function' ? opts.view(viewCalls) : opts.view;
       return 'ok' in v ? (v as Response) : json({ data: v });
     }
+    if (url.startsWith('/psa/tickets?')) return json({ data: [], counts: {}, pagination: { total: 0, page: 1, limit: 20 } });
     throw new Error(`Unexpected fetch ${method} ${url}`);
   });
 }
 
 describe('PsaAlertTicketingCard', () => {
+  it('renders ticket activity on the bound capable connection', async () => {
+    install({ view: makeView() });
+    render(<PsaAlertTicketingCard connectionId="c1" connectionName="Manage" />);
+    expect(await screen.findByTestId('psa-ticketing-activity')).toBeInTheDocument();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });
