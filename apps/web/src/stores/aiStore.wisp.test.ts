@@ -421,6 +421,23 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
       expect(useAiStore.getState().sessionId).toBe('sess-picked');
     });
 
+    it.each([
+      ['a body that is not JSON', async () => ({ ok: true, status: 200, json: vi.fn().mockRejectedValue(new SyntaxError('bad json')) }) as unknown as Response],
+      ['a network failure', async () => { throw new TypeError('Failed to fetch'); }],
+    ])('a resume check that gets %s is logged and a fresh session is created', async (_label, read) => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+        if (url === '/ai/sessions/sess-live' && !init?.method) return read();
+        return response({ data: [] });
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }))).toBe(true);
+      expect(createBodies()).toHaveLength(1);
+      expect(useAiStore.getState().sessionId).toBe('sess-new');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[wispSession]'), expect.anything());
+      warn.mockRestore();
+    });
+
     it('a thread with no last session creates one without reading anything first', async () => {
       await useAiStore.getState().enterWispMode(wisp({ lastSessionId: null }));
       expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/ai/sessions/'))).toBe(false);
