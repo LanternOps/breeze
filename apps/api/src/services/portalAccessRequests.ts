@@ -40,6 +40,7 @@ import {
 } from './portalAccountState';
 import { createIdentityOnlyAccount } from './portalIdentityAccounts';
 import { PORTAL_GOOGLE_ISSUER, entraIssuer, portalUserHasIdentitySql } from './portalUserIdentities';
+import { emailDomainOf } from './portalSelfRegistration/emailDomain';
 
 export { PORTAL_GOOGLE_ISSUER };
 
@@ -62,7 +63,8 @@ export type PortalAccessRequestErrorCode =
   | 'PORTAL_ACCESS_REQUEST_NOT_PENDING'
   | 'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS'
   | 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED'
-  | 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN';
+  | 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN'
+  | 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED';
 
 export class PortalAccessRequestError extends Error {
   constructor(
@@ -94,6 +96,14 @@ const identityLinked = () => new PortalAccessRequestError(
 const entraTenantNotProven = () => new PortalAccessRequestError(
   'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN', 409,
   "This organization's Microsoft tenant has changed since this request was made. Ask the person to sign in again.",
+);
+// W6 D11: a `self` request whose address's domain is no longer verified for
+// this org (lapsed, removed, deactivated or displaced to another org). The MSP
+// can still invite the person directly; the request stays pending until it
+// expires or is denied.
+const domainNotVerified = () => new PortalAccessRequestError(
+  'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED', 409,
+  "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
 );
 
 // ---------------------------------------------------------------------------
@@ -233,6 +243,15 @@ export type ApprovePortalAccessRequestResult = {
 };
 
 type DecisionInput = { orgId: string; requestId: string; deciderUserId: string; now?: Date };
+
+/**
+ * Approve input. `selfDomainVerified` (W6 D11): whether the `self` request's
+ * email domain is still verified for this org, read by the caller OUTSIDE the
+ * request transaction (`isDomainVerifiedForOrg` throws inside one) just before
+ * this call. Only `self` requests read it, and anything but `true` refuses
+ * (DOMAIN_NOT_VERIFIED), so a caller that forgets the pre-check fails closed.
+ */
+type ApproveInput = DecisionInput & { selfDomainVerified?: boolean };
 
 type LockedRequest = {
   id: string;
@@ -431,8 +450,15 @@ async function createIdentityAccount(request: LockedRequest, deciderUserId: stri
   return { outcome: 'account_created', portalUserId: outcome.portalUserId, email: request.email, name: request.name, authEpoch: outcome.authEpoch };
 }
 
-/** `self`: an invited password account, exactly what an MSP invite creates. The route sends the invite. */
-async function createInvitedAccount(request: LockedRequest, deciderUserId: string, now: Date): Promise<ApprovedAccount> {
+/**
+ * `self`: an invited password account, exactly what an MSP invite creates. The
+ * route sends the invite. Refused before any lock or write unless the caller's
+ * pre-check found the address's domain still verified for the org (W6 D11).
+ */
+async function createInvitedAccount(
+  request: LockedRequest, deciderUserId: string, now: Date, selfDomainVerified: boolean | undefined,
+): Promise<ApprovedAccount> {
+  if (selfDomainVerified !== true) throw domainNotVerified();
   await lockAddressAndRefuseExisting(request);
   const contactId = await linkContact(request, deciderUserId);
 
@@ -464,9 +490,10 @@ async function createInvitedAccount(request: LockedRequest, deciderUserId: strin
  * pending. Callers catch OUTSIDE this call and add no transaction of their own.
  *
  * Outcomes: `account_created` (entra/google), `invite_pending` (self — the
- * route issues the invite), `browser_access_granted` (addin_user).
+ * route issues the invite), `browser_access_granted` (addin_user). A `self`
+ * request also needs `selfDomainVerified: true` (see {@link ApproveInput}).
  */
-export async function approvePortalAccessRequest(input: DecisionInput): Promise<ApprovePortalAccessRequestResult> {
+export async function approvePortalAccessRequest(input: ApproveInput): Promise<ApprovePortalAccessRequestResult> {
   const now = input.now ?? new Date();
   return withDbTransaction(async () => {
     const request = await lockPendingRequest(input.orgId, input.requestId, now);
@@ -481,7 +508,7 @@ export async function approvePortalAccessRequest(input: DecisionInput): Promise<
         account = await createIdentityAccount(request, input.deciderUserId, now);
         break;
       case 'self':
-        account = await createInvitedAccount(request, input.deciderUserId, now);
+        account = await createInvitedAccount(request, input.deciderUserId, now, input.selfDomainVerified);
         break;
       default:
         throw new Error('unknown portal access request source');
@@ -525,6 +552,29 @@ export async function denyPortalAccessRequest(
 // Reads (caller's RLS context)
 // ---------------------------------------------------------------------------
 
+/**
+ * The source and address of one of the org's requests, for the route's
+ * pre-approval checks (W6 D11). Null when there is no such request in the org
+ * (or the id is malformed); the approval then reports NOT_FOUND itself.
+ *
+ * Its own savepoint, so a failed read stops there and a caller catching OUTSIDE
+ * this call (the `/decide` loop) leaves the request transaction usable (#11203).
+ */
+export async function readPortalAccessRequestForDecision(
+  orgId: string,
+  requestId: string,
+): Promise<{ source: PortalAccessRequestSource; email: string } | null> {
+  if (!UUID_RE.test(requestId)) return null;
+  return withDbTransaction(async () => {
+    const [row] = await db
+      .select({ source: portalAccessRequests.source, email: portalAccessRequests.email })
+      .from(portalAccessRequests)
+      .where(and(eq(portalAccessRequests.id, requestId), eq(portalAccessRequests.orgId, orgId)))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
 export interface PortalAccessRequestListItem {
   id: string;
   email: string;
@@ -540,6 +590,12 @@ export interface PortalAccessRequestListItem {
   portalUserId: string | null;
   /** Any portal account in the org at this address (approve would refuse with ACCOUNT_EXISTS). */
   accountExists: boolean;
+  /**
+   * `self` rows: whether the address's domain is verified for the org right now
+   * (approve refuses with DOMAIN_NOT_VERIFIED when it is not; W6 D11). Null for
+   * every other source.
+   */
+  domainVerified: boolean | null;
 }
 
 /**
@@ -547,10 +603,14 @@ export interface PortalAccessRequestListItem {
  * newest first; `decided` = everything else, most recently decided or expired
  * first. `limit` defaults to 100 and is clamped to 1–200; `hasMore` comes from
  * reading one extra row.
+ *
+ * `verifiedDomains`: the org's currently verified domains, lower-cased, read by
+ * the caller outside the request transaction (`listVerifiedDomainsForOrg`).
+ * Without it every `self` row reads `domainVerified: false`, as approve would.
  */
 export async function listPortalAccessRequests(
   orgId: string,
-  opts: { status: 'pending' | 'decided'; limit?: number; now?: Date },
+  opts: { status: 'pending' | 'decided'; limit?: number; now?: Date; verifiedDomains?: ReadonlySet<string> },
 ): Promise<{ items: PortalAccessRequestListItem[]; hasMore: boolean }> {
   const now = opts.now ?? new Date();
   const limit = Math.min(LIST_MAX_LIMIT, Math.max(1, Math.floor(opts.limit ?? LIST_DEFAULT_LIMIT)));
@@ -597,8 +657,14 @@ export async function listPortalAccessRequests(
     decidedBy: r.decidedByUserId ? { id: r.decidedByUserId, name: r.decidedByName ?? null } : null,
     portalUserId: r.portalUserId,
     accountExists: Boolean(r.accountExists),
+    domainVerified: r.source === 'self' ? selfDomainVerified(r.email, opts.verifiedDomains) : null,
   }));
   return { items, hasMore: rows.length > limit };
+}
+
+function selfDomainVerified(email: string, verifiedDomains: ReadonlySet<string> | undefined): boolean {
+  const domain = emailDomainOf(email);
+  return domain !== null && verifiedDomains !== undefined && verifiedDomains.has(domain);
 }
 
 /**

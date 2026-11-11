@@ -313,6 +313,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),
+  // #4342 W5. Plain Redis-required consumer, no feature flag.
+  consumers('historyRetention'),
   // Wisp W05b (#9917): daily concern retention — same shape (one Worker, no
   // flag gate before construction, attached under its registry-key name).
   consumers('wispConcernRetention'),
@@ -387,8 +389,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // AI Suggested Fixes W1 — attachWorkerObservability name == registry name.
   consumers('fixOutcomeWorker'),
   consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
-  // #4342 W5. Plain Redis-required consumer, no feature flag.
-  consumers('historyRetention'),
+  // Portal registration W6 (#11383): one Worker, constructed unconditionally
+  // (the kill switch gates the public route, not the consumer), attached under
+  // its registry name.
+  consumers('portalSelfRegistrationWorker'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {

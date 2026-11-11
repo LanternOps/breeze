@@ -169,7 +169,9 @@ By default, when a technician starts a remote desktop session the person sitting
 | **Notify** *(default)* | A desktop notification appears — "*Jordan Lee connected to your computer*" — and the session begins immediately. No approval is required. |
 | **Consent** | A dialog asks the user to **Allow** or **Deny** before the technician can see the screen. The technician's view does not start until the user allows it. |
 
-When a session is active, a small indicator ("*Jordan Lee is connected*" with a live timer) is shown at the top of the user's screen for the duration of the session, and a "*Remote session ended*" notice appears when the technician disconnects. Both can be turned off per policy. The on-screen indicator is drawn on Windows, and by Breeze Assist on macOS and Linux; without Assist, macOS and Linux show the start and end notices only.
+When a session is active, a small indicator ("*Jordan Lee is connected*" with a live timer) is shown at the top of the user's screen for the duration of the session, and a "*Remote session ended*" notice appears when the technician disconnects. Both can be turned off per policy. The on-screen indicator is drawn on Windows, and by Breeze Assist on macOS and Linux. **Without Breeze Assist, macOS and Linux have no indicator at all**: the user sees the start and end notices only.
+
+With the `remote.session` prompt kind enabled (see [What End Users See](/features/end-user-experience/#remote-support)), the indicator becomes a pill the person can click. Breeze Assist expands it to show the technician, their organization, your MSP's name and the start time, with **End session** (when **Let the user end the session** is on) and **Report a problem**, which opens Assist's Request Support flow with the session filled in. The native Windows pill lets clicks pass through unless End session is allowed.
 
 **What the end user sees in Consent mode**
 
@@ -177,8 +179,8 @@ The prompt asks the user to allow or deny the remote session, naming the technic
 
 | Renderer | When it is used | What it looks like |
 |----------|-----------------|--------------------|
-| **Breeze Assist card** | Breeze Assist is running in the signed-in user's session. | A branded card with **Allow** and **Deny** buttons. |
-| **Native dialog** | Breeze Assist is not running, but the Breeze user helper in that session can draw a system dialog. | A **Remote Support Request** dialog: a system message box with **Yes** / **No** on Windows, an **Allow** / **Deny** dialog on macOS, a `zenity` dialog on Linux (requires `zenity` installed and a graphical display). |
+| **Breeze Assist card** | Breeze Assist is running in the signed-in user's session. | A branded card (your MSP's name in the header) with **Allow** and **Deny** buttons. With the `remote.consent` prompt kind enabled, its title is "Remote support request" and it states the consequence of silence: "If no one answers, the session starts in 0:30" (policy **Proceed**) or "…is declined in 0:30" (policy **Block**). |
+| **Native dialog** | Breeze Assist is not running, but the Breeze user helper in that session can draw a system dialog. | A **Remote Support Request** dialog: **Allow** / **Deny** on macOS, a `zenity` dialog on Linux (requires `zenity` installed and a graphical display), and on Windows a task dialog with **Allow** / **Deny** buttons when the `remote.consent` kind is enabled, or a system message box with **Yes** (allow) / **No** (deny) otherwise. |
 
 Consent mode therefore works without Breeze Assist. Both renderers show a **30-second countdown** (the API ships the length with the session start). The countdown starts only once the prompt is confirmed on screen, and the technician's view does not start until the user answers.
 
@@ -199,9 +201,9 @@ A session is refused most commonly when someone is signed in and **neither** ren
 
 **Ending a session from the device**
 
-With **Let the user end the session** on, the active-session indicator offers **End session**. After the person confirms, the session stops, the session history list and detail show **Ended by the user**, and the audit log records **Remote session ended by the user**.
+With **Let the user end the session** on, the active-session indicator offers **End session**. The confirmation ("End this remote session? The technician will be disconnected.") defaults to **Keep session**. After the person confirms, the session stops, the session history list and detail show **Ended by the user**, and the audit log records **Remote session ended by the user**.
 
-This button is part of the newer on-device session indicator, which is opt-in: it appears only once your administrator enables the `remote.session` prompt kind with [`PROMPT_HOST_ENABLED_KINDS`](/deploy/environment/#agent-connection-switches). Nothing is enabled by default, so until then the setting has no effect on devices.
+The policy field is `allow_user_end_session` (default on) on the Remote Access feature. This button is part of the newer on-device session indicator, which is opt-in: it appears only once your administrator enables the `remote.session` prompt kind with [`PROMPT_HOST_ENABLED_KINDS`](/deploy/environment/#agent-connection-switches). Nothing is enabled by default, so until then the setting has no effect on devices.
 
 <Aside>
   These surfaces are drawn in the signed-in user's desktop session by Breeze Assist or, when Assist isn't running, by the Breeze user helper's native dialogs. On an unattended machine (no user signed in), there is no one to notify or ask — in **Consent** mode, Breeze then applies the *"When consent can't be asked"* fallback. With **Proceed** (the default), unattended and headless machines are never locked out. If a user is signed in but neither can show them the prompt, current agents refuse the session instead of connecting without asking. Only Windows reports whether the screen is locked, so on macOS and Linux a prompt that times out is refused.

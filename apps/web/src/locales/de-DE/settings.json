@@ -8407,6 +8407,7 @@
       "updated": "Aktualisiert",
       "actions": "Aktionen"
     },
+    "expired": "Abgelaufen",
     "statusValue": {
       "unconfirmed": "Unbestätigt",
       "confirmed": "Bestätigt",

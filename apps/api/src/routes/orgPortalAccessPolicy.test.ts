@@ -122,6 +122,13 @@ vi.mock('../db', () => ({
   withDbTransaction: (fn: () => unknown) => fn(),
   withDbTransactionIfHeld: (fn: () => unknown) => fn(),
   runAfterDbContextCommit: (label: string, work: () => unknown) => { h.afterCommit.push({ label, work }); },
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+}));
+
+// W6 OD6: the org view's verifiedDomainCount comes from W5's read API (its SQL
+// is portalDomainVerification's); none verified here.
+vi.mock('../services/portalDomainVerification', () => ({
+  listVerifiedDomainsForOrg: async () => [],
 }));
 
 vi.mock('../db/schema', () => ({

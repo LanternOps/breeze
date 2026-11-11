@@ -235,6 +235,11 @@ export const JOB_SCHEDULES = {
   // Closed wake-attempt history expires daily; the outcome sweep uses a
   // sub-hourly repeat interval and does not need a registry slot.
   'wake-attempt-retention': '23 22 * * *',
+  // High-volume table retention W5 (#4342, #11592) — run and access history,
+  // twelve targets in one worker, each report-only until its own
+  // _RETENTION_ENFORCE=true. Daily tier lane (≡ 3 mod 5), slot pre-allocated
+  // by the retention plan.
+  'history-retention': '8 16 * * *',
   // #9128 — daily prune of terminal webhook_deliveries rows past
   // WEBHOOK_DELIVERY_RETENTION_DAYS (default 90). :13 keeps the daily = 3
   // (mod 5) lane in hour 22.
@@ -313,11 +318,6 @@ export const JOB_SCHEDULES = {
   // domains; each row is only re-checked once ~23 h old, so the tick bounds how
   // late a daily re-check runs. :39 is free in every hour.
   'portal-domain-recheck': '39 * * * *',
-  // High-volume table retention W5 (#4342, #11592) — run and access history,
-  // twelve targets in one worker, each report-only until its own
-  // _RETENTION_ENFORCE=true. Daily tier lane (≡ 3 mod 5), slot pre-allocated
-  // by the retention plan.
-  'history-retention': '8 16 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

@@ -191,6 +191,30 @@ From v0.126.0, a Windows standard user who hands an elevation request to IT gets
 
 Notices use the same wording and language as the elevation prompt, in the user's Windows display language where it is supported.
 
+#### The request on the user's screen (elevation.request)
+
+With the `elevation.request` prompt kind enabled (opt-in; it needs Breeze Assist 0.1.4, see [What End Users See](/features/end-user-experience/#elevation-requests)), the person sees the request as one stateful card instead of separate notices:
+
+| State | What the user sees | Buttons |
+|---|---|---|
+| **First question** | "Request administrator access?" with the program, publisher and command line, and "If you don't answer within 1:30, the request is not sent." | **Send request**, **Cancel** (the default) |
+| **Waiting** | "Waiting for *your MSP*": the request was sent and stays open until a time shown on the card. The person can keep working. | **Cancel request**, **Hide** |
+| **Approved** | "*MSP* approved *program*. It is starting." Names the technician only when the remote-access **Technician identity shown** setting allows a name. | none |
+| **Denied** | Your deny reason, when you gave one | none |
+| **Expired** | The request ran out before IT answered | none |
+| **Failed** | "*Program* was approved but couldn't start. Contact *MSP*." | none |
+| **Cancelled** | "You cancelled the request for *program*." | none |
+
+The card updates the moment IT decides, whether or not the person is looking at it, and every state stays in Breeze Assist's notification list afterwards. **Hide** only closes the window. **Cancel request** withdraws the request on the server (it moves to **Withdrawn**, with the reason `user_cancelled` in the audit record) and the agent refuses to run it, so an approval that crosses the cancellation cannot launch the program.
+
+<Aside type="caution">
+  **On the default Windows UAC setting, the first question is not an Assist card.** While Windows shows UAC on the secure desktop, nothing Breeze Assist draws can be seen, so the first question ("Send request" / "Cancel") is a native window drawn by Breeze's system helper next to the UAC prompt. Everything after **Send request** is the Assist card above. Only when the secure desktop is turned off does Assist draw the first question. A later release is planned to close the UAC prompt first and ask on Assist; until it ships, this is the behaviour.
+</Aside>
+
+After **Send request**, and again after an approved elevation, Breeze closes the Windows UAC prompt itself, so a stale prompt does not stay open behind the work (fixed in [#10177](https://github.com/LanternOps/breeze/issues/10177)). If Breeze cannot confirm it closed the prompt, the waiting card tells the person they can close it themselves, and the request stays with IT.
+
+The audit entries for elevation requests record which renderer showed the request (`assist` or `native`) and, for a withdrawal, the reason `user_cancelled`. Without Assist in the person's session (an RDP session on a Windows client edition, for example), the first question stays native and the outcomes use the notifications listed above. Breeze never asks for the user's Windows password in any of these windows.
+
 ---
 
 ## How Just-in-Time Admin Works

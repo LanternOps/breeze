@@ -6,7 +6,8 @@
 //                open; the head moved since; a human removed it by hand
 //                afterwards; the `ci-shepherd:ignore` label; a fork.
 //   2. backoff / wait_main — the removal matches an open breaker (breakers.mjs).
-//   3. hold    — class real or gate_fault; or retry_exhausted: this head's
+//   3. hold    — class real, gate_fault or thin_fault (W05; also paged, see
+//                pageFor); or retry_exhausted: this head's
 //                failed_checks removals (GitHub's own auto-merge re-adds
 //                included) exceed the class limit or MAX_REMOVALS, or one test
 //                failed both attempts in two removals of this head.
@@ -23,7 +24,10 @@
 import { attemptsOf } from './evidence.mjs';
 import { actionId } from './markers.mjs';
 
-export const LIMITS = Object.freeze({ infra: 3, known_flake: 3, suspected_flake: 2, timeout: 1, unknown: 1, real: 0, gate_fault: 0 });
+export const LIMITS = Object.freeze({ infra: 3, known_flake: 3, suspected_flake: 2, timeout: 1, unknown: 1, real: 0, gate_fault: 0, thin_fault: 0 });
+// Classes that hold on the first removal: not a flake signal, never re-queued,
+// and never parked in a breaker (which would re-queue them when it clears).
+export const HOLD_CLASSES = new Set(['real', 'gate_fault', 'thin_fault']);
 export const MAX_REMOVALS = 3;
 export const READD_GRACE_MS = 10 * 60_000;
 // A `manual` removal by the operator login within this long after the
@@ -59,7 +63,7 @@ export function summarizeVerdict(verdict, facts = null) {
   const judged = new Map((verdict.jobs ?? []).map((j) => [j.job, j.class]));
   for (const job of facts?.jobs ?? []) {
     const cls = judged.get(job.name);
-    if (!cls || cls === 'real' || cls === 'gate_fault') continue;
+    if (!cls || HOLD_CLASSES.has(cls)) continue;
     const a = attemptsOf(job);
     if (!a?.first || !a?.second) continue;
     const second = new Set(a.second.failures);
@@ -148,7 +152,7 @@ export function decide({ removal, snapshot, verdict, priorVerdicts = [], breaker
     });
   }
   const broken =
-    verdict.class !== 'real' && verdict.class !== 'gate_fault'
+    !HOLD_CLASSES.has(verdict.class)
       ? breakers.find((b) => b.kind === 'main_broken' && (b.status === 'suspected' || b.status === 'confirmed') && ids.has(b.key))
       : null;
   if (broken) {
@@ -158,7 +162,7 @@ export function decide({ removal, snapshot, verdict, priorVerdicts = [], breaker
   }
 
   // 3. Holds.
-  if (verdict.class === 'real' || verdict.class === 'gate_fault') {
+  if (HOLD_CLASSES.has(verdict.class)) {
     return make('hold', [...notes, `class ${verdict.class}`], parkOps(snapshot, LABELS.hold), { holdReason: verdict.class });
   }
   if (n > limit) {
@@ -182,6 +186,18 @@ export function decide({ removal, snapshot, verdict, priorVerdicts = [], breaker
     { op: 'enqueue', args: {} },
     { op: 'comment', args: {} },
   ]);
+}
+
+// W05 (#10749): the line a thin_fault hold adds to the tick summary's errors, so
+// the run exits non-zero (degraded) and the operator sees it in shadow mode too,
+// where nothing is written to GitHub. Null for every other decision.
+export function pageFor(decision) {
+  if (decision.class !== 'thin_fault' || decision.kind !== 'hold') return null;
+  const where = `PR ${decision.pr} head ${String(decision.head).slice(0, 12)} run ${decision.run ?? 'unknown'}`;
+  if (decision.signature === 'attempt1_selection_missing') {
+    return `PAGE attempt1_selection_missing: ${where}: a CI Gate re-run lost attempt 1's selection and ejected the entry (fail-closed). Check the gate run; resume with the ci-shepherd:resume label.`;
+  }
+  return `PAGE thin_skip_unjustified: ${where}: CI skipped a job the CI Gate's selection did not list. Unless the PR's own ci.yml explains it, gh variable set CI_THIN_QUEUE --body off -R LanternOps/breeze.`;
 }
 
 // A parked PR whose breaker cleared: back to the queue if it is still open on

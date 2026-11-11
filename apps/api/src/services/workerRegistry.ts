@@ -1799,6 +1799,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W5 — report-only history retention sweep (twelve targets).
+    name: 'historyRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/historyRetention');
+      return {
+        init: m.initializeHistoryRetention,
+        shutdown: m.shutdownHistoryRetention,
+      };
+    },
+  },
+  {
     // #7608 W10: daily AI chargeback close. Its closure is db + services only
     // (no route graph, no socket import) — `global`, like the retention workers.
     name: 'aiChargebackWorker',
@@ -2109,16 +2121,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeImageCurrencyWorker, shutdown: m.shutdownImageCurrencyWorker };
     },
   },
+  // Portal registration W6 (#11383): customer-portal self-registration
+  // submits (one event-driven job each; no schedule). `global`: its import
+  // closure (routes/portal helpers, capabilityTokens, email, redis) no longer
+  // reaches socket-local dispatch since the cross-process socket teardown
+  // (#11526), and it touches no agent socket or process-local state.
   {
-    // #4342 W5 — report-only history retention sweep (twelve targets).
-    name: 'historyRetention',
+    name: 'portalSelfRegistrationWorker',
     placement: 'global',
     load: async () => {
-      const m = await import('../jobs/historyRetention');
-      return {
-        init: m.initializeHistoryRetention,
-        shutdown: m.shutdownHistoryRetention,
-      };
+      const m = await import('./portalSelfRegistration/worker');
+      return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
     },
   },
 ];

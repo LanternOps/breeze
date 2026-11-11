@@ -79,7 +79,8 @@ import {
 import type { PortalOidcPurpose, PortalOidcVerifiedIdentity } from '../../services/portalOidc/types';
 import { getRedis } from '../../services/redis';
 import { isRequestConnectionSecure } from '../auth/helpers';
-import { resolvePortalHostOrgId } from './branding';
+import { hostOrgIdFor } from './requestHost';
+import { listVerifiedDomainsForOrg } from '../../services/portalDomainVerification';
 import {
   PORTAL_ENTRA_PROOF_ROUTE,
   auditTenantProofRefusal,
@@ -180,26 +181,7 @@ export const __testOnly = {
 // Request helpers
 // ============================================
 
-const HOST_NAME = /^[a-z0-9.-]+$/;
-
-/**
- * The request's `Host`, port stripped and lowercased (D5). The portal calls
- * the API same-origin and the proxy keeps `Host`, so this is the portal host
- * the browser used. Never a body or query value. Anything that is not a plain
- * DNS name (an IPv6 literal, garbage) is treated as the shared host.
- */
-function requestHost(c: Context): string | null {
-  const raw = c.req.header('host')?.trim().toLowerCase();
-  if (!raw) return null;
-  const host = raw.replace(/:\d+$/, '').replace(/\.$/, '');
-  return host && HOST_NAME.test(host) ? host : null;
-}
-
-/** The org whose verified custom domain served this request, or null on the shared host. Opens its own system context. */
-async function hostOrgIdFor(c: Context): Promise<string | null> {
-  const host = requestHost(c);
-  return host ? resolvePortalHostOrgId(host) : null;
-}
+// requestHost / hostOrgIdFor live in ./requestHost (shared with self-registration, W6 D6).
 
 /**
  * `Secure` on the binding cookie (D3): ALWAYS in production. Entra accepts an
@@ -562,20 +544,30 @@ oidcRoutes.get(PORTAL_ENTRA_PROOF_ROUTE, (c) =>
 // ============================================
 
 /**
- * Shared host: a constant (`password` always offered, Microsoft when the
- * deployment can run it), so it reveals nothing about any org (inv. 8). A
- * verified custom domain: that org's effective policy.
+ * Shared host: a constant (`password` always offered, Microsoft and Request
+ * access when the deployment can run them), so it reveals nothing about any
+ * org (inv. 8). A verified custom domain: that org's effective policy.
  */
 oidcRoutes.get('/auth/methods', async (c) => {
   c.header('Cache-Control', 'no-store');
-  const shared = { password: true, microsoft: getPortalSignInCapabilities().entra };
+  const caps = getPortalSignInCapabilities();
+  // `requestAccess` (W6): the shared host shows the Request access link
+  // whenever the deployment can run self-registration — a constant, so it says
+  // nothing about which domains or orgs are eligible (inv. 8).
+  const shared = { password: true, microsoft: caps.entra, requestAccess: caps.selfRegistration };
   const orgId = await hostOrgIdFor(c);
   if (!orgId) return c.json(shared);
   try {
     const policy = await resolvePortalAccessPolicy(orgId);
+    // A verified custom domain: that org's own mode (masked to `off` while the
+    // capability is off) AND at least one domain verified right now. The W5
+    // read runs with no DB context held (public route).
+    const requestAccess = policy.effective.selfRegistrationMode.value !== 'off'
+      && (await listVerifiedDomainsForOrg(orgId)).length > 0;
     return c.json({
       password: isSignInMethodAllowed(policy, 'password'),
       microsoft: getPortalEntraConfig() !== null && isSignInMethodAllowed(policy, 'entra'),
+      requestAccess,
     });
   } catch (error) {
     // Thrown in JS after the read (no DB context is held on this public route).

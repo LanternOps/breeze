@@ -109,6 +109,8 @@ const EXPECTED_WORKER_NAMES = [
   'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
+  // High-volume table retention W5 (#4342, #11592) — report-only.
+  'historyRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.
   'aiChargebackWorker',
   'alertVerdictScheduler', 'aiAgentSweepScheduler',
@@ -147,8 +149,8 @@ const EXPECTED_WORKER_NAMES = [
   'aiModelDiscoveryWorker',
   // Workload image currency W05 (#8194).
   'imageCurrencyWorker',
-  // High-volume table retention W5 (#4342, #11592) — report-only.
-  'historyRetention',
+  // Portal registration W6 (#11383).
+  'portalSelfRegistrationWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {

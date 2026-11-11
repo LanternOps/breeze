@@ -2711,7 +2711,7 @@
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
       "agentOnlyActionManual": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Manuel varlıkların aracısı yoktur.",
-      "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
+      "alreadyPendingTail": ", {{count}} zaten beklemede",
       "bulkActionFailed": "Toplu {{action}} işlemi başarısız oldu",
       "bulkMaintenanceSuccess": "{{count}} cihazlar {{verb}} bakım modu",
       "bulkMaintenanceSuccess_one": "{{count}} cihaz {{verb}} bakım modu",
@@ -2756,7 +2756,7 @@
       "selectTwoForMultiboot": "Çoklu önyükleme profilleri olarak bağlamak için en az iki cihaz seçin.",
       "unknownAction": "Bilinmeyen eylem: {{action}}",
       "unknownBulkAction": "Bilinmeyen toplu eylem: {{action}}",
-      "wakeSentWatching": "Uyandırma İzlemeye Gönderildi",
+      "wakeSentWatching": "Wake-on-LAN, {{relay}} üzerinden {{hostname}} cihazına gönderildi ({{broadcast}}). Çevrimiçi olması bekleniyor…",
       "wakeTimeout": "{{hostname}} 4 dakika içinde çevrimiçi olmadı. Ethernet + BIOS WoL ayarını kontrol edin.",
       "queuedOfflineTail": ", {{count}} çevrimdışı cihaz için sıraya alındı",
       "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır — son geçerlilik: {{date}}",
@@ -2810,7 +2810,8 @@
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (artık bulunamıyor; silinmiş olabilir)",
       "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı",
-      "bulkWakeResult": "{{sent}} cihaza gönderildi, {{skipped}} cihaz atlandı"
+      "bulkWakeResult": "{{sent}} cihaza gönderildi, {{skipped}} cihaz atlandı",
+      "scriptQueuedOneOffline": "\"{{script}}\" betiği {{hostname}} için kuyruğa alındı — cihaz yeniden bağlandığında çalışacak"
     },
     "tryAgain": "Tekrar deneyin",
     "unknownDevice": "Bilinmiyor",
