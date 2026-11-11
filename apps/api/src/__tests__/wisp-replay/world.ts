@@ -20,12 +20,42 @@ export type ReplayMemoryRow = {
 /** A row of `devices` as the extractor's name resolution selects it. */
 export type ReplayDeviceRow = { id: string; orgId: string; siteId: string | null; hostname: string; displayName: string | null };
 
-/** The subset of ioredis the Wisp turn paths use: get, set (EX, NX), del and a MULTI of INCR/EXPIRE. */
+/**
+ * A settled row of `ai_agent_runs` as the specialist-results read selects it
+ * (#11671). The fake `db` ignores predicates, so a fixture holds only runs this
+ * session handed off.
+ */
+export type ReplayAgentRunRow = {
+  id: string;
+  orgId: string;
+  status: 'completed' | 'failed' | 'awaiting_approval' | 'cancelled';
+  profile: string;
+  summary: string | null;
+};
+
+/** The subset of ioredis the Wisp turn paths use: get, set (EX, NX), del, a set's SADD/SMEMBERS, EXPIRE and a MULTI of INCR/EXPIRE. */
 export class FakeRedis {
   readonly store = new Map<string, string>();
+  readonly sets = new Map<string, Set<string>>();
 
   async get(key: string): Promise<string | null> {
     return this.store.get(key) ?? null;
+  }
+
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    const set = this.sets.get(key) ?? new Set<string>();
+    const before = set.size;
+    for (const m of members) set.add(m);
+    this.sets.set(key, set);
+    return set.size - before;
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    return [...(this.sets.get(key) ?? [])];
+  }
+
+  async expire(_key: string, _seconds: number): Promise<number> {
+    return 1;
   }
 
   async set(key: string, value: string, ...args: Array<string | number>): Promise<'OK' | null> {
@@ -67,6 +97,8 @@ export type ReplayWorld = {
   standingFacts: StandingStateFacts | null;
   memoryRows: ReplayMemoryRow[];
   deviceRows: ReplayDeviceRow[];
+  /** Settled specialist runs this session handed off (#11671). */
+  agentRuns: ReplayAgentRunRow[];
   /** The extractor model's replies, in order (one per capture). */
   extractorReplies: unknown[];
   /** Rows written through `db.insert(...).values(...)` (assistant corrections among them). */
@@ -85,6 +117,7 @@ export const replayWorld: ReplayWorld = {
   standingFacts: null,
   memoryRows: [],
   deviceRows: [],
+  agentRuns: [],
   extractorReplies: [],
   inserted: [],
   unexpectedReads: [],
@@ -98,6 +131,7 @@ export function resetReplayWorld(): void {
   replayWorld.standingFacts = null;
   replayWorld.memoryRows = [];
   replayWorld.deviceRows = [];
+  replayWorld.agentRuns = [];
   replayWorld.extractorReplies = [];
   replayWorld.inserted = [];
   replayWorld.unexpectedReads = [];
