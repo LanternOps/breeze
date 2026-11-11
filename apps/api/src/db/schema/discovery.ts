@@ -342,7 +342,9 @@ export const networkChangeEvents = pgTable('network_change_events', {
   acknowledged: boolean('acknowledged').notNull().default(false),
   acknowledgedBy: uuid('acknowledged_by').references(() => users.id),
   acknowledgedAt: timestamp('acknowledged_at'),
-  alertId: uuid('alert_id').references(() => alerts.id),
+  // ON DELETE SET NULL (2027-01-23-102000, #4342 W3): history that outlives
+  // the alert, which closed-alert retention may delete.
+  alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'set null' }),
   linkedDeviceId: uuid('linked_device_id').references(() => devices.id),
   notes: text('notes'),
   createdAt: timestamp('created_at').defaultNow().notNull()

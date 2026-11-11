@@ -127,6 +127,8 @@ const EXPECTED_WORKER_NAMES = [
   'monitorEpisodeRetention',
   // EDR provider framework W02 (#8164) — daily prune of terminal edr_detections.
   'edrDetectionRetentionWorker',
+  // #4342 W3 — closed-alert retention.
+  'alertRetention',
   // #4248 W03 (AI Scorecard #5757) — narrative delivery reconciliation sweep.
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
@@ -149,6 +151,8 @@ const EXPECTED_WORKER_NAMES = [
   'imageCurrencyWorker',
   // Portal registration W6 (#11383).
   'portalSelfRegistrationWorker',
+  // High-volume table retention W1 (#4342, #11588) — report-only.
+  'deviceCommandRetention', 'filesystemSnapshotRetention', 'networkMonitorResultRetention', 'deviceSessionRetention',
 ];
 
 describe('workerRegistry: losslessness', () => {

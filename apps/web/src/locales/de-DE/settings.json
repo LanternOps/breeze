@@ -8488,7 +8488,9 @@
       "label": "Selbstregistrierung",
       "off": "Aus",
       "approval": "Genehmigung erforderlich",
-      "instant": "Sofort"
+      "instant": "Sofort",
+      "noVerifiedDomain": "Keine verifizierte Domäne: Niemand kann sich registrieren, bis Sie eine verifizieren.",
+      "verifyDomain": "Domäne verifizieren"
     },
     "ssoNewPerson": {
       "label": "Erste Microsoft-/Google-Anmeldung",
@@ -8638,6 +8640,8 @@
     "selectAll": "Alle Anfragen auswählen",
     "selectOne": "Anfrage von {{email}} auswählen",
     "accountExists": "Hat bereits ein Konto — Zum Verwerfen ablehnen",
+    "domainUnverified": "Domäne nicht mehr verifiziert",
+    "domainUnverifiedReason": "Genehmigen ist nicht möglich: Laden Sie diese Person direkt ein, wenn sie Zugriff erhalten soll.",
     "actions": {
       "approve": "Genehmigen",
       "deny": "Ablehnen",
@@ -8650,7 +8654,8 @@
       "notFound": "Anfrage nicht gefunden",
       "identityLinked": "Anmeldung bereits mit einem anderen Konto verknüpft",
       "failed": "Diese Anfrage konnte nicht entschieden werden",
-      "entraTenantNotProven": "Der Microsoft-Mandant dieser Organisation ist nicht mehr nachgewiesen"
+      "entraTenantNotProven": "Der Microsoft-Mandant dieser Organisation ist nicht mehr nachgewiesen",
+      "domainNotVerified": "E-Mail-Domäne nicht mehr verifiziert"
     },
     "denyDialog": {
       "title": "Zugriffsanfrage ablehnen",
@@ -8668,7 +8673,8 @@
     "errors": {
       "load": "Zugriffsanfragen konnten nicht geladen werden.",
       "action": "Die Zugriffsanfrage konnte nicht aktualisiert werden.",
-      "bulk": "Die ausgewählten Anfragen konnten nicht entschieden werden."
+      "bulk": "Die ausgewählten Anfragen konnten nicht entschieden werden.",
+      "domainNotVerified": "Die E-Mail-Domäne dieser Person ist für diese Organisation nicht mehr verifiziert. Laden Sie sie direkt ein, wenn sie Zugriff erhalten soll."
     },
     "summary": {
       "title": "Ausstehende Zugriffsanfragen",

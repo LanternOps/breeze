@@ -65,6 +65,7 @@ import {
   SELF_REGISTER_ACCEPTED_MESSAGE,
   SELF_REGISTER_ACCOUNT_PENDING_SETUP,
   SELF_REGISTER_INVALID_LINK,
+  SELF_REGISTER_LINK_SPENT,
   SELF_REGISTER_REQUEST_AGAIN,
   selfRegistrationRoutes,
 } from './selfRegistration';
@@ -216,9 +217,17 @@ describe('POST /auth/self-register (D3, Review Focus 1)', () => {
     const off = await submit({ email: 'pat@contoso.example.com', name: 'Pat' });
     expect(off.status).toBe(404);
     expect(h.enqueue).not.toHaveBeenCalled();
-    // Off is the W06a default: the real capability.
+    // The real capability (W06b): the kill switch off is a 404 whatever the
+    // email configuration, for submit and verify alike.
     policyTestOnly.setCapabilities(null);
-    expect((await submit({ email: 'pat@contoso.example.com', name: 'Pat' })).status).toBe(404);
+    vi.stubEnv('PORTAL_SELF_REGISTRATION_ENABLED', 'false');
+    try {
+      expect((await submit({ email: 'pat@contoso.example.com', name: 'Pat' })).status).toBe(404);
+      expect((await verify('any-token')).status).toBe(404);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(h.enqueue).not.toHaveBeenCalled();
   });
 
   it('on the in-memory backend a missing Redis client changes nothing (the Redis-backend 503 is address-independent by construction)', async () => {
@@ -299,7 +308,9 @@ describe('POST /auth/self-register/verify (D8–D10, Review Focus 4)', () => {
     h.complete.mockResolvedValue({ outcome: 'account_created', orgId: ORG, portalUserId: 'u-1', inviteToken: null });
     const res = await verify('t');
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: SELF_REGISTER_ACCOUNT_PENDING_SETUP });
+    // `code` tells the verify page the link is spent: no retry button (a retry can only 400).
+    expect(await res.json()).toEqual({ error: SELF_REGISTER_ACCOUNT_PENDING_SETUP, code: 'SELF_REGISTER_LINK_SPENT' });
+    expect(SELF_REGISTER_LINK_SPENT).toBe('SELF_REGISTER_LINK_SPENT');
   });
 
   it('verify: a completion failure after the token is burned answers 503 "request again" and never surfaces the raw error', async () => {
@@ -308,7 +319,8 @@ describe('POST /auth/self-register/verify (D8–D10, Review Focus 4)', () => {
     h.complete.mockRejectedValue(Object.assign(new Error(`Failed query: insert ... params: ${PAYLOAD.email},${PAYLOAD.name}`), { name: 'DrizzleQueryError' }));
     const res = await verify('t');
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: SELF_REGISTER_REQUEST_AGAIN });
+    expect(await res.json()).toEqual({ error: SELF_REGISTER_REQUEST_AGAIN, code: 'SELF_REGISTER_LINK_SPENT' });
+    expect(SELF_REGISTER_LINK_SPENT).toBe('SELF_REGISTER_LINK_SPENT');
     const logged = JSON.stringify(error.mock.calls);
     expect(logged).toContain('DrizzleQueryError');
     expect(logged).not.toContain(PAYLOAD.email);
