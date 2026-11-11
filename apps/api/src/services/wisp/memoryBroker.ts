@@ -118,7 +118,7 @@ function changedPaths(before: unknown, after: unknown, path: string, out: string
  * Memory content with credentials removed, before it is stored: the tool-output
  * field policy and string pass (logRedaction.redactMemoryContentFields with
  * redactAiToolOutputText), so a secret is caught by its key name or by its
- * shape at any depth, while UUIDs, ISO timestamps, numbers, booleans and keys
+ * shape at any depth, while record-id UUIDs, ISO timestamps, numbers, booleans and keys
  * are kept and structural fields (`deviceId`, `concernId`, `evidence` ids,
  * instruction fields) survive. `redactedPaths` names each changed field; when
  * it is empty the input object itself is returned.

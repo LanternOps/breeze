@@ -1,8 +1,8 @@
 /**
  * Memory content is redacted before it is stored, with the field policy and
  * string rules tool output already gets (redactToolOutputFields +
- * redactAiToolOutputText), plus two memory rules: a UUID string is never
- * replaced, and the depth limit is high enough for any real block. Structural
+ * redactAiToolOutputText), plus two memory rules: a UUID string is kept
+ * unless its key names secret material, and the depth limit is high enough for any real block. Structural
  * fields (ids, instruction fields, numbers, booleans) are never touched, and a
  * block with nothing to redact is stored as given. The DB is mocked: these tests pin what reaches the
  * insert; owner and supersede SQL are pinned by memoryBroker.integration.test.ts.
@@ -187,10 +187,30 @@ describe('redactMemoryContent', () => {
     expect(redactedPaths).toEqual(['sessionId']);
   });
 
-  it('keeps UUIDs, ISO timestamps, numbers, booleans and nulls under credential-named keys', () => {
+  it('replaces a UUID-shaped value under a key that names secret material', () => {
+    // Many vendors issue API keys and tokens in UUID form, so the UUID exemption
+    // must not reach a key that names a credential.
+    const uuidKey = '3f2b8c1e-5d47-4a9b-8e21-7c6d5b4a3f10';
+    const { content, redactedPaths } = redactMemoryContent({
+      apiKey: uuidKey,
+      vendor: { clientSecret: uuidKey, tokenId: uuidKey },
+      sessionId: SESSION,
+      deviceId: uuidKey,
+      evidence: [uuidKey],
+    });
+    expect(content).toEqual({
+      apiKey: '[REDACTED]',
+      vendor: { clientSecret: '[REDACTED]', tokenId: '[REDACTED]' },
+      sessionId: SESSION,
+      deviceId: uuidKey,
+      evidence: [uuidKey],
+    });
+    expect(redactedPaths).toEqual(['apiKey', 'vendor.clientSecret', 'vendor.tokenId']);
+  });
+
+  it('keeps a session UUID, ISO timestamps, numbers, booleans and nulls under credential-named keys', () => {
     const input = {
       sessionId: SESSION,
-      tokenId: TICKET,
       tokenExpiresAt: '2026-12-01T00:00:00.000Z',
       tokenCount: 3,
       hasPassword: true,

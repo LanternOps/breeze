@@ -270,15 +270,18 @@ const UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 /**
  * Wisp memory content (services/wisp/memoryBroker.ts) sits beside tool output
  * in the model's prompt, so it takes the same policy with two differences:
- *   * a UUID string is kept whatever its key. Blocks cite records by id
- *     (`sessionId`, `evidence`, `deviceId`), and a UUID is a reference, not a
- *     credential; the tool-output policy would blank one under `sessionId`.
+ *   * a UUID string is kept unless its key names secret material. Blocks cite
+ *     records by id (`sessionId`, `evidence`, `deviceId`), and the tool-output
+ *     policy would blank one under `sessionId`. Under `apiKey`, `token` or
+ *     `clientSecret` a UUID is still replaced: vendors issue keys in that form.
  *   * the depth limit is MEMORY_CONTENT_MAX_DEPTH, not 8. Content is capped
  *     at 8 KiB, and a real block never nests that deep; past it the rest is
  *     still replaced whole, so a pathological shape cannot exhaust the stack.
  */
 const memoryContentFieldPolicy: FieldPolicy = (key, value) =>
-  typeof value === 'string' && UUID_VALUE.test(value) ? 'keep' : toolOutputFieldPolicy(key, value);
+  typeof value === 'string' && UUID_VALUE.test(value) && !isToolOutputSecretMaterialKey(key)
+    ? 'keep'
+    : toolOutputFieldPolicy(key, value);
 
 export const MEMORY_CONTENT_MAX_DEPTH = 64;
 
