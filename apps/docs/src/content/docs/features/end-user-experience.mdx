@@ -9,7 +9,7 @@ Most of Breeze is invisible to the people whose computers you manage. This page 
 
 Every prompt follows the same rules, so you can explain them to your users once:
 
-- **It says who is asking.** The header names your MSP (the partner name from **Settings → Partner → Branding**, with your logo and colour in Breeze Assist). A device that has never received a name shows "Your IT support team".
+- **It says who is asking.** The header names your MSP (your partner's company name, with the logo and colour from **Settings → Partner → Branding** in Breeze Assist). A device that has never received a name shows "Your IT support team".
 - **The safe choice is the default.** Pressing Enter, Esc or the close box never restarts the computer, allows a remote session, or sends a request on its own.
 - **It says what happens if nobody answers**, with the real consequence.
 - **Breeze never asks for a password.** See [below](#breeze-never-asks-for-your-password).
@@ -35,12 +35,12 @@ If Assist is installed but cannot run, prompts use the native fallback automatic
 
 | Prompt | Windows | macOS | Linux |
 |---|---|---|---|
-| Restart prompt | Task dialog with real **Restart now** / **Postpone until 15:30** buttons; Postpone is the default | `osascript` dialog with the same two buttons; Postpone is the default | `zenity` question, drawn by the agent as the signed-in user, same buttons; Postpone is the default |
+| Restart prompt | Task dialog with real **Restart now** / **Postpone until 15:30** buttons; Postpone is the default | `osascript` dialog with the same two buttons; Postpone is the default | `zenity` question, same buttons; Postpone is the default |
 | Restart closing notice | Task dialog, **OK** only | `osascript` dialog, **OK** only | `zenity` / `notify-send`, then `wall` on a headless box |
 | Remote-support consent | **Allow** / **Deny**; Deny is the default | **Allow** / **Deny**; Deny is the default | `zenity` **Allow** / **Deny**; Deny is the default (needs `zenity` and a display) |
 | Session indicator | Native pill at the top of the screen | None | None |
 | Elevation request | The first question is drawn by Breeze's system helper; the outcomes arrive as notifications | Not applicable (UAC capture is Windows-only) | Not applicable |
-| Notices | Windows notification, with a dialog if notifications are muted | macOS notification | `notify-send` |
+| Notices | Windows notification, or a dialog when notifications are muted or the foreground app is full-screen | `osascript` dialog (`display notification` while the kind is not enabled) | `zenity` dialog (`notify-send` while the kind is not enabled) |
 | Notification list | None | None | None |
 
 Native dialogs are drawn with these exact rules: the safe button is the default, Esc and the close box choose it, and **a countdown that runs out is never treated as an answer**. The dialog simply closes and the agent applies the policy that governs that prompt.
@@ -52,12 +52,12 @@ Where an older Windows agent or an older Assist build cannot draw a newer prompt
 Windows Focus Assist / Do Not Disturb, macOS Focus and GNOME's Do Not Disturb silence **operating-system notifications**, not ordinary windows. Breeze therefore does not use a notification for anything that matters when Assist is present:
 
 - **Decisions are windows**, not toasts: the restart prompt, the remote-support consent prompt and the elevation request.
-- **Informational notices are Assist cards** that stay on screen until the person hides them, and every card is also written to Assist's **notification list**: a "Notifications (N)" item in the tray menu and a **Notifications** area in the Assist window. A missed notice can be found later. The list keeps entries for 7 days, up to 50 per person, and entries belong to the person and session they were shown in: they are never shown to another user of the same computer.
+- **Informational notices are Assist cards** that stay on screen until the person hides them, and every card is also written to Assist's **notification list**: a "Notifications (N)" item in the tray menu and a **Notifications** area in the Assist window. A missed notice can be found later. The list keeps entries for up to 7 days (many expire sooner, such as a restart card at its restart time), up to 50 per person, and entries belong to the person and session they were shown in: they are never shown to another user of the same computer.
 - If Assist is closed or restarts while a card is open, the agent keeps the list and puts it back when Assist returns, without stealing focus.
 
 This is DND-*resistant*, not DND-proof. Its limits:
 
-- **Without Assist there is no list**, and notices fall back to operating-system notifications, which Do Not Disturb can hide. Decisions (restart, consent) remain dialogs, not toasts.
+- **Without Assist there is no list**, and notices fall back to native dialogs, or to operating-system notifications where the notice kind is not enabled; Do Not Disturb can hide those notifications. Decisions (restart, consent) remain dialogs, not toasts.
 - **A locked session** gets no new cards. They are shown when the person unlocks (the restart still happens on time). Remote-support consent is the exception: it is never held back, and the policy decides what an unseen prompt means (see [Remote Access](/features/remote-access/#session-consent--end-user-notification)).
 - **The Windows secure desktop** (where a default UAC prompt appears) hides everything Assist draws. This is why the first question of an elevation request is drawn by Breeze's system helper, not Assist; see [Elevation requests](#elevation-requests).
 - **A window can still be behind another window.** A card that is on screen proves the person *could* see it, not that they did.
@@ -83,7 +83,7 @@ When a restart is scheduled, one card follows the whole restart, rather than a n
 - **Reminders update the same card** at 60, 15 and 5 minutes before, instead of opening a new one. A warning the person already answered does not reopen.
 - **Several sessions stay in step.** On a computer with more than one signed-in session, every session shows the same card, and the first answer is applied to all of them.
 - **The closing card** appears at one minute, while the operating system's own countdown runs: "Restarting now", with a live countdown and **OK** only. Nothing can be postponed any more. On Windows the system also shows its own "You're about to be signed out" notice; that is Windows, not Breeze.
-- **If you cancel the restart**, the card closes and "Restart cancelled by *Northwind IT*" stays in the list. Cancelling when nothing is scheduled is reported as success, not as an error.
+- **If you cancel the restart**, the card closes and "Restart cancelled" ("*Northwind IT* cancelled the restart.") stays in the list. Cancelling when nothing is scheduled is reported as success, not as an error.
 - **After the restart**, a "Your computer restarted at *03:12* to finish installing updates" entry waits in the list for the next sign-in.
 - **Your text.** The patch policy's restart prompt **Title**, **Message** and **Restart button label** fill the title, body and the Restart now button. `{{countdown}}` becomes a live countdown on the Assist card. Your text never changes the identity header, the Postpone label, the consequence line or the budget line.
 
@@ -107,7 +107,7 @@ The countdown (30 seconds by default) starts when the prompt is confirmed on scr
 
 **Session indicator.** While a session runs, a small pill shows who is connected ("*Jordan Lee* is connected") with a live timer.
 
-- On Assist the pill expands to show the technician, your MSP name, whether the session is **View only** or **View and control**, and when it started, with **End session** (when your policy allows it) and **Report a problem**.
+- On Assist the pill expands to show the technician, their organization, your MSP name and when it started, with **End session** (when your policy allows it) and **Report a problem**.
 - **End session** always asks first ("End this remote session? The technician will be disconnected.") and its default is **Keep session**. Your policy's **Let the user end the session** controls whether it is offered; it is on by default. **Report a problem** opens Assist's Request Support flow with the session filled in.
 - On Windows without Assist, the pill is the native one. It lets clicks through unless End session is allowed, in which case a click asks the same confirmation.
 - **On macOS and Linux without Assist there is no indicator.** The user still gets the start and end notices.
