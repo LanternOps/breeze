@@ -26,9 +26,18 @@ const SITE_A = { id: "site-a", name: "Alpha HQ", orgId: "org-a" };
 const SITE_B = { id: "site-b", name: "Beta HQ", orgId: "org-b" };
 const AGENT_B = { id: "dev-b", hostname: "beta-edge", displayName: "Beta Edge", siteId: "site-b", status: "online" };
 
-/** Mimics the API: an org-scoped caller only ever receives its own org. */
-function route(orgs: (typeof ORG_A)[], sites: (typeof SITE_A)[], agents: (typeof AGENT_B)[]) {
-  fetchMock.mockImplementation((url: string) => {
+// The org switcher's org. The real fetchWithAuth injects it as ?orgId= unless
+// the call opts out with orgIdOverride: null, and the API then narrows to it.
+const AMBIENT_ORG = "org-a";
+
+/** Mimics fetchWithAuth + API: ambient org narrows unless the call opts out. */
+function route(allOrgs: (typeof ORG_A)[], allSites: (typeof SITE_A)[], allAgents: (typeof AGENT_B)[]) {
+  fetchMock.mockImplementation((url: string, init?: { orgIdOverride?: string | null }) => {
+    const narrowed = init?.orgIdOverride !== null;
+    const orgs = narrowed ? allOrgs.filter((o) => o.id === AMBIENT_ORG) : allOrgs;
+    const sites = narrowed ? allSites.filter((s) => s.orgId === AMBIENT_ORG) : allSites;
+    const siteIds = new Set(sites.map((s) => s.id));
+    const agents = allAgents.filter((a) => siteIds.has(a.siteId));
     if (url === "/unifi")
       return Promise.resolve(res({ connected: true, status: "connected", connectionType: "self_hosted" }));
     if (url.startsWith("/orgs/sites")) return Promise.resolve(res({ data: sites }));
