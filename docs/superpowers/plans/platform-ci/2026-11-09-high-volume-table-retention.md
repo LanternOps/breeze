@@ -556,7 +556,8 @@ W1.T6 checklist for 1 worker, 2 metric names and 4 variables (`ALERT_RETENTION_D
 **Previews (§3.4).** Both endpoints run on the request path under `withDbAccessContext`, with no system escape. Their counts use the same predicate builders as the job.
 - `GET /ai/data-policy/transcript-retention-preview?days=N` (org card) → `{ eligible: number, enforced: boolean }`. Counts the org's eligible technician sessions at window N.
 - `GET /partner/ai/data-policy/transcript-retention-preview?days=N` (partner card) → the same shape. Counts the eligible technician sessions across the partner's orgs that have no tighter org row; the UI labels it "up to".
-- `GET /client-ai/admin/policy/transcript-retention-preview?days=N` (client policy editor; mount it beside the existing admin policy route, `routes/clientAi/admin.ts`) → the same shape for client sessions.
+- `GET /client-ai/admin/orgs/:orgId/policy/transcript-retention-preview?days=N` (client policy editor; mounted beside the existing admin policy route `/orgs/:orgId/policy`, `routes/clientAi/admin.ts`) → the same shape for client sessions.
+- All three return `{ eligible, capped, enforced }`; `capped` is true when the count hit its 10,000 bound (the UI renders "N+"). The org and partner previews require `ai_agents:read`.
 - `enforced` mirrors `AI_TRANSCRIPT_RETENTION_ENFORCE`. The cards show "N conversations are older than this window and will be removed once retention is enforced" when it is false, and "… will be removed in the next nightly run" when it is true. That second string is also what the cards show after enforcement when an admin lowers the window (§3.4).
 
 **Viewers.**
