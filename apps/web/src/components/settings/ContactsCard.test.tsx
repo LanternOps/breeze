@@ -69,6 +69,8 @@ function mockApi(options: {
   responsibilitiesStatus?: number;
   groups?: unknown;
   putStatus?: number;
+  /** Body of the created contact returned by the create POST. */
+  created?: Record<string, unknown>;
 } = {}) {
   fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
     const method = init?.method?.toUpperCase() ?? 'GET';
@@ -94,7 +96,7 @@ function mockApi(options: {
       );
     }
     if (method === 'POST' && url === `/orgs/organizations/${ORG_ID}/contacts`) {
-      return jsonResponse({ data: { id: 'c-new' } }, 201);
+      return jsonResponse({ data: { id: 'c-new', ...options.created } }, 201);
     }
     if (url.startsWith('/orgs/sites')) {
       return jsonResponse(
@@ -996,6 +998,51 @@ describe('ContactsCard scoped responsibilities editor', () => {
       responsibilities: [{ role: 'portal', scope: { type: 'organization' }, isPrimary: false }],
     });
     await waitFor(() => expect(screen.queryByTestId('contact-form')).not.toBeInTheDocument());
+  });
+
+  it('runs the responsibilities PUT before the portal invite on create', async () => {
+    mockApi({ created: { email: 'new@x.test', name: 'New Person' } });
+    await renderCard();
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'New Person' } });
+    fireEvent.change(screen.getByTestId('contact-form-email-input'), { target: { value: 'new@x.test' } });
+    fireEvent.click(await screen.findByTestId('contact-form-portal-access-input'));
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() => expect(
+      mutationCalls().some(([url]) => url.endsWith('/portal-users/invite')),
+    ).toBe(true));
+    const calls = mutationCalls().filter(([, i]) => i.method !== 'GET').map(([url, i]) => `${i.method} ${url}`);
+    expect(calls).toEqual([
+      `POST ${LIST_PREFIX}`,
+      'PUT /orgs/contacts/c-new/responsibilities',
+      `POST /orgs/organizations/${ORG_ID}/portal-users/invite`,
+    ]);
+  });
+
+  it('still sends the portal invite when a failed PUT is retried', async () => {
+    const opts = { putStatus: 400, created: { email: 'new@x.test', name: 'New Person' } };
+    mockApi(opts);
+    await renderCard();
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'New Person' } });
+    fireEvent.change(screen.getByTestId('contact-form-email-input'), { target: { value: 'new@x.test' } });
+    fireEvent.click(await screen.findByTestId('contact-form-portal-access-input'));
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    expect(mutationCalls().some(([url]) => url.endsWith('/portal-users/invite'))).toBe(false);
+
+    opts.putStatus = 200;
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() => expect(
+      mutationCalls().some(([url]) => url.endsWith('/portal-users/invite')),
+    ).toBe(true));
+    expect(mutationCalls().filter(([, i]) => i.method === 'POST' && !String(i.body).includes('contactId'))).toHaveLength(1);
   });
 
   it('keeps the drawer open when the PUT fails and the next Save repeats only the PUT', async () => {
