@@ -11,7 +11,7 @@ import {
   users,
 } from '../db/schema';
 import { checkRemoteAccess } from './remoteAccessPolicy';
-import { getLineagePermissionGrants, resolveRoleLineage } from './roleInheritance';
+import { getRolePermissionGrants } from './roleInheritance';
 import { checkVncConsentGate } from '../routes/remote/vncConsentGate';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { evaluateCapabilityContinuationForState } from './partnerTrust';
@@ -373,10 +373,7 @@ async function resolveRemoteWsLiveAuthority(
     // the same walk getUserPermissions uses, so a member the HTTP
     // requirePermission gate admits is not refused here. This runs in a
     // system transaction, so every permitted ancestor is visible.
-    const lineage = await resolveRoleLineage(roleId);
-    const grants = await getLineagePermissionGrants(
-      lineage.length > 0 ? lineage.map((entry) => entry.id) : [roleId],
-    );
+    const grants = await getRolePermissionGrants(roleId);
     if (!requiredPermissions.every((required) => hasPermission(grants, required))) return { denied: 'permission_denied' as const };
 
     const capability = consumed.sessionType === 'terminal' ? 'remoteTools'

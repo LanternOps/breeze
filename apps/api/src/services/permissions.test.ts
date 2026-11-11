@@ -62,8 +62,10 @@ vi.mock('./roleInheritance', async () => {
   const { db: mockedDb } = await import('../db');
   return {
     resolveRoleLineage: (roleId: string) => mockResolveRoleLineage(roleId),
-    getLineagePermissionGrants: async (roleIds: string[]) => {
-      mockGrantReadRoleIds(roleIds);
+    // Mirrors the real fallback: no visible lineage reads the role's own rows.
+    getRolePermissionGrants: async (roleId: string) => {
+      const lineage = await mockResolveRoleLineage(roleId);
+      mockGrantReadRoleIds(lineage.length > 0 ? lineage.map((entry) => entry.id) : [roleId]);
       const rows = await (mockedDb.select({} as never) as any).from({}).innerJoin({}, {}).where({});
       return (rows as Array<{ resource: string; action: string }>).map((p) => ({ resource: p.resource, action: p.action }));
     },

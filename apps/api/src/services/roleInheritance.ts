@@ -33,7 +33,7 @@ import { permissions, rolePermissions, roles } from '../db/schema';
  * time (routes/roles.ts refuses a parent that would exceed it) and at read
  * time (the walk stops here). Keep in step with the descendant bound in the
  * permissions-epoch triggers (migration
- * 2027-01-18-165000-role-inheritance-permissions-epoch.sql.sql).
+ * 2027-01-22-235000-role-inheritance-permissions-epoch.sql).
  */
 export const MAX_ROLE_INHERITANCE_DEPTH = 8;
 
@@ -83,73 +83,306 @@ export function isPermittedParentRole(child: RoleOwnership, parent: RoleOwnershi
   return false;
 }
 
-type RoleRow = RoleOwnership & { name: string; parentRoleId: string | null };
+type RoleRow = RoleOwnership & { id: string; name: string; parentRoleId: string | null };
 
-async function loadRole(roleId: string): Promise<RoleRow | null> {
-  const [row] = await db
-    .select({
-      name: roles.name,
-      scope: roles.scope,
-      partnerId: roles.partnerId,
-      orgId: roles.orgId,
-      isSystem: roles.isSystem,
-      parentRoleId: roles.parentRoleId,
-    })
-    .from(roles)
-    .where(eq(roles.id, roleId))
-    .limit(1);
-  return (row as RoleRow | undefined) ?? null;
+/**
+ * The executor the walk reads through: the ambient `db` by default, or a
+ * caller's transaction handle so the reads see the same snapshot (and the
+ * same RLS GUCs) as the caller's other reads.
+ */
+export type RoleReadExecutor = Pick<typeof db, 'select'>;
+
+export interface PermissionGrant {
+  resource: string;
+  action: string;
+}
+
+/**
+ * One runtime grant of a role, tagged with the BASE role's ownership — the
+ * drop-in shape for consumers that used to read
+ * `role_permissions ⋈ roles ⋈ permissions WHERE role_id = <member's role>`
+ * and then checked the role's scope and owner themselves.
+ */
+export interface RoleGrantRow extends PermissionGrant {
+  roleId: string;
+  roleScope: string;
+  roleIsSystem: boolean;
+  roleOrgId: string | null;
+  rolePartnerId: string | null;
+}
+
+async function loadRoles(exec: RoleReadExecutor, ids: string[], cache: Map<string, RoleRow | null>): Promise<void> {
+  const missing = [...new Set(ids)].filter((id) => !cache.has(id));
+  if (missing.length === 0) return;
+  const columns = {
+    id: roles.id,
+    name: roles.name,
+    scope: roles.scope,
+    partnerId: roles.partnerId,
+    orgId: roles.orgId,
+    isSystem: roles.isSystem,
+    parentRoleId: roles.parentRoleId,
+  };
+  // One role (the runtime hot path: a member's role, then one parent per hop)
+  // is a point lookup, the same query shape the walk has always issued.
+  if (missing.length === 1) {
+    const [row] = await exec.select(columns).from(roles).where(eq(roles.id, missing[0]!)).limit(1);
+    cache.set(missing[0]!, row ? ({ ...row, id: missing[0]! } as RoleRow) : null);
+    return;
+  }
+  const rows = await exec.select(columns).from(roles).where(inArray(roles.id, missing));
+  for (const row of rows as RoleRow[]) cache.set(row.id, row);
+  for (const id of missing) if (!cache.has(id)) cache.set(id, null);
+}
+
+interface WalkState {
+  roleId: string;
+  lineage: RoleLineageEntry[];
+  visited: Set<string>;
+  child: RoleRow;
+}
+
+/**
+ * THE walk. Every lineage this module returns comes from here: each base role
+ * advances one hop per round, and each round loads the parents it needs in
+ * one query, so N roles cost at most MAX_ROLE_INHERITANCE_DEPTH + 1 queries.
+ * The checks run in a fixed order per hop (depth, cycle, missing, tenant) and
+ * a failed check ends that role's walk only. Returns the base row of each role
+ * (null when not found or not visible) with its validated lineage.
+ */
+async function walkLineages(
+  roleIds: string[],
+  exec: RoleReadExecutor,
+): Promise<Map<string, { base: RoleRow | null; lineage: RoleLineageEntry[] }>> {
+  const cache = new Map<string, RoleRow | null>();
+  const unique = [...new Set(roleIds)];
+  await loadRoles(exec, unique, cache);
+
+  const result = new Map<string, { base: RoleRow | null; lineage: RoleLineageEntry[] }>();
+  let active: WalkState[] = [];
+  for (const roleId of unique) {
+    const base = cache.get(roleId) ?? null;
+    if (!base) {
+      result.set(roleId, { base: null, lineage: [] });
+      continue;
+    }
+    const lineage: RoleLineageEntry[] = [{ id: roleId, name: base.name }];
+    result.set(roleId, { base, lineage });
+    active.push({ roleId, lineage, visited: new Set([roleId]), child: base });
+  }
+
+  while (active.length > 0) {
+    const stepping: WalkState[] = [];
+    for (const state of active) {
+      const parentId = state.child.parentRoleId;
+      if (!parentId) continue;
+      if (state.lineage.length > MAX_ROLE_INHERITANCE_DEPTH) {
+        console.warn('[roleInheritance] inheritance depth limit reached; ignoring further ancestors', {
+          roleId: state.roleId,
+          maxDepth: MAX_ROLE_INHERITANCE_DEPTH,
+        });
+        continue;
+      }
+      if (state.visited.has(parentId)) {
+        console.warn('[roleInheritance] inheritance cycle detected; ignoring the repeated ancestor', {
+          roleId: state.roleId,
+          repeatedRoleId: parentId,
+        });
+        continue;
+      }
+      stepping.push(state);
+    }
+    await loadRoles(exec, stepping.map((state) => state.child.parentRoleId!), cache);
+
+    const next: WalkState[] = [];
+    for (const state of stepping) {
+      const parentId = state.child.parentRoleId!;
+      const parent = cache.get(parentId) ?? null;
+      if (!parent) {
+        console.warn('[roleInheritance] parent role not found or not visible; not inherited', {
+          roleId: state.roleId,
+          missingParentRoleId: parentId,
+        });
+        continue;
+      }
+      if (!isPermittedParentRole(state.child, parent)) {
+        console.warn('[roleInheritance] parent role outside the child role\'s tenant or scope; not inherited', {
+          roleId: state.roleId,
+          refusedParentRoleId: parentId,
+        });
+        continue;
+      }
+      state.visited.add(parentId);
+      state.lineage.push({ id: parentId, name: parent.name });
+      state.child = parent;
+      next.push(state);
+    }
+    active = next;
+  }
+
+  return result;
 }
 
 /**
  * The role followed by its validated ancestors, nearest first. Empty when the
  * role itself is not found (or not visible in the current DB context).
  */
-export async function resolveRoleLineage(roleId: string): Promise<RoleLineageEntry[]> {
-  const base = await loadRole(roleId);
-  if (!base) return [];
+export async function resolveRoleLineage(roleId: string, exec: RoleReadExecutor = db): Promise<RoleLineageEntry[]> {
+  return (await walkLineages([roleId], exec)).get(roleId)?.lineage ?? [];
+}
 
-  const lineage: RoleLineageEntry[] = [{ id: roleId, name: base.name }];
-  const visited = new Set<string>([roleId]);
-  let child: RoleRow = base;
+/** resolveRoleLineage for many roles at once (same walk, batched per hop). */
+export async function resolveRoleLineages(
+  roleIds: string[],
+  exec: RoleReadExecutor = db,
+): Promise<Map<string, RoleLineageEntry[]>> {
+  const walked = await walkLineages(roleIds, exec);
+  return new Map([...walked].map(([id, entry]) => [id, entry.lineage]));
+}
 
-  while (child.parentRoleId) {
-    const parentId = child.parentRoleId;
-    if (lineage.length > MAX_ROLE_INHERITANCE_DEPTH) {
-      console.warn('[roleInheritance] inheritance depth limit reached; ignoring further ancestors', {
-        roleId,
-        maxDepth: MAX_ROLE_INHERITANCE_DEPTH,
-      });
-      break;
-    }
-    if (visited.has(parentId)) {
-      console.warn('[roleInheritance] inheritance cycle detected; ignoring the repeated ancestor', {
-        roleId,
-        repeatedRoleId: parentId,
-      });
-      break;
-    }
-    const parent = await loadRole(parentId);
-    if (!parent) {
-      console.warn('[roleInheritance] parent role not found or not visible; not inherited', {
-        roleId,
-        missingParentRoleId: parentId,
-      });
-      break;
-    }
-    if (!isPermittedParentRole(child, parent)) {
-      console.warn('[roleInheritance] parent role outside the child role\'s tenant or scope; not inherited', {
-        roleId,
-        refusedParentRoleId: parentId,
-      });
-      break;
-    }
-    visited.add(parentId);
-    lineage.push({ id: parentId, name: parent.name });
-    child = parent;
+/**
+ * The lineage ids whose `role_permissions` rows make up `roleId`'s runtime
+ * grants. A role whose row is not visible resolves to no lineage; it then
+ * falls back to its own id, which reads exactly the rows it granted before
+ * inheritance was honoured (an empty set would let a ceiling pass vacuously).
+ */
+function grantSourceIds(roleId: string, lineage: RoleLineageEntry[] | undefined): string[] {
+  return lineage && lineage.length > 0 ? lineage.map((entry) => entry.id) : [roleId];
+}
+
+async function readGrantRows(
+  exec: RoleReadExecutor,
+  roleIds: string[],
+): Promise<Array<{ roleId: string; resource: string; action: string }>> {
+  if (roleIds.length === 0) return [];
+  return exec
+    .select({ roleId: rolePermissions.roleId, resource: permissions.resource, action: permissions.action })
+    .from(rolePermissions)
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(inArray(rolePermissions.roleId, [...new Set(roleIds)]));
+}
+
+/**
+ * Each role's runtime grant set — its own `role_permissions` rows plus every
+ * validated ancestor's, de-duplicated — keyed by role id. Exactly what
+ * getUserPermissions grants a member holding that role. Every requested id
+ * has an entry (possibly empty).
+ */
+export async function getRolesPermissionGrants(
+  roleIds: string[],
+  exec: RoleReadExecutor = db,
+): Promise<Map<string, PermissionGrant[]>> {
+  const unique = [...new Set(roleIds)];
+  const result = new Map<string, PermissionGrant[]>();
+  if (unique.length === 0) return result;
+  const lineages = await resolveRoleLineages(unique, exec);
+  const sourcesByRole = new Map(unique.map((id) => [id, grantSourceIds(id, lineages.get(id))]));
+  const rows = await readGrantRows(exec, [...sourcesByRole.values()].flat());
+  const grantsBySource = new Map<string, PermissionGrant[]>();
+  for (const row of rows) {
+    const list = grantsBySource.get(row.roleId) ?? [];
+    list.push({ resource: row.resource, action: row.action });
+    grantsBySource.set(row.roleId, list);
   }
+  for (const [roleId, sources] of sourcesByRole) {
+    const byKey = new Map<string, PermissionGrant>();
+    for (const source of sources) {
+      for (const grant of grantsBySource.get(source) ?? []) {
+        byKey.set(`${grant.resource}:${grant.action}`, grant);
+      }
+    }
+    result.set(roleId, [...byKey.values()]);
+  }
+  return result;
+}
 
-  return lineage;
+/** getRolesPermissionGrants for one role. */
+export async function getRolePermissionGrants(roleId: string, exec: RoleReadExecutor = db): Promise<PermissionGrant[]> {
+  return (await getRolesPermissionGrants([roleId], exec)).get(roleId) ?? [];
+}
+
+/**
+ * Each role's runtime grants as rows tagged with the BASE role's ownership
+ * (scope, is_system, owning org/partner), for consumers that check the
+ * member's role belongs to the expected tenant before honouring a grant. The
+ * ancestors' ownership is not reported: every hop already passed
+ * isPermittedParentRole, so the lineage is inside the base role's tenant. A
+ * role whose own row is not found or not visible yields no rows, as the old
+ * `role_permissions ⋈ roles` inner join did.
+ */
+export async function getRoleGrantRows(roleIds: string[], exec: RoleReadExecutor = db): Promise<RoleGrantRow[]> {
+  const unique = [...new Set(roleIds)];
+  if (unique.length === 0) return [];
+  const walked = await walkLineages(unique, exec);
+  const visible = unique.filter((id) => walked.get(id)?.base);
+  if (visible.length === 0) return [];
+  const sourcesByRole = new Map(visible.map((id) => [id, grantSourceIds(id, walked.get(id)!.lineage)]));
+  const rows = await readGrantRows(exec, [...sourcesByRole.values()].flat());
+  const grantsBySource = new Map<string, PermissionGrant[]>();
+  for (const row of rows) {
+    const list = grantsBySource.get(row.roleId) ?? [];
+    list.push({ resource: row.resource, action: row.action });
+    grantsBySource.set(row.roleId, list);
+  }
+  const out: RoleGrantRow[] = [];
+  for (const [roleId, sources] of sourcesByRole) {
+    const base = walked.get(roleId)!.base!;
+    const seen = new Set<string>();
+    for (const source of sources) {
+      for (const grant of grantsBySource.get(source) ?? []) {
+        const key = `${grant.resource}:${grant.action}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          roleId,
+          resource: grant.resource,
+          action: grant.action,
+          roleScope: base.scope,
+          roleIsSystem: base.isSystem,
+          roleOrgId: base.orgId,
+          rolePartnerId: base.partnerId,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Reverse lookup: `grantorRoleIds` (roles that carry some grant in their OWN
+ * rows) plus every role that holds that grant through inheritance — i.e.
+ * every role whose validated lineage passes through a grantor. Candidates are
+ * found by walking `parent_role_id` downwards at most
+ * MAX_ROLE_INHERITANCE_DEPTH levels, then each candidate is confirmed by the
+ * forward walk, so a role is returned only when getUserPermissions would
+ * grant it the grantor's rows (same scope/tenant/cycle/depth rules). The
+ * grantors are always returned as given.
+ */
+export async function expandToInheritingRoleIds(
+  grantorRoleIds: string[],
+  exec: RoleReadExecutor = db,
+): Promise<string[]> {
+  const grantors = new Set(grantorRoleIds);
+  if (grantors.size === 0) return [];
+  const seen = new Set(grantors);
+  const candidates: string[] = [];
+  let frontier = [...grantors];
+  for (let depth = 0; depth < MAX_ROLE_INHERITANCE_DEPTH && frontier.length > 0; depth++) {
+    const children = await exec
+      .select({ id: roles.id })
+      .from(roles)
+      .where(inArray(roles.parentRoleId, frontier));
+    const next = (children as Array<{ id: string }>).map((c) => c.id).filter((id) => !seen.has(id));
+    for (const id of next) seen.add(id);
+    candidates.push(...next);
+    frontier = [...new Set(next)];
+  }
+  if (candidates.length === 0) return [...grantors];
+  const lineages = await resolveRoleLineages(candidates, exec);
+  const inheriting = candidates.filter((id) =>
+    (lineages.get(id) ?? []).slice(1).some((entry) => grantors.has(entry.id)),
+  );
+  return [...grantors, ...new Set(inheriting)];
 }
 
 /**

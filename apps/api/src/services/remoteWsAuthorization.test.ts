@@ -33,8 +33,10 @@ const mocks = vi.hoisted(() => ({
 // select exactly as the old direct role_permissions read did.
 vi.mock('./roleInheritance', () => ({
   resolveRoleLineage: (roleId: string) => mocks.resolveRoleLineage(roleId),
-  getLineagePermissionGrants: async (roleIds: string[]) => {
-    mocks.grantReadRoleIds(roleIds);
+  // Mirrors the real fallback: no visible lineage reads the role's own rows.
+  getRolePermissionGrants: async (roleId: string) => {
+    const lineage = await mocks.resolveRoleLineage(roleId);
+    mocks.grantReadRoleIds(lineage.length > 0 ? lineage.map((entry) => entry.id) : [roleId]);
     return mocks.select({}).from({}).innerJoin({}, {}).where({});
   },
 }));

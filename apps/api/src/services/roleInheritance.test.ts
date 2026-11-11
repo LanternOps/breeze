@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Role rows keyed by id; the walk reads one row per hop via
-// select → from → where → limit, and grants via select → from → innerJoin → where.
+// Role rows keyed by id. The walk loads roles in batches via
+// select → from → where(inArray(roles.id, ids)); the descendant walks read
+// select → from → where(inArray(roles.parentRoleId, frontier)); grants are
+// select → from → innerJoin → where(inArray(rolePermissions.roleId, ids)).
 type Row = {
   id: string;
   name: string;
@@ -21,32 +23,37 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('drizzle-orm')>();
   return {
     ...actual,
-    eq: (_col: unknown, value: unknown) => ({ op: 'eq', value }),
-    inArray: (_col: unknown, values: unknown) => ({ op: 'inArray', values }),
+    eq: (col: unknown, value: unknown) => ({ op: 'eq', col, value }),
+    inArray: (col: unknown, values: unknown) => ({ op: 'inArray', col, values }),
   };
 });
+
+type Cond = { op: string; col?: unknown; value?: string; values?: string[] };
 
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: () => ({
-        where: (cond: { op: string; value?: string; values?: string[] }) => {
-          if (cond.op === 'inArray') {
+        where: (cond: Cond) => {
+          if (cond.col === 'roles.parentRoleId') {
             frontiers.push(cond.values!);
             return Promise.resolve(childrenQueue.shift() ?? []);
           }
-          return {
-            limit: () => {
-              roleLookups.push(cond.value!);
-              const row = roleRows.get(cond.value!);
-              return Promise.resolve(row ? [row] : []);
-            },
-          };
+          if (cond.col === 'roles.id') {
+            const ids = cond.op === 'eq' ? [cond.value!] : cond.values!;
+            const read = () => {
+              roleLookups.push(...ids);
+              return Promise.resolve(ids.flatMap((id) => (roleRows.has(id) ? [roleRows.get(id)!] : [])));
+            };
+            // A single role is a point lookup (.limit(1)); several are one IN read.
+            return cond.op === 'eq' ? { limit: read } : read();
+          }
+          throw new Error(`unexpected where on ${String(cond.col)}`);
         },
         innerJoin: () => ({
-          where: (cond: { op: string; value?: string; values?: string[] }) => {
+          where: (cond: Cond) => {
             const ids = cond.op === 'eq' ? [cond.value!] : cond.values!;
-            return Promise.resolve(ids.flatMap((id) => grantsByRole.get(id) ?? []));
+            return Promise.resolve(ids.flatMap((id) => (grantsByRole.get(id) ?? []).map((g) => ({ ...g, roleId: id }))));
           },
         }),
       }),
@@ -62,11 +69,16 @@ vi.mock('../db/schema', () => ({
 
 import {
   MAX_ROLE_INHERITANCE_DEPTH,
+  expandToInheritingRoleIds,
   getEffectiveRolePermissionSources,
   getLineagePermissionGrants,
+  getRoleGrantRows,
+  getRolePermissionGrants,
+  getRolesPermissionGrants,
   getRoleSubtreeHeight,
   isPermittedParentRole,
   resolveRoleLineage,
+  resolveRoleLineages,
 } from './roleInheritance';
 
 let warn: ReturnType<typeof vi.spyOn>;
@@ -246,5 +258,92 @@ describe('getRoleSubtreeHeight', () => {
   it('is cycle-safe', async () => {
     childrenQueue.push([{ id: 'c1' }], [{ id: 'root' }]);
     expect(await getRoleSubtreeHeight('root')).toBe(1);
+  });
+});
+
+describe('batched walk (#11702)', () => {
+  it('resolveRoleLineages gives each role the same lineage the single walk does, one query per hop', async () => {
+    roleRows.set('gp', partnerRole('gp', 'p1'));
+    roleRows.set('p', partnerRole('p', 'p1', 'gp'));
+    roleRows.set('c', partnerRole('c', 'p1', 'p'));
+    roleRows.set('foreign', partnerRole('foreign', 'p2'));
+    roleRows.set('x', partnerRole('x', 'p1', 'foreign'));
+
+    const lineages = await resolveRoleLineages(['c', 'x', 'missing', 'c']);
+    expect(lineages.get('c')!.map((e) => e.id)).toEqual(['c', 'p', 'gp']);
+    expect(lineages.get('x')!.map((e) => e.id)).toEqual(['x']);
+    expect(lineages.get('missing')).toEqual([]);
+    for (const id of ['c', 'x']) {
+      expect(lineages.get(id)).toEqual(await resolveRoleLineage(id));
+    }
+  });
+});
+
+describe('getRolesPermissionGrants / getRolePermissionGrants (#11702)', () => {
+  it('grants each role its own rows plus its validated ancestors\' rows, de-duplicated', async () => {
+    roleRows.set('p', partnerRole('p', 'p1'));
+    roleRows.set('c', partnerRole('c', 'p1', 'p'));
+    roleRows.set('foreign', partnerRole('foreign', 'p2'));
+    roleRows.set('x', partnerRole('x', 'p1', 'foreign'));
+    grantsByRole.set('p', [{ resource: 'devices', action: 'read' }, { resource: 'scripts', action: 'execute' }]);
+    grantsByRole.set('c', [{ resource: 'devices', action: 'read' }]);
+    grantsByRole.set('foreign', [{ resource: '*', action: '*' }]);
+
+    const grants = await getRolesPermissionGrants(['c', 'x', 'p']);
+    expect(grants.get('c')).toEqual([{ resource: 'devices', action: 'read' }, { resource: 'scripts', action: 'execute' }]);
+    expect(grants.get('x')).toEqual([]);
+    expect(grants.get('p')).toEqual([{ resource: 'devices', action: 'read' }, { resource: 'scripts', action: 'execute' }]);
+    expect(await getRolePermissionGrants('c')).toEqual(grants.get('c'));
+  });
+
+  it('falls back to the role\'s own rows when its row is not visible', async () => {
+    grantsByRole.set('hidden', [{ resource: 'devices', action: 'write' }]);
+    expect(await getRolePermissionGrants('hidden')).toEqual([{ resource: 'devices', action: 'write' }]);
+  });
+
+  it('returns an empty map for no roles', async () => {
+    expect((await getRolesPermissionGrants([])).size).toBe(0);
+  });
+});
+
+describe('getRoleGrantRows (#11702)', () => {
+  it('tags the lineage grants with the BASE role\'s ownership and drops roles that are not visible', async () => {
+    roleRows.set('tmpl', { ...partnerRole('tmpl', 'unused'), partnerId: null, isSystem: true });
+    roleRows.set('c', partnerRole('c', 'p1', 'tmpl'));
+    grantsByRole.set('tmpl', [{ resource: 'reports', action: 'read' }]);
+    grantsByRole.set('hidden', [{ resource: 'reports', action: 'read' }]);
+
+    expect(await getRoleGrantRows(['c', 'hidden'])).toEqual([
+      { roleId: 'c', resource: 'reports', action: 'read', roleScope: 'partner', roleIsSystem: false, roleOrgId: null, rolePartnerId: 'p1' },
+    ]);
+  });
+});
+
+describe('expandToInheritingRoleIds (#11702)', () => {
+  it('adds the descendants whose validated lineage passes through a grantor', async () => {
+    roleRows.set('g', partnerRole('g', 'p1'));
+    roleRows.set('c', partnerRole('c', 'p1', 'g'));
+    roleRows.set('gc', partnerRole('gc', 'p1', 'c'));
+    // Written around the API: a child in ANOTHER tenant pointing at g. The
+    // forward walk refuses that hop, so it must not be listed.
+    roleRows.set('foreign-child', partnerRole('foreign-child', 'p2', 'g'));
+    childrenQueue.push([{ id: 'c' }, { id: 'foreign-child' }], [{ id: 'gc' }], []);
+
+    expect((await expandToInheritingRoleIds(['g'])).sort()).toEqual(['c', 'g', 'gc']);
+    expect(frontiers[0]).toEqual(['g']);
+  });
+
+  it('is bounded and cycle-safe', async () => {
+    roleRows.set('a', partnerRole('a', 'p1', 'b'));
+    roleRows.set('b', partnerRole('b', 'p1', 'a'));
+    childrenQueue.push([{ id: 'b' }], [{ id: 'a' }]);
+
+    expect((await expandToInheritingRoleIds(['a'])).sort()).toEqual(['a', 'b']);
+    expect(frontiers.length).toBeLessThanOrEqual(MAX_ROLE_INHERITANCE_DEPTH);
+  });
+
+  it('returns nothing for no grantors without querying', async () => {
+    expect(await expandToInheritingRoleIds([])).toEqual([]);
+    expect(frontiers).toEqual([]);
   });
 });

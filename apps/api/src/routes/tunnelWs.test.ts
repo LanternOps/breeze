@@ -105,8 +105,8 @@ vi.mock('../db', () => ({
           where: vi.fn(() => (
             table === 'rolePermissions'
               ? Promise.resolve([
-                  { resource: 'remote', action: 'access' },
-                  { resource: 'devices', action: 'execute' },
+                  { roleId: 'role-1', resource: 'remote', action: 'access' },
+                  { roleId: 'role-1', resource: 'devices', action: 'execute' },
                 ])
               : {
                   limit: vi.fn(async () => {
