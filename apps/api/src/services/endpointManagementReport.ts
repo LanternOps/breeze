@@ -55,6 +55,7 @@
  * site-restricted technician beside a correctly-scoped Breeze device count.
  */
 import { and, eq, gte, inArray, isNotNull } from 'drizzle-orm';
+import { managedDeviceConditions } from './managedDeviceScope';
 import {
   ENDPOINT_MANAGEMENT_HISTORY_CAVEAT,
   ENDPOINT_MANAGEMENT_NO_SITES_GAP,
@@ -211,7 +212,7 @@ export async function generateEndpointManagementReport(
   // The site filter is pushed independently into EVERY query branch below.
   // Deliberately NOT computed once and reused: a shared device-id list is how a
   // branch silently loses its filter when someone edits one query later.
-  const breezeConditions = [eq(devices.orgId, orgId)];
+  const breezeConditions = managedDeviceConditions(orgId);
   if (cfg.sites.length > 0) breezeConditions.push(inArray(devices.siteId, cfg.sites));
   if (restrictedScope) breezeConditions.push(inArray(devices.siteId, restrictedScope.siteIds));
   const breezeRows = await db
@@ -252,6 +253,7 @@ export async function generateEndpointManagementReport(
   let rows: IntuneDeviceRow[] = [];
   if (intuneMeasured) {
     const rowConditions = [
+      ...managedDeviceConditions(orgId),
       eq(m365IntuneDevices.orgId, orgId),
       isNotNull(m365IntuneDevices.breezeDeviceId),
     ];

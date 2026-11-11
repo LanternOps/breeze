@@ -55,7 +55,8 @@ describe('SlaChip', () => {
       resolutionWarnAt: at(66),
     });
     render(<SlaChip ticket={ticket} />);
-    expect(screen.getByTestId('ticket-sla-tk-3')).toBeInTheDocument();
+    // "1h 30m left", never a bare "1h 30m" that reads like the row's age.
+    expect(screen.getByTestId('ticket-sla-tk-3')).toHaveTextContent(/^1h (29|30)m left$/);
   });
 
   it('renders an at-risk chip for a nearly-breached SLA', () => {

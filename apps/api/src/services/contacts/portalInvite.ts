@@ -27,7 +27,7 @@
  * the address; it does not stop a concurrent disable, accept or password
  * change, which is what the epoch guard is for.
  */
-import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { AlreadyHasAccessReason } from '@breeze/shared';
 import { contacts } from '../../db/schema/contacts';
 import { portalUsers } from '../../db/schema';
@@ -40,17 +40,17 @@ import {
 } from '../portalAccountState';
 import { portalUserHasIdentitySql } from '../portalUserIdentities';
 import { normalizeContactEmail, updateContact, type ContactActor, type ContactExecutor } from './crud';
+import { portalLoginEmailEquals } from '../portalLoginEmail';
 
 /**
  * The ONE comparison every portal-invite path uses to find an existing login
- * for an address (#11529): stored `email` lower-cased against the address
- * lower-cased and trimmed. An exact `eq(email, ...)` treats `Ada@X` and
+ * for an address (#11529). An exact `eq(email, ...)` treats `Ada@X` and
  * `ada@x` as two people, so the plain-email invite and the contact invite
- * could each mint a login for the same person.
+ * could each mint a login for the same person. Defined in
+ * `services/portalLoginEmail.ts` and shared with login, password reset,
+ * inbound email and the add-in (#11541); re-exported here for the invite paths.
  */
-export function portalLoginEmailEquals(email: string): SQL {
-  return sql`lower(${portalUsers.email}) = ${email.trim().toLowerCase()}`;
-}
+export { portalLoginEmailEquals };
 
 export interface InviteableContact {
   id: string;

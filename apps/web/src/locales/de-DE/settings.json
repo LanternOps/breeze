@@ -7166,6 +7166,7 @@
     },
     "verify": {
       "methodLegend": "Verifizierungsmethode",
+      "panelTitle": "{{domain}} verifizieren",
       "methodLocked": "Um die Methode zu wechseln, entfernen Sie zuerst die aktuelle Verifizierung.",
       "openPortalTab": "Weisen Sie den Mandanten unter Kundenportal › Anmeldung & Registrierung nach.",
       "dnsStartHint": "Rufen Sie einen TXT-Eintrag ab, den der DNS-Administrator des Kunden veröffentlichen kann.",

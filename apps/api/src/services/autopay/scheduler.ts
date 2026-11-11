@@ -6,7 +6,7 @@ import { invoices, invoiceLines, contracts, organizations, orgAutopayEnrollments
   invoiceAutopaySchedules, billingNoticeOutbox, invoiceCollectionAttempts } from '../../db/schema';
 import type { AutopayIneligibleReason } from '@breeze/shared';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
-import { isAutopayEnabledForPartner } from './autopayGate';
+import { isAutopayChargingAllowed } from './chargingAllowed';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { getAutopayMethod } from './paymentMethods';
 import { quoteProcessingFee } from './processingFee';
@@ -101,7 +101,7 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
   const settings = await resolveBillingPaymentSettings(tx, { partnerId: invoice.partnerId, orgId: invoice.orgId });
   const method = await getAutopayMethod(tx, invoice.orgId);
   const readiness = await getAutopayStripeReadiness(tx, invoice.partnerId);
-  const charging = await isAutopayEnabledForPartner(tx, invoice.partnerId);
+  const charging = await isAutopayChargingAllowed(tx, invoice.partnerId);
   const excluded = await tx.select({ id: contracts.id }).from(invoiceLines).innerJoin(contracts, and(
     eq(invoiceLines.sourceContractId, contracts.id), eq(invoiceLines.orgId, contracts.orgId),
   )).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(contracts.autopayExcluded, true))).limit(1);

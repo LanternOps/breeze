@@ -198,8 +198,7 @@ describe('TicketsPage', () => {
     // Default to partner scope so existing tests behave as before.
     mockGetJwtClaims.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
     fetchConfigMock.mockResolvedValue(null);
-    // jsdom defaults to 1024, which is below the 1100px split-pane breakpoint;
-    // select() would navigate to the full page instead of selecting in-pane.
+    // Focus is in place at every width; a wide window keeps the old fixtures honest.
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
   });
 
@@ -362,18 +361,19 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
 
       await screen.findByTestId('ticket-row-tk-healthy');
-      // Auto-select writes the selection hash first; sort must coexist with it.
-      await waitFor(() => {
-        expect(window.location.hash).toContain('T-2026-0001');
-      });
+      // The board opens nothing on its own: the hash carries only the sort.
+      expect(window.location.hash).toBe('');
 
       fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'newest' } });
 
       await waitFor(() => {
         expect(ticketFetchUrls().at(-1)).toContain('sort=newest');
       });
-      expect(window.location.hash).toContain('sort=newest');
-      expect(window.location.hash).toContain('T-2026-0001');
+      expect(window.location.hash).toBe('#sort=newest');
+
+      // With a ticket in focus, the sort coexists with the focus key.
+      fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
+      await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&sort=newest'));
     });
 
     it('restores sort and selection from a combined hash on load', async () => {
@@ -418,12 +418,10 @@ describe('TicketsPage', () => {
         expect(ticketFetchUrls().at(-1)).toContain('ticketType=problem');
       });
       expect(screen.getByTestId('tickets-filter-type')).toHaveValue('problem');
-      // Auto-select picks the first row; the `type=` segment must never be the selection.
-      await waitFor(() => {
-        expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
-      });
-      expect(window.location.hash).toContain('type=problem');
-      expect(window.location.hash).toContain('T-2026-0001');
+      // The `type=` segment is never read as a ticket to focus.
+      expect(screen.queryByTestId('tickets-focus')).toBeNull();
+      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
+      expect(window.location.hash).toBe('#type=problem');
     });
 
     it('keeps selection, sort and type from a combined hash', async () => {
@@ -492,11 +490,9 @@ describe('TicketsPage', () => {
       mockListApi([healthy]);
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
-      await waitFor(() => expect(window.location.hash).toContain('T-2026-0001'));
 
       fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'newest' } });
-      await waitFor(() => expect(window.location.hash).toContain('sort=newest'));
-      expect(window.location.hash).toContain('type=problem');
+      await waitFor(() => expect(window.location.hash).toBe('#sort=newest&type=problem'));
       expect(ticketFetchUrls().at(-1)).toContain('ticketType=problem');
 
       // Back to "all tickets": a hash with no type segment resets the filter.
@@ -511,13 +507,8 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
       expect(screen.getByTestId('tickets-filter-type')).toHaveValue('');
-      // Let the mount settle first (#8880): the row can render before the
-      // auto-select effect writes `#T-2026-0001`. A hashchange fired in that gap
-      // is clobbered by the auto-select's hash write (it still holds the old
-      // type), and jsdom's own async hashchange then resets the filter to "All".
-      // That gap is between a commit and its passive effects, so a real
-      // sidebar click is not expected to hit it; the test must not either.
-      await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001'));
+      // No auto-select writes the hash on mount any more (#8880's gap is gone).
+      expect(window.location.hash).toBe('');
 
       window.location.hash = '#type=incident';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -528,9 +519,9 @@ describe('TicketsPage', () => {
       await waitFor(() => {
         expect(ticketFetchUrls().at(-1)).toContain('ticketType=incident');
       });
-      // The re-run auto-select keeps the type segment in the hash it rewrites,
-      // so the filter survives the selection write.
-      await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&type=incident'));
+      // Nothing rewrites the hash behind the sidebar's back.
+      await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      expect(window.location.hash).toBe('#type=incident');
       expect(screen.getByTestId('tickets-filter-type')).toHaveValue('incident');
       expect(ticketFetchUrls().at(-1)).toContain('ticketType=incident');
     });
@@ -643,9 +634,10 @@ describe('TicketsPage', () => {
 
         await waitFor(() => expect(screen.getByTestId('tickets-filter-type')).toHaveValue('change'));
         await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('ticketType=change'));
-        // The change queue's first row is auto-selected under the NEW type.
-        await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
-        expect(window.location.hash).toBe('#T-2026-0002&type=change');
+        // The typed link names no ticket, so the queue shows that board.
+        await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+        expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+        expect(window.location.hash).toBe('#type=change');
         expect(router.intercepted).toHaveLength(0);
       } finally {
         router.uninstall();
@@ -654,32 +646,45 @@ describe('TicketsPage', () => {
   });
 
   describe('queue keyboard and screen-reader feedback', () => {
+    // The board loads with no active row; j makes the first one active.
     const settleOnFirstRow = async () => {
+      await screen.findByTestId('ticket-row-tk-healthy');
+      resetTypingCadence();
+      fireEvent.keyDown(document.body, { key: 'j' });
       await waitFor(() => expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true'));
     };
 
     it('j/k move DOM focus with the selection and announce the ticket politely', async () => {
       mockListApi([healthy, atRisk, breached]);
       render(<TicketsPage />);
-      await settleOnFirstRow();
+      await screen.findByTestId('ticket-row-tk-healthy');
       const announcer = screen.getByTestId('tickets-queue-announcer');
       expect(announcer).toHaveAttribute('role', 'status');
-      // Auto-selecting the first row on load is not a user move: no announcement, no focus theft.
+      // Loading the board is not a user move: no active row, no announcement, no focus theft.
       expect(announcer).toBeEmptyDOMElement();
       expect(document.body).toHaveFocus();
 
       fireEvent.keyDown(document.body, { key: 'j' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveFocus());
+      expect(announcer).toHaveTextContent('T-2026-0001 Healthy ticket, Normal priority');
+
+      resetTypingCadence();
+      fireEvent.keyDown(document.activeElement!, { key: 'j' });
       await waitFor(() => expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'true'));
       expect(screen.getByTestId('ticket-row-tk-risk')).toHaveFocus();
       expect(announcer).toHaveTextContent('T-2026-0002 At-risk ticket, Normal priority');
 
+      resetTypingCadence();
       fireEvent.keyDown(document.activeElement!, { key: 'j' });
       await waitFor(() => expect(screen.getByTestId('ticket-row-tk-breach')).toHaveFocus());
       expect(announcer).toHaveTextContent('T-2026-0003 Breached ticket, Normal priority, SLA breached');
 
+      resetTypingCadence();
       fireEvent.keyDown(document.activeElement!, { key: 'k' });
       await waitFor(() => expect(screen.getByTestId('ticket-row-tk-risk')).toHaveFocus());
-      // Roving tab stop follows the selection.
+      // Moving the active row never opens a ticket.
+      expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+      // Roving tab stop follows the active row.
       expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('tabindex', '0');
       expect(screen.getByTestId('ticket-row-tk-breach')).toHaveAttribute('tabindex', '-1');
     });
@@ -701,7 +706,7 @@ describe('TicketsPage', () => {
       expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-checked', 'false');
     });
 
-    it('Enter on a focused button belongs to the button, not to "open full page"', async () => {
+    it('Enter on a focused button belongs to the button, not to "open the ticket"', async () => {
       mockListApi([healthy, atRisk, breached]);
       render(<TicketsPage />);
       await settleOnFirstRow();
@@ -711,6 +716,7 @@ describe('TicketsPage', () => {
       // cancels the button's own Enter activation.
       expect(fireEvent.keyDown(selectAll, { key: 'Enter' })).toBe(true);
       expect(navigateTo).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('tickets-focus')).toBeNull();
     });
 
     it('offers the keyboard shortcuts card from the queue header', async () => {
@@ -732,17 +738,14 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
 
       await screen.findByTestId('ticket-row-tk-healthy');
-      // Auto-select picks the first row for the workbench.
-      await waitFor(() => {
-        expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
-      });
 
       fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
       fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
 
       expect(screen.getByTestId('tickets-bulk-bar')).toHaveTextContent('2 selected');
-      // Checkbox clicks must NOT drive row selection (stopPropagation / sibling layout).
-      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+      // Checkbox clicks must NOT open a ticket (stopPropagation / sibling layout).
+      expect(screen.queryByTestId('tickets-focus')).toBeNull();
+      expect(window.location.hash).toBe('');
       expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'false');
     });
 
@@ -1128,14 +1131,22 @@ describe('TicketsPage', () => {
 
     it('falls back to the core label when statusName is null', async () => {
       fetchConfigMock.mockResolvedValue(CONFIG);
-      const legacy = makeTicket({ id: 'tk-legacy', internalNumber: 'T-2026-0010', status: 'open', statusName: null });
+      const legacy = makeTicket({ id: 'tk-legacy', internalNumber: 'T-2026-0010', status: 'pending', statusName: null });
       mockListApi([legacy]);
       render(<TicketsPage />);
 
-      const row = await screen.findByTestId('ticket-row-tk-legacy');
+      await screen.findByTestId('ticket-row-tk-legacy');
       await waitFor(() => {
-        expect(row).toHaveTextContent('Open');
+        expect(screen.getByTestId('ticket-status-chip-tk-legacy')).toHaveTextContent('Pending');
       });
+    });
+
+    it('shows no status chip for Open, the default', async () => {
+      fetchConfigMock.mockResolvedValue(CONFIG);
+      mockListApi([makeTicket({ id: 'tk-plain', internalNumber: 'T-2026-0011', status: 'open', statusName: null })]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-plain');
+      expect(screen.queryByTestId('ticket-status-chip-tk-plain')).toBeNull();
     });
   });
 
@@ -1191,18 +1202,28 @@ describe('TicketsPage', () => {
         lastWorkbenchProps().onDeleted?.('tk-healthy');
         lastWorkbenchProps().onChanged?.();
       });
-      // The deleted ticket must not linger in the pane; auto-select takes over.
-      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
+      // The deleted ticket must not linger: the page goes back to the board.
+      await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+      expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+      expect(window.location.hash).toBe('');
       expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
     });
 
     it('releases the hold after a bulk action', async () => {
       await resolveSelectedFromOpenView();
+      // Bulk lives on the board.
+      fireEvent.click(screen.getByTestId('ticket-focus-back'));
+      await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
       fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
       fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
       fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
       await waitFor(() => expect(showToast).toHaveBeenCalled());
-      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
+      // Re-opening the resolved ticket's key no longer finds the stale snapshot:
+      // the page looks it up and, outside this view, says so.
+      window.location.hash = '#T-2026-0001';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      expect(await screen.findByTestId('tickets-deeplink-absent')).toHaveTextContent('T-2026-0001');
+      expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
     });
 
     it('releases the held ticket once the user selects another row', async () => {
@@ -1215,6 +1236,7 @@ describe('TicketsPage', () => {
 
   describe('pane refresh after bulk', () => {
     it('increments refreshToken on TicketWorkbench after a successful bulk apply', async () => {
+      window.location.hash = '#T-2026-0001';
       mockListApi([healthy, atRisk, breached]);
       render(<TicketsPage />);
 
@@ -1245,7 +1267,7 @@ describe('TicketsPage', () => {
   // moved onto the shared OverflowTabs component; the search box moved to
   // its own row below the tabs (full-width on mobile, right-aligned at lg+).
   describe('tab row overflow (#7148)', () => {
-    it('renders the tabs as an OverflowTabs tablist and the search box on its own row', async () => {
+    it('renders the tabs as an OverflowTabs tablist and the search box on the filter row', async () => {
       mockListApi([healthy]);
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
@@ -1255,9 +1277,9 @@ describe('TicketsPage', () => {
 
       const search = screen.getByTestId('tickets-search-input');
       expect(search.className).toContain('w-full');
-      expect(search.className).toContain('lg:w-56');
-      // The search box's row is not the tablist's row.
+      // The search box's row is not the tablist's row: it leads the filter row.
       expect(search.closest('[role="tablist"]')).toBeNull();
+      expect(search.closest('[data-testid="tickets-filter-bar"]')).not.toBeNull();
     });
 
     // Code review (#7233): OverflowTabs' `count` prop renders via CountBadge,
@@ -1447,6 +1469,7 @@ describe('TicketsPage — merged tickets (#8972)', () => {
     mockListApi([healthy, atRisk]);
     render(<TicketsPage />);
     await screen.findByTestId('ticket-row-tk-healthy');
+    fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
     await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001'));
 
     const toggle = screen.getByTestId('ticket-list-show-merged');
@@ -1487,13 +1510,15 @@ describe('TicketsPage — merged tickets (#8972)', () => {
     await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002&sort=newest&merged=1'));
   });
 
-  it('#merged=1 alone is not a selection: auto-select keeps the segment', async () => {
+  it('#merged=1 alone is not a selection: opening a ticket keeps the segment', async () => {
     window.location.hash = '#merged=1';
     mockListApi([healthy, atRisk]);
     render(<TicketsPage />);
     await screen.findByTestId('ticket-row-tk-healthy');
-    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&merged=1'));
+    expect(screen.queryByTestId('tickets-focus')).toBeNull();
     expect(screen.queryByTestId('tickets-deeplink-absent')).toBeNull();
+    fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&merged=1'));
   });
 
   it('merged=0 or another value reads as off', async () => {
@@ -1518,6 +1543,7 @@ describe('TicketsPage — merged tickets (#8972)', () => {
   });
 
   it('onMerged moves the selection to the survivor and reconciles the queue', async () => {
+    window.location.hash = '#T-2026-0001';
     mockListApi([healthy, atRisk]);
     render(<TicketsPage />);
     await screen.findByTestId('ticket-row-tk-healthy');
@@ -1534,6 +1560,7 @@ describe('TicketsPage — merged tickets (#8972)', () => {
   });
 
   it('onMerged without a survivor number selects by id', async () => {
+    window.location.hash = '#T-2026-0001';
     mockListApi([healthy, atRisk]);
     render(<TicketsPage />);
     await screen.findByTestId('ticket-row-tk-healthy');

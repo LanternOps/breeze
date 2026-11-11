@@ -40,7 +40,12 @@ export type SourceChanges = {
    * org merge leaves none.
    */
   orgChanged: boolean;
-  /** Comments of this import whose content or visibility differs in the source. */
+  /**
+   * Source-article comments of this import whose content or visibility
+   * differs in the source. With `ImportTicketOptions.isSourceArticleId`, a
+   * note the module composed is never one: it is module output, not the
+   * source's.
+   */
   commentsChangedInSource: CommentChangedInSource[];
   /**
    * Source article ids this import stored on the ticket that the input no
@@ -148,6 +153,10 @@ function contentHash(content: string): string {
  *   only, which no Breeze edit changes.
  * - A comment a Breeze merge moved onto this ticket is compared when the input
  *   has it, and never counted missing: it was not this source ticket's.
+ * - With `isSourceArticleId`, only source articles are compared or counted
+ *   missing: a note the module composed (an owner note, a time note) is
+ *   module output, never a change in the source (W5 review 10). Without it,
+ *   every comment is compared and none is counted missing.
  */
 export function sourceChanges(
   stored: { orgId: string; requesterContactId: string | null; submitterEmail: string | null },
@@ -162,6 +171,9 @@ export function sourceChanges(
   const bySourceId = new Map(storedComments.filter((c) => !c.deleted).map((c) => [c.sourceId, c]));
   const commentsChangedInSource: CommentChangedInSource[] = [];
   for (const comment of t.comments) {
+    // A note the module composed (an owner note naming a renamed user, a
+    // time note) is module output, not the source's: never "changed".
+    if (isSourceArticleId && !isSourceArticleId(comment.sourceId)) continue;
     const row = bySourceId.get(comment.sourceId);
     if (!row) continue;
     // Both sides without a trailing skip note (the SQL strips the stored side).

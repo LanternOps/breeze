@@ -453,6 +453,41 @@ describe('POST /auth/login — uniform failure for an email with several account
     expect(open).toEqual(expect.arrayContaining(['browserAccess', 'granted']));
   });
 
+  // #11541: a login stored with mixed case must be loginable.
+  it('matches the stored address case-insensitively (#11541)', async () => {
+    portalUserRows.current = [acct('11111111-0000-4000-8000-000000000001', ORG_ID, 'Mixed.Case@X.Test', 'PassA1!')];
+    const res = await login({ email: 'mixed.case@x.test', password: 'PassA1!', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    const q = new PgDialect().sqlToQuery(whereSpy.mock.calls[0]![0] as never);
+    const i = q.params.indexOf('email');
+    expect(q.sql).toContain(`lower($${i + 1}) = $${i + 2}`);
+    expect(q.params[i + 1]).toBe('mixed.case@x.test');
+  });
+
+  // Two logins in ONE org whose addresses differ only by case are separate
+  // accounts with separate passwords. The credential picks the account: no
+  // password opens the other row, and a password both share is the generic 401.
+  it('case-only duplicates in one org: the password picks the account, a shared password fails closed (#11541)', async () => {
+    portalUserRows.current = [
+      acct('11111111-0000-4000-8000-000000000001', ORG_ID, 'Ada@X.Test', 'PassA1!'),
+      acct('11111111-0000-4000-8000-000000000002', ORG_ID, 'ada@x.test', 'PassB1!'),
+    ];
+    const res = await login({ email: 'ADA@x.test', password: 'PassA1!', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    expect([...portalSessions.values()][0]).toMatchObject({ portalUserId: '11111111-0000-4000-8000-000000000001' });
+
+    portalSessions.clear();
+    portalRateLimitBuckets.clear();
+    portalUserRows.current = [
+      acct('11111111-0000-4000-8000-000000000001', ORG_ID, 'Ada@X.Test', 'Same1!'),
+      acct('11111111-0000-4000-8000-000000000002', ORG_ID, 'ada@x.test', 'Same1!'),
+    ];
+    const both = await login({ email: 'ada@x.test', password: 'Same1!', orgId: ORG_ID });
+    expect(both.status).toBe(401);
+    expect(await both.json()).toEqual({ error: 'Invalid email or password' });
+    expect(portalSessions.size).toBe(0);
+  });
+
   it('an account with no password (invite pending) still costs one dummy verify and gets the generic 401', async () => {
     portalUserRows.current = [{ ...acct('11111111-0000-4000-8000-000000000001', ORG_ID, 'pending@x.test', 'x'), passwordHash: null, status: 'invited' }];
     const res = await login({ email: 'pending@x.test', password: 'Whatever1!' });

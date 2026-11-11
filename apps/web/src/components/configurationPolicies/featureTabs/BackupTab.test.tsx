@@ -335,6 +335,37 @@ describe('BackupTab', () => {
     expect(saveMock).not.toHaveBeenCalled();
   });
 
+  it('moves focus to the path field and explains next to Save when paths are missing (#11554)', async () => {
+    Element.prototype.scrollIntoView = vi.fn() as unknown as typeof Element.prototype.scrollIntoView;
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            targets: { paths: [], excludes: [] },
+            paths: [],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    const err = await screen.findByText(/Add at least one backup path/i);
+    expect(err.hasAttribute('data-field-error')).toBe(true);
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('INPUT'));
+    // The focused input is the one belonging to the path list (right above the message).
+    expect(
+      document.activeElement!.compareDocumentPosition(err) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByTestId('save-blocked-hint')).toBeTruthy();
+  });
+
   it('flushes a typed-but-not-added backup path on save', async () => {
     render(
       <BackupTab

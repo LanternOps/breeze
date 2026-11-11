@@ -17,15 +17,14 @@ export function ticketTypeLabelKey(type: TicketType): string {
   return `ticketType.${type}`;
 }
 
-/** Tailwind classes for the type chip; neutral for incident (the default).
- *  Text clears 4.5:1 on each tint (ticketChipContrast.test.tsx): incident
- *  uses the neutral chip text, and problem uses amber-800 (amber-700 was
- *  4.2:1 under a selected row). */
+/** Tailwind classes for the type chip. A type is not a status, so every type
+ *  is the same neutral chip; the label carries the meaning (colour on the
+ *  board is reserved for status). Text clears 4.5:1 (ticketChipContrast.test.tsx). */
 export const TICKET_TYPE_CHIP_CLASS: Record<TicketType, string> = {
   incident: `bg-muted ${NEUTRAL_CHIP_TEXT}`,
-  service_request: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
-  problem: 'bg-amber-500/10 text-amber-800 dark:text-amber-300',
-  change: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
+  service_request: `bg-muted ${NEUTRAL_CHIP_TEXT}`,
+  problem: `bg-muted ${NEUTRAL_CHIP_TEXT}`,
+  change: `bg-muted ${NEUTRAL_CHIP_TEXT}`,
 };
 
 const TYPE_PREFIX = 'type=';

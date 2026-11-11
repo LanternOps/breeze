@@ -582,9 +582,16 @@ userRoutes.get('/me', async (c) => {
   // `?? []` is correct fail-closed behavior. It must NEVER swallow a transient
   // cache/DB fault into null: those throw, so /me 500s and the client keeps its
   // last-known grants rather than silently blanking every gated control.
+  //
+  // #11621: resolved exactly as requirePermission resolves it — same axis AND
+  // the token scope — so a control the web shows is one the route admits. The
+  // scope is what lets a system-scope platform-admin session (no partner/org
+  // axis) resolve; without it this answered [] and the web hid every gated
+  // control from a user the routes themselves admit.
   const userPerms = await getUserPermissions(auth.user.id, {
     partnerId: auth.partnerId || undefined,
-    orgId: auth.orgId || undefined
+    orgId: auth.orgId || undefined,
+    scope: auth.scope
   });
 
   return c.json({

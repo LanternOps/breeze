@@ -34,6 +34,9 @@ export default defineConfig({
       '@breeze/shared/documents': fileURLToPath(
         new URL('../../packages/shared/src/documents/index.ts', import.meta.url)
       ),
+      '@breeze/shared/utils/brandContrast': fileURLToPath(
+        new URL('../../packages/shared/src/utils/brandContrast.ts', import.meta.url)
+      ),
       '@breeze/shared/testing': fileURLToPath(new URL('../../packages/shared/src/testing', import.meta.url)),
       '@breeze/shared/validators': fileURLToPath(new URL('../../packages/shared/src/validators', import.meta.url)),
       '@breeze/shared': fileURLToPath(

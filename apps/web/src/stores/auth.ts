@@ -18,6 +18,7 @@ import { resetEntitlementsCache } from '@/lib/entitlementsCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
 import { clearRememberedEnrollmentArtifacts } from '@/lib/rememberedEnrollmentArtifacts';
+import { clearTicketComposerDrafts } from '@/lib/ticketComposerDrafts';
 import { totpEnrolledAfterPrimaryChange } from '@/lib/mfaFactorState';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import { isGlobalScopeRoute } from '@/lib/routeScope';
@@ -249,6 +250,9 @@ export const useAuthStore = create<AuthState>()(
         // #10923: the Add Device modal's remembered tokens and links are live
         // enrollment credentials, and sign-out does not unload this tab.
         clearRememberedEnrollmentArtifacts();
+        // Unsent ticket replies and internal notes belong to this user; the
+        // next sign-in on this tab must not find them in the composer.
+        clearTicketComposerDrafts();
         // An evicted session must never come back via a stray throttle-recovery
         // reload — the redirect to /login owns navigation from here.
         cancelThrottleReload();
