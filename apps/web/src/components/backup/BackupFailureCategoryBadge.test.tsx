@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { BACKUP_FAILURE_CATEGORIES, type BackupFailureCategory } from '@breeze/shared';
+import { BACKUP_FAILURE_CATEGORIES, BACKUP_FAILURE_CAUSES, type BackupFailureCategory } from '@breeze/shared';
 
 import BackupFailureCategoryBadge from './BackupFailureCategoryBadge';
 
@@ -74,3 +74,40 @@ describe('BackupFailureCategoryBadge (#11027)', () => {
     expect(container.firstChild).toBeNull();
   });
 });
+
+describe('BackupFailureCategoryBadge cause (#11768)', () => {
+  it.each([...BACKUP_FAILURE_CAUSES])('shows a translated hint, not the key, for cause %s', (cause) => {
+    render(<BackupFailureCategoryBadge category="storage" cause={cause} showHint />);
+
+    const badge = screen.getByTestId('backup-failure-category');
+    // The badge keeps the category label; the cause only replaces the hint.
+    expect(badge.textContent).toBe(EN_COPY.storage.label);
+    expect(badge.getAttribute('data-cause')).toBe(cause);
+    const hint = badge.getAttribute('title') ?? '';
+    expect(hint).not.toContain('failureCause.');
+    expect(hint).not.toBe(EN_COPY.storage.hint);
+    expect(hint.length).toBeGreaterThan(20);
+  });
+
+  it('replaces the category hint with the cause hint', () => {
+    render(<BackupFailureCategoryBadge category="storage" cause="storage_access_denied" showHint />);
+
+    expect(screen.getByText(/refused the request/)).toBeTruthy();
+    expect(screen.queryByText(EN_COPY.storage.hint)).toBeNull();
+  });
+
+  it('never tells the user their bucket is at fault for a provider-side operation failure', () => {
+    render(<BackupFailureCategoryBadge category="storage" cause="storage_operation_failed" showHint />);
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/usually temporary/);
+    expect(text).not.toMatch(/bucket policy|access key/i);
+  });
+
+  it('falls back to the category hint when there is no cause', () => {
+    render(<BackupFailureCategoryBadge category="storage" cause={null} showHint />);
+
+    expect(screen.getByText(EN_COPY.storage.hint)).toBeTruthy();
+  });
+});
+
