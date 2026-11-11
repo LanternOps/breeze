@@ -609,6 +609,18 @@ describe('runPreFlightChecks', () => {
       expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
     });
 
+    it('production-shaped facts (auto, unknown window, gateway) keep the stored prompt: ships dark', async () => {
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', {
+        toolProfileFacts: { toolProfile: 'auto', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' },
+      }));
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(result.ok && result.systemPrompt).toBe('existing system prompt');
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+      // A failover to another identity offering reuses the same prompt (no rebuild).
+      if (result.ok) expect(await result.systemPromptFor!(makeResolvedModel('platform'))).toBe('existing system prompt');
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    });
+
     it('a constrained chat exposure always rebuilds, even with a stored prompt and no page', async () => {
       mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { toolProfileFacts: minimal }));
       mockBuildSystemPrompt.mockResolvedValue('compact prompt');

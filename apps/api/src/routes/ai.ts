@@ -1086,6 +1086,11 @@ aiRoutes.post(
       };
       return c.json(answer, 409);
     }
+    // #11395: a failover hop registers ITS model's tool profile, so the prompt
+    // follows it (rebuilt only when that model's prompt exposure differs).
+    const turnSystemPrompt = !topology && model !== resolvedModel && preflight.systemPromptFor
+      ? await preflight.systemPromptFor(model)
+      : systemPrompt;
     // Spec §9.2: the turn binding (offering, options, rate, connection
     // identity, wire model) is written onto the reservation in its own
     // transaction; funding is the resolved offering's, decided before admission.
@@ -1150,7 +1155,7 @@ aiRoutes.post(
           },
           auth,
           c,
-          topology ? topology.systemPrompt : systemPrompt,
+          topology ? topology.systemPrompt : turnSystemPrompt,
           budgetDispatch.maxBudgetUsd,
           model,
           // Topology: the SDK is handed ONLY the topology tools; the pre-tool

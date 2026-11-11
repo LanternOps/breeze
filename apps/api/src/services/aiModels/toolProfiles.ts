@@ -179,7 +179,7 @@ export type ProfilePrefixTokens = Readonly<Record<ProfiledSurface, Readonly<Reco
 export const PROFILE_PREFIX_TOKENS: ProfilePrefixTokens = Object.freeze({
   chat: { minimal: 3289, standard: 11037, full: 128300 },
   helper: { minimal: 2789, standard: 4600, full: 8562 },
-  script_builder: { minimal: 3406, standard: 4265, full: 6372 },
+  script_builder: { minimal: 3419, standard: 4238, full: 6372 },
   ai_agents: { minimal: 2995, standard: 10292, full: 79071 },
   office_chat: { minimal: null, standard: null, full: null },
 });

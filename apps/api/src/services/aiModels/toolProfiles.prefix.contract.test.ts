@@ -4,7 +4,7 @@
  * measured as `auto` will meet it: on a gateway connection, translated to the
  * upstream OpenAI-compatible request (compacted when the exposure says so),
  * bytes / 3 (gateway/openai/adapter.ts estimateInputTokens). A registry,
- * prompt or schema change that moves a constrained prefix by more than 10 %
+ * prompt or schema change that moves any pinned prefix by more than 10 %
  * fails here and must re-measure: `auto` picks profiles from these numbers.
  */
 import { describe, expect, it } from 'vitest';

@@ -705,13 +705,22 @@ export function getToolCompactDescription(toolName: string): string | undefined 
 const COMPACT_DESCRIPTION_MAX = 200;
 
 /**
- * #11395: what a constrained profile advertises for a tool: its curated
- * compact description, else the first sentence of `fullDescription`, capped
- * at 200 chars (a `custom` pick or a script-builder tool has no curated one).
+ * #11395: what a constrained profile advertises for a registry tool: its
+ * curated compact description, else `shortenToolDescription` of the full one
+ * (a `custom` pick has no curated entry).
  */
 export function compactDescriptionFor(toolName: string, fullDescription: string): string {
-  const curated = getToolCompactDescription(toolName);
-  if (curated) return curated;
+  return getToolCompactDescription(toolName) ?? shortenToolDescription(fullDescription);
+}
+
+/**
+ * #11395: a description that already fits in 200 chars is kept whole (so no
+ * approval or consent note is cut from it); a longer one becomes its first
+ * sentence, capped at 200. Used directly by servers whose tools are not the
+ * registry's (the script builder), which must never borrow a chat entry.
+ */
+export function shortenToolDescription(fullDescription: string): string {
+  if (fullDescription.length <= COMPACT_DESCRIPTION_MAX) return fullDescription;
   const first = fullDescription.match(/^.*?[.!?](?=\s|$)/s)?.[0] ?? fullDescription;
   return first.length <= COMPACT_DESCRIPTION_MAX ? first : `${first.slice(0, COMPACT_DESCRIPTION_MAX - 1).trimEnd()}…`;
 }

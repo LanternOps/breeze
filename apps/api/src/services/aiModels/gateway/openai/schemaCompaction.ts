@@ -6,9 +6,11 @@
  *
  * It never loosens anything that is enforced:
  *  - `translateMessagesRequest` keeps the ORIGINAL schema in
- *    `ToolNameMap.schemas`, so `matchesToolSchema` (which checks only
- *    `$ref/type/enum/const/required/properties/additionalProperties/items`)
- *    validates the model's calls against the original, and returns the same
+ *    `ToolNameMap.schemas`, so `matchesToolSchema` validates the model's calls
+ *    against the original. It evaluates only structural keywords (`$ref`,
+ *    `allOf/anyOf/oneOf`, `type`, `nullable`, `enum`, `const`, `required`,
+ *    `properties`, `patternProperties`, `additionalProperties`, `items`; see
+ *    translateResponse.ts), none of which is stripped, so it returns the same
  *    verdict on either schema (schemaCompaction.noLoosening.test.ts).
  *  - Each tool handler's own Zod validation (`validateToolInput`) is untouched.
  *
@@ -19,7 +21,7 @@
  * Exactly these keywords are stripped; nothing structural. The plan's eight
  * size/format keywords, plus `$schema`: the dialect tag the SDK's MCP server
  * puts on every advertised schema (draft-07), which constrains nothing and
- * costs ~45 bytes per tool.
+ * costs ~52 bytes per tool.
  */
 export const COMPACTED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
   'maxLength', 'minLength', 'maximum', 'minimum', 'pattern', 'format', 'examples', 'default', '$schema',

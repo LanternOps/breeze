@@ -72,7 +72,7 @@ function corpus(schema: Schema, seed: number): unknown[] {
   const inputs: unknown[] = [{}, null, 'string', [], { unexpected_key: true }];
   for (let i = 0; inputs.length < 50; i++) {
     const base = sampleObject(schema, rand, 0, 0.3 + rand() * 0.7);
-    switch (i % 6) {
+    switch (i % 7) {
       case 0: inputs.push(base); break; // plausibly valid
       case 1: { // missing one required key
         const drop = required[i % Math.max(1, required.length)];
@@ -94,6 +94,12 @@ function corpus(schema: Schema, seed: number): unknown[] {
           if (t === 'string' && !Array.isArray(sub.enum)) copy[name] = 'y'.repeat(5000);
           if (t === 'integer' || t === 'number') copy[name] = 10 ** 9;
         }
+        inputs.push(copy);
+        break;
+      }
+      case 6: { // out-of-enum values (what `enum` constrains)
+        const copy: Record<string, unknown> = { ...base };
+        for (const [name, sub] of props) if (Array.isArray(sub.enum)) copy[name] = 'zz_not_in_enum';
         inputs.push(copy);
         break;
       }
@@ -143,6 +149,32 @@ describe('schema compaction never loosens validation (#11395)', () => {
     expect(pass).toBeGreaterThan(100);
     expect(fail).toBeGreaterThan(100);
   });
+
+  /** A deliberately LOOSENING compactor: strips one structural keyword everywhere. */
+  function stripEverywhere(node: unknown, key: string): unknown {
+    if (Array.isArray(node)) return node.map((n) => stripEverywhere(n, key));
+    if (!node || typeof node !== 'object') return node;
+    return Object.fromEntries(Object.entries(node as Record<string, unknown>)
+      .filter(([k]) => k !== key)
+      .map(([k, v]) => [k, k === 'enum' || k === 'const' || k === 'required' ? v : stripEverywhere(v, key)]));
+  }
+
+  // `additionalProperties` is not in the list: the SDK's input-mode zod
+  // conversion emits none for these schemas, so there is nothing to strip
+  // (the keyword-level unit test in schemaCompaction.test.ts covers it).
+  it.each(['required', 'enum', 'type'])(
+    'mutation control: a compactor that stripped %s WOULD be caught by this corpus', (key) => {
+      let disagreements = 0;
+      for (const name of CURATED_CHAT) {
+        const original = advertised(name);
+        const loosened = stripEverywhere(original, key) as Schema;
+        for (const input of corpus(original, name.length * 7919)) {
+          if (matchesToolSchema(input, original) !== matchesToolSchema(input, loosened)) disagreements++;
+        }
+      }
+      expect(disagreements).toBeGreaterThan(0);
+    },
+  );
 
   it('compaction removes keywords from the curated set (the comparison is not against identical schemas)', () => {
     const changed = CURATED_CHAT.filter((name) => {

@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
-import { compactDescriptionFor, executeTool } from './aiTools';
+import { executeTool, shortenToolDescription } from './aiTools';
 import type { ActiveSession } from './streamingSessionManager';
 import type { ToolExposure } from './aiModels/toolExposure';
 import { withDbAccessContext, runOutsideDbContext } from '../db';
@@ -485,5 +485,5 @@ export function scriptBuilderServerTools(
     ? tools
     : tools
       .filter((t) => exposed.has(t.name))
-      .map((t) => (compact ? { ...t, description: compactDescriptionFor(t.name, t.description) } : t));
+      .map((t) => (compact ? { ...t, description: shortenToolDescription(t.description) } : t));
 }

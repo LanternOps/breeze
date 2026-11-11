@@ -6,13 +6,14 @@
  * exposure's prompt mode is `constrained`); the `full` exposure never reads
  * this file.
  *
- * Rules (toolProfiles.compactDescription.contract.test.ts):
+ * Rules enforced by toolProfiles.compactDescription.contract.test.ts:
  *  - every curated `minimal`/`standard` registry tool has one, ≤ 200 chars;
  *  - each is no longer than the full description;
  *  - none names ANOTHER tool: a constrained set may not include it, and a
- *    small model pointed at an absent tool invents calls to it;
- *  - approval, consent and cross-client privacy notes from the full text are
- *    kept, since a small model still needs to know what a call will do.
+ *    small model pointed at an absent tool invents calls to it.
+ * Review rule (not machine-checked): approval, consent and cross-client
+ * privacy notes from the full text are kept, since a small model still needs
+ * to know what a call will do.
  *
  * One map rather than a field on every `aiTools*.ts` declaration: the set is
  * the curated lists' (toolProfiles.ts), reviewed together.
