@@ -250,6 +250,22 @@ describe('ExecutionDetails empty stdout (sweep E5)', () => {
   });
 });
 
+describe('ExecutionDetails purged output (#4342 W2)', () => {
+  it('shows the retention note instead of "No output" when outputPurgedAt is set', () => {
+    renderExecution({ stdout: undefined, stderr: undefined, outputPurgedAt: '2026-01-01T00:00:00Z' });
+
+    expect(screen.getAllByText(/Output removed after the retention window/).length).toBeGreaterThan(0);
+    expect(screen.queryByText('No output')).toBeNull();
+  });
+
+  it('keeps the existing "No output" copy when outputPurgedAt is null', () => {
+    renderExecution({ stdout: undefined, stderr: 'a warning', outputPurgedAt: null });
+
+    expect(screen.getByText('No output')).toBeInTheDocument();
+    expect(screen.queryByText(/Output removed after the retention window/)).toBeNull();
+  });
+});
+
 describe('ExecutionDetails restore-point badge (#4759)', () => {
   it('renders the restore-point badge when the execution carries an outcome', () => {
     renderExecution({
