@@ -35,6 +35,8 @@ interface VariableInputProps {
   /** Applied as the input's `id` so a parent `<label htmlFor>` can associate a visible label. */
   id?: string;
   "aria-describedby"?: string;
+  /** Parent-driven validation failure (e.g. malformed URL): marks the input invalid. */
+  invalid?: boolean;
   className?: string;
 }
 /**
@@ -67,6 +69,7 @@ export default function VariableInput({
   tenantVariables = [],
   id,
   className,
+  invalid = false,
   "aria-describedby": ariaDescribedBy,
 }: VariableInputProps) {
   useTranslation("policies");
@@ -219,7 +222,7 @@ export default function VariableInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          aria-invalid={hasTokenWarning || undefined}
+          aria-invalid={hasTokenWarning || invalid || undefined}
           aria-describedby={
             cn(
               ariaDescribedBy,
@@ -229,7 +232,7 @@ export default function VariableInput({
           }
           className={cn(
             "h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring",
-            hasTokenWarning &&
+            (hasTokenWarning || invalid) &&
               "border-destructive/60 focus:ring-destructive/40",
             className,
           )}
