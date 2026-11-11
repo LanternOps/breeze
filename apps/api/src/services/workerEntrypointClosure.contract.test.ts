@@ -159,6 +159,8 @@ const EXPECTED_NAMES = [
   'aiAgentGraduation',
   'scriptReviewWorker',
   'scriptVerifyWorker',
+  // High-volume table retention W2 (#4342, #11589) — report-only.
+  'scriptExecutionRetention',
   'aiBudgetReservationSweep',
   'mfaEnrollmentNoticeWorker',
   'monitorEpisodeRetention',
