@@ -6,7 +6,7 @@
   "door": "wisp",
   "steps": [
     { "name": "ask", "type": "say", "approve": "approve", "maxSec": 120,
-      "text": "HL-PARTNER-MBP at Harbor Legal is offline. Tell me the moment it's back online." },
+      "text": "One of the partners at Harbor Legal says her MacBook has been off the network all afternoon. Which one is it, and tell me the moment it's back online." },
     { "name": "scheduled", "type": "wait_sql", "timeoutSec": 30, "required": true,
       "sql": "select (count(*) > 0)::text from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online' and status = 'scheduled'",
       "equals": "true" },

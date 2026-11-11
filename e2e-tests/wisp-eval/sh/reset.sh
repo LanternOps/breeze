@@ -3,6 +3,8 @@
 #
 #   - retract every Wisp memory block (remembered facts, standing instructions)
 #   - cancel scheduled / running / fired check-ins (API, so their queued jobs go too)
+#   - delete active watches; cancel in-flight specialist runs (a pending one blocks a new launch)
+#   - clear the thread summary a closed session leaves behind (it is handed to the next session)
 #   - planted alerts back to their baseline status
 #   - world tickets back to "new" when a scenario changed them
 #   - sim groups: nw, nwsrv, hl running; hlmac stopped and HL-PARTNER-MBP offline
@@ -30,6 +32,24 @@ while IFS=' ' read -r thread id; do
   n=$((n + 1))
 done <<< "$(q "select thread_id || ' ' || id from wisp_check_ins where status in ('scheduled','running','fired')")"
 say "reset: cancelled $n check-ins"
+
+# Watches keep running (and spending) on their cadence; a scenario may create one instead of a check-in.
+n=0
+while IFS=' ' read -r grant id; do
+  [ -n "$id" ] || continue
+  api DELETE "/wisp/watches/$id?grantId=$grant" >/dev/null 2>&1 \
+    || q "update wisp_watches set status = 'stopped', stopped_reason = 'wisp-eval reset', updated_at = now() where id = '$id'" >/dev/null
+  n=$((n + 1))
+done <<< "$(q "select grant_id || ' ' || id from wisp_watches where status = 'active'")"
+say "reset: stopped $n watches"
+
+# A specialist from an earlier scenario still waiting for approval makes Wisp decline to launch
+# another for the same device ("one is already awaiting approval"). Cancel in-flight specialist
+# runs; leave assessments alone.
+n="$(qsys "with u as (update ai_agent_runs set status = 'cancelled', error_code = 'wisp_eval_reset', finished_at = now()
+            where status in ('queued','running','awaiting_approval') and profile <> 'assessment' returning 1)
+            select count(*) from u")"
+say "reset: cancelled $n in-flight specialist runs"
 
 n="$(qsys "with u as (update alerts set status = (context->>'baselineStatus')::alert_status,
               acknowledged_at = null, acknowledged_by = null, suppressed_until = null, dismissed_at = null, dismissed_by = null,

@@ -135,6 +135,11 @@ stack.
 
 - retracts all Wisp memory blocks;
 - cancels check-ins that are scheduled, running or fired;
+- deletes active watches;
+- cancels in-flight specialist runs. A run left awaiting approval makes Wisp
+  decline to launch a new one for the same device.
+- clears the thread summary. A closed session leaves a summary behind, and it
+  would carry one scenario's conversation into the next.
 - puts the planted alerts back to their baseline status and the world tickets back
   to `new`;
 - restarts the online sim groups and stops `hlmac`;
