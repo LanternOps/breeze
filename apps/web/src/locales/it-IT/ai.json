@@ -646,6 +646,10 @@
   "buyCredits": {
     "link": "Acquista crediti"
   },
+  "sessionClosed": {
+    "message": "Questa conversazione è stata chiusa altrove, quindi il tuo messaggio non è stato inviato. È ancora nella casella qui sotto. Avvia una nuova sessione per continuare.",
+    "startNew": "Avvia una nuova sessione"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Questa conversazione ha raggiunto il limite di turni, quindi Wisp ha aperto una nuova sessione in questo thread. Invia di nuovo il tuo messaggio.",

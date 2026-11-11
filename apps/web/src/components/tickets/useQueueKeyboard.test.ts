@@ -105,13 +105,28 @@ describe('useQueueKeyboard', () => {
   // advertises must reach a handler, so the card can never list a dead key.
   it.each(QUEUE_SHORTCUTS.flatMap((s) => s.keys.map((key) => [s.action, key] as const)))(
     'the advertised %s key "%s" dispatches',
-    (_action, key) => {
+    (action, key) => {
       renderHook(() => useQueueKeyboard(handlers));
       press(key);
-      const fired = Object.entries(handlers).filter(([name, h]) => name !== 'onEscape' && h.mock.calls.length > 0);
+      // Escape is advertised as "back"; for every other key it must not be the one that fired.
+      const fired = Object.entries(handlers).filter(([name, h]) => (action === 'back' || name !== 'onEscape') && h.mock.calls.length > 0);
       expect(fired).toHaveLength(1);
     }
   );
+
+  // A widget that handled the key itself (a queue row's own Enter opening its
+  // ticket) marks it handled; the page shortcut must not act on it a second time.
+  it('stands aside when a widget already handled the key', () => {
+    renderHook(() => useQueueKeyboard(handlers));
+    const row = document.createElement('div');
+    row.setAttribute('role', 'option');
+    row.tabIndex = 0;
+    row.addEventListener('keydown', (e) => e.preventDefault());
+    document.body.appendChild(row);
+    row.focus();
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+  });
 
   // Enter is a button's (and link's) own activation key. The page-level
   // "open full page" binding used to swallow it everywhere (preventDefault on

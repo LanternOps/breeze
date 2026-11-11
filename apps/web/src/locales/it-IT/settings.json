@@ -7212,6 +7212,7 @@
     },
     "verify": {
       "methodLegend": "Metodo di verifica",
+      "panelTitle": "Verifica {{domain}}",
       "methodLocked": "Per cambiare metodo, rimuovi prima la verifica attuale.",
       "openPortalTab": "Dimostra il tenant in Portale clienti › Accesso e registrazione.",
       "dnsStartHint": "Ottieni un record TXT da far pubblicare all’amministratore DNS del cliente.",

@@ -516,6 +516,7 @@ const EXEMPT: Record<string, string> = {
   'services/warrantyPolicyResolution.ts': 'derived: Caller-supplied deviceId; upstream selector already applies notParkedDeviceCondition',
   'ee/workspace/src/services/deviceSummaryService.ts': 'request path: summarize(orgId, deviceId) takes both ids from the calling route, RLS-backed',
   'services/wisp/checkInRuns.ts': "Wisp run check-ins W07 (#11496): reads the ONE device a check-in's context names, by id, only to learn whether it was deleted; admits one org-level assessment run through enqueueAssessment (org in the live GrantCeiling, which excludes hidden orgs); selects no device targets and dispatches nothing to a device",
+  'services/managedDeviceScope.ts': 'report population (#11562): builds the managed-device predicate (org, non-ephemeral, notParkedDeviceCondition, not decommissioned) callers apply; selects nothing itself',
 };
 
 describe('contract: background selectors leave parked devices out', () => {

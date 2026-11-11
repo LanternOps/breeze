@@ -20,6 +20,50 @@ const makeComment = (overrides: Partial<TicketComment> = {}): TicketComment => (
   ...overrides
 });
 
+describe('TicketFeed requester attribution', () => {
+  it('tags a requester-authored comment "Requester", offers Delete but not Edit', () => {
+    render(
+      <TicketFeed
+        comments={[
+          makeComment({ id: 'req-portal', authorName: 'Dana', authorType: 'portal', portalUserId: null, userId: null }),
+          makeComment({ id: 'req-email', authorName: 'Dana', authorType: 'email', userId: null }),
+          makeComment({ id: 'req-pu', authorName: 'Dana', authorType: null, portalUserId: 'pu-1', userId: null }),
+          makeComment({ id: 'tech', authorName: 'Sam', authorType: 'internal' }),
+        ]}
+        onEditComment={vi.fn()}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+    for (const id of ['req-portal', 'req-email', 'req-pu']) {
+      expect(screen.getByTestId(`ticket-comment-requester-${id}`)).toHaveTextContent('Requester');
+      expect(screen.queryByTestId(`ticket-comment-edit-${id}`)).toBeNull();
+      expect(screen.getByTestId(`ticket-comment-delete-${id}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('ticket-comment-requester-tech')).toBeNull();
+    expect(screen.getByTestId('ticket-comment-edit-tech')).toBeInTheDocument();
+  });
+
+  it('reveals Edit/Delete on hover and keyboard focus, and keeps them visible on touch', () => {
+    render(
+      <TicketFeed
+        comments={[makeComment({ id: 'tech-2', authorType: 'internal' })]}
+        onEditComment={vi.fn()}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-tech-2').className).toContain('group');
+    for (const id of ['ticket-comment-edit-tech-2', 'ticket-comment-delete-tech-2']) {
+      const cls = screen.getByTestId(id).className;
+      expect(cls).toContain('opacity-0');
+      expect(cls).toContain('group-hover:opacity-100');
+      expect(cls).toContain('group-focus-within:opacity-100');
+      expect(cls).toContain('[@media(hover:none)]:opacity-100');
+    }
+  });
+});
+
 describe('TicketFeed', () => {
   it('renders the Internal label on non-public comments only', () => {
     render(

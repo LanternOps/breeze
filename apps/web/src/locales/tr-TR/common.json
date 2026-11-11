@@ -909,12 +909,13 @@
       "queue": {
         "next": "Sonraki bilet",
         "previous": "Önceki bilet",
-        "open": "Bileti tam sayfada aç",
+        "open": "Bileti aç (çözümden sonra: önerilen sonraki bilet)",
         "toggleBulk": "Toplu seçime ekle veya çıkar",
         "assignMe": "Bana ata",
         "reply": "Yanıt yaz",
         "internal": "Dahili not yaz",
-        "resolve": "Notla çöz"
+        "resolve": "Notla çöz",
+        "back": "Kuyruğa dön"
       }
     }
   },

@@ -189,11 +189,15 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * 81 → 82 (#11074): routes/oemUpdates/fleet.ts, the Vendor updates fleet list
  * (parked guard beside the filter), and services/oemUpdates/overdueSweep.ts,
  * its alerts (a parkedFanoutModules entry) 82 → 83.
- * 83 → 84 (#8318 wave 2-1): services/reinstallCandidates/index.ts, the SQL
+ * 83 → 82 (#11562): the report generators now take their population from
+ * managedDeviceConditions() in services/managedDeviceScope.ts, so the files that
+ * hand-rolled the ephemeral filter drop out and that one helper (ephemeral filter
+ * and notParkedDeviceCondition() side by side) joins the scan.
+ * 82 → 83 (#8318 wave 2-1): services/reinstallCandidates/index.ts, the SQL
  * half of the reinstall-target rule (notHiddenOrgType() beside the filter;
  * hidden-org targets never qualify).
  */
-const EPHEMERAL_DISCOVERED_FILES = 84;
+const EPHEMERAL_DISCOVERED_FILES = 83;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

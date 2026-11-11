@@ -909,12 +909,13 @@
       "queue": {
         "next": "Ticket siguiente",
         "previous": "Ticket anterior",
-        "open": "Abrir la página completa del ticket",
+        "open": "Abrir el ticket (tras resolver: el siguiente ofrecido)",
         "toggleBulk": "Agregar a la selección múltiple o quitar de ella",
         "assignMe": "Asignarme",
         "reply": "Escribir una respuesta",
         "internal": "Escribir una nota interna",
-        "resolve": "Resolver con una nota"
+        "resolve": "Resolver con una nota",
+        "back": "Volver a la cola"
       }
     }
   },

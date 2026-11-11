@@ -157,6 +157,8 @@ Remote desktop sessions can optionally stream system audio from the device to th
 
 Breeze can capture the Windows secure desktop (Ctrl+Alt+Del screen, UAC prompts, lock screen). This is possible because the helper process runs as SYSTEM with `GENERIC_ALL` access to the input desktop. Secure desktop capture is automatic — no additional configuration is required.
 
+From the 0.128.0 agent, the Windows sign-in screen is captured instead of showing a black frame. When the agent cannot confirm which desktop a frame came from, it still sends the frame and notes it in the agent log. Capture of the console sign-in screen was verified in the lab for this release; preferring the sign-in screen of an RDP session was not.
+
 ### Session Consent & End-User Notification
 
 By default, when a technician starts a remote desktop session the person sitting at the device is told about it. You can tune this per [Configuration Policy](/features/configuration-policies/) on the **Remote Access** feature, choosing one of three session-prompt modes:
@@ -222,6 +224,8 @@ Remote desktop uses hardware GPU encoding when available for better performance.
 As of v0.89.0, hardware encoding on Windows is significantly more reliable and faster: a bug that caused Intel systems to silently fall back to software encoding has been fixed, encode latency is dramatically lower, and streams show fewer artifacts and less smearing at high resolutions. No configuration is needed — devices pick up the improvement with the agent update.
 
 If the hardware encoder stalls (for example, due to a driver issue), the agent automatically switches to a software encoder within approximately 600 milliseconds — previous builds took around 11 seconds to recover. Headless servers without a GPU use software rendering automatically with no configuration needed.
+
+From the 0.128.0 agent, a Windows device with no hardware encoder where the OpenH264 software encoder cannot load starts the session on Windows' built-in H.264 encoder instead of refusing it, and the picture stays current on a static screen. Known issue: on this fallback the picture can stay blocky after a burst of change on an otherwise static screen until the screen changes again ([#11639](https://github.com/LanternOps/breeze/issues/11639)).
 
 ### VNC Fallback and In-Window Switcher (macOS)
 
@@ -661,6 +665,10 @@ The Linux build of the Breeze Viewer ships as a single AppImage, `breeze-viewer-
    ```
 
 </Steps>
+
+<Aside type="caution" title="The Linux viewer cannot connect to Windows devices yet">
+  A device whose agent runs as a service accepts remote desktop over WebRTC only, and every Windows agent runs as a service. The Linux viewer has no WebRTC: the WebKitGTK it is built with is compiled without it. Connecting to such a device ends with *"This device needs WebRTC for remote desktop (it runs as a service), but this viewer build does not support WebRTC."* Use the Windows or macOS viewer for those devices. Terminal, file transfer and scripts are not affected. Tracked in [#9557](https://github.com/LanternOps/breeze/issues/9557).
+</Aside>
 
 Keep the AppImage at a stable path. The registration records the absolute path it was run from, so moving or deleting the file after the first run leaves `breeze://` pointing at a file that no longer exists — run it again from the new location to refresh the entry.
 

@@ -646,6 +646,10 @@
   "buyCredits": {
     "link": "Buy credits"
   },
+  "sessionClosed": {
+    "message": "This conversation was closed somewhere else, so your message was not sent. It's still in the box below. Start a new session to continue.",
+    "startNew": "Start a new session"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "This conversation reached its turn limit, so Wisp opened a fresh session on this thread. Send your message again.",

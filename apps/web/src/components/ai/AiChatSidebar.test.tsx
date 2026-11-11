@@ -174,6 +174,36 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
       expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
     });
   });
+
+  // #11609
+  describe('session closed elsewhere banner', () => {
+    it('offers a new session when the refusal is session_closed, and starts one on click', () => {
+      const createSession = vi.fn();
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, createSession,
+        error: 'This conversation was closed somewhere else.', errorCode: 'session_closed',
+      });
+      render(<AiChatSidebar />);
+      fireEvent.click(screen.getByTestId('ai-session-closed-new-session'));
+      expect(createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not offer a plain session while Wisp is bound (the thread rolls on its own grant)', () => {
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true,
+        wisp: { grantId: 'grant-1' },
+        error: 'This conversation was closed somewhere else.', errorCode: 'session_closed',
+      });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-session-closed-new-session')).toBeNull();
+    });
+
+    it('does not offer it for other errors', () => {
+      vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, error: 'Rate limit exceeded', errorCode: null });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-session-closed-new-session')).toBeNull();
+    });
+  });
 });
 
 // #9613: with Shift held the browser reports KeyboardEvent.key as "A" (capital),

@@ -85,7 +85,8 @@
     },
     "checklistProgress": "{{done}}/{{total}} steps",
     "checklistTitle": "Checklist: {{done}} of {{total}} steps done",
-    "merged": "Merged"
+    "merged": "Merged",
+    "ageTitle": "Opened {{created}} · Updated {{updated}}"
   },
   "ticketArchivedList": {
     "emptyTitle": "No archived tickets.",
@@ -144,7 +145,11 @@
       "sentWithoutAttachmentReply_other": "Reply posted, but {{count}} attachments could not be added. Retry or remove them.",
       "sentWithoutAttachmentNote_other": "Note posted, but {{count}} attachments could not be added. Retry or remove them."
     },
-    "modeLabel": "Comment visibility"
+    "modeLabel": "Comment visibility",
+    "recipient": {
+      "emails": "Emails {{recipient}}",
+      "none": "No requester email on file. The reply is saved to the ticket and nobody is emailed."
+    }
   },
   "ticketFeed": {
     "empty": "No activity yet.",
@@ -858,6 +863,64 @@
       "SELF_LINK": "A ticket cannot be linked to itself.",
       "NOT_FOUND": "That ticket was not found or is no longer available.",
       "LINK_GONE": "That link was already removed."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Ticket navigation",
+    "backTo": "Back to {{tab}}",
+    "position": "{{index}} of {{total}}",
+    "previous": "Previous ticket",
+    "next": "Next ticket",
+    "more": "More actions",
+    "sections": "Ticket sections",
+    "tabs": {
+      "conversation": "Conversation",
+      "details": "Details"
+    },
+    "descriptionAria": "Request from {{author}}",
+    "invoiceDialogTitle": "Some work was not invoiced",
+    "nextOffer": {
+      "label": "Next",
+      "open": "Open",
+      "openAria": "Open {{number}} {{subject}}",
+      "atRisk": "At risk · {{relative}} left",
+      "noSla": "No SLA"
+    },
+    "requester": {
+      "noEmail": "No email on file"
+    },
+    "endpoint": {
+      "noDevice": "No device linked",
+      "lastSeen": "last seen {{ago}}",
+      "loading": "Loading the device",
+      "loadFailed": "The device's live state could not load.",
+      "os": "Operating system",
+      "signedIn": "Signed in",
+      "nobodySignedIn": "No one signed in",
+      "lastUser": "Last user {{user}}",
+      "activeAlerts": "Active alerts",
+      "noAlerts": "No active alerts",
+      "alertsFailed": "Alerts could not load.",
+      "untitledAlert": "Untitled alert",
+      "userSignedIn": "{{user}} signed in",
+      "alertCount": "{{count}} alerts",
+      "alertCount_one": "{{count}} alert",
+      "alertCount_other": "{{count}} alerts",
+      "openDetails": "{{device}}: open the device details"
+    },
+    "details": {
+      "properties": "Properties",
+      "logged": "{{time}} logged",
+      "partCount": "{{count}} parts",
+      "partCount_one": "{{count}} part",
+      "partCount_other": "{{count}} parts",
+      "pendingApprovals": "{{count}} pending",
+      "pendingApprovals_one": "{{count}} pending",
+      "pendingApprovals_other": "{{count}} pending",
+      "linkCount": "{{count}} linked",
+      "linkCount_one": "{{count}} linked",
+      "linkCount_other": "{{count}} linked",
+      "approvals": "Approvals"
     }
   }
 }
