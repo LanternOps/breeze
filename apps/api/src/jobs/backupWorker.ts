@@ -13,7 +13,6 @@ import type { BackupFullRunReason } from '@breeze/shared';
 import * as dbModule from '../db';
 import {
   backupJobs,
-  backupSnapshotFiles,
   backupSnapshots,
   backupSnapshotRetirements,
   backupConfigs,
