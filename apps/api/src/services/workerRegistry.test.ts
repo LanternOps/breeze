@@ -119,6 +119,8 @@ const EXPECTED_WORKER_NAMES = [
   'aiAgentGraduation',
   'scriptReviewWorker',
   'scriptVerifyWorker',
+  // High-volume table retention W2 (#4342, #11589) — report-only.
+  'scriptExecutionRetention',
   'aiBudgetReservationSweep',
   // #5306 — MFA enrolment grace window email nudge (daily sweep).
   'mfaEnrollmentNoticeWorker',

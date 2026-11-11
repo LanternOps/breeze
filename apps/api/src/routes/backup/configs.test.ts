@@ -116,6 +116,7 @@ vi.mock('@aws-sdk/client-s3', () => ({
       s3ClientCtorMock(config);
     }
     send = s3SendMock;
+    middlewareStack = { addRelativeTo: vi.fn() };
   },
   PutObjectCommand: class PutObjectCommand {
     constructor(public input: unknown) {}
