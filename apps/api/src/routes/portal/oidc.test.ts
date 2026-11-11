@@ -104,6 +104,7 @@ import { portalRoutes } from './index';
 import { portalEntraProofRuns, portalOidcStates, portalRateLimitBuckets, portalSessions } from './helpers';
 import { createPortalEntraProofRun, peekPortalEntraProofRun } from '../../services/portalOidc/proofRunStore';
 import {
+  PortalAccessPolicyOrgNotFoundError,
   __testOnly as policyTestOnly,
   pickEffectivePortalAccessPolicy,
 } from '../../services/portalAccessPolicy';
@@ -248,15 +249,27 @@ describe('GET /auth/methods', () => {
     expect(h.resolvePolicy).not.toHaveBeenCalled();
   });
 
-  it('/auth/methods: requestAccess is the capability constant on the shared host', async () => {
+  it('/auth/methods: requestAccess is false on the shared host even when the capability is on', async () => {
+    // Decision B (2026-11-11, spec §5.9): the shared host never shows Request
+    // access. Only a verified custom portal domain whose org has the mode on
+    // does. The /request-access page still works by direct URL (uniform 200).
     policyTestOnly.setCapabilities({ entra: true, google: false, selfRegistration: true });
     for (const host of [undefined, 'breeze.example.test']) {
       const res = await app().request('/auth/methods', { headers: host ? { Host: host } : {} });
-      expect(await res.json()).toEqual({ password: true, microsoft: true, requestAccess: true });
+      expect(await res.json()).toEqual({ password: true, microsoft: true, requestAccess: false });
     }
-    // Nothing about any org or domain is read on the shared host.
+    // Nothing about any org or domain is read on the shared host — no
+    // deployment-wide "does any org use it" read either.
     expect(h.resolvePolicy).not.toHaveBeenCalled();
     expect(h.verifiedDomains).not.toHaveBeenCalled();
+  });
+
+  it('/auth/methods: an unknown org behind a custom host falls back to the shared answer (no Request access)', async () => {
+    policyTestOnly.setCapabilities({ entra: true, google: false, selfRegistration: true });
+    h.hostOrg.mockResolvedValue(ORG);
+    h.resolvePolicy.mockRejectedValue(new PortalAccessPolicyOrgNotFoundError(ORG));
+    const res = await app().request('/auth/methods', { headers: { Host: 'portal.acme.test' } });
+    expect(await res.json()).toEqual({ password: true, microsoft: true, requestAccess: false });
   });
 
   it('/auth/methods: on a custom host, requestAccess needs mode != off and a verified domain', async () => {

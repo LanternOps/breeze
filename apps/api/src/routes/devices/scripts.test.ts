@@ -26,7 +26,8 @@ vi.mock('../../db/schema', () => ({
     deviceId: 'deviceId',
     aiInitiatorKind: 'aiInitiatorKind',
     aiSessionId: 'aiSessionId',
-    aiAgentRunId: 'aiAgentRunId'
+    aiAgentRunId: 'aiAgentRunId',
+    outputPurgedAt: 'outputPurgedAt'
   },
   scripts: {
     id: 'id',
@@ -225,6 +226,32 @@ describe('device scripts routes', () => {
     expect(selectArg.scriptIsSystem).toBe('scripts.isSystem');
     expect(selectArg.scriptOrgId).toBe('scripts.orgId');
     expect(selectArg.scriptPartnerId).toBe('scripts.partnerId');
+  });
+
+  it('projects outputPurgedAt so the tab can say the output was removed by retention (#4342 W2)', async () => {
+    vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+      id: 'device-1',
+      orgId: 'org-123',
+      hostname: 'host-1'
+    } as never);
+
+    const limit = vi.fn().mockResolvedValue([{ id: 'exec-1', stdout: null, stderr: null, outputPurgedAt: '2026-01-01T00:00:00.000Z' }]);
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    const leftJoin = vi.fn().mockReturnValue({ where });
+    const from = vi.fn().mockReturnValue({ leftJoin });
+    vi.mocked(db.select).mockReturnValueOnce({ from } as never);
+
+    const res = await app.request('/devices/device-1/scripts', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(res.status).toBe(200);
+
+    const selectArg = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(selectArg.outputPurgedAt).toBe('outputPurgedAt');
+    const body = await res.json();
+    expect(body.data[0].outputPurgedAt).toBe('2026-01-01T00:00:00.000Z');
   });
 
   it('returns 404 when the device is not accessible', async () => {

@@ -42,6 +42,43 @@ describe('LoginForm — hydration', () => {
   });
 });
 
+describe('LoginForm — Request access (W6)', () => {
+  it('the login page shows Request access only when methods.requestAccess is true', async () => {
+    methodsResponse = { ok: true, status: 200, body: { password: true, microsoft: false, requestAccess: true } };
+    const { unmount } = render(<LoginForm />);
+    const link = await screen.findByTestId('login-request-access');
+    expect(link.getAttribute('href')).toMatch(/\/request-access$/);
+    unmount();
+
+    for (const body of [
+      { password: true, microsoft: false, requestAccess: false },
+      { password: true, microsoft: false },
+      { password: true, microsoft: false, requestAccess: 'yes' },
+    ]) {
+      methodsResponse = { ok: true, status: 200, body };
+      const view = render(<LoginForm />);
+      await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+      await screen.findByTestId('portal-login-submit');
+      expect(screen.queryByTestId('login-request-access')).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it('a failed methods fetch shows no Request access link', async () => {
+    methodsResponse = 'throw';
+    render(<LoginForm />);
+    await screen.findByTestId('portal-login-submit');
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+    expect(screen.queryByTestId('login-request-access')).toBeNull();
+  });
+
+  it('shows Request access under sso_only too (password hidden)', async () => {
+    methodsResponse = { ok: true, status: 200, body: { password: false, microsoft: true, requestAccess: true } };
+    render(<LoginForm />);
+    expect(await screen.findByTestId('login-request-access')).toBeTruthy();
+  });
+});
+
 describe('LoginForm — Microsoft', () => {
   it('login shows Microsoft only when methods.microsoft', async () => {
     const { unmount } = render(<LoginForm />);

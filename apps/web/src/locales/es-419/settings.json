@@ -8488,7 +8488,9 @@
       "label": "Autorregistro",
       "off": "Desactivado",
       "approval": "Requiere aprobación",
-      "instant": "Inmediato"
+      "instant": "Inmediato",
+      "noVerifiedDomain": "No hay ningún dominio verificado: nadie puede registrarse hasta que verifique uno.",
+      "verifyDomain": "Verificar un dominio"
     },
     "ssoNewPerson": {
       "label": "Primer inicio de sesión con Microsoft / Google",
@@ -8638,6 +8640,8 @@
     "selectAll": "Seleccionar todas las solicitudes",
     "selectOne": "Seleccionar la solicitud de {{email}}",
     "accountExists": "Ya tiene una cuenta — Deniegue para descartar",
+    "domainUnverified": "Dominio ya no verificado",
+    "domainUnverifiedReason": "No se puede aprobar: invite a esta persona directamente si debe tener acceso.",
     "actions": {
       "approve": "Aprobar",
       "deny": "Denegar",
@@ -8650,7 +8654,8 @@
       "notFound": "Solicitud no encontrada",
       "identityLinked": "Inicio de sesión ya vinculado a otra cuenta",
       "failed": "No se pudo resolver esta solicitud",
-      "entraTenantNotProven": "El inquilino de Microsoft de esta organización ya no está comprobado"
+      "entraTenantNotProven": "El inquilino de Microsoft de esta organización ya no está comprobado",
+      "domainNotVerified": "Dominio de correo ya no verificado"
     },
     "denyDialog": {
       "title": "Denegar solicitud de acceso",
@@ -8668,7 +8673,8 @@
     "errors": {
       "load": "No se pudieron cargar las solicitudes de acceso.",
       "action": "No se pudo actualizar la solicitud de acceso.",
-      "bulk": "No se pudieron resolver las solicitudes seleccionadas."
+      "bulk": "No se pudieron resolver las solicitudes seleccionadas.",
+      "domainNotVerified": "El dominio de correo de esta persona ya no está verificado para esta organización. Invítela directamente si debe tener acceso."
     },
     "summary": {
       "title": "Solicitudes de acceso pendientes",

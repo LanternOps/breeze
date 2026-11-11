@@ -309,6 +309,169 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     expect(useAiStore.getState().sessionId).toBe('sess-new');
   });
 
+  describe('enterWispMode resumes the thread\'s live session (#11672)', () => {
+    const now = () => new Date().toISOString();
+    const liveSession = (overrides: Record<string, unknown> = {}) => ({
+      id: 'sess-live', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-1',
+      createdAt: now(), lastActivityAt: now(), ...overrides,
+    });
+    const serve = (session: Record<string, unknown> | null, status = 200) => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+        if (url === '/ai/sessions/sess-live' && !init?.method) {
+          return response(session ? { session, messages: [{ id: 'm1', role: 'user', content: 'What needs me today?', createdAt: now() }] } : { error: 'gone' }, status);
+        }
+        return response({ data: [] });
+      });
+    };
+
+    it('opening the pane on a device page while the thread has an active session does not create a session', async () => {
+      serve(liveSession());
+      useAiStore.setState({ pageContext: { type: 'device', id: 'dev-9', hostname: 'pc-9', orgId: 'org-b' } as never });
+      const entered = await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }));
+      expect(entered).toBe(true);
+      expect(createBodies()).toHaveLength(0);
+      const s = useAiStore.getState();
+      expect(s.sessionId).toBe('sess-live');
+      expect(s.wisp?.grantId).toBe('grant-1');
+      expect(s.messages.map((m) => m.content)).toEqual(['What needs me today?']);
+    });
+
+    it.each([
+      ['closed', { status: 'closed' }],
+      ['expired', { status: 'expired' }],
+      ['under another grant', { wispGrantId: 'grant-other' }],
+      ['past the idle limit by its own clock', { lastActivityAt: '2020-01-01T00:00:00.000Z' }],
+      // #11430: older than 24 h though busy (an older API, or a read that raced the expiry).
+      ['past the max age though busy', { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() }],
+    ])('a last session that is %s is not resumed: a fresh session is created on the grant', async (_label, overrides) => {
+      serve(liveSession(overrides));
+      await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }));
+      expect(createBodies()).toHaveLength(1);
+      expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1' });
+      expect(useAiStore.getState().sessionId).toBe('sess-new');
+      expect(useAiStore.getState().wisp?.grantId).toBe('grant-1');
+    });
+
+    it('a last session that cannot be read is not resumed: a fresh session is created', async () => {
+      serve(null, 500);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }));
+      expect(createBodies()).toHaveLength(1);
+      expect(useAiStore.getState().sessionId).toBe('sess-new');
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('a session that moved to another grant between the check and the switch is left: a fresh session is created', async () => {
+      let reads = 0;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+        if (url === '/ai/sessions/sess-live' && !init?.method) {
+          reads += 1;
+          return response({ session: liveSession(reads === 1 ? {} : { wispGrantId: 'grant-other' }), messages: [] });
+        }
+        return response({ data: [] });
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }))).toBe(true);
+      expect(reads).toBe(2);
+      expect(createBodies()).toHaveLength(1);
+      expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-new', wisp: expect.objectContaining({ grantId: 'grant-1' }) });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not resume'), expect.objectContaining({ sessionId: 'sess-live' }));
+      warn.mockRestore();
+    });
+
+    it('a resumable session that then fails to load falls back to a fresh session, logs it, and leaves no load error behind', async () => {
+      let reads = 0;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+        if (url === '/ai/sessions/sess-live' && !init?.method) {
+          reads += 1;
+          return reads === 1 ? response({ session: liveSession(), messages: [] }) : response({ error: 'boom' }, 500);
+        }
+        return response({ data: [] });
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }))).toBe(true);
+      expect(reads).toBe(2);
+      expect(createBodies()).toHaveLength(1);
+      expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-new', error: null, isLoading: false });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not resume'), expect.objectContaining({ sessionId: 'sess-live', error: 'Failed to load session' }));
+      warn.mockRestore();
+    });
+
+    it('a chat picked while the fallback create is in flight wins: the enter reports superseded', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions' && init?.method === 'POST') {
+          await gate;
+          return response({ id: 'sess-new', orgId: 'org-a' });
+        }
+        if (url === '/ai/sessions/sess-picked') {
+          return response({ session: { id: 'sess-picked', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });
+        }
+        return response({ data: [] });
+      });
+      const entering = useAiStore.getState().enterWispMode(wisp({ lastSessionId: null }));
+      await useAiStore.getState().switchSession('sess-picked');
+      release();
+      expect(await entering).toBe(false);
+      expect(useAiStore.getState().sessionId).toBe('sess-picked');
+    });
+
+    it.each([
+      ['a body that is not JSON', async () => ({ ok: true, status: 200, json: vi.fn().mockRejectedValue(new SyntaxError('bad json')) }) as unknown as Response],
+      ['a network failure', async () => { throw new TypeError('Failed to fetch'); }],
+    ])('a resume check that gets %s is logged and a fresh session is created', async (_label, read) => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+        if (url === '/ai/sessions/sess-live' && !init?.method) return read();
+        return response({ data: [] });
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }))).toBe(true);
+      expect(createBodies()).toHaveLength(1);
+      expect(useAiStore.getState().sessionId).toBe('sess-new');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[wispSession]'), expect.anything());
+      warn.mockRestore();
+    });
+
+    it('a thread with no last session creates one without reading anything first', async () => {
+      await useAiStore.getState().enterWispMode(wisp({ lastSessionId: null }));
+      expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/ai/sessions/'))).toBe(false);
+      expect(useAiStore.getState().sessionId).toBe('sess-new');
+    });
+
+    it('a chat picked while the resume check is in flight wins: the enter is superseded and binds nothing', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let liveReads = 0;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions/sess-live' && !init?.method) {
+          liveReads += 1;
+          await gate;
+          return response({ session: liveSession(), messages: [] });
+        }
+        if (url === '/ai/sessions/sess-picked') {
+          return response({ session: { id: 'sess-picked', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });
+        }
+        if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+        return response({ data: [] });
+      });
+      const entering = useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }));
+      // Loading from the first tick, so the pane's auto-enter guard (isLoading) holds during the check.
+      expect(useAiStore.getState()).toMatchObject({ isLoading: true, wisp: expect.objectContaining({ grantId: 'grant-1' }) });
+      await useAiStore.getState().switchSession('sess-picked');
+      release();
+      expect(await entering).toBe(false);
+      expect(liveReads).toBe(1);
+      expect(useAiStore.getState().sessionId).toBe('sess-picked');
+      expect(createBodies()).toHaveLength(0);
+    });
+  });
+
   it('switching to a history session on the same grant keeps Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/ai/sessions/sess-w2') return response({ session: { id: 'sess-w2', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-1' }, messages: [] });

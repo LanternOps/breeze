@@ -82,6 +82,15 @@ describe('gatewayCandidate', () => {
     expect(checkEligibility(c.facts, CTX)).toBeNull();
   });
 
+  it('carries the offering tool profile facts with the gateway transport and an unknown window (#11394)', async () => {
+    expect((await gatewayCandidate({ offering: offering(), conn: conn() })).toolProfileFacts).toEqual({
+      toolProfile: 'auto', toolAllowlist: null, effectiveWindow: null, transport: 'gateway',
+    });
+    const allowlist = { domains: ['devices'], tools: ['search_logs'] };
+    const c = await gatewayCandidate({ offering: offering({ toolProfile: 'custom', toolAllowlist: allowlist }), conn: conn() });
+    expect(c.toolProfileFacts).toEqual({ toolProfile: 'custom', toolAllowlist: allowlist, effectiveWindow: null, transport: 'gateway' });
+  });
+
   it('keyless connection (active, NULL key) is usable with a null secret; no decrypt attempted', async () => {
     m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: null });
     const c = await gatewayCandidate({ offering: offering(), conn: conn() });

@@ -71,6 +71,7 @@ const getSignedUrlMock = vi.fn(async () => 'https://signed.example.com/object');
 
 vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: class S3Client {
+    middlewareStack = { addRelativeTo: vi.fn() };
     constructor(config: unknown) {
       s3ClientCtorMock(config);
     }

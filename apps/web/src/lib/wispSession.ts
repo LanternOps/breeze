@@ -3,7 +3,49 @@
 // same anchor, and both read a refused create the same way. Kept free of the
 // step-up/WebAuthn graph (lib/wispGrant) so either store can import it
 // statically; the grant read itself is a lazy import.
+import { AI_SESSION_IDLE_TIMEOUT_MS, AI_SESSION_MAX_AGE_MS } from '@breeze/shared';
 import type { WispState } from '../stores/aiStore';
+import { fetchWithAuth } from '../stores/auth';
+
+/**
+ * Past the server's chat-session lifetime (the shared AI_SESSION_* limits; a
+ * send past either is refused with 410) by the session's own timestamps. An
+ * unreadable timestamp is left to the status.
+ */
+function pastSessionLifetime(session: { createdAt?: unknown; lastActivityAt?: unknown }, now = Date.now()): boolean {
+  const ageOf = (value: unknown) => (typeof value === 'string' ? now - Date.parse(value) : Number.NaN);
+  return ageOf(session.createdAt) > AI_SESSION_MAX_AGE_MS || ageOf(session.lastActivityAt) > AI_SESSION_IDLE_TIMEOUT_MS;
+}
+
+/**
+ * Whether a thread's `lastSessionId` can carry the next turn (#11672: a Wisp
+ * thread is one conversation, so every surface entering Wisp continues its
+ * live session rather than starting a second one beside it).
+ *
+ * `thread.lastSessionId` is the last session stamped on the thread, not the
+ * last live one: an idled-out (`expired`) or closed session would load its
+ * transcript and then refuse the first send. Resume only an active session
+ * that still runs under this grant and is within the server's lifetime: the
+ * read reports a stale session as expired (#11430), and this check covers an
+ * older API or a read that raced the expiry. A failed read is "not resumable".
+ */
+export async function isResumableWispSession(sessionId: string, grantId: string): Promise<boolean> {
+  try {
+    const res = await fetchWithAuth(`/ai/sessions/${encodeURIComponent(sessionId)}`);
+    if (!res.ok) {
+      console.warn('[wispSession] checking the thread\'s last Wisp session failed; starting a new one', res.status);
+      return false;
+    }
+    const body = (await res.json().catch((err: unknown) => {
+      console.warn('[wispSession] the last Wisp session read was not JSON; starting a new one', err);
+      return null;
+    })) as { session?: { status?: unknown; wispGrantId?: unknown; createdAt?: unknown; lastActivityAt?: unknown } } | null;
+    return body?.session?.status === 'active' && body.session.wispGrantId === grantId && !pastSessionLifetime(body.session);
+  } catch (err) {
+    console.warn('[wispSession] could not check the thread\'s last Wisp session; starting a new one', err);
+    return false;
+  }
+}
 
 /** Session-create refusals that mean the grant cannot carry a session at all. */
 export const WISP_GRANT_UNUSABLE: ReadonlySet<string> = new Set([

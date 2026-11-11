@@ -13,7 +13,8 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { aiMemoryBlocks } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import type { GrantCeiling } from '../../services/wisp/grantAuthority';
-import { rememberInstructionGroupForGrant } from '../../services/wisp/memoryBroker';
+import { rememberForGrant, rememberInstructionGroupForGrant } from '../../services/wisp/memoryBroker';
+import { loadThreadSavedInstructions } from '../../services/wisp/instructionExtractor';
 import { MemoryServiceError } from '../../services/wisp/memoryService';
 import {
   confirmInstructionGroup,
@@ -21,7 +22,7 @@ import {
   promoteInstructionGroupToOrg,
   retractInstructionGroup,
 } from '../../services/wisp/instructionCaptures';
-import { standingInstructionSubjectKey } from '../../services/wisp/standingInstructions';
+import { standingInstructionRuleKey, standingInstructionSubjectKey } from '../../services/wisp/standingInstructions';
 import {
   SYSTEM_CTX, cleanupMemoryBlocks, insertAiSession, partnerContext, seedMemoryFixture, type MemoryFixture,
 } from './aiMemoryBlocksFixtures';
@@ -253,5 +254,54 @@ describe('captured standing instructions: group operations (#10428)', () => {
     const listed = await as(me, (auth) => listCapturedInstructions(auth, session));
     expect(listed.map((d) => d.instructionId)).toEqual([here.instructionId]);
     expect(listed[0]).toMatchObject({ targetLabels: ['PC-01', 'PC-02'], until: null });
+  });
+});
+
+describe('the thread\'s saved standing instructions, read before a capture (#11614)', () => {
+  it('reads live ones from either path and any owner; never retracted, superseded, lapsed, another thread or another type', async () => {
+    const f = await seedMemoryFixture();
+    const session = await insertAiSession(f.orgA1, f.uA1);
+    const elsewhere = await insertAiSession(f.orgA1, f.uA1);
+    const d1 = await device(f.orgA1, 'PC-01');
+    const c = ceiling(f, f.uA1);
+    const free = (subjectKey: string, text: string, over: Partial<Parameters<typeof rememberForGrant>[1]> = {}) =>
+      rememberForGrant(c, {
+        owner: { kind: 'org', orgId: f.orgA1 }, blockType: 'standing_instruction', subjectKey,
+        content: { text }, confidence: 'medium', sourceSessionId: session, ...over,
+      });
+
+    await capture(f, f.uA1, session, [d1], { text: 'live capture' });
+    const forgotten = await capture(f, f.uA1, session, [d1], { text: 'forgotten capture', verb: 'shutdown' });
+    const me = partnerSession(f.uA1, f.partnerA, [f.orgA1, f.orgA2]);
+    await as(me, (auth) => retractInstructionGroup(auth, forgotten.instructionId));
+    await capture(f, f.uA1, session, [d1], { text: 'lapsed capture', until: '2020-01-01T00:00:00Z' });
+    await capture(f, f.uA1, elsewhere, [d1], { text: 'another thread' });
+    await free('manual:hl-dc-01', 'old wording');
+    await free('manual:hl-dc-01', 'Never reboot HL-DC-01');
+    await free('manual:pref', 'a preference, not a rule', { blockType: 'preference' });
+
+    const thread = await loadThreadSavedInstructions(c, session, new Date());
+    expect([...thread.texts].sort()).toEqual(['Never reboot HL-DC-01', 'live capture (PC-01, PC-02)'].sort());
+    expect([...thread.ruleKeys]).toEqual([standingInstructionRuleKey({
+      effect: 'deny', verb: 'reboot', deviceId: d1, condition: null, until: null, targetLabels: [],
+    })]);
+
+    const otherPartner = await loadThreadSavedInstructions({ ...c, partnerId: f.partnerB }, session, new Date());
+    expect(otherPartner.texts).toEqual([]);
+    // The ceiling filter applies: an org outside it hides that org's blocks.
+    const narrowed = await loadThreadSavedInstructions({ ...c, orgIds: new Set([f.orgA2]) }, session, new Date());
+    expect(narrowed.texts).toEqual(['live capture (PC-01, PC-02)']);
+  });
+
+  it('a capture a person kept for everyone still counts for the thread', async () => {
+    const f = await seedMemoryFixture();
+    const session = await insertAiSession(f.orgA1, f.uA1);
+    const d1 = await device(f.orgA1, 'PC-01');
+    const group = await capture(f, f.uA1, session, [d1], { text: 'kept for everyone' });
+    const me = partnerSession(f.uA1, f.partnerA, [f.orgA1, f.orgA2]);
+    await as(me, (auth) => promoteInstructionGroupToOrg(auth, group.instructionId));
+    const thread = await loadThreadSavedInstructions(ceiling(f, f.uA1), session, new Date());
+    expect(thread.texts).toEqual(['kept for everyone (PC-01, PC-02)']);
+    expect(thread.ruleKeys.size).toBe(1);
   });
 });

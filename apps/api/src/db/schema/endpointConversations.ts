@@ -53,7 +53,7 @@ export const endpointConversations = pgTable('endpoint_conversations', {
   /** Snapshot of the device's resolved `endpointMessaging.allowUserReply` at open. */
   allowUserReply: boolean('allow_user_reply').notNull(),
   openedBy: uuid('opened_by').references(() => users.id, { onDelete: 'set null' }),
-  /** device_commands.id of the chat_open command; no FK (commands are system-scoped and pruned). */
+  /** device_commands.id of the chat_open command; no FK (commands are system-scoped and pruned by jobs/deviceCommandRetention.ts). */
   openCommandId: uuid('open_command_id'),
   /** Agent-attested console user the chat window opened for. */
   targetUsername: text('target_username'),

@@ -45,7 +45,7 @@ tracking_issue: LanternOps/breeze#11377
 | W4 Tenant proof + Microsoft sign-in + OIDC layer + session caps + `sso_only` | `2026-11-09-portal-registration-options-w04-entra-sign-in.md` (W04a API, W04b web + portal) | W3 | High | plan written |
 | W5 Domain verification + Organization › Domains | `2026-11-11-portal-registration-options-w05-domain-verification.md` (W05a API, W05b web) | W3 (Entra method: W4) | Medium | plan written |
 | W6 Self-registration | `2026-11-10-portal-registration-options-w06-self-registration.md` (W06a API, W06b portal + web) | W3, W5 | High | plan written |
-| W7 Sign in with Google | write at start | W4, W5 | High | — |
+| W7 Sign in with Google | `2026-11-11-portal-registration-options-w07-google-sign-in.md` (W07a API, W07b web + portal) | W4, W5 | High | plan written |
 | W8 Directory deprovisioning | write at start | W4 or W7 | High | — |
 | W9 Entra SCIM Users (#8278) | write at start | W4 | High | — |
 | Cleanup: drop `portal_users.entra_*` | write at start | W3 shipped + one release reconciled | Medium | — |
@@ -74,6 +74,7 @@ Later wave plans must use these names. If W2's plan or code renames any of them,
 | W4 | Rule: every identity-removing writer clears `portal_users.entra_*` and bumps `auth_epoch` (Entra sessions carry their tenant and die durably) | W8, W9 |
 | W6 | `routes/portal/requestHost.ts` (`requestHost`, `hostOrgIdFor`, moved out of `oidc.ts`); `GET /portal/auth/methods` gains `requestAccess`; `self_register` capability-token family in `routes/portal/capabilityTokens.ts` | W7 |
 | W5 | domain verification state on `customer_email_domains` + `isDomainVerifiedForOrg(domain, orgId)`, `findOrgByVerifiedDomain(domain)`, `listVerifiedDomainsForOrg(orgId)` (`services/portalDomainVerification/`; evidence re-checked at use) | W6, W7 |
+| W7 | OIDC provider adapter `PortalOidcSignInProvider` / `signInProviderFor` (`services/portalOidc/signInProviders.ts`), `PortalOidcProvider = 'entra' \| 'google'`, `findPortalUserIdByIdentity` / `PortalIdentityKey`, `lockVerifiedDomainRow` (W5 module), `portal_access_requests.google_hosted_domain`, `ResolvedPortalAccessPolicy.googleDomains` | W8 (Google deprovisioning), W9 |
 
 ## Wave entry checklist (W3+)
 

@@ -9,7 +9,7 @@ import { resolveAuthenticatedLanding } from './lib/landing';
 import { isProtectedPath, requiresAccountStatusGuard } from './lib/protectedPaths';
 import { redirectToAccountDisabled } from './lib/accountStatus';
 
-const authOnlyPaths = new Set(['/login', '/forgot-password']);
+const authOnlyPaths = new Set(['/login', '/forgot-password', '/request-access']);
 
 /** Build `/login?next=<path>` so an emailed deep link survives the auth wall. */
 function loginWithNext(pathname: string, search: string): string {
@@ -163,7 +163,15 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // must never land in referrer headers, shared caches, or search indexes.
   // strict-origin-when-cross-origin (the base policy) still sends the full
   // token url on same-origin navigation — no-referrer does not.
-  if (pathname.startsWith('/quote/') || pathname.startsWith('/agreement/') || pathname.startsWith('/invoice/') || pathname.startsWith('/autopay/')) {
+  //
+  // Self-registration (W6 plan D9): /request-access/verify carries its token in
+  // the fragment, and /accept-invite carries an invite token in the query
+  // (the instant-mode handoff lands there too). Neither may be cached, indexed
+  // or leaked through a referrer.
+  if (
+    pathname.startsWith('/quote/') || pathname.startsWith('/agreement/') || pathname.startsWith('/invoice/') || pathname.startsWith('/autopay/')
+    || pathname === '/request-access/verify' || pathname === '/accept-invite'
+  ) {
     headers.set('Referrer-Policy', 'no-referrer');
     headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
     headers.set('Cache-Control', 'no-store');
