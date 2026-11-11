@@ -258,6 +258,7 @@ suite org sources apps/api/src/jobs/deviceGroupJobs.ts
 suite org sources apps/api/src/routes/patches/index.ts
 suite org sources apps/api/src/routes/portal/helpers.ts
 suite org sources apps/api/src/routes/quotesPublic.ts
+suite org sources apps/api/src/services/aiGuardrails.ts
 suite org sources apps/api/src/services/contractService.ts
 suite org sources apps/api/src/services/contractTypes.ts
 suite org sources apps/api/src/services/deviceGroupDelete.ts
