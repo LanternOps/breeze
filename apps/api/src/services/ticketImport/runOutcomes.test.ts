@@ -13,11 +13,13 @@ import {
   conversionIdentityViolation,
   importedTicketBytes,
   isInfrastructureError,
+  keepImportedOnUnreadableRow,
   predictTicket,
   recordImportResult,
   versionKey,
 } from './runOutcomes';
-import { emptyCounters, IssueBuffer, normalizeCounters, type RunIssue } from './runReport';
+import type { ItemRow } from './runLedger';
+import { emptyCounters, IssueBuffer, normalizeCounters, RUN_ISSUE_KINDS, type RunIssue } from './runReport';
 import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceShapeError, SourceUnavailableError } from './sourceFetch';
 
 const NOW = new Date('2026-10-25T12:00:00.000Z');
@@ -166,6 +168,52 @@ describe('applyNotes and recordImportResult (spec §5.10)', () => {
       }],
     }), counters, true);
     expect(counters.predicted).toMatchObject({ resumes: 1, creates: 0, comments: 1, attachments: 2, attachmentBytes: 10, attachmentsSkipped: 2 });
+  });
+});
+
+describe('keepImportedOnUnreadableRow (#11296 follow-up: an unreadable row of an imported ticket)', () => {
+  const item = (overrides: Partial<ItemRow> = {}): ItemRow => ({
+    sourceTicketKey: '150',
+    state: 'imported',
+    importedVersion: 'v1',
+    seenVersion: 'v1',
+    seenRunId: 'run-0',
+    breezeTicketId: 'ticket-150',
+    pendingLinks: null,
+    failureCode: null,
+    attempts: 0,
+    ...overrides,
+  });
+  const seen = { seenVersion: 'unreadable', seenRunId: 'run-1' };
+  const target = { key: '150', number: '31050' };
+
+  it('keeps an imported ticket imported and seen, counts it skipped and lists it once as row_unreadable', () => {
+    const counters = emptyCounters();
+    const issues = new IssueBuffer(counters, 100);
+    const kept = keepImportedOnUnreadableRow(item(), 'source_shape_invalid', seen, counters, issues, target);
+    // Not failed: same state, imported version, ticket and attempts; seen by this run.
+    expect(kept).toEqual({ ...item(), seenVersion: 'unreadable', seenRunId: 'run-1' });
+    expect(counters.tickets).toMatchObject({ skipped: 1, failed: 0 });
+    expect(issues.take()).toEqual([{ sourceTicketKey: '150', sourceTicketNumber: '31050', kind: 'row_unreadable', code: 'source_shape_invalid', count: 1 }]);
+    expect(RUN_ISSUE_KINDS).toContain('row_unreadable');
+  });
+
+  it('a ticket never imported, or an item in any other state, fails as before', () => {
+    const counters = emptyCounters();
+    const issues = new IssueBuffer(counters, 100);
+    for (const candidate of [
+      undefined,
+      item({ state: 'failed', importedVersion: null, failureCode: 'source_shape_invalid' }),
+      // Imported once, then failed: already failed, not newly so.
+      item({ state: 'failed', failureCode: 'internal_error' }),
+      item({ state: 'imported', importedVersion: null }),
+      item({ state: 'skipped', importedVersion: null }),
+      item({ state: 'deleted_in_source' }),
+    ]) {
+      expect(keepImportedOnUnreadableRow(candidate, 'source_shape_invalid', seen, counters, issues, target)).toBeNull();
+    }
+    expect(counters.tickets).toMatchObject({ skipped: 0, failed: 0 });
+    expect(issues.take()).toEqual([]);
   });
 });
 

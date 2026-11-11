@@ -951,7 +951,9 @@ predictions (`predicted.*`, including `contactsToCreate` per org).
 Issue `kind`s, with at most `TICKET_IMPORT_MAX_ISSUES_PER_RUN` rows (default 50,000; counters stay
 exact beyond it):
 
-- **Skipped or failed:** `skipped_no_org`, `failed`.
+- **Skipped or failed:** `skipped_no_org`, `failed`, and `row_unreadable` (a list row the module
+  cannot read, of a ticket already imported: it stays imported, is counted skipped and the next
+  run reads the row again; a ticket never imported fails as before; #11296 follow-up).
 - **Writer decisions:** `status_kept` (with the #8884 detail), `attachments_skipped`,
   `link_not_written`.
 - **People:** `owner_unmatched`, once per distinct source owner. The row holds the source user
