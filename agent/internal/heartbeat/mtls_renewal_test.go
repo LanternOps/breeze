@@ -79,6 +79,8 @@ type mtlsRenewalServer struct {
 	confirmStatus       int    // 0 => 200 success
 	confirmConflictBody string // body returned with a non-200 confirmStatus
 	renewStatus         int    // 0 => 200
+	onRenew             func() // runs before /renew-cert answers
+	onConfirm           func() // runs before /renew-cert/confirm answers
 }
 
 func (s *mtlsRenewalServer) counts() (renew, confirm, challenge int) {
@@ -130,7 +132,11 @@ func newMTLSRenewalServer(t *testing.T) *mtlsRenewalServer {
 		}
 		status := rs.confirmStatus
 		conflictBody := rs.confirmConflictBody
+		onConfirm := rs.onConfirm
 		rs.mu.Unlock()
+		if onConfirm != nil {
+			onConfirm()
+		}
 
 		if status != 0 && status != http.StatusOK {
 			w.Header().Set("Content-Type", "application/json")
@@ -151,7 +157,11 @@ func newMTLSRenewalServer(t *testing.T) *mtlsRenewalServer {
 		status := rs.renewStatus
 		certPEM, keyPEM := rs.renewCertPEM, rs.renewKeyPEM
 		certID, activationExpiresAt := rs.certificateID, rs.activationExpiresAt
+		onRenew := rs.onRenew
 		rs.mu.Unlock()
+		if onRenew != nil {
+			onRenew()
+		}
 
 		if status != 0 && status != http.StatusOK {
 			w.WriteHeader(status)

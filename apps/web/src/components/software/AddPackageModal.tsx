@@ -929,8 +929,8 @@ export default function AddPackageModal({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {i18n.t(
                       "policies:software.addPackageModal.useVariablesLike",
-                    )}
-                    <code className="font-mono">{"{{org.name}}"}</code>
+                    )}{" "}
+                    <code className="font-mono">{"{{org.name}}"}</code>{" "}
                     {i18n.t(
                       "policies:software.addPackageModal.resolvedPerOrganizationAtDeployTime",
                     )}

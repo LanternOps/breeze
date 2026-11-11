@@ -1074,7 +1074,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Site eşlemeleri kaydedilemedi.",
     "siteMappingsSaved": "Site eşlemeleri kaydedildi",
-    "pickTheSiteThisControllerServesACollector": "Bu denetleyicinin hizmet verdiği siteyi (bir toplayıcı aracı) seçin ve denetleyici URL'sini ve yerel API anahtarını girin.",
+    "pickTheSiteThisControllerServesACollector": "Toplayıcı aracının konumunu ve bir toplayıcı aracı seçin, ardından denetleyici URL'sini ve yerel API anahtarını girin.",
     "failedToRegisterTheController": "Denetleyici kaydedilemedi.",
     "controllerRegistered": "Denetleyici kayıtlı",
     "pickABreezeSiteACollectorAgentAnd": "Bir Breeze sitesi, bir toplayıcı aracı seçin ve denetleyici URL'sini ve yerel API anahtarını girin.",

@@ -9,11 +9,13 @@
  *     it with SET NX before it starts and refreshes it while it runs. A second
  *     consumer for the same shard finds the key held and refuses to start. Two
  *     consumers on one shard would compete for jobs exactly as the old shared
- *     queue did. Producers read the key too: no key, no consumer, so they
- *     answer `offline` instead of enqueuing.
+ *     queue did. Producers read the key too: no key, no consumer, so a send
+ *     answers `offline` and an eviction `unavailable` instead of enqueuing.
  *   - The drain: pause the queue, ack every job that never started
- *     `owner_mismatch` (its send claim was never taken, so nothing was sent),
- *     then obliterate the queue, which removes its BullMQ keys.
+ *     `owner_mismatch` (its send claim was never taken, so nothing was sent;
+ *     a `relay-evict` job gets one `owner_mismatch` per entry, or nothing
+ *     when nobody waits on it), then obliterate the queue, which removes its
+ *     BullMQ keys.
  *   - The sweep: INSTANCE_ID changes on every boot, so every restart leaves a
  *     queue behind. A graceful shutdown drains its own; a crash cannot. Live
  *     consumers remove a relay queue (a shard, or the pre-#4134 shared queue)
@@ -33,8 +35,9 @@ import {
   relayQueueOwner,
   relayShardOwnerKey,
   writeRelayAck,
-  type RelayJobData,
+  type RelayQueueJobData,
 } from './agentCommandRelay';
+import { parseRelayEvictJob, RELAY_EVICT_JOB_NAME, writeRelayEvictAck, type EvictOutcome } from './agentCommandRelayEvict';
 
 export const RELAY_SHARD_OWNER_TTL_MS = 30_000;
 export const RELAY_SHARD_REFRESH_INTERVAL_MS = 10_000;
@@ -121,7 +124,9 @@ export type RelayQueueDrainResult =
  * Empty and remove one relay queue. The queue is paused first so no consumer
  * starts a job while it is read. Jobs that never started are then acked
  * `owner_mismatch`, so a producer still waiting gets that answer instead of
- * timing out; any retry is the producer's caller's decision. Active jobs are
+ * timing out; any retry is the producer's caller's decision. A `relay-evict`
+ * job is acked in its own shape, `owner_mismatch` per entry, and one nobody
+ * waits on (`awaitAck: false`) is not acked at all (#4142). Active jobs are
  * not acked: on shutdown none remain, and in a sweep they belonged to a
  * consumer that is gone, so their producers have timed out already.
  *
@@ -136,7 +141,7 @@ export async function drainRelayQueue(
 ): Promise<RelayQueueDrainResult> {
   // skipMetasUpdate: this handle exists to remove the queue, so it must not
   // write the queue's meta hash back on construction.
-  const queue = createInstrumentedQueue<RelayJobData>(queueName, { skipMetasUpdate: true });
+  const queue = createInstrumentedQueue<RelayQueueJobData>(queueName, { skipMetasUpdate: true });
   try {
     if (opts.skipIfConsumerConnected) {
       let workers: number;
@@ -150,22 +155,44 @@ export async function drainRelayQueue(
     }
     await queue.pause();
     const jobs = await queue.getJobs(['waiting', 'prioritized', 'paused', 'delayed'], 0, RELAY_DRAIN_MAX_ACKS - 1);
-    const relayIds = jobs
-      .map((job) => job?.data?.relayId)
-      .filter((relayId): relayId is string => typeof relayId === 'string' && relayId.length > 0);
-    const acks = await Promise.allSettled(
-      relayIds.map((relayId) => writeRelayAck(relayId, { status: 'owner_mismatch' })),
-    );
+    const pendingAcks: Array<() => Promise<void>> = [];
+    let droppedQueuedEvictions = 0;
+    for (const job of jobs) {
+      const relayId = job?.data?.relayId;
+      if (typeof relayId !== 'string' || relayId.length === 0) continue;
+      const evict = job.name === RELAY_EVICT_JOB_NAME ? parseRelayEvictJob(job.data) : null;
+      if (evict && !evict.awaitAck) {
+        droppedQueuedEvictions += 1;
+      } else if (evict) {
+        // Keys are agent ids from the wire: no prototype for one to land on.
+        const outcomes: Record<string, EvictOutcome> = Object.create(null);
+        for (const entry of evict.entries) {
+          if (typeof entry?.agentId === 'string') outcomes[entry.agentId] = { status: 'owner_mismatch' };
+        }
+        pendingAcks.push(() => writeRelayEvictAck(relayId, outcomes));
+      } else {
+        // A send, or an evict job this build cannot read: the scalar answer,
+        // which an evict producer maps to `indeterminate`.
+        pendingAcks.push(() => writeRelayAck(relayId, { status: 'owner_mismatch' }));
+      }
+    }
+    if (droppedQueuedEvictions > 0) {
+      // Nobody waits on these, so nothing else records that they never ran.
+      console.warn(
+        `[AgentRelayShard] ${droppedQueuedEvictions} queued relay-evict job(s) on ${queueName} dropped unrun by the drain`,
+      );
+    }
+    const acks = await Promise.allSettled(pendingAcks.map((write) => write()));
     const failed = acks.filter((ack) => ack.status === 'rejected');
     if (failed.length > 0) {
       // Those producers time out to `indeterminate` instead; the queue must still go.
       console.warn(
-        `[AgentRelayShard] ${failed.length} of ${relayIds.length} owner_mismatch ack(s) on ${queueName} failed:`,
+        `[AgentRelayShard] ${failed.length} of ${pendingAcks.length} owner_mismatch ack(s) on ${queueName} failed:`,
         (failed[0] as PromiseRejectedResult).reason,
       );
     }
     await queue.obliterate({ force: true });
-    return { removed: true, acked: relayIds.length - failed.length };
+    return { removed: true, acked: pendingAcks.length - failed.length };
   } finally {
     await queue.close().catch((err: unknown) => {
       console.warn(`[AgentRelayShard] closing drain handle for ${queueName} failed:`, err);

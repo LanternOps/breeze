@@ -87,6 +87,7 @@ func (m *mftEncoder) teardownDXGIManager() {
 	}
 	m.needInputCredits = 0
 	m.pendingOutput = nil
+	m.catchUp.noteReset()
 
 	slog.Info("DXGI device manager removed from MFT (zero-copy input disabled)")
 }
@@ -198,6 +199,7 @@ func (m *mftEncoder) resetForCPUFallback() {
 				slog.Warn("MFT prime: drain failed or encoder shutdown", "error", fmt.Sprintf("%v", drainErr))
 				return
 			}
+			m.noteSyncOutput(out)
 			if out != nil {
 				primed++
 			}
@@ -208,11 +210,15 @@ func (m *mftEncoder) resetForCPUFallback() {
 			slog.Warn("MFT prime: ProcessInput failed", "hr", fmt.Sprintf("0x%08X", uint32(ret)))
 			break
 		}
+		// A blank primer is not a screen frame: count it so its later output
+		// is not taken for the newest frame by the idle catch-up (#11622).
+		m.catchUp.noteFiller()
 		out, drainErr := m.drainOutput()
 		if drainErr != nil || !m.inited {
 			slog.Warn("MFT prime: drain failed or encoder shutdown", "error", fmt.Sprintf("%v", drainErr))
 			return
 		}
+		m.noteSyncOutput(out)
 		if out != nil {
 			primed++
 		}

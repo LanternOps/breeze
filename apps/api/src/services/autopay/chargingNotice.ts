@@ -136,8 +136,8 @@ const validateAutopayNotice: NoticePreSendValidator = async (tx, row) => {
   const [org] = await tx.select().from(organizations).where(eq(organizations.id, row.orgId)).limit(1);
   if (!org || org.partnerId !== invoice.partnerId || org.deletedAt || !isPublicLinkOrgStatusLive(org.status)) return obsolete;
   const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
-  // The planner applies the same partner bar (isAutopayEnabledForPartner), so a notice refused here is never re-planned.
-  if (!isAutopayPartnerChargeable(partner)) return obsolete;
+  // The planner applies the same partner bar (isAutopayChargingAllowed: autopay + billing switch), so a notice refused here is never re-planned.
+  if (!isAutopayPartnerChargeable(partner) || partner?.billingEnabled === false) return obsolete;
   const terms = parseAutopayTerms(schedule.termsSnapshot);
   const frozen = (row.rendered as { frozen?: Record<string, unknown> }).frozen;
   if (!terms || terms.noticeSeq !== row.seq || terms.currency !== invoice.currencyCode

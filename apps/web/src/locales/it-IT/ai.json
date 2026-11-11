@@ -646,6 +646,10 @@
   "buyCredits": {
     "link": "Acquista crediti"
   },
+  "sessionClosed": {
+    "message": "Questa conversazione è stata chiusa altrove, quindi il tuo messaggio non è stato inviato. È ancora nella casella qui sotto. Avvia una nuova sessione per continuare.",
+    "startNew": "Avvia una nuova sessione"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Questa conversazione ha raggiunto il limite di turni, quindi Wisp ha aperto una nuova sessione in questo thread. Invia di nuovo il tuo messaggio.",
@@ -662,7 +666,7 @@
       "explain": "Wisp opera entro i limiti delle tue autorizzazioni. Conferma la tua identità per continuare.",
       "code": "Codice di autenticazione",
       "passkey": "Confermerai con la tua passkey.",
-      "noFactor": "Wisp richiede una passkey o un'app di autenticazione. Configurane una prima nel tuo profilo.",
+      "noFactor": "Wisp richiede una passkey o un'app di autenticazione. Configurane una prima nel <profileLink>tuo profilo</profileLink>.",
       "noOrg": "Seleziona prima un'organizzazione nell'intestazione.",
       "confirm": "Conferma",
       "cancel": "Annulla",
@@ -982,6 +986,27 @@
       "newDescription": "Breeze AI con tutti gli strumenti a cui hai accesso. Non Wisp.",
       "wispDescription": "Wisp, con la tua autorizzazione",
       "label": "Breeze AI · non Wisp"
+    },
+    "instruction": {
+      "remembered": "Memorizzato: {{text}}",
+      "conflictBanner": "In conflitto con un’istruzione memorizzata: «{{text}}»",
+      "enforcedForm": "Wisp non proporrà: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "nessuna data di fine",
+      "keep": "Mantieni",
+      "keepForOrg": "Mantieni per tutti in {{org}}",
+      "forget": "Dimentica",
+      "unmatched": "Salvato come nota: non sono riuscito ad associare tutti i nomi dei dispositivi.",
+      "kept": "Mantenuto",
+      "keptForOrg": "Mantenuto per tutti in {{org}}",
+      "crossOrg": "Questi dispositivi appartengono a più di un'organizzazione, quindi può essere mantenuto solo per te.",
+      "actionFailed": "Non ha funzionato. Riprova.",
+      "verb": {
+        "reboot": "riavviare",
+        "shutdown": "spegnere",
+        "run_script": "eseguire uno script",
+        "patch_install": "installare patch",
+        "any_change": "apportare qualsiasi modifica"
+      }
     }
   },
   "wispConcerns": {

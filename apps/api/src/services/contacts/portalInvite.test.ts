@@ -20,6 +20,7 @@ vi.mock('./crud', async () => {
 
 import {
   planContactInvite,
+  portalLoginEmailEquals,
   bindContactLoginForInvite,
   loadOrgContactsForPortalInvite,
   lockPortalInviteAddresses,
@@ -455,5 +456,13 @@ describe('loadOrgContactsForPortalInvite', () => {
     const r = recorder([]);
     expect(await loadOrgContactsForPortalInvite(r.exec, ORG, [])).toEqual([]);
     expect(r.wheres).toHaveLength(0);
+  });
+});
+
+describe("portalLoginEmailEquals (#11529)", () => {
+  it("compares lower(email) against the lower-cased, trimmed address", () => {
+    const q = compile(portalLoginEmailEquals("  Ada@X.Test "));
+    expect(q.sql).toContain("lower(\"portal_users\".\"email\") = $1");
+    expect(q.params).toEqual(["ada@x.test"]);
   });
 });

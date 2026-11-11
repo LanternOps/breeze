@@ -80,7 +80,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
     2. Verify the download passes Gatekeeper's notarization assessment (`spctl --assess`) before installing it as root
     3. `sudo installer -pkg breeze-agent.pkg -target /`
     4. Read `enrollment.json` via `plutil -extract`
-    5. Invoke `sudo <agent> enroll <key> --server <url> [--enrollment-secret <secret>]`, where `<agent>` is the binary the package installed: `/Library/Breeze/bin/breeze-agent` when the package put it there, otherwise `/usr/local/bin/breeze-agent` (the site comes from the enrollment key; the installer no longer passes the deprecated `--site-id`)
+    5. Invoke `sudo <agent> enroll <key> --server <url> [--enrollment-secret <secret>]`, where `<agent>` is the binary the package installed: `/Library/Breeze/bin/breeze-agent` when the package put it there, otherwise `/usr/local/bin/breeze-agent` (the site comes from the enrollment key; `--site-id` was removed)
     6. Delete `enrollment.json` and the downloaded pkg
   </TabItem>
 </Tabs>
@@ -105,7 +105,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
 | `serverUrl` | yes | Passed as `--server` to the agent. Validated server-side at zip generation. |
 | `enrollmentKey` | yes | 64 lowercase hex chars. Server-side regex: `^[a-f0-9]{64}$`. |
 | `enrollmentSecret` | optional | Only set when `AGENT_ENROLLMENT_SECRET` is required by the server. Maps to `--enrollment-secret`. |
-| `siteId` | yes | Site UUID, for reference only. The device always lands in the site the enrollment key resolves to. The installers no longer pass it as `--site-id` (deprecated and ignored by the agent). |
+| `siteId` | yes | Site UUID, for reference only. The device always lands in the site the enrollment key resolves to. `enroll --site-id` was removed; do not pass it. |
 
 If you write your own wrapper, you can ignore the bundled `install.bat` / `install.sh` and just feed the JSON values straight into `breeze-agent enroll` — see [Direct binary + manual enroll](#direct-binary--manual-enroll).
 
@@ -201,7 +201,6 @@ On macOS, this manual `service install` path (unlike the `.pkg` installer) alway
 | `<enrollment-key>` (positional) | yes | Single positional argument. 64-char enrollment key. |
 | `--server <url>` | yes | API base URL. May also be set in the config file. |
 | `--enrollment-secret <secret>` | optional | The server's `AGENT_ENROLLMENT_SECRET`. Required when configured server-side. |
-| `--site-id <uuid>` | deprecated | Ignored: the site comes from the enrollment key. Passing it prints a deprecation warning; the flag will be removed in a future release. |
 | `--device-role <role>` | optional | Override the inferred device role (e.g. `workstation`, `server`). |
 | `--force` | optional | Re-enroll a host that already has a config. Replaces `agent_id` and `auth_token` only on success — a failed re-enroll leaves the existing config untouched. |
 | `--quiet` | optional | Suppress stdout progress output. Errors still go to stderr. Use for unattended installs. |

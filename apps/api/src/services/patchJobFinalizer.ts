@@ -258,7 +258,7 @@ type PendingFailureAlert = {
   patchJobId: string;
   deviceId: string;
   failedCount: number;
-  errorExcerpt: string | null;
+  errorMessage: string | null;
 };
 
 export type FinalizePatchJobDeviceInput = {
@@ -420,7 +420,7 @@ async function applyDeviceTransition(
           // summary row (patchId null) carrying `status: 'failed'` is exactly
           // one row.
           failedCount: failedRows.length,
-          errorExcerpt: firstFailedRow?.errorMessage ? firstFailedRow.errorMessage.slice(0, 200) : null,
+          errorMessage: firstFailedRow?.errorMessage ?? null,
         }
       : null,
   };

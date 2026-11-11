@@ -231,6 +231,8 @@ export default defineConfig({
                 { slug: 'features/community-ecosystem' },
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
+                { slug: 'features/portal-microsoft-sign-in' },
+                { slug: 'features/portal-domain-verification' },
                 { slug: 'features/setup-wizard' },
                 { slug: 'features/mobile' },
               ],

@@ -2531,9 +2531,9 @@
       "couldNotQueue": "{{action}} no se pudo poner en cola",
       "updateVersionQueued": "Actualización de {{version}} en cola para \"{{name}}\""
     },
-    "uninstallTitle": "Título de desinstalación",
+    "uninstallTitle": "Desinstalar este paquete",
     "unknownSoftware": "Software desconocido",
-    "updateTitle": "Actualizar título",
+    "updateTitle": "Poner en cola una actualización para este paquete",
     "updatesAvailable": "{{count}} actualizaciones disponibles",
     "updatesAvailable_one": "Actualización {{count}} disponible",
     "updatesAvailable_other": "{{count}} actualizaciones disponibles"
@@ -2565,7 +2565,7 @@
       "load": "Cargar",
       "mitigate": "Mitigar",
       "reopen": "Reabrir",
-      "scheduleRemediation": "Programar remediación"
+      "scheduleRemediation": "No se pudo programar la corrección"
     },
     "groupSummary": "{{cves}} CVE · {{findings}} hallazgos · {{patchReady}} listos para aplicar parches",
     "hideFindings": "Ocultar resultados",
@@ -2707,7 +2707,7 @@
       "agentOnlyAction": "Esta acción se aplica únicamente a los dispositivos del agente. Los dispositivos de red no tienen agente y se omitieron.",
       "agentOnlyActionManual": "Esta acción se aplica únicamente a los dispositivos del agente. Los activos manuales no tienen agente.",
       "alreadyPendingTail": "Cola ya pendiente",
-      "bulkActionFailed": "Error en la acción masiva",
+      "bulkActionFailed": "Falló la acción masiva {{action}}",
       "bulkMaintenanceSuccess": "dispositivos {{count}} {{verb}} modo de mantenimiento",
       "bulkMaintenanceSuccess_one": "dispositivo {{count}} {{verb}} modo de mantenimiento",
       "bulkMaintenanceSuccess_other": "dispositivos {{count}} {{verb}} modo de mantenimiento",
@@ -2728,14 +2728,14 @@
       "decommissionFailed": "Error al quitar",
       "decommissioned": "Quitado",
       "decommissioning": "Quitando",
-      "deleteFailed": "Eliminación fallida",
+      "deleteFailed": "No se pudo eliminar {{hostname}}",
       "deviceError": "Error del dispositivo",
-      "deviceOnline": "Dispositivo en línea",
-      "inventoryRefreshRequested": "Actualización de inventario solicitada",
+      "deviceOnline": "{{hostname}} ya está en línea.",
+      "inventoryRefreshRequested": "Se solicitó la actualización del inventario de {{hostname}}. Datos actualizados en 1–2 minutos.",
       "listTruncated": "Lista truncada",
       "maintenanceOff": "Mantenimiento desactivado",
       "maintenanceOn": "Mantenimiento activado",
-      "multibootLinked": "Arranque múltiple vinculado",
+      "multibootLinked": "Se vincularon {{count}} dispositivos como perfiles de arranque múltiple.",
       "networkSkipped_one": "1 dispositivo de red omitido — esta acción solo aplica a dispositivos con agente.",
       "networkSkipped_other": "{{count}} dispositivos de red omitidos — esta acción solo aplica a dispositivos con agente.",
       "networkSkipped": "{{count}} dispositivos de red omitidos — esta acción solo aplica a dispositivos con agente.",
@@ -2744,15 +2744,15 @@
       "permanentlyDeleted": "{{hostname}} eliminado permanentemente",
       "refreshFailed": "No se pudieron actualizar los dispositivos. La lista mostrada puede estar desactualizada.",
       "restored": "Restaurado",
-      "scriptQueueFailed": "Error en la cola de script",
-      "scriptQueuedMany": "Script en cola muchos",
-      "scriptQueuedOne": "Script en cola uno",
-      "selectDeviceForScript": "Seleccionar dispositivo para secuencia de comandos",
-      "selectTwoForMultiboot": "Seleccione dos para arranque múltiple",
-      "unknownAction": "Acción desconocida",
-      "unknownBulkAction": "Acción masiva desconocida",
+      "scriptQueueFailed": "No se pudo poner el script en cola",
+      "scriptQueuedMany": "Script \"{{script}}\" en cola para {{count}} dispositivos",
+      "scriptQueuedOne": "Script \"{{script}}\" en cola para {{hostname}}",
+      "selectDeviceForScript": "Seleccione al menos un dispositivo para ejecutar un script",
+      "selectTwoForMultiboot": "Seleccione al menos dos dispositivos para vincularlos como perfiles de arranque múltiple.",
+      "unknownAction": "Acción desconocida: {{action}}",
+      "unknownBulkAction": "Acción masiva desconocida: {{action}}",
       "wakeSentWatching": "Comando de encendido enviado; supervisando",
-      "wakeTimeout": "Tiempo de espera para despertar",
+      "wakeTimeout": "{{hostname}} no se conectó en 4 minutos. Revise el ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} en cola para dispositivos sin conexión",
       "runsWhenOnline": "Se ejecutará cuando el dispositivo esté en línea — vence el {{date}}",
       "runsWhenOnlineNoExpiry": "Se ejecutará cuando el dispositivo esté en línea",
@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Envío de registros con fallas",
       "networkIsolation": {
         "active": "Aislado"
+      },
+      "helperVersion": "Versión del asistente",
+      "deviceFunction": "Función del dispositivo",
+      "hostsWorkloads": "Aloja cargas de trabajo",
+      "workloadRuntimes": "Entornos de ejecución de cargas de trabajo",
+      "warranty": {
+        "status": "Estado de la garantía"
       }
     }
   },
@@ -3729,9 +3736,9 @@
       "noneRecorded": "Aún no se han registrado muestras de proceso para este dispositivo. El agente los recoge periódicamente; vuelva a consultar una vez que haya informado."
     },
     "errors": {
-      "liveProcesses": "Procesos en vivo",
-      "loadProcesses": "Procesos de carga",
-      "processSample": "Muestra de proceso"
+      "liveProcesses": "No se pudieron obtener los procesos en vivo",
+      "loadProcesses": "No se pudieron cargar los procesos",
+      "processSample": "No se pudo obtener la muestra del proceso"
     },
     "live": "En vivo",
     "subtitle": {

@@ -28,7 +28,24 @@ export type PortalAccountWriter =
   // W3 (#11380): approving an add-in user's access request
   // (services/portalAccessRequests.ts). New accounts from an approved request
   // use initialPortalAccountState instead.
-  | 'access_request_approve';
+  | 'access_request_approve'
+  // W4 (#11381): an invitation-bound Microsoft sign-in
+  // (services/portalOidc/accountResolution.ts). Same rows and epoch rule as
+  // accept_invite; auth_method is left unchanged (plan D13).
+  | 'sso_invite_accept'
+  // W4: instant-mode browser grant to an existing add-in account, and the MSP
+  // "grant browser access" action. Aliases of access_request_approve; the
+  // separate names exist only so the writer census and audits say which path
+  // wrote.
+  | 'sso_instant_grant'
+  | 'msp_grant_browser_access'
+  // W4: "Send Microsoft sign-in invite" to a stranded account (spec §5.11; the
+  // §5.1 `active → invited` re-invite). Unlike msp_invite it accepts an active
+  // account that HAS a password: under sso_only that password no longer signs
+  // in, and only an invitation can bind a Microsoft identity to the account
+  // (§5.6 step 2, never by email). The hash is kept (a fallback to `allowed`
+  // must not strand the person); a Microsoft accept under sso_only clears it.
+  | 'msp_sso_invite';
 
 export interface PortalAccountFacts {
   status: string;
@@ -81,9 +98,12 @@ export function isPasswordEligible(f: Pick<PortalAccountFacts, 'authMethod'>): b
  *    The caller sets `auth_method` to the provider, never `password` (plan D2).
  *  - `self_request_approved` — the same as an MSP invite: invited and granted.
  *    The caller issues the invite.
+ *
+ * W4 (#11381): `sso_instant` — a first Microsoft sign-in under the instant
+ * new-person mode. An alias of `sso_request_approved` (identity-only, W3 D2).
  */
 export function initialPortalAccountState(
-  writer: 'msp_invite' | 'addin_jit' | 'sso_request_approved' | 'self_request_approved',
+  writer: 'msp_invite' | 'addin_jit' | 'sso_request_approved' | 'self_request_approved' | 'sso_instant',
 ): { status: PortalAccountStatus; browserAccess: PortalBrowserAccess } {
   switch (writer) {
     case 'msp_invite':
@@ -92,6 +112,7 @@ export function initialPortalAccountState(
     case 'addin_jit':
       return { status: 'active', browserAccess: 'none' };
     case 'sso_request_approved':
+    case 'sso_instant':
       return { status: 'active', browserAccess: 'granted' };
   }
 }
@@ -130,6 +151,16 @@ export function planPortalAccountTransition(facts: PortalAccountFacts, writer: P
   const inviteEligible = isPasswordEligible(facts) && !facts.hasExternalIdentity;
 
   switch (writer) {
+    case 'msp_sso_invite': {
+      if (!inviteEligible) return refuse(PORTAL_USER_IDENTITY_MANAGED, 409, 'identity_managed', MSG_IDENTITY_MANAGED);
+      if (status === 'disabled') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'disabled', 'This user is disabled. Reactivate them before inviting.');
+      }
+      if (browserAccess !== 'granted') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'browser_access_none', 'Give this user browser access first.');
+      }
+      return { status: 'invited', browserAccess: 'granted', bumpEpoch: true };
+    }
     case 'msp_invite':
     case 'msp_bulk_invite': {
       // Identity check first: today's route order (an add-in login is
@@ -185,7 +216,17 @@ export function planPortalAccountTransition(facts: PortalAccountFacts, writer: P
       return { status: 'active', browserAccess, bumpEpoch: true };
     }
 
-    case 'access_request_approve': {
+    case 'sso_invite_accept': {
+      // accept_invite's rows without the password-eligibility check: the
+      // credential is the identity linked in the same transaction.
+      if (status !== 'invited' || browserAccess !== 'granted') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 400, 'not_acceptable', MSG_INVALID_INVITE);
+      }
+      return { status: 'active', browserAccess, bumpEpoch: true };
+    }
+
+    case 'access_request_approve':
+    case 'sso_instant_grant': {
       // Grants the browser portal to an existing (add-in) account. No epoch
       // bump: granting must not kill the person's live add-in sessions.
       if (status === 'disabled') {
@@ -193,6 +234,17 @@ export function planPortalAccountTransition(facts: PortalAccountFacts, writer: P
       }
       if (status === 'invited') {
         return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'invited', 'This user has a pending invite. Resend the invite instead.');
+      }
+      return { status: 'active', browserAccess: 'granted', bumpEpoch: false };
+    }
+
+    case 'msp_grant_browser_access': {
+      // The same rows as access_request_approve, with the MSP action's wording.
+      if (status === 'disabled') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'disabled', 'This user is disabled. Reactivate them first.');
+      }
+      if (status === 'invited') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'invited', 'This user has a pending invite.');
       }
       return { status: 'active', browserAccess: 'granted', bumpEpoch: false };
     }

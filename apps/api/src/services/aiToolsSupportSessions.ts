@@ -27,7 +27,7 @@ import { devices, organizations, remoteSessions, supportSessions } from '../db/s
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
-import { endSupportSession } from './quickSupportEnd';
+import { endSupportSession, type EndSupportSessionResult } from './quickSupportEnd';
 import { deviceScopeCondition } from './aiToolsSiteScope';
 import { SUPPORT_SESSION_ACTIONS } from './aiToolSchemasDeviceOps';
 import { auditToolWrite, bounded, clampLimit, json, jsonError, notFound, thrown } from './aiToolsSoftwareShared';
@@ -110,10 +110,16 @@ async function views(auth: AuthContext, sessions: SessionRow[]) {
 }
 
 /** What the model should say about the client after an end (quickSupportEnd.ts: credentials are revoked either way). */
-function endNote(session: SessionRow, result: { commandDelivered: boolean; disconnect: unknown }): { note?: string } {
+function endNote(
+  session: SessionRow,
+  result: Pick<EndSupportSessionResult, 'commandDelivered' | 'disconnect'>,
+): { note?: string } {
   if (!session.deviceId) return { note: 'No client had joined this session; it is closed.' };
   if (result.disconnect === 'close-failed') {
     return { note: 'Access is revoked, but the client\'s connection did not close cleanly; it removes itself once it fails to re-authenticate.' };
+  }
+  if (result.disconnect === 'unconfirmed') {
+    return { note: 'Access is revoked, but closing the client\'s connection was not confirmed; it removes itself once it fails to re-authenticate.' };
   }
   if (!result.commandDelivered) {
     return { note: 'The client is not connected right now. Its access is already revoked; it removes itself within about 10 minutes of reconnecting.' };

@@ -18,6 +18,7 @@
  *     src/__tests__/integration/portalAccessPolicyEnforcement.integration.test.ts
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, isNull } from 'drizzle-orm';
@@ -33,7 +34,7 @@ vi.mock('../../services/email', async (importOriginal) => ({
   }),
 }));
 
-import { portalAccessPolicies, portalUsers } from '../../db/schema';
+import { clientAiTenantMappings, portalAccessPolicies, portalUsers } from '../../db/schema';
 import { portalRoutes } from '../../routes/portal';
 import { issuePortalCapabilityToken } from '../../routes/portal/capabilityTokens';
 import { portalInviteTokens, portalRateLimitBuckets, portalResetTokens, portalSessions } from '../../routes/portal/helpers';
@@ -89,6 +90,12 @@ async function loginToken(email: string, orgId: string): Promise<string> {
 async function setup() {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
+  // W4 (#11381) D2: Microsoft is effective only for an org with a proven Entra tenant,
+  // so every org here has one (its loss is portalAccessPolicyResolver's / portalSessionCaps' case).
+  await getTestDb().insert(clientAiTenantMappings).values({
+    orgId: org.id, entraTenantId: randomUUID(), provenAt: new Date(), provenVia: 'proof_run',
+    provenEvidence: { via: 'proof_run', adminOid: randomUUID(), runId: randomUUID() },
+  });
   return { partnerId: partner.id, orgId: org.id };
 }
 

@@ -1,6 +1,7 @@
 // Ticket type (#7900): fixed ITIL core set. Labels come from i18n only
 // (`tickets:ticketType.<type>`); the keys here are API values, never copy.
 import { TICKET_TYPES, type TicketType } from '@breeze/shared';
+import { NEUTRAL_CHIP_TEXT } from './ticketConfig';
 
 export type { TicketType };
 
@@ -16,12 +17,14 @@ export function ticketTypeLabelKey(type: TicketType): string {
   return `ticketType.${type}`;
 }
 
-/** Tailwind classes for the type chip; neutral for incident (the default). */
+/** Tailwind classes for the type chip. A type is not a status, so every type
+ *  is the same neutral chip; the label carries the meaning (colour on the
+ *  board is reserved for status). Text clears 4.5:1 (ticketChipContrast.test.tsx). */
 export const TICKET_TYPE_CHIP_CLASS: Record<TicketType, string> = {
-  incident: 'bg-muted text-muted-foreground',
-  service_request: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
-  problem: 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
-  change: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
+  incident: `bg-muted ${NEUTRAL_CHIP_TEXT}`,
+  service_request: `bg-muted ${NEUTRAL_CHIP_TEXT}`,
+  problem: `bg-muted ${NEUTRAL_CHIP_TEXT}`,
+  change: `bg-muted ${NEUTRAL_CHIP_TEXT}`,
 };
 
 const TYPE_PREFIX = 'type=';

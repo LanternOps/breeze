@@ -692,6 +692,8 @@
         "override": "Outremise",
         "revertToParent": "Retour au nom de parent",
         "saving": "Enregistrement...",
+        "notSaved": "Non enregistré : {{reason}}",
+        "saveBlocked": "Non enregistré. Corrigez le problème signalé et réessayez.",
         "revertConfirmTitle": "Revenir à la stratégie parente ?",
         "revertConfirmMessage": "Cette action supprime la substitution {{feature}} de cette stratégie. Ses paramètres sont perdus et ceux de la stratégie parente s'appliquent à tous les appareils utilisant cette stratégie. Action irréversible.",
         "removeConfirmTitle": "Supprimer cette configuration ?",
@@ -725,7 +727,24 @@
         "endpointMessaging": "Messagerie des terminaux",
         "endpointMessagingHelp": "Permet aux techniciens d'envoyer des messages à la personne devant l'appareil.",
         "allowUserReply": "Autoriser les réponses de l'utilisateur",
-        "allowUserReplyHelp": "Permet à la personne devant l'appareil de répondre dans un chat lancé par un technicien. Désactivé, les chats sont à sens unique."
+        "allowUserReplyHelp": "Permet à la personne devant l'appareil de répondre dans un chat lancé par un technicien. Désactivé, les chats sont à sens unique.",
+        "brandingTitle": "Image de marque du Helper",
+        "brandingHelp": "Textes et couleurs affichés dans le Helper. Laissez un champ vide pour hériter. Les logos, liens et styles personnalisés ne sont pas pris en charge.",
+        "brandingDisplayName": "Nom d'affichage",
+        "brandingCompanyName": "Nom de l'entreprise",
+        "brandingWelcomeTitle": "Titre de bienvenue",
+        "brandingWelcomeMessage": "Message de bienvenue",
+        "brandingSupportLabel": "Libellé du soutien",
+        "brandingPortalLabel": "Libellé du portail",
+        "brandingPrimaryColor": "Couleur principale",
+        "brandingAccentColor": "Couleur d'accent",
+        "brandingInheritedFromParent": "Hérité de la politique parente : {{value}}",
+        "brandingBlankUsesDefault": "Vide : la valeur par défaut de Breeze est utilisée.",
+        "brandingCharCount": "{{used}} / {{max}}",
+        "brandingErrorTooLong": "Utilisez au plus {{max}} caractères.",
+        "brandingErrorControl": "Retirez les caractères de contrôle ou de mise en forme invisibles.",
+        "brandingErrorColor": "Utilisez une couleur au format #RRGGBB, par exemple #1A3C8F.",
+        "brandingErrorContrast": "Cette couleur est difficile à lire sur l'arrière-plan du Helper. Choisissez une couleur plus foncée ou plus claire."
       },
       "inlineEntityPicker": {
         "search": "Rechercher...",
@@ -2048,7 +2067,9 @@
       "builtinVersionsReadOnly": "Géré par Breeze. Les versions des packages intégrés ne peuvent être ni ajoutées ni modifiées ici.",
       "installScriptsReadOnlyOnEdit": "Les scripts d’installation d’une version existante ne peuvent pas être modifiés et fixent son système d’exploitation cible. Pour les changer, ajoutez une nouvelle version : elle reprend ces scripts.",
       "partnerWideRequiresFullAccess": "Les paquets à l'échelle du partenaire ne peuvent être modifiés que par un administrateur partenaire à accès complet.",
-      "builtinArgsDefault": "Laissez vide pour utiliser les arguments par défaut du paquet, y compris sa clé par organisation."
+      "builtinArgsDefault": "Laissez vide pour utiliser les arguments par défaut du paquet, y compris sa clé par organisation.",
+      "versionRequired": "La version est obligatoire",
+      "downloadUrlInvalid": "Saisissez une URL http(s) valide, par exemple https://example.com/package.msi"
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insérer une variable de temps de déploiement",

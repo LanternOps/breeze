@@ -48,6 +48,7 @@ import {
 import { loadProposalApprovalSummary } from './scriptProposals/approvalSummary';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
+import { recordWispToolOutcome } from './wisp/turnRecord';
 import type { TenantToolDescriptor } from './toolSources/resolver';
 // W5 PR C (#5220): the leaf name rule only; the flow gate and resolver are
 // loaded on first use so this module's import graph does not widen.
@@ -58,6 +59,11 @@ import type { WispCeilingRefusal } from './wisp/chatCeiling';
 // Leaf data module (no imports): loading it never pulls in the Wisp graph.
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
 import { classifyWispUnattendedRead } from './wisp/unattendedReads';
+import {
+  STANDING_CHECK_UNAVAILABLE_MESSAGE,
+  checkStandingInstructionsForCall,
+  standingConflictDescription,
+} from './wisp/standingInstructionGate';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { aiTools as registeredAiTools } from './aiToolNames';
@@ -495,6 +501,11 @@ export type PreFlightResult = {
   code?: ResolveFailureReason | 'turn_limit_reached';
   /** The credit / plan gate refused the turn (status is 402): the code the client switches on. */
   billingCode?: AiDenialClientCode;
+  /**
+   * #11609: the session was closed elsewhere before this turn ran. Typed, not
+   * a message match, so the route answers a coded 410 `session_closed`.
+   */
+  sessionRefusal?: 'session_closed';
 };
 
 /**
@@ -631,13 +642,11 @@ async function runPreFlightAdmission(
     // below would have produced that wording lazily. Without this, the same
     // terminal state surfaced as 410 or 400 depending purely on which path
     // got there first.
-    return {
-      ok: false,
-      error:
-        session.status === 'expired'
-          ? 'Session has expired. Please start a new session.'
-          : 'Session is not active',
-    };
+    // #11609: 'closed' (ended elsewhere, e.g. DELETE /ai/sessions/:id) is worded
+    // the same way so the route can code it (410 session_closed) instead of a
+    // bare 400 the client can only show raw.
+    if (session.status === 'expired') return { ok: false, error: 'Session has expired. Please start a new session.' };
+    return { ok: false, error: 'This conversation was closed. Please start a new session.', sessionRefusal: 'session_closed' };
   }
 
   if (session.turnCount >= session.maxTurns) {
@@ -1120,6 +1129,27 @@ async function runWispCeilingGate(
 }
 
 /**
+ * #10428 W06: the standing-instruction check for one Wisp call, under the
+ * ceiling this call passed. Never throws: any failure refuses the call (only
+ * a Wisp Tier >= 2 call reaches it).
+ */
+async function standingInstructionCheck(
+  session: ActiveSession,
+  wispState: WispCallState,
+  toolName: string,
+  input: Record<string, unknown>,
+): Promise<{ action: 'refuse'; error: string } | { action: 'warn'; text: string } | { action: 'none' }> {
+  try {
+    // The call's own reach expands a run_script group target to its devices.
+    return await checkStandingInstructionsForCall({ ceiling: wispState.ceiling, toolName, input, auth: callReach(session, wispState) });
+  } catch (err) {
+    console.error(`[AI-SDK] Standing-instruction check failed for '${toolName}'; refusing`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return { action: 'refuse', error: STANDING_CHECK_UNAVAILABLE_MESSAGE };
+  }
+}
+
+/**
  * #10193 — who an approval raised from this chat session is attributed to on
  * the approval row, the mobile push and the intent: Wisp under a grant (the
  * grant-driven voice, #10131), Breeze AI otherwise.
@@ -1214,6 +1244,10 @@ async function wispSelfStateSkipsCard(
     // grant_id), so the only rows it can touch are this grant's own.
     case 'own_thread':
       return true;
+    // W07 (#11496): only a notify check-in is a pure add. A `run` one spends
+    // grant budget unattended when it fires; an unrecognised mode asks too.
+    case 'notify_check_in':
+      return input.mode === undefined || input.mode === 'notify';
     case 'own_memory':
       return input.ownerKind === 'user';
     case 'own_concern': {
@@ -1642,6 +1676,18 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       specialistOrgName = gate.orgName;
     }
 
+    // #10428 W06 (spec §5.3): a Wisp device-changing call meets the user's
+    // remembered standing instructions before any card. A confirmed,
+    // enforceable deny on an exact verb refuses it here; any other match
+    // forces a card (even under auto-approve) carrying a conflict banner.
+    // Narrowing only. Re-checked after a Tier-2 card's wait below.
+    let standingConflict: { text: string } | null = null;
+    if (guardrailCheck.tier >= 2 && wispCall.current && !flowTool && !tenant) {
+      const standing = await standingInstructionCheck(session, wispCall.current, toolName, input);
+      if (standing.action === 'refuse') return { allowed: false, error: standing.error };
+      if (standing.action === 'warn') standingConflict = { text: standing.text };
+    }
+
     // Tier 2+: Requires user approval (mutating and destructive tools)
     // NOTE: This callback runs inside the background processor which operates
     // outside the request's AsyncLocalStorage DB context (via runOutsideDbContext).
@@ -1876,7 +1922,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && !session.isPaused
         && !planInFlight
         && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
-      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || unattendedRead)) {
+      // #10428 W06: a standing-instruction warning always reaches a human.
+      if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || unattendedRead)) {
         const liveDenial = await refreshTier2Authority(
           'Authorization changed before execution; the action was not executed.',
         );
@@ -2078,7 +2125,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
 
       if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
-        if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName)) {
+        // #10428 W06: a step that now conflicts with a standing instruction
+        // takes the card below (the plan's approval never saw the banner).
+        if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName) && !standingConflict) {
           const liveDenial = await refreshTier2Authority(
             'Authorization changed after plan approval; the action was not executed.',
           );
@@ -2274,9 +2323,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
       // every surface that renders one: the chat card, the durable intent's
       // stored reason, the /approvals queue, and the mobile push.
-      const description = scriptRunContext
+      const contextDescription = scriptRunContext
         ? `${baseDescription}. ${describeScriptRunContext(scriptRunContext)}`
         : baseDescription;
+      // #10428 W06: the conflict leads the description, for the same reason.
+      const description = standingConflict
+        ? standingConflictDescription(standingConflict.text, contextDescription)
+        : contextDescription;
 
       if (guardrailCheck.tier >= 3) {
         // Hoisted above the try below (unlike `intent`, which stays
@@ -2480,6 +2533,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             input: pinnedCard ? pinnedCard.input : input,
             description: pinnedCard ? pinnedCard.description : description,
             deviceContext,
+            ...(standingConflict ? { standingInstructionConflict: standingConflict } : {}),
             intentBacked: true,
             // #10416: the requester can decide only an intent that fanned a
             // row out to them; otherwise someone else must (four-eyes).
@@ -2715,9 +2769,11 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             );
             // Wisp W04 (Review Focus 2): a Wisp ceiling refusal at release
             // (services/wisp/releaseCeiling.ts) carries fixed user-facing copy
-            // in details.reason; only `wisp_*` codes may surface it.
+            // in details.reason; only `wisp_*` codes may surface it, and the
+            // standing-instruction refusal (#10428 W06), which uses the same seam.
             const wispReleaseReason =
-              revalidation.errorCode.startsWith('wisp_') && typeof revalidation.details?.reason === 'string'
+              (revalidation.errorCode.startsWith('wisp_') || revalidation.errorCode === 'standing_instruction_denied')
+              && typeof revalidation.details?.reason === 'string'
                 ? revalidation.details.reason
                 : undefined;
             return await failMatchedPlanStep({
@@ -3157,6 +3213,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             deviceContext,
             scriptRunContext,
             ...(scriptProposal ? { scriptProposal } : {}),
+            ...(standingConflict ? { standingInstructionConflict: standingConflict } : {}),
             pushedToPhone,
             waitingOn: 'you',
           });
@@ -3228,14 +3285,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             captureException(err instanceof Error ? err : new Error(String(err)));
             console.error('[AI-SDK] Failed to close out settled approval record:', approvalExec.id, err);
           }
-          // Not reachable with a non-null matchedPlanStepIndex today (both
-          // secret-bearing tools are statically tier 3, so the only way to
-          // land in this tier<3 legacy branch with a matched-but-declined
-          // plan step — a tier-2 secret-bearing tool — is dead code). Wrap
-          // anyway: it costs nothing (failMatchedPlanStep no-ops when
-          // matchedPlanStepIndex is null) and removes a latent trap that is
-          // currently safe only by the coincidence of two other files'
-          // static tier assignments.
+          // A matched plan step lands in this tier<3 branch when a standing
+          // instruction warned on it (#10428 W06) and declined the plan
+          // shortcut; a step nobody approved stops the plan.
+          // failMatchedPlanStep no-ops when matchedPlanStepIndex is null.
           return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected or timed out' });
         }
 
@@ -3254,6 +3307,37 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             captureException(err instanceof Error ? err : new Error(String(err)));
           }
           return liveDenial;
+        }
+
+        // #10428 W06 (quorum): this in-session card never becomes an intent,
+        // so no release re-check would see an instruction confirmed while it
+        // waited. Check again before running; a refusal now stops the call.
+        if (wispCall.current && !flowTool && !tenant) {
+          const standing = await standingInstructionCheck(session, wispCall.current, toolName, input);
+          if (standing.action === 'refuse') {
+            try {
+              await withDbAccessContext(
+                { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+                () => db.update(aiToolExecutions)
+                  .set({ status: 'rejected', errorMessage: standing.error })
+                  .where(eq(aiToolExecutions.id, approvalExec!.id)),
+              );
+            } catch (err) {
+              captureException(err instanceof Error ? err : new Error(String(err)));
+            }
+            return await failMatchedPlanStep({ allowed: false, error: standing.error }, ' The plan has been stopped.');
+          }
+        }
+
+        // A warned plan step that took this card (W06) is authorized now.
+        if (matchedPlanStepIndex !== null && session.activePlanId) {
+          session.eventBus.publish({
+            type: 'plan_step_start',
+            planId: session.activePlanId,
+            stepIndex: matchedPlanStepIndex,
+            toolName,
+          });
+          session.currentPlanStepIndex = matchedPlanStepIndex + 1;
         }
 
         // Mark as executing
@@ -3482,6 +3566,11 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // whether the DB writes below succeed — postToolUse only fires for a tool
     // that actually ran, which is the event the counter tracks.
     session.pendingTurnToolExecutionCount += 1;
+    // #10428 (W05): a Wisp turn keeps what its tools did for the turn-end hooks
+    // (wisp/turnEnd.ts: the `remember` calls the instruction capture skips).
+    if (session.wispGrant && session.currentTurn) {
+      recordWispToolOutcome(session.currentTurn, { toolName, input, isError, output });
+    }
     // Pair this result with its own tool_use by the id the SDK sent with the
     // call, never by queue position (#7931). Claiming also tells the
     // dropped-call fallback (#3094) this call ran, whichever of this and its

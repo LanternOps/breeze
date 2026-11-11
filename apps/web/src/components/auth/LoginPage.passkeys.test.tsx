@@ -79,7 +79,7 @@ describe('LoginPage passkey MFA', () => {
 
     await waitFor(() => expect(apiVerifyPasskeyMFAMock).toHaveBeenCalled());
     expect(apiVerifyPasskeyMFAMock).toHaveBeenCalledWith('temp-passkey');
-    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc'));
   });
 
   // #2153: when the primary method is TOTP but the account also has a passkey,
@@ -106,7 +106,7 @@ describe('LoginPage passkey MFA', () => {
 
     await waitFor(() => expect(apiVerifyPasskeyMFAMock).toHaveBeenCalled());
     expect(apiVerifyPasskeyMFAMock).toHaveBeenCalledWith('temp-totp');
-    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc'));
   });
 
   // Guard: no passkey alternate when the account has none.

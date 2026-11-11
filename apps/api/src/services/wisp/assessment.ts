@@ -35,7 +35,14 @@
  */
 import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
-import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind, WatchKind } from '@breeze/shared';
+import {
+  WISP_CHECK_IN_TRIGGER_EVENTS,
+  type Concern,
+  type ConcernSeverity,
+  type ConcernSubject,
+  type ConcernSubjectKind,
+  type WatchKind,
+} from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
@@ -61,6 +68,7 @@ import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
 import { captureException } from '../sentry';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce, utcDayWindow } from './budget';
+import { CHECK_IN_EVIDENCE_OUTPUT_MAX, type CheckInEvidence } from './checkInTriggers';
 import { ConcernSubjectHeldError, listConcernsForCeiling, resolveConcernBySignature, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
 import {
@@ -87,6 +95,13 @@ import type {
 
 export type { AssessmentReason, AssessmentRunContext, AssessmentDigest, WispAssessmentTriggerRef } from './assessmentTypes';
 export { assessableOrgIds } from './assessableOrgs';
+
+/**
+ * W07 (#11496): every caller-supplied dedupe key starts with this, so it can
+ * never collide with a derived `wisp-assess-` key or another trigger's key.
+ * `checkInRunDedupeKey` (wisp/checkInRuns.ts) builds it.
+ */
+export const CHECK_IN_RUN_DEDUPE_PREFIX = 'wisp-check-in-';
 
 /** Rows per digest table (w00: bounded, newest first). */
 const DIGEST_ROW_LIMIT = 25;
@@ -208,13 +223,33 @@ export async function enqueueAssessment(
      * fixed in W07). Unset → a time-based key (direct callers).
      */
     occurrenceKey?: string;
+    /**
+     * W07 (#11496): the run's dedupe key, verbatim, in place of the derived
+     * one. Only a run-mode check-in sets it (`checkInRunDedupeKey`), so it
+     * must start with CHECK_IN_RUN_DEDUPE_PREFIX: one check-in admits at most
+     * one run, whichever path fires it and however often it retries.
+     */
+    dedupeKey?: string;
+    /**
+     * W07: admit only while this is still the grant's current revision (a
+     * run-mode check-in's scheduling revision). Anything else skips as
+     * `grant_revision_changed` before the ceiling is resolved or any budget
+     * is charged, so a revised grant, wider or narrower, never runs it.
+     */
+    requireRevisionId?: string;
   } & DeterministicDigestHint,
 ): Promise<{ runId: string } | { skipped: string }> {
+  if (input.dedupeKey !== undefined && !input.dedupeKey.startsWith(CHECK_IN_RUN_DEDUPE_PREFIX)) {
+    throw new Error(`enqueueAssessment: a dedupeKey must start with ${CHECK_IN_RUN_DEDUPE_PREFIX}`);
+  }
   if (!wispEnabled()) return skipAssessment('wisp_disabled', 'skipped_admission');
   const { grantId, orgId, reason } = input;
 
   const grant = await loadGrantPin(grantId);
   if (!grant?.currentRevisionId) return skipAssessment('grant_inactive', 'skipped_grant');
+  if (input.requireRevisionId !== undefined && grant.currentRevisionId !== input.requireRevisionId) {
+    return skipAssessment('grant_revision_changed', 'skipped_grant');
+  }
   // Spec §10 claim-time re-check: a partner that lost the entitlement admits nothing.
   if (!(await hasEntitlement(grant.partnerId, 'wisp'))) return skipAssessment('not_entitled', 'skipped_admission');
 
@@ -259,9 +294,9 @@ export async function enqueueAssessment(
     triggerKind: 'schedule',
     deviceId: null,
     profile: 'assessment',
-    dedupeKey: input.occurrenceKey
+    dedupeKey: input.dedupeKey ?? (input.occurrenceKey
       ? `wisp-assess-${grantId}-${orgId}-o${createHash('sha256').update(input.occurrenceKey).digest('hex').slice(0, 24)}`
-      : `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
+      : `wisp-assess-${grantId}-${orgId}-${Date.now()}`),
     triggerRef: { wisp: triggerRef },
     grant: { grantId, grantRevisionId: ceiling.revisionId },
   };
@@ -379,8 +414,19 @@ async function lastCleanAssessmentFinish(grantId: string, orgId: string): Promis
       eq(aiAgentRuns.profile, 'assessment'),
       inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
       or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
+      notCheckInRun(),
     )), 'wisp.assessment.noChangesAnchor');
   return toDate(row?.at);
+}
+
+/**
+ * W07 (#11496): not a run check-in's assessment. That run answers one
+ * follow-up the person asked for, so it never moves the org's digest
+ * watermark or the no-changes anchor: the next tick still sees every change
+ * since the last full look. Null-safe: a row with no reason kind is kept.
+ */
+function notCheckInRun(): SQL {
+  return sql`coalesce(${aiAgentRuns.triggerRef} -> 'wisp' -> 'reason' ->> 'kind', '') <> ${'check_in'}`;
 }
 
 /** Not a row the no-changes gate wrote (null-safe: a null error_code is kept). */
@@ -640,6 +686,7 @@ export async function lastAssessmentWatermark(grantId: string, orgId: string): P
       eq(aiAgentRuns.profile, 'assessment'),
       inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
       or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
+      notCheckInRun(),
     )), 'wisp.assessment.watermark');
   return toDate(row?.at);
 }
@@ -740,9 +787,37 @@ function parseReason(v: unknown): AssessmentReason | null {
       return { kind: 'onboarding' };
     case 'on_demand':
       return isNonEmptyString(r.requestId) ? { kind: 'on_demand', requestId: r.requestId } : null;
+    case 'check_in':
+      // W07: the instruction is rendered into the prompt (single-lined there);
+      // malformed evidence is dropped, never the reason.
+      return isUuid(r.checkInId) && isNonEmptyString(r.instruction)
+        ? { kind: 'check_in', checkInId: r.checkInId, instruction: r.instruction, evidence: parseCheckInEvidence(r.evidence) }
+        : null;
     default:
       return null;
   }
+}
+
+const TRIGGER_EVENTS: ReadonlySet<string> = new Set(WISP_CHECK_IN_TRIGGER_EVENTS);
+const EVIDENCE_STATUS_MAX = 64;
+
+/** A check_in reason's evidence as stored; null when absent or not the shape triggerConditionOf writes. */
+function parseCheckInEvidence(v: unknown): CheckInEvidence | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const e = v as Record<string, unknown>;
+  if (typeof e.kind !== 'string' || !TRIGGER_EVENTS.has(e.kind)) return null;
+  if (!isNonEmptyString(e.status) || e.status.length > EVIDENCE_STATUS_MAX) return null;
+  const at = typeof e.at === 'string' ? toDate(e.at) : null;
+  if (!at) return null;
+  const out: CheckInEvidence = { kind: e.kind as CheckInEvidence['kind'], status: e.status, at: at.toISOString() };
+  if (e.exitCode === null || (typeof e.exitCode === 'number' && Number.isInteger(e.exitCode))) out.exitCode = e.exitCode as number | null;
+  if (typeof e.outputHead === 'string' && e.outputHead !== '') out.outputHead = Array.from(e.outputHead).slice(0, CHECK_IN_EVIDENCE_OUTPUT_MAX).join('');
+  if (e.lastSeenAt === null) out.lastSeenAt = null;
+  else if (typeof e.lastSeenAt === 'string') {
+    const seen = toDate(e.lastSeenAt);
+    if (seen) out.lastSeenAt = seen.toISOString();
+  }
+  return out;
 }
 
 /** `ai_agent_runs.trigger_ref.wisp` → WispAssessmentTriggerRef; null when absent or malformed. */
@@ -1131,7 +1206,10 @@ export async function loadAssessmentContext(run: {
   // current open ones rather than the 24 h fallback window. #10406: a person
   // asking "go through the open alerts" gets the same open-alerts digest,
   // whatever the watermark.
-  const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding' || ref.reason.kind === 'on_demand';
+  // W07: a check-in run is a follow-up on one thing the person asked about,
+  // never a look at the whole org's current state, whatever the watermark.
+  const firstLook = ref.reason.kind !== 'check_in'
+    && (ref.watermark === null || ref.reason.kind === 'onboarding' || ref.reason.kind === 'on_demand');
   const reason = ref.reason;
   const anomalyIncidentId = reason.kind === 'event' ? reason.anomalyIncidentId ?? null : null;
   const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook, anomalyIncidentId);

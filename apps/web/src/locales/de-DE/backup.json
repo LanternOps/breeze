@@ -693,7 +693,8 @@
     "confirmLargeFolderSelection": "Diese Auswahl umfasst etwa {{count}} Dateien und die Wiederherstellung kann einige Zeit dauern. Fortfahren?",
     "name": "Name",
     "size2": "Größe",
-    "modified": "Geändert"
+    "modified": "Geändert",
+    "noSnapshotsYetFilesAppearHere": "Noch keine Snapshots vorhanden. Dateien erscheinen hier, sobald die erste Sicherung abgeschlossen ist."
   },
   "vMRestoreConfirmStep": {
     "reviewConfirm": "Überprüfen und bestätigen",

@@ -56,7 +56,11 @@ export const portalAccessPolicyPatchSchema = z.object({
 }).partial().strict() satisfies z.ZodType<Partial<PortalAccessPolicyRowValues>>;
 export type PortalAccessPolicyPatch = z.infer<typeof portalAccessPolicyPatchSchema>;
 
-/** What the deployment can run. W3: all false; W4 (entra), W7 (google) and W6 (self-registration) flip their key. */
+/**
+ * What the deployment can run. `entra` is on when the portal Entra app is configured
+ * (W4: PORTAL_ENTRA_CLIENT_ID + PORTAL_ENTRA_CLIENT_SECRET); W7 (google) and W6
+ * (self-registration) flip their own key.
+ */
 export interface PortalSignInCapabilities {
   entra: boolean;
   google: boolean;
@@ -78,11 +82,21 @@ export interface PortalAccessPolicyView {
   capabilities: PortalSignInCapabilities;
   /** Partner view: canManagePartnerWidePolicies. Org view: true (the route's org write gate decides). */
   canEdit: boolean;
+  /**
+   * Org view: whether the org's Microsoft (Entra) tenant is proven (W4 #11381, spec §5.4).
+   * Microsoft is effectively off without it, inherited or not. Partner view: null (proof
+   * is a fact about one org; the partner default means "on wherever a tenant is proven").
+   */
+  entraTenantProven: boolean | null;
 }
 
 export const PORTAL_ACCESS_POLICY_ERROR_CODES = {
   METHOD_UNAVAILABLE: 'PORTAL_ACCESS_POLICY_METHOD_UNAVAILABLE',
   SSO_ONLY_NEEDS_SSO: 'PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO',
+  /** W4: an org override turns Microsoft on before the org's tenant is proven (400). */
+  TENANT_NOT_PROVEN: 'PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN',
+  /** W4 D12: an `sso_only` save without the current impact acknowledgement (409). */
+  SSO_ONLY_CONFIRM_REQUIRED: 'PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED',
 } as const;
 export type PortalAccessPolicyErrorCode =
   typeof PORTAL_ACCESS_POLICY_ERROR_CODES[keyof typeof PORTAL_ACCESS_POLICY_ERROR_CODES];

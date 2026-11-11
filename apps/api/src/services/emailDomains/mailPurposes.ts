@@ -91,6 +91,16 @@ export const MAIL_PURPOSES = {
   // Connection health daily digest to MSP staff and grant owners (spec 2026-10-15 §4).
   // Send site: services/connectionHealth/digest.ts.
   'staff.connection_health_digest': { lane: 'platform' },
+  // Portal registration W4 (#11381, plan D7): Breeze tells a partner's admins
+  // that another organization proved the Microsoft tenant one of their orgs was
+  // linked to, so that link was removed. Platform lane, like the trust notices:
+  // mail from Breeze to the partner's own staff. Send site:
+  // services/portalEntraTenantProof.ts (EmailService.sendPortalEntraTenantDisplaced).
+  'partner.portal_entra_tenant.displaced': { lane: 'platform' },
+  // Portal registration W5 (#11382): Breeze tells a partner's admins that a
+  // customer org's domain is no longer verified. Platform lane, like the entra
+  // notice above. Send site: EmailService.sendPortalDomainVerificationLost.
+  'partner.portal_domain_verification.lost': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 

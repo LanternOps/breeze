@@ -1518,6 +1518,29 @@ describe('user routes', () => {
       expect(JSON.stringify(body)).not.toContain('argon2id');
     });
 
+    // #11621: the list /me returns must be resolved exactly as requirePermission
+    // resolves it, or the web gates a control (Connect Desktop) differently from
+    // the route behind it. requirePermission passes the token scope, which is
+    // what lets a system-scope platform-admin session (no partner/org axis)
+    // resolve at all; without it /me answered [] for that session.
+    it.each([
+      [{ scope: 'partner', partnerId: 'partner-123', orgId: null }, { partnerId: 'partner-123', orgId: undefined, scope: 'partner' }],
+      [{ scope: 'organization', partnerId: null, orgId: 'org-9' }, { partnerId: undefined, orgId: 'org-9', scope: 'organization' }],
+      [{ scope: 'system', partnerId: null, orgId: null }, { partnerId: undefined, orgId: undefined, scope: 'system' }],
+    ])('resolves permissions on the same axis + scope as requirePermission (%o)', async (authShape, expected) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', { ...authShape, user: { id: 'user-123', email: 'admin@example.com' } });
+        return next();
+      });
+      mockMeRow(meRow());
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', expected);
+    });
+
     // The web app hides billing nav and action buttons off this list. If /me
     // stops surfacing the user's grants, gated controls would render for users
     // who lack the permission (server still 403s, but it's a UX regression).

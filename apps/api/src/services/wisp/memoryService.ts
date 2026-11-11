@@ -17,7 +17,7 @@
  * Agent-side reads/writes never come through here — they go through
  * memoryBroker.ts, under the grant ceiling.
  */
-import { and, desc, eq, isNull, ne, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, type MemoryConfidence } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../../db';
 import { aiMemoryBlocks, aiSessions, organizations, users } from '../../db/schema';
@@ -27,7 +27,7 @@ import { createAuditLog } from '../auditService';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import {
   MEMORY_CONTENT_MAX_BYTES, MEMORY_SUBJECT_KEY_MAX_LENGTH, toMemoryBlock,
-  memoryKeyLock, type MemoryBlock, type MemoryBlockType,
+  memoryKeyLock, type MemoryBlock, type MemoryBlockType, type MemoryOwner,
 } from './memoryBroker';
 
 export type MemoryServiceErrorCode =
@@ -41,7 +41,9 @@ export type MemoryServiceErrorCode =
   /** recordHumanBlock: the caller may not author memory for the named owner. */
   | 'owner_mismatch'
   /** confirmBlock: a newer block already replaced this one; confirming it would orphan the key. */
-  | 'superseded';
+  | 'superseded'
+  /** #10428: a captured instruction can be shared with an org only when every target device is in that one org. */
+  | 'cross_org';
 
 export class MemoryServiceError extends Error {
   readonly code: MemoryServiceErrorCode;
@@ -400,4 +402,145 @@ export async function recordHumanBlock(auth: AuthContext, input: RecordHumanBloc
   });
 
   return toMemoryBlock(row);
+}
+
+// ---------------------------------------------------------------------------
+// #10428 (W05): standing instructions captured at turn end. The extractor
+// writes one user-owned block per target device, all sharing
+// `content.instructionId`; the chip acts on that group. Every read and write
+// here is restricted to the CALLER's own user blocks (on top of RLS) — apart
+// from the confirmed org copy that keep-for-org creates — and only
+// to captured blocks (`content.captureId` set): a block the model wrote itself
+// with `remember` stays on the memory page's per-block controls.
+// ---------------------------------------------------------------------------
+
+/** One of the caller's captured blocks, and the owner kind of the block that replaced it (null: not replaced, or not visible). */
+export type CapturedInstructionBlock = { block: MemoryBlock; supersededByOwnerKind: MemoryOwner['kind'] | null };
+
+export type CapturedInstructionFilter = { sessionId: string } | { captureId: string } | { instructionId: string };
+
+/** A session captures a handful of instructions; this bounds a pathological one. */
+export const CAPTURED_INSTRUCTION_LIST_LIMIT = 200;
+
+function capturedWhere(auth: AuthContext, filter: CapturedInstructionFilter): SQL {
+  const own = and(
+    eq(aiMemoryBlocks.ownerKind, 'user'),
+    eq(aiMemoryBlocks.ownerUserId, auth.user.id),
+    eq(aiMemoryBlocks.blockType, 'standing_instruction'),
+    sql`${aiMemoryBlocks.content} ->> 'captureId' IS NOT NULL`,
+  )!;
+  if ('sessionId' in filter) return and(own, eq(aiMemoryBlocks.sourceSessionId, filter.sessionId))!;
+  if ('captureId' in filter) return and(own, sql`${aiMemoryBlocks.content} ->> 'captureId' = ${filter.captureId}`)!;
+  return and(own, sql`${aiMemoryBlocks.content} ->> 'instructionId' = ${filter.instructionId}`)!;
+}
+
+/** The caller's captured blocks for a session, a capture or one instruction, oldest first (superseded ones included). */
+export async function listCapturedInstructionBlocks(
+  auth: AuthContext,
+  filter: CapturedInstructionFilter,
+): Promise<CapturedInstructionBlock[]> {
+  for (const value of Object.values(filter)) {
+    if (typeof value !== 'string' || !UUID_RE.test(value)) return [];
+  }
+  // The newest blocks win the limit; returned oldest first.
+  const rows = (await db.select().from(aiMemoryBlocks)
+    .where(capturedWhere(auth, filter))
+    .orderBy(desc(aiMemoryBlocks.createdAt), desc(aiMemoryBlocks.id))
+    .limit(CAPTURED_INSTRUCTION_LIST_LIMIT)).reverse();
+  const supersederIds = [...new Set(rows.map((r) => r.supersededById).filter((id): id is string => id !== null))];
+  const kinds = new Map<string, MemoryOwner['kind']>();
+  if (supersederIds.length > 0) {
+    const superseders = await db.select({ id: aiMemoryBlocks.id, ownerKind: aiMemoryBlocks.ownerKind })
+      .from(aiMemoryBlocks).where(inArray(aiMemoryBlocks.id, supersederIds));
+    for (const s of superseders) kinds.set(s.id, s.ownerKind);
+  }
+  return rows.map((row) => ({
+    block: toMemoryBlock(row),
+    supersededByOwnerKind: row.supersededById ? kinds.get(row.supersededById) ?? null : null,
+  }));
+}
+
+/** The caller's LIVE (not superseded) blocks of one captured instruction; not_found when there are none. */
+async function liveInstructionGroup(auth: AuthContext, instructionId: string): Promise<AiMemoryBlockRow[]> {
+  assertHuman(auth);
+  const rows = UUID_RE.test(instructionId)
+    ? await db.select().from(aiMemoryBlocks)
+      .where(and(capturedWhere(auth, { instructionId }), isNull(aiMemoryBlocks.supersededById)))
+      .orderBy(asc(aiMemoryBlocks.createdAt), asc(aiMemoryBlocks.id))
+      .limit(CAPTURED_INSTRUCTION_LIST_LIMIT)
+    : [];
+  if (rows.length === 0) throw new MemoryServiceError('not_found', 'Captured instruction not found');
+  return rows;
+}
+
+/** Keep: confirm every unconfirmed block of the group (confirmBlock's per-key rule). Retracted blocks stay retracted. */
+export async function confirmInstructionGroupBlocks(auth: AuthContext, instructionId: string): Promise<MemoryBlock[]> {
+  const rows = await liveInstructionGroup(auth, instructionId);
+  const out: MemoryBlock[] = [];
+  for (const row of rows) {
+    out.push(row.status === 'unconfirmed' ? await confirmBlock(auth, row.id) : toMemoryBlock(row));
+  }
+  return out;
+}
+
+/** Forget: retract every block of the group. */
+export async function retractInstructionGroupBlocks(auth: AuthContext, instructionId: string): Promise<MemoryBlock[]> {
+  const rows = await liveInstructionGroup(auth, instructionId);
+  const out: MemoryBlock[] = [];
+  for (const row of rows) {
+    out.push(row.status === 'retracted' ? toMemoryBlock(row) : await retractBlock(auth, row.id));
+  }
+  return out;
+}
+
+/** The device ids a live, not-forgotten group targets, for the caller to resolve to one org. */
+export async function instructionGroupDeviceIds(auth: AuthContext, instructionId: string): Promise<Array<string | null>> {
+  const rows = (await liveInstructionGroup(auth, instructionId)).filter((r) => r.status !== 'retracted');
+  if (rows.length === 0) throw new MemoryServiceError('retracted', 'A forgotten instruction cannot be shared');
+  return rows.map((r) => {
+    const deviceId = (r.content as { deviceId?: unknown }).deviceId;
+    return typeof deviceId === 'string' ? deviceId : null;
+  });
+}
+
+/**
+ * Keep for everyone at `orgId`: a human write of a confirmed org-owned block
+ * per live block (recordHumanBlock: RLS and the org-reach gate apply), and each
+ * user block pointed at its replacement through `superseded_by_id`. The caller
+ * has already established that every target device is in `orgId`
+ * (instructionCaptures.ts). Run it inside one transaction (the route does).
+ */
+export async function promoteInstructionGroupBlocksToOrg(
+  auth: AuthContext,
+  instructionId: string,
+  orgId: string,
+): Promise<MemoryBlock[]> {
+  const rows = (await liveInstructionGroup(auth, instructionId)).filter((r) => r.status !== 'retracted');
+  if (rows.length === 0) throw new MemoryServiceError('retracted', 'A forgotten instruction cannot be shared');
+  const promoted: MemoryBlock[] = [];
+  for (const row of rows) {
+    const orgBlock = await recordHumanBlock(auth, {
+      owner: { kind: 'org', orgId },
+      blockType: row.blockType,
+      subjectKey: row.subjectKey,
+      content: row.content,
+      confidence: row.confidence,
+      authoredByGrantId: row.authoredByGrantId,
+      sourceSessionId: row.sourceSessionId,
+    });
+    const [pointed] = await db.update(aiMemoryBlocks)
+      .set({ supersededById: orgBlock.id, updatedAt: sql`now()` })
+      .where(and(
+        eq(aiMemoryBlocks.id, row.id),
+        eq(aiMemoryBlocks.ownerKind, 'user'),
+        eq(aiMemoryBlocks.ownerUserId, auth.user.id),
+        isNull(aiMemoryBlocks.supersededById),
+      ))
+      .returning({ id: aiMemoryBlocks.id });
+    // A concurrent write replaced the user block meanwhile: refuse, and the
+    // route's transaction drops the org copy with it (never two live copies).
+    if (!pointed) throw new MemoryServiceError('superseded', 'A newer memory block already replaced this one');
+    promoted.push(orgBlock);
+  }
+  return promoted;
 }

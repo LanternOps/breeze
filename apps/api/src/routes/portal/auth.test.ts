@@ -165,8 +165,14 @@ const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, se
 /** A resolved policy built by the real pick with entra runnable: 'sso_only' is effective, 'allowed' is today's default. */
 function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
   const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
-  return { orgId, partnerId: 'partner-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+  // W4: Microsoft is effective only for an org with a proven tenant (plan D2), which entra sessions pin (D9).
+  const proven = mode === 'sso_only';
+  return {
+    orgId, partnerId: 'partner-1', entraTenant: proven ? { tenantId: PROVEN_TENANT_ID, provenAt: '2026-11-01T00:00:00.000Z' } : null,
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven }),
+  };
 }
+const PROVEN_TENANT_ID = '72f988bf-86f1-41af-91ab-2d7cd011db47';
 
 describe('portalAuthMiddleware partner context', () => {
   it('surfaces the active organization owning partner on portalAuth', async () => {
@@ -445,6 +451,41 @@ describe('POST /auth/login — uniform failure for an email with several account
     const open = new PgDialect().sqlToQuery(whereSpy.mock.calls[0]![0] as never).params;
     expect(open).not.toContain(ORG_ID);
     expect(open).toEqual(expect.arrayContaining(['browserAccess', 'granted']));
+  });
+
+  // #11541: a login stored with mixed case must be loginable.
+  it('matches the stored address case-insensitively (#11541)', async () => {
+    portalUserRows.current = [acct('11111111-0000-4000-8000-000000000001', ORG_ID, 'Mixed.Case@X.Test', 'PassA1!')];
+    const res = await login({ email: 'mixed.case@x.test', password: 'PassA1!', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    const q = new PgDialect().sqlToQuery(whereSpy.mock.calls[0]![0] as never);
+    const i = q.params.indexOf('email');
+    expect(q.sql).toContain(`lower($${i + 1}) = $${i + 2}`);
+    expect(q.params[i + 1]).toBe('mixed.case@x.test');
+  });
+
+  // Two logins in ONE org whose addresses differ only by case are separate
+  // accounts with separate passwords. The credential picks the account: no
+  // password opens the other row, and a password both share is the generic 401.
+  it('case-only duplicates in one org: the password picks the account, a shared password fails closed (#11541)', async () => {
+    portalUserRows.current = [
+      acct('11111111-0000-4000-8000-000000000001', ORG_ID, 'Ada@X.Test', 'PassA1!'),
+      acct('11111111-0000-4000-8000-000000000002', ORG_ID, 'ada@x.test', 'PassB1!'),
+    ];
+    const res = await login({ email: 'ADA@x.test', password: 'PassA1!', orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    expect([...portalSessions.values()][0]).toMatchObject({ portalUserId: '11111111-0000-4000-8000-000000000001' });
+
+    portalSessions.clear();
+    portalRateLimitBuckets.clear();
+    portalUserRows.current = [
+      acct('11111111-0000-4000-8000-000000000001', ORG_ID, 'Ada@X.Test', 'Same1!'),
+      acct('11111111-0000-4000-8000-000000000002', ORG_ID, 'ada@x.test', 'Same1!'),
+    ];
+    const both = await login({ email: 'ada@x.test', password: 'Same1!', orgId: ORG_ID });
+    expect(both.status).toBe(401);
+    expect(await both.json()).toEqual({ error: 'Invalid email or password' });
+    expect(portalSessions.size).toBe(0);
   });
 
   it('an account with no password (invite pending) still costs one dummy verify and gets the generic 401', async () => {

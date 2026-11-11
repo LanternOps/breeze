@@ -1,5 +1,5 @@
 ---
-status: draft (spec-drafted). Awaiting Todd's Gate A on the Open Decisions in §7. Quorum: Codex gpt-6-astra xhigh, read-only, 2026-11-06; agreed on OD-1/OD-2, disagreed on OD-4/OD-5/OD-7/OD-8 (both positions in §7; author recommends Codex's refinements).
+status: APPROVED 2026-11-08 (Todd, Gate A) — every Open Decision in §7 resolved to its recommended option (Codex refinements adopted on OD-4/OD-5/OD-7/OD-8). Quorum: Codex gpt-6-astra xhigh, read-only, 2026-11-06. Plan: docs/superpowers/plans/ai-mcp/2026-11-08-small-model-tool-profiles-plan.md
 date: 2026-11-06
 tracking_issue: LanternOps/breeze#9596
 covers: "#9596 (constrained prompt for small self-hosted models), #11111 (cap the tool catalog for small-window OpenAI-compatible models; learn the window), #9770 (tool profiles / allowlists for AI chat on self-hosted LLMs)"

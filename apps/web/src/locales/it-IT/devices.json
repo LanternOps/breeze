@@ -2531,9 +2531,9 @@
       "couldNotQueue": "Impossibile mettere in coda il comando {{action}}",
       "updateVersionQueued": "Aggiornamento a {{version}} in coda per \"{{name}}\""
     },
-    "uninstallTitle": "Disinstalla software",
+    "uninstallTitle": "Disinstalla questo pacchetto",
     "unknownSoftware": "Software sconosciuto",
-    "updateTitle": "Aggiorna software",
+    "updateTitle": "Accoda un aggiornamento per questo pacchetto",
     "updatesAvailable": "{{count}} aggiornamenti disponibili",
     "updatesAvailable_one": "{{count}} aggiornamento disponibile",
     "updatesAvailable_other": "{{count}} aggiornamenti disponibili"
@@ -2565,7 +2565,7 @@
       "load": "Carica",
       "mitigate": "Mitiga",
       "reopen": "Riapri",
-      "scheduleRemediation": "Pianifica la correzione"
+      "scheduleRemediation": "Impossibile pianificare la correzione"
     },
     "groupSummary": "{{cves}} CVE · {{findings}} rilevamenti · {{patchReady}} pronti per patch",
     "hideFindings": "Nascondi rilevamenti",
@@ -2712,7 +2712,7 @@
       "agentOnlyAction": "Questa azione si applica solo ai dispositivi con agente. I dispositivi di rete non hanno un agente e sono stati ignorati.",
       "agentOnlyActionManual": "Questa azione si applica solo ai dispositivi con agente. Le risorse manuali non hanno un agente.",
       "alreadyPendingTail": "Già in sospeso",
-      "bulkActionFailed": "Azione in blocco non riuscita",
+      "bulkActionFailed": "Azione in blocco {{action}} non riuscita",
       "bulkMaintenanceSuccess": "{{count}} dispositivi {{verb}} modalità di manutenzione",
       "bulkMaintenanceSuccess_one": "{{count}} dispositivo {{verb}} modalità di manutenzione",
       "bulkMaintenanceSuccess_other": "{{count}} dispositivi {{verb}} modalità di manutenzione",
@@ -2733,14 +2733,14 @@
       "decommissionFailed": "Rimozione non riuscita",
       "decommissioned": "Rimosso",
       "decommissioning": "Rimozione in corso",
-      "deleteFailed": "Eliminazione non riuscita",
+      "deleteFailed": "Impossibile eliminare {{hostname}}",
       "deviceError": "Errore del dispositivo",
-      "deviceOnline": "Dispositivo online",
-      "inventoryRefreshRequested": "Aggiornamento inventario richiesto",
+      "deviceOnline": "{{hostname}} è ora online.",
+      "inventoryRefreshRequested": "Aggiornamento dell'inventario richiesto per {{hostname}}. Dati aggiornati in 1–2 minuti.",
       "listTruncated": "Elenco troncato",
       "maintenanceOff": "Manutenzione disattivata",
       "maintenanceOn": "Manutenzione attivata",
-      "multibootLinked": "Multiboot collegato",
+      "multibootLinked": "{{count}} dispositivi collegati come profili multi-boot.",
       "networkSkipped_one": "1 dispositivo di rete ignorato — questa azione si applica solo ai dispositivi con agente.",
       "networkSkipped_other": "{{count}} dispositivi di rete ignorati — questa azione si applica solo ai dispositivi con agente.",
       "networkSkipped": "{{count}} dispositivi di rete ignorati — questa azione si applica solo ai dispositivi con agente.",
@@ -2749,15 +2749,15 @@
       "permanentlyDeleted": "{{hostname}} eliminato definitivamente",
       "refreshFailed": "Impossibile aggiornare i dispositivi. L'elenco visualizzato potrebbe non essere aggiornato.",
       "restored": "Ripristinato",
-      "scriptQueueFailed": "Accodamento script non riuscito",
-      "scriptQueuedMany": "Script accodato per più dispositivi",
-      "scriptQueuedOne": "Script accodato",
-      "selectDeviceForScript": "Seleziona un dispositivo per lo script",
-      "selectTwoForMultiboot": "Seleziona due dispositivi per Multiboot",
-      "unknownAction": "Azione sconosciuta",
-      "unknownBulkAction": "Azione in blocco sconosciuta",
+      "scriptQueueFailed": "Impossibile accodare lo script",
+      "scriptQueuedMany": "Script \"{{script}}\" accodato per {{count}} dispositivi",
+      "scriptQueuedOne": "Script \"{{script}}\" accodato per {{hostname}}",
+      "selectDeviceForScript": "Seleziona almeno un dispositivo per eseguire uno script",
+      "selectTwoForMultiboot": "Seleziona almeno due dispositivi da collegare come profili multi-boot.",
+      "unknownAction": "Azione sconosciuta: {{action}}",
+      "unknownBulkAction": "Azione in blocco sconosciuta: {{action}}",
       "wakeSentWatching": "Richiesta di riattivazione inviata, monitoraggio in corso",
-      "wakeTimeout": "Timeout della riattivazione",
+      "wakeTimeout": "{{hostname}} non è andato online entro 4 minuti. Controlla ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} in coda per dispositivi offline",
       "runsWhenOnline": "Viene eseguito quando il dispositivo è online — scade il {{date}}",
       "runsWhenOnlineNoExpiry": "Viene eseguito quando il dispositivo è online",
@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Invio dei log non riuscito",
       "networkIsolation": {
         "active": "Isolato"
+      },
+      "helperVersion": "Versione helper",
+      "deviceFunction": "Funzione del dispositivo",
+      "hostsWorkloads": "Ospita carichi di lavoro",
+      "workloadRuntimes": "Runtime dei carichi di lavoro",
+      "warranty": {
+        "status": "Stato della garanzia"
       }
     }
   },
@@ -3729,9 +3736,9 @@
       "noneRecorded": "Non sono ancora stati registrati campioni dei processi per questo dispositivo. L'agente li raccoglie periodicamente — ricontrolla dopo il prossimo report."
     },
     "errors": {
-      "liveProcesses": "Processi live",
-      "loadProcesses": "Caricamento processi",
-      "processSample": "Campione processi"
+      "liveProcesses": "Impossibile recuperare i processi live",
+      "loadProcesses": "Impossibile caricare i processi",
+      "processSample": "Impossibile recuperare il campione del processo"
     },
     "live": "Live",
     "subtitle": {

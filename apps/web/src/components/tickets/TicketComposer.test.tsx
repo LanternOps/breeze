@@ -1,27 +1,225 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 
 import TicketComposer from './TicketComposer';
+import { apiLogout, useAuthStore } from '@/stores/auth';
+import { ActionError } from '../../lib/runAction';
 
 describe('TicketComposer', () => {
   const onSend = vi.fn().mockResolvedValue(undefined);
   beforeEach(() => onSend.mockClear());
 
-  // axe (aria-allowed-attr): aria-selected is only valid on an element with
-  // role="tab" (or an element whose role implies it); these buttons carried
-  // aria-selected with no role at all.
-  it('gives the mode buttons role="tab" inside a role="tablist" wrapper', () => {
+  // Reply / Internal note pick the visibility of the one message being
+  // written; there is no second panel, so they are a radio group, not tabs
+  // (tabs with no tabpanel announced a widget that was not there).
+  it('exposes Reply / Internal note as a labelled radio group with one tab stop', () => {
+    render(<TicketComposer requesterName="Pat" onSend={onSend} />);
+    const group = screen.getByRole('radiogroup', { name: 'Comment visibility' });
+    const reply = screen.getByTestId('ticket-composer-tab-reply');
+    const internal = screen.getByTestId('ticket-composer-tab-internal');
+    expect(reply).toHaveAttribute('role', 'radio');
+    expect(internal).toHaveAttribute('role', 'radio');
+    expect(group).toContainElement(reply);
+    expect(group).toContainElement(internal);
+    expect(reply).toHaveAttribute('aria-checked', 'true');
+    expect(internal).toHaveAttribute('aria-checked', 'false');
+    expect(reply).toHaveAttribute('tabindex', '0');
+    expect(internal).toHaveAttribute('tabindex', '-1');
+    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
+    // Attach is an action, not a third mode.
+    expect(group).not.toContainElement(screen.queryByTestId('ticket-composer-attach'));
+  });
+
+  it('arrow keys move focus and the checked mode, wrapping at both ends', () => {
     render(<TicketComposer requesterName="Pat" onSend={onSend} />);
     const reply = screen.getByTestId('ticket-composer-tab-reply');
     const internal = screen.getByTestId('ticket-composer-tab-internal');
-    expect(reply.getAttribute('role')).toBe('tab');
-    expect(internal.getAttribute('role')).toBe('tab');
-    const tablist = reply.closest('[role="tablist"]');
-    expect(tablist).not.toBeNull();
-    expect(internal.closest('[role="tablist"]')).toBe(tablist);
+    reply.focus();
+    fireEvent.keyDown(reply, { key: 'ArrowRight' });
+    expect(internal).toHaveAttribute('aria-checked', 'true');
+    expect(internal).toHaveFocus();
+    expect(screen.getByTestId('ticket-composer-internal-banner')).toBeInTheDocument();
+    fireEvent.keyDown(internal, { key: 'ArrowDown' });
+    expect(reply).toHaveAttribute('aria-checked', 'true');
+    expect(reply).toHaveFocus();
+    fireEvent.keyDown(reply, { key: 'ArrowLeft' });
+    expect(internal).toHaveFocus();
+    fireEvent.keyDown(internal, { key: 'ArrowUp' });
+    expect(reply).toHaveFocus();
+    expect(screen.queryByTestId('ticket-composer-internal-banner')).toBeNull();
+  });
+
+  describe('recipient line', () => {
+    it('in public mode, says who the reply emails, above Send', () => {
+      render(<TicketComposer requesterName="Pat Smith" requesterEmail="pat@example.com" onSend={onSend} />);
+      const line = screen.getByTestId('ticket-composer-recipient');
+      expect(line).toHaveTextContent('Emails Pat Smith <pat@example.com>');
+      // Reads before the Send button in DOM (and so in reading) order.
+      expect(line.compareDocumentPosition(screen.getByTestId('ticket-composer-send')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('names the address alone when the requester has no name', () => {
+      render(<TicketComposer requesterName={null} requesterEmail="pat@example.com" onSend={onSend} />);
+      expect(screen.getByTestId('ticket-composer-recipient')).toHaveTextContent('Emails pat@example.com');
+    });
+
+    it('says plainly that nobody is emailed when there is no requester email on file', () => {
+      render(<TicketComposer requesterName="Pat" requesterEmail={null} onSend={onSend} />);
+      const line = screen.getByTestId('ticket-composer-recipient');
+      expect(line).toHaveTextContent('No requester email on file');
+      expect(line).toHaveAttribute('data-recipient', 'none');
+      expect(line).not.toHaveTextContent('Emails');
+    });
+
+    it('in internal mode, says who sees it where the recipient line was, not in the toolbar', () => {
+      render(<TicketComposer requesterName="Pat" requesterEmail="pat@example.com" onSend={onSend} onLogTime={vi.fn()} />);
+      fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+      const banner = screen.getByTestId('ticket-composer-internal-banner');
+      // Out of the toolbar, so the toolbar keeps one row with Log time and Ask AI.
+      expect(screen.getByTestId('ticket-composer-toolbar')).not.toContainElement(banner);
+      expect(banner.compareDocumentPosition(screen.getByTestId('ticket-composer-send')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('caps only its contents to the host measure, not its rule or wash', () => {
+      render(<TicketComposer requesterName="Pat" onSend={onSend} contentClassName="max-w-[78ch]" />);
+      expect(screen.getByTestId('ticket-composer').className).not.toContain('max-w');
+      expect(screen.getByTestId('ticket-composer-content').className).toContain('max-w-[78ch]');
+    });
+
+    it('in internal mode, drops the recipient line for the internal treatment', () => {
+      render(<TicketComposer requesterName="Pat" requesterEmail="pat@example.com" onSend={onSend} />);
+      fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+      expect(screen.queryByTestId('ticket-composer-recipient')).toBeNull();
+      expect(screen.getByTestId('ticket-composer-internal-banner')).toBeInTheDocument();
+    });
+  });
+
+  it('offers Log time beside Attach when the host handles it', () => {
+    const onLogTime = vi.fn();
+    render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={vi.fn()} onLogTime={onLogTime} logTimeOpen={false} />);
+    const button = screen.getByTestId('ticket-composer-log-time');
+    expect(screen.getByTestId('ticket-composer-toolbar')).toContainElement(button);
+    expect(button).toHaveTextContent('Log time');
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    // Attach comes first, Log time right after it.
+    expect(screen.getByTestId('ticket-composer-attach').compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(button);
+    expect(onLogTime).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders toolbar extras (Ask AI) beside canned responses', () => {
+    render(<TicketComposer requesterName="Pat" onSend={onSend} toolbarExtra={<button type="button" data-testid="extra-tool">Ask AI</button>} />);
+    expect(screen.getByTestId('ticket-composer-toolbar')).toContainElement(screen.getByTestId('extra-tool'));
+  });
+
+  it('keeps a half-written reply per draft key across a remount', () => {
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-1" />);
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'Half a thought' } });
+    unmount();
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-1" />);
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('Half a thought');
+  });
+
+  // An internal note restored as a public reply would email the requester
+  // the moment Send is pressed: the draft keeps its mode with its text.
+  it('restores an internal-note draft in internal mode, never as a reply', () => {
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-internal" />);
+    fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'Customer is difficult, escalate' } });
+    unmount();
+
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-internal" />);
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('Customer is difficult, escalate');
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('ticket-composer-tab-reply')).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('ticket-composer-internal-banner')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-composer-send')).toHaveTextContent('Add internal note');
+  });
+
+  it('forgets a sent reply even when the composer unmounted while the POST was in flight', async () => {
+    let land!: () => void;
+    const slowSend = vi.fn(() => new Promise<void>((resolve) => { land = resolve; }));
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={slowSend} draftKey="tk-draft-sent" />);
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'On my way' } });
+    fireEvent.click(screen.getByTestId('ticket-composer-send'));
+    expect(slowSend).toHaveBeenCalledWith('On my way', true, []);
+    // j/k (or the next-ticket offer) moves on before the POST answers.
+    unmount();
+    await act(async () => { land(); });
+
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-sent" />);
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
+  });
+
+  it('keeps the draft when the POST fails after the composer unmounted', async () => {
+    let fail!: () => void;
+    const failingSend = vi.fn(() => new Promise<void>((_, reject) => { fail = () => reject(new Error('500')); }));
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={failingSend} draftKey="tk-draft-failed" />);
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'Not sent yet' } });
+    fireEvent.click(screen.getByTestId('ticket-composer-send'));
+    unmount();
+    await act(async () => { fail(); });
+
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-failed" />);
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('Not sent yet');
+  });
+
+  // Web sign-out is same-document: module state survives it, so the next
+  // person to sign in on this browser must not find the last one's drafts.
+  function leaveInternalDraft(key: string) {
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey={key} />);
+    fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'Private note' } });
+    unmount();
+  }
+
+  function expectNoDraft(key: string) {
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey={key} />);
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
+    expect(screen.getByTestId('ticket-composer-tab-reply')).toHaveAttribute('aria-checked', 'true');
+  }
+
+  it('drops every unsent draft at sign-out', async () => {
+    leaveInternalDraft('tk-draft-logout');
+    await apiLogout();
+    expectNoDraft('tk-draft-logout');
+  });
+
+  // Session expiry and the throttle mask's Sign Out end the session through the
+  // store's logout() alone, which runs no logout hooks.
+  it('drops every unsent draft when the session ends through the store logout alone', () => {
+    leaveInternalDraft('tk-draft-store-logout');
+    useAuthStore.getState().logout();
+    expectNoDraft('tk-draft-store-logout');
+  });
+
+  // r / n route here through the workbench: the asked mode, then the caret.
+  it('a host focus request sets the asked mode and focuses the box, once per request', () => {
+    const { rerender } = render(<TicketComposer requesterName="Pat" onSend={onSend} />);
+    const input = screen.getByTestId('ticket-composer-input');
+    rerender(<TicketComposer requesterName="Pat" onSend={onSend} focusRequest={{ mode: 'internal', token: 1 }} />);
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-checked', 'true');
+    expect(input).toHaveFocus();
+
+    // The same request again (a re-render) changes nothing the user did since.
+    fireEvent.click(screen.getByTestId('ticket-composer-tab-reply'));
+    rerender(<TicketComposer requesterName="Pat" onSend={onSend} focusRequest={{ mode: 'internal', token: 1 }} />);
+    expect(screen.getByTestId('ticket-composer-tab-reply')).toHaveAttribute('aria-checked', 'true');
+
+    rerender(<TicketComposer requesterName="Pat" onSend={onSend} focusRequest={{ mode: 'internal', token: 2 }} />);
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('does not carry a draft to another ticket', () => {
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-2" />);
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'For ticket two' } });
+    unmount();
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-3" />);
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
   });
 
   it('defaults to public reply mode', () => {
@@ -246,6 +444,53 @@ describe('TicketComposer', () => {
       );
       expect(screen.getByTestId('ticket-composer-chip-retry-notes.txt')).toBeInTheDocument();
       expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
+    });
+
+    it('says "Reply posted" for a public reply and "Note posted" for an internal note', async () => {
+      const onUpload = vi.fn(async () => { throw new Error('network'); });
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={onUpload} />);
+      upload([png('a.png')]);
+      await screen.findByTestId('ticket-composer-chip-retry-a.png');
+      fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'hi' } });
+      fireEvent.click(screen.getByTestId('ticket-composer-send'));
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: expect.stringContaining('Reply posted') }))
+      );
+
+      showToastMock.mockClear();
+      fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+      fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'hm' } });
+      fireEvent.click(screen.getByTestId('ticket-composer-send'));
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: expect.stringContaining('Note posted') }))
+      );
+    });
+
+    describe('permanent rejections', () => {
+      it.each([
+        ['unsupported type', new ActionError('Only JPEG', 415, 'UNSUPPORTED_ATTACHMENT_TYPE'), 'notes.txt'],
+        ['too large', new ActionError('too big', 413, 'ATTACHMENT_TOO_LARGE'), 'huge.png'],
+      ])('drops a file refused as %s: no chip, no Retry, a reason toast', async (_label, err, name) => {
+        const onUpload = vi.fn(async () => { throw err; });
+        render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={onUpload} />);
+        upload([png(name)]);
+        await waitFor(() => expect(screen.queryByTestId(`ticket-composer-chip-${name}`)).toBeNull());
+        expect(screen.queryByTestId(`ticket-composer-chip-retry-${name}`)).toBeNull();
+        expect(showToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringContaining(name) })
+        );
+      });
+
+      it.each([
+        ['5xx', new ActionError('storage down', 503, 'STORAGE_UNAVAILABLE')],
+        ['network', new ActionError('offline', 0)],
+        ['rate limit', new ActionError('slow down', 429, 'TOO_MANY_PENDING')],
+      ])('keeps Retry for a transient %s failure', async (_label, err) => {
+        const onUpload = vi.fn(async () => { throw err; });
+        render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={onUpload} />);
+        upload([png('a.png')]);
+        await screen.findByTestId('ticket-composer-chip-retry-a.png');
+      });
     });
   });
 });

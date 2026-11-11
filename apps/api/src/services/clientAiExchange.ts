@@ -16,6 +16,7 @@ import type { ClientAiEntraClaims } from './clientAiEntraJwt';
 import {
   CLIENT_AI_REDIS_KEYS,
   CLIENT_AI_SESSION_TTL_SECONDS,
+  CLIENT_AI_SESSION_MAX_AGE_SECONDS,
 } from '../routes/clientAi/schemas';
 
 export { purgeClientAiSessionsForUsers } from './clientAiSessionStore';
@@ -565,7 +566,8 @@ export async function resolveAndMintClientSession(
     kind: 'resolved',
     body: {
       accessToken: token,
-      expiresInSeconds: CLIENT_AI_SESSION_TTL_SECONDS,
+      // The absolute cap (W4 OD1, middleware/clientAiAuth.ts) ends the session first.
+      expiresInSeconds: Math.min(CLIENT_AI_SESSION_TTL_SECONDS, CLIENT_AI_SESSION_MAX_AGE_SECONDS),
       user: { id: user.id, email: user.email, name: user.name },
       org: { id: user.orgId },
       branding,

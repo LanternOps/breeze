@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 /**
@@ -59,8 +59,34 @@ const h = vi.hoisted(() => {
       }),
     })),
   };
-  return { organizations, portalAccessPolicies, store, upserts, db, authRef: { current: null as any }, auditSpy: vi.fn() };
+  return {
+    organizations, portalAccessPolicies, store, upserts, db, authRef: { current: null as any }, auditSpy: vi.fn(),
+    // The org's proven Entra tenant (W4 D2), as findProvenEntraTenantForOrg returns it.
+    provenTenant: { current: null as { tenantId: string; provenAt: Date } | null },
+    // W4 D12: the sso_only impact (the preview's computeFlips, the save's
+    // lockImpact over the rows it locks) and the clear (their SQL is
+    // portalSsoOnly.integration's), and the work the route defers until the
+    // request transaction commits.
+    computeFlips: vi.fn(),
+    lockImpact: vi.fn(),
+    clearPasswords: vi.fn(),
+    listStranded: vi.fn(),
+    afterCommit: [] as Array<{ label: string; work: () => unknown }>,
+    purgePortal: vi.fn(async () => 0),
+    purgeAi: vi.fn(async () => 0),
+  };
 });
+
+vi.mock('../services/portalSsoOnly', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/portalSsoOnly')>()),
+  computeSsoOnlyFlips: (...args: unknown[]) => h.computeFlips(...args),
+  lockSsoOnlyImpact: (...args: unknown[]) => h.lockImpact(...args),
+  clearPasswordsForSsoOnly: (...args: unknown[]) => h.clearPasswords(...args),
+  listSsoOnlyStranded: (...args: unknown[]) => h.listStranded(...args),
+}));
+vi.mock('./portal/helpers', () => ({ purgePortalSessionsForUsers: h.purgePortal }));
+vi.mock('../services/clientAiSessionStore', () => ({ purgeClientAiSessionsForUsers: h.purgeAi }));
+vi.mock('../services/redis', () => ({ getRedis: () => ({ fake: 'redis' }) }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
@@ -95,6 +121,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   withDbTransaction: (fn: () => unknown) => fn(),
   withDbTransactionIfHeld: (fn: () => unknown) => fn(),
+  runAfterDbContextCommit: (label: string, work: () => unknown) => { h.afterCommit.push({ label, work }); },
 }));
 
 vi.mock('../db/schema', () => ({
@@ -108,9 +135,14 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../services/auditOrgResolver', () => ({
   resolveAuditOrgIdForPartner: async (partnerId: string | null) => (partnerId ? 'org-audit-1' : null),
 }));
+vi.mock('../services/portalEntraTenantProof', () => ({
+  findProvenEntraTenantForOrg: async () => h.provenTenant.current,
+}));
 
 import { authMiddleware } from '../middleware/auth';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { __testOnly } from '../services/portalAccessPolicy';
+import { ssoOnlyImpactDigest } from '../services/portalSsoOnly';
 import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
@@ -174,7 +206,16 @@ beforeEach(() => {
   h.store.orgs = [{ id: ORG_ID, partnerId: 'p-1' }];
   h.store.policies = [];
   h.upserts.length = 0;
+  h.provenTenant.current = null;
+  h.afterCommit.length = 0;
+  h.computeFlips.mockReset().mockResolvedValue([]);
+  h.lockImpact.mockReset().mockResolvedValue({ flips: [], clearableUserIds: [] });
+  h.clearPasswords.mockReset().mockResolvedValue({ clearedUserIds: [] });
+  h.listStranded.mockReset().mockResolvedValue({ items: [], total: 0 });
+  // Explicit, never the deployment's (W4 derives entra from the portal Entra app env).
+  __testOnly.setCapabilities({ entra: false, google: false, selfRegistration: false });
 });
+afterEach(() => __testOnly.setCapabilities(null));
 
 describe('GET /organizations/:id/portal-access-policy', () => {
   it('GET org returns values (all null), inherited from partner/default, effective and capabilities', async () => {
@@ -197,6 +238,7 @@ describe('GET /organizations/:id/portal-access-policy', () => {
     expect(data.passwordModeFallback).toBe(false);
     expect(data.capabilities).toEqual({ entra: false, google: false, selfRegistration: false });
     expect(data.canEdit).toBe(true);
+    expect(data.entraTenantProven).toBe(false);
     expect(h.auditSpy).not.toHaveBeenCalled();
   });
 
@@ -228,6 +270,28 @@ describe('PATCH /organizations/:id/portal-access-policy', () => {
     });
     expect(h.db.insert).not.toHaveBeenCalled();
     expect(h.auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('PATCH org entraEnabled true without a proven tenant → 400 PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN with field', async () => {
+    __testOnly.setCapabilities({ entra: true, google: false, selfRegistration: false });
+    const res = await makeApp().request(ORG_PATH, patch({ entraEnabled: true }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "Prove the organization's Microsoft tenant before turning on Microsoft sign-in.",
+      code: 'PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN',
+      field: 'entraEnabled',
+    });
+    expect(h.db.insert).not.toHaveBeenCalled();
+    expect(h.auditSpy).not.toHaveBeenCalled();
+
+    // Proven: saved, audited, and the view says so.
+    h.provenTenant.current = { tenantId: 'a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5', provenAt: new Date('2027-01-23T10:00:00.000Z') };
+    const ok = await makeApp().request(ORG_PATH, patch({ entraEnabled: true }));
+    expect(ok.status).toBe(200);
+    const { data } = await ok.json();
+    expect(data.effective.entraEnabled).toEqual({ value: true, source: 'org' });
+    expect(data.entraTenantProven).toBe(true);
+    expect(h.auditSpy).toHaveBeenCalledTimes(1);
   });
 
   it('PATCH org passwordMode sso_only with no SSO method → 400 PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO', async () => {
@@ -330,6 +394,8 @@ describe('/partners/me/portal-access-policy', () => {
     expect(data.inherited.ssoSessionMaxHours).toEqual({ value: 12, source: 'default' });
     expect(data.effective.ssoSessionMaxHours).toEqual({ value: 24, source: 'partner' });
     expect(data.canEdit).toBe(true);
+    // Tenant proof is a fact about one org; a partner view has none.
+    expect(data.entraTenantProven).toBeNull();
   });
 
   it('PATCH partner as full partner admin upserts the partner row and audits partner.portal_access_policy.update', async () => {
@@ -445,5 +511,170 @@ describe('gates', () => {
     expect(h.auditSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: ORG_ID, action: 'organization.portal_access_policy.update',
     }));
+  });
+});
+
+// W4 (#11381) Task 9, plan D12: the sso_only save flow.
+describe('sso_only save flow (D12)', () => {
+  const ENTRA = { entra: true, google: false, selfRegistration: false };
+  const PROVEN = { tenantId: 'a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5', provenAt: new Date('2027-01-23T10:00:00.000Z') };
+  const SECOND_ORG_ID = '7c0a1f7e-2222-4222-8333-444455556666';
+  const FLIP = { orgId: ORG_ID, orgName: 'Acme', passwordsToClear: 2, strandedTotal: 1 };
+  const FLIP_2 = { orgId: SECOND_ORG_ID, orgName: 'Beta', passwordsToClear: 1, strandedTotal: 0 };
+  const DIGEST = ssoOnlyImpactDigest([FLIP]);
+  const IMPACT_PATH = `${ORG_PATH}/sso-only-impact`;
+  const PARTNER_IMPACT_PATH = `${PARTNER_PATH}/sso-only-impact`;
+  const STRANDED_PATH = `${ORG_PATH}/stranded`;
+  const post = (body: unknown) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+  beforeEach(() => {
+    __testOnly.setCapabilities(ENTRA);
+    h.provenTenant.current = PROVEN;
+    h.store.policies = [orgOverrideRow({ entraEnabled: true })];
+  });
+
+  async function runAfterCommit() {
+    for (const { work } of h.afterCommit) await work();
+  }
+
+  it('PATCH without acknowledge → 409 with impact and nothing written', async () => {
+    h.lockImpact.mockResolvedValue({ flips: [FLIP], clearableUserIds: ['pu-1', 'pu-2'] });
+    const res = await makeApp().request(ORG_PATH, patch({ passwordMode: 'sso_only' }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: expect.any(String),
+      code: 'PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED',
+      impact: { flips: [FLIP], impactDigest: DIGEST },
+    });
+    expect(h.lockImpact).toHaveBeenCalledWith({ kind: 'org', orgId: ORG_ID, partnerId: 'p-1' }, { passwordMode: 'sso_only' });
+    expect(h.db.insert).not.toHaveBeenCalled();
+    expect(h.clearPasswords).not.toHaveBeenCalled();
+    expect(h.auditSpy).not.toHaveBeenCalled();
+    expect(h.afterCommit).toHaveLength(0);
+  });
+
+  it('PATCH with a stale digest → 409 with the fresh digest, nothing written', async () => {
+    h.lockImpact.mockResolvedValue({ flips: [FLIP], clearableUserIds: ['pu-1', 'pu-2'] });
+    const stale = ssoOnlyImpactDigest([{ ...FLIP, passwordsToClear: 1 }]);
+    const res = await makeApp().request(`${ORG_PATH}?acknowledge=${stale}`, patch({ passwordMode: 'sso_only' }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).impact.impactDigest).toBe(DIGEST);
+    expect(h.db.insert).not.toHaveBeenCalled();
+    expect(h.clearPasswords).not.toHaveBeenCalled();
+  });
+
+  it('PATCH with the current digest saves, audits details.ssoOnly and purges cleared sessions only after commit', async () => {
+    h.lockImpact.mockResolvedValue({ flips: [FLIP], clearableUserIds: ['pu-1', 'pu-2'] });
+    h.clearPasswords.mockResolvedValue({ clearedUserIds: ['pu-1', 'pu-2'] });
+    const res = await makeApp().request(`${ORG_PATH}?acknowledge=${DIGEST}`, patch({ passwordMode: 'sso_only' }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
+    expect(h.upserts).toHaveLength(1);
+    // The locked ids the acknowledged impact counted, not an org-wide re-select.
+    expect(h.clearPasswords.mock.calls[0]![1]).toEqual({ portalUserIds: ['pu-1', 'pu-2'] });
+    expect(h.auditSpy).toHaveBeenCalledWith(expect.anything(), {
+      orgId: ORG_ID,
+      action: 'organization.portal_access_policy.update',
+      resourceType: 'organization',
+      resourceId: ORG_ID,
+      details: {
+        changedFields: ['passwordMode'],
+        before: { passwordMode: null },
+        after: { passwordMode: 'sso_only' },
+        ssoOnly: { orgIds: [ORG_ID], passwordsCleared: 2 },
+      },
+    });
+
+    // Cleanup, deferred to the commit: nothing purged while the transaction is open.
+    expect(h.purgePortal).not.toHaveBeenCalled();
+    expect(h.afterCommit).toHaveLength(1);
+    await runAfterCommit();
+    expect(h.purgePortal).toHaveBeenCalledWith(['pu-1', 'pu-2']);
+    expect(h.purgeAi).toHaveBeenCalledWith({ fake: 'redis' }, ['pu-1', 'pu-2']);
+  });
+
+  it('a save that flips nothing carries no ssoOnly audit detail and defers no purge', async () => {
+    const res = await makeApp().request(ORG_PATH, patch({ ssoSessionMaxHours: 8 }));
+    expect(res.status).toBe(200);
+    const details = h.auditSpy.mock.calls[0]![1].details;
+    expect(details).not.toHaveProperty('ssoOnly');
+    expect(h.afterCommit).toHaveLength(0);
+  });
+
+  it('partner PATCH: 409 without an ack; with it, clears across the flipped orgs and audits partner details.ssoOnly', async () => {
+    h.store.policies = [];
+    h.lockImpact.mockResolvedValue({ flips: [FLIP, FLIP_2], clearableUserIds: ['pu-7'] });
+    const refused = await makeApp().request(PARTNER_PATH, patch({ entraEnabled: true, passwordMode: 'sso_only' }));
+    expect(refused.status).toBe(409);
+    const { impact } = await refused.json();
+    expect(impact.flips).toEqual([FLIP, FLIP_2]);
+    expect(h.lockImpact).toHaveBeenCalledWith({ kind: 'partner', partnerId: 'p-1' }, { entraEnabled: true, passwordMode: 'sso_only' });
+    expect(h.db.insert).not.toHaveBeenCalled();
+
+    h.clearPasswords.mockResolvedValue({ clearedUserIds: ['pu-7'] });
+    const ok = await makeApp().request(`${PARTNER_PATH}?acknowledge=${impact.impactDigest}`, patch({ entraEnabled: true, passwordMode: 'sso_only' }));
+    expect(ok.status).toBe(200);
+    expect(h.clearPasswords.mock.calls[0]![1]).toEqual({ portalUserIds: ['pu-7'] });
+    expect(h.auditSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'partner.portal_access_policy.update',
+      details: expect.objectContaining({ ssoOnly: { orgIds: [ORG_ID, SECOND_ORG_ID], passwordsCleared: 1 } }),
+    }));
+    await runAfterCommit();
+    expect(h.purgePortal).toHaveBeenCalledWith(['pu-7']);
+  });
+
+  it('POST org sso-only-impact returns the flips, their digest and the stranded list; writes nothing', async () => {
+    h.computeFlips.mockResolvedValue([FLIP]);
+    const stranded = { items: [{ portalUserId: 'pu-3', email: 'kim@acme.example', name: 'Kim', status: 'active' }], total: 1 };
+    h.listStranded.mockResolvedValue(stranded);
+    const res = await makeApp().request(IMPACT_PATH, post({ passwordMode: 'sso_only' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { flips: [FLIP], impactDigest: DIGEST, stranded } });
+    expect(h.computeFlips).toHaveBeenCalledWith({ kind: 'org', orgId: ORG_ID, partnerId: 'p-1' }, { passwordMode: 'sso_only' });
+    expect(h.listStranded).toHaveBeenCalledWith(ORG_ID);
+    expect(h.db.insert).not.toHaveBeenCalled();
+    expect(h.auditSpy).not.toHaveBeenCalled();
+
+    // The body is the PATCH schema: unknown keys are refused.
+    expect((await makeApp().request(IMPACT_PATH, post({ orgId: OTHER_ORG_ID }))).status).toBe(400);
+  });
+
+  it('POST partner sso-only-impact returns the per-org flips and their digest', async () => {
+    h.computeFlips.mockResolvedValue([FLIP, FLIP_2]);
+    const res = await makeApp().request(PARTNER_IMPACT_PATH, post({ entraEnabled: true }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { flips: [FLIP, FLIP_2], impactDigest: ssoOnlyImpactDigest([FLIP, FLIP_2]) } });
+    expect(h.computeFlips).toHaveBeenCalledWith({ kind: 'partner', partnerId: 'p-1' }, { entraEnabled: true });
+  });
+
+  it('GET stranded lists the org stranded accounts; an inaccessible org is 404', async () => {
+    const stranded = { items: [{ portalUserId: 'pu-3', email: 'kim@acme.example', name: null, status: 'invited' }], total: 7 };
+    h.listStranded.mockResolvedValue(stranded);
+    const res = await makeApp().request(STRANDED_PATH);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: stranded });
+    expect(h.listStranded).toHaveBeenCalledWith(ORG_ID);
+
+    h.authRef.current = SELECTED;
+    const hidden = await makeApp().request(`/organizations/${OTHER_ORG_ID}/portal-access-policy/stranded`);
+    expect(hidden.status).toBe(404);
+    expect((await makeApp().request(`/organizations/${OTHER_ORG_ID}/portal-access-policy/sso-only-impact`, post({ passwordMode: 'sso_only' }))).status).toBe(404);
+  });
+
+  it('impact and stranded routes: org-scope token → 403; need organizations:read, not write or MFA', async () => {
+    const reads = [
+      () => makeApp().request(IMPACT_PATH, post({ passwordMode: 'sso_only' })),
+      () => makeApp().request(PARTNER_IMPACT_PATH, post({ passwordMode: 'sso_only' })),
+      () => makeApp().request(STRANDED_PATH),
+    ];
+    h.authRef.current = ORG_TOKEN;
+    for (const r of reads) expect((await r()).status).toBe(403);
+    h.authRef.current = { ...FULL_ADMIN, perms: ['organizations:read'], mfa: false };
+    for (const r of reads) expect((await r()).status).toBe(200);
+    h.authRef.current = { ...FULL_ADMIN, perms: [] };
+    for (const r of reads) expect((await r()).status).toBe(403);
+    // The partner impact is partner-scope only.
+    h.authRef.current = { ...FULL_ADMIN, scope: 'system' };
+    expect((await reads[1]!()).status).toBe(403);
   });
 });

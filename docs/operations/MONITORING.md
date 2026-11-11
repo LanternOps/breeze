@@ -5,6 +5,7 @@ This guide covers setting up comprehensive monitoring for the Breeze RMM platfor
 ## Table of Contents
 
 - [Overview](#overview)
+- [Native Health Tab (no Prometheus required)](#native-health-tab-no-prometheus-required)
 - [Architecture](#architecture)
 - [Prometheus Setup](#prometheus-setup)
 - [Grafana Setup](#grafana-setup)
@@ -24,6 +25,17 @@ The Breeze monitoring stack provides:
 - **Alerting**: Alertmanager sends notifications for critical conditions
 - **Error Tracking**: Sentry captures and analyzes application errors
 - **Log Aggregation**: Centralized logging with Loki or ELK stack
+
+## Native Health Tab (no Prometheus required)
+
+Platform administrators can see shared background-work status at **Administration → System → Health** (`/admin/system?tab=health`). It works without `ENABLE_MONITORING`.
+
+- **Queues:** pending counts (`waiting`, `prioritized`, `delayed`, `active`) for the connection-health reconciler, the connection-health digest, alerts and event dispatch. Status is `unknown` until a threshold is defined for that queue, so counts are not a health verdict.
+- **Jobs:** the connection-health reconciler, the digest, and each per-kind heartbeat. A known failure streak shows as `degraded`; a stale or missing heartbeat shows as `unknown`.
+- **Source:** Redis only. `GET /api/v1/admin/system/health` never queries the database. If Redis is unavailable, the tab still loads and marks the affected items `unknown`.
+- **Refresh:** manual only; the tab does not poll.
+
+The tab does not report per-process or per-host health. Use `/health/ready` and the monitoring overlay below for that.
 
 ## Architecture
 

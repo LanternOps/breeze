@@ -5253,6 +5253,19 @@
       "docs": [
         "features/system-tools.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/db/migrationAdvisoryLock.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/backupRetention.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
     }
   ]
 }

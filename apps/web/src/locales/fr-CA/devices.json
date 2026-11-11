@@ -2531,9 +2531,9 @@
       "couldNotQueue": "{{action}} n’a pas pu être mis en file d’attente",
       "updateVersionQueued": "Mise à jour de {{version}} mise en file pour « {{name}} »"
     },
-    "uninstallTitle": "Désinstaller le titre",
+    "uninstallTitle": "Désinstaller ce paquet",
     "unknownSoftware": "Logiciel inconnu",
-    "updateTitle": "Titre de mise à jour",
+    "updateTitle": "Mettre en file d'attente une mise à jour pour ce paquet",
     "updatesAvailable": "{{count}} mises à jour disponibles",
     "updatesAvailable_one": "mise à jour {{count}} disponible",
     "updatesAvailable_other": "{{count}} mises à jour disponibles"
@@ -2565,7 +2565,7 @@
       "load": "Charge",
       "mitigate": "Atténuer",
       "reopen": "Réouverture",
-      "scheduleRemediation": "Réhabilitation programmée"
+      "scheduleRemediation": "Échec de la planification de la correction"
     },
     "groupSummary": "{{cves}} CVE · {{findings}} constats · {{patchReady}} avec correctif disponible",
     "hideFindings": "Masquer les constats",
@@ -2707,7 +2707,7 @@
       "agentOnlyAction": "Cette action s’applique uniquement aux appareils dotés d’un agent. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "agentOnlyActionManual": "Cette action s’applique uniquement aux appareils dotés d’un agent. Les actifs manuels n’ont pas d’agent.",
       "alreadyPendingTail": "Déjà en attente de Tail",
-      "bulkActionFailed": "Échec de l’action en masse",
+      "bulkActionFailed": "Échec de l'action groupée {{action}}",
       "bulkMaintenanceSuccess": "{{count}} appareils {{verb}} mode maintenance",
       "bulkMaintenanceSuccess_one": "{{count}} appareil {{verb}} mode maintenance",
       "bulkMaintenanceSuccess_other": "{{count}} appareils {{verb}} mode maintenance",
@@ -2728,14 +2728,14 @@
       "decommissionFailed": "Échec du retrait",
       "decommissioned": "Retiré",
       "decommissioning": "Retrait en cours…",
-      "deleteFailed": "Échec de la suppression",
+      "deleteFailed": "Échec de la suppression de {{hostname}}",
       "deviceError": "Erreur de l’appareil",
-      "deviceOnline": "Appareil en ligne",
-      "inventoryRefreshRequested": "Besoin de rafraîchissement d’inventaire",
+      "deviceOnline": "{{hostname}} est maintenant en ligne.",
+      "inventoryRefreshRequested": "Actualisation de l'inventaire demandée pour {{hostname}}. Données à jour dans 1–2 minutes.",
       "listTruncated": "Liste tronquée",
       "maintenanceOff": "Maintenance désactivée",
       "maintenanceOn": "Maintenance en marche",
-      "multibootLinked": "Multidémarrage associé",
+      "multibootLinked": "{{count}} appareils liés comme profils à démarrage multiple.",
       "networkSkipped_one": "1 appareil réseau ignoré — cette action s’applique uniquement aux appareils avec agent.",
       "networkSkipped_other": "{{count}} appareils réseau ignorés — cette action s’applique uniquement aux appareils avec agent.",
       "networkSkipped": "{{count}} appareils réseau ignorés — cette action s’applique uniquement aux appareils avec agent.",
@@ -2744,15 +2744,15 @@
       "permanentlyDeleted": "{{hostname}} supprimé définitivement",
       "refreshFailed": "Impossible d'actualiser les appareils. La liste affichée peut être périmée.",
       "restored": "Restauré",
-      "scriptQueueFailed": "File d’attente de scripts échouée",
-      "scriptQueuedMany": "Script en file d’attente de nombreux",
-      "scriptQueuedOne": "Script Queue One",
-      "selectDeviceForScript": "Sélectionner l’appareil pour le script",
-      "selectTwoForMultiboot": "Sélectionner deux pour le multiboot",
-      "unknownAction": "Action inconnue",
-      "unknownBulkAction": "Action en vrac inconnue",
+      "scriptQueueFailed": "Échec de la mise en file d'attente du script",
+      "scriptQueuedMany": "Script « {{script}} » mis en file d'attente pour {{count}} appareils",
+      "scriptQueuedOne": "Script « {{script}} » mis en file d'attente pour {{hostname}}",
+      "selectDeviceForScript": "Sélectionnez au moins un appareil pour exécuter un script",
+      "selectTwoForMultiboot": "Sélectionnez au moins deux appareils à lier comme profils à démarrage multiple.",
+      "unknownAction": "Action inconnue : {{action}}",
+      "unknownBulkAction": "Action groupée inconnue : {{action}}",
       "wakeSentWatching": "Commande de réveil envoyée ; surveillance en cours",
-      "wakeTimeout": "Temps d’arrêt du réveil",
+      "wakeTimeout": "{{hostname}} n'est pas passé en ligne en 4 minutes. Vérifiez l'ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} en file d'attente pour des appareils hors ligne",
       "runsWhenOnline": "S'exécute quand l'appareil est en ligne — expire le {{date}}",
       "runsWhenOnlineNoExpiry": "S'exécute quand l'appareil est en ligne",
@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Échec de l'envoi des journaux",
       "networkIsolation": {
         "active": "Isolé"
+      },
+      "helperVersion": "Version de l'assistant",
+      "deviceFunction": "Fonction de l'appareil",
+      "hostsWorkloads": "Héberge des charges de travail",
+      "workloadRuntimes": "Environnements d'exécution des charges de travail",
+      "warranty": {
+        "status": "État de la garantie"
       }
     }
   },
@@ -3729,9 +3736,9 @@
       "noneRecorded": "Aucun échantillon de processus n’a encore été enregistré pour cet appareil. L’agent les recueille périodiquement — revenez lorsqu’il aura transmis ses données."
     },
     "errors": {
-      "liveProcesses": "Processus en cours",
-      "loadProcesses": "Processus de chargement",
-      "processSample": "Exemple de procédé"
+      "liveProcesses": "Échec de la récupération des processus en direct",
+      "loadProcesses": "Échec du chargement des processus",
+      "processSample": "Échec de la récupération de l'échantillon de processus"
     },
     "live": "En direct",
     "subtitle": {

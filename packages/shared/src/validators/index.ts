@@ -1469,6 +1469,7 @@ export * from './wispConcerns';
 export * from './wispCheckIns';
 export * from './wispNudgePreferences';
 export * from './wispSpecialists';
+export * from './wispStandingInstruction';
 export * from './wisp';
 export * from './flowRuns';
 export * from './flowBudgets';

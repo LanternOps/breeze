@@ -9,9 +9,11 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { linkLoginToContactMock, insertSpy } = vi.hoisted(() => ({
+const { linkLoginToContactMock, insertSpy, selectState } = vi.hoisted(() => ({
   linkLoginToContactMock: vi.fn(),
   insertSpy: vi.fn(),
+  // #11541: rows served to, and where/limit captured from, findPortalUserByEmail.
+  selectState: { rows: [] as unknown[], wheres: [] as unknown[], limits: [] as number[] },
 }));
 
 vi.mock('../../db', () => ({
@@ -21,20 +23,28 @@ vi.mock('../../db', () => ({
       throw new Error('resolveConfirmedContact must not write to portal_users');
     },
     select: () => {
-      const chain: any = { from: () => chain, where: () => chain, limit: () => Promise.resolve([]) };
+      const chain: any = {
+        from: () => chain,
+        where: (w: unknown) => { selectState.wheres.push(w); return chain; },
+        limit: (n: number) => { selectState.limits.push(n); return Promise.resolve(selectState.rows); },
+      };
       return chain;
     },
   },
 }));
 vi.mock('../contacts/loginLink', () => ({ linkLoginToContact: linkLoginToContactMock }));
 
-import { resolveConfirmedContact } from './addinContacts';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { resolveConfirmedContact, findPortalUserByEmail } from './addinContacts';
 
 const ORG_ID = '11111111-2222-4333-8444-555555555555';
 const actor = { userId: 'tech-1' };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  selectState.rows = [];
+  selectState.wheres = [];
+  selectState.limits = [];
 });
 
 describe('resolveConfirmedContact', () => {
@@ -78,5 +88,27 @@ describe('resolveConfirmedContact', () => {
     // A shared mailbox surfaces as an unlinked outcome, not a thrown error —
     // the ticket is still worth creating.
     expect(result).toEqual({ contactId: null, outcome: 'ambiguous' });
+  });
+});
+
+describe('findPortalUserByEmail (#11541)', () => {
+  it('matches the stored address case-insensitively, scoped to the org', async () => {
+    selectState.rows = [{ id: 'pu-1', name: 'Ada' }];
+    expect(await findPortalUserByEmail(ORG_ID, '  Ada@Acme.COM ')).toEqual({ id: 'pu-1', name: 'Ada' });
+    const q = new PgDialect().sqlToQuery(selectState.wheres[0] as never);
+    expect(q.sql).toContain('"portal_users"."org_id" = $1');
+    expect(q.sql).toContain('lower("portal_users"."email") = $2');
+    expect(q.params).toEqual([ORG_ID, 'ada@acme.com']);
+    // Probes for a second row so a case-only duplicate is visible.
+    expect(selectState.limits).toEqual([2]);
+  });
+
+  it('returns null when two logins in the org differ only by case (fail closed)', async () => {
+    selectState.rows = [{ id: 'pu-1', name: 'Ada' }, { id: 'pu-2', name: 'ADA' }];
+    expect(await findPortalUserByEmail(ORG_ID, 'ada@acme.com')).toBeNull();
+  });
+
+  it('returns null for an unknown sender', async () => {
+    expect(await findPortalUserByEmail(ORG_ID, 'nobody@acme.com')).toBeNull();
   });
 });

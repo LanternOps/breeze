@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Seções do sistema",
         "connections": "Conexões",
-        "deprecations": "Descontinuações"
+        "deprecations": "Descontinuações",
+        "health": "Saúde"
       },
       "connections": {
         "enabledMeaning": "Ativado significa configurado. O Breeze não contata o serviço para verificar se ele responde.",
@@ -720,6 +721,57 @@
           "load": "Não foi possível carregar o status das tarefas."
         },
         "retry": "Tentar novamente"
+      },
+      "health": {
+        "coverage": "Somente trabalho em segundo plano compartilhado: contagens de filas e heartbeats de jobs agendados, lidos do Redis. Esta aba não mostra veredito geral. A saúde por processo e por host fica em /health/ready e no overlay de monitoramento.",
+        "loading": "Carregando status do trabalho em segundo plano…",
+        "refresh": "Atualizar",
+        "never": "nunca",
+        "errors": {
+          "load": "Não foi possível carregar o status do trabalho em segundo plano."
+        },
+        "status": {
+          "operational": "Operacional",
+          "degraded": "Degradado",
+          "unavailable": "Indisponível",
+          "unknown": "Desconhecido",
+          "disabled": "Desativado"
+        },
+        "detail": {
+          "redis_unavailable": "O Redis está indisponível, então não foi possível ler.",
+          "read_failed": "A leitura falhou.",
+          "timeout": "A leitura excedeu o tempo limite.",
+          "stale": "O último heartbeat é mais antigo do que o esperado.",
+          "missing": "Nenhum heartbeat foi registrado.",
+          "no_threshold": "Somente contagens. Ainda não há limite de saúde definido para esta fila."
+        },
+        "queues": {
+          "title": "Filas",
+          "description": "Trabalho pendente em cada fila compartilhada. As contagens não são um veredito de saúde.",
+          "items": {
+            "connection-health-reconcile": "Reconciliador de saúde de conexões",
+            "connection-health-digest": "Resumo de saúde de conexões",
+            "alerts": "Alertas",
+            "event-dispatch": "Despacho de eventos"
+          },
+          "counts": {
+            "waiting": "Aguardando",
+            "prioritized": "Priorizados",
+            "delayed": "Adiados",
+            "active": "Ativos"
+          }
+        },
+        "jobs": {
+          "title": "Jobs agendados",
+          "description": "Última execução registrada de cada job de saúde de conexões.",
+          "items": {
+            "reconcile": "Reconciliador de saúde de conexões",
+            "digest": "Resumo de saúde de conexões"
+          },
+          "kind": "Verificação de conexão: {{kind}}",
+          "lastRun": "Última execução: {{when}}",
+          "failureStreak": "Sequência de falhas: {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -1002,6 +1054,7 @@
       "contract_document": "Documento de contrato",
       "contract_template": "Modelo de contrato",
       "custom_field": "Campo personalizado",
+      "customer_email_domain": "Domínio de e-mail do cliente",
       "deployment": "Implantação",
       "deployment_invite": "Convite de implantação",
       "deployment_target": "Destino de implantação",

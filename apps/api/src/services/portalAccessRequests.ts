@@ -19,31 +19,32 @@
  * services/portalAccountState.ts (`portalAccountWriters.contract.test.ts`).
  * No `Promise.all` inside any transaction: every statement is sequential.
  */
-import { and, desc, eq, gt, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, isNotNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db, withDbTransaction, withSystemDbAccessContextIsolated } from '../db';
 import {
+  clientAiTenantMappings,
   organizations,
   portalAccessRequests,
-  portalUserIdentities,
   portalUsers,
   users,
   type PortalAccessRequestSource,
   type PortalAccessRequestStatus,
 } from '../db/schema';
 import { linkLoginToContact } from './contacts/loginLink';
-import { lockPortalInviteAddresses } from './contacts/portalInvite';
+import { lockPortalInviteAddresses, portalLoginEmailEquals } from './contacts/portalInvite';
 import {
   PORTAL_ACCOUNT_TRANSITION_REFUSED,
   PortalAccountTransitionError,
   initialPortalAccountState,
   planPortalAccountTransition,
 } from './portalAccountState';
-import { entraIssuer, portalUserHasIdentitySql } from './portalUserIdentities';
+import { createIdentityOnlyAccount } from './portalIdentityAccounts';
+import { PORTAL_GOOGLE_ISSUER, entraIssuer, portalUserHasIdentitySql } from './portalUserIdentities';
+
+export { PORTAL_GOOGLE_ISSUER };
 
 export const PORTAL_ACCESS_REQUEST_TTL_DAYS = 14;
 export const PORTAL_ACCESS_REQUEST_PENDING_CAP = 200;
-/** The `iss` of a Google ID token; the issuer stored for a Google request and identity. */
-export const PORTAL_GOOGLE_ISSUER = 'https://accounts.google.com';
 /** Key 1 of the per-org admission lock in {@link createPortalAccessRequest} (key 2 is `hashtext(org_id)`). */
 const PORTAL_ACCESS_REQUEST_ADMISSION_LOCK_NAMESPACE = 'portal_access_request_admission';
 
@@ -60,7 +61,8 @@ export type PortalAccessRequestErrorCode =
   | 'PORTAL_ACCESS_REQUEST_NOT_FOUND'
   | 'PORTAL_ACCESS_REQUEST_NOT_PENDING'
   | 'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS'
-  | 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED';
+  | 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED'
+  | 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN';
 
 export class PortalAccessRequestError extends Error {
   constructor(
@@ -86,6 +88,12 @@ const accountExists = () => new PortalAccessRequestError(
 // stay in this comment only.
 const identityLinked = () => new PortalAccessRequestError(
   'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', 409, 'This sign-in identity cannot be approved. Ask the person to request access again.',
+);
+// One message for "no proven mapping" and "proven for another tenant": the
+// approver learns nothing about which org holds the tenant now.
+const entraTenantNotProven = () => new PortalAccessRequestError(
+  'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN', 409,
+  "This organization's Microsoft tenant has changed since this request was made. Ask the person to sign in again.",
 );
 
 // ---------------------------------------------------------------------------
@@ -286,7 +294,7 @@ async function lockAddressAndRefuseExisting(request: LockedRequest): Promise<voi
   const [existing] = await db
     .select({ id: portalUsers.id })
     .from(portalUsers)
-    .where(and(eq(portalUsers.orgId, request.orgId), sql`lower(${portalUsers.email}) = ${request.email}`))
+    .where(and(eq(portalUsers.orgId, request.orgId), portalLoginEmailEquals(request.email)))
     .limit(1);
   if (existing) throw accountExists();
 }
@@ -357,58 +365,70 @@ async function grantBrowserAccess(request: LockedRequest, now: Date): Promise<Ap
 }
 
 /**
- * `entra` / `google`: an identity-only account (plan D2) — `auth_method` names
- * the provider, never `password`. Entra rows also carry `entra_tenant_id` /
- * `entra_oid` until release C (plan D4 writer fence).
+ * inv. 4 at approval time (W4 #11381). An `entra` request carries the tenant
+ * its sign-in resolved through the org's PROVEN mapping, captured up to
+ * {@link PORTAL_ACCESS_REQUEST_TTL_DAYS} days ago. If that tenant has since
+ * been displaced to another org, removed or replaced, creating
+ * `(entraIssuer(tid), oid)` here would place an identity in an org that no
+ * longer owns the tenant, and the person would be locked out
+ * (`identity_other_org`). So the org's proven mapping must still name the
+ * request's tenant, or the approval is refused.
  *
- * Both inserts are `ON CONFLICT DO NOTHING` (no target: every unique key), so a
- * taken identity never raises 23505. The login insert can only conflict on the
- * legacy `(entra_tenant_id, entra_oid)` key; the identity insert on
- * `(issuer, subject)`. Either way the identity is linked elsewhere — possibly
- * in an org this context cannot see — and the throw rolls everything back.
+ * `FOR SHARE` on that mapping row, held to commit: a concurrent displacement
+ * (recordEntraTenantProof: `FOR UPDATE`, then `DELETE`), removal, or repoint
+ * (the AI for Office PUT, whose trigger clears the proof) waits for this
+ * approval. Once it commits, the displacement's epoch bump sees the new account
+ * like any other identity the org holds in the tenant. One that committed first
+ * leaves no proven row for the tenant (READ COMMITTED re-checks `proven_at` on
+ * the updated row), and the approval is refused.
  */
-async function createIdentityAccount(request: LockedRequest, deciderUserId: string): Promise<ApprovedAccount> {
+async function lockProvenEntraTenant(request: LockedRequest): Promise<void> {
+  const [mapping] = await db
+    .select({ tenantId: clientAiTenantMappings.entraTenantId })
+    .from(clientAiTenantMappings)
+    .where(and(eq(clientAiTenantMappings.orgId, request.orgId), isNotNull(clientAiTenantMappings.provenAt)))
+    .for('share')
+    .limit(1);
+  if (!mapping || !request.entraTenantId || mapping.tenantId.toLowerCase() !== request.entraTenantId.toLowerCase()) {
+    throw entraTenantNotProven();
+  }
+}
+
+/**
+ * `entra` / `google`: an identity-only account (plan D2), written by the
+ * shared services/portalIdentityAccounts.ts writer (W4 instant mode uses the
+ * same one). An `entra` request first re-checks its tenant
+ * ({@link lockProvenEntraTenant}: ENTRA_TENANT_NOT_PROVEN). The writer's
+ * outcomes map back to this queue's 409s, and the throw rolls back everything
+ * the writer did (the contact link, a login row): `account_exists` →
+ * ACCOUNT_EXISTS, `identity_linked` → IDENTITY_LINKED. The contact is linked at
+ * the request's address, as an MSP invite does (the approval is an MSP action).
+ */
+async function createIdentityAccount(request: LockedRequest, deciderUserId: string, now: Date): Promise<ApprovedAccount> {
   const provider = request.source;
   if ((provider !== 'entra' && provider !== 'google') || !request.issuer || !request.subject) {
     throw new Error('SSO access request is missing its identity claims');
   }
   if (provider === 'entra' && !request.entraTenantId) throw new Error('entra access request has no tenant id');
+  if (provider === 'entra') await lockProvenEntraTenant(request);
 
-  await lockAddressAndRefuseExisting(request);
-  const contactId = await linkContact(request, deciderUserId);
+  const outcome = await createIdentityOnlyAccount(db, {
+    orgId: request.orgId,
+    email: request.email,
+    name: request.name,
+    contactAddress: request.email,
+    actorUserId: deciderUserId,
+    writer: 'sso_request_approved',
+    now,
+    // portal_access_requests_claims_chk pins issuer to these exact forms.
+    ...(provider === 'entra'
+      ? { provider, tid: request.entraTenantId!, oid: request.subject }
+      : { provider, sub: request.subject }),
+  });
+  if (outcome.kind === 'account_exists') throw accountExists();
+  if (outcome.kind === 'identity_linked') throw identityLinked();
 
-  const [created] = await db
-    .insert(portalUsers)
-    .values({
-      orgId: request.orgId,
-      email: request.email,
-      name: request.name,
-      passwordHash: null,
-      authMethod: provider,
-      ...(provider === 'entra' ? { entraTenantId: request.entraTenantId, entraOid: request.subject } : {}),
-      ...initialPortalAccountState('sso_request_approved'),
-      contactId,
-    })
-    .onConflictDoNothing()
-    .returning({ id: portalUsers.id, authEpoch: portalUsers.authEpoch });
-  if (!created) throw identityLinked();
-
-  const [identity] = await db
-    .insert(portalUserIdentities)
-    .values({
-      orgId: request.orgId,
-      portalUserId: created.id,
-      provider,
-      issuer: request.issuer,
-      subject: request.subject,
-      entraTenantId: provider === 'entra' ? request.entraTenantId : null,
-      linkedVia: 'jit',
-    })
-    .onConflictDoNothing()
-    .returning({ id: portalUserIdentities.id });
-  if (!identity) throw identityLinked();
-
-  return { outcome: 'account_created', portalUserId: created.id, email: request.email, name: request.name, authEpoch: created.authEpoch };
+  return { outcome: 'account_created', portalUserId: outcome.portalUserId, email: request.email, name: request.name, authEpoch: outcome.authEpoch };
 }
 
 /** `self`: an invited password account, exactly what an MSP invite creates. The route sends the invite. */
@@ -458,7 +478,7 @@ export async function approvePortalAccessRequest(input: DecisionInput): Promise<
         break;
       case 'entra':
       case 'google':
-        account = await createIdentityAccount(request, input.deciderUserId);
+        account = await createIdentityAccount(request, input.deciderUserId, now);
         break;
       case 'self':
         account = await createInvitedAccount(request, input.deciderUserId, now);

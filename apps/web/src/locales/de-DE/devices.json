@@ -2531,9 +2531,9 @@
       "couldNotQueue": "{{action}} konnte nicht in die Warteschlange gestellt werden",
       "updateVersionQueued": "Update auf {{version}} steht in der Warteschlange für „{{name}}“"
     },
-    "uninstallTitle": "Titel deinstallieren",
+    "uninstallTitle": "Dieses Paket deinstallieren",
     "unknownSoftware": "Unbekannte Software",
-    "updateTitle": "Titel aktualisieren",
+    "updateTitle": "Update für dieses Paket in die Warteschlange stellen",
     "updatesAvailable": "{{count}} Updates verfügbar",
     "updatesAvailable_one": "{{count}} Update verfügbar",
     "updatesAvailable_other": "{{count}} Updates verfügbar"
@@ -2565,7 +2565,7 @@
       "load": "Laden",
       "mitigate": "Abmildern",
       "reopen": "Wieder öffnen",
-      "scheduleRemediation": "Planen Sie die Behebung"
+      "scheduleRemediation": "Behebung konnte nicht geplant werden"
     },
     "groupSummary": "{{cves}} CVEs · {{findings}} Befunde · {{patchReady}} Patch-bereit",
     "hideFindings": "Befunde ausblenden",
@@ -2708,7 +2708,7 @@
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
       "agentOnlyActionManual": "Diese Aktion gilt nur für Agent-Geräte. Manuelle Assets haben keinen Agenten.",
       "alreadyPendingTail": "Tail ist bereits ausstehend",
-      "bulkActionFailed": "Massenaktion fehlgeschlagen",
+      "bulkActionFailed": "Massenaktion {{action}} fehlgeschlagen",
       "bulkMaintenanceSuccess": "Wartungsmodus für {{count}} Geräte {{verb}}",
       "bulkMaintenanceSuccess_one": "Wartungsmodus für {{count}} Gerät {{verb}}",
       "bulkMaintenanceSuccess_other": "Wartungsmodus für {{count}} Geräte {{verb}}",
@@ -2729,14 +2729,14 @@
       "decommissionFailed": "Entfernen fehlgeschlagen",
       "decommissioned": "Entfernt",
       "decommissioning": "Wird entfernt",
-      "deleteFailed": "Löschen fehlgeschlagen",
+      "deleteFailed": "{{hostname}} konnte nicht gelöscht werden",
       "deviceError": "Gerätefehler",
-      "deviceOnline": "Gerät online",
-      "inventoryRefreshRequested": "Bestandsaktualisierung angefordert",
+      "deviceOnline": "{{hostname}} ist jetzt online.",
+      "inventoryRefreshRequested": "Inventaraktualisierung für {{hostname}} angefordert. Aktuelle Daten in 1–2 Minuten.",
       "listTruncated": "Liste abgeschnitten",
       "maintenanceOff": "Wartung aus",
       "maintenanceOn": "Wartung eingeschaltet",
-      "multibootLinked": "Multiboot-verknüpft",
+      "multibootLinked": "{{count}} Geräte als Multi-Boot-Profile verknüpft.",
       "networkSkipped_one": "1 Netzwerkgerät übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "networkSkipped_other": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "networkSkipped": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
@@ -2745,15 +2745,15 @@
       "permanentlyDeleted": "{{hostname}} endgültig gelöscht",
       "refreshFailed": "Geräte konnten nicht aktualisiert werden. Die angezeigte Liste ist möglicherweise veraltet.",
       "restored": "Wiederhergestellt",
-      "scriptQueueFailed": "Skriptwarteschlange fehlgeschlagen",
-      "scriptQueuedMany": "Skriptausführungen in die Warteschlange gestellt",
-      "scriptQueuedOne": "Skriptausführung in die Warteschlange gestellt",
-      "selectDeviceForScript": "Wählen Sie Gerät für Skript aus",
-      "selectTwoForMultiboot": "Zwei Geräte für Multiboot auswählen",
-      "unknownAction": "Unbekannte Aktion",
-      "unknownBulkAction": "Unbekannte Massenaktion",
+      "scriptQueueFailed": "Skript konnte nicht in die Warteschlange gestellt werden",
+      "scriptQueuedMany": "Skript \"{{script}}\" für {{count}} Geräte in die Warteschlange gestellt",
+      "scriptQueuedOne": "Skript \"{{script}}\" für {{hostname}} in die Warteschlange gestellt",
+      "selectDeviceForScript": "Wählen Sie mindestens ein Gerät aus, um ein Skript auszuführen",
+      "selectTwoForMultiboot": "Wählen Sie mindestens zwei Geräte aus, um sie als Multi-Boot-Profile zu verknüpfen.",
+      "unknownAction": "Unbekannte Aktion: {{action}}",
+      "unknownBulkAction": "Unbekannte Massenaktion: {{action}}",
       "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
-      "wakeTimeout": "Zeitüberschreitung beim Aufwecken",
+      "wakeTimeout": "{{hostname}} ist innerhalb von 4 Minuten nicht online gegangen. Prüfen Sie Ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} für Offline-Geräte in die Warteschlange gestellt",
       "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist — läuft ab am {{date}}",
       "runsWhenOnlineNoExpiry": "Wird ausgeführt, sobald das Gerät online ist",
@@ -2941,6 +2941,13 @@
       "logShippingFailing": "Log-Übertragung fehlerhaft",
       "networkIsolation": {
         "active": "Isoliert"
+      },
+      "helperVersion": "Helper-Version",
+      "deviceFunction": "Gerätefunktion",
+      "hostsWorkloads": "Hostet Workloads",
+      "workloadRuntimes": "Workload-Laufzeiten",
+      "warranty": {
+        "status": "Garantiestatus"
       }
     }
   },
@@ -3729,9 +3736,9 @@
       "noneRecorded": "Für dieses Gerät wurden noch keine Prozessproben erfasst. Der Agent sammelt sie regelmäßig – schauen Sie noch einmal nach, sobald er sie gemeldet hat."
     },
     "errors": {
-      "liveProcesses": "Live-Prozesse",
-      "loadProcesses": "Prozesse laden",
-      "processSample": "Prozessprobe"
+      "liveProcesses": "Live-Prozesse konnten nicht abgerufen werden",
+      "loadProcesses": "Prozesse konnten nicht geladen werden",
+      "processSample": "Prozessprobe konnte nicht abgerufen werden"
     },
     "live": "Lebe",
     "subtitle": {

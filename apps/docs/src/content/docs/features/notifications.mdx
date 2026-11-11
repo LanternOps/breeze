@@ -363,10 +363,11 @@ without saying so:
   its retries and no later delivery has succeeded. Deliveries that were dropped
   because the webhook was edited or disabled do not count. The incident clears
   after the next successful delivery, or when the webhook is disabled.
-- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi and backup provider
-  connections open a **Sync stalled** incident when there has been no
-  successful sync for three sync intervals (at least an hour). This catches a
-  sync that is stuck or no longer scheduled.
+- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi, backup provider and
+  DNS filtering connections, and Microsoft 365 tenant sync when it is enabled,
+  open a **Sync stalled** incident when there has been no successful sync for
+  three sync intervals (at least an hour). This catches a sync that is stuck or
+  no longer scheduled.
 - **Google Workspace.** Breeze verifies each Google Workspace connection about
   every six hours, with the same Directory call it makes when the connection is
   saved. If Google rejects the service account (for example, domain-wide

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Drizzle mock pattern copied verbatim from hardwareLifecycleReport.test.ts:
 // every `db.select()` call resolves the next queued row set, in call order.
@@ -442,6 +443,18 @@ describe('generateThreatDetectionReport', () => {
       agentsOffline: 1,
       devicesWithoutAgent: 1,
     });
+  });
+
+  it('excludes decommissioned devices from the fleet and from agent coverage (#11562)', async () => {
+    queueSelects(ORG_ROW, [], ACTIVE_INTEGRATION, [], [], [], [], []);
+    await generateThreatDetectionReport(ORG_ID, {}, authority());
+    // whereCalls: 0 org, 1 devices (fleet), 2 integration, 3 huntress agents
+    const dialect = new PgDialect();
+    for (const idx of [1, 3]) {
+      const q = dialect.sqlToQuery(whereCalls[idx]![0] as never);
+      expect(q.sql).toMatch(/"status" <> \$\d+/);
+      expect(q.params).toContain('decommissioned');
+    }
   });
 });
 

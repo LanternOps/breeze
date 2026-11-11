@@ -325,6 +325,10 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/portal/auth/reset-password': 'public: pre-login portal auth endpoint',
   'POST /api/v1/portal/auth/accept-invite': 'public: pre-login portal auth endpoint',
   'POST /api/v1/portal/auth/logout': 'portal session: portal session auth (portalAuthMiddleware)',
+  // routes/portal/oidc.ts (portal registration W4, #11381)
+  'POST /api/v1/portal/auth/oidc/entra/start': 'public: pre-login portal auth endpoint',
+  'POST /api/v1/portal/auth/invite/methods': 'public: pre-login portal auth endpoint',
+  'POST /api/v1/portal/auth/oidc/entra/link/start': 'portal session: portal session auth (portalAuthMiddleware)',
   // routes/portal/invoices.ts
   'POST /api/v1/portal/invoices/:id/autopay-confirmation': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/invoices/:id/pay': 'portal session: portal session auth (portalAuthMiddleware)',
