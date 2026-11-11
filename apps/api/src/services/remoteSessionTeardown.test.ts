@@ -42,10 +42,6 @@ const h = vi.hoisted(() => {
         via: 'relay',
       }),
     ),
-    // The socket-local send is still the tunnel path's transport (main), so the
-    // harness keeps both: `dispatchCommandToAgent` for desktop/terminal stops,
-    // `sendCommandToAgent` for `tunnel_close`.
-    sendCommandToAgent: vi.fn(),
     revokeViewerSession: vi.fn().mockResolvedValue(undefined),
     captureException: vi.fn(),
     // closeTerminalSession returns true when a live terminal socket existed on
@@ -111,9 +107,12 @@ vi.mock('../db/schema', () => ({
 vi.mock('./agentCommandRelay', () => ({
   dispatchCommandToAgent: (...args: unknown[]) => h.dispatchCommandToAgent(...(args as [])),
 }));
-vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: (...args: unknown[]) => h.sendCommandToAgent(...(args as [])),
-}));
+// #4142 W2: teardown reaches no route module. Every agent signal goes through
+// the relay facade, and local browser-socket closes through the role-safe
+// boundary below.
+vi.mock('../routes/agentWs', () => {
+  throw new Error('remoteSessionTeardown must not load routes/agentWs');
+});
 
 vi.mock('./viewerTokenRevocation', () => ({
   revokeViewerSession: (...args: unknown[]) => h.revokeViewerSession(...args),
@@ -123,19 +122,21 @@ vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => h.captureException(...args),
 }));
 
-// teardownDisconnectedSessions dynamically imports terminalWs to break the
-// import cycle; mock the closed-over closeTerminalSession.
-vi.mock('../routes/terminalWs', () => ({
-  closeTerminalSession: (...args: unknown[]) => h.closeTerminalSession(...args),
+vi.mock('./remoteSessionSocketLocal', () => ({
+  closeLocalTerminalSession: (...args: unknown[]) => h.closeTerminalSession(...args),
+  closeLocalTunnelSession: (...args: unknown[]) => h.closeTunnelSession(...args),
 }));
-
-vi.mock('../routes/tunnelWs', () => ({
-  closeTunnelSession: (...args: unknown[]) => h.closeTunnelSession(...args),
-}));
+vi.mock('../routes/terminalWs', () => {
+  throw new Error('remoteSessionTeardown must not load routes/terminalWs');
+});
+vi.mock('../routes/tunnelWs', () => {
+  throw new Error('remoteSessionTeardown must not load routes/tunnelWs');
+});
 
 import {
   terminateUserRemoteSessions,
   terminateDeviceRemoteSessions,
+  teardownDisconnectedTunnels,
   TEARDOWN_FAILED,
 } from './remoteSessionTeardown';
 
@@ -368,7 +369,7 @@ describe('terminateUserRemoteSessions', () => {
     expect(result).toBe(1);
     expect(h.revokeViewerSession).toHaveBeenCalledWith('t1');
     expect(h.closeTunnelSession).toHaveBeenCalledWith('t1');
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
       id: 'tun-close-t1',
       type: 'tunnel_close',
       payload: { tunnelId: 't1' },
@@ -585,5 +586,91 @@ describe('terminateDeviceRemoteSessions', () => {
 
     expect(result).toBe(TEARDOWN_FAILED);
     expect(h.captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #4142 W2: tunnel teardown through the relay facade, with a bounded fan-out.
+describe('teardownDisconnectedTunnels', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.state.mode = 'update';
+    h.chain.select.mockImplementation(() => { h.state.mode = 'select'; return h.chain; });
+    h.chain.from.mockImplementation(() => h.chain);
+    h.chain.where.mockImplementation(() => Promise.resolve(h.state.deviceRowsResult));
+    h.revokeViewerSession.mockResolvedValue(undefined);
+    h.closeTunnelSession.mockResolvedValue(false);
+    h.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'relay' });
+  });
+
+  const tunnels = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `t${i}`, type: 'vnc', deviceId: `d${i}` }));
+
+  it('N tunnels dispatch tunnel_close concurrently, at most 8 at a time', async () => {
+    h.state.deviceRowsResult = Array.from({ length: 20 }, (_, i) => ({ id: `d${i}`, agentId: `agent-${i}` }));
+    let inFlight = 0;
+    let peak = 0;
+    const release: Array<() => void> = [];
+    h.dispatchCommandToAgent.mockImplementation(() => new Promise((resolve) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      release.push(() => { inFlight -= 1; resolve({ status: 'sent', via: 'relay' }); });
+    }));
+
+    const pending = teardownDisconnectedTunnels(tunnels(20));
+    await vi.waitFor(() => expect(release).toHaveLength(8));
+    // More than one in flight (not row by row), never more than the bound.
+    expect(inFlight).toBe(8);
+    while (release.length < 20 || inFlight > 0) {
+      const next = release.shift();
+      if (next) next();
+      await new Promise((r) => setTimeout(r, 0));
+      if (release.length === 0 && inFlight === 0) break;
+    }
+    await pending;
+
+    expect(peak).toBe(8);
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(20);
+  });
+
+  it('one failure does not stop the others', async () => {
+    h.state.deviceRowsResult = [
+      { id: 'd0', agentId: 'agent-0' }, { id: 'd1', agentId: 'agent-1' }, { id: 'd2', agentId: 'agent-2' },
+    ];
+    h.closeTunnelSession.mockImplementation(async (id: string) => {
+      if (id === 't0') throw new Error('socket map gone');
+      return false;
+    });
+    h.dispatchCommandToAgent.mockImplementation(async (agentId?: string) => {
+      if (agentId === 'agent-1') throw new Error('relay down');
+      return { status: 'sent', via: 'relay' };
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(teardownDisconnectedTunnels(tunnels(3))).resolves.toBeUndefined();
+
+    expect(h.dispatchCommandToAgent.mock.calls.map((c) => c[0]).sort()).toEqual(['agent-0', 'agent-1', 'agent-2']);
+    consoleError.mockRestore();
+  });
+
+  it('a tunnel closed locally is not also signalled to the agent', async () => {
+    h.state.deviceRowsResult = [{ id: 'd0', agentId: 'agent-0' }];
+    h.closeTunnelSession.mockResolvedValue(true);
+
+    await teardownDisconnectedTunnels(tunnels(1));
+
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('sends tunnel_close outside any held DB context', async () => {
+    h.state.deviceRowsResult = [{ id: 'd0', agentId: 'agent-0' }];
+    const depthAtSend: number[] = [];
+    h.dispatchCommandToAgent.mockImplementation(async () => {
+      depthAtSend.push(h.outside.depth);
+      return { status: 'sent', via: 'relay' };
+    });
+
+    await teardownDisconnectedTunnels(tunnels(1));
+
+    expect(depthAtSend).toEqual([expect.any(Number)]);
+    expect(depthAtSend[0]).toBeGreaterThan(0);
   });
 });

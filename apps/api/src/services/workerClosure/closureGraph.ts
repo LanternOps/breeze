@@ -134,18 +134,25 @@ export function parseFile(file: string): ParsedFile {
 }
 
 /**
- * Role-safe boundary modules (#4141): the walk records them but does NOT
- * traverse their imports. `services/agentCommandRelay.ts` is the ONE module
- * designed to be loaded by every placement: its only socket-local access is a
- * dynamic `import('../routes/agentWs')` inside `breezeRole() !== 'worker'`
- * guards, and 3.5b's runtime assertions make any illegal call THROW rather
- * than silently report agents offline. Treating it as a leaf is what lets the
- * facade's callers (monitor/snmp/backup/discovery/networkBaseline) be
- * `global` — the entire point of the relay. Any OTHER path to agentWs still
- * classifies an entry socket-owner.
+ * Role-safe boundary modules (#4141, #4142): the walk records them but does
+ * NOT traverse their imports. Each is designed to be loaded by every
+ * placement: its only socket-local access is a dynamic import of a route
+ * module inside a `breezeRole() !== 'worker'` guard, so a worker-role process
+ * never loads that route. Any OTHER path to agentWs still classifies an entry
+ * socket-owner, and the contract test checks each module keeps that shape.
+ *
+ *   - `services/agentCommandRelay.ts`: agent command dispatch and eviction.
+ *     `import('../routes/agentWs')`, and 3.5b's runtime assertions make any
+ *     illegal call THROW rather than silently report agents offline. Treating
+ *     it as a leaf is what lets the facade's callers be `global`, the entire
+ *     point of the relay.
+ *   - `services/remoteSessionSocketLocal.ts`: the local terminal / tunnel
+ *     browser-socket close. `import('../routes/terminalWs')` and
+ *     `import('../routes/tunnelWs')`; a worker answers "nothing closed here".
  */
 export const AGENT_COMMAND_RELAY = path.join(SRC_ROOT, 'services', 'agentCommandRelay.ts');
-export const ROLE_SAFE_BOUNDARY_MODULES: ReadonlySet<string> = new Set([AGENT_COMMAND_RELAY]);
+export const REMOTE_SESSION_SOCKET_LOCAL = path.join(SRC_ROOT, 'services', 'remoteSessionSocketLocal.ts');
+export const ROLE_SAFE_BOUNDARY_MODULES: ReadonlySet<string> = new Set([AGENT_COMMAND_RELAY, REMOTE_SESSION_SOCKET_LOCAL]);
 
 /** An edge filter: return true to DROP the edge `from -> to` (it is not followed). */
 export type EdgeFilter = (from: string, to: string) => boolean;
