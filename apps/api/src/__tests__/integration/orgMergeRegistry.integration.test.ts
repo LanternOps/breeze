@@ -384,6 +384,10 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // Topology site location W3 (#7887, 2026-12-26-190000): clears NEW.site_assignment_confirmed_at on a site/org
   // change; touches no other column, never RAISEs.
   'devices.breeze_devices_site_assignment_confirmation_reset': 'clears site_assignment_confirmed_at on a site/org change; never RAISEs or reverts org_id',
+  // #8318 wave 2-1 (2027-01-23-090000): BEFORE INSERT OR UPDATE OF
+  // possible_replacement_of_device_id only, so a merge's org_id repoint does
+  // not name the column and never runs it.
+  'devices.devices_possible_replacement_reason_sync': 'fires only on UPDATE OF possible_replacement_of_device_id and syncs the reason columns; never reads or reverts org_id',
   'devices.devices_ownership_epoch_write_guard': 'fires only on UPDATE OF ownership_epoch and refuses an epoch change WITHOUT an org change; a merge repoint never targets ownership_epoch',
   'devices.devices_install_incarnation_guard': 'fires only on UPDATE OF install_incarnation, incarnation_started_at (#8318) and refuses an incarnation that does not advance by one; a merge repoint never targets either column',
   // Customer work approval (#4617, 2026-12-20-200200): freezes a DECIDED

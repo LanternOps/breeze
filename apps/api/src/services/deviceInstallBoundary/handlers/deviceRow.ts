@@ -23,6 +23,14 @@
  *    decommission the reattached row again before the new install's first
  *    heartbeat clears it.
  *
+ * Deliberately NOT reset: `possible_replacement_of_device_id`, `_reason` and
+ * `_detected_at` (#8318 §7.3, wave 2-1). They describe the ROW's history (this
+ * record was flagged as a probable reinstall of another), not anything the
+ * old install holds or can execute, so they are history, not install state.
+ * On the source, which confirm retires, the flag that led to the reattach
+ * stays as the record of why; on the target the boundary leaves whatever
+ * flag the record already had. Pinned by deviceInstallBoundary.test.ts.
+ *
  * `INSTALL_BOUNDARY_RESET_COLUMNS` is pinned by a unit test that fails when a
  * new `*ProtocolVersion` column is added to `devices` without joining it.
  */

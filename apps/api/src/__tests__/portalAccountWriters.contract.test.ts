@@ -55,6 +55,10 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // W4 (#11381) plan D12: an acknowledged sso_only save clears the hash and
   // bumps the epoch of the flipped orgs' accounts that have an identity.
   'apps/api/src/services/portalSsoOnly.ts': { kind: 'no-state', reason: 'passwordHash / authEpoch / updatedAt on an sso_only save only' },
+  // Portal registration W6 (#11383) plan D10: an instant-mode self-registration
+  // creates an invited + browser-granted account
+  // (initialPortalAccountState('self_registration_instant')).
+  'apps/api/src/services/portalSelfRegistration/complete.ts': { kind: 'state-module' },
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');

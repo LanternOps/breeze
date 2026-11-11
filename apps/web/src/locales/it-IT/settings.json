@@ -8558,6 +8558,26 @@
         "protectedOrg": "Questa organizzazione non può essere collegata a un tenant Microsoft."
       }
     },
+    "passwordFallbackNotice": {
+      "title": "L’accesso al portale è tornato alla password",
+      "body": "L’accesso con Microsoft è disattivato per il portale di questa organizzazione, quindi gli utenti accedono con una password finché il tenant non viene dimostrato di nuovo.",
+      "tenant": "(Tenant interessato: {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Il collegamento al tenant Microsoft è stato rimosso il {{date}}.",
+        "ai_for_office_mapping_removed": "La mappatura del tenant di AI for Office, che conteneva la dimostrazione, è stata rimossa il {{date}}.",
+        "ai_for_office_mapping_changed": "La mappatura del tenant di AI for Office è stata cambiata con un altro tenant il {{date}}, annullando la dimostrazione.",
+        "tenant_displaced": "Un’altra organizzazione ha dimostrato questo tenant Microsoft il {{date}}.",
+        "unknown": "La dimostrazione del tenant Microsoft è andata persa il {{date}}."
+      },
+      "rerun": "Ripeti la dimostrazione del tenant",
+      "dismiss": "Ignora",
+      "toasts": {
+        "dismissed": "Avviso ignorato."
+      },
+      "errors": {
+        "dismiss": "Impossibile ignorare l’avviso."
+      }
+    },
     "ssoOnlyConfirm": {
       "title": "Disattivare l’accesso con password?",
       "intro": "Il salvataggio disattiva l’accesso con password per le organizzazioni seguenti.",

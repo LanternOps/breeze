@@ -113,6 +113,13 @@ function portalListCalls() {
   ).length;
 }
 
+/** GETs of the contacts list (the Roles cell's source). */
+function contactListCalls() {
+  return fetchWithAuthMock.mock.calls.filter(
+    (c) => typeof c[0] === 'string' && c[0].startsWith(`/orgs/organizations/${ORG}/contacts?`) && !(c[1] as RequestInit | undefined)?.method,
+  ).length;
+}
+
 async function renderCard() {
   render(<ContactsCard orgId={ORG} />);
   await waitFor(() => expect(screen.getByTestId('org-contacts-table')).toBeInTheDocument());
@@ -165,6 +172,26 @@ describe('ContactsCard portal access', () => {
     await waitFor(() => expect(postsTo('/invite')).toHaveLength(1));
     expect(postsTo('/invite')[0].body).toEqual({ email: 'nora@acme.test', name: 'Nora None', contactId: 'c-none' });
     await waitFor(() => expect(portalListCalls()).toBe(before + 1));
+  });
+
+  it('Give portal access refetches the contacts list so the Roles cell shows the stamped portal role (#11599)', async () => {
+    mockApi();
+    await renderCard();
+    const btn = await screen.findByTestId('org-contacts-portal-give-c-none');
+    const before = contactListCalls();
+    fireEvent.click(btn);
+    await waitFor(() => expect(postsTo('/invite')).toHaveLength(1));
+    await waitFor(() => expect(contactListCalls()).toBe(before + 1));
+  });
+
+  it('bulk Give portal access refetches the contacts list (#11599)', async () => {
+    mockApi();
+    await renderCard();
+    fireEvent.click(await screen.findByTestId('org-contacts-select-c-none'));
+    const before = contactListCalls();
+    fireEvent.click(screen.getByTestId('org-contacts-portal-bulk-give'));
+    await waitFor(() => expect(postsTo('/invite-contacts')).toHaveLength(1));
+    await waitFor(() => expect(contactListCalls()).toBe(before + 1));
   });
 
   it('Resend invite posts the same contact-bound invite', async () => {

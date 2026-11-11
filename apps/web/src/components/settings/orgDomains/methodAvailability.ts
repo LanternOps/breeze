@@ -1,5 +1,10 @@
 import { fetchWithAuth } from '../../../stores/auth';
-import { isPortalEntraTenantView, type PortalEntraTenantView } from '../portalAccess/types';
+import {
+  isPortalEntraTenantView,
+  passwordFallbackOf,
+  type PortalEntraTenantView,
+  type PortalPasswordFallbackNotice,
+} from '../portalAccess/types';
 
 /**
  * Whether the directory methods can run for an org (plan D7, OD2, D8). This is
@@ -32,27 +37,31 @@ export function entraAvailability(tenant: PortalEntraTenantView): Availability<E
   return AVAILABLE;
 }
 
-async function loadEntra(orgId: string): Promise<Availability<EntraUnavailableReason>> {
+type EntraStatus = { availability: Availability<EntraUnavailableReason>; passwordFallback: PortalPasswordFallbackNotice | null };
+
+/** One read of the org's Entra tenant status serves both the method hint and the #11582 password-fallback notice. */
+async function loadEntra(orgId: string): Promise<EntraStatus> {
+  const unknown: EntraStatus = { availability: AVAILABLE, passwordFallback: null };
   try {
     const res = await fetchWithAuth(`/orgs/organizations/${orgId}/portal-entra-tenant`);
     if (res.status === 404) {
       // No portal Entra app on this deployment: no tenant can be proven here (W4).
       const body = (await res.json().catch(() => ({}))) as { code?: unknown };
-      if (body.code === 'PORTAL_ENTRA_NOT_CONFIGURED') return { available: false, reason: 'not_enabled' };
+      if (body.code === 'PORTAL_ENTRA_NOT_CONFIGURED') return { availability: { available: false, reason: 'not_enabled' }, passwordFallback: null };
     }
     if (!res.ok) {
       console.warn(`[orgDomains] Entra tenant status failed to load: ${res.status}`);
-      return AVAILABLE;
+      return unknown;
     }
     const body = (await res.json()) as { data?: unknown };
     if (!isPortalEntraTenantView(body.data)) {
       console.warn('[orgDomains] Entra tenant status returned an unexpected body');
-      return AVAILABLE;
+      return unknown;
     }
-    return entraAvailability(body.data);
+    return { availability: entraAvailability(body.data), passwordFallback: passwordFallbackOf(body.data) };
   } catch (err) {
     console.warn('[orgDomains] Entra tenant status failed to load', err);
-    return AVAILABLE;
+    return unknown;
   }
 }
 
@@ -81,7 +90,13 @@ async function loadGoogle(orgId: string): Promise<Availability<GoogleUnavailable
   }
 }
 
-export async function loadDomainMethodAvailability(orgId: string): Promise<DomainMethodAvailability> {
-  const [entra_tenant, google_directory] = await Promise.all([loadEntra(orgId), loadGoogle(orgId)]);
-  return { entra_tenant, google_directory };
+export interface DomainTabStatus {
+  availability: DomainMethodAvailability;
+  /** #11582: the org's portal fell back to password sign-in after losing its tenant proof. */
+  passwordFallback: PortalPasswordFallbackNotice | null;
+}
+
+export async function loadDomainTabStatus(orgId: string): Promise<DomainTabStatus> {
+  const [entra, google_directory] = await Promise.all([loadEntra(orgId), loadGoogle(orgId)]);
+  return { availability: { entra_tenant: entra.availability, google_directory }, passwordFallback: entra.passwordFallback };
 }
