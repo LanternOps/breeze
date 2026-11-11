@@ -106,6 +106,11 @@ type WriteProvider struct {
 	wrote        bool
 	sseAlgorithm string
 	sseKMSKeyID  string
+
+	// refusals counts the store's refusals across every store request of
+	// this writer (uploads, parts, read-backs) and, past
+	// destinationRefusalThreshold, fails every later one (#11765).
+	refusals refusalTracker
 }
 
 var (
@@ -590,7 +595,10 @@ func (p *WriteProvider) idleContext(parent context.Context, urlExpiresAt time.Ti
 // sendPut PUTs size bytes from body to a resolved URL with exactly its signed
 // headers plus Content-Length — never a credential — and follows no
 // redirect. It returns the response's ETag.
-func (p *WriteProvider) sendPut(ctx context.Context, obj *resolvedWrite, body io.Reader, size int64, touch func()) (string, error) {
+func (p *WriteProvider) sendPut(ctx context.Context, obj *resolvedWrite, key string, body io.Reader, size int64, touch func()) (string, error) {
+	if err := p.refusals.err(); err != nil {
+		return "", err
+	}
 	var reqBody io.Reader = http.NoBody
 	if size > 0 {
 		reqBody = &progressReader{r: body, onRead: touch}
@@ -613,11 +621,12 @@ func (p *WriteProvider) sendPut(ctx context.Context, obj *resolvedWrite, body io
 	defer drain(resp)
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		p.refusals.succeeded()
 		return resp.Header.Get("ETag"), nil
 	case isRedirect(resp.StatusCode):
 		return "", sessionErr("storage answered an upload with a redirect (status %d); redirects are not followed", resp.StatusCode)
 	default:
-		return "", &storageStatusError{status: resp.StatusCode, retryAfter: httputil.ParseRetryAfter(resp.Header, time.Now())}
+		return "", p.refusals.refused(key, newStorageStatusError(resp))
 	}
 }
 
@@ -706,6 +715,10 @@ func (p *WriteProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 	if strings.TrimSpace(localPath) == "" {
 		return providers.UploadDigest{}, sessionErr("local source path is required")
 	}
+	if err := p.refusals.err(); err != nil {
+		// Not even a resolve: the destination already refused this run.
+		return providers.UploadDigest{}, err
+	}
 	ctx, stop := p.merge(ctx)
 	defer stop()
 	ctx = withoutWriterWait(ctx)
@@ -789,7 +802,7 @@ func (p *WriteProvider) putAttempt(ctx context.Context, localPath, key string) (
 	attemptCtx, touch, mapErr, done := p.idleContext(ctx, obj.expiresAt)
 	defer done()
 	started := time.Now()
-	if _, err := p.sendPut(attemptCtx, obj, body, size, touch); err != nil {
+	if _, err := p.sendPut(attemptCtx, obj, key, body, size, touch); err != nil {
 		return providers.UploadDigest{}, mapErr(err)
 	}
 	p.recordThroughput(size, time.Since(started))
@@ -1072,7 +1085,7 @@ func (p *WriteProvider) partAttempt(ctx context.Context, file *os.File, key, upl
 	attemptCtx, touch, mapErr, done := p.idleContext(ctx, obj.expiresAt)
 	defer done()
 	started := time.Now()
-	etag, err := p.sendPut(attemptCtx, obj, body, n, touch)
+	etag, err := p.sendPut(attemptCtx, obj, key, body, n, touch)
 	if err != nil {
 		return "", mapErr(err)
 	}
@@ -1189,6 +1202,9 @@ func (p *WriteProvider) getObject(ctx context.Context, key string, sink func(io.
 }
 
 func (p *WriteProvider) getAttempt(ctx context.Context, key string, sink func(io.Reader) error) error {
+	if err := p.refusals.err(); err != nil {
+		return err
+	}
 	obj, err := p.resolveOne(ctx, writeRequest{Method: http.MethodGet, Key: key})
 	if err != nil {
 		return err
@@ -1212,12 +1228,13 @@ func (p *WriteProvider) getAttempt(ctx context.Context, key string, sink func(io
 	defer func() { _ = resp.Body.Close() }()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		p.refusals.succeeded()
 	case isRedirect(resp.StatusCode):
 		return sessionErr("storage answered a download with a redirect (status %d); redirects are not followed", resp.StatusCode)
 	default:
-		statusErr := &storageStatusError{status: resp.StatusCode, retryAfter: httputil.ParseRetryAfter(resp.Header, time.Now())}
+		statusErr := newStorageStatusError(resp)
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-		return statusErr
+		return p.refusals.refused(key, statusErr)
 	}
 	if err := sink(&progressReader{r: resp.Body, onRead: touch}); err != nil {
 		if ctx.Err() != nil {
