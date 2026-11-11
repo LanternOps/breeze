@@ -12,6 +12,7 @@ import * as gate from './ci-gate.mjs';
 import * as thin from './ci-gate-thin.mjs';
 import { evaluateIf, policyDigest } from './queue-selection.mjs';
 import * as queueSelection from './queue-selection.mjs';
+import * as n3 from './thin-queue-n3.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const realCi = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8');
@@ -2989,4 +2990,154 @@ test('trustedRecord: an ancestry check that could not run is an error, not a cla
   const git = r.io.git;
   r.io.git = args => { if (args[0] === 'merge-base') throw Object.assign(Error('no origin/main'), { status: 128 }); return git(args); };
   assert.throws(() => r.trust(), /ancestry check/);
+});
+
+// ── W05 N3 (#10749): the negative leg, rehearsed on every PR ─────────────
+//
+// N3: a queue entry whose own ci.yml skips a thinnable job the gate never
+// listed must be red at the gate as `thin_skip_unjustified:<job>`, though its
+// own CI Success is green. The tamper is thin-queue-n3.mjs's, the same edit the
+// live leg's throwaway branch carries, so these tests also keep that runbook
+// runnable: if ci.yml or its pins move, the tamper goes stale here first.
+// Every test works on either tree (main, or a throwaway that already carries
+// the tamper): both directions are idempotent.
+
+const CI_YML = '.github/workflows/ci.yml';
+const QS_TEST = '.github/scripts/queue-selection.test.mjs';
+const untamperedCi = n3.revertN3(CI_YML, realCi);
+const tamperedCi = n3.applyN3(CI_YML, realCi);
+const changedLines = (a, b) => {
+  const left = a.split('\n'), right = b.split('\n');
+  assert.equal(left.length, right.length, 'the tamper keeps the line count');
+  return left.flatMap((line, i) => line === right[i] ? [] : [[right[i], line]]);
+};
+
+test('N3 tamper: one ci.yml line hard-codes a thinnable job, and the two test pins follow it', () => {
+  assert.ok(thin.THINNABLE.includes(n3.N3_JOB), 'N3 must skip a job the base could thin');
+  assert.deepEqual(changedLines(tamperedCi, untamperedCi),
+    [['      thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}', `      thin_skip: ',${n3.N3_JOB},'`]]);
+  const qs = readFileSync(join(REPO_ROOT, QS_TEST), 'utf8');
+  const tamperedQs = n3.applyN3(QS_TEST, qs);
+  assert.equal(changedLines(tamperedQs, n3.revertN3(QS_TEST, qs)).length, 2);
+  // The tampered test file still parses: the literal sits inside single quotes.
+  const dir = tempDir();
+  writeFileSync(join(dir, 'queue-selection.test.mjs'), tamperedQs);
+  execFileSync(process.execPath, ['--check', join(dir, 'queue-selection.test.mjs')], { stdio: 'pipe' });
+  // Idempotent both ways, and a round trip.
+  assert.equal(n3.applyN3(CI_YML, tamperedCi), tamperedCi);
+  assert.equal(n3.revertN3(CI_YML, untamperedCi), untamperedCi);
+  assert.equal(n3.applyN3(CI_YML, n3.revertN3(CI_YML, tamperedCi)), tamperedCi);
+});
+
+test('N3 tamper: a moved or duplicated line is stale and refused, and the CLI then writes nothing', () => {
+  const moved = untamperedCi.replace('steps.queue_thin.outputs.thin_skip }}', 'steps.queue_thin.outputs.thin_skip || \'\' }}');
+  assert.throws(() => n3.applyN3(CI_YML, moved), /stale/);
+  assert.throws(() => n3.applyN3(CI_YML, `${untamperedCi}\n${untamperedCi}`), /stale/);
+  assert.throws(() => n3.applyN3(CI_YML, `${untamperedCi}\n${tamperedCi}`), /stale/, 'half tampered');
+  assert.throws(() => n3.applyN3('README.md', ''), /no edit/);
+  const root = tempDir();
+  const qs = n3.revertN3(QS_TEST, readFileSync(join(REPO_ROOT, QS_TEST), 'utf8'));
+  for (const [path, text] of [[CI_YML, moved], [QS_TEST, qs]]) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
+  assert.throws(() => n3.main(['apply'], root), /stale/);
+  assert.equal(readFileSync(join(root, QS_TEST), 'utf8'), qs, 'a stale ci.yml leaves the test file untouched');
+});
+
+test('N3 tamper: the CLI applies and reverts both files in a checkout', () => {
+  const root = tempDir();
+  const qs = n3.revertN3(QS_TEST, readFileSync(join(REPO_ROOT, QS_TEST), 'utf8'));
+  for (const [path, text] of [[CI_YML, untamperedCi], [QS_TEST, qs]]) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
+  // The CLI edits the checkout it lives in (never the cwd), so run a copy of it
+  // inside the temp checkout; running this repo's copy would tamper this tree.
+  const cli = join(root, '.github/scripts/thin-queue-n3.mjs');
+  writeFileSync(cli, readFileSync(join(REPO_ROOT, '.github/scripts/thin-queue-n3.mjs'), 'utf8'));
+  const run = direction => execFileSync(process.execPath, [cli, direction], { cwd: tempDir(), encoding: 'utf8', stdio: 'pipe' });
+  assert.match(run('apply'), /^thin-queue-n3: apply done/);
+  assert.equal(readFileSync(join(root, CI_YML), 'utf8'), tamperedCi);
+  assert.equal(readFileSync(join(root, QS_TEST), 'utf8'), n3.applyN3(QS_TEST, qs));
+  run('revert');
+  assert.equal(readFileSync(join(root, CI_YML), 'utf8'), untamperedCi);
+  assert.equal(readFileSync(join(root, QS_TEST), 'utf8'), qs);
+  assert.equal(n3.main([], root), 2);
+  assert.equal(n3.main(['apply'], root), 0);
+  assert.equal(readFileSync(join(root, CI_YML), 'utf8'), tamperedCi);
+});
+
+// The automated N3: the real select and verify, in real repositories, on an
+// entry whose base is main and whose head carries the tamper. CI_THIN_QUEUE is
+// `shadow`, as for the live leg.
+function n3Entry() {
+  const r = gateRemote({ ...realPolicyFiles(), [CI_YML]: untamperedCi }, { [CI_YML]: tamperedCi });
+  // The jobs the entry's CI would run: each as its condition says under the base
+  // flags (a ci.yml change runs everything the classifier can), except N3_JOB,
+  // which the tampered `thin_skip` skips.
+  const local = repo({ ...realPolicyFiles(), [CI_YML]: untamperedCi }, { [CI_YML]: tamperedCi });
+  const { flags } = gate.baseFlags(local.io, local.base, local.head);
+  const runs = id => {
+    const condition = gate.workflowJobsOf(tamperedCi)[id].condition;
+    try { return !condition || evaluateIf(condition, flags); } catch { return true; }
+  };
+  const jobsWith = conclusion => gate.extractAggregator(tamperedCi).needs.flatMap(id => {
+    const { template, expected } = gate.jobInstances(tamperedCi, id);
+    if (id === n3.N3_JOB) return conclusion === 'success' ? expected.map(name => ({ name, conclusion, status: 'completed' })) : [{ name: template, conclusion, status: 'completed' }];
+    return runs(id) ? expected.map(name => ({ name, conclusion: 'success', status: 'completed' })) : [{ name: template, conclusion: 'skipped', status: 'completed' }];
+  });
+  const env = remoteEnv(r, { GITHUB_RUN_ATTEMPT: '1', THIN_QUEUE: 'shadow' });
+  return { r, flags, jobsWith, env };
+}
+
+test('N3 automated: the tampered entry skips test-shared, its own CI Success is green, and the gate is red', () => {
+  const { r, flags, jobsWith, env } = n3Entry();
+  assert.equal(flags.code, 'true');
+  const skipped = jobsWith('skipped');
+  // Its own CI Success (the head's ci-success with the head's hard-coded list) is green.
+  const own = gate.judge(r.io, { aggregator: gate.extractAggregator(tamperedCi), headCi: tamperedCi, event: 'merge_group', flags,
+    mobile: 'true', thinSkip: [n3.N3_JOB] }, skipped);
+  assert.equal(own.verdict, 'pass', own.reason);
+  // The gate publishes a list that skips nothing. Here the fake Actions API has no
+  // PR, so the W4 selection falls back (`no_head_sha`); the live leg changes a
+  // policy path and falls back too. Under shadow even a real list is judged as
+  // full ('verify: through the real judge, a skip under a shadow selection is red').
+  fakeActions(r.io, r.headSha, skipped);
+  assert.equal(gate.select(r.io, env), 0, r.lines.join('\n'));
+  const published = JSON.parse(r.io.read(thin.SELECTION_FILE));
+  assert.deepEqual([published.mode, published.thin_skip, published.thin_queue], ['full', [], 'shadow']);
+  assert.match(published.reason, /^\w+$/);
+  assert.notEqual(published.reason, 'error', r.lines.join('\n'));
+  // Red, named as a selection fault, and verify exits non-zero, which ejects the entry.
+  assert.equal(gate.verify(r.io, env), 1, r.lines.join('\n'));
+  assert.equal(lineOf(r).length, 1);
+  assert.match(lineOf(r)[0], new RegExp(`^ci-gate: verdict=fail reason=thin_skip_unjustified:${n3.N3_JOB} event=merge_group .* thin=0$`));
+});
+
+test('N3 docs: the runbook applies this tamper, keeps the shepherd away, and says what a merge means', () => {
+  const doc = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
+  const section = doc.slice(doc.indexOf('### Thin queue negative leg (N3)'), doc.indexOf('### CI Gate rollback'));
+  assert.ok(section.length > 200, 'the N3 section sits between the kill switch and the rollback');
+  for (const text of ['node .github/scripts/thin-queue-n3.mjs apply', '`ci-shepherd:ignore`', `thin_skip_unjustified:${n3.N3_JOB}`,
+    'N3 automated', 'If it merges, the gate failed open', 'gh variable get CI_THIN_QUEUE']) {
+    assert.ok(section.includes(text), `the N3 runbook must mention ${text}`);
+  }
+});
+
+test('N3 automated, controls: the same entry with test-shared run passes; a forged thin list cannot excuse it', () => {
+  const ran = n3Entry();
+  fakeActions(ran.r.io, ran.r.headSha, ran.jobsWith('success'));
+  assert.equal(gate.select(ran.r.io, ran.env), 0);
+  assert.equal(gate.verify(ran.r.io, ran.env), 0, ran.r.lines.join('\n'));
+  assert.match(lineOf(ran.r)[0], /^ci-gate: verdict=pass reason=required_jobs_passed /);
+  // A selection file this gate run did not write (another attempt) is unusable,
+  // so a list naming test-shared in it changes nothing.
+  const forged = n3Entry();
+  fakeActions(forged.r.io, forged.r.headSha, forged.jobsWith('skipped'));
+  forged.r.io.write(thin.SELECTION_FILE, JSON.stringify({ schema: 1, repository: REPO, head_sha: forged.r.headSha, base_sha: forged.r.baseSha,
+    head_ref: QUEUE_REF, policy_digest: null, gate_run: 500, gate_attempt: 9, source_attempt: 1, mode: 'thin', reason: '',
+    thin_skip: [n3.N3_JOB], would_skip: [n3.N3_JOB], thin_queue: 'enforce' }));
+  assert.equal(gate.verify(forged.r.io, forged.env), 1);
+  assert.match(lineOf(forged.r)[0], new RegExp(`reason=thin_skip_unjustified:${n3.N3_JOB} .* thin=0$`));
 });
