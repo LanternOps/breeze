@@ -126,9 +126,9 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 	}
 	options.ExcludePaths = append(options.ExcludePaths, s.agentOwnedExcludePaths()...)
 	// Caller exclusions are ADDITIVE to the agent's built-ins: a policy may
-	// widen the skip set, never narrow it. /proc, /sys, the Defender
-	// quarantine and the agent's own quarantine and rule cache stay excluded
-	// whatever the policy says.
+	// widen the skip set, never narrow it. The per-OS built-ins (e.g. /proc
+	// and /sys on Linux, the Defender quarantine on Windows) and the agent's
+	// own quarantine and rule cache stay excluded whatever the policy says.
 	options.ExcludePaths = append(options.ExcludePaths, s.Exclusions...)
 
 	scanCtx, cancel := s.scanContext(ctx)
@@ -264,9 +264,9 @@ func (s *SecurityScanner) RuleCacheDirOrDefault() string {
 //   - the quarantine, whose .bqz payloads are known-bad files;
 //   - the compiled YARA rule cache (#11728). A compiled rule file carries the
 //     strings its rules look for, and the cache's single-byte XOR is no cover
-//     against a rule using YARA's `xor` string modifier. On Windows the cache
-//     sits under %ProgramData%, which both quick and full scans walk; a full
-//     scan reported a rule hit on a .byrc entry and auto-quarantined it.
+//     against a rule using YARA's `xor` string modifier, so the scanner can
+//     match its own rules. For the installed Windows agent the cache sits
+//     under %ProgramData%, which both quick and full scans walk.
 func (s *SecurityScanner) agentOwnedExcludePaths() []string {
 	var dirs []string
 	for _, dir := range []string{s.quarantineDir(), s.RuleCacheDirOrDefault()} {

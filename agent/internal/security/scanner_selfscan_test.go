@@ -13,8 +13,8 @@ import (
 // #11728 — a scan must never match (or auto-quarantine) the agent's own
 // compiled YARA rule cache. A compiled rule file carries the strings its rules
 // look for, and the .byrc payload's single-byte XOR is no cover against a rule
-// using YARA's `xor` string modifier. On Windows the cache lives under
-// %ProgramData%, which both quick and full scans walk.
+// using YARA's `xor` string modifier. For the installed Windows agent the
+// cache lives under %ProgramData%, which both quick and full scans walk.
 
 const cacheKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
