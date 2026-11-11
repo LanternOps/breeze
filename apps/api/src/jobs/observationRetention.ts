@@ -37,11 +37,12 @@
  * SCHEDULE AND SIZE
  * -----------------
  * Hourly, not nightly: the insert rate is continuous and high, and an hourly
- * run deletes about one hour of the day's crossing rows in a few batches
- * instead of one long nightly sweep. Default capacity per run is 500,000 health
- * rows (5,000 x 100) and 50,000 software rows (500 x 100; each carries a
- * TOASTed item list). A backlog drains over successive runs, each batch in its
- * own short system transaction.
+ * run deletes about one hour of crossing rows in a few batches instead of one
+ * long nightly sweep. Default capacity per run is 1,000,000 health rows
+ * (5,000 x 200; a fleet of ~16,000 devices at one row per minute) and 50,000
+ * software rows (500 x 100, each carrying a TOASTed item list; ~12,500 devices
+ * at one report per 15 minutes). Larger fleets raise _MAX_BATCHES. A backlog
+ * drains over successive runs, each batch in its own short system transaction.
  *
  * `*_received_at_idx` (migration 2027-01-23-140000) serves the age scan; the
  * pointer probes use existing primary keys and partial indexes.
@@ -129,7 +130,7 @@ const ENTRIES: ReadonlyArray<ObservationRetentionEntry> = [
         process.env.AGENT_HEALTH_OBSERVATION_RETENTION_DAYS, 90, MAX_RETENTION_DAYS, LOG_PREFIX,
       ),
       batchSize: parsePositiveIntEnv(LOG_PREFIX, 'AGENT_HEALTH_OBSERVATION_RETENTION_BATCH_SIZE', 5000),
-      maxBatches: parsePositiveIntEnv(LOG_PREFIX, 'AGENT_HEALTH_OBSERVATION_RETENTION_MAX_BATCHES', 100),
+      maxBatches: parsePositiveIntEnv(LOG_PREFIX, 'AGENT_HEALTH_OBSERVATION_RETENTION_MAX_BATCHES', 200),
       enforce: retentionEnforceFromEnv(LOG_PREFIX, 'AGENT_HEALTH_OBSERVATION_RETENTION_ENFORCE', false),
     },
   },

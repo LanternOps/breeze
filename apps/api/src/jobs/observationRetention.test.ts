@@ -108,7 +108,7 @@ describe('observation retention (#11737)', () => {
         table: 'agent_health_observations',
         enforceVar: 'AGENT_HEALTH_OBSERVATION_RETENTION_ENFORCE',
         maxRetentionDays: 365,
-        knobs: { retentionDays: 90, batchSize: 5000, maxBatches: 100, enforce: false },
+        knobs: { retentionDays: 90, batchSize: 5000, maxBatches: 200, enforce: false },
       },
       {
         table: 'software_inventory_observations',
