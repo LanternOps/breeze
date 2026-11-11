@@ -38,9 +38,12 @@ const h = vi.hoisted(() => ({
   messagesUsageAfterDispatchError: vi.fn(() => ({ usage: [], outcome: {} })),
   turnBindingFrom: vi.fn(() => ({ binding: true })),
   rememberInstructionGroupForGrant: vi.fn(),
+  recallForGrant: vi.fn(),
   finishInstructionCapture: vi.fn(),
   captureException: vi.fn(),
   deviceRows: [] as Array<Record<string, unknown>>,
+  sessionRows: [] as Array<{ content: Record<string, unknown> }>,
+  sessionRowsError: null as Error | null,
 }));
 
 vi.mock('../../config/env', () => ({ wispEnabled: h.wispEnabled }));
@@ -68,6 +71,7 @@ vi.mock('./budget', async (importOriginal) => ({
 vi.mock('./memoryBroker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./memoryBroker')>()),
   rememberInstructionGroupForGrant: h.rememberInstructionGroupForGrant,
+  recallForGrant: h.recallForGrant,
 }));
 vi.mock('./instructionCaptureStatus', () => ({ finishInstructionCapture: h.finishInstructionCapture }));
 vi.mock('../aiModels/resolveModel', () => ({ resolveModel: h.resolveModel }));
@@ -152,6 +156,12 @@ beforeEach(() => {
     { id: DEV1, orgId: ORG, siteId: SITE, hostname: 'PC-01', displayName: null },
     { id: DEV2, orgId: ORG, siteId: SITE, hostname: 'pc-02', displayName: 'Front desk' },
   ];
+  h.sessionRows = [];
+  h.sessionRowsError = null;
+  h.recallForGrant.mockImplementation(async () => {
+    if (h.sessionRowsError) throw h.sessionRowsError;
+    return h.sessionRows;
+  });
 });
 
 describe('extractStandingInstructions', () => {
@@ -366,6 +376,112 @@ describe('extractStandingInstructions', () => {
     await expect(extractStandingInstructions(input)).resolves.toBe('failed');
     expect(h.captureException).toHaveBeenCalled();
     expect(h.finishInstructionCapture).toHaveBeenCalledWith(CAPTURE, 'failed');
+  });
+});
+
+/** A structured standing instruction an earlier turn of this thread captured. */
+function savedCapture(over: Record<string, unknown> = {}): { content: Record<string, unknown> } {
+  return {
+    content: {
+      instructionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', effect: 'deny', verb: 'reboot', deviceId: DEV1,
+      condition: null, until: null, text: 'never reboot PC-01', targetLabels: ['PC-01'],
+      sourceMessageId: null, captureId: null, ...over,
+    },
+  };
+}
+
+function savedPrompt(): string {
+  const body = h.createMessage.mock.calls[0]![2] as { messages: Array<{ content: string }> };
+  const prompt = body.messages[0]!.content;
+  const start = prompt.indexOf('Already saved');
+  return prompt.slice(start, prompt.indexOf("The technician's message"));
+}
+
+describe('#11614: instructions an earlier turn of the thread already saved', () => {
+  it('reads the thread\'s standing instructions through the broker, under the grant\'s ceiling', async () => {
+    await extractStandingInstructions(input);
+    expect(h.recallForGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ grantId: GRANT }),
+      expect.objectContaining({ blockTypes: ['standing_instruction'], sourceSessionId: SESSION }),
+    );
+  });
+
+  it('lists a standing instruction an earlier turn saved with `remember` (free-form) as already saved', async () => {
+    h.sessionRows = [{ content: { text: 'Never reboot HL-DC-01', expires: 'Friday' } }];
+    await extractStandingInstructions({ ...input, alreadyRemembered: [] });
+    expect(savedPrompt()).toContain('Never reboot HL-DC-01');
+    expect(savedPrompt()).not.toContain('Already saved: nothing.');
+  });
+
+  it('lists an earlier capture by its wording and devices, after this turn\'s own clauses', async () => {
+    h.sessionRows = [savedCapture()];
+    await extractStandingInstructions(input);
+    const saved = savedPrompt();
+    expect(saved).toContain('never patch the CEO laptop');
+    expect(saved).toContain('never reboot PC-01');
+    expect(saved.indexOf('never patch the CEO laptop')).toBeLessThan(saved.indexOf('never reboot PC-01'));
+  });
+
+  it('a clause this turn remembered (already in the table too) is listed once', async () => {
+    h.sessionRows = [{ content: { text: 'never patch the CEO laptop' } }];
+    await extractStandingInstructions(input);
+    expect(savedPrompt().split('never patch the CEO laptop')).toHaveLength(2);
+  });
+
+  it('drops an extracted rule the thread already holds on that device, however it is worded', async () => {
+    h.sessionRows = [savedCapture()];
+    await expect(extractStandingInstructions(input)).resolves.toBe('saved');
+    const [, blocks] = h.rememberInstructionGroupForGrant.mock.calls[0]! as [GrantCeiling, Array<Record<string, any>>];
+    expect(blocks.map((b) => b.content.deviceId)).toEqual([DEV2]);
+  });
+
+  it('every extracted rule already held: `none`, nothing written', async () => {
+    h.sessionRows = [savedCapture(), savedCapture({ deviceId: DEV2, text: 'leave the front desk alone', verb: 'reboot' })];
+    await expect(extractStandingInstructions(input)).resolves.toBe('none');
+    expect(h.rememberInstructionGroupForGrant).not.toHaveBeenCalled();
+    expect(h.finishInstructionCapture).toHaveBeenCalledWith(CAPTURE, 'none');
+  });
+
+  it('a held rule that was a note (unresolved device) matches the same names as a note', async () => {
+    h.deviceRows = [];
+    h.sessionRows = [savedCapture({ deviceId: null, targetLabels: ['pc-02', 'PC-01'] })];
+    await expect(extractStandingInstructions(input)).resolves.toBe('none');
+  });
+
+  it.each([
+    ['another verb', { verb: 'shutdown' }],
+    ['another effect', { effect: 'require' }],
+    ['a condition', { condition: 'during business hours' }],
+    ['an end time', { until: '2099-01-01T00:00:00Z' }],
+  ])('a held rule with %s is a different rule: the new one is kept', async (_label, over) => {
+    h.sessionRows = [savedCapture(over)];
+    await extractStandingInstructions(input);
+    const [, blocks] = h.rememberInstructionGroupForGrant.mock.calls[0]! as [GrantCeiling, Array<Record<string, any>>];
+    expect(blocks.map((b) => b.content.deviceId).sort()).toEqual([DEV1, DEV2].sort());
+  });
+
+  it('a rule with no verb is never dropped by the code check (only the prompt skip applies)', async () => {
+    h.sessionRows = [savedCapture({ verb: null })];
+    h.createMessage.mockResolvedValue(modelReply({
+      instructions: [{ effect: 'deny', verb: null, targets: ['PC-01'], condition: null, until: null, text: 'never change PC-01 DNS' }],
+    }));
+    await expect(extractStandingInstructions(input)).resolves.toBe('saved');
+  });
+
+  it('a lapsed held instruction (#11630) is neither listed nor blocks a re-capture', async () => {
+    h.sessionRows = [savedCapture({ until: '2020-01-01T00:00:00Z', text: 'hold PC-01 until 2020' })];
+    h.createMessage.mockResolvedValue(modelReply({
+      instructions: [{ effect: 'deny', verb: 'reboot', targets: ['PC-01'], condition: null, until: '2020-01-01T00:00:00Z', text: 'hold PC-01' }],
+    }));
+    await expect(extractStandingInstructions(input)).resolves.toBe('saved');
+    expect(savedPrompt()).not.toContain('hold PC-01 until 2020');
+  });
+
+  it('the thread read failing fails the capture before any spend', async () => {
+    h.sessionRowsError = new Error('db down');
+    await expect(extractStandingInstructions(input)).resolves.toBe('failed');
+    expect(h.reserveAiBudget).not.toHaveBeenCalled();
+    expect(h.createMessage).not.toHaveBeenCalled();
   });
 });
 
