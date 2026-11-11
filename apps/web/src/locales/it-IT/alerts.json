@@ -952,7 +952,7 @@
     "createNotificationChannel": "Crea canale di notifica",
     "editNotificationChannel": "Modifica canale di notifica",
     "createChannel": "Crea canale",
-    "deleteChannelConfirm": "Conferma eliminazione canale",
+    "deleteChannelConfirm": "Eliminare il canale “{{name}}”? Gli avvisi indirizzati solo a questo canale non verranno più recapitati.",
     "deleting": "Eliminazione",
     "editRoutingRule": "Modifica regola di instradamento",
     "newRoutingRule": "Nuova regola di instradamento",

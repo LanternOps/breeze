@@ -148,7 +148,7 @@
     "headingSingle": "Supprimer {{name}} ?",
     "itemCount": "Nombre d’éléments",
     "moveToTrash": "Déménager vers les déchets",
-    "recycleBinNotice": "Avis de recyclage",
+    "recycleBinNotice": "Les éléments déplacés vers la corbeille restent récupérables. La suppression définitive est irréversible.",
     "totalSize": "Total : {{size}}",
     "itemCount_one": "{{count}} élément",
     "itemCount_other": "{{count}} éléments"
@@ -464,10 +464,10 @@
       "devices": "Dispositifs",
       "fileManager": "Gestionnaire de fichiers"
     },
-    "deviceNotFoundDescription": "Description de l’appareil non trouvé",
-    "deviceNotFoundTitle": "Appareil non trouvé Titre",
+    "deviceNotFoundDescription": "L’appareil recherché n’existe pas ou vous n’y avez pas accès.",
+    "deviceNotFoundTitle": "Appareil introuvable",
     "deviceOfflineDescription": "L’appareil est actuellement {{status}}. L’accès à distance aux fichiers n’est disponible que lorsque l’appareil est en ligne.",
-    "deviceOfflineTitle": "Titre de l’appareil hors ligne",
+    "deviceOfflineTitle": "L’appareil est hors ligne",
     "errorTitle": "Erreur Titre",
     "errors": {
       "deviceNotFound": "Dispositif non trouvé",
@@ -507,8 +507,8 @@
     "welcome": "Bienvenue"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Description de l’appareil non trouvé",
-    "deviceNotFoundTitle": "Appareil non trouvé Titre",
+    "deviceNotFoundDescription": "L’appareil recherché n’existe pas ou vous n’y avez pas accès.",
+    "deviceNotFoundTitle": "Appareil introuvable",
     "errorTitle": "Erreur Titre",
     "errors": {
       "deviceNotFound": "Dispositif non trouvé",
@@ -635,8 +635,8 @@
     },
     "actionBlocked": "Action bloquée",
     "adjustHint": "Essayez de modifier votre recherche ou vos filtres.",
-    "agentRestartConfirm": "Redémarrage de l’agent Confirmer",
-    "agentStopBlocked": "Arrêt d’agent bloqué",
+    "agentRestartConfirm": "Le redémarrage de l’agent Breeze déconnectera brièvement cet appareil de Breeze. Continuer ?",
+    "agentStopBlocked": "L’agent Breeze ne peut pas être arrêté d’ici : cela couperait la gestion à distance de cet appareil.",
     "allStatus": "Tous les statuts",
     "cannotStopAgent": "Impossible d’arrêter l’agent",
     "changeStartupType": "Changement de type de démarrage",

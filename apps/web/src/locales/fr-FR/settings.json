@@ -8407,6 +8407,7 @@
       "updated": "Mis à jour",
       "actions": "Actions"
     },
+    "expired": "Expirée",
     "statusValue": {
       "unconfirmed": "Non confirmé",
       "confirmed": "Confirmé",
@@ -8556,6 +8557,26 @@
         "hintInvalid": "Ce n’est ni un ID de tenant Microsoft ni un domaine vérifié par un tenant Microsoft.",
         "hintLookupFailed": "Impossible de joindre Microsoft pour rechercher ce domaine. Réessayez ou saisissez l’ID du tenant.",
         "protectedOrg": "Cette organisation ne peut pas être liée à un tenant Microsoft."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "La connexion au portail est revenue au mot de passe",
+      "body": "La connexion Microsoft est désactivée pour le portail de cette organisation. Ses utilisateurs se connectent donc avec un mot de passe jusqu’à ce que le tenant soit à nouveau prouvé.",
+      "tenant": "(Tenant concerné : {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Le lien du tenant Microsoft a été supprimé le {{date}}.",
+        "ai_for_office_mapping_removed": "Le mappage de tenant AI for Office, qui contenait la preuve, a été supprimé le {{date}}.",
+        "ai_for_office_mapping_changed": "Le mappage de tenant AI for Office a été remplacé par un autre tenant le {{date}}, ce qui a effacé la preuve.",
+        "tenant_displaced": "Une autre organisation a prouvé ce tenant Microsoft le {{date}}.",
+        "unknown": "La preuve du tenant Microsoft a été perdue le {{date}}."
+      },
+      "rerun": "Refaire la preuve du tenant",
+      "dismiss": "Ignorer",
+      "toasts": {
+        "dismissed": "Avis ignoré."
+      },
+      "errors": {
+        "dismiss": "Impossible d’ignorer l’avis."
       }
     },
     "ssoOnlyConfirm": {

@@ -377,6 +377,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('flowRunner'),
   consumers('flowRunReconciler'),
   consumers('flowRunRetention'),
+  // #4342 W2. Plain Redis-required consumer, no feature flag.
+  consumers('scriptExecutionRetention'),
   // Task A9 — the schedule trigger tick (FLOWS_ENABLED gates the tick body).
   consumers('flowScheduleTick'),
   // Partner sending domains W03. initializeSendingDomainsWorker returns before
@@ -387,8 +389,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // AI Suggested Fixes W1 — attachWorkerObservability name == registry name.
   consumers('fixOutcomeWorker'),
   consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
-  // #4342 W2. Plain Redis-required consumer, no feature flag.
-  consumers('scriptExecutionRetention'),
+  // Portal registration W6 (#11383): one Worker, constructed unconditionally
+  // (the kill switch gates the public route, not the consumer), attached under
+  // its registry name.
+  consumers('portalSelfRegistrationWorker'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {

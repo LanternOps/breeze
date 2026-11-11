@@ -8407,6 +8407,7 @@
       "updated": "Atualizado",
       "actions": "Ações"
     },
+    "expired": "Expirada",
     "statusValue": {
       "unconfirmed": "Não confirmado",
       "confirmed": "Confirmado",
@@ -8556,6 +8557,26 @@
         "hintInvalid": "Isso não é um ID de locatário da Microsoft nem um domínio verificado por um locatário da Microsoft.",
         "hintLookupFailed": "Não foi possível acessar a Microsoft para consultar esse domínio. Tente novamente ou informe o ID do locatário.",
         "protectedOrg": "Esta organização não pode ser vinculada a um locatário da Microsoft."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "O login do portal voltou para a senha",
+      "body": "O login com Microsoft está desativado no portal desta organização, então os usuários entram com senha até que o locatário seja comprovado novamente.",
+      "tenant": "(Locatário {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "O vínculo do locatário da Microsoft foi removido em {{date}}.",
+        "ai_for_office_mapping_removed": "O mapeamento de locatário do AI for Office, que guardava a comprovação, foi removido em {{date}}.",
+        "ai_for_office_mapping_changed": "O mapeamento de locatário do AI for Office foi alterado para outro locatário em {{date}}, o que apagou a comprovação.",
+        "tenant_displaced": "Outra organização comprovou este locatário da Microsoft em {{date}}.",
+        "unknown": "A comprovação do locatário da Microsoft foi perdida em {{date}}."
+      },
+      "rerun": "Comprovar o locatário novamente",
+      "dismiss": "Dispensar",
+      "toasts": {
+        "dismissed": "Aviso dispensado."
+      },
+      "errors": {
+        "dismiss": "Não foi possível dispensar o aviso."
       }
     },
     "ssoOnlyConfirm": {

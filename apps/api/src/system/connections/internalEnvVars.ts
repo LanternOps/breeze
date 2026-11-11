@@ -449,6 +449,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // PORTAL_*
   PORTAL_COOKIE_FORCE_SECURE: 'cookie policy override',
   PORTAL_COOKIE_SAME_SITE: 'cookie policy override',
+  PORTAL_SELF_REGISTRATION_ENABLED: 'portal self-registration deployment kill switch (portal registration W6, on by default)',
   PORTAL_STATE_BACKEND: 'portal rate-limit store selector',
   // PRE_*
   PRE_ASSIGNMENT_ENROLLMENT_ENABLED: 'pre-assignment enrollment rollout flag',

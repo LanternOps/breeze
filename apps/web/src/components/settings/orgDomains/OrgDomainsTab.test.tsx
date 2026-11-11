@@ -290,3 +290,42 @@ describe('OrgDomainsTab', () => {
     expect(screen.getByTestId('domain-method-google_directory')).toBeEnabled();
   });
 });
+
+describe('OrgDomainsTab password-fallback notice (#11582)', () => {
+  const NOTICE = { since: '2026-11-08T10:00:00.000Z', tenantId: TENANT, cause: 'ai_for_office_mapping_changed' };
+  const entraFallback = () => json({ data: {
+    tenantId: TENANT, state: 'unproven', provenAt: null, provenVia: null, connectionTenantId: null, consentUrl: null, passwordFallback: NOTICE,
+  } });
+
+  beforeEach(() => {
+    fetchWithAuthMock.mockReset();
+    showToastMock.mockReset();
+  });
+
+  it('shows the notice from the one Entra status read, with a link to re-run the proof on #portal', async () => {
+    baseRoutes([domainView()], { [`GET ${ENTRA}`]: entraFallback });
+    render(<OrgDomainsTab orgId={ORG} />);
+    expect(await screen.findByTestId('org-domains-password-fallback')).toHaveTextContent(/changed to another tenant/i);
+    expect(screen.getByTestId('org-domains-password-fallback-rerun')).toHaveAttribute('href', '#portal');
+    expect(callsTo(fetchWithAuthMock, 'GET', ENTRA)).toHaveLength(1);
+  });
+
+  it('no notice when the status carries none', async () => {
+    baseRoutes([domainView()]);
+    render(<OrgDomainsTab orgId={ORG} />);
+    await screen.findByTestId('org-domains-row-d1');
+    await waitFor(() => expect(callsTo(fetchWithAuthMock, 'GET', ENTRA)).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('org-domains-password-fallback')).toBeNull();
+  });
+
+  it('dismiss removes the notice', async () => {
+    baseRoutes([domainView()], {
+      [`GET ${ENTRA}`]: entraFallback,
+      [`POST ${ENTRA}/password-fallback/dismiss`]: () => json({ data: { dismissed: true } }),
+    });
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-password-fallback-dismiss'));
+    await waitFor(() => expect(screen.queryByTestId('org-domains-password-fallback')).toBeNull());
+  });
+});

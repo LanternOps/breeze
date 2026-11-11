@@ -159,6 +159,8 @@ const EXPECTED_NAMES = [
   'aiAgentGraduation',
   'scriptReviewWorker',
   'scriptVerifyWorker',
+  // High-volume table retention W2 (#4342, #11589) — report-only.
+  'scriptExecutionRetention',
   'aiBudgetReservationSweep',
   'mfaEnrollmentNoticeWorker',
   'monitorEpisodeRetention',
@@ -178,8 +180,8 @@ const EXPECTED_NAMES = [
   'imageCurrencyWorker',
   // Trust Center W1 (#8768).
   'trustPageSnapshotWorker',
-  // High-volume table retention W2 (#4342, #11589) — report-only.
-  'scriptExecutionRetention',
+  // Portal registration W6 (#11383).
+  'portalSelfRegistrationWorker',
 ];
 
 // ---------------------------------------------------------------------------

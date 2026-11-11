@@ -119,6 +119,19 @@ vi.mock('../../services/devicePolicySet', async (importOriginal) => {
   };
 });
 
+const reinstallDetections = new Set<Promise<unknown>>();
+vi.mock('../../services/reinstallCandidates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/reinstallCandidates')>();
+  return {
+    ...actual,
+    detectReinstallCandidates: (...args: Parameters<typeof actual.detectReinstallCandidates>) => {
+      const run = actual.detectReinstallCandidates(...args);
+      reinstallDetections.add(run);
+      return run;
+    },
+  };
+});
+
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   auditLogs,
@@ -373,6 +386,16 @@ async function waitForEnrollAuditCommitted(deviceId: string): Promise<void> {
   throw new Error(`agent.enroll audit row for device ${deviceId} never became visible (10s)`);
 }
 
+/**
+ * #8318 wave 2-1: `/agents/enroll` also runs its reinstall-candidate detection
+ * fire-and-forget, on the same instrumented pool, for the same reason as the
+ * audit row above: it must finish before `measure()` arms the recorder.
+ */
+async function waitForReinstallDetections(): Promise<void> {
+  await Promise.allSettled(reinstallDetections);
+  reinstallDetections.clear();
+}
+
 async function enrollDevice(org: SeededOrg, hostname: string) {
   const app = new Hono();
   app.route('/agents', enrollmentRoutes);
@@ -391,6 +414,7 @@ async function enrollDevice(org: SeededOrg, hostname: string) {
   expect(response.status).toBe(201);
   const body = await response.json() as { deviceId: string; agentId: string; authToken: string };
   await waitForEnrollAuditCommitted(body.deviceId);
+  await waitForReinstallDetections();
   return {
     deviceId: body.deviceId,
     agentId: body.agentId,

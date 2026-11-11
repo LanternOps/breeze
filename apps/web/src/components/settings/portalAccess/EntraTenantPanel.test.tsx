@@ -181,3 +181,56 @@ describe('EntraTenantPanel', () => {
     expect(await screen.findByTestId('entra-tenant-status')).toBeInTheDocument();
   });
 });
+
+describe('EntraTenantPanel password-fallback notice (#11582)', () => {
+  const NOTICE = { since: '2026-11-08T10:00:00.000Z', tenantId: TENANT, cause: 'tenant_displaced' as const };
+
+  beforeEach(() => {
+    fetchWithAuthMock.mockReset();
+    showToastMock.mockReset();
+  });
+
+  it('shows the notice above the proof controls; re-run focuses the tenant field', async () => {
+    mockRoutes({ [`GET ${BASE}`]: () => json({ data: status({ passwordFallback: NOTICE }) }) });
+    renderPanel();
+    expect(await screen.findByTestId('entra-tenant-password-fallback')).toHaveTextContent(/another organization proved/i);
+    const rerun = screen.getByTestId('entra-tenant-password-fallback-rerun');
+    expect(rerun.tagName).toBe('BUTTON');
+    fireEvent.click(rerun);
+    expect(document.activeElement).toBe(screen.getByTestId('entra-tenant-hint'));
+  });
+
+  it('no notice without passwordFallback, for a malformed one, or for a proven tenant', async () => {
+    mockRoutes({ [`GET ${BASE}`]: () => json({ data: status() }) });
+    const first = render(<EntraTenantPanel orgId={ORG} />);
+    await screen.findByTestId('entra-tenant-status');
+    expect(screen.queryByTestId('entra-tenant-password-fallback')).toBeNull();
+    first.unmount();
+
+    mockRoutes({ [`GET ${BASE}`]: () => json({ data: status({ passwordFallback: { since: 7 } as never }) }) });
+    const second = render(<EntraTenantPanel orgId={ORG} />);
+    await screen.findByTestId('entra-tenant-status');
+    expect(screen.queryByTestId('entra-tenant-password-fallback')).toBeNull();
+    second.unmount();
+
+    mockRoutes({ [`GET ${BASE}`]: () => json({ data: status({
+      tenantId: TENANT, state: 'proven', provenAt: '2026-11-09T00:00:00.000Z', provenVia: 'proof_run', passwordFallback: NOTICE,
+    }) }) });
+    render(<EntraTenantPanel orgId={ORG} />);
+    await screen.findByTestId('entra-tenant-status');
+    expect(screen.queryByTestId('entra-tenant-password-fallback')).toBeNull();
+  });
+
+  it('dismiss hides the notice without reloading the panel', async () => {
+    mockRoutes({
+      [`GET ${BASE}`]: () => json({ data: status({ passwordFallback: NOTICE }) }),
+      [`POST ${BASE}/password-fallback/dismiss`]: () => json({ data: { dismissed: true } }),
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByTestId('entra-tenant-password-fallback-dismiss'));
+    await waitFor(() => expect(screen.queryByTestId('entra-tenant-password-fallback')).toBeNull());
+    expect(calls('POST', `${BASE}/password-fallback/dismiss`)).toHaveLength(1);
+    expect(calls('GET', BASE)).toHaveLength(1);
+    expect(screen.getByTestId('entra-tenant-status')).toBeInTheDocument();
+  });
+});
