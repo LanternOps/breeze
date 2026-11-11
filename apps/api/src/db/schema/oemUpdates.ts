@@ -42,7 +42,8 @@ export const deviceOemUpdateStatus = pgTable('device_oem_update_status', {
   lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
   lastOutcome: varchar('last_outcome', { length: 32 }).$type<OemOutcome>(),
   lastErrorCode: varchar('last_error_code', { length: 64 }),
-  // Bare uuid: device_commands is system-scoped and keeps its own retention.
+  // Bare uuid: device_commands is system-scoped and has its own retention
+  // (jobs/deviceCommandRetention.ts, report-only until enabled).
   lastCommandId: uuid('last_command_id'),
   installedCount: integer('installed_count').notNull().default(0),
   failedCount: integer('failed_count').notNull().default(0),
