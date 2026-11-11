@@ -42,6 +42,8 @@ const blockIdInputSchema = z.object(memoryBlockIdShape);
 type WispGrantRef = NonNullable<AuthContext['wispGrant']>;
 
 const GRANT_REQUIRED = JSON.stringify({ error: 'wisp_grant_required' });
+const CONTENT_REDACTED_NOTE =
+  'A value that looked like a credential was removed before saving. Ask the user to keep credentials in the vault, not in memory.';
 
 function inputSchemaFor(shape: z.ZodRawShape): AiTool['definition']['input_schema'] {
   const { $schema: _dropped, ...schema } = z.toJSONSchema(z.object(shape), { io: 'input' }) as Record<string, unknown>;
@@ -119,7 +121,9 @@ async function rememberHandler(input: Record<string, unknown>, auth: AuthContext
       // The tool, not the broker, is where the calling session is known (w00 A23).
       sourceSessionId: grant.sessionId ?? null,
     });
-    return `Remembered as unconfirmed (ID: ${saved.id}). The owner can confirm or retract it on the Wisp memory page.`;
+    // dispatchEvidence.ts matches this prefix; keep it first.
+    const result = `Remembered as unconfirmed (ID: ${saved.id}). The owner can confirm or retract it on the Wisp memory page.`;
+    return saved.contentRedacted ? `${result} ${CONTENT_REDACTED_NOTE}` : result;
   } catch (err) {
     return mapBrokerError(err);
   }
@@ -167,7 +171,7 @@ export function registerWispMemoryTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'save a preference, instruction, customer fact, decision or session work summary to Wisp memory',
     definition: {
       name: 'remember',
-      description: 'Save a Wisp memory block; it stays unconfirmed until its owner confirms or retracts it. user = the technician\'s own preferences only; customer facts belong to that org. After work on one customer, write one org-owned work_summary citing the Breeze records touched.',
+      description: 'Save a Wisp memory block; it stays unconfirmed until its owner confirms or retracts it. user = the technician\'s own preferences only; customer facts belong to that org. After work on one customer, write one org-owned work_summary citing the Breeze records touched. Credentials are never stored.',
       input_schema: inputSchemaFor(rememberShape),
     },
     handler: rememberHandler,

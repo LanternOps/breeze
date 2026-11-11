@@ -340,6 +340,31 @@ describe('memoryService', () => {
       expect(h.inserts[0]).toMatchObject({ ownerKind: 'user', ownerUserId: U1, tenantPartnerId: P1 });
     });
 
+    it('redacts a credential in a feedback note before it is stored; the other fields are untouched', async () => {
+      h.insertReturning.push([row({ status: 'confirmed' })]);
+      const content = {
+        useful: false,
+        concernId: B0,
+        summary: 'Disk nearly full on FS-01',
+        note: 'Ignore, the local admin pwd=Example-Not-Real-42 is on the sticky note',
+      };
+      await recordHumanBlock(userSession(P1, U1), input({ owner: { kind: 'user' }, content }));
+      expect(h.inserts[0]!.content).toEqual({
+        useful: false,
+        concernId: B0,
+        summary: 'Disk nearly full on FS-01',
+        note: 'Ignore, the local admin pwd=[REDACTED] is on the sticky note',
+      });
+      expect(JSON.stringify(h.inserts[0]!.content)).not.toContain('Example-Not-Real-42');
+    });
+
+    it('stores a feedback block with nothing to redact exactly as given', async () => {
+      h.insertReturning.push([row({ status: 'confirmed' })]);
+      const content = { useful: true, concernId: B0, summary: 'Disk nearly full on FS-01', note: null };
+      await recordHumanBlock(userSession(P1, U1), input({ owner: { kind: 'user' }, content }));
+      expect(h.inserts[0]!.content).toBe(content);
+    });
+
     it('user-owned memory needs a partner-scope session (an org token has no partner anchor)', async () => {
       expect(await codeOf(recordHumanBlock(userSession(null, U1, 'organization', null), input({ owner: { kind: 'user' } }))))
         .toBe('owner_mismatch');

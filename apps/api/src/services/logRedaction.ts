@@ -1,11 +1,9 @@
 // The assignment rules live in the leaf module ./redactionPatterns (shared
 // with diagnostic-read redaction); re-exported here for existing importers.
-import { SECRET_ASSIGNMENT_PATTERNS } from './redactionPatterns';
+import { SECRET_ASSIGNMENT_PATTERNS, SECRET_KEY_PATTERN } from './redactionPatterns';
 export { SECRET_ASSIGNMENT_PATTERNS };
 
 const REDACTED = '[REDACTED]';
-
-const SECRET_KEY_PATTERN = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {

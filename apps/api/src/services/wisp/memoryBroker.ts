@@ -23,6 +23,8 @@ import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessC
 import { aiMemoryBlocks, type AiMemoryBlockRow } from '../../db/schema/aiMemoryBlocks';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { sanitizeUntrustedToolText, wrapUntrustedData } from '../aiInputSanitizer';
+import { redactAiToolOutputText } from '../aiToolOutput';
+import { SECRET_KEY_PATTERN } from '../redactionPatterns';
 import { captureException } from '../sentry';
 import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
 import { isEnforceableDeny } from './standingInstructions';
@@ -58,6 +60,8 @@ export type RememberInput = Omit<
   MemoryBlock,
   'id' | 'status' | 'createdAt' | 'updatedAt' | 'authoredByGrantId' | 'authoredByGrantRevisionId' | 'tenantPartnerId' | 'supersededById' | 'sourceSessionId'
 > & { sourceSessionId?: string | null };
+/** A written block, and whether credentials were removed from its content before it was stored. */
+export type RememberedBlock = MemoryBlock & { contentRedacted: boolean };
 
 /** JSON.stringify(content).length ceiling on remember. */
 export const MEMORY_CONTENT_MAX_BYTES = 8_192;
@@ -88,6 +92,57 @@ export function toMemoryBlock(row: AiMemoryBlockRow): MemoryBlock {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+const REDACTED = '[REDACTED]';
+const UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Memory content with credentials removed, before it is stored. Every string
+ * at any depth gets the tool-output string pass (redactAiToolOutputText:
+ * secret assignments plus bare token shapes). A string under a credential-named
+ * key (SECRET_KEY_PATTERN, the persisted-tool-input key list) — or anywhere
+ * inside a value under one — is replaced whole, unless it is a UUID.
+ * Numbers, booleans, nulls and keys are never changed, so structural fields
+ * (`deviceId`, `concernId`, `evidence` ids, instruction fields) survive.
+ * Nothing replaced: the input object itself is returned, unchanged.
+ */
+export function redactMemoryContent(content: Record<string, unknown>): {
+  content: Record<string, unknown>;
+  redacted: boolean;
+} {
+  let redacted = false;
+  const walk = (value: unknown, underSecretKey: boolean): unknown => {
+    if (typeof value === 'string') {
+      const next = underSecretKey && !UUID_VALUE.test(value) ? REDACTED : redactAiToolOutputText(value);
+      if (next === value) return value;
+      redacted = true;
+      return next;
+    }
+    if (Array.isArray(value)) {
+      let changed = false;
+      const out = value.map((item) => {
+        const next = walk(item, underSecretKey);
+        if (next !== item) changed = true;
+        return next;
+      });
+      return changed ? out : value;
+    }
+    if (value !== null && typeof value === 'object') {
+      let changed = false;
+      const out: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value)) {
+        const next = walk(item, underSecretKey || SECRET_KEY_PATTERN.test(key));
+        if (next !== item) changed = true;
+        // defineProperty: a `__proto__` key stays an own property (see logRedaction.ts).
+        Object.defineProperty(out, key, { value: next, enumerable: true, writable: true, configurable: true });
+      }
+      return changed ? out : value;
+    }
+    return value;
+  };
+  const out = walk(content, false) as Record<string, unknown>;
+  return { content: out, redacted };
 }
 
 /** A remember input the broker refuses on shape alone (before any ceiling or DB work). */
@@ -279,16 +334,15 @@ export function memoryKeyLock(key: {
  * (memoryService.confirmBlock) replaces it. Otherwise a prompt-injected
  * `remember` could silently drop a technician's confirmed preference.
  */
-export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInput): Promise<MemoryBlock> {
+export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInput): Promise<RememberedBlock> {
   assertActive(ceiling);
   validateRememberInput(block);
   assertOwnerWithinCeiling(ceiling, block.owner);
 
-  const row = await inBrokerContext(async () => {
+  return inBrokerContext(async () => {
     await db.execute(memoryKeyLock(lockKeyFor(ceiling, block)));
     return insertAndSupersede(ceiling, block);
   });
-  return toMemoryBlock(row);
 }
 
 /** Maximum blocks one instruction-capture group write may carry (5 instructions × 20 targets). */
@@ -303,7 +357,7 @@ export const MEMORY_GROUP_MAX_BLOCKS = 100;
  * and the per-key locks are taken in one sorted order, so two concurrent group
  * writes over overlapping keys cannot deadlock.
  */
-export async function rememberInstructionGroupForGrant(ceiling: GrantCeiling, blocks: RememberInput[]): Promise<MemoryBlock[]> {
+export async function rememberInstructionGroupForGrant(ceiling: GrantCeiling, blocks: RememberInput[]): Promise<RememberedBlock[]> {
   assertActive(ceiling);
   if (blocks.length === 0) return [];
   if (blocks.length > MEMORY_GROUP_MAX_BLOCKS) {
@@ -319,13 +373,12 @@ export async function rememberInstructionGroupForGrant(ceiling: GrantCeiling, bl
     return [JSON.stringify(key), key] as const;
   })).entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
-  const rows = await inBrokerContext(async () => {
+  return inBrokerContext(async () => {
     for (const [, key] of locks) await db.execute(memoryKeyLock(key));
-    const inserted: AiMemoryBlockRow[] = [];
+    const inserted: RememberedBlock[] = [];
     for (const block of blocks) inserted.push(await insertAndSupersede(ceiling, block));
     return inserted;
   });
-  return rows.map(toMemoryBlock);
 }
 
 function lockKeyFor(ceiling: GrantCeiling, block: RememberInput): Parameters<typeof memoryKeyLock>[0] {
@@ -340,9 +393,13 @@ function lockKeyFor(ceiling: GrantCeiling, block: RememberInput): Parameters<typ
   };
 }
 
-/** The write half of rememberForGrant; the caller holds the key's advisory lock inside the broker context. */
-async function insertAndSupersede(ceiling: GrantCeiling, block: RememberInput): Promise<AiMemoryBlockRow> {
+/**
+ * The write half of rememberForGrant; the caller holds the key's advisory lock
+ * inside the broker context. Content is stored redacted (redactMemoryContent).
+ */
+async function insertAndSupersede(ceiling: GrantCeiling, block: RememberInput): Promise<RememberedBlock> {
   const { owner } = block;
+  const { content, redacted } = redactMemoryContent(block.content);
   const ownerUserId = owner.kind === 'user' ? owner.userId : null;
   const ownerOrgId = owner.kind === 'org' ? owner.orgId : null;
   const [inserted] = await db.insert(aiMemoryBlocks).values({
@@ -352,7 +409,7 @@ async function insertAndSupersede(ceiling: GrantCeiling, block: RememberInput): 
     ownerOrgId,
     blockType: block.blockType,
     subjectKey: block.subjectKey,
-    content: block.content,
+    content,
     confidence: block.confidence,
     status: 'unconfirmed',
     authoredByGrantId: ceiling.grantId,
@@ -374,7 +431,7 @@ async function insertAndSupersede(ceiling: GrantCeiling, block: RememberInput): 
       eq(aiMemoryBlocks.status, 'unconfirmed'),
       isNull(aiMemoryBlocks.supersededById),
     ));
-  return inserted;
+  return { ...toMemoryBlock(inserted), contentRedacted: redacted };
 }
 
 /**

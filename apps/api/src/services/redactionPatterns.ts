@@ -55,6 +55,14 @@ export const SECRET_OUTPUT_REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacem
 ];
 
 /**
+ * Field names whose value is treated as a secret by the key-based redactors
+ * (logRedaction.ts redactLogFields, and so the persisted tool input; Wisp
+ * memory content in services/wisp/memoryBroker.ts).
+ */
+export const SECRET_KEY_PATTERN =
+  /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
+
+/**
  * Secret-assignment rules (logRedaction.ts redactLogMessage). Every pattern
  * keeps its capture group 1 (the key) and redacts the rest.
  */

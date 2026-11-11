@@ -36,6 +36,7 @@ import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './
 import { MemoryValidationError, type MemoryBlock } from './memoryBroker';
 import { MemoryServiceError } from './memoryService';
 import { registerWispMemoryTools } from './memoryTools';
+import { DISPATCH_EVIDENCE } from './dispatchEvidence';
 import { TOOL_TIERS, wispMemoryToolDefinitions } from '../aiAgentSdkTools';
 import { isToolEnvGatedOff, WISP_MEMORY_TOOL_NAMES } from '../aiToolEnvGates';
 import { AGENT_HUMAN_ONLY_TOOLS, HUMAN_ONLY_TOOLS } from '../aiToolExposure';
@@ -183,6 +184,25 @@ describe('wisp memory tools', () => {
     // Anything else is not swallowed.
     rememberForGrant.mockRejectedValueOnce(new Error('db down'));
     await expect(run('remember', { ...base, ownerKind: 'partner' })).rejects.toThrow('db down');
+  });
+
+  it('remember keeps the result prefix and adds the removal sentence only when the broker redacted content', async () => {
+    const base = { ownerKind: 'partner', blockType: 'fact', subjectKey: 'backup:account', content: { v: 1 } };
+    const prefix = `Remembered as unconfirmed (ID: ${BLOCK}).`;
+    const sentence = 'A value that looked like a credential was removed before saving. Ask the user to keep credentials in the vault, not in memory.';
+    const evidence = DISPATCH_EVIDENCE.remember!.text!;
+
+    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: true });
+    const redacted = await run('remember', base);
+    expect(redacted.startsWith(prefix)).toBe(true);
+    expect(redacted).toContain(sentence);
+    expect(evidence.test(redacted)).toBe(true);
+
+    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: false });
+    const clean = await run('remember', base);
+    expect(clean).toBe(`${prefix} The owner can confirm or retract it on the Wisp memory page.`);
+    expect(clean).not.toContain('credential');
+    expect(evidence.test(clean)).toBe(true);
   });
 
   it('remember surfaces GrantInactiveError as {"error":"grant_inactive"}', async () => {
