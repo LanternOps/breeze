@@ -47,6 +47,7 @@ import {
   type ReattachTenant,
   type SeededAgentDevice,
   type SeedDeviceOptions,
+  targetVersionOf,
 } from './deviceReattachFixtures';
 import { getTestDb } from './setup';
 
@@ -150,12 +151,10 @@ async function mint(caller: Caller, resource: DeviceReattachResource): Promise<s
 
 /** The grant for exactly what the dialog showed: the target's current install. */
 async function mintFor(caller: Caller, source: SeededAgentDevice, target: SeededAgentDevice, over: Partial<DeviceReattachResource> = {}) {
-  const row = await readDevice(target.id);
   return mint(caller, {
     sourceDeviceId: source.id,
     targetDeviceId: target.id,
-    targetAgentId: row!.agentId,
-    targetIncarnation: row!.installIncarnation,
+    targetVersion: await targetVersionOf(target.id),
     evidenceLevel: 'hint',
     restoreDecommissioned: false,
     ...over,
@@ -181,8 +180,9 @@ const post = (caller: Caller, sourceId: string, body: Record<string, unknown>) =
 const getCandidates = (caller: Caller, sourceId: string) =>
   app.request(`/devices/${sourceId}/reinstall-candidates`, { headers: { Authorization: `Bearer ${caller.token}` } });
 
-const reattachBody = (target: SeededAgentDevice, grant: string | undefined, over: Record<string, unknown> = {}) => ({
+const reattachBody = async (target: SeededAgentDevice, grant: string | undefined, over: Record<string, unknown> = {}) => ({
   targetDeviceId: target.id,
+  targetVersion: await targetVersionOf(target.id),
   possessionConfirmed: true,
   confirmTargetName: target.hostname,
   ...(grant ? { stepUpGrant: grant } : {}),
@@ -197,7 +197,7 @@ describe('POST /devices/:id/reattach — the device_reattach step-up (#8318 §8)
     const target = await silentTarget(tenant.orgA);
     const grant = await mintFor(admin, source, target);
 
-    const res = await post(admin, source.id, reattachBody(target, grant));
+    const res = await post(admin, source.id, await reattachBody(target, grant));
     expect(res.status).toBe(202);
     const { intent } = await res.json() as { intent: { id: string; state: string; evidenceLevel: string } };
     expect(intent).toMatchObject({ state: 'requested', evidenceLevel: 'hint' });
@@ -207,7 +207,7 @@ describe('POST /devices/:id/reattach — the device_reattach step-up (#8318 §8)
 
     // The replay, against a second free target so no other refusal answers first.
     const other = await silentTarget(tenant.orgA);
-    const replay = await post(admin, (await parkedSource(tenant)).id, reattachBody(other, grant));
+    const replay = await post(admin, (await parkedSource(tenant)).id, await reattachBody(other, grant));
     expect(replay.status).toBe(403);
     expect(await replay.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
   });
@@ -219,22 +219,22 @@ describe('POST /devices/:id/reattach — the device_reattach step-up (#8318 §8)
     const target = await seedAgentDevice(tenant.orgA, { status: 'online', lastSeenAt: new Date() });
     const grant = await mintFor(admin, source, target);
 
-    const alive = await post(admin, source.id, reattachBody(target, grant));
+    const alive = await post(admin, source.id, await reattachBody(target, grant));
     expect(alive.status).toBe(409);
     expect(await alive.json()).toMatchObject({ code: 'target_alive' });
     expect(await grantExists(grant)).toBe(true);
 
-    const wrongName = await post(admin, source.id, reattachBody(target, grant, { confirmTargetName: 'SOMETHING-ELSE' }));
+    const wrongName = await post(admin, source.id, await reattachBody(target, grant, { confirmTargetName: 'SOMETHING-ELSE' }));
     expect(wrongName.status).toBe(409); // still target_alive: the name is checked after liveness
     expect(await grantExists(grant)).toBe(true);
 
     await getTestDb().execute(sql`UPDATE devices SET status = 'offline', last_seen_at = now() - interval '2 hours' WHERE id = ${target.id}::uuid`);
-    const mismatch = await post(admin, source.id, reattachBody(target, grant, { confirmTargetName: 'SOMETHING-ELSE' }));
+    const mismatch = await post(admin, source.id, await reattachBody(target, grant, { confirmTargetName: 'SOMETHING-ELSE' }));
     expect(mismatch.status).toBe(400);
     expect(await mismatch.json()).toMatchObject({ code: 'confirm_target_name_mismatch' });
     expect(await grantExists(grant)).toBe(true);
 
-    const ok = await post(admin, source.id, reattachBody(target, grant, { confirmTargetName: target.hostname.toUpperCase() }));
+    const ok = await post(admin, source.id, await reattachBody(target, grant, { confirmTargetName: target.hostname.toUpperCase() }));
     expect(ok.status).toBe(202);
     expect(await grantExists(grant)).toBe(false);
   });
@@ -244,11 +244,12 @@ describe('POST /devices/:id/reattach — the device_reattach step-up (#8318 §8)
     const admin = await partnerCaller(tenant, 'admin');
     const source = await parkedSource(tenant);
     const target = await silentTarget(tenant.orgA);
-    const stale = await mintFor(admin, source, target, { targetIncarnation: 2 });
+    // A version that is not the target's current install (e.g. read before a re-enroll).
+    const stale = await mintFor(admin, source, target, { targetVersion: 'S'.repeat(43) });
     const otherRestore = await mintFor(admin, source, target, { restoreDecommissioned: true });
 
     for (const grant of [stale, otherRestore]) {
-      const res = await post(admin, source.id, reattachBody(target, grant));
+      const res = await post(admin, source.id, await reattachBody(target, grant));
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
       expect(await grantExists(grant)).toBe(true);
@@ -256,12 +257,53 @@ describe('POST /devices/:id/reattach — the device_reattach step-up (#8318 §8)
     expect(await intentsOf(source.id)).toHaveLength(0);
   });
 
+  it('a grant minted for another target or another source is refused unspent; the right request then succeeds with it', async () => {
+    const tenant = await seedReattachTenant();
+    const admin = await partnerCaller(tenant, 'admin');
+    const source = await parkedSource(tenant);
+    const target = await silentTarget(tenant.orgA);
+    const otherTarget = await silentTarget(tenant.orgA);
+    const otherSource = await parkedSource(tenant);
+
+    const forOtherTarget = await mintFor(admin, source, otherTarget);
+    const wrongTarget = await post(admin, source.id, await reattachBody(target, forOtherTarget));
+    expect(wrongTarget.status).toBe(403);
+    expect(await wrongTarget.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
+    expect(await grantExists(forOtherTarget)).toBe(true);
+
+    const forOtherSource = await mintFor(admin, otherSource, target);
+    const wrongSource = await post(admin, source.id, await reattachBody(target, forOtherSource));
+    expect(wrongSource.status).toBe(403);
+    expect(await wrongSource.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
+    expect(await grantExists(forOtherSource)).toBe(true);
+    expect(await intentsOf(source.id)).toHaveLength(0);
+
+    // Each grant still works for the pair it was minted for.
+    expect((await post(admin, source.id, await reattachBody(otherTarget, forOtherTarget))).status).toBe(202);
+    expect((await post(admin, otherSource.id, await reattachBody(target, forOtherSource))).status).toBe(202);
+    expect(await grantExists(forOtherTarget)).toBe(false);
+    expect(await grantExists(forOtherSource)).toBe(false);
+  });
+
+  it('a target that re-enrolled after the read is 409 target_changed, the grant unspent', async () => {
+    const tenant = await seedReattachTenant();
+    const admin = await partnerCaller(tenant, 'admin');
+    const source = await parkedSource(tenant);
+    const target = await silentTarget(tenant.orgA);
+    const body = await reattachBody(target, await mintFor(admin, source, target));
+    await getTestDb().execute(sql`UPDATE devices SET agent_id = left(agent_id, 60) || 'beef' WHERE id = ${target.id}::uuid`);
+    const res = await post(admin, source.id, body);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'target_changed' });
+    expect(await grantExists(body.stepUpGrant as string)).toBe(true);
+  });
+
   it('a missing grant is 403 STEP_UP_REQUIRED and writes nothing', async () => {
     const tenant = await seedReattachTenant();
     const admin = await partnerCaller(tenant, 'admin');
     const source = await parkedSource(tenant);
     const target = await silentTarget(tenant.orgA);
-    const res = await post(admin, source.id, reattachBody(target, undefined));
+    const res = await post(admin, source.id, await reattachBody(target, undefined));
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
     expect(await intentsOf(source.id)).toHaveLength(0);
@@ -275,7 +317,7 @@ describe('POST /devices/:id/reattach — the device_reattach step-up (#8318 §8)
     const grant = await mintFor(admin, source, target);
 
     consumeSeam.failAfterConsume = true;
-    const res = await post(admin, source.id, reattachBody(target, grant));
+    const res = await post(admin, source.id, await reattachBody(target, grant));
     expect(res.status).toBe(500);
     expect(await intentsOf(source.id)).toHaveLength(0);
     expect(await grantExists(grant)).toBe(false);
@@ -289,29 +331,29 @@ describe('POST /devices/:id/reattach — who may reattach (#8318 §8, §9.3)', (
     const source = await parkedSource(tenant);
     const target = await silentTarget(tenant.orgA);
     const grant = await mintFor(tech, source, target);
-    const res = await post(tech, source.id, reattachBody(target, grant));
+    const res = await post(tech, source.id, await reattachBody(target, grant));
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'full_admin_required' });
     expect(await grantExists(grant)).toBe(true);
   });
 
-  it('a technician: 403 org_access_denied when either org is not theirs; accepted inside their own org', async () => {
+  it('a technician: 404 device_not_found when either org is not theirs (no oracle); accepted inside their own org', async () => {
     const tenant = await seedReattachTenant();
     const tech = await partnerCaller(tenant, 'techA');
 
     const sourceInB = await seedAgentDevice(tenant.orgB, { rebindProtocolVersion: 1 });
     const targetInA = await silentTarget(tenant.orgA);
-    const deniedSource = await post(tech, sourceInB.id, reattachBody(targetInA, await mintFor(tech, sourceInB, targetInA)));
-    expect(deniedSource.status).toBe(403);
-    expect(await deniedSource.json()).toMatchObject({ code: 'org_access_denied' });
+    const deniedSource = await post(tech, sourceInB.id, await reattachBody(targetInA, await mintFor(tech, sourceInB, targetInA)));
+    expect(deniedSource.status).toBe(404);
+    expect(await deniedSource.json()).toEqual({ error: 'Device not found', code: 'device_not_found' });
 
     const sourceInA = await seedAgentDevice(tenant.orgA, { rebindProtocolVersion: 1 });
     const targetInB = await silentTarget(tenant.orgB);
-    const deniedTarget = await post(tech, sourceInA.id, reattachBody(targetInB, await mintFor(tech, sourceInA, targetInB)));
-    expect(deniedTarget.status).toBe(403);
-    expect(await deniedTarget.json()).toMatchObject({ code: 'org_access_denied' });
+    const deniedTarget = await post(tech, sourceInA.id, await reattachBody(targetInB, await mintFor(tech, sourceInA, targetInB)));
+    expect(deniedTarget.status).toBe(404);
+    expect(await deniedTarget.json()).toEqual({ error: 'Device not found', code: 'device_not_found' });
 
-    const ok = await post(tech, sourceInA.id, reattachBody(targetInA, await mintFor(tech, sourceInA, targetInA)));
+    const ok = await post(tech, sourceInA.id, await reattachBody(targetInA, await mintFor(tech, sourceInA, targetInA)));
     expect(ok.status).toBe(202);
   });
 
@@ -321,10 +363,10 @@ describe('POST /devices/:id/reattach — who may reattach (#8318 §8, §9.3)', (
     const source = await parkedSource(tenant, { osType: 'linux' });
     const target = await silentTarget(tenant.orgA);
     const grant = await mintFor(admin, source, target);
-    const refused = await post(admin, source.id, reattachBody(target, grant));
+    const refused = await post(admin, source.id, await reattachBody(target, grant));
     expect(refused.status).toBe(409);
     expect(await refused.json()).toMatchObject({ code: 'os_changed' });
-    const ok = await post(admin, source.id, reattachBody(target, grant, { acknowledgeOsChange: true }));
+    const ok = await post(admin, source.id, await reattachBody(target, grant, { acknowledgeOsChange: true }));
     expect(ok.status).toBe(202);
   });
 
@@ -333,7 +375,7 @@ describe('POST /devices/:id/reattach — who may reattach (#8318 §8, §9.3)', (
     const orgUser = await orgCaller(tenant, tenant.orgA.orgId);
     const source = await seedAgentDevice(tenant.orgA, { rebindProtocolVersion: 1 });
     const target = await silentTarget(tenant.orgA);
-    const res = await post(orgUser, source.id, reattachBody(target, undefined));
+    const res = await post(orgUser, source.id, await reattachBody(target, undefined));
     expect(res.status).toBe(403);
     expect(await intentsOf(source.id)).toHaveLength(0);
   });
@@ -353,7 +395,6 @@ describe('GET /devices/:id/reinstall-candidates — no leaks (#8318 §7.3)', () 
     expect(view.source).toMatchObject({ deviceId: source.id, parked: true, rebindSupported: true, systemUuid: UUID });
     expect(view.reviewPending).toBe(false);
     expect(view.candidates).toHaveLength(1);
-    const targetRow = await readDevice(target.id);
     expect(view.candidates[0]).toMatchObject({
       deviceId: target.id,
       orgId: tenant.orgA.orgId,
@@ -364,18 +405,22 @@ describe('GET /devices/:id/reinstall-candidates — no leaks (#8318 §7.3)', () 
       osChanged: false,
       requiresRestore: false,
       serialNumber: 'SN-1',
-      stepUpBinding: { targetAgentId: targetRow!.agentId, targetIncarnation: targetRow!.installIncarnation },
+      targetVersion: await targetVersionOf(target.id),
     });
+    // The raw install identifiers never leave the API.
+    const targetRow = await readDevice(target.id);
+    expect(JSON.stringify(view)).not.toContain(targetRow!.agentId);
+    expect(view.candidates[0]).not.toHaveProperty('stepUpBinding');
 
     // The binding the read returns is exactly what the reattach accepts.
     const grant = await mint(admin, {
       sourceDeviceId: source.id,
       targetDeviceId: target.id,
-      ...view.candidates[0].stepUpBinding,
+      targetVersion: view.candidates[0].targetVersion,
       evidenceLevel: view.candidates[0].evidenceLevel,
       restoreDecommissioned: false,
     });
-    expect((await post(admin, source.id, reattachBody(target, grant))).status).toBe(202);
+    expect((await post(admin, source.id, await reattachBody(target, grant))).status).toBe(202);
     const after = await (await getCandidates(admin, source.id)).json() as any;
     expect(after.openIntent).toMatchObject({ state: 'requested', targetDeviceId: target.id });
 
@@ -401,6 +446,28 @@ describe('GET /devices/:id/reinstall-candidates — no leaks (#8318 §7.3)', () 
 
     const adminView = await (await getCandidates(admin, source.id)).json() as any;
     expect(adminView.candidates.map((c: any) => c.deviceId)).toEqual([target.id]);
+  });
+
+  it('the open intent is hidden from an organization user and from a technician without the target\'s org', async () => {
+    const tenant = await seedReattachTenant();
+    const admin = await partnerCaller(tenant, 'admin');
+    const tech = await partnerCaller(tenant, 'techA');
+    const orgUser = await orgCaller(tenant, tenant.orgA.orgId);
+    // A real source in org A (the technician and the org user see it), whose
+    // reattach targets a record in org B.
+    const source = await seedAgentDevice(tenant.orgA, { rebindProtocolVersion: 1 });
+    const target = await silentTarget(tenant.orgB);
+    expect((await post(admin, source.id, await reattachBody(target, await mintFor(admin, source, target)))).status).toBe(202);
+
+    const adminView = await (await getCandidates(admin, source.id)).json() as any;
+    expect(adminView.openIntent).toMatchObject({ targetDeviceId: target.id });
+    for (const viewer of [tech, orgUser]) {
+      const res = await getCandidates(viewer, source.id);
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(JSON.parse(text).openIntent).toBeNull();
+      expect(text).not.toContain(target.id);
+    }
   });
 
   it('an organization user never sees a candidate, even in their own org', async () => {

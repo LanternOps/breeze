@@ -4,8 +4,9 @@
  * §7.3 "No leaks", §8 "Confirmation", §9).
  *
  * For one SOURCE device: the ranked targets, each with its evidence and the
- * side-by-side comparison fields, plus the two values the `device_reattach`
- * step-up binds (the target's agent id and install incarnation). The ranking
+ * side-by-side comparison fields, plus the opaque `targetVersion` the
+ * request and its `device_reattach` step-up bind (an HMAC over the target's
+ * agent id and install incarnation; the raw values never leave). The ranking
  * is the detection's own (`readRankedReinstallCandidates`): nothing re-ranks.
  *
  * Who sees what:
@@ -33,6 +34,7 @@ import { deviceHardware, deviceReattachIntents, devices, organizations, sites } 
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { OPEN_REATTACH_INTENT_STATES } from '../deviceReattach/protocol';
+import { reattachTargetVersion } from '../deviceReattach/targetVersion';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import { readRankedReinstallCandidates } from './index';
 import type { RankedCandidate } from './ranking';
@@ -81,8 +83,11 @@ export interface ReattachCandidateView extends ReattachComparisonFields {
   osChanged: boolean;
   /** The record is removed: the request needs `restoreDecommissioned`. */
   requiresRestore: boolean;
-  /** The values the `device_reattach` step-up binds, as they are now. */
-  stepUpBinding: { targetAgentId: string; targetIncarnation: number };
+  /**
+   * The opaque version of the target's install (deviceReattach/targetVersion.ts):
+   * sent back with the request and bound by the `device_reattach` step-up.
+   */
+  targetVersion: string;
 }
 
 export interface ReinstallCandidatesView {
@@ -256,7 +261,11 @@ export async function readReinstallCandidatesForViewer(input: {
         flagged: source.storedTargetId === candidate.target.id,
         osChanged: row.osType !== sourceRow.osType,
         requiresRestore: row.status === 'decommissioned',
-        stepUpBinding: { targetAgentId: row.agentId, targetIncarnation: row.installIncarnation },
+        targetVersion: reattachTargetVersion({
+          targetDeviceId: candidate.target.id,
+          agentId: row.agentId,
+          installIncarnation: row.installIncarnation,
+        }),
       });
     }
 
@@ -279,7 +288,9 @@ export async function readReinstallCandidatesForViewer(input: {
         rebindSupported: (sourceRow.rebindProtocolVersion ?? 0) >= 1,
       },
       candidates,
-      reviewPending: candidates.length < ranked.ranked.length,
+      // Only candidates HIDDEN by visibility make a review pending; a row
+      // dropped for missing data is not something this viewer is kept from.
+      reviewPending: visible.length < ranked.ranked.length,
       openIntent,
       evidenceNotice: HINT_EVIDENCE_NOTICE,
     };
