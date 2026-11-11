@@ -39,7 +39,7 @@ import {
   type PortalAccountTarget,
 } from '../portalAccountState';
 import { portalUserHasIdentitySql } from '../portalUserIdentities';
-import { normalizeContactEmail, updateContact, type ContactExecutor } from './crud';
+import { normalizeContactEmail, updateContact, type ContactActor, type ContactExecutor } from './crud';
 import { portalLoginEmailEquals } from '../portalLoginEmail';
 
 /**
@@ -359,4 +359,35 @@ export async function bindContactLoginForInvite(
     await updateContact(exec, contact.id, orgId, { roles: [...roles, 'portal'] }, actor);
   }
   return decision;
+}
+
+/**
+ * The `portal` role follows the login's lifecycle (#11599): when a login bound
+ * to a contact is removed, take `portal` off that contact unless another login
+ * in the organization is still bound to it. Only `portal` is removed, and both
+ * reads are scoped to the organization. Call inside the same transaction as the
+ * login delete.
+ */
+export async function dropPortalRoleForRemovedLogin(
+  exec: ContactExecutor,
+  input: { orgId: string; contactId: string; actor: ContactActor },
+): Promise<void> {
+  const { orgId, contactId, actor } = input;
+  const [row] = await exec
+    .select({ roles: contacts.roles })
+    .from(contacts)
+    .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
+    // FOR UPDATE conflicts with a concurrent invite's FOR KEY SHARE on this row,
+    // so a bind cannot slip a new login in between the check below and the write.
+    .for('update')
+    .limit(1);
+  const roles = row?.roles ?? [];
+  if (!roles.includes('portal')) return;
+  const [remaining] = await exec
+    .select({ id: portalUsers.id })
+    .from(portalUsers)
+    .where(and(eq(portalUsers.contactId, contactId), eq(portalUsers.orgId, orgId)))
+    .limit(1);
+  if (remaining) return;
+  await updateContact(exec, contactId, orgId, { roles: roles.filter((r) => r !== 'portal') }, actor);
 }

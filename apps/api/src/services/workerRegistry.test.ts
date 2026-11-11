@@ -147,6 +147,8 @@ const EXPECTED_WORKER_NAMES = [
   'aiModelDiscoveryWorker',
   // Workload image currency W05 (#8194).
   'imageCurrencyWorker',
+  // Portal registration W6 (#11383).
+  'portalSelfRegistrationWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {

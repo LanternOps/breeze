@@ -39,7 +39,8 @@ import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
-  projectPublicDevice,
+  projectPublicDeviceForCaller,
+  redactReplacementLinksForCaller,
 } from './helpers';
 import {
   listDevicesSchema,
@@ -81,6 +82,7 @@ import {
   type RemoteAccessLaunchSkipReason,
 } from '../../services/remoteAccessLauncher';
 import { readPartnerRemoteAccessSettings } from '../../services/remoteAccessProviders';
+import { scheduleReinstallLinkClear } from '../../services/reinstallCandidates/clearLinks';
 import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
@@ -1681,6 +1683,10 @@ coreRoutes.get(
       };
     });
 
+    // #8318 §7.3: a reinstall link may name a device in an org this caller
+    // cannot reach; it is nulled for those rows (one query per page).
+    await redactReplacementLinksForCaller(data, auth);
+
     // Response shape diverges by pagination mode (see route-level comment).
     if (isCursorMode) {
       const pagination: { nextCursor: string | null; limit: number; total?: number } = {
@@ -1901,7 +1907,7 @@ coreRoutes.get(
     const promptHost = await readPromptHostObservation(deviceId);
 
     return c.json({
-      ...projectPublicDevice(device),
+      ...(await projectPublicDeviceForCaller(device, auth)),
       // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
       logShipping: deriveLogShipping(device, new Date()),
       logsNotArriving,
@@ -2394,7 +2400,7 @@ coreRoutes.patch(
     // SR-008: never return agent/helper/watchdog token hashes or mTLS cert
     // material to the client (these are credential verifiers / lifecycle
     // metadata that belong only inside the API).
-    return c.json(updated ? projectPublicDevice(updated) : updated);
+    return c.json(updated ? await projectPublicDeviceForCaller(updated, auth) : updated);
   }
 );
 
@@ -2567,13 +2573,24 @@ coreRoutes.delete(
     // as the decommission UPDATE above.
     await db
       .update(devices)
-      .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
+      // #8318: the reason and the detection time go with the link
+      // (devices_possible_replacement_reason_chk).
+      .set({
+        possibleReplacementOfDeviceId: null,
+        possibleReplacementReason: null,
+        possibleReplacementDetectedAt: null,
+        updatedAt: new Date(),
+      })
       .where(
         and(
           eq(devices.possibleReplacementOfDeviceId, deviceId),
           eq(devices.orgId, device.orgId)
         )
       );
+    // #8318 §7.3: links from the partner's OTHER orgs (hardware hints are
+    // partner-wide) are cleared after this request commits, in a system
+    // context; see services/reinstallCandidates/clearLinks.ts.
+    scheduleReinstallLinkClear(deviceId);
 
     // Cut any live remote-control session to the device being decommissioned —
     // device `status` is only checked at session connect time, so an in-flight
@@ -2608,7 +2625,7 @@ coreRoutes.delete(
 
     return c.json({
       success: true,
-      device: updated ? projectPublicDevice(updated) : updated,
+      device: updated ? await projectPublicDeviceForCaller(updated, auth) : updated,
       uninstallQueued,
     });
   }
@@ -2706,7 +2723,7 @@ coreRoutes.post(
 
     return c.json({
       success: true,
-      device: result.device ? projectPublicDevice(result.device) : result.device,
+      device: result.device ? await projectPublicDeviceForCaller(result.device, auth) : result.device,
       uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
     });
   }

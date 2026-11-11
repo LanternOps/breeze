@@ -105,7 +105,9 @@ async function recallHandler(input: Record<string, unknown>, auth: AuthContext):
       orgId: q.orgId,
       limit: q.limit,
     });
-    return blocks.length > 0 ? renderMemoryForPrompt(blocks) : 'No memory blocks match.';
+    // Render can come back empty when every match was a lapsed standing instruction (#11630).
+    const rendered = blocks.length > 0 ? renderMemoryForPrompt(blocks) : '';
+    return rendered !== '' ? rendered : 'No memory blocks match.';
   } catch (err) {
     return mapBrokerError(err);
   }

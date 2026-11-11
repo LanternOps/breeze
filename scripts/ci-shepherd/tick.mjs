@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { apply, readModeDetail } from './apply.mjs';
 import { parkInBreaker, setBreakerIssue, updateBreakers } from './breakers.mjs';
 import { classifyRun } from './classify.mjs';
-import { LABELS, decide, staleReasons, summarizeVerdict } from './decide.mjs';
+import { LABELS, decide, pageFor, staleReasons, summarizeVerdict } from './decide.mjs';
 import { History } from './evidence.mjs';
 import { groupRunFor, headPushedAt, prSnapshot, recentRemovals, requiredJobIds, runFacts } from './facts.mjs';
 import { acquireLock, appendJsonl, loadState, readJsonl, releaseLock, saveState, tickBudget, writeJsonl } from './state.mjs';
@@ -265,6 +265,9 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
         t.lastSummary = s;
         if (s) state.verdicts.push(s);
         track(t, decision);
+        // A thin-queue selection fault pages in every mode (W05, #10749).
+        const page = pageFor(decision);
+        if (page) error(page);
         state.seen[removal.id] = removal.at;
         summary.removals++;
         await t.act(decision, 'removal');

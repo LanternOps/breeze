@@ -148,7 +148,7 @@
     "headingSingle": "¿Eliminar {{name}}?",
     "itemCount": "Cantidad de elementos",
     "moveToTrash": "Mover a la papelera",
-    "recycleBinNotice": "Aviso sobre la papelera de reciclaje",
+    "recycleBinNotice": "Al mover a la papelera, los elementos se pueden recuperar. La eliminación permanente no se puede deshacer.",
     "totalSize": "Total: {{size}}",
     "itemCount_one": "artículo {{count}}",
     "itemCount_other": "{{count}} elementos"
@@ -464,10 +464,10 @@
       "devices": "Dispositivos",
       "fileManager": "Gestor de archivos"
     },
-    "deviceNotFoundDescription": "Descripción del dispositivo no encontrado",
-    "deviceNotFoundTitle": "Título del dispositivo no encontrado",
+    "deviceNotFoundDescription": "El dispositivo que busca no existe o no tiene acceso a él.",
+    "deviceNotFoundTitle": "Dispositivo no encontrado",
     "deviceOfflineDescription": "El dispositivo es actualmente {{status}}. El acceso remoto a archivos solo está disponible cuando el dispositivo está en línea.",
-    "deviceOfflineTitle": "Título del dispositivo sin conexión",
+    "deviceOfflineTitle": "El dispositivo está sin conexión",
     "errorTitle": "Título del error",
     "errors": {
       "deviceNotFound": "Dispositivo no encontrado",
@@ -507,8 +507,8 @@
     "welcome": "Bienvenido"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Descripción del dispositivo no encontrado",
-    "deviceNotFoundTitle": "Título del dispositivo no encontrado",
+    "deviceNotFoundDescription": "El dispositivo que busca no existe o no tiene acceso a él.",
+    "deviceNotFoundTitle": "Dispositivo no encontrado",
     "errorTitle": "Título del error",
     "errors": {
       "deviceNotFound": "Dispositivo no encontrado",
@@ -635,8 +635,8 @@
     },
     "actionBlocked": "Acción bloqueada",
     "adjustHint": "Intente ajustar la búsqueda o los filtros.",
-    "agentRestartConfirm": "Reiniciar agente Confirmar",
-    "agentStopBlocked": "Agente detenido bloqueado",
+    "agentRestartConfirm": "Reiniciar el agente de Breeze desconectará brevemente este dispositivo de Breeze. ¿Continuar?",
+    "agentStopBlocked": "El agente de Breeze no se puede detener desde aquí: hacerlo cortaría la administración remota de este dispositivo.",
     "allStatus": "Todo el estado",
     "cannotStopAgent": "No se puede detener al agente",
     "changeStartupType": "Cambiar tipo de inicio",

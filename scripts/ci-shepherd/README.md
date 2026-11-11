@@ -58,9 +58,29 @@ The probe refuses without the label, or outside act mode.
 Each failed_checks removal of a PR head counts against that head's budget,
 including removals GitHub re-added on its own through auto-merge. A new head
 starts a new budget. Re-queues allowed per head: infra 3, known flake 3,
-suspected flake 2, timeout 1, unknown 1, real 0, gate fault 0, and never more
-than 3. The same test failing both attempts in two removals of one head is a
-hold too. A removal older than 6 hours is never acted on.
+suspected flake 2, timeout 1, unknown 1, real 0, gate fault 0, thin fault 0,
+and never more than 3. The same test failing both attempts in two removals of
+one head is a hold too. A removal older than 6 hours is never acted on.
+
+### Thin queue faults (W05, #10749)
+
+`thin_fault` is the class for a removal the CI Gate made with
+`reason=thin_skip_unjustified:<jobs>`: the entry's CI skipped a thinnable job the
+gate's published selection did not list. The entry's own CI is usually green, so
+this is never a test failure. It holds on the first removal, is never parked in
+a breaker, and pages: the tick adds a `PAGE …` line to its errors, so the run
+exits non-zero (`degraded`) in shadow mode too. The signature says which shape:
+
+- `thin_skip_unjustified`: the PR's own `ci.yml` skipped the job, or the
+  CI-side consumer misread the list. Unless the PR explains it, turn the thin
+  queue off (`gh variable set CI_THIN_QUEUE --body off`).
+- `attempt1_selection_missing`: the gate's own `ci-gate-selection:` line says a
+  re-run found no attempt-1 selection, so it judged in full while CI had
+  skipped under attempt 1's list. The fail-closed fallback, not a consumer bug;
+  check the gate run, then release with `ci-shepherd:resume`.
+
+A `queue-thin:` fallback in CI (`no_gate_run`, `no_gate_selection`, and so on)
+means CI ran everything, so its failures are ordinary test failures.
 
 Two repo-wide breakers stop retry storms. `outage`: three PRs removed on the
 same infra signature within an hour park matching removals for 20 minutes
@@ -76,7 +96,7 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
 
 | Label | Meaning |
 |---|---|
-| `ci-shepherd:hold` | Held. Causes: a real failure, a gate fault, or the retry budget is exhausted. |
+| `ci-shepherd:hold` | Held. Causes: a real failure, a gate fault, a thin queue fault, or the retry budget is exhausted. |
 | `ci-shepherd:backoff` | Parked during an infrastructure outage. |
 | `ci-shepherd:wait-main` | Parked while main may be broken. |
 | `ci-shepherd:ignore` | The shepherd leaves this PR alone. |
