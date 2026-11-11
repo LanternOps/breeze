@@ -23,6 +23,7 @@ Lab checks owed before the next tag:
 - [ ] **Windows self-uninstall** (#11349, still open) — on hold for its lab leg.
 - [ ] **Viewer clipboard** (#11325, still open) — on hold for its lab leg.
 - [ ] **YARA scan skips its own rule cache** (#11728). On a Windows host with YARA rule sets and auto-quarantine on, run a full scan: no threat under `%ProgramData%\Breeze\data\yara\cache\`, and the `.byrc` files are still there afterwards (reported in #11728).
+- [ ] **macOS Local Network prompt** (#11311). On a Mac enrolled to a LAN-hosted server, confirm macOS shows "Allow breeze-agent to find devices on local networks?" and that Breeze Assist connecting triggers it. On a Mac enrolled to an internet-hosted server, confirm no prompt appears.
 
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)

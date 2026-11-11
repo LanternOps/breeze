@@ -90,6 +90,9 @@ export function LoginForm() {
 
   const showPassword = methods?.password !== false;
   const showMicrosoft = methods?.microsoft === true;
+  // W6: only a verified custom portal domain whose org has self-registration
+  // on answers true; the shared host and a failed fetch show no link.
+  const showRequestAccess = methods?.requestAccess === true;
   const ssoBanner = ssoCode && ssoCode !== 'signed_in' ? (SSO_COPY[ssoCode] ?? SSO_GENERIC_COPY) : null;
 
   const onMicrosoft = async () => {
@@ -249,6 +252,19 @@ export function LoginForm() {
           )}
           <MicrosoftSignInButton onClick={onMicrosoft} busy={msBusy} />
         </div>
+      )}
+
+      {showRequestAccess && (
+        <p className="text-center text-sm text-muted-foreground">
+          Don't have an account?{' '}
+          <a
+            href={withBase('/request-access')}
+            data-testid="login-request-access"
+            className="font-medium text-primary-on-tint underline-offset-4 hover:underline"
+          >
+            Request access
+          </a>
+        </p>
       )}
     </div>
   );

@@ -831,7 +831,18 @@ export const deviceCommands = pgTable('device_commands', {
   // immutable after. NULL only on rows from before the trigger, and a NULL
   // counts as incarnation 1. See services/commandIncarnation.ts.
   deviceIncarnation: integer('device_incarnation')
-});
+}, (table) => ({
+  // #4342 W1 retention (2027-01-23-101000, built CONCURRENTLY). The job's
+  // terminal-age scan, and its keep-newest-per-reader probe
+  // (jobs/deviceCommandRetention.ts KEEP_NEWEST_COMMAND_READERS). Older
+  // device_commands indexes live only in their migrations.
+  terminalAgeIdx: index('idx_device_commands_terminal_age')
+    .on(sql`(COALESCE(${table.completedAt}, ${table.createdAt}))`)
+    .where(sql`${table.status} IN ('completed', 'failed', 'timeout', 'cancelled')`),
+  keepNewestIdx: index('idx_device_commands_keep_newest')
+    .on(table.deviceId, table.type, sql`${table.createdAt} DESC`)
+    .where(sql`${table.type} IN ('patch_scan', 'set_log_level', 'self_uninstall', 'oem_update_run', 'oem_update_release')`),
+}));
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);
 
