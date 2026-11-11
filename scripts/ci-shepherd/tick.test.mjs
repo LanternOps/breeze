@@ -115,6 +115,46 @@ test('shadow makes no write call, and records what it would do (one line per rem
   }
 });
 
+// W05 (#10749): an entry the CI Gate ejected for a skip its selection never
+// allowed. Its own CI is green; without the gate's reason it would be an
+// `unknown` re-queued once. It holds and pages, in shadow (no write) and in act.
+const thinGateLog = (selectionReason) => [
+  `2026-11-08T11:30:00.0000000Z ci-gate-selection: mode=full reason=${selectionReason} thin_queue="enforce" thin_skip=[]`,
+  '2026-11-08T11:49:00.0000000Z ci-gate: verdict=fail reason=thin_skip_unjustified:test-shared event=merge_group thin=0',
+  '',
+].join('\n');
+
+test('thin_skip_unjustified: held and paged, never re-queued; shadow writes nothing', async () => {
+  for (const mode of [null, 'act']) {
+    const env = setup({ mode });
+    env.world.addPr(108, { autoMerge: false });
+    env.world.removeFailed(108, { at: iso(T0 - 10 * MIN), job: null, gateLog: thinGateLog('anchor_policy_in_p') });
+    const summary = await env.run();
+    const [d] = env.decisions().filter((l) => l.source === 'removal');
+    assert.deepEqual([d.kind, d.class, d.signature, d.holdReason], ['hold', 'thin_fault', 'thin_skip_unjustified', 'thin_fault'], String(mode));
+    assert.equal(summary.status, 'degraded', 'a page makes the tick exit non-zero');
+    assert.equal(summary.errors.length, 1);
+    assert.match(summary.errors[0], /^PAGE thin_skip_unjustified: PR 108 .*CI_THIN_QUEUE --body off/);
+    assert.equal(env.world.execs.filter((e) => e.includes('merge')).length, 0, 'never re-queued');
+    if (mode === null) assert.deepEqual(env.world.writes, []);
+    else assert.deepEqual(env.world.prs.get(108).labels, [LABELS.hold]);
+    // Decided once: a second tick neither re-decides nor pages again.
+    const again = await env.run();
+    assert.deepEqual(again.errors, []);
+  }
+});
+
+test('attempt1_selection_missing: held and paged as the fail-closed fallback, with no kill-switch advice', async () => {
+  const env = setup();
+  env.world.addPr(109, { autoMerge: false });
+  env.world.removeFailed(109, { at: iso(T0 - 10 * MIN), job: null, gateLog: thinGateLog('attempt1_selection_missing') });
+  const summary = await env.run();
+  const [d] = env.decisions().filter((l) => l.source === 'removal');
+  assert.deepEqual([d.kind, d.class, d.signature], ['hold', 'thin_fault', 'attempt1_selection_missing']);
+  assert.match(summary.errors[0], /^PAGE attempt1_selection_missing: PR 109 /);
+  assert.doesNotMatch(summary.errors[0], /--body off/);
+});
+
 test('the read-only client refuses writes before they reach the network; a writer refuses it', async () => {
   const world = createWorld();
   const ro = readOnlyGitHub(createGitHub({ token: 't', fetchImpl: world.fetchImpl }));

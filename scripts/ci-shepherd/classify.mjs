@@ -14,7 +14,9 @@
 // Failing ids come from a schema-2 flake report (the second attempt's, else
 // the first's), else from the job log's last attempt (facts.processLog).
 //
-// classifyRun takes the most severe job verdict, in the order of CLASSES.
+// classifyRun takes the most severe job verdict, in the order of CLASSES. Two
+// run-level classes come first, from the CI Gate's own line: gate_fault (the
+// gate could not judge) and thin_fault (W05: a skip the selection never allowed).
 // None of this proves a flake: suspected_flake and known_flake are bounded
 // bets the decision layer budgets, and a retry never turns a failure into a pass.
 import { join } from 'node:path';
@@ -26,9 +28,13 @@ import { isFailedConclusion } from './facts.mjs';
 import { INFRA_SIGNATURES, signatureEvidence } from './signatures.mjs';
 
 // Most severe first.
-export const CLASSES = ['gate_fault', 'real', 'unknown', 'timeout', 'suspected_flake', 'known_flake', 'infra'];
+export const CLASSES = ['thin_fault', 'gate_fault', 'real', 'unknown', 'timeout', 'suspected_flake', 'known_flake', 'infra'];
 export const KNOWN_FLAKE_DAYS = 14;
 export const GATE_FAULT_REASONS = new Set(['error', 'not_pinned', 'aggregator_unparseable', 'base_unreadable', 'head_unparseable', 'duplicate_job_name']);
+// W05 (#10749): the gate's verdict when every job it blames is a thinnable job
+// the entry's CI skipped though the published selection did not list it. The
+// entry's own CI is usually green, so without this it would read as `unknown`.
+export const THIN_SKIP_UNJUSTIFIED = /^thin_skip_unjustified:[a-z0-9,-]+$/;
 // Jobs whose failure no retry changes. `Lint Agent (Go)` is the display name
 // in ci.yml; every name starting `Build ` is a build.
 export const DETERMINISTIC_JOBS = new Set(['Lint', 'Type Check', 'Docs Check', 'Check Migrations', 'Check Migrations (non-superuser)', 'Lint Agent (Go)']);
@@ -113,6 +119,25 @@ export function classifyJob(job, ctx) {
   return verdict(job, 'unknown', null, ids, [why]);
 }
 
+// A thin-queue selection fault (W05, #10749): never a test failure, never
+// re-queued (LIMITS.thin_fault is 0), and paged (decide.pageFor). Two shapes:
+//   - attempt1_selection_missing: a gate re-run found no attempt-1 selection in
+//     its own run, so it judged full while CI had skipped under attempt 1's
+//     list. The fail-closed fallback, not a consumer bug.
+//   - thin_skip_unjustified: anything else. The PR's own ci.yml skipped a job,
+//     or the CI-side consumer misread the list: a reason to turn the thin queue off.
+function thinFault(gate, gaps) {
+  const lost = gate.selection?.reason === 'attempt1_selection_missing';
+  const evidence = [`CI Gate reason ${gate.reason}`];
+  // No selection line (a gate older than W05a, or a log that did not parse): the
+  // shape is unconfirmed, and the page errs toward the kill switch.
+  evidence.push(gate.selection ? `selection mode=${gate.selection.mode} reason=${gate.selection.reason}` : 'ci-gate-selection line missing or unparsed; shape unconfirmed');
+  evidence.push(lost
+    ? 'a gate re-run found no attempt 1 selection and judged in full; CI had skipped under attempt 1\'s list'
+    : 'CI skipped a job the gate\'s selection did not list; unless the PR\'s own ci.yml explains it, turn the thin queue off');
+  return { class: 'thin_fault', signature: lost ? 'attempt1_selection_missing' : 'thin_skip_unjustified', testIds: [], jobs: [], evidence, gaps };
+}
+
 // ctx: { prFiles: Set, history, repoRoot, pr?, now?, requiredJobs? }.
 // `requiredJobs` (ci.yml job ids CI Success needs) drops failed jobs outside
 // the aggregate: they cannot have caused the removal, and jobs still running
@@ -128,6 +153,7 @@ export function classifyRun(facts, ctx) {
   if (GATE_FAULT_REASONS.has(reason)) {
     return { class: 'gate_fault', signature: null, testIds: [], jobs: [], evidence: [`CI Gate reason ${reason}`], gaps: runGaps };
   }
+  if (reason && THIN_SKIP_UNJUSTIFIED.test(reason)) return thinFault(facts.gate, runGaps);
   const failed = facts.jobs.filter(
     (j) => isFailedConclusion(j.conclusion) && j.name !== CI_SUCCESS && (!ctx.requiredJobs || !j.jobId || ctx.requiredJobs.has(j.jobId)),
   );
