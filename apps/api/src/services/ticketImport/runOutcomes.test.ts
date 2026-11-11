@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MigrationWindowError } from '../migrationWindows';
 import { TicketServiceError } from '../ticketService';
@@ -276,6 +277,7 @@ describe('versionKey (review #15)', () => {
 describe('created contacts in the run report (W4b, spec 2026-10-19 §5.10, §5.13)', () => {
   const ORG_A = '11111111-1111-4111-8111-111111111111';
   const ORG_B = '22222222-2222-4222-8222-222222222222';
+  const RUN = '33333333-3333-4333-8333-333333333333';
   const target = { key: '1', number: null };
 
   it('counts a created contact, and a createContact requester the writer left display-only', () => {
@@ -294,26 +296,32 @@ describe('created contacts in the run report (W4b, spec 2026-10-19 §5.10, §5.1
   it('predicts a contact once per (org, email) across the run, case-insensitively, and per org', () => {
     const counters = emptyCounters();
     const seen = new Set<string>();
-    predictRequesterContact('create', ORG_A, 'maya@customer.example', counters, seen, 100);
-    predictRequesterContact('create', ORG_A, 'Maya@Customer.example', counters, seen, 100);
-    predictRequesterContact('create', ORG_B, 'maya@customer.example', counters, seen, 100);
-    predictRequesterContact('linked', ORG_A, 'old@customer.example', counters, seen, 100);
-    predictRequesterContact('matched', ORG_A, 'one@customer.example', counters, seen, 100);
-    predictRequesterContact('display_only', ORG_A, 'shared@customer.example', counters, seen, 100);
+    predictRequesterContact('create', RUN, ORG_A, 'maya@customer.example', counters, seen, 100);
+    predictRequesterContact('create', RUN, ORG_A, 'Maya@Customer.example', counters, seen, 100);
+    predictRequesterContact('create', RUN, ORG_B, 'maya@customer.example', counters, seen, 100);
+    predictRequesterContact('linked', RUN, ORG_A, 'old@customer.example', counters, seen, 100);
+    predictRequesterContact('matched', RUN, ORG_A, 'one@customer.example', counters, seen, 100);
+    predictRequesterContact('display_only', RUN, ORG_A, 'shared@customer.example', counters, seen, 100);
     expect(counters.predicted.contactsToCreate).toEqual({ [ORG_A]: 1, [ORG_B]: 1 });
     expect(counters.requestersWithoutContact).toBe(1);
     expect(seen.size).toBe(2);
   });
 
   it('keeps digests, never addresses, and counts without dedupe past the bound', () => {
-    expect(predictedContactKey(ORG_A, 'maya@customer.example')).toMatch(/^[0-9a-f]{16}$/);
-    expect(predictedContactKey(ORG_A, ' MAYA@customer.example ')).toBe(predictedContactKey(ORG_A, 'maya@customer.example'));
+    expect(predictedContactKey(RUN, ORG_A, 'maya@customer.example')).toMatch(/^[0-9a-f]{16}$/);
+    expect(predictedContactKey(RUN, ORG_A, ' MAYA@customer.example ')).toBe(predictedContactKey(RUN, ORG_A, 'maya@customer.example'));
+    // Keyed per run: the same address digests differently in another run, and is no plain SHA-256.
+    expect(predictedContactKey('other-run', ORG_A, 'maya@customer.example')).not.toBe(predictedContactKey(RUN, ORG_A, 'maya@customer.example'));
+    expect(predictedContactKey(RUN, ORG_A, 'maya@customer.example'))
+      .not.toBe(createHash('sha256').update(`${ORG_A}:maya@customer.example`).digest('hex').slice(0, 16));
+    expect(PREDICTED_CONTACT_KEYS_MAX).toBe(5_000);
     const counters = emptyCounters();
     const seen = new Set<string>();
-    predictRequesterContact('create', ORG_A, 'a@x.example', counters, seen, 1);
-    predictRequesterContact('create', ORG_A, 'b@x.example', counters, seen, 1);
-    predictRequesterContact('create', ORG_A, 'b@x.example', counters, seen, 1);
+    predictRequesterContact('create', RUN, ORG_A, 'a@x.example', counters, seen, 1);
+    predictRequesterContact('create', RUN, ORG_A, 'b@x.example', counters, seen, 1);
+    predictRequesterContact('create', RUN, ORG_A, 'b@x.example', counters, seen, 1);
     expect(counters.predicted.contactsToCreate[ORG_A]).toBe(3);
+    expect(counters.predicted.contactsToCreateOverCap).toBe(2);
     expect(seen.size).toBe(1);
   });
 

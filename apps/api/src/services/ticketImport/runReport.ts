@@ -92,6 +92,12 @@ export type RunCounters = {
     invalid: number;
     /** Contacts an import would create, per org (W4b): once per (org, email) across the run. */
     contactsToCreate: Record<string, number>;
+    /**
+     * Predictions counted past the run's dedupe bound (PREDICTED_CONTACT_KEYS_MAX):
+     * when non-zero, `contactsToCreate` is a ceiling, as such an address may be
+     * counted more than once.
+     */
+    contactsToCreateOverCap: number;
   };
 };
 
@@ -129,6 +135,7 @@ export function emptyCounters(): RunCounters {
       attachmentsSkipped: 0,
       invalid: 0,
       contactsToCreate: {},
+      contactsToCreateOverCap: 0,
     },
   };
 }

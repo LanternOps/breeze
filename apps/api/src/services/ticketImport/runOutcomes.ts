@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { MigrationWindowError } from '../migrationWindows';
 import { TicketServiceError } from '../ticketService';
 import { IMPORT_ATTACHMENT_MAX_BYTES } from './importAttachments';
@@ -175,9 +175,14 @@ export function predictTicket(ticket: ImportedTicket, counters: RunCounters, res
   }
 }
 
-/** The dry run's dedupe key of a contact to create: a digest of (org, lower(email)), never the address. */
-export function predictedContactKey(orgId: string, email: string): string {
-  return createHash('sha256').update(`${orgId}:${email.trim().toLowerCase()}`).digest('hex').slice(0, 16);
+/**
+ * The dry run's dedupe key of a contact to create: an HMAC-SHA256 of (org,
+ * lower(email)) keyed by the run id, never the address. Keyed per run, so a
+ * digest stored in one run's cursor cannot be checked against a guessed
+ * address by computing it once and looking for it across runs.
+ */
+export function predictedContactKey(runId: string, orgId: string, email: string): string {
+  return createHmac('sha256', runId).update(`${orgId}:${email.trim().toLowerCase()}`).digest('hex').slice(0, 16);
 }
 
 /**
@@ -189,6 +194,7 @@ export function predictedContactKey(orgId: string, email: string): string {
  */
 export function predictRequesterContact(
   prediction: 'linked' | 'matched' | 'create' | 'display_only',
+  runId: string,
   orgId: string,
   email: string,
   counters: RunCounters,
@@ -200,9 +206,10 @@ export function predictRequesterContact(
     return;
   }
   if (prediction !== 'create') return;
-  const key = predictedContactKey(orgId, email);
+  const key = predictedContactKey(runId, orgId, email);
   if (seen.has(key)) return;
   if (seen.size < maxKeys) seen.add(key);
+  else counters.predicted.contactsToCreateOverCap += 1;
   counters.predicted.contactsToCreate[orgId] = (counters.predicted.contactsToCreate[orgId] ?? 0) + 1;
 }
 

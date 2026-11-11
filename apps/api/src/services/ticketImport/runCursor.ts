@@ -18,14 +18,18 @@
  *   (`source_unavailable`).
  * - `clockSkewMs` is measured once per run, at its first slice's connect.
  * - `predictedContacts` (W4b, a dry run only): the (org, email) keys the run
- *   already predicted a contact for, as short digests, so a requester on many
+ *   already predicted a contact for, as short digests keyed by the run id
+ *   (`predictedContactKey`), so a requester on many
  *   tickets is predicted once (§5.10 `predicted.contactsToCreate`). A dry run
  *   commits only at a slice's end, and it is bounded by
- *   PREDICTED_CONTACT_KEYS_MAX; past the bound, new addresses are counted
- *   without deduplication (an over-estimate).
+ *   PREDICTED_CONTACT_KEYS_MAX (5,000 distinct addresses, about 100 KB);
+ *   past the bound, a new address is counted every time it is seen, so the
+ *   prediction over-counts, and `predicted.contactsToCreateOverCap` says how
+ *   many predictions were counted past the bound (`contactsToCreate` is then a
+ *   ceiling).
  */
 
-export const PREDICTED_CONTACT_KEYS_MAX = 20_000;
+export const PREDICTED_CONTACT_KEYS_MAX = 5_000;
 
 export const SOURCE_FAILURE_LIMIT = 20;
 

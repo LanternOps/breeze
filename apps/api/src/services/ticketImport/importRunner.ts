@@ -638,7 +638,7 @@ class SliceRunner {
         contactLookupContext(this.input.partnerId, this.contactOrgIds),
         { orgId: ticket.orgId, sourceId: this.run.sourceId, request },
       );
-      predictRequesterContact(prediction, ticket.orgId, request.email, this.counters, this.predictedContacts, PREDICTED_CONTACT_KEYS_MAX);
+      predictRequesterContact(prediction, this.input.runId, ticket.orgId, request.email, this.counters, this.predictedContacts, PREDICTED_CONTACT_KEYS_MAX);
     }
     this.counters.linksAsNotes += links;
     return { kind: 'done', slow: true };
