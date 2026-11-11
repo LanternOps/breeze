@@ -375,3 +375,51 @@ describe('getRoleIdsHoldingPermission (#11702)', () => {
     expect(frontiers).toEqual([]);
   });
 });
+
+describe('review follow-ups (#11702)', () => {
+  it(`expandToInheritingRoleIds stops ${MAX_ROLE_INHERITANCE_DEPTH} levels down, where the forward walk stops`, async () => {
+    // g ← l1 ← … ← l(MAX+1), all one partner; every level has a child.
+    roleRows.set('g', partnerRole('g', 'p1'));
+    for (let i = 1; i <= MAX_ROLE_INHERITANCE_DEPTH + 1; i++) {
+      roleRows.set(`l${i}`, partnerRole(`l${i}`, 'p1', i === 1 ? 'g' : `l${i - 1}`));
+    }
+    for (let i = 1; i <= MAX_ROLE_INHERITANCE_DEPTH + 1; i++) childrenQueue.push([{ id: `l${i}` }]);
+
+    const holders = await expandToInheritingRoleIds(['g']);
+    expect(frontiers).toHaveLength(MAX_ROLE_INHERITANCE_DEPTH);
+    expect(holders).toContain(`l${MAX_ROLE_INHERITANCE_DEPTH}`);
+    expect(holders).not.toContain(`l${MAX_ROLE_INHERITANCE_DEPTH + 1}`);
+    // Forward agreement at the boundary.
+    expect((await resolveRoleLineage(`l${MAX_ROLE_INHERITANCE_DEPTH}`)).map((e) => e.id)).toContain('g');
+    expect((await resolveRoleLineage(`l${MAX_ROLE_INHERITANCE_DEPTH + 1}`)).map((e) => e.id)).not.toContain('g');
+  });
+
+  it('a mixed batch resolves every role exactly as the single walk does, in at most MAX + 1 role reads', async () => {
+    const depth = MAX_ROLE_INHERITANCE_DEPTH + 3;
+    for (let i = 0; i <= depth; i++) roleRows.set(`d${i}`, partnerRole(`d${i}`, 'p1', i < depth ? `d${i + 1}` : null));
+    roleRows.set('cy-a', partnerRole('cy-a', 'p1', 'cy-b'));
+    roleRows.set('cy-b', partnerRole('cy-b', 'p1', 'cy-a'));
+    roleRows.set('orphan', partnerRole('orphan', 'p1', 'gone'));
+    roleRows.set('foreign', partnerRole('foreign', 'p2'));
+    roleRows.set('x', partnerRole('x', 'p1', 'foreign'));
+    roleRows.set('tmpl', { ...partnerRole('tmpl', 'unused'), partnerId: null, isSystem: true });
+    roleRows.set('t-child', partnerRole('t-child', 'p1', 'tmpl'));
+    roleRows.set('solo', partnerRole('solo', 'p1'));
+    const ids = ['d0', 'd3', 'cy-a', 'orphan', 'x', 't-child', 'solo', 'missing'];
+
+    const { db } = await import('../db');
+    const selectCalls = vi.mocked(db.select).mock.calls.length;
+    const batch = await resolveRoleLineages(ids);
+    expect(vi.mocked(db.select).mock.calls.length - selectCalls).toBeLessThanOrEqual(MAX_ROLE_INHERITANCE_DEPTH + 1);
+    const truncations = warn.mock.calls.length;
+    expect(truncations).toBe(4); // depth (d0), cycle (cy-a), missing (orphan), tenant (x)
+
+    for (const id of ids) {
+      expect(batch.get(id)).toEqual(await resolveRoleLineage(id));
+    }
+    expect(batch.get('d0')).toHaveLength(MAX_ROLE_INHERITANCE_DEPTH + 1);
+    expect(batch.get('d3')).toHaveLength(MAX_ROLE_INHERITANCE_DEPTH + 1);
+    expect(batch.get('t-child')!.map((e) => e.id)).toEqual(['t-child', 'tmpl']);
+    expect(batch.get('missing')).toEqual([]);
+  });
+});

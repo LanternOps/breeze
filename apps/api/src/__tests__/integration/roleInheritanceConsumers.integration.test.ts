@@ -461,9 +461,13 @@ describe('#11702 migrationWindows sweep keeps an opener holding the opener permi
   const DAY = 86_400_000;
   const OPEN_KEYS = ['organizations:write', 'tickets:write'];
 
-  /** An open window whose owner opened it with DIRECT grants; the caller then swaps the owner's role. */
-  async function openWindow(t: Tenant) {
-    const ownerRoleId = await mkRole(t, 'partner', 'Window owner', OPEN_KEYS);
+  /**
+   * Opens a window as a partner-wide owner. By default the owner's role holds
+   * the opener permissions DIRECTLY; `ownerRole` substitutes another role
+   * (e.g. one that only inherits them) for the open itself.
+   */
+  async function openWindow(t: Tenant, ownerRole?: () => Promise<string>) {
+    const ownerRoleId = ownerRole ? await ownerRole() : await mkRole(t, 'partner', 'Window owner', OPEN_KEYS);
     const owner = await createUser({ partnerId: t.partnerId, orgId: null, email: `inh-mw-${randomUUID()}@example.test` });
     await assignUserToPartner(owner.id, t.partnerId, ownerRoleId, 'all');
     const [principal] = await getTestDb().insert(partnerServicePrincipals).values({
@@ -502,6 +506,24 @@ describe('#11702 migrationWindows sweep keeps an opener holding the opener permi
     await swapOwnerRole(w.ownerId, t.partnerId, child);
     await sweepMigrationWindows(new Date());
     expect(await statusOf(w.windowId)).toMatchObject({ status: 'open' });
+  });
+
+  runDb('opens a window for an owner whose role holds the opener permissions only via the parent', async () => {
+    const t = await seedTenant();
+    const w = await openWindow(t, async () => {
+      const parent = await mkRole(t, 'partner', 'Opener perms parent', OPEN_KEYS);
+      return mkRole(t, 'partner', 'Inheriting opener', [], parent);
+    });
+    expect(await statusOf(w.windowId)).toMatchObject({ status: 'open' });
+  });
+
+  runDb('refuses to open for an owner whose parent belongs to another partner', async () => {
+    const t = await seedTenant();
+    const other = await seedTenant();
+    await expect(openWindow(t, async () => {
+      const foreignParent = await mkRole(other, 'partner', 'Foreign opener perms', OPEN_KEYS);
+      return mkRole(t, 'partner', 'Cross-tenant opener', [], foreignParent);
+    })).rejects.toMatchObject({ code: 'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED' });
   });
 
   runDb('closes the window (opener_inactive) when the parent belongs to another partner', async () => {

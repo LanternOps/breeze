@@ -119,18 +119,28 @@ async function member(t: Tenant, roleId: string, axis: 'partner' | 'org', status
   }
 }
 
-/** Runs the script file verbatim as breeze_app (no RLS context) and returns the per-role result set. */
-async function runReport(): Promise<{ visibleRoles: number; rows: ReportRow[] }> {
+async function runScriptAsApp(script: string): Promise<Array<Array<Record<string, unknown>> & { command?: string }>> {
   const client = (getAppDb() as unknown as { $client: Sql }).$client;
   // The script carries its own BEGIN/ROLLBACK, so it needs one dedicated
   // connection, as psql gives it.
   const reserved = await client.reserve();
   let results: Array<Array<Record<string, unknown>> & { command?: string }>;
   try {
-    results = (await reserved.unsafe(SCRIPT).simple()) as unknown as typeof results;
+    results = (await reserved.unsafe(script).simple()) as unknown as typeof results;
+  } catch (error) {
+    // A failed statement leaves the script's transaction open and aborted;
+    // end it before the connection goes back to the pool.
+    await reserved.unsafe('ROLLBACK').catch(() => undefined);
+    throw error;
   } finally {
     reserved.release();
   }
+  return results;
+}
+
+/** Runs the script file verbatim as breeze_app (no RLS context) and returns the per-role result set. */
+async function runReport(): Promise<{ visibleRoles: number; rows: ReportRow[] }> {
+  const results = await runScriptAsApp(SCRIPT);
   // postgres.js labels multi-statement results off by one (the report comes
   // back tagged with the next statement's command), so pick the result sets
   // by their columns, not by `command`.
@@ -171,6 +181,13 @@ describe('role inheritance gain report (#11702)', () => {
     expect(code).toMatch(/set_config\('breeze\.scope', 'system', true\)/);
     // The depth bound in SQL is the resolver's.
     expect(code).toMatch(new RegExp(`l\\.depth < ${MAX_ROLE_INHERITANCE_DEPTH}\\b`));
+  });
+
+  runDb('aborts instead of printing an empty report when the connection cannot see the rows', async () => {
+    await role({ scope: 'partner', partnerId: (await seedTenant()).partnerId }, `Visible ${randomUUID()}`, []);
+    const blind = SCRIPT.replace("SELECT set_config('breeze.scope', 'system', true) AS breeze_scope;", '');
+    expect(blind).not.toBe(SCRIPT);
+    await expect(runScriptAsApp(blind)).rejects.toThrow(/breeze\.scope is not system/);
   });
 
   runDb('matches the resolver for every role with a parent, across every walk rule', async () => {

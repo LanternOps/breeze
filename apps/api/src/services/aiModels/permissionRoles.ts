@@ -40,6 +40,7 @@ export async function rolesGrantingPermission(input: {
     for (const r of candidates) {
       if ((grants.get(r.id) ?? []).some((g) => permissionGrantMatches(g, resource, action))) names.add(r.name);
     }
-    return [...names].sort().slice(0, MAX_ROLE_NAMES);
+    // localeCompare, not code-unit order: closer to the old SQL ORDER BY name collation.
+    return [...names].sort((a, b) => a.localeCompare(b)).slice(0, MAX_ROLE_NAMES);
   }));
 }

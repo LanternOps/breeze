@@ -43,15 +43,37 @@
 -- or a managed-Postgres admin role that is not a superuser — would otherwise
 -- see ZERO roles and print an empty, reassuring report. The scope is set with
 -- is_local = true inside a READ ONLY transaction that is rolled back, so the
--- session cannot write and nothing persists. The first result set
--- (visible_roles) shows how many roles the connection can see; if it is 0 on
--- a populated database, the report is not seeing the data.
+-- session cannot write and nothing persists. A guard then aborts the run if
+-- the scope did not take or the connection sees no roles or no users, and the
+-- first result set (visible_roles, roles_with_parent, visible_users,
+-- visible_memberships) shows what the connection can see.
 
 BEGIN TRANSACTION READ ONLY;
 SELECT set_config('breeze.scope', 'system', true) AS breeze_scope;
 
+-- Fail loudly rather than print an empty, reassuring report: every Breeze
+-- database has the seeded built-in roles and at least one user, so seeing
+-- none of either means RLS (or a missing grant) is hiding the data. With
+-- ON_ERROR_STOP the run aborts here.
+DO $$
+DECLARE
+  seen_roles bigint;
+  seen_users bigint;
+BEGIN
+  IF current_setting('breeze.scope', true) IS DISTINCT FROM 'system' THEN
+    RAISE EXCEPTION 'role-inheritance gain report: breeze.scope is not system; the report would not see tenant rows';
+  END IF;
+  SELECT count(*) INTO seen_roles FROM roles;
+  SELECT count(*) INTO seen_users FROM users;
+  IF seen_roles = 0 OR seen_users = 0 THEN
+    RAISE EXCEPTION 'role-inheritance gain report: this connection sees % roles and % users; RLS or privileges are hiding rows', seen_roles, seen_users;
+  END IF;
+END $$;
+
 SELECT count(*) AS visible_roles,
-       count(*) FILTER (WHERE parent_role_id IS NOT NULL) AS roles_with_parent
+       count(*) FILTER (WHERE parent_role_id IS NOT NULL) AS roles_with_parent,
+       (SELECT count(*) FROM users) AS visible_users,
+       (SELECT count(*) FROM partner_users) + (SELECT count(*) FROM organization_users) AS visible_memberships
 FROM roles;
 
 WITH RECURSIVE lineage AS (

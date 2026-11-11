@@ -60,15 +60,28 @@ const ALLOWED: Record<string, Allowed> = {
 const REPO = resolve(import.meta.dirname, '..', '..', '..', '..');
 const ROOTS = ['apps/api/src', 'apps/api/scripts', 'ee'];
 
+// Every way code can reach the table. Counted on comment-stripped source.
+// The drizzle symbol is matched wherever it is USED as a table (bare, through
+// a namespace such as `schema.rolePermissions`, or `db.query.rolePermissions`),
+// raw SQL in any case, quoted or schema-qualified, including comma joins.
 const SITE_PATTERNS: RegExp[] = [
-  /\.(?:from|insert|delete|update)\(\s*rolePermissions\b/g,
-  /\b(?:inner|left|right|full)Join\(\s*rolePermissions\b/g,
-  /\$\{\s*rolePermissions\s*\}/g,
-  /\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:public\.)?role_permissions\b/gi,
+  /\.(?:from|insert|delete|update)\(\s*(?:\w+\.)?rolePermissions\b/g,
+  /\b(?:inner|left|right|full|cross)Join\(\s*(?:\w+\.)?rolePermissions\b/g,
+  /\$\{\s*(?:\w+\.)?rolePermissions\s*\}/g,
+  /\bquery\.rolePermissions\b/g,
+  /\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:"?public"?\.)?"?role_permissions"?/gi,
+  /,\s*(?:"?public"?\.)?"?role_permissions"?\s+(?:AS\s+)?\w+/gi,
 ];
-// A bare reference (e.g. an import or a table definition) that no site pattern
-// above counts still marks the file as touching the table.
-const MENTION = /(?:\bimport\b[^;]*\brolePermissions\b|pgTable\(\s*['"]role_permissions['"])/;
+// A reference no site pattern counts (an import, an alias, a table
+// definition) still marks the file, so an aliased reader cannot hide.
+const MENTION = /(?:\bimport\b[^;]*\brolePermissions\b|\brolePermissions\s+as\s+\w+|pgTable\(\s*['"]role_permissions['"])/;
+
+/** Touch sites in one file's source (also driven directly by the scanner self-test). */
+function countSites(source: string): { sites: number; mentioned: boolean } {
+  const code = stripComments(source);
+  const sites = SITE_PATTERNS.reduce((n, re) => n + (code.match(re)?.length ?? 0), 0);
+  return { sites, mentioned: sites > 0 || MENTION.test(code) };
+}
 
 function walk(dir: string, out: string[]): void {
   if (!existsSync(dir)) return;
@@ -93,15 +106,34 @@ function scan(): Map<string, number> {
   for (const root of ROOTS) walk(join(REPO, root), files);
   const found = new Map<string, number>();
   for (const file of files) {
-    const code = stripComments(readFileSync(file, 'utf8'));
-    const sites = SITE_PATTERNS.reduce((n, re) => n + (code.match(re)?.length ?? 0), 0);
-    if (sites > 0 || MENTION.test(code)) found.set(relative(REPO, file), sites);
+    const { sites, mentioned } = countSites(readFileSync(file, 'utf8'));
+    if (mentioned) found.set(relative(REPO, file), sites);
   }
   return found;
 }
 
 describe('role_permissions readers (#11702)', () => {
   const found = scan();
+
+  it('the scanner catches every reader shape (self-test)', () => {
+    const shapes = [
+      'await db.select().from(rolePermissions).where(eq(rolePermissions.roleId, id));',
+      'await db.select().from(schema.rolePermissions);',
+      'await db.query.rolePermissions.findMany({});',
+      'x.innerJoin(rolePermissions, eq(a, b));',
+      'sql`SELECT 1 FROM ${rolePermissions} WHERE true`;',
+      'sql`select 1 from role_permissions rp where rp.role_id = ${id}`;',
+      'sql`SELECT 1 FROM "role_permissions" WHERE true`;',
+      'sql`SELECT 1 FROM public."role_permissions" rp`;',
+      'sql`SELECT 1 FROM roles r, role_permissions rp WHERE rp.role_id = r.id`;',
+      'sql`SELECT 1 FROM roles r JOIN role_permissions AS rp ON rp.role_id = r.id`;',
+    ];
+    for (const shape of shapes) expect(countSites(shape).sites, shape).toBeGreaterThan(0);
+    expect(countSites("import { rolePermissions as rp } from '../db/schema';").mentioned).toBe(true);
+    // Comments and prose do not count.
+    expect(countSites('// FROM role_permissions\n/* JOIN role_permissions */\nconst a = 1;').mentioned).toBe(false);
+    expect(countSites("throw new Error('the ceiling reads role_permissions (FORCE RLS)');").mentioned).toBe(false);
+  });
 
   it('finds the resolver itself (the scan works)', () => {
     expect(found.get('apps/api/src/services/roleInheritance.ts')).toBeGreaterThan(0);
