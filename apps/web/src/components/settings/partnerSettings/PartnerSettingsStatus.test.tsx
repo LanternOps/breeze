@@ -101,8 +101,8 @@ describe('PartnerSettingsStatus', () => {
   it('the invalid link opens the tab at its first invalid field', async () => {
     const onOpenTab = vi.fn();
     render(<PartnerSettingsStatus state={{ kind: 'invalid', tab: 'aiBudgets', count: 1, fieldId: 'f-1' }} onOpenTab={onOpenTab} />);
-    expect(screen.getByTestId('partner-settings-status').textContent).toBe('Fix 1 field in AI Budgets to save.');
-    await userEvent.setup().click(screen.getByRole('button', { name: 'AI Budgets' }));
+    expect(screen.getByTestId('partner-settings-status').textContent).toBe('Fix 1 field in AI Budgets & Limits to save.');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'AI Budgets & Limits' }));
     expect(onOpenTab).toHaveBeenCalledWith('aiBudgets', 'f-1');
   });
 

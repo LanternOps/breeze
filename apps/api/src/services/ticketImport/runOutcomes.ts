@@ -6,7 +6,7 @@ import type { ImportedTicket } from './importedTicket';
 import type { ImportTicketResult } from './importWriter';
 import type { Conversion, ReportNote } from './moduleContract';
 import type { IssueBuffer, RunCounters, RunIssue } from './runReport';
-import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceUnavailableError } from './sourceFetch';
+import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceShapeError, SourceUnavailableError } from './sourceFetch';
 
 /**
  * The pure decisions of a slice (#8313 W4; spec 2026-10-19 §5.2, §5.8–§5.10):
@@ -93,6 +93,11 @@ export function applyNotes(
       case 'custom_attribute': {
         const name = note.name.slice(0, 128);
         counters.customAttributes[name] = (counters.customAttributes[name] ?? 0) + Math.max(1, note.count ?? 1);
+        break;
+      }
+      case 'module_count': {
+        const name = note.name.slice(0, 64);
+        counters.moduleCounts[name] = (counters.moduleCounts[name] ?? 0) + Math.max(0, note.count ?? 1);
         break;
       }
     }
@@ -211,10 +216,16 @@ export type SourceFailure =
   | { kind: 'unauthorized' }
   | { kind: 'http'; status: number }
   | { kind: 'too_large' }
+  /** An answer the module cannot read (SourceShapeError): not an outage. */
+  | { kind: 'shape' }
   | { kind: 'rethrow' };
+
+/** The failure code of a ticket whose row or load the module could not read. */
+export const SOURCE_SHAPE_INVALID = 'source_shape_invalid';
 
 export function classifySourceError(error: unknown): SourceFailure {
   if (error instanceof SourceAuthError) return { kind: 'unauthorized' };
+  if (error instanceof SourceShapeError) return { kind: 'shape' };
   if (error instanceof SourceHttpError) return { kind: 'http', status: error.status };
   if (error instanceof SourceUnavailableError) return { kind: 'unavailable', retryAfterMs: error.retryAfterMs };
   if (error instanceof SourceResponseTooLargeError) return { kind: 'too_large' };

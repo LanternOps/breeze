@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
@@ -25,6 +25,10 @@ interface PartRow {
 }
 
 interface Props {
+  /** Inside a titled Details section: no own rule or heading. */
+  embedded?: boolean;
+  /** Reports how many parts the ticket carries, for the section summary. */
+  onCountChange?: (count: number) => void;
   ticketId: string;
   /** The ticket org's currency (ISO 4217). Drives the catalog prefill (#3775):
    *  unit price comes from the item's price-book row in THIS currency (blank
@@ -37,9 +41,15 @@ interface Props {
   readOnly?: boolean;
 }
 
-export default function TicketPartsCard({ ticketId, currencyCode, readOnly = false }: Props) {
+export default function TicketPartsCard({ ticketId, currencyCode, readOnly = false, embedded = false, onCountChange }: Props) {
   const { t } = useTranslation('tickets');
   const [parts, setParts] = useState<PartRow[]>([]);
+  const [partsLoaded, setPartsLoaded] = useState(false);
+  const onCountRef = useRef(onCountChange);
+  onCountRef.current = onCountChange;
+  useEffect(() => {
+    if (partsLoaded) onCountRef.current?.(parts.length);
+  }, [partsLoaded, parts.length]);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   // The part being edited is already invoiced: the pricing fields are locked
@@ -62,7 +72,7 @@ export default function TicketPartsCard({ ticketId, currencyCode, readOnly = fal
     const res = await fetchWithAuth(`/tickets/${ticketId}/parts`)
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null);
-    if (res?.data) setParts(res.data as PartRow[]);
+    if (res?.data) { setParts(res.data as PartRow[]); setPartsLoaded(true); }
   }, [ticketId]);
 
   useEffect(() => {
@@ -221,8 +231,8 @@ export default function TicketPartsCard({ ticketId, currencyCode, readOnly = fal
   };
 
   return (
-    <div className="mt-3 border-t pt-3" data-testid="ticket-parts-card">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('ticketPartsCard.title')}</p>
+    <div className={embedded ? undefined : 'mt-3 border-t pt-3'} data-testid="ticket-parts-card">
+      {!embedded && <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('ticketPartsCard.title')}</p>}
 
       {parts.length === 0 && !showForm && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="ticket-parts-empty">{t('ticketPartsCard.empty')}</p>

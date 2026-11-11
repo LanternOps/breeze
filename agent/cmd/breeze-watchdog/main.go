@@ -16,6 +16,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ech"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -402,18 +403,40 @@ var failoverReloadConfigFn = func() (*config.Config, error) { return config.Load
 // successful reload also refreshes the ECH switches; a failed one is
 // journaled and leaves them as they were.
 func resolveFailoverBaseURL(cfg *config.Config, journal *watchdog.Journal) string {
-	baseURL := cfg.ServerURL
+	baseURL, _ := resolveFailoverTarget(cfg, nil, journal)
+	return baseURL
+}
+
+// resolveFailoverTarget is resolveFailoverBaseURL that also follows an
+// identity change on disk: when agent.yaml names another agent id than the
+// one this process holds (a reinstall reattach, #8318, swapped the install
+// to an existing device; or a re-enrollment), the on-disk agent id and
+// watchdog token are adopted together — a failover beat under the old agent
+// id would only be refused, with either token. tokens nil: URL only. Called
+// from the main loop only (cfg is not shared with other goroutines).
+func resolveFailoverTarget(cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) (baseURL string, identityChanged bool) {
+	baseURL = cfg.ServerURL
 	reloaded, err := failoverReloadConfigFn()
 	if err != nil {
 		journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": err.Error()})
-		return baseURL
+		return baseURL, false
 	}
 	// ech.Shared() reads no config; every process configures it.
 	ech.Configure(reloaded.ECH, reloaded.ECHServerEnabled)
 	if reloaded.ServerURL != "" {
 		baseURL = reloaded.ServerURL
 	}
-	return baseURL
+	if tokens != nil && reloaded.AgentID != "" && reloaded.AgentID != cfg.AgentID && reloaded.WatchdogAuthToken != "" {
+		journal.Log(watchdog.LevelInfo, "failover.identity_reloaded", map[string]any{
+			"from_agent_id": cfg.AgentID,
+			"to_agent_id":   reloaded.AgentID,
+		})
+		cfg.AgentID = reloaded.AgentID
+		cfg.DeviceID = reloaded.DeviceID
+		tokens.Replace(reloaded.WatchdogAuthToken)
+		identityChanged = true
+	}
+	return baseURL, identityChanged
 }
 
 func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
@@ -1040,7 +1063,11 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 				// client built from the stale startup URL would keep working
 				// against the rolled-back control plane if that URL answers —
 				// the failure-only reload path below would then never run.
-				failoverBaseURL := resolveFailoverBaseURL(cfg, journal)
+				failoverBaseURL, identityChanged := resolveFailoverTarget(cfg, tokenStore, journal)
+				if identityChanged {
+					// A new identity is not refused yet: no inherited backoff.
+					failoverAuthMon.Reset()
+				}
 				failoverClient = watchdog.NewFailoverClient(
 					failoverBaseURL, cfg.AgentID, tokenStore.Reveal(), nil,
 				)
@@ -1433,6 +1460,10 @@ var heartbeatUpgradeBackoff updater.TargetBackoff
 // exponential per-target backoff instead of a re-download on every poll. A new
 // target version is attempted immediately. Skipped polls are not journaled:
 // the failure that started the backoff already was, with its retry time.
+// heldUpgradeJournaled records, per component, the target whose firmware hold
+// has already been journaled.
+var heldUpgradeJournaled sync.Map
+
 func runHeartbeatUpgrade(b *updater.TargetBackoff, journal *watchdog.Journal, component, version string, update func() error) {
 	if _, active := b.Remaining(component, version); active {
 		return
@@ -1445,6 +1476,16 @@ func runHeartbeatUpgrade(b *updater.TargetBackoff, journal *watchdog.Journal, co
 		b.Clear(component)
 		return
 	}
+	if errors.Is(err, flashguard.ErrFlashInProgress) {
+		// Not a failure, and not backed off: the next heartbeat offers it again.
+		// Journaled once per target rather than on every poll of a long flash.
+		key := component + "@" + version
+		if prev, loaded := heldUpgradeJournaled.Swap(component, key); !loaded || prev != key {
+			journal.Log(watchdog.LevelInfo, "failover.upgrade_"+component+"_held", map[string]any{"version": version})
+		}
+		return
+	}
+	heldUpgradeJournaled.Delete(component)
 	fields := map[string]any{
 		"version": version,
 		"error":   err.Error(),
@@ -1630,6 +1671,16 @@ func updateTrustConfig(journal *watchdog.Journal, component string) (*config.Con
 // downloads follow that promotion instead of pinning the dead primary captured
 // in cfg at startup (#2478).
 func doUpdateAgent(targetVersion string, serverURL func() string, tokens *tokenHolder, journal *watchdog.Journal) error {
+	// This replaces and restarts the agent, so it must not run during a firmware
+	// update. Held through the update and for a while after it, so a section
+	// cannot open while the agent restart is still under way. A watchdog
+	// self-update needs no admission: it does not touch the agent.
+	done, err := flashguard.Default().AdmitPowerAction("watchdog_update_agent")
+	if err != nil {
+		return err
+	}
+	handedOff := false
+	defer func() { flashguard.ReleaseAfterHandoff(done, handedOff) }()
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")
@@ -1665,6 +1716,7 @@ func doUpdateAgent(targetVersion string, serverURL func() string, tokens *tokenH
 		// return value without redacting there too.
 		return err
 	}
+	handedOff = true
 	journal.Log(watchdog.LevelInfo, "update.agent_success", map[string]any{
 		"version": targetVersion,
 	})

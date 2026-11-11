@@ -59,6 +59,7 @@ export default defineConfig({
               label: 'Remote Management',
               items: [
                 { slug: 'features/remote-access' },
+                { slug: 'features/end-user-experience' },
                 { slug: 'features/scripts' },
                 { slug: 'scripts/stopping-a-running-script' },
                 { slug: 'features/automations' },
@@ -74,6 +75,7 @@ export default defineConfig({
               items: [
                 { slug: 'features/patch-management' },
                 { slug: 'features/update-rings' },
+                { slug: 'features/vendor-updates' },
                 { slug: 'features/software-inventory' },
                 { slug: 'features/software-policies' },
               ],
@@ -230,6 +232,8 @@ export default defineConfig({
                 { slug: 'features/community-ecosystem' },
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
+                { slug: 'features/portal-microsoft-sign-in' },
+                { slug: 'features/portal-domain-verification' },
                 { slug: 'features/setup-wizard' },
                 { slug: 'features/mobile' },
               ],

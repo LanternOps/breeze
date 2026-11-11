@@ -78,6 +78,9 @@ function row(overrides: Partial<BackupHealthRow> = {}): BackupHealthRow {
     dataSources: ['files'],
     history28d: [],
     agentOnline: true,
+    verifiedBootableAt: null,
+    verifiedBootable: null,
+    verifiedBootableFailedChecks: null,
     ...overrides,
   } as BackupHealthRow;
 }
@@ -123,6 +126,25 @@ describe('generateBackupStatusReport', () => {
     const data = summaryOf(result);
     expect(data.rows.map((r) => r.key)).toEqual(['provider:p1', 'breeze:d1']);
     expect(data.org).toEqual({ id: ORG_ID, name: 'Acme Legal' });
+  });
+
+  it('exports the verified-bootable state and date on the flat CSV rows', async () => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    vi.mocked(listBackupHealthRows).mockResolvedValueOnce({
+      rows: [
+        row({ key: 'provider:a', name: 'A-AX', source: 'provider', providerKey: 'axcient', verifiedBootable: true, verifiedBootableAt: '2026-11-05T03:12:00.000Z', verifiedBootableFailedChecks: [] }),
+        row({ key: 'provider:b', name: 'B-AX', source: 'provider', providerKey: 'axcient', verifiedBootable: false, verifiedBootableAt: '2026-11-05T03:12:00.000Z', verifiedBootableFailedChecks: ['system_boot', 'check_disk'] }),
+        row({ key: 'breeze:d1', name: 'C-WKS' }),
+      ],
+      nextCursor: null,
+    });
+
+    const result = await generateBackupStatusReport(ORG_ID, {}, authority('unrestricted'));
+
+    const byDevice = new Map((result.rows as Array<Record<string, unknown>>).map((r) => [r.device, r]));
+    expect(byDevice.get('A-AX')).toMatchObject({ verifiedBootable: 'passed', verifiedBootableAt: '2026-11-05T03:12:00.000Z', verifiedBootableFailedChecks: '' });
+    expect(byDevice.get('B-AX')).toMatchObject({ verifiedBootable: 'failed', verifiedBootableFailedChecks: 'system_boot; check_disk' });
+    expect(byDevice.get('C-WKS')).toMatchObject({ verifiedBootable: 'not_applicable', verifiedBootableAt: null, verifiedBootableFailedChecks: '' });
   });
 
   it('buckets statuses using the shared bucketForBackupStatus mapping, folding not_started and unknown into "other"', async () => {

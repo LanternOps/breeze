@@ -493,7 +493,7 @@ describe('Task 13 — revocation drops a link everywhere (real Postgres)', () =>
     expect(listed.map((l) => l.id)).toEqual([a.id]);
 
     const home = await env.inRequest(() => buildHomeSections({
-      auth: env.auth, partnerId: env.partner.id, grantId: env.grantId, grantorUserId: env.grantor.id, threadId: env.thread.id, ceiling,
+      auth: env.auth, partnerId: env.partner.id, grantId: env.grantId, grantorUserId: env.grantor.id, threadId: env.thread.id, grantCreatedAt: new Date(), ceiling,
     }));
     expect(home.links.map((l) => l.id)).toEqual([a.id]);
 
@@ -559,7 +559,7 @@ describe('Task 13 — revocation drops a link everywhere (real Postgres)', () =>
     });
     const ceiling = await env.ceiling();
     const home = await env.inRequest(() => buildHomeSections({
-      auth: env.auth, partnerId: env.partner.id, grantId: env.grantId, grantorUserId: env.grantor.id, threadId: env.thread.id, ceiling,
+      auth: env.auth, partnerId: env.partner.id, grantId: env.grantId, grantorUserId: env.grantor.id, threadId: env.thread.id, grantCreatedAt: new Date(), ceiling,
     }));
     expect(home.links.map((l) => l.ref.kind)).toEqual(['user']);
     expect(await rowsOf(env.thread.id)).toHaveLength(3);

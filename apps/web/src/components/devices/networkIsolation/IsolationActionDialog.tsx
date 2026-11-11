@@ -41,7 +41,7 @@ export default function IsolationActionDialog({ deviceId, isolationId, mode, ser
         request: () => fetchWithAuth(`/devices/${deviceId}/network-isolation${mode === 'start' ? '' : `/${isolationId}/${mode}`}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
         successMessage: t(/* i18n-dynamic */ `networkIsolation.${mode}Success`),
         errorFallback: t('networkIsolation.mutationError'),
-        friendly: code => isolationRefusalCopy(code, t),
+        friendly: (code, _message, body) => isolationRefusalCopy(code, t, body),
       });
       onSuccess();
       onClose();

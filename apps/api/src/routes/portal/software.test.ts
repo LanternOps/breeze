@@ -7,6 +7,20 @@ const mocks = vi.hoisted(() => ({
   brandingRows: [] as Array<{ enableSoftwareInventory: boolean | null }>,
 }));
 
+// Portal registration W3 (#11380): portalAuthMiddleware re-checks the portal
+// access policy on every request. Not under test here, so it resolves like an
+// org with no policy rows: password allowed, today's behaviour (the gate itself
+// is covered in authOrgStatusGate.test.ts and auth.logout.test.ts).
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/portalAccessPolicy')>();
+  return {
+    ...actual,
+    resolvePortalAccessPolicy: async (orgId: string) => ({
+      orgId, partnerId: 'partner-1', entraTenant: null,
+      ...actual.pickEffectivePortalAccessPolicy(null, null, actual.getPortalSignInCapabilities(), { entraTenantProven: false }),
+    }),
+  };
+});
 vi.mock('../../services/portal/softwareInventoryReadModel', () => ({
   softwareInventorySummary: mocks.page,
   softwareInventoryDevicePage: mocks.detail,
@@ -39,7 +53,7 @@ vi.mock('../../db', () => ({
                   email: 'customer@example.com',
                   name: 'Customer',
                   contactId: null,
-                  authMethod: 'password',
+                  authMethod: 'password', browserAccess: 'granted',
                   receiveNotifications: true,
                   status: 'active',
                   authEpoch: 1,

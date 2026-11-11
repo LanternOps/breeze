@@ -5,7 +5,10 @@
  *           ∩ the grantor's LIVE concrete permissions / org reach / site reach
  *           ∩ agent policy (applied by the callers: admission and release)
  *
- * with AGENT_HUMAN_ONLY_TOOLS ∪ AGENT_DENIED_READ_TOOLS always denied.
+ * with the agent deny floor always denied: AGENT_HUMAN_ONLY_TOOLS ∪
+ * AGENT_DENIED_READ_TOOLS, less the tools a human may call under a grant —
+ * wholly (launch_specialist) or only for listed actions, the rest refused per
+ * call (WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS, #11433).
  *
  * This is deliberately NOT aiSessionLiveAuthority.ts, which refuses every
  * non-`user_session` principal by design: Wisp work runs under the `ai_agent`
@@ -75,7 +78,12 @@ export type GrantCeiling = {
   permissionKeys: ReadonlySet<string>;
   /** Snapshot allowlist; null = agent policy default. */
   toolAllowlist: ReadonlySet<string> | null;
-  /** AGENT_HUMAN_ONLY_TOOLS ∪ AGENT_DENIED_READ_TOOLS ∪ snapshot denies. */
+  /**
+   * Whole-tool denies: the agent deny floor (`agentDeniedToolNames`: both agent
+   * registries less the tools a human may call under a grant, wholly or by
+   * action) ∪ snapshot denies. An action-level floor is not here; it is
+   * checked per call (`isNeverDelegableToolAction`).
+   */
   deniedTools: ReadonlySet<string>;
   /**
    * Per-org narrowing from the grantor's `organization_users` rows (org-axis
@@ -85,6 +93,13 @@ export type GrantCeiling = {
    */
   orgTerms: ReadonlyMap<string, OrgCeilingTerm>;
   status: WispGrantStatus;
+  /**
+   * #10973: the grant-level unattended-reads switch, pinned AND live (Decision
+   * 7): this revision's snapshot flag and `wisp_grants.unattended_reads`. A
+   * session or run pinned to an older revision never gains it. Only
+   * `resolveGrantCeiling` sets it; absent reads as off.
+   */
+  unattendedReads?: boolean;
 };
 
 export type OrgCeilingTerm = {
@@ -99,6 +114,14 @@ export type LiveOrgMembership = { orgId: string; permissionKeys: string[]; siteI
 
 export type CeilingCheck = {
   toolName?: string;
+  /**
+   * #11433: the call's `input.action`, for the action-level floor
+   * (`WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS`). Only a call to a tool with
+   * such a floor reads it, and there anything but one of its listed actions,
+   * omitted included, is refused: a caller that does not pass the action (the
+   * agent run loop, a proposal check) can never reach one of those tools.
+   */
+  toolAction?: string | null;
   /** `${resource}:${action}` */
   permission?: string;
   /** undefined = no org term; null = a partner-level subject (allowed only for a partner-wide grant). */
@@ -201,17 +224,52 @@ export function assertReadWithinCeiling(ceiling: GrantCeiling, check: { orgId: s
   assertTermsWithinCeiling(ceiling, check);
 }
 
+/**
+ * The tool term of a ceiling: which tools a call may name at all, whatever its
+ * org, site or permission. It comes from the pinned revision alone (snapshot
+ * denies and allowlist) plus the code's agent deny floor, so within one
+ * running process it does not change for a session pinned to that revision
+ * (a deploy can change the floor).
+ */
+export type CeilingToolTerm = Pick<GrantCeiling, 'deniedTools' | 'toolAllowlist'>;
+
+/** The tool term of a pinned snapshot, as `resolveGrantCeiling` builds it. */
+export function ceilingToolTermOf(snapshot: Pick<WispCeilingSnapshot, 'deniedTools' | 'toolAllowlist'>): CeilingToolTerm {
+  return {
+    toolAllowlist: snapshot.toolAllowlist === null ? null : new Set(snapshot.toolAllowlist),
+    deniedTools: new Set([...snapshot.deniedTools, ...agentDeniedToolNames()]),
+  };
+}
+
+/** Why `toolName` fails the tool term, or null when it passes. */
+function toolTermViolation(term: CeilingToolTerm, toolName: string): string | null {
+  // The two agent deny registries are checked directly too, so the
+  // never-delegable floor does not depend on how the term was built.
+  if (term.deniedTools.has(toolName) || isNeverDelegableTool(toolName)) return `tool ${toolName} is never delegable`;
+  if (term.toolAllowlist !== null && !term.toolAllowlist.has(toolName)) return `tool ${toolName} is outside the grant's tool allowlist`;
+  return null;
+}
+
+/**
+ * True when `toolName` passes the tool term, the check `assertWithinCeiling`
+ * applies to `{ toolName }`. It has no status, org, site or permission term,
+ * so it can only narrow what a Wisp session is OFFERED (its MCP server and
+ * prompt index, #10430); every call still passes `enforceWispCeiling`. A tool
+ * with an action-level floor (#11433) is offered: its call is then checked
+ * with its action, and a refused action fails there.
+ */
+export function ceilingAdmitsTool(term: CeilingToolTerm, toolName: string): boolean {
+  return toolTermViolation(term, toolName) === null;
+}
+
 /** The tool / org / site / permission terms of a check; the caller has applied (or, for a read, deliberately skipped) the status gate. */
 function assertTermsWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck): void {
   if (check.toolName !== undefined) {
-    // The two agent deny registries are checked directly too, so the
-    // never-delegable floor does not depend on how the ceiling was built.
-    if (ceiling.deniedTools.has(check.toolName) || isNeverDelegableTool(check.toolName)) {
-      throw new CeilingViolationError('tool', `tool ${check.toolName} is never delegable`);
-    }
-    if (ceiling.toolAllowlist !== null && !ceiling.toolAllowlist.has(check.toolName)) {
-      throw new CeilingViolationError('tool', `tool ${check.toolName} is outside the grant's tool allowlist`);
-    }
+    const violation = toolTermViolation(ceiling, check.toolName)
+      ?? (isNeverDelegableToolAction(check.toolName, check.toolAction)
+        ? `tool ${check.toolName} action ${typeof check.toolAction === 'string' ? check.toolAction : '(none)'} is never delegable`
+        : null);
+    if (violation !== null) throw new CeilingViolationError('tool', violation);
   }
 
   if (check.orgId !== undefined) {
@@ -291,6 +349,8 @@ export function ceilingSnapshotHash(snapshot: WispCeilingSnapshot): string {
     toolAllowlist: snapshot.toolAllowlist === null ? null : sortedUnique(snapshot.toolAllowlist),
     version: snapshot.version,
     partnerWide: snapshot.partnerWide === true,
+    // Only when on, so every unflagged ceiling keeps the hash it already had.
+    ...(snapshot.unattendedReads === true ? { unattendedReads: true } : {}),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
@@ -384,12 +444,47 @@ export function buildOrgTerms(
  */
 const WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS: ReadonlySet<string> = new Set(['launch_specialist']);
 
-/** In an agent deny registry and not one a human may call under a grant. */
+/**
+ * #11433: agent-denied tools of which a HUMAN may call only the listed actions
+ * from a Wisp chat turn under a grant. The tool leaves the whole-tool floor (so
+ * it is offered, and new revisions stop pinning it in `deniedTools`); every
+ * other action of it stays on the floor PER CALL (`isNeverDelegableToolAction`,
+ * checked through `CeilingCheck.toolAction`). The org, site and permission
+ * terms still apply to every listed action. Agents stay denied by
+ * AGENT_HUMAN_ONLY_TOOLS itself.
+ *
+ * `manage_fleet_designs` (W16 PR B put the whole tool on the floor): Wisp offers
+ * a Fleet Design run as the way to set up monitoring for a customer, and the
+ * run applies nothing (maxActionsPerRun 0) and keeps its Tier-3 approval card;
+ * `preview` writes nothing (tier 1, though it needs devices:write), `applied`
+ * reads the ledger, `document` files the design in the org's documents (its
+ * evidence link is ceiling-checked in the handler, aiToolsFleetDesigns.ts).
+ * `apply` and `rollback` are four-eyes with a pinned effect digest,
+ * so they stay in the console. A revision pinned while the whole tool was on
+ * the floor keeps it in its snapshot denies until "Refresh grant" (the
+ * #10146 precedent for launch_specialist).
+ */
+export const WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['manage_fleet_designs', new Set(['run', 'preview', 'applied', 'document'])],
+]);
+
+/** In an agent deny registry as a whole tool, and not one a human may call (wholly or by action) under a grant. */
 export function isNeverDelegableTool(toolName: string): boolean {
   return (
     (AGENT_HUMAN_ONLY_TOOLS.has(toolName) || AGENT_DENIED_READ_TOOLS.has(toolName))
     && !WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS.has(toolName)
+    && !WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS.has(toolName)
   );
+}
+
+/**
+ * True when `toolName` has an action-level floor and `action` is not one of its
+ * delegable actions — a missing, non-string or differently cased action
+ * included (fail closed). False for every tool without such a floor.
+ */
+export function isNeverDelegableToolAction(toolName: string, action: string | null | undefined): boolean {
+  const callable = WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS.get(toolName);
+  return callable !== undefined && (typeof action !== 'string' || !callable.has(action));
 }
 
 /** Both agent deny registries — the floor every ceiling carries. */
@@ -549,6 +644,7 @@ export const wispCeilingSnapshotSchema = z.object({
   toolAllowlist: z.array(z.string()).nullable(),
   deniedTools: z.array(z.string()),
   partnerWide: z.boolean().optional(),
+  unattendedReads: z.boolean().optional(),
 });
 
 /**
@@ -584,6 +680,7 @@ export async function resolveGrantCeiling(
           grantorUserId: wispGrants.grantorUserId,
           status: wispGrants.status,
           expiresAt: wispGrants.expiresAt,
+          unattendedReads: wispGrants.unattendedReads,
         })
         .from(wispGrants)
         .where(eq(wispGrants.id, grantId))
@@ -633,10 +730,10 @@ export async function resolveGrantCeiling(
     partnerWide: scopeOrgId === null && snapshot.partnerWide === true && live.partnerOrgAccess === 'all',
     ...reach,
     orgIds,
-    toolAllowlist: snapshot.toolAllowlist === null ? null : new Set(snapshot.toolAllowlist),
-    deniedTools: new Set([...snapshot.deniedTools, ...agentDeniedToolNames()]),
+    ...ceilingToolTermOf(snapshot),
     orgTerms: buildOrgTerms({ ...reach, orgIds }, live.orgMemberships),
     // 'paused' only for an allowPaused read; assertWithinCeiling refuses it.
     status: readablePause ? 'paused' : 'active',
+    unattendedReads: grant.unattendedReads === true && snapshot.unattendedReads === true,
   };
 }

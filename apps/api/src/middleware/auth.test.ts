@@ -1287,6 +1287,43 @@ describe('requirePermission', () => {
     expect(body).toBe('Permission denied');
   });
 
+  // #11621: an opted-in denial names the grant and carries a code, on the
+  // default Hono error path too (no app.onError): PermissionDeniedError.getResponse.
+  it('answers an opted-in coded denial with { error, message, code } and a fresh body per request', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', baseAuth);
+      await next();
+    });
+    app.use(requirePermission('remote', 'access', { denial: { code: 'X_REQUIRED', message: 'needs remote:access' } }));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(mockPerms);
+    vi.mocked(hasPermission).mockReturnValue(false);
+
+    for (let i = 0; i < 2; i++) {
+      const res = await app.request('/test');
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'needs remote:access', message: 'needs remote:access', code: 'X_REQUIRED' });
+    }
+  });
+
+  it('keeps the plain "No permissions found" for an unresolvable role even with a denial set', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', baseAuth);
+      await next();
+    });
+    app.use(requirePermission('remote', 'access', { denial: { code: 'X_REQUIRED', message: 'needs remote:access' } }));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(null);
+
+    const res = await app.request('/test');
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe('No permissions found');
+  });
+
   it('allows when user has the exact required permission', async () => {
     const app = new Hono();
     app.use(async (c: any, next: any) => {

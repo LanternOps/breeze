@@ -16,7 +16,7 @@
  *     in SYSTEM context: their callers are workers and the reconciler, and
  *     every read is equality-keyed on the ids the caller already holds.
  */
-import { and, desc, eq, isNull, max, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, max, sql } from 'drizzle-orm';
 import { isPgUniqueViolation } from '@breeze/shared/pgErrors';
 import { db } from '../../db';
 import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
@@ -62,6 +62,13 @@ export type WispGrant = {
   expiresAt: Date;
   budgetCentsPerDay: number;
   floorTickMinutes: number;
+  /** #10973: effective on the current revision (the live switch AND the pin). */
+  unattendedReads: boolean;
+  /** #10973: the current revision pins the switch, whether or not it is on now. */
+  unattendedReadsPinned: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to this grant's budget. */
+  summaryRefine: boolean;
+  createdAt: Date;
 };
 
 export type WispGrantErrorCode =
@@ -124,7 +131,7 @@ export const SYSTEM_PAUSE_REASONS = [
 // helpers
 // ---------------------------------------------------------------------------
 
-function toGrant(row: WispGrantRow): WispGrant {
+function toGrant(row: WispGrantRow, unattendedReadsPinned = false): WispGrant {
   return {
     id: row.id,
     partnerId: row.partnerId,
@@ -137,7 +144,28 @@ function toGrant(row: WispGrantRow): WispGrant {
     expiresAt: row.expiresAt,
     budgetCentsPerDay: row.budgetCentsPerDay,
     floorTickMinutes: row.floorTickMinutes,
+    unattendedReads: row.unattendedReads === true && unattendedReadsPinned,
+    unattendedReadsPinned,
+    summaryRefine: row.summaryRefine === true,
+    createdAt: row.createdAt,
   };
+}
+
+/** Grants as a caller sees them: each row with its current revision's pin looked up. */
+async function toGrantsWithPin(rows: WispGrantRow[]): Promise<WispGrant[]> {
+  const revisionIds = rows.flatMap((row) => (row.currentRevisionId ? [row.currentRevisionId] : []));
+  if (revisionIds.length === 0) return rows.map((row) => toGrant(row));
+  const pinned = await db
+    .select({ id: wispGrantRevisions.id })
+    .from(wispGrantRevisions)
+    .where(and(inArray(wispGrantRevisions.id, revisionIds), sql`${wispGrantRevisions.ceilingSnapshot}->>'unattendedReads' = 'true'`));
+  const pinnedIds = new Set(pinned.map((r) => r.id));
+  return rows.map((row) => toGrant(row, row.currentRevisionId !== null && pinnedIds.has(row.currentRevisionId)));
+}
+
+async function toGrantWithPin(row: WispGrantRow): Promise<WispGrant> {
+  const [grant] = await toGrantsWithPin([row]);
+  return grant!;
 }
 
 function systemContext<T>(fn: () => Promise<T>): Promise<T> {
@@ -191,7 +219,11 @@ function liveOrThrow(live: LiveHumanTerm): Extract<LiveHumanTerm, { ok: true }> 
 }
 
 /** The ceiling the create / refresh path pins: the grantor's live reach, clamped to the scope. */
-export function buildGrantSnapshot(live: Extract<LiveHumanTerm, { ok: true }>, scope: WispGrantScope): WispCeilingSnapshot {
+export function buildGrantSnapshot(
+  live: Extract<LiveHumanTerm, { ok: true }>,
+  scope: WispGrantScope,
+  opts: { unattendedReads?: boolean } = {},
+): WispCeilingSnapshot {
   const orgIds = scope.orgId === null ? [...live.orgIds] : live.orgIds.filter((id) => id === scope.orgId);
   if (orgIds.length === 0) throw new WispGrantError('org_out_of_reach', 'Organization not found.');
   return {
@@ -203,6 +235,8 @@ export function buildGrantSnapshot(live: Extract<LiveHumanTerm, { ok: true }>, s
     deniedTools: [...new Set(agentDeniedToolNames())].sort(),
     // Pinned so a later widening to org_access 'all' needs a refresh (§4.4).
     partnerWide: scope.orgId === null && live.partnerOrgAccess === 'all',
+    // #10973: bound into the ceiling hash, so the step-up proves this exact widening.
+    ...(opts.unattendedReads === true ? { unattendedReads: true } : {}),
   };
 }
 
@@ -301,15 +335,32 @@ async function resolvePlanBudgetDefault(partnerId: string): Promise<number> {
 // caller-facing
 // ---------------------------------------------------------------------------
 
-/** What createGrant would pin, and the hash the client mints its step-up against (w00 A4). */
-export async function previewGrantCeiling(input: { auth: AuthContext; scope: WispGrantScope }): Promise<{
+/**
+ * What createGrant / refreshGrant would pin, and the hash the client mints its
+ * step-up against (w00 A4). A refresh names its grant in `refreshGrantId`: a
+ * grant whose switch is on keeps it, so the server reports that hash rather than
+ * trusting the client's possibly stale idea of the switch. `unattendedReads`
+ * asks for the ceiling that turns it on.
+ */
+export async function previewGrantCeiling(input: {
+  auth: AuthContext;
+  scope: WispGrantScope;
+  unattendedReads?: true;
+  refreshGrantId?: string;
+}): Promise<{
   scope: WispGrantScope;
   ceilingSnapshot: WispCeilingSnapshot;
   ceilingHash: string;
 }> {
   assertInteractivePartnerCaller(input.auth, input.scope);
+  let unattendedReads = input.unattendedReads === true;
+  if (input.refreshGrantId) {
+    const row = await loadGrantInContext(input.refreshGrantId);
+    if (row.grantorUserId !== input.auth.user.id) throw new WispGrantError('forbidden', 'Only the grantor can refresh a Wisp grant.');
+    unattendedReads ||= row.unattendedReads === true;
+  }
   const live = liveOrThrow(await computeLiveHumanTerm(input.auth.user.id, input.scope.partnerId));
-  const ceilingSnapshot = buildGrantSnapshot(live, input.scope);
+  const ceilingSnapshot = buildGrantSnapshot(live, input.scope, { unattendedReads });
   return { scope: input.scope, ceilingSnapshot, ceilingHash: ceilingSnapshotHash(ceilingSnapshot) };
 }
 
@@ -394,8 +445,21 @@ export async function createGrant(input: { auth: AuthContext; scope: WispGrantSc
   return grant;
 }
 
-/** Re-snapshot the grantor's live reach as revision n+1 (the §4.4 widening path) and renew the expiry. */
-export async function refreshGrant(input: { auth: AuthContext; grantId: string; stepUpGrantId: string }): Promise<WispGrant> {
+/**
+ * Re-snapshot the grantor's live reach as revision n+1 (the §4.4 widening path)
+ * and renew the expiry.
+ *
+ * #10973: this is the only way to turn unattended reads ON. `unattendedReads:
+ * true` writes the flagged revision and sets the live column in one transaction,
+ * under a step-up whose digest covers the flag. Without it, a grant whose switch
+ * is on keeps it: a refresh that widens reach must not silently stop the reads.
+ */
+export async function refreshGrant(input: {
+  auth: AuthContext;
+  grantId: string;
+  stepUpGrantId: string;
+  unattendedReads?: true;
+}): Promise<WispGrant> {
   const { auth } = input;
   const row = await loadGrantInContext(input.grantId);
   if (row.grantorUserId !== auth.user.id) throw new WispGrantError('forbidden', 'Only the grantor can refresh a Wisp grant.');
@@ -408,7 +472,9 @@ export async function refreshGrant(input: { auth: AuthContext; grantId: string; 
   await assertPartnerEnabled(scope.partnerId);
 
   const live = liveOrThrow(await computeLiveHumanTerm(auth.user.id, scope.partnerId));
-  const snapshot = buildGrantSnapshot(live, scope);
+  const enabling = input.unattendedReads === true && row.unattendedReads !== true;
+  const pinsUnattendedReads = input.unattendedReads === true || row.unattendedReads === true;
+  const snapshot = buildGrantSnapshot(live, scope, { unattendedReads: pinsUnattendedReads });
   const method = await consumeWispStepUp(auth, scope, ceilingSnapshotHash(snapshot), input.stepUpGrantId);
 
   let refreshed: { updated: WispGrantRow; revisionNumber: number };
@@ -431,10 +497,16 @@ export async function refreshGrant(input: { auth: AuthContext; grantId: string; 
       .returning({ id: wispGrantRevisions.id });
     if (!revision) throw new Error('wisp grant revision insert returned no row');
     // A paused grant stays paused: refresh widens the pin, never the status.
+    // The switch is compared too: flipped by another tab since the row was read,
+    // this revision no longer matches what the step-up proved.
     const [next] = await tx
       .update(wispGrants)
-      .set({ currentRevisionId: revision.id, expiresAt: new Date(Date.now() + GRANT_LIFETIME_MS) })
-      .where(and(eq(wispGrants.id, row.id), eq(wispGrants.status, row.status)))
+      .set({
+        currentRevisionId: revision.id,
+        expiresAt: new Date(Date.now() + GRANT_LIFETIME_MS),
+        ...(input.unattendedReads === true ? { unattendedReads: true } : {}),
+      })
+      .where(and(eq(wispGrants.id, row.id), eq(wispGrants.status, row.status), eq(wispGrants.unattendedReads, row.unattendedReads === true)))
       .returning();
     if (!next) throw new WispGrantError('not_active', 'This Wisp grant changed while refreshing; try again.');
     return { updated: next, revisionNumber: nextRevision };
@@ -449,12 +521,16 @@ export async function refreshGrant(input: { auth: AuthContext; grantId: string; 
   }
   const { updated, revisionNumber } = refreshed;
 
-  const grant = toGrant(updated);
+  const grant = toGrant(updated, pinsUnattendedReads);
   await audit({
     grant,
     action: 'wisp.grant.refreshed',
     actor: { type: 'user', id: auth.user.id, email: auth.user.email },
-    details: { revisionId: grant.currentRevisionId, revision: revisionNumber },
+    details: {
+      revisionId: grant.currentRevisionId,
+      revision: revisionNumber,
+      ...(enabling ? { unattendedReads: 'enabled' } : {}),
+    },
   });
   return grant;
 }
@@ -484,25 +560,35 @@ export async function revokeGrant(input: { auth: AuthContext; grantId: string })
 /**
  * Budget and floor tick are operational settings, not authority (w00 A6): the
  * grantor or a partner admin may change them; the revision is never touched.
+ *
+ * #10973: `unattendedReads: false` is the grantor's own off switch and takes
+ * effect on the next call. Turning it on widens authority, so it is refused here
+ * and only `refreshGrant` can do it. A partner admin's brake is pause / revoke.
+ *
+ * #10390: `summaryRefine` is spend, not authority, so it follows budget: either
+ * direction, the grantor or a partner admin, no step-up.
  */
 export async function updateGrantSettings(input: {
   auth: AuthContext;
   grantId: string;
-  patch: { budgetCentsPerDay?: number; floorTickMinutes?: number };
+  patch: { budgetCentsPerDay?: number; floorTickMinutes?: number; unattendedReads?: boolean; summaryRefine?: boolean };
   bounds?: GrantSettingsBounds;
 }): Promise<WispGrant> {
+  if (input.patch.unattendedReads === true) {
+    throw new WispGrantError('step_up_required', 'Turning on unattended reads needs a fresh step-up verification.');
+  }
   // The DB CHECK floor is 15 minutes; caller bounds can only tighten it.
   const requested = input.bounds ?? DEFAULT_SETTINGS_BOUNDS;
   const bounds: GrantSettingsBounds = {
     budgetCentsPerDayMax: requested.budgetCentsPerDayMax,
     minFloorTickMinutes: Math.max(DEFAULT_SETTINGS_BOUNDS.minFloorTickMinutes, requested.minFloorTickMinutes),
   };
-  const { budgetCentsPerDay, floorTickMinutes } = input.patch;
+  const { budgetCentsPerDay, floorTickMinutes, unattendedReads, summaryRefine } = input.patch;
   const outOfBounds = () => new WispGrantError(
     'settings_out_of_bounds',
     `Budget must be 0–${bounds.budgetCentsPerDayMax} cents/day and the floor tick ${bounds.minFloorTickMinutes}–${MAX_FLOOR_TICK_MINUTES} minutes.`,
   );
-  if (budgetCentsPerDay === undefined && floorTickMinutes === undefined) throw outOfBounds();
+  if (budgetCentsPerDay === undefined && floorTickMinutes === undefined && unattendedReads === undefined && summaryRefine === undefined) throw outOfBounds();
   if (budgetCentsPerDay !== undefined
     && (!Number.isInteger(budgetCentsPerDay) || budgetCentsPerDay < 0 || budgetCentsPerDay > bounds.budgetCentsPerDayMax)) {
     throw outOfBounds();
@@ -517,21 +603,39 @@ export async function updateGrantSettings(input: {
   if (row.grantorUserId !== auth.user.id && !canManagePartnerWidePolicies(auth)) {
     throw new WispGrantError('forbidden', 'Only the grantor or a partner admin can change these settings.');
   }
-  const set: { budgetCentsPerDay?: number; floorTickMinutes?: number } = {};
+  if (unattendedReads !== undefined && row.grantorUserId !== auth.user.id) {
+    throw new WispGrantError('forbidden', 'Only the grantor can change unattended reads.');
+  }
+  const set: { budgetCentsPerDay?: number; floorTickMinutes?: number; unattendedReads?: boolean; summaryRefine?: boolean } = {};
   if (budgetCentsPerDay !== undefined) set.budgetCentsPerDay = budgetCentsPerDay;
   if (floorTickMinutes !== undefined) set.floorTickMinutes = floorTickMinutes;
+  if (unattendedReads !== undefined) set.unattendedReads = unattendedReads;
+  if (summaryRefine !== undefined) set.summaryRefine = summaryRefine;
   const [updated] = await db.update(wispGrants).set(set).where(eq(wispGrants.id, row.id)).returning();
   if (!updated) throw new WispGrantError('not_found', 'Wisp grant not found.');
+  // Before the audit: a failed read here aborts the request transaction, and
+  // the update with it, so no audit row may claim a change that rolled back.
+  const grant = await toGrantWithPin(updated);
   await audit({
-    grant: toGrant(updated),
+    grant,
     action: 'wisp.grant.settings_changed',
     actor: { type: 'user', id: auth.user.id, email: auth.user.email },
     details: {
-      from: { budgetCentsPerDay: row.budgetCentsPerDay, floorTickMinutes: row.floorTickMinutes },
-      to: { budgetCentsPerDay: updated.budgetCentsPerDay, floorTickMinutes: updated.floorTickMinutes },
+      from: {
+        budgetCentsPerDay: row.budgetCentsPerDay,
+        floorTickMinutes: row.floorTickMinutes,
+        ...(unattendedReads !== undefined ? { unattendedReads: row.unattendedReads } : {}),
+        ...(summaryRefine !== undefined ? { summaryRefine: row.summaryRefine } : {}),
+      },
+      to: {
+        budgetCentsPerDay: updated.budgetCentsPerDay,
+        floorTickMinutes: updated.floorTickMinutes,
+        ...(unattendedReads !== undefined ? { unattendedReads: updated.unattendedReads } : {}),
+        ...(summaryRefine !== undefined ? { summaryRefine: updated.summaryRefine } : {}),
+      },
     },
   });
-  return toGrant(updated);
+  return grant;
 }
 
 /** w00 A29: the grantor's own off-switch. No step-up — pausing never widens. */
@@ -546,7 +650,7 @@ export async function userPauseGrant(input: { auth: AuthContext; grantId: string
     .where(and(eq(wispGrants.id, row.id), eq(wispGrants.status, 'active')))
     .returning();
   if (!updated) throw new WispGrantError('not_active', 'Wisp is not running under this grant.');
-  const grant = toGrant(updated);
+  const grant = await toGrantWithPin(updated);
   await audit({ grant, action: 'wisp.grant.paused', actor: { type: 'user', id: auth.user.id, email: auth.user.email }, details: { reason: 'user_paused', revisionId: grant.currentRevisionId } });
   return grant;
 }
@@ -584,7 +688,7 @@ export async function userResumeGrant(input: { auth: AuthContext; grantId: strin
        WHERE grant_id = ${row.id} AND stopped_reason = 'paused'`);
   }
 
-  const grant = toGrant(updated);
+  const grant = await toGrantWithPin(updated);
   await audit({ grant, action: 'wisp.grant.resumed', actor: { type: 'user', id: auth.user.id, email: auth.user.email }, details: { revisionId: grant.currentRevisionId, reason: 'user_paused' } });
   return grant;
 }
@@ -599,7 +703,7 @@ export async function listGrants(input: { auth: AuthContext; view: 'mine' | 'par
     ? and(eq(wispGrants.partnerId, auth.partnerId), eq(wispGrants.grantorUserId, auth.user.id))
     : eq(wispGrants.partnerId, auth.partnerId);
   const rows = await db.select().from(wispGrants).where(where).orderBy(desc(wispGrants.createdAt)).limit(500);
-  return rows.map(toGrant);
+  return toGrantsWithPin(rows);
 }
 
 // ---------------------------------------------------------------------------
@@ -679,8 +783,8 @@ export async function resumeGrant(grantId: string, expectedReason?: WispGrantPau
 
 /** The user's live (active, unexpired) grant for exactly this scope, or null. */
 export async function getActiveGrantForUser(userId: string, scope: WispGrantScope): Promise<WispGrant | null> {
-  const [row] = await systemContext(() =>
-    db
+  return systemContext(async () => {
+    const [row] = await db
       .select()
       .from(wispGrants)
       .where(and(
@@ -690,9 +794,9 @@ export async function getActiveGrantForUser(userId: string, scope: WispGrantScop
         eq(wispGrants.status, 'active'),
         sql`${wispGrants.expiresAt} > now()`,
       ))
-      .limit(1),
-  );
-  return row ? toGrant(row) : null;
+      .limit(1);
+    return row ? toGrantWithPin(row) : null;
+  });
 }
 
 function covers(keys: readonly string[], key: string): boolean {

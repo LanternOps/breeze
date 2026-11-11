@@ -5,6 +5,7 @@ import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
 import { PG_UUID_REGEX } from '../../utils/uuid';
+import { normalizeSystemUuid } from '../../services/reinstallCandidates/systemUuid';
 
 // ============================================
 // Enrollment
@@ -44,6 +45,19 @@ const productSkuField = z.string().transform((value) => {
   return trimmed && trimmed.length <= 100 ? trimmed : undefined;
 }).optional();
 
+/**
+ * `systemUuid` on enroll and on the hardware report (#8318 §7.2). Tolerant: a
+ * value of any shape never fails the request. Absent stays `undefined` (the
+ * stored value is left alone); present is normalized with the agent's rules,
+ * and a rejected value (malformed, a placeholder, not a string) becomes
+ * `null`, which is stored as NULL.
+ */
+export const systemUuidField = z
+  .unknown()
+  .optional()
+  .transform((value): string | null | undefined =>
+    value === undefined ? undefined : normalizeSystemUuid(typeof value === 'string' ? value : null));
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -69,7 +83,8 @@ export const enrollSchema = z.object({
     motherboardProduct: z.string().optional(),
     motherboardVersion: z.string().optional(),
     biosVersion: z.string().optional(),
-    gpuModel: z.string().optional()
+    gpuModel: z.string().optional(),
+    systemUuid: systemUuidField,
   }).optional(),
   networkInfo: z.array(z.object({
     name: z.string(),
@@ -862,6 +877,7 @@ export const securityProviderValues = [
   'webroot',
   'withsecure',
   'cylance',
+  'trend_micro',
   'other',
   'unknown'
 ] as const;
@@ -1058,6 +1074,7 @@ export const updateHardwareSchema = z.object({
   motherboardVersion: z.string().optional(),
   biosVersion: z.string().optional(),
   gpuModel: z.string().optional(),
+  systemUuid: systemUuidField,
   // #5351: kept RAW here and validated separately with
   // agentMemoryInventorySchema by the route, so an invalid memory block is
   // logged and ignored instead of 400-ing the whole hardware report.
@@ -1123,7 +1140,8 @@ export const updateDisksSchema = z.object({
     usedGb: z.number(),
     freeGb: z.number(),
     usedPercent: z.number(),
-    health: z.string().optional()
+    health: z.string().optional(),
+    isOsVolume: z.boolean().optional()
   })).max(100)
 });
 
@@ -1233,6 +1251,11 @@ const pendingPatchSchema = z.object({
   // is a malformed one (`.catch`), since a bad provenance label must never
   // cost the device its whole patch inventory.
   severitySource: z.string().max(32).optional().catch(undefined),
+  // What this device says the update is (#11073). A free string narrowed at
+  // ingest for the same reason as `severitySource`: an unrecognised or malformed
+  // value is dropped rather than costing the device its whole patch inventory.
+  reportedUpdateType: z.string().max(32).optional().catch(undefined),
+  reportedUpdateOwner: z.string().max(32).optional().catch(undefined),
   size: z.number().int().optional(),
   requiresRestart: z.boolean().optional(),
   releaseDate: z.string().optional(),
@@ -1334,11 +1357,28 @@ export const agentLogIngestSchema = z.object({
 
 export const EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER = '(no message text)';
 
+// device_event_logs.source column width (varchar(255)).
+const EVENT_LOG_SOURCE_MAX = 255;
+
+function truncateToCodePoints(max: number) {
+  return (value: string): string => {
+    // Cheap path: UTF-16 length <= max implies code points <= max.
+    if (value.length <= max) return value;
+    const points = Array.from(value);
+    return points.length <= max ? value : points.slice(0, max).join('');
+  };
+}
+
 export const eventLogRowSchema = z.object({
   timestamp: z.string().min(1),
   level: z.enum(['info', 'warning', 'error', 'critical']),
   category: z.enum(['security', 'hardware', 'application', 'system']),
-  source: z.string().min(1),
+  // device_event_logs.source is varchar(255). An over-long source passed
+  // validation and then failed the whole 100-row insert batch (Postgres
+  // 22001), losing ~99 neighbouring events. It is a display/grouping label, so
+  // truncate to the column width rather than drop the row. Cut by code point
+  // (Postgres counts characters) so a surrogate pair is never split.
+  source: z.string().min(1).transform(truncateToCodePoints(EVENT_LOG_SOURCE_MAX)),
   // device_event_logs.event_id is varchar(100). Without this bound an
   // over-long id passed validation and then failed the whole 100-row insert
   // batch; now only that row is dropped (counted in invalidDropped). The

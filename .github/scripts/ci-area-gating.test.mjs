@@ -461,11 +461,23 @@ const AREA_JOBS = {
 const STACK_JOBS = ['build-smoke-images', 'smoke-test', 'guided-setup-smoke'];
 const STACK_IF = `${APP_IF} && (needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.portal == 'true')`;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+// W05 (#10749): a job CI Success has a thin `case` arm for may end its `if:` with the
+// clause naming its own id (queue-selection.test.mjs requires it there). Any other
+// job, and any other suffix, still fails the exact pins below.
+const thinArms = new Set([...summary.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gmu)].map((m) => m[1]));
+const thinOpt = (name) => (thinArms.has(name) ? `(?:${escape(` && !contains(needs.changes.outputs.thin_skip, ',${name},')`)})?` : '');
+test('W05: the thin clause is allowed only on a job CI Success can count as satisfied', () => {
+  assert.equal(thinArms.size, 27);
+  assert.equal(thinOpt('smoke-test'), '');
+  assert.ok(new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-shared')}$`, 'mu').test(job('test-shared')));
+  assert.ok(!new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-shared')}$`, 'mu')
+    .test(`    if: ${APP_IF} && !contains(needs.changes.outputs.thin_skip, ',test-web,')\n`), 'another job\'s id is not accepted');
+});
 
 for (const [area, jobs] of Object.entries(AREA_JOBS)) {
   for (const name of jobs) {
     test(`${name} is gated on the ${area} area`, () => {
-      assert.match(job(name), new RegExp(`^    if: ${escape(`${APP_IF} && needs.changes.outputs.${area} == 'true'`)}$`, 'mu'));
+      assert.match(job(name), new RegExp(`^    if: ${escape(`${APP_IF} && needs.changes.outputs.${area} == 'true'`)}${thinOpt(name)}$`, 'mu'));
     });
   }
 }
@@ -481,7 +493,7 @@ for (const name of STACK_JOBS) {
 // It is an app-gated job (any packages/** diff sets code+app), not area-gated:
 // shared is a dependency of every area.
 test('test-shared runs the packages/shared vitest suite, gated on code AND app (#8373)', () => {
-  assert.match(job('test-shared'), new RegExp(`^    if: ${escape(APP_IF)}$`, 'mu'));
+  assert.match(job('test-shared'), new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-shared')}$`, 'mu'));
   assert.match(job('test-shared'), /^        run: pnpm --filter @breeze\/shared exec vitest run$/mu);
   assert.doesNotMatch(job('test-shared'), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu);
 });
@@ -495,7 +507,7 @@ test('ci-success needs test-shared and asserts it in both the app and non-app br
 // typecheck run in an app-gated job (any packages/** diff sets code+app), not
 // area-gated, like test-shared.
 test('test-document-ui runs the package suite and typecheck, gated on code AND app (#9414)', () => {
-  assert.match(job('test-document-ui'), new RegExp(`^    if: ${escape(APP_IF)}$`, 'mu'));
+  assert.match(job('test-document-ui'), new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-document-ui')}$`, 'mu'));
   assert.match(job('test-document-ui'), /^        run: pnpm --filter @breeze\/document-ui exec vitest run$/mu);
   assert.match(job('test-document-ui'), /^        run: pnpm --filter=@breeze\/document-ui typecheck$/mu);
   assert.doesNotMatch(job('test-document-ui'), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu);

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { scriptParametersSchema } from '@breeze/shared';
 import { and, asc, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import {
   aiSessions,
   alerts,
@@ -143,7 +143,8 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
   }
 
   try {
-    const networkRows = await db
+    // Savepoint so a failed statement rolls back and the request transaction survives (#11203).
+    const networkRows = await withDbTransaction(async () => db
       .select({
         deviceId: deviceNetwork.deviceId,
         ipAddress: deviceNetwork.ipAddress,
@@ -152,7 +153,7 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
         interfaceName: deviceNetwork.interfaceName
       })
       .from(deviceNetwork)
-      .where(and(inArray(deviceNetwork.deviceId, deviceIds), sql`${deviceNetwork.ipAddress} IS NOT NULL`));
+      .where(and(inArray(deviceNetwork.deviceId, deviceIds), sql`${deviceNetwork.ipAddress} IS NOT NULL`)));
 
     const candidatesByDevice = new Map<string, LanIpCandidate[]>();
     for (const row of networkRows) {
@@ -174,13 +175,14 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
 
   let openAlertCountByDevice: Map<string, number> | null = new Map();
   try {
-    const alertCountRows = await db
+    // Savepoint so a failed statement rolls back and the request transaction survives (#11203).
+    const alertCountRows = await withDbTransaction(async () => db
       .select({ deviceId: alerts.deviceId, count: sql<number>`count(*)::int` })
       .from(alerts)
       // A site-owned topology alert counts on its origin device only when its
       // OWNING topology site is in the caller's scope (M3-D6).
       .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES), alertTopologySiteGate(allowedSiteIds)))
-      .groupBy(alerts.deviceId);
+      .groupBy(alerts.deviceId));
     for (const row of alertCountRows) {
       if (isDeviceOwned(row)) openAlertCountByDevice.set(row.deviceId, Number(row.count));
     }
@@ -191,11 +193,12 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
 
   let openTicketCountByDevice: Map<string, number> | null = new Map();
   try {
-    const ticketCountRows = await db
+    // Savepoint so a failed statement rolls back and the request transaction survives (#11203).
+    const ticketCountRows = await withDbTransaction(async () => db
       .select({ deviceId: tickets.deviceId, count: sql<number>`count(*)::int` })
       .from(tickets)
       .where(and(inArray(tickets.deviceId, deviceIds), inArray(tickets.status, OPEN_TICKET_STATUSES)))
-      .groupBy(tickets.deviceId);
+      .groupBy(tickets.deviceId));
     for (const row of ticketCountRows) {
       // tickets.deviceId is nullable in general, but inArray(...) above
       // already excludes NULL rows (`NULL IN (...)` is never true in SQL) —

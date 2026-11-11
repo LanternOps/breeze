@@ -153,6 +153,20 @@ function asFileType(raw: string): "" | SoftwareFileType {
     ? (raw as SoftwareFileType)
     : "";
 }
+/** Blank is allowed (an uploaded file can be the source). Otherwise require an
+ *  http(s) URL; `{{token}}` deploy-time variables are swapped for a placeholder
+ *  first so they don't trip the parser. */
+function isValidDownloadUrl(raw: string): boolean {
+  const value = raw.trim();
+  if (!value) return true;
+  try {
+    const url = new URL(value.replace(/\{\{[^}]*\}\}/g, "x"));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 const EMPTY_FORM = {
   version: "",
   architecture: "x64" as Architecture,
@@ -186,12 +200,25 @@ interface SoftwareVersionManagerProps {
   /** #6958: a Breeze-pinned built-in (builtinPackageKey set). Versions are
    *  managed by Breeze: no add, edit or promote here (the API answers 403). */
   builtinReadOnly?: boolean;
+  /** Who owns the package (#11412). Partner-owned packages are written through
+   *  the same upload routes, but only by a full-partner admin. */
+  ownerScope?: "organization" | "partner";
+  /** The signed-in user's `canManagePartnerWide`. Only an explicit `false`
+   *  disables the form; `undefined` (not loaded yet) leaves it enabled and the
+   *  server still answers 403. */
+  canManagePartnerWide?: boolean;
+  /** Set on a built-in integration package: blank install args default to the
+   *  package's own template server-side. */
+  integrationProvider?: "huntress" | "sentinelone";
 }
 export default function SoftwareVersionManager({
   timezone,
   catalogId: propCatalogId,
   embedded = false,
   builtinReadOnly = false,
+  ownerScope = "organization",
+  canManagePartnerWide,
+  integrationProvider,
 }: SoftwareVersionManagerProps) {
   useTranslation("policies");
   const [versions, setVersions] = useState<VersionEntry[]>([]);
@@ -214,12 +241,20 @@ export default function SoftwareVersionManager({
   // Without S3 configured the upload routes 503, so gray the file picker out
   // up front instead of failing after the user chose a file.
   const { enabled: uploadsEnabled } = usePackageUploadsGate();
+  const partnerWriteBlocked =
+    ownerScope === "partner" && canManagePartnerWide === false;
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Owns the in-flight chunked upload so Cancel (and unmount) can actually stop
   // it. A ref, not state: it must survive re-renders without causing one, and
   // the progress bar already re-renders on every acknowledged chunk.
   const uploadAbortRef = useRef<AbortController | null>(null);
   const [formState, setFormState] = useState(EMPTY_FORM);
+  const [fieldErrors, setFieldErrors] = useState<{
+    version?: string;
+    downloadUrl?: string;
+  }>({});
+  const versionInputRef = useRef<HTMLInputElement>(null);
+  const downloadUrlWrapRef = useRef<HTMLDivElement>(null);
   const fetchVersions = useCallback(async () => {
     try {
       setLoading(true);
@@ -353,6 +388,13 @@ export default function SoftwareVersionManager({
     () => versions.find((item) => item.id === selectedVersionId) ?? versions[0],
     [versions, selectedVersionId],
   );
+  // Built-in integration packages (SentinelOne, Huntress) take their server
+  // default template when the field is blank; the generic msiexec prefill
+  // would fail server validation (e.g. missing {s1_site_token}).
+  const prefillSilentArgs = (
+    current: { silentInstallArgs: string; silentUninstallArgs: string },
+    nextFileType: SoftwareFileType | null,
+  ) => (integrationProvider ? {} : applySilentArgsPrefill(current, nextFileType));
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -361,7 +403,7 @@ export default function SoftwareVersionManager({
       file,
       fileName: file.name,
       // Auto-populate MSI silent args (retractable — see applySilentArgsPrefill).
-      ...applySilentArgsPrefill(prev, deriveSoftwareFileTypeFromUrl(file.name)),
+      ...prefillSilentArgs(prev, deriveSoftwareFileTypeFromUrl(file.name)),
       ...applyOsHint(prev, file.name),
     }));
   };
@@ -373,7 +415,7 @@ export default function SoftwareVersionManager({
     setFormState((prev) => ({
       ...prev,
       downloadUrl: value,
-      ...applySilentArgsPrefill(
+      ...prefillSilentArgs(
         prev,
         prev.fileType || deriveSoftwareFileTypeFromUrl(value),
       ),
@@ -387,7 +429,7 @@ export default function SoftwareVersionManager({
     setFormState((prev) => ({
       ...prev,
       fileType: value,
-      ...applySilentArgsPrefill(
+      ...prefillSilentArgs(
         prev,
         value || deriveSoftwareFileTypeFromUrl(prev.downloadUrl),
       ),
@@ -443,6 +485,7 @@ export default function SoftwareVersionManager({
       : formState.silentInstallArgs;
   const resetForm = () => {
     setFormState(EMPTY_FORM);
+    setFieldErrors({});
     setEditingVersionId("");
     if (fileInputRef.current) fileInputRef.current.value = "";
     setIsFormOpen(false);
@@ -494,6 +537,7 @@ export default function SoftwareVersionManager({
       ),
     );
     if (fileInputRef.current) fileInputRef.current.value = "";
+    setFieldErrors({});
     setIsFormOpen(true);
   };
   const openEditForm = (entry: VersionEntry) => {
@@ -522,6 +566,7 @@ export default function SoftwareVersionManager({
       ),
     );
     if (fileInputRef.current) fileInputRef.current.value = "";
+    setFieldErrors({});
     setIsFormOpen(true);
   };
 
@@ -570,7 +615,27 @@ export default function SoftwareVersionManager({
     controller !== null && controller.signal.aborted;
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!formState.version.trim()) return;
+    // Required-field / format feedback (#11606): never a silent no-op.
+    const nextErrors: { version?: string; downloadUrl?: string } = {};
+    if (!formState.version.trim()) {
+      nextErrors.version = i18n.t(
+        "policies:software.softwareVersionManager.versionRequired",
+      );
+    }
+    if (!isValidDownloadUrl(formState.downloadUrl)) {
+      nextErrors.downloadUrl = i18n.t(
+        "policies:software.softwareVersionManager.downloadUrlInvalid",
+      );
+    }
+    setFieldErrors(nextErrors);
+    if (nextErrors.version) {
+      versionInputRef.current?.focus();
+      return;
+    }
+    if (nextErrors.downloadUrl) {
+      downloadUrlWrapRef.current?.querySelector("input")?.focus();
+      return;
+    }
     if (!catalogId) return;
     if (!successExitCodesResult.ok) return;
     if (installSpecIssues.length > 0) return;
@@ -797,7 +862,9 @@ export default function SoftwareVersionManager({
       </div>
     );
   }
-  if (error && versions.length === 0) {
+  // LOAD failures only: a rejected create/save keeps the form (and the typed
+  // input) mounted and shows the error inline below.
+  if (error && versions.length === 0 && !isFormOpen) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
@@ -889,19 +956,28 @@ export default function SoftwareVersionManager({
                 {i18n.t("policies:software.softwareVersionManager.version")}
               </label>
               <input
+                ref={versionInputRef}
                 type="text"
                 value={formState.version}
-                onChange={(event) =>
+                aria-invalid={fieldErrors.version ? true : undefined}
+                aria-describedby={fieldErrors.version ? "version-error" : undefined}
+                onChange={(event) => {
+                  setFieldErrors((prev) => ({ ...prev, version: undefined }));
                   setFormState((prev) => ({
                     ...prev,
                     version: event.target.value,
-                  }))
-                }
+                  }));
+                }}
                 placeholder={i18n.t(
                   "policies:software.softwareVersionManager.eG100",
                 )}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                className={`mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${fieldErrors.version ? "border-destructive/60" : ""}`}
               />
+              {fieldErrors.version && (
+                <p id="version-error" role="alert" className="mt-1 text-xs text-destructive">
+                  {fieldErrors.version}
+                </p>
+              )}
             </div>
             <div>
               <label className="text-xs font-semibold uppercase text-muted-foreground">
@@ -936,10 +1012,15 @@ export default function SoftwareVersionManager({
             <label className="text-xs font-semibold uppercase text-muted-foreground">
               {i18n.t("policies:software.softwareVersionManager.downloadURL")}
             </label>
-            <div className="mt-2">
+            <div className="mt-2" ref={downloadUrlWrapRef}>
               <VariableInput
                 value={formState.downloadUrl}
-                onChange={handleDownloadUrlChange}
+                invalid={Boolean(fieldErrors.downloadUrl)}
+                aria-describedby={fieldErrors.downloadUrl ? "download-url-error" : undefined}
+                onChange={(value) => {
+                  setFieldErrors((prev) => ({ ...prev, downloadUrl: undefined }));
+                  handleDownloadUrlChange(value);
+                }}
                 placeholder={i18n.t(
                   "policies:software.softwareVersionManager.httpsExampleComPackageV100",
                 )}
@@ -947,13 +1028,18 @@ export default function SoftwareVersionManager({
                 tenantVariables={tenantVariables}
               />
             </div>
+            {fieldErrors.downloadUrl && (
+              <p id="download-url-error" role="alert" className="mt-1 text-xs text-destructive">
+                {fieldErrors.downloadUrl}
+              </p>
+            )}
             <p className="mt-1 text-xs text-muted-foreground">
               {i18n.t(
                 "policies:software.softwareVersionManager.provideADirectDownloadURLOrUpload",
               )}{" "}
               <code className="font-mono">
                 {'{{org.name}}'}
-              </code>
+              </code>{" "}
               {i18n.t(
                 "policies:software.softwareVersionManager.resolvePerOrganizationAtDeployTime",
               )}
@@ -1045,6 +1131,17 @@ export default function SoftwareVersionManager({
             </div>
           </div>
 
+          {partnerWriteBlocked && (
+            <p
+              className="mt-4 text-xs text-amber-600 dark:text-amber-500"
+              data-testid="partner-wide-requires-full-access"
+            >
+              {i18n.t(
+                "policies:software.softwareVersionManager.partnerWideRequiresFullAccess",
+              )}
+            </p>
+          )}
+
           {editingVersionId ? (
             /* The uploaded binary is immutable per version — replacing the
                installer means adding a new version, not editing this one. */
@@ -1068,7 +1165,7 @@ export default function SoftwareVersionManager({
               />
               <button
                 type="button"
-                disabled={!uploadsEnabled}
+                disabled={!uploadsEnabled || partnerWriteBlocked}
                 title={
                   uploadsEnabled
                     ? undefined
@@ -1123,6 +1220,16 @@ export default function SoftwareVersionManager({
                 tenantVariables={tenantVariables}
               />
             </div>
+            {integrationProvider && (
+              <p
+                className="mt-1 text-xs text-muted-foreground"
+                data-testid="builtin-args-default"
+              >
+                {i18n.t(
+                  "policies:software.softwareVersionManager.builtinArgsDefault",
+                )}
+              </p>
+            )}
           </div>
           )}
 
@@ -1313,6 +1420,7 @@ export default function SoftwareVersionManager({
               type="submit"
               disabled={
                 saving ||
+                partnerWriteBlocked ||
                 tokenErrors.length > 0 ||
                 !successExitCodesResult.ok ||
                 installSpecIssues.length > 0

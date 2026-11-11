@@ -321,6 +321,14 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Portal registration W4 (#11381, 2027-01-22-233500-portal-entra-tenant-proof.sql):
+  // clears the Entra tenant proof only when entra_tenant_id changes; an org_id
+  // repoint (keep-survivor adoption, plan D8) keeps the proof.
+  'client_ai_tenant_mappings.client_ai_tenant_mappings_clear_proof_on_repoint': 'clears the proof only when entra_tenant_id changes; an org_id repoint keeps it',
+  // Portal registration W5 (#11382, 2027-01-22-233700-portal-domain-verification.sql):
+  // never RAISEs; on an org_id change it clears the domain verification columns,
+  // and the merge's Phase B sets breeze.org_merge=on so the merge repoint keeps them.
+  'customer_email_domains.customer_email_domains_clear_verification_on_repoint': 'never blocks: clears verification on a non-merge org_id change; skipped while breeze.org_merge=on (org merge Phase B)',
   // #10521 W1 (2027-01-12-200000): RAISEs only on a partner_id change or an
   // org_id NULL↔NOT NULL flip, so the merge's org_id → org_id repoint passes.
   'device_groups.device_groups_owner_immutable': 'freezes partner_id and owner kind only; an org-owned group may repoint org_id to another non-null org_id',
@@ -376,6 +384,10 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // Topology site location W3 (#7887, 2026-12-26-190000): clears NEW.site_assignment_confirmed_at on a site/org
   // change; touches no other column, never RAISEs.
   'devices.breeze_devices_site_assignment_confirmation_reset': 'clears site_assignment_confirmed_at on a site/org change; never RAISEs or reverts org_id',
+  // #8318 wave 2-1 (2027-01-23-090000): BEFORE INSERT OR UPDATE OF
+  // possible_replacement_of_device_id only, so a merge's org_id repoint does
+  // not name the column and never runs it.
+  'devices.devices_possible_replacement_reason_sync': 'fires only on UPDATE OF possible_replacement_of_device_id and syncs the reason columns; never reads or reverts org_id',
   'devices.devices_ownership_epoch_write_guard': 'fires only on UPDATE OF ownership_epoch and refuses an epoch change WITHOUT an org change; a merge repoint never targets ownership_epoch',
   'devices.devices_install_incarnation_guard': 'fires only on UPDATE OF install_incarnation, incarnation_started_at (#8318) and refuses an incarnation that does not advance by one; a merge repoint never targets either column',
   // Customer work approval (#4617, 2026-12-20-200200): freezes a DECIDED
@@ -689,7 +701,7 @@ describe('Org merge policy registry contract', () => {
   });
 
   // Must match DROP_LOSER_OVERRIDE_SETTINGS_TABLES in services/orgMerge.ts.
-  const DUAL_AXIS_SETTINGS_TABLES = new Set(['billing_payment_settings', 'ticket_approval_settings']);
+  const DUAL_AXIS_SETTINGS_TABLES = new Set(['billing_payment_settings', 'ticket_approval_settings', 'portal_access_policies']);
   it('every keep-survivor table has a UNIQUE constraint on exactly (org_id)', async () => {
     for (const [table, policy] of policies) {
       if (policy.kind !== 'keep-survivor') continue;

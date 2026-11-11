@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ row: {} as any, ackFailures: 0, invoiceEligible: true, send: vi.fn(), capture: vi.fn() }));
+const h = vi.hoisted(() => ({ billingEnabled: true, row: {} as any, ackFailures: 0, invoiceEligible: true, send: vi.fn(), capture: vi.fn() }));
 vi.mock('../email', () => ({ getEmailService: () => ({ sendEmail: h.send }) }));
+vi.mock('../billingEnabled', () => ({ isBillingEnabledForOrg: async () => h.billingEnabled }));
 vi.mock('../sentry', () => ({ captureException: h.capture }));
 vi.mock('../../db', async () => {
   const { billingNoticeOutbox, invoices } = await import('../../db/schema');
@@ -27,7 +28,7 @@ vi.mock('../../db', async () => {
 });
 import { dispatchPendingBillingNotices, registerNoticeSentHandler } from './noticeOutbox';
 beforeEach(() => {
-  vi.clearAllMocks(); h.ackFailures = 0; h.invoiceEligible = true;
+  vi.clearAllMocks(); h.billingEnabled = true; h.ackFailures = 0; h.invoiceEligible = true;
   h.send.mockReset().mockResolvedValue(undefined);
   h.row = { id: 'outbox', orgId: 'org', kind: 'autopay_request', status: 'pending', attempts: 0, sentAt: null,
     rendered: { subject: 'Notice', html: '<p>Notice</p>', text: 'Notice' }, toEmail: 'client@example.test' };
@@ -84,6 +85,30 @@ it('leaves non-reminder delivery unaffected by invoice eligibility', async () =>
 });
 it('finishes an accepted reminder without revalidating or resending', async () => {
   h.row.kind = 'payment_reminder'; h.row.sentAt = new Date(); h.invoiceEligible = false;
+  expect(await dispatchPendingBillingNotices()).toEqual({ sent: 1, failed: 0 });
+  expect(h.row.status).toBe('sent'); expect(h.send).not.toHaveBeenCalled();
+});
+
+it.each(['autopay_request', 'card_expiring', 'invoice_autopay'])('BRZ-8807: billing off cancels %s without sending', async kind => {
+  h.billingEnabled = false; h.row.kind = kind;
+  expect(await dispatchPendingBillingNotices()).toEqual({ sent: 0, failed: 0 });
+  expect(h.row).toMatchObject({ status: 'cancelled', lastError: 'Billing is disabled' });
+  expect(h.send).not.toHaveBeenCalled();
+});
+it.each(['autopay_request', 'card_expiring', 'invoice_autopay'])('BRZ-8807: billing on still sends %s', async kind => {
+  h.row.kind = kind;
+  expect(await dispatchPendingBillingNotices()).toEqual({ sent: 1, failed: 0 });
+  expect(h.send).toHaveBeenCalledOnce();
+});
+// Kept kinds with their own validators are covered by policy + sibling suites; these two pass the mocked validators.
+it.each(['payment_receipt', 'autopay_enrolled'])(
+  'BRZ-8807: billing off keeps sending %s', async kind => {
+    h.billingEnabled = false; h.row.kind = kind;
+    expect(await dispatchPendingBillingNotices()).toEqual({ sent: 1, failed: 0 });
+    expect(h.send).toHaveBeenCalledOnce();
+  });
+it('BRZ-8807: billing off never cancels a blocked-kind row that was already sent', async () => {
+  h.billingEnabled = false; h.row.kind = 'autopay_request'; h.row.sentAt = new Date();
   expect(await dispatchPendingBillingNotices()).toEqual({ sent: 1, failed: 0 });
   expect(h.row.status).toBe('sent'); expect(h.send).not.toHaveBeenCalled();
 });

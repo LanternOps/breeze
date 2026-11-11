@@ -11,7 +11,16 @@ vi.mock('react-i18next', () => ({
 
 const fetchWithAuth = vi.hoisted(() => vi.fn());
 vi.mock('@/stores/auth', () => ({ fetchWithAuth }));
+const decideIntentApproval = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/intentApprovals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/intentApprovals')>()),
+  decideIntentApproval,
+}));
+const showToast = vi.hoisted(() => vi.fn());
+vi.mock('@/components/shared/Toast', () => ({ showToast }));
 
+import { fireEvent } from '@testing-library/react';
+import { ActionError } from '@/lib/runAction';
 import AiRunCard from './AiRunCard';
 
 const RUN = '11111111-1111-4111-8111-111111111111';
@@ -208,14 +217,14 @@ describe('AiRunCard (spec §5.5)', () => {
     expect(text).toEqual(['Polled one', 'Live two', 'Live three']);
   });
 
-  it('stops polling on awaiting_approval and shows the pending count and /approvals link', async () => {
+  it('keeps polling on awaiting_approval while intents are pending, and shows the pending count and /approvals link', async () => {
     vi.useFakeTimers();
     try {
       fetchWithAuth.mockResolvedValue(detail({
         status: 'awaiting_approval',
         intents: [
-          { id: 'i1', status: 'pending_approval', actionName: 'x', approvalScope: 'single', decidedVia: null },
-          { id: 'i2', status: 'pending_approval', actionName: 'y', approvalScope: 'single', decidedVia: null },
+          { id: 'i1', status: 'pending_approval', actionName: 'x', approvalScope: 'single', decidedVia: null, approvalRequestId: 'r1' },
+          { id: 'i2', status: 'pending_approval', actionName: 'y', approvalScope: 'single', decidedVia: null, approvalRequestId: 'r2' },
           { id: 'i3', status: 'completed', actionName: 'z', approvalScope: 'single', decidedVia: null },
         ],
       }));
@@ -228,6 +237,19 @@ describe('AiRunCard (spec §5.5)', () => {
       expect(block.textContent).toContain('aiRunCard.approvals.pending:2');
       expect(block.querySelector('a')?.getAttribute('href')).toBe('/approvals');
       expect(queryByTestId('ai-run-card-open')).not.toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(fetchWithAuth.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops polling on awaiting_approval once no intent is pending', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth.mockResolvedValue(detail({ status: 'awaiting_approval', intents: [] }));
+      render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
       expect(fetchWithAuth).toHaveBeenCalledTimes(1);
     } finally {
@@ -372,5 +394,148 @@ describe('AiRunCard (spec §5.5)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe('inline step approvals', () => {
+    const intent = (id: string, over: Record<string, unknown> = {}) => ({
+      id,
+      status: 'pending_approval',
+      actionName: `tool_${id}`,
+      approvalScope: 'supervised',
+      decidedVia: null,
+      actionLabel: `Label ${id}`,
+      approvalRequestId: `req-${id}`,
+      ...over,
+    });
+    const awaiting = (intents: unknown[], over: Record<string, unknown> = {}) =>
+      detail({ status: 'awaiting_approval', intents, wisp: { grantorName: 'Dana' }, ...over });
+
+    it('renders a row per pending intent and Approve calls the shared decide client', async () => {
+      vi.useFakeTimers();
+      try {
+        decideIntentApproval.mockResolvedValue('decided');
+        fetchWithAuth.mockResolvedValueOnce(awaiting([intent('a'), intent('b')]));
+        const { getAllByTestId, getByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(getAllByTestId('ai-run-card-step-approval')).toHaveLength(2);
+        expect(getAllByTestId('ai-run-card-step-approval')[0].textContent).toContain('Label a');
+        expect(getAllByTestId('ai-run-card-step-approval')[0].textContent).toContain('aiRunCard.stepApprovals.wispFor');
+        // Next poll lists only b as pending.
+        fetchWithAuth.mockResolvedValue(awaiting([intent('b'), intent('a', { status: 'approved' })]));
+        await act(async () => {
+          fireEvent.click(getByTestId('ai-run-card-step-approve-a'));
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(decideIntentApproval).toHaveBeenCalledWith('req-a', 'approve', undefined, 'supervised');
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(getAllByTestId('ai-run-card-step-approval')).toHaveLength(1);
+        expect(getAllByTestId('ai-run-card-step-approval')[0].textContent).toContain('Label b');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('Deny sends deny', async () => {
+      decideIntentApproval.mockResolvedValue('decided');
+      fetchWithAuth.mockResolvedValue(awaiting([intent('a')]));
+      const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      fireEvent.click(await findByTestId('ai-run-card-step-deny-a'));
+      await waitFor(() => expect(decideIntentApproval).toHaveBeenCalledWith('req-a', 'deny', undefined, 'supervised'));
+    });
+
+    it('keeps polling while an intent is pending_approval', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValue(awaiting([intent('a')]));
+        render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
+        expect(fetchWithAuth.mock.calls.length).toBeGreaterThanOrEqual(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stops polling a settled run when no pending step is the caller\'s to decide', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValue(awaiting([intent('a', { approvalRequestId: null })]));
+        render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('shows no buttons when the caller cannot decide (approvalRequestId null)', async () => {
+      fetchWithAuth.mockResolvedValue(awaiting([intent('a', { approvalRequestId: null })]));
+      const { findByTestId, queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      const row = await findByTestId('ai-run-card-step-approval');
+      expect(row.querySelector('button')).toBeNull();
+      expect(row.textContent).toContain('aiRunCard.stepApprovals.waitingForApprover');
+      expect(queryByTestId('ai-run-card-step-approve-a')).toBeNull();
+    });
+
+    it('is silent on a 401 ActionError', async () => {
+      decideIntentApproval.mockRejectedValue(new ActionError('nope', 401));
+      fetchWithAuth.mockResolvedValue(awaiting([intent('a')]));
+      const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      fireEvent.click(await findByTestId('ai-run-card-step-approve-a'));
+      await waitFor(() => expect(decideIntentApproval).toHaveBeenCalled());
+      await act(async () => { await Promise.resolve(); });
+      expect(showToast).not.toHaveBeenCalled();
+    });
+
+    it('toasts an error for a non-ActionError failure', async () => {
+      decideIntentApproval.mockRejectedValue(new Error('boom'));
+      fetchWithAuth.mockResolvedValue(awaiting([intent('a')]));
+      const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      fireEvent.click(await findByTestId('ai-run-card-step-approve-a'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    });
+
+    it('surfaces the needs_device outcome as an error toast with the register-device copy', async () => {
+      decideIntentApproval.mockResolvedValue('needs_device');
+      fetchWithAuth.mockResolvedValue(awaiting([intent('a')]));
+      const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      fireEvent.click(await findByTestId('ai-run-card-step-approve-a'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'aiApprovalDialog.noApproverDevice' }),
+      ));
+    });
+  });
+
+  describe('Continue', () => {
+    const settled = (over: Record<string, unknown> = {}) => detail({ status: 'completed', profile: 'device_troubleshooting', ...over });
+
+    it('renders for a settled device_troubleshooting run and calls onContinue(runId)', async () => {
+      fetchWithAuth.mockResolvedValue(settled());
+      const onContinue = vi.fn();
+      const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} onContinue={onContinue} />);
+      fireEvent.click(await findByTestId('ai-run-card-continue'));
+      expect(onContinue).toHaveBeenCalledWith(RUN);
+      expect(decideIntentApproval).not.toHaveBeenCalled();
+    });
+
+    it('does not render without onContinue, for other profiles, or while running', async () => {
+      fetchWithAuth.mockResolvedValue(settled());
+      const a = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      await a.findByTestId('ai-run-card-open');
+      expect(a.queryByTestId('ai-run-card-continue')).toBeNull();
+      a.unmount();
+
+      fetchWithAuth.mockResolvedValue(settled({ profile: 'analysis' }));
+      const b = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} onContinue={vi.fn()} />);
+      await b.findByTestId('ai-run-card-open');
+      expect(b.queryByTestId('ai-run-card-continue')).toBeNull();
+      b.unmount();
+
+      fetchWithAuth.mockResolvedValue(settled({ status: 'running' }));
+      const c = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} onContinue={vi.fn()} />);
+      await act(async () => { await Promise.resolve(); });
+      expect(c.queryByTestId('ai-run-card-continue')).toBeNull();
+    });
   });
 });

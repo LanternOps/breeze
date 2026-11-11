@@ -8,6 +8,7 @@ package desktop
 #include <IOKit/hidsystem/IOHIDLib.h>
 #include <IOKit/hidsystem/event_status_driver.h>
 #include <mach/mach.h>
+#include <AppKit/AppKit.h>
 
 // ---- IOHIDPostEvent wrappers for login-window input ----
 // IOHIDPostEvent is deprecated since macOS 11 but still functional and is
@@ -56,8 +57,11 @@ static void hidMouseMove(int x, int y, int flags) {
                    kNXEventDataVersion, flags, 0);
 }
 
-static void hidMouseButton(int x, int y, int button, int flags, int left, int right, int other) {
+// click is the click state for a press or release (issue #11549): 1 for a
+// single click, 2 for the second press/release of a double-click, and so on.
+static void hidMouseButton(int x, int y, int button, int flags, int click, int left, int right, int other) {
     NXEventData eventData = {0};
+    eventData.mouse.click = click;
     IOGPoint location = {(float)x, (float)y};
     int eventType;
     switch (button) {
@@ -72,16 +76,16 @@ static void hidMouseButton(int x, int y, int button, int flags, int left, int ri
                    kNXEventDataVersion, flags, 0);
 }
 
-static void hidMouseDown(int x, int y, int button, int flags) {
-    hidMouseButton(x, y, button, flags, NX_LMOUSEDOWN, NX_RMOUSEDOWN, NX_OMOUSEDOWN);
+static void hidMouseDown(int x, int y, int button, int flags, int click) {
+    hidMouseButton(x, y, button, flags, click, NX_LMOUSEDOWN, NX_RMOUSEDOWN, NX_OMOUSEDOWN);
 }
 
-static void hidMouseUp(int x, int y, int button, int flags) {
-    hidMouseButton(x, y, button, flags, NX_LMOUSEUP, NX_RMOUSEUP, NX_OMOUSEUP);
+static void hidMouseUp(int x, int y, int button, int flags, int click) {
+    hidMouseButton(x, y, button, flags, click, NX_LMOUSEUP, NX_RMOUSEUP, NX_OMOUSEUP);
 }
 
 static void hidMouseDrag(int x, int y, int button, int flags) {
-    hidMouseButton(x, y, button, flags, NX_LMOUSEDRAGGED, NX_RMOUSEDRAGGED, NX_OMOUSEDRAGGED);
+    hidMouseButton(x, y, button, flags, 0, NX_LMOUSEDRAGGED, NX_RMOUSEDRAGGED, NX_OMOUSEDRAGGED);
 }
 
 static void hidMouseScroll(int delta, int deltaAxis2, int flags) {
@@ -156,11 +160,19 @@ static CGEventType mouseTypeFor(int button, CGEventType left, CGEventType right,
 
 // setFlags 0 leaves the event's flags as CoreGraphics creates them (the
 // behaviour before W2c); 1 sets them to `flags`, the modifiers the agent holds.
-static void postMouse(int tap, CGEventType type, int x, int y, int button, int flags, int setFlags) {
+//
+// clickState > 0 is written to kCGMouseEventClickState, which AppKit reports as
+// NSEvent.clickCount. Left alone it stays 1, so every double-click arrived as
+// two single clicks (issue #11549). 0 leaves
+// the field as CoreGraphics creates it (moves and drags).
+static void postMouse(int tap, CGEventType type, int x, int y, int button, int flags, int setFlags, int clickState) {
     CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
     if (event) {
         if (setFlags) {
             CGEventSetFlags(event, (CGEventFlags)flags);
+        }
+        if (clickState > 0) {
+            CGEventSetIntegerValueField(event, kCGMouseEventClickState, clickState);
         }
         CGEventPost(tapFor(tap), event);
         CFRelease(event);
@@ -168,22 +180,22 @@ static void postMouse(int tap, CGEventType type, int x, int y, int button, int f
 }
 
 static void cgMouseMove(int tap, int x, int y, int flags, int setFlags) {
-    postMouse(tap, kCGEventMouseMoved, x, y, 0, flags, setFlags);
+    postMouse(tap, kCGEventMouseMoved, x, y, 0, flags, setFlags, 0);
 }
 
-static void cgMouseDown(int tap, int x, int y, int button, int flags, int setFlags) {
+static void cgMouseDown(int tap, int x, int y, int button, int flags, int setFlags, int clickState) {
     postMouse(tap, mouseTypeFor(button, kCGEventLeftMouseDown, kCGEventRightMouseDown, kCGEventOtherMouseDown),
-              x, y, button, flags, setFlags);
+              x, y, button, flags, setFlags, clickState);
 }
 
-static void cgMouseUp(int tap, int x, int y, int button, int flags, int setFlags) {
+static void cgMouseUp(int tap, int x, int y, int button, int flags, int setFlags, int clickState) {
     postMouse(tap, mouseTypeFor(button, kCGEventLeftMouseUp, kCGEventRightMouseUp, kCGEventOtherMouseUp),
-              x, y, button, flags, setFlags);
+              x, y, button, flags, setFlags, clickState);
 }
 
 static void cgMouseDrag(int tap, int x, int y, int button, int flags, int setFlags) {
     postMouse(tap, mouseTypeFor(button, kCGEventLeftMouseDragged, kCGEventRightMouseDragged, kCGEventOtherMouseDragged),
-              x, y, button, flags, setFlags);
+              x, y, button, flags, setFlags, 0);
 }
 
 // axes 1 is the pre-W2c vertical-only event; 2 adds the horizontal wheel.
@@ -210,6 +222,20 @@ static void cgFlagsChanged(int tap, int keycode, int flags) {
         CGEventPost(tapFor(tap), event);
         CFRelease(event);
     }
+}
+
+// The user's double-click interval in seconds (System Settings > Mouse /
+// Trackpad > Double-click speed). Go asks for it on every press rather than
+// caching it, and falls back to 0.5 s for an out-of-range value.
+static double systemDoubleClickInterval(void) {
+    @autoreleasepool {
+        return [NSEvent doubleClickInterval];
+    }
+}
+
+// The modifier flags the HID system currently has, Caps Lock included.
+static long long hidSystemFlags(void) {
+    return (long long)CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState);
 }
 
 // setFlags selects how the event's modifier flags are handled:
@@ -322,7 +348,7 @@ static void sessionTypeUnicode(const UniChar *chars, int len) {
     postUnicodeString(kCGSessionEventTap, chars, len);
 }
 */
-// #cgo LDFLAGS: -framework IOKit
+// #cgo LDFLAGS: -framework IOKit -framework AppKit
 import "C"
 
 import (
@@ -330,6 +356,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -400,6 +427,14 @@ type DarwinInputHandler struct {
 	// held by sequenced key_down events, set on every later key and mouse
 	// event. Empty in legacy sessions, so their events are unchanged.
 	mods macModifierMask
+
+	// clicks gives each press and release its click state (issue #11549).
+	clicks *clickCounter
+}
+
+// systemDoubleClickInterval is the user's macOS double-click interval.
+func systemDoubleClickInterval() time.Duration {
+	return time.Duration(float64(C.systemDoubleClickInterval()) * float64(time.Second))
 }
 
 func NewInputHandler(desktopContext string) InputHandler {
@@ -407,7 +442,11 @@ func NewInputHandler(desktopContext string) InputHandler {
 	if sf < 1.0 {
 		sf = 1.0
 	}
-	h := &DarwinInputHandler{scaleFactor: sf, inputAvailable: true}
+	h := &DarwinInputHandler{
+		scaleFactor:    sf,
+		inputAvailable: true,
+		clicks:         newClickCounter(systemDoubleClickInterval, nil),
+	}
 
 	// Always try to open HID connection regardless of context.
 	// IOHIDPostEvent is the preferred way to inject clicks/keyboard at the
@@ -524,6 +563,7 @@ func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
+	h.clicks.move(int(sx), int(sy))
 	f, set := h.pointerFlags()
 	switch {
 	case h.shouldUseHID():
@@ -545,15 +585,18 @@ func (h *DarwinInputHandler) SendMouseClick(x, y int, button string) error {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
-	btn := C.int(macMouseButtonNumber(button))
+	n := macMouseButtonNumber(button)
+	btn := C.int(n)
 	f, set := h.pointerFlags()
+	down := C.int(h.clicks.down(n, int(sx), int(sy)))
+	up := C.int(h.clicks.up(n))
 	if h.shouldUseHID() {
-		C.hidMouseDown(sx, sy, btn, f)
-		C.hidMouseUp(sx, sy, btn, f)
+		C.hidMouseDown(sx, sy, btn, f, down)
+		C.hidMouseUp(sx, sy, btn, f, up)
 		return nil
 	}
-	C.cgMouseDown(h.cgTap(), sx, sy, btn, f, set)
-	C.cgMouseUp(h.cgTap(), sx, sy, btn, f, set)
+	C.cgMouseDown(h.cgTap(), sx, sy, btn, f, set, down)
+	C.cgMouseUp(h.cgTap(), sx, sy, btn, f, set, up)
 	return nil
 }
 
@@ -565,11 +608,12 @@ func (h *DarwinInputHandler) SendMouseDown(x, y int, button string) error {
 	h.mouseDown = true
 	sx, sy := h.scaleXY(x, y)
 	f, set := h.pointerFlags()
+	click := C.int(h.clicks.down(h.mouseBtn, int(sx), int(sy)))
 	if h.shouldUseHID() {
-		C.hidMouseDown(sx, sy, C.int(h.mouseBtn), f)
+		C.hidMouseDown(sx, sy, C.int(h.mouseBtn), f, click)
 		return nil
 	}
-	C.cgMouseDown(h.cgTap(), sx, sy, C.int(h.mouseBtn), f, set)
+	C.cgMouseDown(h.cgTap(), sx, sy, C.int(h.mouseBtn), f, set, click)
 	return nil
 }
 
@@ -579,13 +623,15 @@ func (h *DarwinInputHandler) SendMouseUp(x, y int, button string) error {
 	}
 	h.mouseDown = false
 	sx, sy := h.scaleXY(x, y)
-	btn := C.int(macMouseButtonNumber(button))
+	n := macMouseButtonNumber(button)
+	btn := C.int(n)
 	f, set := h.pointerFlags()
+	click := C.int(h.clicks.up(n))
 	if h.shouldUseHID() {
-		C.hidMouseUp(sx, sy, btn, f)
+		C.hidMouseUp(sx, sy, btn, f, click)
 		return nil
 	}
-	C.cgMouseUp(h.cgTap(), sx, sy, btn, f, set)
+	C.cgMouseUp(h.cgTap(), sx, sy, btn, f, set, click)
 	return nil
 }
 
@@ -601,6 +647,7 @@ func (h *DarwinInputHandler) sendMouseScroll(x, y, delta, deltaX int) error {
 	}
 	sx, sy := h.scaleXY(x, y)
 	sc := macScrollFor(delta, deltaX)
+	h.clicks.move(int(sx), int(sy))
 	f, set := h.pointerFlags()
 	if h.shouldUseHID() {
 		C.hidMouseMove(sx, sy, f)
@@ -789,6 +836,25 @@ func (h *DarwinInputHandler) handleModifierKey(event InputEvent) (handled bool) 
 		C.cgFlagsChanged(h.cgTap(), C.int(keycode), flags)
 	}
 	return true
+}
+
+// ResetModifierState releases both sides of every modifier, held by the
+// running mask or not, keeping Caps Lock as it is: "Release stuck keys" for a
+// modifier macOS still has down that no record names (issue #9595).
+func (h *DarwinInputHandler) ResetModifierState() error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
+	h.mods.clear()
+	flags := C.int(macModifierResetFlags(int(C.hidSystemFlags())))
+	for _, kc := range macModifierKeycodes {
+		if h.shouldUseHID() {
+			C.hidFlagsChanged(C.int(kc), flags)
+		} else {
+			C.cgFlagsChanged(h.cgTap(), C.int(kc), flags)
+		}
+	}
+	return nil
 }
 
 func (h *DarwinInputHandler) HandleEvent(event InputEvent) error {

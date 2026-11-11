@@ -169,3 +169,40 @@ func TestLocalICECandidateNeedsDesktopScope(t *testing.T) {
 		t.Fatal("a desktop-scoped helper's ICE candidates must be forwarded")
 	}
 }
+
+// The system helper's clipboard read through the user helper (#8393) is a
+// desktop-session request: forwarded for a helper with the desktop scope only.
+func TestShouldForwardDesktopClipboardReadNeedsDesktopScope(t *testing.T) {
+	t.Parallel()
+
+	env := &ipc.Envelope{Type: ipc.TypeDesktopClipboardRead}
+	if !shouldForwardUnsolicitedHelperMessage(&Session{AllowedScopes: []string{"desktop"}}, env) {
+		t.Fatal("desktop_clipboard_read from a desktop-scoped helper was dropped")
+	}
+	if shouldForwardUnsolicitedHelperMessage(&Session{AllowedScopes: []string{"notify", "clipboard", "run_as_user"}}, env) {
+		t.Fatal("desktop_clipboard_read from a helper without the desktop scope was forwarded")
+	}
+}
+
+// Through the dispatch itself: the request must reach onMessage (the
+// heartbeat's handler) for a desktop-scoped helper, and never otherwise.
+func TestBrokerDispatchesDesktopClipboardReadOnlyWithDesktopScope(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+		want   bool
+	}{
+		{"desktop scope", []string{"notify", "tray", "clipboard", "desktop"}, true},
+		{"user helper scopes", []string{"notify", "clipboard", "run_as_user"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			b := New("/tmp/clip-read-dispatch.sock", func(_ *Session, env *ipc.Envelope) { got = append(got, env.Type) })
+			s := &Session{AllowedScopes: tc.scopes}
+			b.dispatchHelperMessage(s, &ipc.Envelope{ID: "clip-read-1", Type: ipc.TypeDesktopClipboardRead, Payload: []byte(`{"sessionId":"d1"}`)})
+			if (len(got) == 1 && got[0] == ipc.TypeDesktopClipboardRead) != tc.want {
+				t.Fatalf("onMessage calls = %v, want forwarded=%v", got, tc.want)
+			}
+		})
+	}
+}

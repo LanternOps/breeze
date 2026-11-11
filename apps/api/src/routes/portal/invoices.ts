@@ -30,10 +30,9 @@ import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { getPartnerStripeClient, isPartnerOnlinePaymentAvailable, PartnerStripeError } from '../../services/partnerStripe';
 import { assertNoHeldDbContextForStripe, HeldDbContextForStripeError, settleCheckoutSession } from '../../services/stripeSettle';
-import { toMinorUnits } from '../../services/stripeMoney';
-import { computeChargeNow, ERROR_CODES } from '@breeze/shared';
+import { computeCheckoutCharge, ERROR_CODES } from '@breeze/shared';
 import { mapStripeCheckoutError, CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
-import { checkoutSessionExpiry, checkCheckoutPublicationInTx } from '../../services/invoiceCheckout';
+import { BALANCE_NOT_REPRESENTABLE_MESSAGE, checkoutSessionExpiry, checkCheckoutPublicationInTx } from '../../services/invoiceCheckout';
 import {
   assertNoPendingRevocation,
   markSessionRevocationRequestedInTx,
@@ -378,15 +377,20 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   }
 
   // Deposit-first: charge the deposit remaining while unmet, else the full
-  // balance. computeChargeNow clamps to balance and handles every state (no
-  // deposit, deposit partially/fully paid) — never reimplement that logic here.
-  const chargeNow = computeChargeNow({
+  // balance, in currency-aware minor units — zero-decimal currencies (JPY, KRW,
+  // …) are NOT multiplied by 100. computeCheckoutCharge owns the whole rule,
+  // shared with createInvoicePayLink — never reimplement it here.
+  const charge = computeCheckoutCharge({
     depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
   }, inv.currencyCode);
-  // Currency-aware minor units: zero-decimal currencies (JPY, KRW, …) must NOT be
-  // multiplied by 100, or the customer is over-charged 100x (see stripeMoney.ts).
-  const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
-  if (chargeMinor <= 0) return c.json({ error: 'Nothing to pay', code: ERROR_CODES.CONFLICT }, 409);
+  // A legacy balance the currency cannot express (JPY '1000.50') has no correct
+  // Checkout amount (#3803 item 8). Refused before any Stripe work.
+  if (charge.kind === 'not_representable') {
+    return c.json({ error: BALANCE_NOT_REPRESENTABLE_MESSAGE, code: 'BALANCE_NOT_REPRESENTABLE' }, 409);
+  }
+  if (charge.kind === 'nothing') return c.json({ error: 'Nothing to pay', code: ERROR_CODES.CONFLICT }, 409);
+  const chargeNow = { amount: charge.amount, isDeposit: charge.isDeposit };
+  const chargeMinor = charge.minor;
   const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry(inv.createdAt);
   let capture: Awaited<ReturnType<typeof prepareCardPayAndSave>>;
   try {

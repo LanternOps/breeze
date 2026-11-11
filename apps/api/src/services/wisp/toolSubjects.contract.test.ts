@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { getToolDefinitions } from '../aiTools';
 import { subjectRefsOf, WISP_NON_FOCAL_TOOLS, WISP_TOOL_SUBJECTS } from './toolSubjects';
+import { isNeverDelegableToolAction, WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS } from './grantAuthority';
+import { AGENT_HUMAN_ONLY_TOOLS } from '../aiToolExposure';
+import { TIER3_FOUR_EYES_ACTIONS } from '../aiGuardrails';
+import { requiresPinnedEffectDigest } from '../actionIntents/pinnedEffectPolicy';
+import { isOrgWideGovernanceIntent } from '../actionIntents/orgWideGovernanceTools';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const definitions = new Map(getToolDefinitions().map((tool) => [tool.name, tool]));
@@ -79,5 +84,45 @@ describe('subjectRefsOf', () => {
       expect(subjectRefsOf('manage_invoices', { action, invoiceId: id })).toEqual([]);
     }
     expect(subjectRefsOf('manage_invoices', { action: 'issue', invoiceId: id })).toEqual([{ kind: 'invoice', id }]);
+  });
+});
+
+// #11433: the action-level ceiling floor names the agent-denied actions a human
+// may still delegate to Wisp. It is matched by exact action string, so a renamed
+// action would silently fall back to "refused"; and it must never open a
+// two-approver action (four-eyes, pinned effect digest, org-wide governance).
+describe('agent-denied actions a human may call under a Wisp grant (#11433)', () => {
+  const actionEnum = (tool: string): string[] =>
+    (definitions.get(tool)?.input_schema.properties as Record<string, { enum?: string[] }> | undefined)?.action?.enum ?? [];
+
+  it('pins the reviewed set', () => {
+    expect(Object.fromEntries([...WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS].map(([tool, actions]) => [tool, [...actions].sort()]))).toEqual({
+      manage_fleet_designs: ['applied', 'document', 'preview', 'run'],
+    });
+  });
+
+  it('every entry is a real tool action that stays agent-denied', () => {
+    for (const [tool, actions] of WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+      for (const action of actions) expect(actionEnum(tool), `${tool}.${action}`).toContain(action);
+    }
+  });
+
+  it('never opens a four-eyes, pinned-effect or org-wide governance action', () => {
+    for (const [tool, actions] of WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS) {
+      for (const action of actions) {
+        expect(TIER3_FOUR_EYES_ACTIONS[tool] ?? [], `${tool}.${action}`).not.toContain(action);
+        expect(requiresPinnedEffectDigest(tool, { action }), `${tool}.${action}`).toBe(false);
+        expect(isOrgWideGovernanceIntent(tool, { action }), `${tool}.${action}`).toBe(false);
+      }
+    }
+  });
+
+  it('every other action of such a tool stays refused per call', () => {
+    for (const [tool, actions] of WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS) {
+      const all = actionEnum(tool);
+      expect(all.length, tool).toBeGreaterThan(actions.size);
+      for (const action of all) expect(isNeverDelegableToolAction(tool, action), `${tool}.${action}`).toBe(!actions.has(action));
+    }
   });
 });

@@ -35,13 +35,20 @@ afterEach(() => {
   cleanup();
 });
 
+function acceptInviteCall() {
+  return (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+    String(url).endsWith('/portal/auth/accept-invite')
+  );
+}
+
 async function submitValidPassword() {
   render(<AcceptInviteForm token="invite-token-abc" />);
   fireEvent.input(screen.getByLabelText(/new password/i), { target: { value: 'Password123' } });
   fireEvent.input(screen.getByLabelText(/confirm password/i), { target: { value: 'Password123' } });
   fireEvent.submit(screen.getByRole('button'));
-  await waitFor(() => expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled());
-  return (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+  // The form also asks /auth/invite/methods on mount; pick the accept-invite POST.
+  await waitFor(() => expect(acceptInviteCall()).toBeDefined());
+  return acceptInviteCall()!;
 }
 
 describe('AcceptInviteForm — posts to the portal-scoped accept-invite route (#2824)', () => {
@@ -98,8 +105,7 @@ describe('AcceptInviteForm — pre-hydration fallback must never GET-submit cred
     fireEvent.input(screen.getByLabelText(/new password/i), { target: { value: 'Password123' } });
     fireEvent.input(screen.getByLabelText(/confirm password/i), { target: { value: 'Password123' } });
     fireEvent.click(button);
-    await waitFor(() => expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled());
-    const [url] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe('/api/v1/portal/auth/accept-invite');
+    await waitFor(() => expect(acceptInviteCall()).toBeDefined());
+    expect(acceptInviteCall()![0]).toBe('/api/v1/portal/auth/accept-invite');
   });
 });

@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransactionIfHeld } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { readAiKillState } from '../aiKillState';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
@@ -92,61 +92,66 @@ export async function evaluateTicketAutonomy(
   // ordinary intent creation, must not pay for this module at all).
   if (args.requestedAutonomyKind !== 'ticket_autonomy') return deny('not_requested');
   if (args.principalKind !== 'ai_agent' || !args.agentRunId) return deny('not_agent_run');
+  const agentRunId = args.agentRunId;
 
   // Gate 5.
   if (!args.scope || !('ticketId' in args.scope)) return deny('scope_not_ticket');
 
   // Gates 2-4: every fallible read from here on is wrapped (see the header
   // comment's "Review fix" paragraph) — this function must NEVER let an
-  // exception escape into `createActionIntent`'s transaction.
+  // exception escape into `createActionIntent`'s transaction. The savepoint is
+  // what makes that true for a SQL failure: the intent insert follows on this
+  // same transaction, so without it the deny below fails at that insert (#11225).
   try {
-    // Gate 2 — re-read the run row IN-TRANSACTION. The ambient `db` already
-    // runs inside `createActionIntent`'s system-scoped transaction (see that
-    // module's header comment on why the whole creation is one transaction),
-    // so this is the SAME connection/snapshot as the intent insert about to
-    // follow — no separate context needed here.
-    const [run] = await db
-      .select({
-        id: aiAgentRuns.id,
-        agentId: aiAgentRuns.agentId,
-        orgId: aiAgentRuns.orgId,
-        triggerKind: aiAgentRuns.triggerKind,
-        policySnapshot: aiAgentRuns.policySnapshot,
-      })
-      .from(aiAgentRuns)
-      .where(eq(aiAgentRuns.id, args.agentRunId))
-      .limit(1);
-    if (!run || run.orgId !== args.orgId) return deny('not_agent_run');
-    if (run.triggerKind !== 'ticket') return deny('run_not_ticket_triggered');
+    return await withDbTransactionIfHeld(async (): Promise<TicketAutonomyDecision> => {
+      // Gate 2 — re-read the run row IN-TRANSACTION. The ambient `db` already
+      // runs inside `createActionIntent`'s system-scoped transaction (see that
+      // module's header comment on why the whole creation is one transaction),
+      // so this is the SAME connection/snapshot as the intent insert about to
+      // follow — no separate context needed here.
+      const [run] = await db
+        .select({
+          id: aiAgentRuns.id,
+          agentId: aiAgentRuns.agentId,
+          orgId: aiAgentRuns.orgId,
+          triggerKind: aiAgentRuns.triggerKind,
+          policySnapshot: aiAgentRuns.policySnapshot,
+        })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, agentRunId))
+        .limit(1);
+      if (!run || run.orgId !== args.orgId) return deny('not_agent_run');
+      if (run.triggerKind !== 'ticket') return deny('run_not_ticket_triggered');
 
-    const snapshotEffective = run.policySnapshot?.effective;
-    if (
-      snapshotEffective?.mode !== 'act'
-      || snapshotEffective?.triggers?.ticketAutonomousWrites !== true
-    ) {
-      return deny('run_snapshot_not_authorized');
-    }
+      const snapshotEffective = run.policySnapshot?.effective;
+      if (
+        snapshotEffective?.mode !== 'act'
+        || snapshotEffective?.triggers?.ticketAutonomousWrites !== true
+      ) {
+        return deny('run_snapshot_not_authorized');
+      }
 
-    // Gate 3 — the live policy. `resolveEffectiveAgentSystem` is already
-    // system-scoped and, per its own doc comment, reads straight through (no
-    // second pooled connection) when the ambient context is already 'system'
-    // — exactly the case here. It can also THROW (`HTTPException` on a
-    // missing organization row) rather than return null — caught below.
-    const resolved = await resolveEffectiveAgentSystem(args.orgId, run.policySnapshot.kind);
-    if (
-      !resolved
-      || resolved.agentId !== run.agentId
-      || resolved.effective.mode !== 'act'
-      || resolved.effective.triggers?.ticketAutonomousWrites !== true
-    ) {
-      return deny('live_policy_not_authorized');
-    }
+      // Gate 3 — the live policy. `resolveEffectiveAgentSystem` is already
+      // system-scoped and, per its own doc comment, reads straight through (no
+      // second pooled connection) when the ambient context is already 'system'
+      // — exactly the case here. It can also THROW (`HTTPException` on a
+      // missing organization row) rather than return null — caught below.
+      const resolved = await resolveEffectiveAgentSystem(args.orgId, run.policySnapshot.kind);
+      if (
+        !resolved
+        || resolved.agentId !== run.agentId
+        || resolved.effective.mode !== 'act'
+        || resolved.effective.triggers?.ticketAutonomousWrites !== true
+      ) {
+        return deny('live_policy_not_authorized');
+      }
 
-    // Gate 4.
-    const killState = await readAiKillState();
-    if (killState.killed) return deny('kill_switch_engaged');
+      // Gate 4.
+      const killState = await readAiKillState();
+      if (killState.killed) return deny('kill_switch_engaged');
 
-    return { granted: true };
+      return { granted: true };
+    });
   } catch (err) {
     console.error('[ticketAutonomy] gate evaluation threw — denying (fail-closed to human_required):', err);
     captureException(err instanceof Error ? err : new Error(String(err)));

@@ -38,7 +38,7 @@ describe("ComplianceDashboard create-policy prefill (#9636)", () => {
     const name = await screen.findByPlaceholderText("e.g. Block Unauthorized Software");
     await waitFor(() => expect((name as HTMLInputElement).value).toBe("Zoom Policy"));
     expect((screen.getByLabelText("Mode") as HTMLSelectElement).value).toBe("allowlist");
-    expect((screen.getByPlaceholderText("Name *") as HTMLInputElement).value).toBe("Zoom");
+    expect((screen.getByPlaceholderText("Software name *") as HTMLInputElement).value).toBe("Zoom");
     expect((screen.getByPlaceholderText("Vendor") as HTMLInputElement).value).toBe("Zoom Inc");
   });
 

@@ -12,7 +12,8 @@ export type SaveUnitId =
   | 'loginBranding'
   | 'trustCenter'
   | 'aiFeatureDefaults'
-  | 'aiDataPolicy';
+  | 'aiDataPolicy'
+  | 'portalAccessPolicy';
 
 export type SaveOutcome =
   | { status: 'saved'; savedAt: number }
@@ -53,6 +54,7 @@ export const UNIT_TABS: Record<SaveUnitId, readonly TabKey[]> = {
   trustCenter: ['trustCenter'],
   aiFeatureDefaults: ['aiProvider'],
   aiDataPolicy: ['aiFeatures'],
+  portalAccessPolicy: ['customerPortal'],
 };
 
 const RAIL_INDEX = new Map<TabKey, number>(ALL_TABS.map((t, i) => [t.key, i]));

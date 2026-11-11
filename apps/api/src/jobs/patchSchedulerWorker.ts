@@ -22,6 +22,7 @@ import {
 import { and, eq, gte, inArray, ne } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
+import { getLocalTimeParts, normalizeTimezone, zonedWallClockToUtc } from '../services/zonedTime';
 import { attachWorkerObservability } from './workerObservability';
 import {
   checkDeviceMaintenanceWindow,
@@ -80,16 +81,6 @@ function getSchedulerQueue(): Queue {
   return schedulerQueue;
 }
 
-interface LocalTimeParts {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-  weekday: 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
-}
-
 interface DeviceSchedulingContext {
   deviceId: string;
   orgId: string;
@@ -119,44 +110,6 @@ function parsePartnerTimezone(column: string | null | undefined, settings: unkno
   const fromSettings = parseOrgTimezone(settings);
   if (fromSettings) return fromSettings;
   return canonicalColumn;
-}
-
-function normalizeTimezone(timezone: string | null | undefined): string {
-  const candidate = timezone || 'UTC';
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: candidate }).format(new Date());
-    return candidate;
-  } catch (err) {
-    console.warn(`[PatchScheduler] Invalid timezone "${candidate}", falling back to UTC:`, err);
-    return 'UTC';
-  }
-}
-
-function getLocalTimeParts(now: Date, timezone: string): LocalTimeParts {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: normalizeTimezone(timezone),
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    weekday: 'short',
-    hourCycle: 'h23',
-  });
-  const parts = formatter.formatToParts(now);
-  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '0';
-  const weekday = get('weekday').toLowerCase().slice(0, 3) as LocalTimeParts['weekday'];
-
-  return {
-    year: Number.parseInt(get('year'), 10),
-    month: Number.parseInt(get('month'), 10),
-    day: Number.parseInt(get('day'), 10),
-    hour: Number.parseInt(get('hour'), 10),
-    minute: Number.parseInt(get('minute'), 10),
-    second: Number.parseInt(get('second'), 10),
-    weekday,
-  };
 }
 
 function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, now: Date): string | null {
@@ -196,49 +149,6 @@ function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, no
 
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 type WeekdayKey = (typeof WEEKDAY_KEYS)[number];
-
-/** The zone's UTC offset (ms) in force at `instant`. */
-function zoneOffsetMsAt(instant: number, timezone: string): number {
-  const local = getLocalTimeParts(new Date(instant), timezone);
-  return (
-    Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0) - instant
-  );
-}
-
-/**
- * The UTC instant of a wall-clock time in `timezone`.
- *
- * Deliberately NOT a convergence loop. The naive guess uses the offset in force
- * at `wallAsUtc`, which is the wrong offset for a wall clock on the far side of
- * a DST transition; correcting once and re-checking is right for every ordinary
- * time, but on a SPRING-FORWARD day the requested wall clock does not exist at
- * all (02:00 is skipped) and the two candidates oscillate forever — a loop
- * settles on 01:00, an hour BEFORE the window the admin asked for.
- *
- * So: try the correction, accept it if the offset it implies is self-consistent,
- * and otherwise take the later of the two candidates — the same "shift forward
- * into the gap" rule Luxon and date-fns-tz use. Ambiguous fall-back times
- * resolve to the first (pre-transition) occurrence.
- */
-function zonedWallClockToUtc(
-  parts: { year: number; month: number; day: number; hour: number; minute: number },
-  timezone: string,
-): Date {
-  const wallAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
-
-  const firstOffset = zoneOffsetMsAt(wallAsUtc, timezone);
-  const firstCandidate = wallAsUtc - firstOffset;
-
-  const secondOffset = zoneOffsetMsAt(firstCandidate, timezone);
-  if (secondOffset === firstOffset) return new Date(firstCandidate);
-
-  const secondCandidate = wallAsUtc - secondOffset;
-  if (zoneOffsetMsAt(secondCandidate, timezone) === secondOffset) {
-    return new Date(secondCandidate);
-  }
-
-  return new Date(Math.max(firstCandidate, secondCandidate));
-}
 
 /**
  * The next occurrence of a patch schedule, strictly after `now`, as a UTC

@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchWithAuth = vi.fn();
 const showToast = vi.fn();
@@ -399,5 +399,517 @@ describe("Pax8Integration", () => {
 
     expect(await screen.findByTestId("pax8-org-scope")).toBeTruthy();
     expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  describe("suggested matches", () => {
+    const suggestedRow = {
+      ...company,
+      firstSeenAt: "2026-06-01T00:00:00.000Z",
+      suggestion: {
+        status: "match",
+        orgId: breezeOrg.id,
+        orgName: breezeOrg.name,
+        tier: "exact",
+        matchKey: "acme",
+      },
+    };
+    const mappedRow = {
+      ...suggestedRow,
+      mappedOrgId: breezeOrg.id,
+      mappedOrgName: breezeOrg.name,
+      suggestion: null,
+    };
+    const summaryOf = (unmapped: number, suggested: number, newUnmapped = 0) => ({
+      unmapped,
+      suggested,
+      newUnmapped,
+    });
+
+    function mockSuggest(opts: {
+      companiesQueue: Array<{ data: unknown[]; summary?: unknown }>;
+      onPost?: (url: string, init: RequestInit) => Response | undefined;
+    }) {
+      let n = 0;
+      fetchWithAuth.mockImplementation(
+        async (url: string, init?: RequestInit) => {
+          if (init?.method === "POST") {
+            const r = opts.onPost?.(url, init);
+            if (r) return r;
+          }
+          if (url === "/pax8/integration")
+            return jsonResponse({ data: existingIntegration });
+          if (url.startsWith("/pax8/companies")) {
+            const entry =
+              opts.companiesQueue[Math.min(n, opts.companiesQueue.length - 1)];
+            n += 1;
+            return jsonResponse({
+              integrationId: "pax8-1",
+              summary: summaryOf(1, 1),
+              ...entry,
+            });
+          }
+          if (url.startsWith("/pax8/subscriptions"))
+            return jsonResponse({ data: [] });
+          if (url.startsWith("/orgs/organizations"))
+            return jsonResponse({ data: [breezeOrg] });
+          return jsonResponse({}, 404);
+        },
+      );
+    }
+    const postsTo = (path: string) =>
+      fetchWithAuth.mock.calls.filter(
+        ([url, init]) => url === path && init?.method === "POST",
+      );
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("shows the chip, summary and review count for a match row", async () => {
+      mockSuggest({ companiesQueue: [{ data: [suggestedRow] }] });
+      render(<Pax8Integration />);
+      expect(
+        await screen.findByTestId("pax8-company-suggestion-pax8-co-1"),
+      ).toHaveTextContent("Acme Corp");
+      expect(screen.getByTestId("pax8-mapping-summary")).toHaveTextContent(
+        "1 unmapped · 1 suggested",
+      );
+      expect(screen.getByTestId("pax8-review-suggestions")).toHaveTextContent(
+        "Review 1 suggested match",
+      );
+    });
+
+    it("after mapping, the select shows the new org and the chip is gone", async () => {
+      mockSuggest({
+        companiesQueue: [
+          { data: [suggestedRow] },
+          { data: [mappedRow], summary: summaryOf(0, 0) },
+        ],
+        onPost: (url) =>
+          url === "/pax8/companies/map"
+            ? jsonResponse({ data: { ...company, orgId: breezeOrg.id } })
+            : undefined,
+      });
+      render(<Pax8Integration />);
+      await screen.findByTestId("pax8-company-suggestion-pax8-co-1");
+
+      fireEvent.change(screen.getByTestId("pax8-company-map-pax8-co-1"), {
+        target: { value: breezeOrg.id },
+      });
+
+      await waitFor(() =>
+        expect(
+          (screen.getByTestId("pax8-company-map-pax8-co-1") as HTMLSelectElement)
+            .value,
+        ).toBe(breezeOrg.id),
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("pax8-company-suggestion-pax8-co-1"),
+        ).toBeNull(),
+      );
+    });
+
+    it("accept posts source=suggestion", async () => {
+      mockSuggest({
+        companiesQueue: [{ data: [suggestedRow] }, { data: [mappedRow] }],
+        onPost: (url) =>
+          url === "/pax8/companies/map" ? jsonResponse({ data: {} }) : undefined,
+      });
+      render(<Pax8Integration />);
+      fireEvent.click(
+        await screen.findByTestId("pax8-company-suggestion-pax8-co-1-accept"),
+      );
+      await waitFor(() => expect(postsTo("/pax8/companies/map")).toHaveLength(1));
+      expect(
+        JSON.parse(String(postsTo("/pax8/companies/map")[0][1].body)),
+      ).toMatchObject({
+        integrationId: "pax8-1",
+        pax8CompanyId: "pax8-co-1",
+        orgId: breezeOrg.id,
+        source: "suggestion",
+      });
+    });
+
+    it("ambiguous row narrows the dropdown", async () => {
+      const otherOrg = { id: "00000000-0000-4000-8000-000000000002", name: "Other" };
+      fetchWithAuth.mockImplementation(async (url: string) => {
+        if (url === "/pax8/integration")
+          return jsonResponse({ data: existingIntegration });
+        if (url.startsWith("/pax8/companies"))
+          return jsonResponse({
+            integrationId: "pax8-1",
+            summary: summaryOf(1, 0),
+            data: [
+              {
+                ...company,
+                firstSeenAt: "2026-06-01T00:00:00.000Z",
+                suggestion: {
+                  status: "ambiguous",
+                  candidates: [{ orgId: breezeOrg.id, orgName: breezeOrg.name }],
+                  tier: "exact",
+                  matchKey: "acme",
+                },
+              },
+            ],
+          });
+        if (url.startsWith("/pax8/subscriptions"))
+          return jsonResponse({ data: [] });
+        if (url.startsWith("/orgs/organizations"))
+          return jsonResponse({ data: [breezeOrg, otherOrg] });
+        return jsonResponse({}, 404);
+      });
+      render(<Pax8Integration />);
+      expect(
+        await screen.findByTestId("pax8-company-suggestion-pax8-co-1"),
+      ).toHaveTextContent("1 possible match");
+      expect(
+        screen.queryByTestId("pax8-company-suggestion-pax8-co-1-accept"),
+      ).toBeNull();
+      const select = screen.getByTestId(
+        "pax8-company-map-pax8-co-1",
+      ) as HTMLSelectElement;
+      await waitFor(() =>
+        expect(Array.from(select.options).map((o) => o.value)).toEqual([
+          "",
+          breezeOrg.id,
+        ]),
+      );
+    });
+
+    it("a contested row shows alsoMatches without Accept", async () => {
+      mockSuggest({
+        companiesQueue: [
+          {
+            data: [
+              {
+                ...suggestedRow,
+                suggestion: {
+                  status: "contested",
+                  orgId: breezeOrg.id,
+                  orgName: breezeOrg.name,
+                  tier: "exact",
+                  matchKey: "acme",
+                  contestedWith: [
+                    { pax8CompanyId: "x", pax8CompanyName: "Acme Two" },
+                    { pax8CompanyId: "y", pax8CompanyName: "Acme Three" },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
+      render(<Pax8Integration />);
+      expect(
+        await screen.findByTestId("pax8-company-suggestion-pax8-co-1"),
+      ).toHaveTextContent("Also matches Acme Two, Acme Three");
+      expect(
+        screen.queryByTestId("pax8-company-suggestion-pax8-co-1-accept"),
+      ).toBeNull();
+    });
+
+    const twoRows = [
+      suggestedRow,
+      {
+        ...suggestedRow,
+        pax8CompanyId: "pax8-co-2",
+        pax8CompanyName: "Beta Pax8",
+        suggestion: { ...suggestedRow.suggestion, orgId: "org-b", orgName: "Beta" },
+      },
+    ];
+
+    it("bulk confirm posts only checked items with expectedOrgId null", async () => {
+      mockSuggest({
+        companiesQueue: [{ data: twoRows }, { data: [] }],
+        onPost: (url) =>
+          url === "/pax8/companies/map-bulk"
+            ? jsonResponse({ data: { mapped: 1 } })
+            : undefined,
+      });
+      render(<Pax8Integration />);
+      fireEvent.click(await screen.findByTestId("pax8-review-suggestions"));
+      fireEvent.click(await screen.findByTestId("pax8-review-item-pax8-co-2"));
+      fireEvent.click(screen.getByTestId("pax8-review-confirm"));
+      await waitFor(() =>
+        expect(postsTo("/pax8/companies/map-bulk")).toHaveLength(1),
+      );
+      expect(
+        JSON.parse(String(postsTo("/pax8/companies/map-bulk")[0][1].body)),
+      ).toEqual({
+        integrationId: "pax8-1",
+        items: [
+          { pax8CompanyId: "pax8-co-1", orgId: breezeOrg.id, expectedOrgId: null },
+        ],
+      });
+      await waitFor(() =>
+        expect(screen.queryByTestId("pax8-review-modal")).toBeNull(),
+      );
+    });
+
+    it("409 STALE_REVIEW reloads companies and shows the stale notice", async () => {
+      mockSuggest({
+        companiesQueue: [{ data: twoRows }, { data: [twoRows[1]] }],
+        onPost: (url) =>
+          url === "/pax8/companies/map-bulk"
+            ? jsonResponse(
+                {
+                  error: "stale",
+                  code: "STALE_REVIEW",
+                  pax8CompanyIds: ["pax8-co-1"],
+                },
+                409,
+              )
+            : undefined,
+      });
+      render(<Pax8Integration />);
+      fireEvent.click(await screen.findByTestId("pax8-review-suggestions"));
+      fireEvent.click(await screen.findByTestId("pax8-review-confirm"));
+
+      expect(await screen.findByTestId("pax8-review-stale")).toHaveTextContent(
+        "Some rows changed since you opened this review.",
+      );
+      // Modal stays open with the reloaded rows only.
+      await waitFor(() =>
+        expect(screen.queryByTestId("pax8-review-item-pax8-co-1")).toBeNull(),
+      );
+      expect(screen.getByTestId("pax8-review-item-pax8-co-2")).toBeTruthy();
+      // runAction's own error toast is suppressed; no raw error toast on top.
+      expect(
+        showToast.mock.calls.filter(([a]) => a?.type === "error"),
+      ).toHaveLength(0);
+    });
+
+    it("sync polls integration until lastSyncAt changes then shows \"2 new since last sync\"", async () => {
+      let integrationGets = 0;
+      let companiesGets = 0;
+      fetchWithAuth.mockImplementation(
+        async (url: string, init?: RequestInit) => {
+          if (url === "/pax8/sync" && init?.method === "POST")
+            return jsonResponse({ queued: true });
+          if (url === "/pax8/integration") {
+            integrationGets += 1;
+            // load = 1; polls 2 and 3 unchanged; poll 4 changed.
+            return jsonResponse({
+              data:
+                integrationGets >= 4
+                  ? { ...existingIntegration, lastSyncAt: "2026-06-19T12:00:00.000Z" }
+                  : existingIntegration,
+            });
+          }
+          if (url.startsWith("/pax8/companies")) {
+            companiesGets += 1;
+            const extra =
+              companiesGets > 1
+                ? [
+                    { ...suggestedRow, pax8CompanyId: "n1" },
+                    { ...suggestedRow, pax8CompanyId: "n2" },
+                  ]
+                : [];
+            return jsonResponse({
+              integrationId: "pax8-1",
+              summary: summaryOf(3, 0, 2),
+              data: [suggestedRow, ...extra],
+            });
+          }
+          if (url.startsWith("/pax8/subscriptions"))
+            return jsonResponse({ data: [] });
+          if (url.startsWith("/orgs/organizations"))
+            return jsonResponse({ data: [breezeOrg] });
+          return jsonResponse({}, 404);
+        },
+      );
+      render(<Pax8Integration />);
+      await screen.findByTestId("pax8-status-connected");
+
+      vi.useFakeTimers({
+        toFake: ["setTimeout", "clearTimeout"],
+        shouldAdvanceTime: true,
+      });
+      fireEvent.click(screen.getByTestId("pax8-sync"));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(screen.queryByTestId("pax8-sync-new-companies")).toBeNull();
+      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(screen.queryByTestId("pax8-sync-new-companies")).toBeNull();
+      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(screen.getByTestId("pax8-sync-new-companies")).toHaveTextContent(
+        "2 new since last sync",
+      );
+    });
+
+    describe("review fixes", () => {
+      const baseHandler = (
+        overrides: (url: string, init?: RequestInit) => Response | undefined,
+        counters: { integrationGets: number; companiesGets: number },
+      ) =>
+        fetchWithAuth.mockImplementation(
+          async (url: string, init?: RequestInit) => {
+            const o = overrides(url, init);
+            if (o) return o;
+            if (url === "/pax8/integration") {
+              counters.integrationGets += 1;
+              return jsonResponse({ data: existingIntegration });
+            }
+            if (url.startsWith("/pax8/companies")) {
+              counters.companiesGets += 1;
+              return jsonResponse({
+                integrationId: "pax8-1",
+                summary: summaryOf(1, 1),
+                data: [suggestedRow],
+              });
+            }
+            if (url.startsWith("/pax8/subscriptions"))
+              return jsonResponse({ data: [] });
+            if (url.startsWith("/orgs/organizations"))
+              return jsonResponse({ data: [breezeOrg] });
+            return jsonResponse({}, 404);
+          },
+        );
+      const toastWith = (type: string, text: string) =>
+        showToast.mock.calls.some(
+          ([a]) => a?.type === type && String(a.message).includes(text),
+        );
+      const syncOk = (url: string, init?: RequestInit) =>
+        url === "/pax8/sync" && init?.method === "POST"
+          ? jsonResponse({ queued: true })
+          : undefined;
+
+      it("a sync poll timeout warns and shows no new-companies pill", async () => {
+        baseHandler(syncOk, { integrationGets: 0, companiesGets: 0 });
+        render(<Pax8Integration />);
+        await screen.findByTestId("pax8-status-connected");
+        vi.useFakeTimers({
+          toFake: ["setTimeout", "clearTimeout"],
+          shouldAdvanceTime: true,
+        });
+        fireEvent.click(screen.getByTestId("pax8-sync"));
+        await vi.advanceTimersByTimeAsync(3000 * 41);
+        await vi.advanceTimersByTimeAsync(50);
+        expect(toastWith("warning", "still running")).toBe(true);
+        expect(screen.queryByTestId("pax8-sync-new-companies")).toBeNull();
+      });
+
+      it("unmounting mid-poll stops further integration GETs", async () => {
+        const counters = { integrationGets: 0, companiesGets: 0 };
+        baseHandler(syncOk, counters);
+        const view = render(<Pax8Integration />);
+        await screen.findByTestId("pax8-status-connected");
+        vi.useFakeTimers({
+          toFake: ["setTimeout", "clearTimeout"],
+          shouldAdvanceTime: true,
+        });
+        fireEvent.click(screen.getByTestId("pax8-sync"));
+        await vi.advanceTimersByTimeAsync(3100);
+        const atUnmount = counters.integrationGets;
+        expect(atUnmount).toBeGreaterThan(1);
+        view.unmount();
+        await vi.advanceTimersByTimeAsync(20000);
+        expect(counters.integrationGets).toBe(atUnmount);
+      });
+
+      it("a successful map with a non-OK companies refetch warns, not 'failed to map'", async () => {
+        const counters = { integrationGets: 0, companiesGets: 0 };
+        baseHandler((url, init) => {
+          if (url === "/pax8/companies/map" && init?.method === "POST")
+            return jsonResponse({ data: {} });
+          if (url.startsWith("/pax8/companies") && counters.companiesGets >= 1)
+            return jsonResponse({ error: "boom" }, 500);
+          return undefined;
+        }, counters);
+        render(<Pax8Integration />);
+        fireEvent.click(
+          await screen.findByTestId("pax8-company-suggestion-pax8-co-1-accept"),
+        );
+        await waitFor(() =>
+          expect(toastWith("warning", "could not be refreshed")).toBe(true),
+        );
+        expect(toastWith("error", "Failed to map")).toBe(false);
+      });
+
+      it("a successful map whose refetch throws also warns, not 'failed to map'", async () => {
+        let mapped = false;
+        baseHandler(
+          (url, init) => {
+            if (url === "/pax8/companies/map" && init?.method === "POST") {
+              mapped = true;
+              return jsonResponse({ data: {} });
+            }
+            if (url.startsWith("/pax8/companies") && mapped)
+              throw new Error("network down");
+            return undefined;
+          },
+          { integrationGets: 0, companiesGets: 0 },
+        );
+        render(<Pax8Integration />);
+        fireEvent.click(
+          await screen.findByTestId("pax8-company-suggestion-pax8-co-1-accept"),
+        );
+        await waitFor(() =>
+          expect(toastWith("warning", "could not be refreshed")).toBe(true),
+        );
+        expect(toastWith("error", "Failed to map")).toBe(false);
+      });
+
+      it("bulk success toasts a plural count", async () => {
+        baseHandler(
+          (url, init) =>
+            url === "/pax8/companies/map-bulk" && init?.method === "POST"
+              ? jsonResponse({ data: { mapped: 1 } })
+              : undefined,
+          { integrationGets: 0, companiesGets: 0 },
+        );
+        render(<Pax8Integration />);
+        fireEvent.click(await screen.findByTestId("pax8-review-suggestions"));
+        fireEvent.click(await screen.findByTestId("pax8-review-confirm"));
+        await waitFor(() =>
+          expect(toastWith("success", "1 company mapped")).toBe(true),
+        );
+      });
+
+      it("bulk 400 INVALID_TARGET toasts an error, keeps the modal open, no stale notice", async () => {
+        baseHandler(
+          (url, init) =>
+            url === "/pax8/companies/map-bulk" && init?.method === "POST"
+              ? jsonResponse({ error: "bad target", code: "INVALID_TARGET" }, 400)
+              : undefined,
+          { integrationGets: 0, companiesGets: 0 },
+        );
+        render(<Pax8Integration />);
+        fireEvent.click(await screen.findByTestId("pax8-review-suggestions"));
+        fireEvent.click(await screen.findByTestId("pax8-review-confirm"));
+        await waitFor(() =>
+          expect(showToast.mock.calls.some(([a]) => a?.type === "error")).toBe(
+            true,
+          ),
+        );
+        expect(screen.getByTestId("pax8-review-modal")).toBeTruthy();
+        expect(screen.queryByTestId("pax8-review-stale")).toBeNull();
+      });
+
+      it("a 409 STALE_REVIEW whose refetch throws never escapes confirmBulk", async () => {
+        let stale = false;
+        baseHandler(
+          (url, init) => {
+            if (url === "/pax8/companies/map-bulk" && init?.method === "POST") {
+              stale = true;
+              return jsonResponse({ error: "stale", code: "STALE_REVIEW" }, 409);
+            }
+            if (url.startsWith("/pax8/companies") && stale)
+              throw new Error("network down");
+            return undefined;
+          },
+          { integrationGets: 0, companiesGets: 0 },
+        );
+        render(<Pax8Integration />);
+        fireEvent.click(await screen.findByTestId("pax8-review-suggestions"));
+        fireEvent.click(await screen.findByTestId("pax8-review-confirm"));
+        await waitFor(() =>
+          expect(toastWith("warning", "could not be refreshed")).toBe(true),
+        );
+        expect(toastWith("error", "Failed to map")).toBe(false);
+      });
+    });
   });
 });

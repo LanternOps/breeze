@@ -32,8 +32,9 @@
  *     {@link REMEDIATION_BOUND_PARAMETER_ERROR}.
  */
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { safeErrorMessage } from '../aiModels/safeDbError';
 
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { sqlTimestamp } from '../../db/sqlValues';
 import { devices, scripts } from '../../db/schema';
 import { deviceCommands } from '../../db/schema/devices';
@@ -756,95 +757,99 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
     }
 
     try {
-      let type: string;
-      let payload: Record<string, unknown>;
+      // Per-target savepoint: the chunk shares one transaction, and the catch below
+      // marks this target failed on it and moves to the next (#11225).
+      await withDbTransaction(async () => {
+        let type: string;
+        let payload: Record<string, unknown>;
 
-      if (run.actionKind === 'script') {
-        if (!scriptPayload) {
-          throw new Error(scriptUnavailableReason);
+        if (run.actionKind === 'script') {
+          if (!scriptPayload) {
+            throw new Error(scriptUnavailableReason);
+          }
+          type = CommandTypes.SCRIPT;
+          // #3409 PR4c-2: `parameters` here is the caller's snapshot verbatim —
+          // this path has no server-side resolution and NO secret envelope, so
+          // only runtime-sourced scripts ever reach it (guarded twice above).
+          // Adding a bound parameter to this payload requires routing the path
+          // through `dispatchScriptToDevice` first, not a resolver call here.
+          payload = {
+            scriptId: run.scriptId,
+            language: scriptPayload.language,
+            content: scriptPayload.content,
+            timeoutSeconds: scriptPayload.timeoutSeconds,
+            // #4888 — the operator's choice, pinned on the run at creation,
+            // wins over the script's saved default. Before this the picker
+            // rendered a System / logged-in-user select and the answer was
+            // dropped on the floor (`_runAs` in FixPickerModal.tsx), so a
+            // remediation always ran in whatever context the script row
+            // happened to carry. `?? scriptPayload.runAs` is what keeps every
+            // pre-#4888 run (run_as NULL) behaving identically.
+            runAs: run.runAs ?? scriptPayload.runAs,
+            parameters: run.parameterSnapshot ?? {},
+            // #5129 — this is the FOURTH script-dispatch path and the only one
+            // that does not go through `dispatchScriptToDevice` (see the file
+            // docblock), so it has to list the field itself. Omitted when empty
+            // so the wire is unchanged for scripts that acknowledge nothing.
+            ...((scriptPayload.acknowledgedSecurityPatterns ?? []).length > 0
+              ? { acknowledgedSecurityPatterns: scriptPayload.acknowledgedSecurityPatterns }
+              : {}),
+          };
+        } else {
+          const commandType = run.commandType as RemediationCommandType | null;
+          const mapped = commandType ? COMMAND_TYPE_DISPATCH_MAP[commandType] : undefined;
+          if (!mapped) {
+            // Never fall back to the raw stored value. A run whose commandType
+            // is not in the dispatch map is a row the allowlist should have made
+            // impossible (a hand-written row, or an allowlist entry added
+            // without a map entry); dispatching `run.commandType || ''` would
+            // hand the agent an unknown — or empty — command type that dies
+            // somewhere far from here, or worse, silently no-ops.
+            throw new Error(`Unsupported command type: ${run.commandType ?? '(none)'}`);
+          }
+          type = mapped;
+          payload = (run.parameterSnapshot ?? {}) as Record<string, unknown>;
         }
-        type = CommandTypes.SCRIPT;
-        // #3409 PR4c-2: `parameters` here is the caller's snapshot verbatim —
-        // this path has no server-side resolution and NO secret envelope, so
-        // only runtime-sourced scripts ever reach it (guarded twice above).
-        // Adding a bound parameter to this payload requires routing the path
-        // through `dispatchScriptToDevice` first, not a resolver call here.
-        payload = {
-          scriptId: run.scriptId,
-          language: scriptPayload.language,
-          content: scriptPayload.content,
-          timeoutSeconds: scriptPayload.timeoutSeconds,
-          // #4888 — the operator's choice, pinned on the run at creation,
-          // wins over the script's saved default. Before this the picker
-          // rendered a System / logged-in-user select and the answer was
-          // dropped on the floor (`_runAs` in FixPickerModal.tsx), so a
-          // remediation always ran in whatever context the script row
-          // happened to carry. `?? scriptPayload.runAs` is what keeps every
-          // pre-#4888 run (run_as NULL) behaving identically.
-          runAs: run.runAs ?? scriptPayload.runAs,
-          parameters: run.parameterSnapshot ?? {},
-          // #5129 — this is the FOURTH script-dispatch path and the only one
-          // that does not go through `dispatchScriptToDevice` (see the file
-          // docblock), so it has to list the field itself. Omitted when empty
-          // so the wire is unchanged for scripts that acknowledge nothing.
-          ...((scriptPayload.acknowledgedSecurityPatterns ?? []).length > 0
-            ? { acknowledgedSecurityPatterns: scriptPayload.acknowledgedSecurityPatterns }
-            : {}),
-        };
-      } else {
-        const commandType = run.commandType as RemediationCommandType | null;
-        const mapped = commandType ? COMMAND_TYPE_DISPATCH_MAP[commandType] : undefined;
-        if (!mapped) {
-          // Never fall back to the raw stored value. A run whose commandType
-          // is not in the dispatch map is a row the allowlist should have made
-          // impossible (a hand-written row, or an allowlist entry added
-          // without a map entry); dispatching `run.commandType || ''` would
-          // hand the agent an unknown — or empty — command type that dies
-          // somewhere far from here, or worse, silently no-ops.
-          throw new Error(`Unsupported command type: ${run.commandType ?? '(none)'}`);
+
+        // #4609 W05: this path builds its own script payload, so it stamps the
+        // restore-point decision through the same chokepoint as
+        // dispatchScriptToDevice. A resolution error lands in the catch below
+        // and fails the target visibly.
+        const restorePoint = type === CommandTypes.SCRIPT
+          ? await buildRestorePointRequest({
+            deviceId: target.targetDeviceUuid,
+            orgId: target.orgId,
+            osType: osTypes.get(target.targetDeviceUuid) ?? null,
+            trigger: 'script',
+            label: 'run remediation script',
+          })
+          : null;
+        if (restorePoint) payload = { ...payload, ...restorePointPayloadField(restorePoint) };
+
+        const result = await queueCommandForExecution(target.targetDeviceUuid, type, payload, {
+          userId: run.createdBy ?? undefined,
+          expectedOrgId: target.orgId,
+        });
+
+        if (result.error || !result.command) {
+          await discardRestorePointRequest(restorePoint);
+          await markTargetFailed(runId, target.targetDeviceUuid, result.error ?? 'Failed to queue command');
+          return;
         }
-        type = mapped;
-        payload = (run.parameterSnapshot ?? {}) as Record<string, unknown>;
-      }
+        await linkRestorePointCommand(restorePoint, result.command.id);
 
-      // #4609 W05: this path builds its own script payload, so it stamps the
-      // restore-point decision through the same chokepoint as
-      // dispatchScriptToDevice. A resolution error lands in the catch below
-      // and fails the target visibly.
-      const restorePoint = type === CommandTypes.SCRIPT
-        ? await buildRestorePointRequest({
-          deviceId: target.targetDeviceUuid,
-          orgId: target.orgId,
-          osType: osTypes.get(target.targetDeviceUuid) ?? null,
-          trigger: 'script',
-          label: 'run remediation script',
-        })
-        : null;
-      if (restorePoint) payload = { ...payload, ...restorePointPayloadField(restorePoint) };
-
-      const result = await queueCommandForExecution(target.targetDeviceUuid, type, payload, {
-        userId: run.createdBy ?? undefined,
-        expectedOrgId: target.orgId,
+        // The claim already flipped status/queuedAt; just attach the resulting
+        // command id onto the now-`queued` row.
+        await db
+          .update(fleetRemediationRunTargets)
+          .set({ deviceCommandId: result.command.id })
+          .where(
+            and(
+              eq(fleetRemediationRunTargets.runId, runId),
+              eq(fleetRemediationRunTargets.targetDeviceUuid, target.targetDeviceUuid)
+            )
+          );
       });
-
-      if (result.error || !result.command) {
-        await discardRestorePointRequest(restorePoint);
-        await markTargetFailed(runId, target.targetDeviceUuid, result.error ?? 'Failed to queue command');
-        continue;
-      }
-      await linkRestorePointCommand(restorePoint, result.command.id);
-
-      // The claim already flipped status/queuedAt; just attach the resulting
-      // command id onto the now-`queued` row.
-      await db
-        .update(fleetRemediationRunTargets)
-        .set({ deviceCommandId: result.command.id })
-        .where(
-          and(
-            eq(fleetRemediationRunTargets.runId, runId),
-            eq(fleetRemediationRunTargets.targetDeviceUuid, target.targetDeviceUuid)
-          )
-        );
     } catch (err) {
       // Everything the dispatcher EXPECTS to go wrong (a queue refusal, a
       // vanished script) is handled above by an explicit markTargetFailed.
@@ -868,7 +873,8 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
       await markTargetFailed(
         runId,
         target.targetDeviceUuid,
-        err instanceof Error ? err.message : 'Failed to queue command'
+        // Stored and tenant-readable: never the failed query's values.
+        err instanceof Error ? safeErrorMessage(err) : 'Failed to queue command'
       );
     }
   }

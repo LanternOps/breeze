@@ -33,7 +33,7 @@ function noteRefusal(c: Context, code: IsolationRefusalCode, orgId?: string) {
 function response(c: Context, result: object, created = false) {
   if ('error' in result) {
     const code = result.error as IsolationRefusalCode;
-    return c.json({ error: code, code, ...('networkIsolationUnsupportedReason' in result ? { networkIsolationUnsupportedReason: result.networkIsolationUnsupportedReason } : {}) }, REFUSAL_STATUS[code]);
+    return c.json({ error: code, code, ...('networkIsolationUnsupportedReason' in result ? { networkIsolationUnsupportedReason: result.networkIsolationUnsupportedReason } : {}), ...('allowlistReason' in result ? { allowlistReason: result.allowlistReason } : {}) }, REFUSAL_STATUS[code]);
   }
   return c.json(result, created ? 201 : 200);
 }

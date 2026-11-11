@@ -8,7 +8,7 @@ import { db, runAfterDbContextCommit } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, withAuthDbAccessContext, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDevice } from './helpers';
+import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDeviceForCaller } from './helpers';
 import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
 import {
@@ -256,7 +256,7 @@ commandsRoutes.post(
         // records as INSERT_FAILED for that device rather than 500-ing the whole
         // batch and losing every prior success.
         let command: QueuedCommand | undefined;
-        let delivery: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
+        let delivery: 'delivered' | 'indeterminate' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
         try {
           // `wake` never reaches here — it returns from its own relay path above.
           const res = await dispatchDeviceCommand({ deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id });
@@ -747,7 +747,7 @@ commandsRoutes.post(
           },
         });
       }
-      return c.json({ success: true, changed: result.changed, device: projectPublicDevice(result.device) });
+      return c.json({ success: true, changed: result.changed, device: await projectPublicDeviceForCaller(result.device, auth) });
     }
 
     // Advisory pre-check so a state denial costs no lock and no write; the
@@ -834,7 +834,7 @@ commandsRoutes.post(
           startedAt: result.startedAt.toISOString(),
           reason: data.reason,
         },
-        device: projectPublicDevice(result.device),
+        device: await projectPublicDeviceForCaller(result.device, auth),
       });
     } catch (err) {
       if (err instanceof MaintenanceStepUpConsumedError) {

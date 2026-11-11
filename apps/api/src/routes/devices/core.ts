@@ -4,7 +4,7 @@ import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, asc, eq, gte, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { deviceSearchCondition } from './searchFilter';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { CLEARED_AGENT_CREDENTIALS } from '../../services/agentCredentialHashes';
@@ -27,20 +27,29 @@ import {
 } from '../../db/schema';
 import {
   authMiddleware,
+  hasSatisfiedMfa,
   isInteractiveUserSession,
   requireMfa,
   requireScope,
   requirePermission,
   type AuthContext,
 } from '../../middleware/auth';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import { REMOTE_ACCESS_DENIAL } from '../remote/remoteAccessDenial';
 import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
-  projectPublicDevice,
+  projectPublicDeviceForCaller,
+  redactReplacementLinksForCaller,
 } from './helpers';
-import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema } from './schemas';
+import {
+  listDevicesSchema,
+  updateDeviceSchema,
+  decommissionDeviceSchema,
+  permanentDeleteDeviceSchema,
+  remoteAccessLaunchSchema,
+} from './schemas';
 import {
   DEVICES_LIST_DEFAULT_LIMIT,
   DEVICES_LIST_HARD_MAX,
@@ -59,6 +68,7 @@ import {
   purgeRemovedDevice,
   restoreRemovedDevice,
   DeviceLifecycleError,
+  type PurgeResult,
 } from '../../services/deviceLifecycle';
 import { listDeviceScreenshotStorageKeys } from '../../services/screenshotStorage';
 import { removeScreenshotFiles } from '../../services/screenshotFiles';
@@ -66,11 +76,14 @@ import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy'
 import {
   resolveRemoteAccessLaunch,
   checkRemoteAccessLaunchAvailability,
+  listRemoteAccessProviderOptions,
+  type RemoteAccessProviderOption,
   type RemoteAccessLaunchResult,
   type RemoteAccessLaunchAvailability,
   type RemoteAccessLaunchSkipReason,
 } from '../../services/remoteAccessLauncher';
 import { readPartnerRemoteAccessSettings } from '../../services/remoteAccessProviders';
+import { scheduleReinstallLinkClear } from '../../services/reinstallCandidates/clearLinks';
 import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
@@ -92,6 +105,7 @@ import {
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+import { findDbSaturationError } from '../../middleware/dbSaturationResponse';
 import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
 import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
 import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
@@ -356,6 +370,12 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_ip_history', 'device_memory_modules',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
+  // #11242 — derived per-device vendor update policy side; restamped by its composite FK's ON UPDATE CASCADE
+  // (also in DEVICE_ORG_FK_CASCADE_TABLES below).
+  'device_oem_policy_side',
+  // #11068 — vendor update status; restamped by its composite FK's ON UPDATE
+  // CASCADE (also in DEVICE_ORG_FK_CASCADE_TABLES below).
+  'device_oem_update_status',
   // #4755 — restore-checkpoint attempt ledger; restamped by its composite FK's
   // ON UPDATE CASCADE (also in DEVICE_ORG_FK_CASCADE_TABLES below).
   'device_restore_point_attempts',
@@ -464,6 +484,10 @@ export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'device_restore_point_attempts',
   // #6960 W03 — composite (device_id, org_id) FK ON UPDATE CASCADE.
   'security_agent_device_status',
+  // #11068 — composite (device_id, org_id) FK ON UPDATE CASCADE.
+  'device_oem_update_status',
+  // #11242 — composite (device_id, org_id) FK ON UPDATE CASCADE.
+  'device_oem_policy_side',
   'device_wake_attempts',
   'device_wake_status',
 ];
@@ -721,6 +745,12 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // devices(id, org_id) ON DELETE CASCADE; leaf table, no children. Default
   // device_id predicate (no DEVICE_CASCADE_DELETE_PREDICATES entry).
   'device_restore_point_attempts',
+  // Vendor update policy side (#11242) — FK (device_id, org_id) -> devices(id, org_id)
+  // ON DELETE CASCADE; leaf table, no children.
+  'device_oem_policy_side',
+  // Vendor update status (#11068) — FK (device_id, org_id) -> devices(id, org_id)
+  // ON DELETE CASCADE; leaf table, no children.
+  'device_oem_update_status',
   // Network-isolation episodes (#10089) — FK (device_id, org_id) -> devices(id, org_id) ON DELETE CASCADE;
   // leaf table, no children. Device delete with an unresolved episode is refused upstream (W1c).
   'device_network_isolations',
@@ -1080,8 +1110,12 @@ coreRoutes.post(
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);
     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    // #11116: chosen here, not by the column default, so the response can name
+    // the stored row without a RETURNING round trip.
+    const childKeyId = randomUUID();
 
     await db.insert(enrollmentKeys).values({
+      id: childKeyId,
       orgId,
       siteId,
       name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
@@ -1097,6 +1131,9 @@ coreRoutes.post(
 
     return c.json({
       token: key,
+      // #11116: the minted key's row id (never the secret), so a client that
+      // remembers the token can check GET /enrollment-keys/:id before reusing it.
+      childKeyId,
       maxUsage,
       // #7035: echo the bound site so the UI can say where devices will land.
       siteId,
@@ -1302,6 +1339,7 @@ coreRoutes.get(
     const offset = isCursorMode ? 0 : Math.max(0, ((Number.parseInt(query.page ?? '1', 10) || 1) - 1) * limit);
 
     const includeWarranty = query.includeWarranty === 'true';
+    const includeDisks = query.includeDisks === 'true';
     const listQuery = db
       .select({
         id: devices.id,
@@ -1453,7 +1491,9 @@ coreRoutes.get(
     // populated by the batched lateral below. Absent => the column dashes.
     const lanIpByDevice = new Map<string, string>();
     const disksByDevice = new Map<string, Array<{
+      id: string;
       mountPoint: string;
+      isOsVolume: boolean | null;
       totalGb: number;
       usedGb: number;
       freeGb: number;
@@ -1550,33 +1590,39 @@ coreRoutes.get(
         lanIpByDevice.set(row.device_id, row.ip_address);
       }
 
-      // Restrict inventory to the authorized page, after trimming the cursor
-      // peek row. A separate batched lookup avoids a 1:N join duplicating
-      // device rows and changing pagination. device_disks also enforces RLS.
-      const diskRows = await db.execute<{
-        device_id: string;
-        mount_point: string;
-        total_gb: number;
-        used_gb: number;
-        free_gb: number;
-        used_percent: number;
-      }>(sql`
-        SELECT disk.device_id, disk.mount_point, disk.total_gb,
-               disk.used_gb, disk.free_gb, disk.used_percent
-        FROM (VALUES ${idTuples}) AS d(device_id)
-        INNER JOIN ${deviceDisks} AS disk ON disk.device_id = d.device_id
-        ORDER BY disk.device_id, disk.mount_point
-      `);
-      for (const row of diskRows) {
-        const disks = disksByDevice.get(row.device_id) ?? [];
-        disks.push({
-          mountPoint: row.mount_point,
-          totalGb: row.total_gb,
-          usedGb: row.used_gb,
-          freeGb: row.free_gb,
-          usedPercent: row.used_percent,
-        });
-        disksByDevice.set(row.device_id, disks);
+      if (includeDisks) {
+        // Restrict inventory to the authorized page, after trimming the cursor
+        // peek row. A separate batched lookup avoids a 1:N join duplicating
+        // device rows and changing pagination. device_disks also enforces RLS.
+        const diskRows = await db.execute<{
+          device_id: string;
+          id: string;
+          mount_point: string;
+          is_os_volume: boolean | null;
+          total_gb: number;
+          used_gb: number;
+          free_gb: number;
+          used_percent: number;
+        }>(sql`
+          SELECT disk.device_id, disk.id, disk.mount_point, disk.is_os_volume,
+                 disk.total_gb, disk.used_gb, disk.free_gb, disk.used_percent
+          FROM (VALUES ${idTuples}) AS d(device_id)
+          INNER JOIN ${deviceDisks} AS disk ON disk.device_id = d.device_id
+          ORDER BY disk.device_id, disk.mount_point, disk.id
+        `);
+        for (const row of diskRows) {
+          const disks = disksByDevice.get(row.device_id) ?? [];
+          disks.push({
+            id: row.id,
+            mountPoint: row.mount_point,
+            isOsVolume: row.is_os_volume,
+            totalGb: row.total_gb,
+            usedGb: row.used_gb,
+            freeGb: row.free_gb,
+            usedPercent: row.used_percent,
+          });
+          disksByDevice.set(row.device_id, disks);
+        }
       }
     }
 
@@ -1644,7 +1690,7 @@ coreRoutes.get(
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
         ramPercent: latestMetrics?.ramPercent ?? 0,
-        disks: disksByDevice.get(d.id) ?? [],
+        ...(includeDisks ? { disks: disksByDevice.get(d.id) ?? [] } : {}),
         hardware: {
           cpuModel: d.cpuModel,
           cpuCores: d.cpuCores,
@@ -1683,6 +1729,10 @@ coreRoutes.get(
           : null
       };
     });
+
+    // #8318 §7.3: a reinstall link may name a device in an org this caller
+    // cannot reach; it is nulled for those rows (one query per page).
+    await redactReplacementLinksForCaller(data, auth);
 
     // Response shape diverges by pagination mode (see route-level comment).
     if (isCursorMode) {
@@ -1862,8 +1912,15 @@ coreRoutes.get(
 
     let hasRemoteAccessLauncher = false;
     let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
+    // #10922: the tools the Connect menu may offer for this device, and the one
+    // its primary click would launch. This route only needs devices:read, so the
+    // list follows the stricter gate GET /remote/providers already has
+    // (remote:access + MFA): reading a device must not widen who can see which
+    // remote tools the tenant uses. Without it the button simply has no menu.
+    let remoteAccessProviders: RemoteAccessProviderOption[] = [];
+    let remoteAccessDefaultProviderId: string | null = null;
     try {
-      const availability = await checkRemoteAccessLauncherAvailabilityForDevice(
+      const { availability, providerOptions } = await loadRemoteAccessLauncherViewForDevice(
         device.orgId,
         device.customFields as Record<string, unknown> | null,
         auth,
@@ -1872,6 +1929,16 @@ coreRoutes.get(
         hasRemoteAccessLauncher = true;
       } else {
         remoteAccessLaunchSkipReason = availability.skipReason;
+      }
+      // Inside the try so a failure here degrades to "no menu", never a 500
+      // for the whole device page.
+      const callerPermissions = c.get('permissions') as UserPermissions | undefined;
+      const mayChooseRemoteTool = !!callerPermissions
+        && hasPermission(callerPermissions, PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action)
+        && hasSatisfiedMfa(auth);
+      if (mayChooseRemoteTool) {
+        remoteAccessProviders = providerOptions;
+        remoteAccessDefaultProviderId = availability.available ? availability.providerId : null;
       }
     } catch (err) {
       captureException(err, c);
@@ -1887,7 +1954,7 @@ coreRoutes.get(
     const promptHost = await readPromptHostObservation(deviceId);
 
     return c.json({
-      ...projectPublicDevice(device),
+      ...(await projectPublicDeviceForCaller(device, auth)),
       // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
       logShipping: deriveLogShipping(device, new Date()),
       logsNotArriving,
@@ -1905,6 +1972,8 @@ coreRoutes.get(
       remoteAccessPolicy,
       hasRemoteAccessLauncher,
       remoteAccessLaunchSkipReason,
+      remoteAccessProviders,
+      remoteAccessDefaultProviderId,
       uninstall,
     });
   }
@@ -1989,8 +2058,24 @@ export async function checkRemoteAccessLauncherAvailabilityForDevice(
   customFields: Record<string, unknown> | null,
   auth?: AuthContext,
 ): Promise<RemoteAccessLaunchAvailability> {
+  return (await loadRemoteAccessLauncherViewForDevice(orgId, customFields, auth)).availability;
+}
+
+/**
+ * Everything GET /devices/:id shows about launchers, from ONE partner read:
+ * the primary click's availability and the Connect menu's options (#10922).
+ * Same no-decrypt guarantee as the availability check above.
+ */
+async function loadRemoteAccessLauncherViewForDevice(
+  orgId: string,
+  customFields: Record<string, unknown> | null,
+  auth?: AuthContext,
+): Promise<{ availability: RemoteAccessLaunchAvailability; providerOptions: RemoteAccessProviderOption[] }> {
   const { providers, preferredProviderId } = await loadRemoteAccessLauncherContext(orgId, auth);
-  return checkRemoteAccessLaunchAvailability({ customFields }, providers, preferredProviderId);
+  return {
+    availability: checkRemoteAccessLaunchAvailability({ customFields }, providers, preferredProviderId),
+    providerOptions: listRemoteAccessProviderOptions({ customFields }, providers),
+  };
 }
 
 /** Thrown by the launcher issuance for a device parked in a holding org. */
@@ -2015,12 +2100,40 @@ export async function resolveRemoteAccessLauncherForDevice(
   orgId: string,
   customFields: Record<string, unknown> | null,
   auth?: AuthContext,
+  explicitProviderId?: string | null,
 ): Promise<RemoteAccessLaunchResult> {
   if (await isParkedDevice(db, deviceId)) {
     throw new RemoteAccessLaunchParkedDeviceError(deviceId);
   }
   const { providers, preferredProviderId } = await loadRemoteAccessLauncherContext(orgId, auth);
-  return resolveRemoteAccessLaunch({ customFields }, providers, preferredProviderId);
+  return resolveRemoteAccessLaunch({ customFields }, providers, preferredProviderId, explicitProviderId);
+}
+
+/**
+ * Reads the launch POST's optional `{ providerId }` (#10922).
+ *
+ * Parsed by hand rather than with zValidator('json') for two reasons. The
+ * existing callers send no body, and fetchWithAuth forces a JSON content-type
+ * on every request, so the JSON validator would answer 400 to every one of
+ * them. And the validator skips a body whose content-type is not JSON, which
+ * here would quietly launch the DEFAULT tool for a request that named another
+ * one. So: a blank body is "no choice"; anything else must parse and validate
+ * whatever its content-type, or the request is refused. Never "fall back".
+ */
+async function readRemoteAccessLaunchChoice(
+  c: Context,
+): Promise<{ ok: true; providerId: string | null } | { ok: false }> {
+  const raw = await c.req.text();
+  if (raw.trim().length === 0) return { ok: true, providerId: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false };
+  }
+  const result = remoteAccessLaunchSchema.safeParse(parsed);
+  if (!result.success) return { ok: false };
+  return { ok: true, providerId: result.data.providerId ?? null };
 }
 
 // POST /devices/:id/remote-access-launch - Issue a one-shot remote-access
@@ -2037,7 +2150,10 @@ coreRoutes.post(
   // Same gate as the WebRTC initiate flow (apps/api/src/routes/remote/index.ts:12).
   // This endpoint issues URLs containing substituted provider credentials, so it
   // needs to match (not loosen) the existing remote-desktop session gate.
-  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
+  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action, {
+    // #11621: name the missing grant instead of a bare "Permission denied".
+    denial: REMOTE_ACCESS_DENIAL,
+  }),
   requireMfa(),
   requireCapability('remote_control'),
   async (c) => {
@@ -2052,6 +2168,17 @@ coreRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // After the device lookup on purpose: a device the caller cannot see is a
+    // 404 whatever the body says.
+    const choice = await readRemoteAccessLaunchChoice(c);
+    if (!choice.ok) {
+      return c.json(
+        { error: 'Invalid request body: expected an empty body or { "providerId": "<id>" }', code: 'invalid_request' },
+        400,
+      );
+    }
+    const explicitProvider = choice.providerId !== null;
+
     let launcher: RemoteAccessLaunchResult;
     try {
       launcher = await resolveRemoteAccessLauncherForDevice(
@@ -2059,6 +2186,7 @@ coreRoutes.post(
         device.orgId,
         device.customFields as Record<string, unknown> | null,
         auth,
+        choice.providerId,
       );
     } catch (err) {
       if (err instanceof RemoteAccessLaunchParkedDeviceError) {
@@ -2083,6 +2211,7 @@ coreRoutes.post(
         details: {
           deviceId,
           providerId: launcher.providerId,
+          explicitProvider,
         },
         result: 'denied',
       });
@@ -2100,7 +2229,9 @@ coreRoutes.post(
       // Match GET /devices/:id 404 convention used elsewhere for missing
       // sub-resources; the UI uses `hasRemoteAccessLauncher` on the detail
       // response to know whether to surface the button at all, so this
-      // path is only reachable from race conditions or out-of-date UI.
+      // path is only reachable from race conditions or out-of-date UI. An
+      // explicit choice that is not an enabled tool of this tenant lands here
+      // too, as code `provider_not_available` (#10922).
       return c.json(
         { error: 'No remote-access launcher available for this device', code: launcher.skipReason ?? 'unavailable' },
         404,
@@ -2108,7 +2239,8 @@ coreRoutes.post(
     }
 
     // Success: record the issuance. NEVER write the launch URL or password
-    // into the audit row. Only deviceId, providerId, and the scheme.
+    // into the audit row. Only deviceId, providerId, the scheme, and whether
+    // the technician picked the tool (#10922) or got the default.
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.remote_access_launch_url.issued',
@@ -2119,6 +2251,7 @@ coreRoutes.post(
         deviceId,
         providerId: launcher.providerId,
         scheme: launcher.scheme,
+        explicitProvider,
       },
     });
 
@@ -2314,7 +2447,7 @@ coreRoutes.patch(
     // SR-008: never return agent/helper/watchdog token hashes or mTLS cert
     // material to the client (these are credential verifiers / lifecycle
     // metadata that belong only inside the API).
-    return c.json(updated ? projectPublicDevice(updated) : updated);
+    return c.json(updated ? await projectPublicDeviceForCaller(updated, auth) : updated);
   }
 );
 
@@ -2487,13 +2620,24 @@ coreRoutes.delete(
     // as the decommission UPDATE above.
     await db
       .update(devices)
-      .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
+      // #8318: the reason and the detection time go with the link
+      // (devices_possible_replacement_reason_chk).
+      .set({
+        possibleReplacementOfDeviceId: null,
+        possibleReplacementReason: null,
+        possibleReplacementDetectedAt: null,
+        updatedAt: new Date(),
+      })
       .where(
         and(
           eq(devices.possibleReplacementOfDeviceId, deviceId),
           eq(devices.orgId, device.orgId)
         )
       );
+    // #8318 §7.3: links from the partner's OTHER orgs (hardware hints are
+    // partner-wide) are cleared after this request commits, in a system
+    // context; see services/reinstallCandidates/clearLinks.ts.
+    scheduleReinstallLinkClear(deviceId);
 
     // Cut any live remote-control session to the device being decommissioned —
     // device `status` is only checked at session connect time, so an in-flight
@@ -2528,7 +2672,7 @@ coreRoutes.delete(
 
     return c.json({
       success: true,
-      device: updated ? projectPublicDevice(updated) : updated,
+      device: updated ? await projectPublicDeviceForCaller(updated, auth) : updated,
       uninstallQueued,
     });
   }
@@ -2626,7 +2770,7 @@ coreRoutes.post(
 
     return c.json({
       success: true,
-      device: result.device ? projectPublicDevice(result.device) : result.device,
+      device: result.device ? await projectPublicDeviceForCaller(result.device, auth) : result.device,
       uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
     });
   }
@@ -2638,9 +2782,15 @@ coreRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
   requireMfa(),
+  // #11153 — optional body: `{ force: true }` is the operator's explicit
+  // "delete anyway" after a 409 UNINSTALL_NOT_CONFIRMED. A bodyless call (every
+  // existing client) is `force: false`, so it is refused rather than silently
+  // orphaning an agent that never confirmed it came off.
+  optionalJsonValidator(permanentDeleteDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
+    const { force } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -2667,6 +2817,8 @@ coreRoutes.delete(
     let linkGroupDissolved = false;
     let detachedTopologyAlerts = 0;
     let screenshotStorageKeys: string[] = [];
+    let uninstallState: PurgeResult['uninstallState'] = 'none';
+    let forced = false;
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
     // #2787 — one implementation shared with POST /devices/bulk/permanent-delete
@@ -2725,7 +2877,7 @@ coreRoutes.delete(
           () => db.transaction(async (tx) => ({
             // #8117 — read in the purge transaction; files go after it commits.
             screenshotStorageKeys: await listDeviceScreenshotStorageKeys(tx, deviceId),
-            ...(await purgeRemovedDevice(tx, deviceId, auth.allowedSiteIds)),
+            ...(await purgeRemovedDevice(tx, deviceId, auth.allowedSiteIds, { force })),
           })),
           'devices.permanentDelete',
         ),
@@ -2734,12 +2886,16 @@ coreRoutes.delete(
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
       detachedTopologyAlerts = purge.detachedTopologyAlerts;
+      uninstallState = purge.uninstallState;
+      forced = purge.forced;
     } catch (err: unknown) {
       if (err instanceof NetworkIsolationUnresolvedError) {
         return c.json({ error: err.code, message: err.message }, 409);
       }
       if (err instanceof DeviceLifecycleError) {
-        return c.json({ error: err.message, code: err.code }, err.status);
+        // UNINSTALL_NOT_CONFIRMED carries `uninstallState`, which the web's
+        // "delete anyway?" dialog explains to the operator.
+        return c.json({ error: err.message, code: err.code, ...err.details }, err.status);
       }
       // MUST unwrap. Drizzle wraps the postgres-js PostgresError in a
       // DrizzleQueryError whose own `.code` is undefined — the SQLSTATE lives on
@@ -2775,8 +2931,12 @@ coreRoutes.delete(
       // the transient, retryable conflict it is. The lock is the FIRST
       // statement of the purge, so a bounded lock failure rolls back having
       // mutated nothing at all and a retry is an ordinary retry.
-      if (pgCode === '55P03') {
-        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it`, err);
+      // #11627 — deadlock (40P01) / serialization failure (40001) are the same
+      // story: the purge rolled back whole and nothing was applied, so a retry
+      // is an ordinary retry. (57014 statement timeout is deliberately NOT
+      // here: a huge cascade can time out identically on every retry.)
+      if (pgCode === '55P03' || pgCode === '40P01' || pgCode === '40001') {
+        console.warn(`[devices] transient ${pgCode} during permanent delete of ${deviceId}; another writer holds it`, err);
         return c.json({
           error: 'Device is busy: another operation is currently modifying it. Try again in a moment.',
         }, 409);
@@ -2784,14 +2944,23 @@ coreRoutes.delete(
       // Anything else is a server-side cascade defect, and it STAYS a 500 —
       // #3952 was exactly this (a 23514 check violation), and mapping such a
       // failure to a 409 would advertise "retry me" for something that fails
-      // identically forever. But the status code is not the reason to lose the
-      // context: the global onError logs a bare `Error:` with no deviceId and,
-      // in production, returns a sanitized body, so without this line there is
-      // no server-side record of WHICH device failed to delete. Rethrow
-      // unchanged so the response contract and Sentry reporting stay owned by
-      // onError.
+      // identically forever. The global onError logs a bare `Error:` with no
+      // deviceId, so log which device failed here.
       console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId}`, err);
-      throw err;
+      // Non-Postgres errors (HTTPException, connect-timeout diagnostics) and
+      // pool/prologue saturation (503 + Retry-After, no Sentry) stay owned by
+      // onError.
+      if (!pgCode || findDbSaturationError(err)) throw err;
+      // #11627 — a Postgres cascade defect: still a 500, but answered here with
+      // a body the UI can show instead of onError's literal "Internal Server
+      // Error". Sentry reporting moves here with the response.
+      captureException(err, c, { route: 'devices.permanentDelete', pgCode }, {
+        fingerprint: ['devices.permanentDelete', pgCode],
+      });
+      return c.json({
+        error: `This device could not be permanently deleted because of a server-side error (database code ${pgCode}). Try again; if it keeps failing, contact support.`,
+        code: 'DEVICE_PURGE_FAILED',
+      }, 500);
     }
 
     // #8117 — the purge committed (its system context is a top-level
@@ -2816,6 +2985,13 @@ coreRoutes.delete(
         // Site-owned topology alerts this device originated (M3-D6) — after a
         // move-org they belong to ANOTHER org; record the detached provenance.
         ...(detachedTopologyAlerts > 0 ? { detachedTopologyAlerts } : {}),
+        // #11153 — always present: whether the operator sent force, whether
+        // force is what let the device through (`forced`), and what the
+        // agent's uninstall looked like under the lock. `forced: true` is the
+        // record of a deliberate "delete anyway".
+        force,
+        forced,
+        uninstallState,
       }
     });
 

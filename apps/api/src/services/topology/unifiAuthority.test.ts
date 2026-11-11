@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { executeMock, transactionMock, revoked } = vi.hoisted(() => ({ executeMock: vi.fn(), transactionMock: vi.fn(), revoked: [] as Array<{ siteId: string; collectorId?: string }> }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: transactionMock,
   assertInTransaction: vi.fn(),
   db: {
     execute: executeMock,

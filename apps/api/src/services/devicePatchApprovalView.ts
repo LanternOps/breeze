@@ -52,6 +52,9 @@ function ineligibleState(entry: PatchIneligibleEntry): DevicePatchApprovalState 
     case 'blocked_by_category':
     case 'blocked_by_app_rule':
     case 'blocked_by_feature_update_policy':
+    // A vendor lane is delivering this class (spec 4.6). No patch job installs it
+    // while that holds; the device's own Install button still does.
+    case 'managed_by_vendor_updates':
     case 'explicitly_declined':
     // The policy links a ring that does not resolve: nothing installs until
     // the link is fixed (#8186).

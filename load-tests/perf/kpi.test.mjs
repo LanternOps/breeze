@@ -94,6 +94,14 @@ test('1. buildKpiRecord computes the gated KPIs from the fixtures', () => {
   assert.deepEqual(rec.stack, STACK);
 });
 
+test('1b. non-2xx outside crawl-config are recorded in notes; a clean report has none', () => {
+  assert.deepEqual(build().notes, []);
+  const report = readJson('agentsim-report.json');
+  report.routes[0].status = { 200: 3998, 502: 3 };
+  report.routes[1].status = { 200: 1600, 404: 7 }; // crawl-config is exempt
+  assert.deepEqual(build({ report }).notes, ['3 × 502 on POST /agents/:id/heartbeat']);
+});
+
 test('2. interpolateAt is linear between samples and refuses edges more than 30 s from a sample', () => {
   const s = [
     { ts: new Date('2026-10-13T00:00:00Z'), cpuSeconds: 10, scrapeOk: true },

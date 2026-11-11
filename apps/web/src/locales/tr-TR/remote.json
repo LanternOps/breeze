@@ -49,7 +49,8 @@
       "securityCheckToast": "Uzaktan başlatma kullanılamıyor: güvenlik kontrolü başarısız oldu. Lütfen yöneticinizle iletişime geçin.",
       "securityPolicy": "Uzaktan başlatma güvenlik politikası tarafından engellendi",
       "server": "Uzaktan başlatma başarısız oldu: sunucu hatası. Lütfen yöneticinizle iletişime geçin.",
-      "vncTunnelFailed": "VNC tüneli açılamadı"
+      "vncTunnelFailed": "VNC tüneli açılamadı",
+      "providerUnavailable": "Bu uzaktan erişim aracı artık bu cihaz için kullanılamıyor. Sayfayı yenileyip tekrar deneyin."
     },
     "fallback": {
       "linuxFirstRun": "Linux'ta indirmeyi yürütülebilir hale getirin (chmod +x) ve bir kez çalıştırın. Bu, izleyiciyi kaydeder, böylece oturumlar bundan sonra otomatik olarak açılır.",
@@ -104,13 +105,21 @@
       "missingEntitlement": "Oturum açma penceresi masaüstü, gerekli Apple yetkisi onaylanana kadar engellenir",
       "missingPermission": "macOS gözetimsiz masaüstü erişimi için gereken izinler hâlâ eksik",
       "noDisplaySession": "Aktif grafik oturumu yok — önce RDP veya konsol aracılığıyla oturum açın",
+      "remoteAccessPermission": "Uzak masaüstü, rolünüzde bulunmayan Uzaktan Erişim (remote:access) iznini gerektirir. Bir yöneticiden bu izni rolünüze eklemesini isteyin.",
       "unsupportedOs": "macOS, oturum açma penceresinde uzaktan klavye ve fare girişini engeller; bu nedenle Uzak Masaüstü bu Mac'i orada denetleyemez. Oturum açma ekranına bağlanmak için cihazın yapılandırma ilkesinde VNC Aktarmasını etkinleştirin.",
       "virtualDisplay": "Bu Mac için yakalanabilir ekran mevcut değil. macOS Ekran Paylaşımı yoluyla bağlanmak için VNC Aktarmasını etkinleştirin.",
       "waylandUnsupported": "Bu bir Wayland masaüstü — uzak masaüstünün daha yeni bir aracıya ihtiyacı var",
       "x11AuthFailed": "Görüntü sunucusunda kimlik doğrulaması yapılamadı (X yetkilisi)",
       "x11ConnectFailed": "Bu cihazdaki ekran sunucusuna bağlanılamadı"
     },
-    "opensNewWindow": "(yeni bir pencerede açılır)"
+    "opensNewWindow": "(yeni bir pencerede açılır)",
+    "split": {
+      "builtInViewer": "Yerleşik görüntüleyici",
+      "connectWith": "{{name}} ile bağlan",
+      "connectWithBuiltIn": "Yerleşik görüntüleyici ile bağlan",
+      "menuLabel": "Bağlantı yöntemini seçin",
+      "opensInBrowser": "Yeni bir tarayıcı sekmesinde açılır"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Tünel oluşturuluyor...",
@@ -139,7 +148,7 @@
     "headingSingle": "{{name}} silinsin mi?",
     "itemCount": "Öğe Sayısı",
     "moveToTrash": "Çöp Kutusuna Taşı",
-    "recycleBinNotice": "Geri Dönüşüm Kutusu Bildirimi",
+    "recycleBinNotice": "Çöp kutusuna taşınan öğeler geri alınabilir. Kalıcı silme geri alınamaz.",
     "totalSize": "Toplam: {{size}}",
     "itemCount_one": "{{count}} öğe",
     "itemCount_other": "{{count}} öğe"
@@ -153,7 +162,7 @@
     "dateRange": "Tarih Aralığı",
     "detailsTitle": "Ayrıntılar Başlığı",
     "eventCount": "Etkinlik Sayısı",
-    "eventIdPlaceholder": "Etkinlik Kimliği Yer Tutucusu",
+    "eventIdPlaceholder": "ör. 7036",
     "eventLogs": "Olay Günlükleri",
     "eventsTitle": "{{name}} Etkinlikler",
     "fields": {
@@ -181,9 +190,9 @@
     },
     "logTitle": "{{name}} Günlük",
     "lookupEventId": "Arama Etkinliği Kimliği",
-    "noEvents": "Etkinlik Yok",
-    "noHandler": "İşleyici Yok",
-    "noMatches": "Eşleşme Yok",
+    "noEvents": "Kullanılabilir olay günlüğü yok.",
+    "noHandler": "Kullanılabilir olay günlüğü yok. Bu cihazdan olayları almak için bir sorgu işleyicisi bağlayın.",
+    "noMatches": "Olay bulunamadı. Filtrelerinizi değiştirmeyi deneyin.",
     "page": "Sayfa {{current}} / {{total}}",
     "ranges": {
       "allTime": "Tüm Zamanlar",
@@ -193,7 +202,7 @@
       "lastHour": "Son Saat"
     },
     "recordId": "Kayıt Kimliği: {{id}}",
-    "searchPlaceholder": "Arama Yer Tutucusu",
+    "searchPlaceholder": "Olay ara...",
     "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
     "time": {
       "daysAgo": "{{count}}d önce",
@@ -209,6 +218,7 @@
       "copy": "Kopyala",
       "delete": "Sil",
       "download": "İndir",
+      "mkdir": "Yeni klasör",
       "move": "Taşı",
       "purge": "Temizle",
       "restore": "Geri Yükle",
@@ -232,7 +242,7 @@
       "minutesAgo": "{{count}}m önce"
     },
     "title": "Dosya Etkinliği",
-    "unverifiedHint": "Doğrulanmamış İpucu"
+    "unverifiedHint": "Cihaz zamanında yanıt vermedi — doğrulamak için yenileyin"
   },
   "fileManager": {
     "activeCount": "{{count}} aktif",
@@ -250,6 +260,7 @@
     "emptyDirectory": "Boş Dizin",
     "errors": {
       "copy": "Kopyalanamadı",
+      "createFolder": "Klasör oluşturulamadı",
       "delete": "Silinemedi",
       "download": "İndirilemedi",
       "downloadTooLarge": "İndirilemeyecek kadar büyük ({{size}}). Dosya tarayıcısı en fazla {{max}} boyutunda dosya aktarır.",
@@ -264,6 +275,15 @@
     "home": "Ana Sayfa",
     "modified": "Değiştirildi",
     "moveTo": "Şuraya Taşı",
+    "newFolder": {
+      "action": "Yeni klasör",
+      "title": "Yeni klasör",
+      "nameLabel": "Klasör adı",
+      "location": "Şu konumda oluşturulacak: {{path}}",
+      "created": "{{name}} klasörü oluşturuldu",
+      "invalidName": "Klasör adları yol ayırıcıları veya bu cihazın dosya sisteminin izin vermediği karakterler içeremez.",
+      "nameExists": "Burada bu ada sahip bir dosya veya klasör zaten var."
+    },
     "selectedCount": "Seçilen Sayı",
     "size": "Boyut",
     "title": "Dosya Yöneticisi",
@@ -306,7 +326,7 @@
     "noMatches": "Eşleşme Yok",
     "processMemory": "İşlem Belleği",
     "processes": "Süreçler",
-    "searchPlaceholder": "Arama Yer Tutucusu",
+    "searchPlaceholder": "Ada veya PID'ye göre ara...",
     "showing": "{{total}} işlemlerden {{shown}} gösteriliyor",
     "status": {
       "idle": "Boşta",
@@ -318,7 +338,8 @@
     "title": "Süreç Yöneticisi",
     "totalCpu": "Toplam CPU",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Bunu izle"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -367,11 +388,11 @@
     "device": "Cihaz: {{id}}",
     "editValue": "Değeri Düzenle",
     "enterDecimalValue": "Ondalık Değeri Girin",
-    "enterHexBytes": "Onaltılı Bayt Girin",
+    "enterHexBytes": "Onaltılık baytları boşlukla ayırarak girin (ör. 00 01 02 03)",
     "enterHexValue": "Onaltılık Değeri Girin",
     "enterKeyName": "Anahtar Adını Girin",
     "enterStringValue": "Dize Değerini Girin",
-    "enterStrings": "Dizeleri Girin",
+    "enterStrings": "Her dizeyi yeni bir satıra girin",
     "enterValueName": "Değer Adını Girin",
     "errors": {
       "createKey": "Kayıt defteri anahtarı oluşturulamadı",
@@ -403,7 +424,7 @@
     "noValues": "Değer Yok",
     "parentPath": "Ana Yol",
     "root": "Kök",
-    "searchPlaceholder": "Arama Yer Tutucusu",
+    "searchPlaceholder": "Değer ara...",
     "title": "Kayıt Defteri Düzenleyicisi",
     "value": "Değer",
     "valueCount": "Değer Sayımı",
@@ -432,21 +453,21 @@
         "title": "Terminal Oturumunu Başlat"
       }
     },
-    "noOnlineDevices": "Çevrimiçi Cihaz Yok",
-    "noSearchMatches": "Arama Eşleşmesi Yok",
+    "noOnlineDevices": "Çevrimiçi cihaz yok.",
+    "noSearchMatches": "Aramanızla eşleşen cihaz yok.",
     "openDeviceList": "Cihaz Listesini Aç",
     "os": "İşletim Sistemi",
-    "searchPlaceholder": "Arama Yer Tutucusu"
+    "searchPlaceholder": "Çevrimiçi cihazlarda ara..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
       "devices": "Cihazlar",
       "fileManager": "Dosya Yöneticisi"
     },
-    "deviceNotFoundDescription": "Cihaz Bulunamadı Açıklama",
-    "deviceNotFoundTitle": "Cihaz Bulunamadı Başlığı",
+    "deviceNotFoundDescription": "Aradığınız cihaz mevcut değil veya erişiminiz yok.",
+    "deviceNotFoundTitle": "Cihaz bulunamadı",
     "deviceOfflineDescription": "Cihaz şu anda {{status}}. Uzaktan dosya erişimi yalnızca cihaz çevrimiçi olduğunda kullanılabilir.",
-    "deviceOfflineTitle": "Cihaz Çevrimdışı Başlığı",
+    "deviceOfflineTitle": "Cihaz çevrimdışı",
     "errorTitle": "Hata Başlığı",
     "errors": {
       "deviceNotFound": "Cihaz bulunamadı",
@@ -486,8 +507,8 @@
     "welcome": "Hoş geldiniz"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Cihaz Bulunamadı Açıklama",
-    "deviceNotFoundTitle": "Cihaz Bulunamadı Başlığı",
+    "deviceNotFoundDescription": "Aradığınız cihaz mevcut değil veya erişiminiz yok.",
+    "deviceNotFoundTitle": "Cihaz bulunamadı",
     "errorTitle": "Hata Başlığı",
     "errors": {
       "deviceNotFound": "Cihaz bulunamadı",
@@ -544,7 +565,7 @@
       "start": "Başlat",
       "stop": "Durdur"
     },
-    "adjustSearch": "Aramayı Ayarla",
+    "adjustSearch": "Arama sorgunuzu değiştirmeyi deneyin",
     "arguments": "Tartışmalar",
     "author": "Yazar",
     "deviceId": "Cihaz Kimliği: {{id}}",
@@ -566,7 +587,7 @@
     "runNow": "Şimdi Çalıştır",
     "searchPlaceholder": "Görevleri arayın...",
     "startIn": "Başla",
-    "startProgram": "Programı Başlat",
+    "startProgram": "Program başlat",
     "status": {
       "disabled": "Devre Dışı",
       "queued": "Sıraya alındı",
@@ -613,9 +634,9 @@
       "stop": "Durdur"
     },
     "actionBlocked": "İşlem Engellendi",
-    "adjustHint": "İpucunu Ayarla",
-    "agentRestartConfirm": "Temsilciyi Yeniden Başlat Onayla",
-    "agentStopBlocked": "Temsilci Durdurma Engellendi",
+    "adjustHint": "Aramanızı veya filtrelerinizi değiştirmeyi deneyin.",
+    "agentRestartConfirm": "Breeze temsilcisini yeniden başlatmak bu cihazın Breeze ile bağlantısını kısa süreliğine keser. Devam edilsin mi?",
+    "agentStopBlocked": "Breeze temsilcisi buradan durdurulamaz; durdurmak bu cihazın uzaktan yönetimini keser.",
     "allStatus": "Tüm Durumlar",
     "cannotStopAgent": "Temsilci Durdurulamıyor",
     "changeStartupType": "Başlangıç Türünü Değiştir",
@@ -632,7 +653,7 @@
     "page": "Sayfa {{current}} / {{total}}",
     "refreshHint": "Hizmetleri kontrol etmek için yenilemeyi deneyin.",
     "restartService": "Hizmeti Yeniden Başlatın",
-    "searchPlaceholder": "Arama Yer Tutucusu",
+    "searchPlaceholder": "Hizmet ara...",
     "serviceConfirm": "{{action}} hizmetini {{service}} yapmak istediğinizden emin misiniz?",
     "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
     "startService": "Hizmeti Başlat",
@@ -643,9 +664,10 @@
     },
     "stopService": "Hizmeti Durdur\n__BREEZE_TOKEN_2__ üzerindeki __BREEZE_TOKEN_1__ hizmetlerinden ",
     "summary": "{{device}} üzerindeki {{total}} hizmetten {{shown}} tanesi",
-    "title": "Başlık",
+    "title": "Hizmetler",
     "windowsOnlyDescription": "Hizmetler Yöneticisi yalnızca Windows cihazlar için kullanılabilir. {{device}}, {{os}} çalıştırıyor.",
-    "windowsOnlyTitle": "Windows Yalnızca Başlık"
+    "windowsOnlyTitle": "Yalnızca Windows",
+    "monitorThis": "Bunu izle"
   },
   "sessionHistory": {
     "columns": {
@@ -667,7 +689,7 @@
     },
     "noSessions": "Oturum Yok",
     "page": "Sayfa {{current}} / {{total}}",
-    "searchPlaceholder": "Arama Yer Tutucusu",
+    "searchPlaceholder": "Cihaza veya kullanıcıya göre ara...",
     "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
     "stats": {
       "averageDuration": "Ortalama Süre",
@@ -735,7 +757,7 @@
     "deletePermanently": "Kalıcı Olarak Sil",
     "deleteSelected": "Kalıcı Olarak Sil ({{count}})",
     "empty": "Boş",
-    "emptyConfirm": "Boş Onayla",
+    "emptyConfirm": "Tüm çöp kutusu boşaltılsın mı? Tüm öğeler kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     "emptyTrash": "Çöp Kutusunu Boşalt",
     "errors": {
       "empty": "Boşaltılamadı",
@@ -754,13 +776,13 @@
   "vncViewer": {
     "connect": "Bağlan",
     "credentials": {
-      "macDescription": "Mac Açıklaması",
+      "macDescription": "Mac, Apple Remote Desktop kimlik doğrulamasını kullanıyor. Ekran Paylaşımı erişimi olan bir macOS kullanıcı hesabı girin (kullanıcının oturum açma adı ve şifresi).",
       "macLoginRequired": "Mac Girişi Gerekli",
       "macPassword": "Mac Şifresi",
-      "macUsername": "Mac Kullanıcı Adı",
+      "macUsername": "macOS kullanıcı adı",
       "password": "Şifre",
       "passwordRequired": "Şifre gerekli",
-      "vncDescription": "Vnc Açıklaması"
+      "vncDescription": "System Settings > General > Sharing > Screen Sharing > Computer Settings bölümünde belirlenen şifreyi girin."
     },
     "disconnect": "Bağlantıyı kes",
     "errors": {
@@ -782,7 +804,7 @@
       "error": "Hata",
       "passwordRequired": "Şifre gerekli"
     },
-    "syncClipboard": "Senkronizasyon Panosu",
+    "syncClipboard": "Panoyu uzak cihazla eşitle",
     "tunnel": "Tünel {{id}}"
   },
   "vncViewerPage": {

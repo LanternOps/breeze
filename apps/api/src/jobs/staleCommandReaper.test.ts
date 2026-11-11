@@ -1389,7 +1389,7 @@ describe('reapStaleBackupJobs — liveness vs progress (#2798)', () => {
     expect(await reapStaleBackupJobs()).toBe(1);
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
       status: 'failed',
-      errorLog: '[stale-backup-reaper] Backup stalled: no data transferred for 2h while the agent was still responding (limit 2h)',
+      errorLog: '[stale-backup-reaper] Backup stalled: no data transferred or verified for 2h while the agent was still responding (limit 2h)',
     }));
     // The agent is alive, so it must be told to stop the wedged upload.
     expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-live', { jobId: 'job-live' });
@@ -1416,6 +1416,24 @@ describe('reapStaleBackupJobs — liveness vs progress (#2798)', () => {
       .mockReturnValueOnce(selectChain([liveRow(5 * 60 * MIN, { totalSize: 100 * GiB, transferredSize: 10 * GiB })]))
       .mockReturnValueOnce(selectChain([]));
     expect(await reapStaleBackupJobs()).toBe(0);
+  });
+
+  // #11014: a resume pass reports verified counters while transferred_size
+  // stays 0; applyBackupProgress turns their movement into last_progress_at
+  // (real-PG proof in staleBackupReaper.integration.test.ts). Here: the rule
+  // keys on that clock, not on transferred bytes, in both directions.
+  it.each([
+    { name: 'verified counters moved a minute ago: spared at 30h', progressAgeMs: 60 * 1000, want: 0 },
+    { name: 'verified counters frozen for 25h: reaped', progressAgeMs: 25 * 60 * MIN, want: 1 },
+  ])('resume pass with 0 bytes transferred — $name', async ({ progressAgeMs, want }) => {
+    captureSet();
+    selectMock
+      .mockReturnValueOnce(selectChain([liveRow(progressAgeMs, {
+        totalSize: 2400 * GiB, transferredSize: 0,
+        startedAt: new Date(T - 30 * 60 * MIN), createdAt: new Date(T - 31 * 60 * MIN),
+      })]))
+      .mockReturnValueOnce(selectChain([]));
+    expect(await reapStaleBackupJobs()).toBe(want);
   });
 
   it('a silent agent (keepalive stale) is still reaped on the 15-minute liveness rule', async () => {

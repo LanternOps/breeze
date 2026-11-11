@@ -22,6 +22,7 @@ vi.mock('../db', () => ({
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, partnerId: null },
 }));
 
+import { isBackupFullRunReason } from '@breeze/shared';
 import { classifyMissingBaseReason, type BaseCandidateProbe } from './backupWorker';
 
 const now = new Date('2026-09-20T12:00:00Z');
@@ -202,5 +203,30 @@ describe('classifyMissingBaseReason', () => {
         { storageIdentity: identity, mode: 'file', now, keyRoot: LEGACY },
       ),
     ).toBe('storage_identity_changed');
+  });
+});
+
+// #11027: this string is persisted on backup_jobs.full_backup_reason and read
+// back through isBackupFullRunReason, so an output missing from the shared list
+// would render as "Reason not recorded" with nothing going red. One row per
+// reachable branch of the classifier, in its order.
+describe('BACKUP_FULL_RUN_REASONS covers every classifyMissingBaseReason output', () => {
+  const ctx = { storageIdentity: identity, mode: 'file', now, keyRoot: LEGACY } as const;
+  const cases: Array<[expected: string, probe: BaseCandidateProbe | null, ctx?: Parameters<typeof classifyMissingBaseReason>[1]]> = [
+    ['no_prior_snapshot', null],
+    ['storage_identity_changed', probe({ storageIdentity: 'local::/srv/old' })],
+    ['base_key_root_unreadable', probe({ keyLayout: 'prefixed_flat', keyPrefix: null })],
+    ['key_root_changed', probe({ keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' })],
+    ['backup_type_mismatch', probe({ backupType: 'system_image' })],
+    ['base_expired', probe({ expiresAt: new Date('2026-09-20T11:59:00Z') })],
+    ['base_job_not_completed', probe({ jobStatus: 'failed' })],
+    ['base_retired', probe({ retired: true })],
+    ['no_prior_snapshot', probe()],
+  ];
+
+  it.each(cases)('%s is a known reason', (expected, candidate) => {
+    const reason = classifyMissingBaseReason(candidate, ctx);
+    expect(reason).toBe(expected);
+    expect(isBackupFullRunReason(reason)).toBe(true);
   });
 });

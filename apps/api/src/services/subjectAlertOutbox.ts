@@ -5,8 +5,10 @@
  * Alert creators stage a `SubjectAlertDispatch` envelope on the alert row
  * itself (`alerts.context._subjectDispatch`, or `_subjectResolutionDispatch`
  * for a subject recovery) inside the SAME transaction that writes the alert:
- * the subject path of `createAlert` (W03 Task 10), and since #10926 the legacy
- * `createAlert` path and `createSourcedAlert` too. The key keeps its W03 name;
+ * the subject path of `createAlert` (W03 Task 10), since #10926 the legacy
+ * `createAlert` path and `createSourcedAlert` too, and since #11348 the
+ * automation / flow `create_alert` writer (`alertCreation.ts`; envelope in
+ * `alertDispatchEnvelope.ts`). The key keeps its W03 name;
  * it is the alert dispatch outbox for all of them. This module reads the
  * envelope back only AFTER the writing transaction has committed, so the
  * `process-alert` worker, PSA admission and webhook enrichment always find
@@ -21,6 +23,11 @@
  * fixed at staging, so publication is at-least-once across a crash between
  * publish and acknowledgement. "Published" means the event bus accepted the
  * event; a local subscriber's own failure is swallowed by the bus, as before.
+ *
+ * Flow ancestry (#11348): an envelope staged inside a flow step carries that
+ * step's run id and chain depth, and each event is published outside any flow
+ * execution frame with exactly those, so a drain started by one flow step
+ * never stamps its own ancestry onto another alert's event.
  *
  * Publish failure: a legacy or sourced envelope (`retryOnPublishFailure`)
  * keeps its row and backs off for a minute before a drain retries it.
@@ -52,11 +59,12 @@ import { publishEvent } from './eventBus';
 import { recordStateTransition, setCooldown } from './alertCooldown';
 import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 import { captureException } from './sentry';
-import type { SubjectAlertDispatch } from './alertService';
+import type { SubjectAlertDispatch } from './alertDispatchEnvelope';
 import { escalationSeverityFor } from './monitors/escalationLatch';
 import { drainRetirementOutbox } from './hardwareHealth/retirementOutbox';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { SUBJECT_MONITOR_KINDS } from './monitors/subjectMonitorKinds';
+import { outsideFlowExecutionContext } from './flows/flowExecutionContext';
 
 type Claimed = {
   id: string;
@@ -154,14 +162,20 @@ export async function dispatchStagedAlerts(
       if (live.length === 0) continue;
 
       try {
-        await publishEvent(
+        // #11348 — each event carries the flow ancestry staged with it, never
+        // the frame of whichever flow step started this drain: publish()
+        // prefers an ambient frame over these options.
+        await outsideFlowExecutionContext(() => publishEvent(
           row.pending.eventType, row.orgId, row.pending.payload,
           row.pending.publisher ?? 'alert-service',
           {
             siteId: row.pending.siteId, eventId: row.pending.eventId,
             ...(row.pending.occurredAt ? { occurredAt: row.pending.occurredAt } : {}),
+            ...(row.pending.flow
+              ? { flowRunId: row.pending.flow.runId, flowChainDepth: row.pending.flow.chainDepth }
+              : {}),
           },
-        );
+        ));
       } catch (error) {
         captureException(error, undefined, { errorId: 'subject-alert-publish-failed', alertId: row.id });
         console.error('[SubjectAlertOutbox] Publication failed', row.id, error);
@@ -222,7 +236,10 @@ export async function dispatchStagedAlerts(
 
       const effects: Array<() => Promise<unknown>> = [];
       const { ruleId, subjectKey, deviceId: ownerDeviceId } = row;
-      if (ruleId && ownerDeviceId && subjectKey) {
+      if (row.pending.noiseControls === false) {
+        // #11348 — the creator keeps no cooldown or flap state for this alert
+        // (the automation `create_alert` action, one subject per action).
+      } else if (ruleId && ownerDeviceId && subjectKey) {
         effects.push(
           () => recordStateTransition(ruleId, ownerDeviceId, triggering ? 'triggered' : 'resolved', subjectKey),
           () => setCooldown(ruleId, ownerDeviceId, row.pending.cooldownMinutes, subjectKey),

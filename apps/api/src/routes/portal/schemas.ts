@@ -2,6 +2,7 @@ import { PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import { z } from 'zod';
 import { PORTAL_REPORT_TYPES } from '../../services/portal/reportsSelfService';
 import { PORTAL_RATE_LIMIT_REDIS_KEYS } from '../../services/portal/rateLimit';
+import type { PortalSessionMethod } from './browserSession';
 
 // ============================================
 // Types
@@ -12,6 +13,18 @@ export type PortalSession = {
   portalUserId: string;
   orgId: string;
   authEpoch: number;
+  /**
+   * The sign-in method that minted the session (W3, plan D6). Every mint site
+   * writes it; absent means a pre-W3 session, which `parseStoredPortalSession`
+   * reads as `'password'`, exactly like a Redis payload without the field.
+   */
+  method?: PortalSessionMethod;
+  /**
+   * The org's proven Entra tenant at mint (W4, plan D9). Set for, and only
+   * for, an `entra` session; `parseStoredPortalSession` refuses an entra
+   * session without it.
+   */
+  entraTenantId?: string;
   createdAt: Date;
   expiresAt: Date;
 };
@@ -88,6 +101,10 @@ export const RESET_TTL_SECONDS = Math.floor(RESET_TTL_MS / 1000);
 export const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 export const INVITE_TTL_SECONDS = Math.floor(INVITE_TTL_MS / 1000);
 export const PORTAL_INVITE_TOKEN_CAP = 20000;
+/** Self-registration mailbox-proof link (portal registration W6, plan D8): 30 minutes. */
+export const SELF_REGISTER_TTL_MS = 1000 * 60 * 30;
+export const SELF_REGISTER_TTL_SECONDS = Math.floor(SELF_REGISTER_TTL_MS / 1000);
+export const PORTAL_SELF_REGISTER_TOKEN_CAP = 10_000;
 
 // The state-backend switch and the rate limiter live in the services layer
 // (services/portal/rateLimit.ts) so services can use them without importing
@@ -104,6 +121,12 @@ export const PORTAL_REDIS_KEYS = {
   userSessions: (userId: string) => `portal:user-sessions:${userId}`,
   resetToken: (hash: string) => `portal:reset:${hash}`,
   inviteToken: (hash: string) => `portal:invite:${hash}`,
+  /** Portal OIDC flow state (W4), keyed by sha256(state); TTL 600 s. */
+  oidcState: (hash: string) => `portal:oidc:state:${hash}`,
+  /** Entra tenant proof-run link (W4), keyed by sha256(run token); TTL 72 h. */
+  entraProofRun: (hash: string) => `portal:entra:proof-run:${hash}`,
+  /** Self-registration link (W6), keyed by sha256(raw token); TTL 1800 s. */
+  selfRegisterToken: (hash: string) => `portal:self-register:${hash}`,
   rlAttempts: PORTAL_RATE_LIMIT_REDIS_KEYS.attempts,
   rlBlock: PORTAL_RATE_LIMIT_REDIS_KEYS.block,
 };
@@ -137,6 +160,32 @@ export const PASSWORD_CHANGE_RATE_LIMIT = {
   blockMs: 15 * 60 * 1000
 } as const;
 
+// Self-registration (portal registration W6, plan D4 / OD3). Every limit is
+// applied before anything address-specific and answers the same 429 for
+// every address. The email key is sha256(normalized address), never the
+// address; the domain limit is the spec's "per-domain-per-day".
+const HOUR_MS = 60 * 60 * 1000;
+export const SELF_REGISTER_IP_RATE_LIMIT = {
+  windowMs: 15 * 60 * 1000,
+  maxAttempts: 5,
+  blockMs: 30 * 60 * 1000
+} as const;
+export const SELF_REGISTER_EMAIL_RATE_LIMIT = {
+  windowMs: 24 * HOUR_MS,
+  maxAttempts: 3,
+  blockMs: 24 * HOUR_MS
+} as const;
+export const SELF_REGISTER_DOMAIN_RATE_LIMIT = {
+  windowMs: 24 * HOUR_MS,
+  maxAttempts: 50,
+  blockMs: 24 * HOUR_MS
+} as const;
+export const SELF_REGISTER_VERIFY_RATE_LIMIT = {
+  windowMs: 15 * 60 * 1000,
+  maxAttempts: 10,
+  blockMs: 30 * 60 * 1000
+} as const;
+
 // ============================================
 // Zod Schemas
 // ============================================
@@ -155,6 +204,33 @@ export const forgotPasswordSchema = z.object({
   email: z.string().email(),
   orgId: z.string().guid().optional()
 });
+
+/**
+ * Control characters, plus the Unicode format and bidi-override characters
+ * (Cf), and line/paragraph separators: a self-registration name is shown to
+ * MSP staff in the access-request queue, so it must render as typed.
+ */
+const NAME_FORBIDDEN_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/**
+ * POST /portal/auth/self-register (W6 D3). Strict: the body never names an
+ * org (inv. 1, 2) — the org comes only from the address's verified domain.
+ * `email` uses forgotPasswordSchema's validator, capped at 254 (RFC 5321).
+ */
+export const selfRegisterSchema = z.object({
+  email: z.string().email().max(254),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .refine((v) => !NAME_FORBIDDEN_CHARS.test(v), { message: 'Name contains characters that are not allowed' }),
+}).strict();
+
+/** POST /portal/auth/self-register/verify (W6 D9). */
+export const selfRegisterVerifySchema = z.object({
+  token: z.string().min(1).max(512),
+}).strict();
 
 export const resetPasswordSchema = z.object({
   token: z.string().min(1),

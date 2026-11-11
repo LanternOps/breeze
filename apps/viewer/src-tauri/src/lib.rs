@@ -10,6 +10,7 @@ use url::Url;
 mod dev_build;
 #[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
+mod linux_webrtc;
 mod screenshot;
 mod session_menu;
 mod update_diagnostics;
@@ -897,7 +898,12 @@ fn create_session_window(app: &tauri::AppHandle, url: String) -> bool {
         .inner_size(1280.0, 800.0)
         .build()
     {
-        Ok(_) => {
+        Ok(_window) => {
+            // WebKitGTK ships with WebRTC switched off, and a service-mode
+            // agent accepts nothing else (#9557).
+            #[cfg(target_os = "linux")]
+            linux_webrtc::enable(&_window);
+
             // A real session took over — retire the anchor window. Hidden, not
             // closed: it is still the process anchor. Failure is cosmetic (the
             // idle card lingers beside the session) and cannot strand the exit

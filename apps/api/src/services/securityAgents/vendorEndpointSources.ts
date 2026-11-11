@@ -1,17 +1,27 @@
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices, huntressAgents, huntressIntegrations, organizations, s1Agents, s1Integrations } from '../../db/schema';
+import {
+  devices,
+  edrConnections,
+  edrEndpoints,
+  edrTenants,
+  huntressAgents,
+  huntressIntegrations,
+  organizations,
+  s1Agents,
+  s1Integrations,
+} from '../../db/schema';
 import { HUNTRESS_OFFLINE_STATUSES } from '../huntressConstants';
 import type { VendorEndpointSource, VendorEndpointView } from './coverageReconciler';
-import type { VendorKey } from './securityAgentVendors';
+import { listVendors, type VendorKey } from './securityAgentVendors';
 
 /**
  * Vendor endpoint sources for coverage reconciliation (#6960 W03).
  *
- * Huntress (`huntress_agents`, W03) and SentinelOne (`s1_agents`, W04). EDR
- * framework providers (`edr_endpoints`) come later; a vendor without a source
- * is never reconciled (the DNS vendors cannot be enabled yet, so they only
- * ever hold `not_applicable` rows).
+ * Huntress (`huntress_agents`, W03), SentinelOne (`s1_agents`, W04) and EDR
+ * framework vendors (`edr_endpoints`, #8170). A vendor without a source is never
+ * reconciled (the DNS vendors cannot be enabled yet, so they only ever hold
+ * `not_applicable` rows).
  *
  * Every query here runs in the CALLER's system context: vendor rows are read
  * across the partner's orgs to find cross-org (mismatched) agents, which an
@@ -177,10 +187,83 @@ function s1Online(status: string | null): boolean | null {
   return null;
 }
 
+/**
+ * An EDR framework vendor (`edr_endpoints`, filled by the framework's inventory
+ * sync).
+ *
+ * `reportsVendorOrg: false`: a row's `org_id` is its tenant's mapping and the
+ * sync links `breeze_device_id` only inside that org, so `mismatched_org` is
+ * never claimed (security-agents spec 2.9).
+ *
+ * Tombstoned tenants are ignored, as the installer selection ignores them: they
+ * no longer sync, so counting one would hold the view unavailable forever, and
+ * its old endpoints must not read as covered. Any other mapped tenant that is
+ * stale, or whose connection is inactive or needs reauth, makes the whole view
+ * unavailable, because a gap could not be told from a sync that stopped.
+ */
+function edrFrameworkEndpointSource(vendor: VendorKey): VendorEndpointSource {
+  return {
+    vendor,
+    reportsVendorOrg: false,
+    async listForOrg(orgId: string): Promise<VendorEndpointView[] | null> {
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+      if (!org?.partnerId) return null;
+
+      const tenants = await db
+        .select({
+          id: edrTenants.id,
+          lastInventorySyncAt: edrTenants.lastInventorySyncAt,
+          connectionActive: edrConnections.isActive,
+          connectionStatus: edrConnections.status,
+        })
+        .from(edrTenants)
+        .innerJoin(edrConnections, eq(edrTenants.connectionId, edrConnections.id))
+        .where(and(
+          eq(edrTenants.orgId, orgId),
+          eq(edrTenants.partnerId, org.partnerId),
+          eq(edrConnections.provider, vendor),
+          isNull(edrTenants.vendorMissingSince),
+        ));
+      if (viewIsUnavailable(tenants.map((tenant) => ({ lastSyncAt: tenant.lastInventorySyncAt })))) return null;
+      if (tenants.some((tenant) => !tenant.connectionActive || tenant.connectionStatus === 'reauth_required')) return null;
+
+      const rows = await db
+        .select({
+          id: edrEndpoints.id,
+          orgId: edrEndpoints.orgId,
+          deviceId: edrEndpoints.breezeDeviceId,
+          hostname: edrEndpoints.hostname,
+          online: edrEndpoints.online,
+        })
+        .from(edrEndpoints)
+        .where(and(
+          inArray(edrEndpoints.tenantId, tenants.map((tenant) => tenant.id)),
+          eq(edrEndpoints.orgId, orgId),
+          eq(edrEndpoints.partnerId, org.partnerId),
+        ));
+
+      return rows.map((row) => ({
+        endpointId: row.id,
+        orgId: row.orgId,
+        deviceId: row.deviceId,
+        hostname: row.hostname,
+        online: row.online,
+      }));
+    },
+  };
+}
+
 const SOURCES: Partial<Record<VendorKey, VendorEndpointSource>> = {
   huntress: huntressEndpointSource,
   sentinelone: sentinelOneEndpointSource,
 };
+for (const vendor of listVendors()) {
+  if (vendor.orgSource === 'edr_framework') SOURCES[vendor.key] = edrFrameworkEndpointSource(vendor.key);
+}
 
 /** The vendor's endpoint source, or null when the vendor has none yet. */
 export function getVendorEndpointSource(vendor: VendorKey): VendorEndpointSource | null {

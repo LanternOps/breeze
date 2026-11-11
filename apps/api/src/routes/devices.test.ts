@@ -97,7 +97,10 @@ vi.mock('../services/permissions', () => ({
       const parts = prop.toLowerCase().split('_');
       return { resource: parts[0], action: parts.slice(1).join('_') };
     }
-  })
+  }),
+  // GET /devices/:id lists the Connect menu's tools only for a remote:access
+  // holder (#10922). Not the subject of this suite, so the menu stays empty.
+  hasPermission: vi.fn(() => false),
 }));
 
 vi.mock('drizzle-orm', () => {
@@ -205,6 +208,8 @@ vi.mock('../db', () => {
     runOutsideDbContext: vi.fn((fn) => fn()),
     withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    // #8318: decommission registers the partner-wide reinstall-link clear.
+    runAfterDbContextCommit: vi.fn(),
     db: dbMock
   };
 });
@@ -418,6 +423,29 @@ describe('device routes', () => {
       expect(res.status).toBe(200);
       expect(JSON.stringify(where.mock.calls[0]![0])).toContain(allowedSiteId);
       expect(values).toHaveBeenCalledWith(expect.objectContaining({ siteId: allowedSiteId }));
+    });
+
+    // #11116: the web modal needs the minted key's id to run GET
+    // /enrollment-keys/:id on a remembered CLI token. The row id is chosen by
+    // the route and written in the insert, so the response id is the stored id.
+    it('returns the minted key id alongside the token (#11116)', async () => {
+      const siteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(siteRows([{ id: siteId }])) }),
+      } as any);
+      const values = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.token).toMatch(/^enroll_/);
+      expect(body.childKeyId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ id: body.childKeyId }));
     });
 
     // #7035: the automatic pick used to be `WHERE org_id = ? LIMIT 1` with no
@@ -1191,11 +1219,12 @@ describe('device routes', () => {
       // the max timestamp). If a future refactor reverts to those, the
       // db.select call count here will jump from 2 to 4.
       expect(vi.mocked(db.select).mock.calls.length).toBe(2);
-      // Three db.execute lookups per page, batched over the whole page:
-      // latest metrics, LAN IP (#2503), and disk usage. None should degrade
+      // Two db.execute laterals per page, both batched over the whole page:
+      // latest metrics, then the LAN-IP lookup added for the opt-in WAN/LAN
+      // IP columns (#2503). The point of the guard is that neither degrades
       // into per-device queries — if this number starts scaling with the row
       // count, something has moved inside the map().
-      expect(vi.mocked(db.execute).mock.calls.length).toBe(3);
+      expect(vi.mocked(db.execute).mock.calls.length).toBe(2);
     });
   });
 

@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Les raccourcis à touche unique sont activés.",
       "charKeysOff": "Les raccourcis à touche unique sont désactivés. Seuls les raccourcis Ctrl/Cmd fonctionnent.",
-      "charKeysManage": "Modifier dans les paramètres du profil"
+      "charKeysManage": "Modifier dans les paramètres du profil",
+      "queueTitle": "File d’attente des tickets",
+      "queueHint": "Sur la page des tickets, hors d’un champ de texte.",
+      "queue": {
+        "next": "Ticket suivant",
+        "previous": "Ticket précédent",
+        "open": "Ouvrir le ticket (après une résolution : le suivant proposé)",
+        "toggleBulk": "Ajouter à la sélection groupée ou l’en retirer",
+        "assignMe": "M’assigner",
+        "reply": "Rédiger une réponse",
+        "internal": "Rédiger une note interne",
+        "resolve": "Résoudre avec une note",
+        "back": "Retour à la file"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1461,10 @@
           "deviceOnline": {
             "description": "Déclenché lorsqu’un appareil se connecte.",
             "label": "Appareil en ligne"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Déclenché lorsqu’un appareil nouvellement inscrit semble être une réinstallation d’une fiche d’appareil existante et inactive.",
+            "label": "Réinstallation possible d’un appareil"
           },
           "deviceReinstalled": {
             "description": "Déclenché lorsqu’une machine réinstallée est rattachée à sa fiche d’appareil existante.",
@@ -2935,5 +2952,8 @@
   "featureLock": {
     "lockedLabel": "Verrouillé",
     "upgrade": "Voir les offres"
+  },
+  "inheritChoice": {
+    "inherit": "Hériter — {{value}} ({{source}})"
   }
 }

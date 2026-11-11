@@ -49,7 +49,8 @@
       "securityCheckToast": "Inicio remoto no disponible: falló la verificación de seguridad. Comunícate con tu administrador.",
       "securityPolicy": "Inicio remoto bloqueado por la política de seguridad",
       "server": "Falló el inicio remoto: error del servidor. Comunícate con tu administrador.",
-      "vncTunnelFailed": "El túnel VNC no se pudo abrir"
+      "vncTunnelFailed": "El túnel VNC no se pudo abrir",
+      "providerUnavailable": "Esa herramienta remota ya no está disponible para este dispositivo. Actualiza la página e inténtalo de nuevo."
     },
     "fallback": {
       "linuxFirstRun": "En Linux, haz que el archivo descargado sea ejecutable (chmod +x) y ábrelo una vez. Eso registra el visor y, a partir de entonces, las sesiones se abren automáticamente.",
@@ -104,13 +105,21 @@
       "missingEntitlement": "El escritorio de la ventana de inicio de sesión está bloqueado hasta que se apruebe el derecho de Apple requerido",
       "missingPermission": "Todavía faltan los permisos macOS necesarios para el acceso al escritorio desatendido",
       "noDisplaySession": "No hay una sesión gráfica activa — inicie sesión primero mediante RDP o la consola",
+      "remoteAccessPermission": "El escritorio remoto requiere el permiso de acceso remoto (remote:access), que tu rol no incluye. Pide a un administrador que lo agregue a tu rol.",
       "unsupportedOs": "macOS bloquea la entrada remota de teclado y mouse en la ventana de inicio de sesión, por lo que Escritorio remoto no puede controlar esta Mac allí. Habilite VNC Relay en la política de configuración del dispositivo para conectarse en la pantalla de inicio de sesión.",
       "virtualDisplay": "No hay ninguna pantalla capturable disponible para esta Mac. Habilite el relé VNC para conectarse a través de macOS Screen Sharing.",
       "waylandUnsupported": "Este es un escritorio Wayland — el escritorio remoto requiere un agente más reciente",
       "x11AuthFailed": "No se pudo autenticar en el servidor de pantalla (autoridad X)",
       "x11ConnectFailed": "No se pudo conectar al servidor de pantalla de este dispositivo"
     },
-    "opensNewWindow": "(se abre en una ventana nueva)"
+    "opensNewWindow": "(se abre en una ventana nueva)",
+    "split": {
+      "builtInViewer": "Visor integrado",
+      "connectWith": "Conectar con {{name}}",
+      "connectWithBuiltIn": "Conectar con el visor integrado",
+      "menuLabel": "Elige cómo conectarte",
+      "opensInBrowser": "Se abre en una pestaña nueva del navegador"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Creando túnel...",
@@ -139,7 +148,7 @@
     "headingSingle": "¿Eliminar {{name}}?",
     "itemCount": "Cantidad de elementos",
     "moveToTrash": "Mover a la papelera",
-    "recycleBinNotice": "Aviso sobre la papelera de reciclaje",
+    "recycleBinNotice": "Al mover a la papelera, los elementos se pueden recuperar. La eliminación permanente no se puede deshacer.",
     "totalSize": "Total: {{size}}",
     "itemCount_one": "artículo {{count}}",
     "itemCount_other": "{{count}} elementos"
@@ -153,7 +162,7 @@
     "dateRange": "Rango de fechas",
     "detailsTitle": "Detalles Título",
     "eventCount": "Recuento de eventos",
-    "eventIdPlaceholder": "Marcador de posición de ID de evento",
+    "eventIdPlaceholder": "p. ej., 7036",
     "eventLogs": "Registros de eventos",
     "eventsTitle": "Eventos {{name}}",
     "fields": {
@@ -181,9 +190,9 @@
     },
     "logTitle": "registro {{name}}",
     "lookupEventId": "ID de evento de búsqueda",
-    "noEvents": "Sin eventos",
-    "noHandler": "Sin controlador",
-    "noMatches": "No hay coincidencias",
+    "noEvents": "No hay registros de eventos disponibles.",
+    "noHandler": "No hay registros de eventos disponibles. Conecte un controlador de consultas para obtener eventos de este dispositivo.",
+    "noMatches": "No se encontraron eventos. Intente ajustar los filtros.",
     "page": "Página {{current}} de {{total}}",
     "ranges": {
       "allTime": "Todo el tiempo",
@@ -209,6 +218,7 @@
       "copy": "Copiar",
       "delete": "Eliminar",
       "download": "Descargar",
+      "mkdir": "Nueva carpeta",
       "move": "Mover",
       "purge": "Purga",
       "restore": "Restaurar",
@@ -232,7 +242,7 @@
       "minutesAgo": "hace {{count}}m"
     },
     "title": "Actividad de archivos",
-    "unverifiedHint": "Pista no verificada"
+    "unverifiedHint": "El dispositivo no respondió a tiempo — actualice para verificar"
   },
   "fileManager": {
     "activeCount": "{{count}} activo",
@@ -250,6 +260,7 @@
     "emptyDirectory": "Directorio vacío",
     "errors": {
       "copy": "No se pudo copiar",
+      "createFolder": "No se pudo crear la carpeta",
       "delete": "No se pudo eliminar",
       "download": "No se pudo descargar",
       "downloadTooLarge": "Demasiado grande para descargar ({{size}}). El explorador de archivos transfiere archivos de hasta {{max}}.",
@@ -264,6 +275,15 @@
     "home": "Inicio",
     "modified": "Modificado",
     "moveTo": "Convidar a",
+    "newFolder": {
+      "action": "Nueva carpeta",
+      "title": "Nueva carpeta",
+      "nameLabel": "Nombre de la carpeta",
+      "location": "Se creará en {{path}}",
+      "created": "Carpeta {{name}} creada",
+      "invalidName": "El nombre de la carpeta no puede contener separadores de ruta ni caracteres que el sistema de archivos de este dispositivo no permita.",
+      "nameExists": "Ya existe un archivo o una carpeta con este nombre aquí."
+    },
     "selectedCount": "Recuento seleccionado",
     "size": "Tamaño",
     "title": "Administrador de archivos",
@@ -306,7 +326,7 @@
     "noMatches": "No hay coincidencias",
     "processMemory": "Memoria de proceso",
     "processes": "Procesos",
-    "searchPlaceholder": "Buscar procesos",
+    "searchPlaceholder": "Buscar por nombre o PID...",
     "showing": "Mostrando {{shown}} de {{total}} procesos",
     "status": {
       "idle": "Inactivo",
@@ -318,7 +338,8 @@
     "title": "Gerente de Procesos",
     "totalCpu": "CPU total",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitorear esto"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -367,11 +388,11 @@
     "device": "Dispositivo: {{id}}",
     "editValue": "Editar valor",
     "enterDecimalValue": "Introduzca el valor decimal",
-    "enterHexBytes": "Introduzca bytes hexadecimales",
+    "enterHexBytes": "Ingrese bytes hexadecimales separados por espacios (p. ej., 00 01 02 03)",
     "enterHexValue": "Introduzca el valor hexadecimal",
     "enterKeyName": "Introduzca el nombre de la clave",
     "enterStringValue": "Introduzca el valor de la cadena",
-    "enterStrings": "Introducir cadenas",
+    "enterStrings": "Ingrese cada cadena en una línea nueva",
     "enterValueName": "Introduzca el nombre del valor",
     "errors": {
       "createKey": "No se pudo crear la clave del registro",
@@ -432,21 +453,21 @@
         "title": "Iniciar sesión de terminal"
       }
     },
-    "noOnlineDevices": "Sin dispositivos en línea",
-    "noSearchMatches": "No hay coincidencias de búsqueda",
+    "noOnlineDevices": "No hay dispositivos en línea disponibles.",
+    "noSearchMatches": "Ningún dispositivo coincide con su búsqueda.",
     "openDeviceList": "Abrir lista de dispositivos",
     "os": "os",
-    "searchPlaceholder": "Buscar dispositivos..."
+    "searchPlaceholder": "Buscar dispositivos en línea..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
       "devices": "Dispositivos",
       "fileManager": "Gestor de archivos"
     },
-    "deviceNotFoundDescription": "Descripción del dispositivo no encontrado",
-    "deviceNotFoundTitle": "Título del dispositivo no encontrado",
+    "deviceNotFoundDescription": "El dispositivo que busca no existe o no tiene acceso a él.",
+    "deviceNotFoundTitle": "Dispositivo no encontrado",
     "deviceOfflineDescription": "El dispositivo es actualmente {{status}}. El acceso remoto a archivos solo está disponible cuando el dispositivo está en línea.",
-    "deviceOfflineTitle": "Título del dispositivo sin conexión",
+    "deviceOfflineTitle": "El dispositivo está sin conexión",
     "errorTitle": "Título del error",
     "errors": {
       "deviceNotFound": "Dispositivo no encontrado",
@@ -486,8 +507,8 @@
     "welcome": "Bienvenido"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Descripción del dispositivo no encontrado",
-    "deviceNotFoundTitle": "Título del dispositivo no encontrado",
+    "deviceNotFoundDescription": "El dispositivo que busca no existe o no tiene acceso a él.",
+    "deviceNotFoundTitle": "Dispositivo no encontrado",
     "errorTitle": "Título del error",
     "errors": {
       "deviceNotFound": "Dispositivo no encontrado",
@@ -544,7 +565,7 @@
       "start": "Comenzar",
       "stop": "Detener"
     },
-    "adjustSearch": "Ajustar búsqueda",
+    "adjustSearch": "Intente ajustar su búsqueda",
     "arguments": "Argumentos",
     "author": "Autor",
     "deviceId": "Dispositivo ID: {{id}}",
@@ -566,7 +587,7 @@
     "runNow": "Ejecutar ahora",
     "searchPlaceholder": "Buscar tareas...",
     "startIn": "Empezar en",
-    "startProgram": "Iniciar programa",
+    "startProgram": "Iniciar un programa",
     "status": {
       "disabled": "Desactivado",
       "queued": "En cola",
@@ -613,9 +634,9 @@
       "stop": "Detener"
     },
     "actionBlocked": "Acción bloqueada",
-    "adjustHint": "Ajustar sugerencia",
-    "agentRestartConfirm": "Reiniciar agente Confirmar",
-    "agentStopBlocked": "Agente detenido bloqueado",
+    "adjustHint": "Intente ajustar la búsqueda o los filtros.",
+    "agentRestartConfirm": "Reiniciar el agente de Breeze desconectará brevemente este dispositivo de Breeze. ¿Continuar?",
+    "agentStopBlocked": "El agente de Breeze no se puede detener desde aquí: hacerlo cortaría la administración remota de este dispositivo.",
     "allStatus": "Todo el estado",
     "cannotStopAgent": "No se puede detener al agente",
     "changeStartupType": "Cambiar tipo de inicio",
@@ -643,9 +664,10 @@
     },
     "stopService": "Detener servicio",
     "summary": "{{shown}} de los servicios {{total}} en {{device}}",
-    "title": "Título",
+    "title": "Servicios",
     "windowsOnlyDescription": "El Administrador de servicios solo está disponible para dispositivos Windows. {{device}} está ejecutando {{os}}.",
-    "windowsOnlyTitle": "Windows Solo Título"
+    "windowsOnlyTitle": "Solo Windows",
+    "monitorThis": "Monitorear esto"
   },
   "sessionHistory": {
     "columns": {
@@ -667,7 +689,7 @@
     },
     "noSessions": "Sin sesiones",
     "page": "Página {{current}} de {{total}}",
-    "searchPlaceholder": "Buscar sesiones...",
+    "searchPlaceholder": "Buscar por dispositivo o usuario...",
     "showing": "Mostrando {{start}} a {{end}} de {{total}}",
     "stats": {
       "averageDuration": "Duración promedio",
@@ -735,7 +757,7 @@
     "deletePermanently": "Eliminar permanentemente",
     "deleteSelected": "Eliminar permanentemente ({{count}})",
     "empty": "Vacío",
-    "emptyConfirm": "Vacío Confirmar",
+    "emptyConfirm": "¿Vaciar toda la papelera? Todos los elementos se eliminarán de forma permanente. Esta acción no se puede deshacer.",
     "emptyTrash": "Vaciar la papelera",
     "errors": {
       "empty": "No se pudo vaciar",
@@ -754,13 +776,13 @@
   "vncViewer": {
     "connect": "Conectar",
     "credentials": {
-      "macDescription": "Descripción de Mac",
+      "macDescription": "El Mac usa la autenticación de Apple Remote Desktop. Ingrese una cuenta de usuario de macOS con acceso a Compartir pantalla (el nombre de inicio de sesión y la contraseña del usuario).",
       "macLoginRequired": "Se requiere inicio de sesión en Mac",
       "macPassword": "Contraseña de Mac",
-      "macUsername": "Nombre de usuario de Mac",
+      "macUsername": "Nombre de usuario de macOS",
       "password": "Contraseña",
       "passwordRequired": "Se requiere contraseña",
-      "vncDescription": "Descripción de VNC"
+      "vncDescription": "Ingrese la contraseña establecida en System Settings > General > Sharing > Screen Sharing > Computer Settings."
     },
     "disconnect": "Desconectar",
     "errors": {
@@ -782,7 +804,7 @@
       "error": "Error",
       "passwordRequired": "Se requiere contraseña"
     },
-    "syncClipboard": "Sincronizar portapapeles",
+    "syncClipboard": "Sincronizar el portapapeles con el equipo remoto",
     "tunnel": "Túnel {{id}}"
   },
   "vncViewerPage": {

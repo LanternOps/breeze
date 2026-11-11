@@ -43,6 +43,8 @@ export type ConnectReport = {
   warnings: Array<{ code: string; detail?: string }>;
   /** The source clock minus Breeze's, from the response `Date` header; null when the source sent none. */
   clockSkewMs: number | null;
+  /** The source's own version string, as it reports it; null when the credential may not read it. */
+  sourceVersion?: string | null;
 };
 
 export type SourceCatalogEntry = {
@@ -78,6 +80,12 @@ export type SourceRow = {
   orgKey: string | null;
   number?: string | null;
   summary: unknown;
+  /**
+   * The module could key this row but not read the rest (a malformed record
+   * in an otherwise good page): the framework fails this ticket with `code`
+   * without loading it, and the page goes on. The next run retries it.
+   */
+  failure?: { code: string };
 };
 
 /**
@@ -141,7 +149,14 @@ export type ReportNote =
   /** Alternative parts not imported (an HTML mail's message.html copy). */
   | { kind: 'attachments_alternative_ignored'; count: number }
   /** A custom attribute with a value, not imported in v1. */
-  | { kind: 'custom_attribute'; name: string; count?: number };
+  | { kind: 'custom_attribute'; name: string; count?: number }
+  /**
+   * A module-specific count the report lists by name, with no issue row
+   * (Zammad: a legacy `removed` state, tags cut to Breeze's limits, a body
+   * the source could not render). Names are fixed strings of the module,
+   * never source content.
+   */
+  | { kind: 'module_count'; name: string; count?: number };
 
 export type Conversion =
   | { kind: 'ticket'; ticket: ImportedTicket; links: ImportedLink[]; notes: ReportNote[] }
@@ -172,6 +187,15 @@ export interface TicketImportModule<Options = unknown, Cursor = unknown> {
   catalog(src: SourceHandle<Options>): Promise<SourceCatalog>;
   /** One page of the ticket list; `next` null after the last page. */
   scan(src: SourceHandle<Options>, cursor: Cursor | null): Promise<{ rows: SourceRow[]; next: Cursor | null }>;
+  /**
+   * Optional: the cursor that re-reads the same page without the rows up to
+   * and including `rowKey` (rows come in the order the module returns them).
+   * Given, the runner saves it after each row instead of a position in the
+   * page, so a page re-read after a yield or a crash, and shifted meanwhile
+   * (a ticket deleted or added before it), skips no row. Without it the
+   * runner keeps the row's position.
+   */
+  cursorAfterRow?(cursor: Cursor | null, rowKey: string): Cursor;
   load(src: SourceHandle<Options>, row: SourceRow): Promise<LoadedTicket>;
   /** Pure and synchronous. */
   convert(loaded: LoadedTicket, ctx: ConversionContext<Options>): Conversion;
@@ -182,7 +206,24 @@ export interface TicketImportModule<Options = unknown, Cursor = unknown> {
    */
   fetchAttachment(src: SourceHandle<Options>, ref: AttachmentRef, maxBytes: number): Promise<Uint8Array>;
   probe(src: SourceHandle<Options>, sourceTicketKey: string): Promise<ProbeResult>;
-  isSourceArticleId(commentSourceId: string): boolean;
+  /**
+   * A comment id the writer stored that this pass's conversion no longer
+   * sends: is it a source article deleted in the source (§5.3 item 3)? False
+   * for a note the module composed. `loaded` is the ticket this pass loaded,
+   * so a module can also answer false for an article the source still holds
+   * but did not send as a comment (it became the description, a toggle now
+   * skips it) or moved to another ticket (a merge in the source, W0's note):
+   * none of those was deleted.
+   */
+  isSourceArticleId(commentSourceId: string, loaded?: LoadedTicket): boolean;
+  /**
+   * Optional: drops what the module keeps in memory for this source (a
+   * directory of its people, file locations). The runner calls it when a run
+   * of the source ends in this process (completed, stopped, failed, or found
+   * cancelled by its slice); a module's own expiry covers other processes and
+   * a run cancelled between two slices.
+   */
+  dispose?(sourceId: string): void;
 }
 
 export type AnyTicketImportModule = TicketImportModule<any, any>;

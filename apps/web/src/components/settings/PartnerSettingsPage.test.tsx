@@ -1005,7 +1005,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     const input = await screen.findByTestId('partner-ai-budget-thresholds-input');
     expect((input as HTMLInputElement).value).toBe('50, 80');
@@ -1021,6 +1021,26 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     expect(settings.aiBudgets).not.toHaveProperty('alertThresholdPercents');
   });
 
+  // Approval mode lives in aiBudgets but is edited on the AI Approvals tab;
+  // the page must wire that tab to the shared aiBudgets draft.
+  it('approval mode set on the AI Approvals tab reaches aiBudgets in the PATCH, caps kept', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai approvals$/i }));
+    await user.selectOptions(await screen.findByTestId('partner-ai-approvals-mode'), 'auto_approve');
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    expect(patchedSettings().aiBudgets).toEqual({
+      enabled: true,
+      monthlyBudgetCents: 5000,
+      alertThresholdPercents: [50, 80],
+      approvalMode: 'auto_approve',
+    });
+  });
+
   // #9666: "not set" must reach the API as an absent key. The partner PATCH
   // replaces the stored aiBudgets block wholesale, so an omitted `enabled`
   // unlocks every organization's own AI switch; `false` would turn AI off for
@@ -1030,7 +1050,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     const select = await screen.findByTestId('partner-ai-budget-enabled');
     await user.selectOptions(select, '');
@@ -1047,7 +1067,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     const select = await screen.findByTestId('partner-ai-budget-enabled');
     await user.selectOptions(select, 'off');
@@ -1064,7 +1084,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     const select = await screen.findByTestId('partner-ai-budget-enabled');
     await user.selectOptions(select, 'off');
@@ -1082,7 +1102,7 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     await screen.findByText('Partner Settings');
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+    await user.click(screen.getByRole('link', { name: /^ai budgets & limits$/i }));
 
     // Commit a real edit first, so the tab is dirty and the Save button is
     // enabled for a reason other than the one under test.

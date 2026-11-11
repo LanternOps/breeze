@@ -9,6 +9,7 @@
  * apps/api/migrations/*-wisp-thread-links.sql — change both together (a
  * contract test in apps/api compares them).
  */
+import type { WispBriefSchedule } from '../validators/wispNudgePreferences';
 import type { ActivityItem, BriefSection, CurrentActivity } from './wispActivity';
 import type { Concern, ConcernSubjectKind } from './wispConcerns';
 
@@ -124,9 +125,37 @@ export interface WispThreadGrantSummary {
   currentRevisionId: string | null;
   budgetCentsPerDay: number;
   floorTickMinutes: number;
+  /** Today's total spend in cents: `backgroundCents + chatCents`. */
   spentTodayCents: number;
+  /** #10414: runs plus summaries/overhead (the unattended line of the spend). */
+  backgroundCents: number;
+  /** #10414: Wisp chat turns (counted and warned on, never refused). */
+  chatCents: number;
   budgetResetsAt: string;
   pausedReason: string | null;
+  /** #10973: unattended reads are effective on the current revision (the live switch AND the pin). */
+  unattendedReads: boolean;
+  /** #10973: the current revision pins the switch, whether or not it is on now. */
+  unattendedReadsPinned: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to this grant's budget. */
+  summaryRefine: boolean;
+}
+
+/**
+ * Where a grant's first look stands, from its thread posts (#11145): nothing
+ * posted yet, a real first look posted, or only the post saying no org could be
+ * looked at. A later look moves `couldnt_look` to `done`.
+ */
+export type WispFirstLookState = 'looking' | 'done' | 'couldnt_look';
+
+/** How a grant's first look is going while no post exists (#11146). Every org of `totalOrgs` is in exactly one count. */
+export interface WispFirstLookProgress {
+  lookedAtOrgs: number;
+  /** Has a settled run, none of which looked. */
+  failedOrgs: number;
+  /** No settled run yet: running, waiting, or past the first batch and due on a floor tick. */
+  queuedOrgs: number;
+  totalOrgs: number;
 }
 
 /**
@@ -147,6 +176,14 @@ export interface WispHomePayload {
   current: CurrentActivity;
   links: WispThreadLink[];
   partner: { enabled: boolean };
+  /** When and where the grantor's morning brief goes out (#10402). */
+  briefSchedule: WispBriefSchedule;
+  /** When this grant's one first-look post was written, or null (#10402). A couldn't-look post does not count (#11145). */
+  firstLookAt: string | null;
+  /** Also on `GET /wisp/thread*`, for the chat surfaces with no timeline to read (#11145). */
+  firstLookState: WispFirstLookState;
+  /** Live counts for the welcome card; null once either post exists, on a paused grant, or after the grant's first day (#11146). */
+  firstLookProgress: WispFirstLookProgress | null;
 }
 
 export interface WispHomeResponse {

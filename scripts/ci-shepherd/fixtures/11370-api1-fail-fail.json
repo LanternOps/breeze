@@ -1,0 +1,109 @@
+{
+  "name": "11370-api1-fail-fail",
+  "source": {
+    "run": 42475142031,
+    "pr": 11370,
+    "recordedAt": "2026-11-08"
+  },
+  "prFiles": [
+    ".github/actions/restore-osv-scanner/action.yml",
+    ".github/scripts/ci-cache-policy.test.mjs",
+    ".github/workflows/ci-cache-seed.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/security.yml",
+    "docs/agents/testing.md",
+    "package.json",
+    "scripts/security/check-supply-chain-hardening.sh",
+    "scripts/security/install-osv-scanner.sh",
+    "scripts/security/install-osv-scanner.test.mjs"
+  ],
+  "facts": {
+    "run": {
+      "id": 42475142031,
+      "attempt": 1,
+      "headSha": "571842fcfdf5fee640b1d1a804b729b322461949",
+      "headBranch": "gh-readonly-queue/main/pr-11370-4d09768bf15152309ae4dde3c2211439d9a07010",
+      "headRepo": "LanternOps/breeze",
+      "event": "merge_group",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-11-08T11:18:16Z",
+      "updatedAt": "2026-11-08T11:48:44Z",
+      "pr": 11370
+    },
+    "jobs": [
+      {
+        "id": 128714837558,
+        "name": "Test API (shard 1/8)",
+        "jobId": "test-api",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T11:18:57Z",
+        "completedAt": "2026-11-08T11:44:19Z",
+        "timeoutMinutes": 40,
+        "label": "api-1",
+        "runner": "vitest",
+        "failedStep": "Run API tests",
+        "annotations": [
+          "Process completed with exit code 1.",
+          "src/services/aiToolsDevice.customFields.test.ts > custom field definition query extraction > exports the dual-axis definition reader and its predicate builder: Error: Test timed out in 15000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/services/aiToolsDevice.customFields.test.ts:20:3\n\n",
+          "Retrying test shard: api-1: attempt 1 failed with 1 failing test(s); re-running the whole shard once",
+          "src/jobs/staleCommandReaper.test.ts > reapStaleBackupJobs > pending missed-schedule catch-ups (#11013) > settles a lapsed one with the Missed reason, unmarked, and sends the device no stop: AssertionError: expected \"vi.fn()\" to be called with arguments: [ ObjectContaining{…} ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   ObjectContaining {\n-     \"errorLog\": \"Missed: device was offline for the whole catch-up window\",\n+   {\n+     \"completedAt\": 2026-11-08T11:20:35.257Z,\n+     \"errorLog\": \"Catch-up did not start: the device came online during the catch-up window, but the backup could not be dispatched\",\n      \"status\": \"failed\",\n+     \"updatedAt\": 2026-11-08T11:20:35.257Z,\n    },\n  ]\n\n\nNumber of calls: 1\n\n ❯ src/jobs/staleCommandReaper.test.ts:900:23\n\n"
+        ],
+        "logStatus": 200,
+        "logTail": " ✓ src/services/scriptMaintenanceGate.test.ts (4 tests) 6ms\nstderr | src/routes/auth/mfa.schemas.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\nstderr | src/routes/auth/mfa.schemas.test.ts\n[database] Request pool configuration source: development-fallback\n\nstdout | src/routes/auth/mfa.schemas.test.ts\n[remoteSessionAuth] tickets backend: memory (NODE_ENV=test, override=unset)\n\n ✓ src/services/aiOperator/recipes/types.test.ts (7 tests) 6ms\n ✓ src/config/env.trustCisFrameworkView.test.ts (14 tests) 11ms\n ✓ src/services/notificationSenders/smsSender.test.ts (6 tests) 7ms\n ✓ src/routes/auth/mfa.schemas.test.ts (4 tests) 8ms\nstderr | src/services/aiToolAliases.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\n ✓ src/services/softwareInstallRemediationKnobs.test.ts (5 tests) 9ms\nstderr | src/services/aiToolAliases.test.ts\n[database] Request pool configuration source: development-fallback\n\n ✓ src/db/schema/topologyRelationshipIndexes.test.ts (2 tests) 4ms\n ✓ src/config/env.wisp.test.ts (5 tests) 6ms\nstdout | src/services/aiToolAliases.test.ts\n[remoteSessionAuth] tickets backend: memory (NODE_ENV=test, override=unset)\n\nstderr | src/services/toolSources/execute.orgInFlightCap.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\nstderr | src/services/toolSources/execute.orgInFlightCap.test.ts\n[database] Request pool configuration source: development-fallback\n\n ✓ src/services/toolSources/execute.orgInFlightCap.test.ts (2 tests) 10ms\n ✓ src/db/schema/dnsSecurity.test.ts (2 tests) 7ms\n ✓ src/services/aiToolAliases.test.ts (7 tests) 7ms\n ✓ src/services/agentTokenRotationCycle.test.ts (1 test) 6ms\nstderr | src/services/aiAgentSdkTools.topologyPreconditions.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\nstdout | src/services/aiAgentSdkTools.topologyPreconditions.test.ts\n[remoteSessionAuth] tickets backend: memory (NODE_ENV=test, override=unset)\n\nstderr | src/services/topology/configurationObjects.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\nstderr | src/services/topology/configurationObjects.test.ts\n[database] Request pool configuration source: development-fallback\n\n ✓ src/services/topology/configurationObjects.test.ts (1 test) 6ms\nstderr | src/services/configurationPolicy.warrantyGuard.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\n ✓ src/services/configurationPolicy.warrantyGuard.test.ts (3 tests) 7ms\n ✓ src/services/aiAgentSdkTools.topologyPreconditions.test.ts (3 tests) 7ms\n ✓ src/routes/agents/agentSelfInventory.test.ts (8 tests) 6ms\n ✓ src/services/portal/edrVisibility.test.ts (3 tests) 6ms\n ✓ src/services/quoteExpiry.test.ts (6 tests) 5ms\nstderr | src/services/configurationPolicy.onedrive.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\n ✓ src/services/configurationPolicy.onedrive.test.ts (2 tests) 6ms\n ✓ src/services/fleetDesign/listing.test.ts (2 tests) 5ms\n ✓ src/services/tunnelHttpMetrics.test.ts (1 test) 4ms\nstderr | src/routes/alerts/helpers.systemManagedLabel.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\n ✓ src/services/flows/conversion/classify.test.ts (4 tests) 5ms\n ✓ src/db/partnerNotifyOnBehalfAcceptanceMigration.test.ts (4 tests) 5ms\n ✓ src/routes/alerts/helpers.systemManagedLabel.test.ts (4 tests) 6ms\n ✓ src/services/aiToolReleaseGuards.test.ts (2 tests) 4ms\n ✓ src/services/reportSeries/errors.test.ts (3 tests) 5ms\nstderr | src/routes/reports/helpers.systemManaged.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\n ✓ src/db/aiToolStatusRefused.migration.test.ts (2 tests) 7ms\n ✓ src/db/aiAgentsAssessmentProfile.migration.test.ts (3 tests) 5ms\nstderr | src/routes/reports/helpers.systemManaged.test.ts\n[database] Request pool configuration source: development-fallback\n\n ✓ src/routes/reports/helpers.systemManaged.test.ts (5 tests) 5ms\n ✓ src/routes/alerts/correlations.ephemeralOrg.contract.test.ts (3 tests) 5ms\n ✓ src/services/aiModels/transport.test.ts (3 tests) 7ms\n ✓ src/services/aiModels/transport.realAdapters.test.ts (2 tests) 6ms\nstderr | src/middleware/auth.siteAccess.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\n ✓ src/services/aiOperator/taskDeadline.test.ts (6 tests) 7ms\n ✓ src/db/schema/delegant.test.ts (2 tests) 5ms\nstderr | src/middleware/auth.siteAccess.test.ts\n[database] Request pool configuration source: development-fallback\n\n ✓ src/middleware/auth.siteAccess.test.ts (4 tests) 5ms\n ✓ src/services/tenantExportPolicyRegistry.contractDocumentsTemplateName.test.ts (2 tests) 5ms\nstderr | src/services/aiAgents/runLoop.runContext.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\nstderr | src/services/aiAgents/runLoop.runContext.test.ts\n[database] Request pool configuration source: development-fallback\n\nstderr | src/services/backupSnapshotBrowse.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\nstdout | src/services/aiAgents/runLoop.runContext.test.ts\n[remoteSessionAuth] tickets backend: memory (NODE_ENV=test, override=unset)\n\nstderr | src/services/backupSnapshotBrowse.test.ts\n[database] Request pool configuration source: development-fallback\n\n ✓ src/services/backupSnapshotBrowse.test.ts (1 test) 4ms\n ✓ src/db/schema/discovery.test.ts (1 test) 4ms\n ✓ src/testUtils/envFlag.test.ts (2 tests) 4ms\nstderr | src/services/topology/presenceVisibility.test.ts\n[version] APP_VERSION not set, using fallback: 0.2.0\n\n ✓ src/services/aiAgents/runLoop.runContext.test.ts (3 tests) 5ms\nstderr | src/services/topology/presenceVisibility.test.ts\n[database] Request pool configuration source: development-fallback\n\n ✓ src/services/topology/presenceVisibility.test.ts (2 tests) 5ms\n ✓ src/db/migration-ticket-mailbox-permissions.test.ts (1 test) 4ms\n ✓ src/routes/configurationPolicies/index.test.ts (1 test) 3ms\n ✓ src/db/schema/aiInitiator.test.ts (1 test) 4ms\n\n⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯\n\n FAIL  src/services/aiToolsDevice.customFields.test.ts > custom field definition query extraction > exports the dual-axis definition reader and its predicate builder\nError: Test timed out in 15000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/services/aiToolsDevice.customFields.test.ts:20:3\n     18|   // cycle (fixed via lazy imports in aiToolsExportDatasets.ts) — load…\n     19|   // real registerXTools module can exceed the default 5s timeout.\n     20|   it('exports the dual-axis definition reader and its predicate builde…\n       |   ^\n     21|     const mod = await import('./aiToolsDevice');\n     22|     expect(typeof mod.readCustomFieldDefinitions).toBe('function');\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯\n\n\n Test Files  1 failed | 620 passed (621)\n      Tests  1 failed | 14207 passed | 3 skipped (14211)\n   Start at  11:32:15\n   Duration  720.89s (transform 47.06s, setup 34.69s, import 1222.31s, tests 88.92s, environment 74ms)\n\n\n##[error]Error: Test timed out in 15000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/services/aiToolsDevice.customFields.test.ts:20:3\n\n\n/home/runner/work/breeze/breeze/apps/api:\n ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @breeze/api@0.1.0 test:run: `vitest run --shard=1/8`\nExit status 1\n##[error]Process completed with exit code 1.\n##[group]Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9\nwith:\n  name: flake-report-api-1\n  path: flake-report-*.json\n  if-no-files-found: ignore\n  retention-days: 14\n  overwrite: true\n  compression-level: 6\n  include-hidden-files: false\n  archive: true\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\nWith the provided path, there will be 1 file uploaded\nArtifact name is valid!\nRoot directory input is valid!\nUploading artifact: flake-report-api-1.zip\nBeginning upload of artifact content to blob storage\nUploaded bytes 238\nFinished uploading artifact content to blob storage!\nSHA256 digest of uploaded artifact is 3ef7bc2f81c35ea1b9179b7f6fd96b78d004ff0eb2e15648b2c724b2823e350f\nFinalizing artifact upload\nArtifact flake-report-api-1 successfully finalized. Artifact ID 13614899812\nArtifact flake-report-api-1 has been successfully uploaded! Final size is 238 bytes. Artifact ID is 13614899812\nArtifact download URL: https://github.com/LanternOps/breeze/actions/runs/42475142031/artifacts/13614899812\nPost job cleanup.\nPruning is unnecessary.\nPost job cleanup.\n[command]/usr/bin/git version\ngit version 2.56.0\nTemporarily overriding HOME='/home/runner/work/_temp/fa84f748-4ee7-434a-97aa-35d705874099' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/work/breeze/breeze\nRemoving SSH command configuration\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\nRemoving HTTP extra header\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.https\\:\\/\\/github\\.com\\/\\.extraheader\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.https\\:\\/\\/github\\.com\\/\\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\"\nRemoving includeIf entries pointing to credentials config files\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\nCleaning up orphan processes",
+        "logAttempts": [
+          {
+            "failures": [
+              "src/jobs/staleCommandReaper.test.ts > reapStaleBackupJobs > pending missed-schedule catch-ups (#11013) > settles a lapsed one with the Missed reason, unmarked, and sends the device no stop"
+            ],
+            "truncated": false,
+            "unattributed": false,
+            "buildFailed": false,
+            "raceDetected": false,
+            "timedOut": false
+          },
+          {
+            "failures": [
+              "src/services/aiToolsDevice.customFields.test.ts > custom field definition query extraction > exports the dual-axis definition reader and its predicate builder"
+            ],
+            "truncated": false,
+            "unattributed": false,
+            "buildFailed": false,
+            "raceDetected": false,
+            "timedOut": false
+          }
+        ],
+        "report": {
+          "label": "api-1",
+          "attempts": 2,
+          "flaky": [],
+          "quarantined": [],
+          "exitCode": 1
+        },
+        "reportError": null,
+        "errors": []
+      },
+      {
+        "id": 128721572895,
+        "name": "CI Success",
+        "jobId": "ci-success",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T11:48:39Z",
+        "completedAt": "2026-11-08T11:48:43Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Check all jobs passed",
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "ciSuccess": "present",
+    "gate": null
+  }
+}

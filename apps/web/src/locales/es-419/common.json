@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Los atajos de una sola tecla están activados.",
       "charKeysOff": "Los atajos de una sola tecla están desactivados. Solo funcionan los atajos con Ctrl/Cmd.",
-      "charKeysManage": "Cambiar en la configuración del perfil"
+      "charKeysManage": "Cambiar en la configuración del perfil",
+      "queueTitle": "Cola de tickets",
+      "queueHint": "En la página de tickets, fuera de un campo de texto.",
+      "queue": {
+        "next": "Ticket siguiente",
+        "previous": "Ticket anterior",
+        "open": "Abrir el ticket (tras resolver: el siguiente ofrecido)",
+        "toggleBulk": "Agregar a la selección múltiple o quitar de ella",
+        "assignMe": "Asignarme",
+        "reply": "Escribir una respuesta",
+        "internal": "Escribir una nota interna",
+        "resolve": "Resolver con una nota",
+        "back": "Volver a la cola"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1461,10 @@
           "deviceOnline": {
             "description": "Se activa cuando se conecta un dispositivo.",
             "label": "Dispositivo en línea"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Se activa cuando un dispositivo recién inscrito parece una reinstalación de un registro de dispositivo existente e inactivo.",
+            "label": "Posible reinstalación de dispositivo"
           },
           "deviceReinstalled": {
             "description": "Se activa cuando un equipo reinstalado se vuelve a vincular con su registro de dispositivo existente.",
@@ -2935,5 +2952,8 @@
   "featureLock": {
     "lockedLabel": "Bloqueado",
     "upgrade": "Ver planes"
+  },
+  "inheritChoice": {
+    "inherit": "Heredar — {{value}} ({{source}})"
   }
 }

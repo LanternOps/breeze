@@ -14,7 +14,7 @@ import type { PatchJobStatus } from './PatchJobsList';
  * Skip reasons the API records when an update ring is deleted or disabled
  * under a queued job (#8909). Other skip codes are internal and stay unshown.
  */
-const RING_SKIP_REASONS: ReadonlySet<string> = new Set(['ring_deleted', 'ring_disabled', 'ring_unavailable']);
+const RING_SKIP_REASONS: ReadonlySet<string> = new Set(['ring_deleted', 'ring_disabled', 'ring_unavailable', 'all_managed_by_vendor_updates', 'no_approved_patches']);
 
 type PatchJobResultRow = {
   id: string;

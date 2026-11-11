@@ -31,7 +31,60 @@ export interface TelemetryPayload {
   // collector by guessing a collectorId (RLS is bypassed on the system path).
   deviceId?: string;
 }
-export interface ReconcileResult { devicesUpserted: number; devicesStaled: number; clientsUpserted: number; clientsStaled: number; }
+export interface ReconcileResult {
+  devicesUpserted: number; devicesStaled: number; clientsUpserted: number; clientsStaled: number;
+  // W04 (#11504): records a mapped-only (self-hosted) collector did not file,
+  // by reason. "Unmapped": reported under a controller site with no mapping (map
+  // it to fix). "NoSiteId": the agent sent no site id (an older agent; upgrade it).
+  devicesSkippedUnmapped: number; clientsSkippedUnmapped: number;
+  devicesSkippedNoSiteId: number; clientsSkippedNoSiteId: number;
+  // Rows removed because the controller reported them under an unmapped site.
+  devicesRemovedUnmapped: number; clientsRemovedUnmapped: number;
+  // The controller site ids this poll reported records under with no mapping (sorted).
+  unmappedSiteIds: string[];
+  // discovered_assets rows the removed device telemetry rows linked to. Logged
+  // for review, never deleted here: they may be approved, linked or manual.
+  // (Client rows only enrich an existing asset, so their links are not collected.)
+  removedDiscoveredAssetIds: string[];
+}
+
+export type TelemetrySiteResolution =
+  | { kind: 'mapped' | 'fallback'; orgId: string; siteId: string }
+  | { kind: 'skip'; reason: 'unmapped_site'; unifiSiteId: string }
+  | { kind: 'skip'; reason: 'no_site_id'; unifiSiteId: null };
+
+/**
+ * W04 (#11504, refs #10358): one self-hosted controller (unifi_host_id NULL) can
+ * serve several customers, so a site with no mapping must not fall back to the
+ * collector agent's own org: that files customer B's inventory under customer A.
+ * Its unmapped sites are discovery-only (listed in unifi_controller_sites for
+ * mapping, but they file no telemetry). A cloud collector keeps the fallback
+ * until its reported site ids are confirmed to match the Site Manager mapping
+ * keys (#10358); making it mapped-only before then could empty its telemetry.
+ */
+export function requiresMappedSite(collector: { unifiHostId: string | null }): boolean {
+  // `== null` on purpose, matching the hostKey `??` below: both treat a missing host id as self-hosted.
+  return collector.unifiHostId == null;
+}
+
+export function resolveTelemetrySite(
+  unifiSiteId: string | null | undefined,
+  siteByUnifi: ReadonlyMap<string, { orgId: string; siteId: string }>,
+  collector: { orgId: string; siteId: string },
+  mappedOnly: boolean,
+): TelemetrySiteResolution {
+  const mapped = unifiSiteId ? siteByUnifi.get(unifiSiteId) : undefined;
+  if (mapped) return { kind: 'mapped', orgId: mapped.orgId, siteId: mapped.siteId };
+  if (!mappedOnly) return { kind: 'fallback', orgId: collector.orgId, siteId: collector.siteId };
+  // An older agent that sends no site id is skipped but never triggers a removal:
+  // a missing id proves nothing about where the record belongs.
+  return unifiSiteId
+    ? { kind: 'skip', reason: 'unmapped_site', unifiSiteId }
+    : { kind: 'skip', reason: 'no_site_id', unifiSiteId: null };
+}
+
+// Bind a JS array as ONE text[] parameter (`= ANY($n::text[])`), not one parameter per element.
+const textArray = (values: readonly string[]) => sql`${sql.param(values)}::text[]`;
 
 // normalizeMac / canonicalMac / canonicalAssetMac now live in ./unifiMac —
 // shared with unifiSyncService.ts (#5096, #5102) so every UniFi producer
@@ -121,7 +174,13 @@ export async function reconcileTelemetry(
   // On a partial poll (some sites failed) the caller passes markStale=false so we
   // don't tombstone devices that merely belong to a momentarily-unreachable site.
   const markStale = opts.markStale ?? true;
-  const result: ReconcileResult = { devicesUpserted: 0, devicesStaled: 0, clientsUpserted: 0, clientsStaled: 0 };
+  const result: ReconcileResult = {
+    devicesUpserted: 0, devicesStaled: 0, clientsUpserted: 0, clientsStaled: 0,
+    devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0, devicesSkippedNoSiteId: 0, clientsSkippedNoSiteId: 0,
+    devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0, unmappedSiteIds: [], removedDiscoveredAssetIds: [],
+  };
+  // Every controller site id reported this poll that has no mapping (devices and clients).
+  const unmappedSiteIds = new Set<string>();
 
   const [collector] = await db.select({
     id: unifiCollectors.id, orgId: unifiCollectors.orgId, siteId: unifiCollectors.siteId,
@@ -145,9 +204,11 @@ export async function reconcileTelemetry(
   }).from(unifiSiteMappings).where(eq(unifiSiteMappings.integrationId, collector.integrationId));
   const siteByUnifi = new Map<string, { orgId: string; siteId: string }>();
   for (const m of mappings) if (m.unifiSiteId && m.unifiHostId === hostKey) siteByUnifi.set(m.unifiSiteId, { orgId: m.orgId, siteId: m.siteId });
-  // Fallback to the collector's own org/site when a device reports no/unknown unifi site.
+  // A cloud collector falls back to its own org/site for a no/unknown unifi site;
+  // a self-hosted one files only mapped sites (W04).
+  const mappedOnly = requiresMappedSite(collector);
   const resolveSite = (unifiSiteId: string | null | undefined) =>
-    (unifiSiteId && siteByUnifi.get(unifiSiteId)) || { orgId: collector.orgId, siteId: collector.siteId };
+    resolveTelemetrySite(unifiSiteId, siteByUnifi, collector, mappedOnly);
 
   const now = new Date();
   // polledAt is the controller measurement time (agent clock); use it for
@@ -188,9 +249,22 @@ export async function reconcileTelemetry(
     return healthByOrg.get(orgId)!;
   };
   const seenDeviceIds = new Set<string>();
+  const unmappedDeviceIds = new Set<string>();
   for (const d of payload.devices) {
+    const target = resolveSite(d.unifiSiteId);
+    if (target.kind === 'skip') {
+      // No telemetry row, no asset link, not "seen" (so a full poll stales an existing row).
+      if (target.reason === 'unmapped_site') {
+        result.devicesSkippedUnmapped++;
+        unmappedDeviceIds.add(d.unifiDeviceId);
+        unmappedSiteIds.add(target.unifiSiteId);
+      } else {
+        result.devicesSkippedNoSiteId++;
+      }
+      continue;
+    }
     seenDeviceIds.add(d.unifiDeviceId);
-    const { orgId, siteId } = resolveSite(d.unifiSiteId);
+    const { orgId, siteId } = target;
     const mac = canonicalMac(d.mac);
     const discoveredAssetId = await linkTelemetryDeviceToAsset(db, orgId, siteId, d, mac);
     // A metric the agent could not collect is omitted from the body, and must
@@ -230,6 +304,21 @@ export async function reconcileTelemetry(
     });
     result.devicesUpserted++;
   }
+  // Removal runs on every poll, partial included: the controller reporting a
+  // device under an unmapped site proves its row (written by the old collector
+  // fallback, or before the site was unmapped) is wrongly attributed. One
+  // set-based statement. A device id reported under a mapped site as well keeps its row.
+  const removeDeviceIds = [...unmappedDeviceIds].filter((id) => !seenDeviceIds.has(id));
+  if (removeDeviceIds.length > 0) {
+    const removed: Array<{ discoveredAssetId: string | null }> = await db.delete(unifiDeviceTelemetry)
+      .where(and(
+        eq(unifiDeviceTelemetry.collectorId, collector.id),
+        sql`${unifiDeviceTelemetry.unifiDeviceId} = ANY(${textArray(removeDeviceIds)})`,
+      ))
+      .returning({ discoveredAssetId: unifiDeviceTelemetry.discoveredAssetId });
+    result.devicesRemovedUnmapped = removed.length;
+    for (const row of removed) if (row.discoveredAssetId) result.removedDiscoveredAssetIds.push(row.discoveredAssetId);
+  }
   if (markStale) {
     const existingDevices = await db.select({ id: unifiDeviceTelemetry.id, unifiDeviceId: unifiDeviceTelemetry.unifiDeviceId })
       .from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.collectorId, collector.id));
@@ -242,11 +331,30 @@ export async function reconcileTelemetry(
   }
 
   // --- Clients ---
-  const seenMacs = new Set<string>();
+  // Identity is (collector, local site, mac): the same MAC at two sites of one
+  // controller is two rows, each in its own site's org. '' = site not recorded.
+  const clientKey = (localSiteId: string, mac: string) => `${localSiteId}\u0000${mac}`;
+  const seenClientKeys = new Set<string>();
+  const unmappedClientMacs = new Set<string>();
+  const macsUpsertedWithSite = new Set<string>();
+  const macsUpsertedWithoutSite = new Set<string>();
   for (const cl of payload.clients) {
     const mac = normalizeMac(cl.mac);
-    seenMacs.add(mac);
-    const { orgId, siteId } = resolveSite(cl.unifiSiteId);
+    const target = resolveSite(cl.unifiSiteId);
+    if (target.kind === 'skip') {
+      if (target.reason === 'unmapped_site') {
+        result.clientsSkippedUnmapped++;
+        unmappedClientMacs.add(mac);
+        unmappedSiteIds.add(target.unifiSiteId);
+      } else {
+        result.clientsSkippedNoSiteId++;
+      }
+      continue;
+    }
+    const { orgId, siteId } = target;
+    const localSiteId = cl.unifiSiteId ?? '';
+    seenClientKeys.add(clientKey(localSiteId, mac));
+    (localSiteId ? macsUpsertedWithSite : macsUpsertedWithoutSite).add(mac);
     // Enrich-only link to discovered_assets by (org_id, mac) — never create.
     // Normalize both sides so casing/separator differences don't miss the link.
     let discoveredAssetId: string | null = null;
@@ -255,12 +363,13 @@ export async function reconcileTelemetry(
     discoveredAssetId = asset?.id ?? null;
 
     await db.insert(unifiClients).values({
-      collectorId: collector.id, orgId, siteId, mac, hostname: cl.hostname,
+      collectorId: collector.id, orgId, siteId, localSiteId, mac, hostname: cl.hostname,
       ipAddress: cl.ip, connectedDeviceId: cl.connectedDeviceId, uplinkPortIdx: cl.uplinkPortIdx, isWired: cl.isWired,
       ssid: cl.ssid, vlan: cl.vlan, signalDbm: cl.signalDbm, txBytes: cl.txBytes, rxBytes: cl.rxBytes,
       uptimeSeconds: cl.uptimeSeconds, discoveredAssetId, raw: rawOrEmpty(cl.raw), isStale: false, lastSeenAt: seenAt, updatedAt: now,
     }).onConflictDoUpdate({
-      target: [unifiClients.collectorId, unifiClients.mac],
+      target: [unifiClients.collectorId, unifiClients.localSiteId, unifiClients.mac],
+      // org/site stay in the SET: a site re-mapped to another org moves its rows.
       set: {
         orgId, siteId, hostname: cl.hostname, ipAddress: cl.ip, connectedDeviceId: cl.connectedDeviceId,
         uplinkPortIdx: cl.uplinkPortIdx, isWired: cl.isWired, ssid: cl.ssid, vlan: cl.vlan, signalDbm: cl.signalDbm,
@@ -270,16 +379,42 @@ export async function reconcileTelemetry(
     });
     result.clientsUpserted++;
   }
+  // Removal (every poll, partial included), as for devices. A legacy '' row for
+  // a MAC now reported under an unmapped site is equally wrongly attributed.
+  // Rows of mapped sites are never matched: their local_site_id is a mapped id.
+  if (unmappedClientMacs.size > 0) {
+    const removed: Array<{ id: string }> = await db.delete(unifiClients)
+      .where(and(
+        eq(unifiClients.collectorId, collector.id),
+        sql`${unifiClients.mac} = ANY(${textArray([...unmappedClientMacs])})`,
+        sql`${unifiClients.localSiteId} = ANY(${textArray([...unmappedSiteIds, ''])})`,
+      ))
+      .returning({ id: unifiClients.id });
+    result.clientsRemovedUnmapped = removed.length;
+  }
+  // Legacy cleanup: a row from the old (collector_id, mac) key has
+  // local_site_id = ''. Once the same MAC is upserted under a real site id, the
+  // legacy row is a duplicate (often in the wrong org), so delete it rather than
+  // let it go stale. A MAC also reported with no site id this poll keeps its '' row.
+  const legacyMacs = [...macsUpsertedWithSite].filter((mac) => !macsUpsertedWithoutSite.has(mac));
+  if (legacyMacs.length > 0) {
+    await db.delete(unifiClients).where(and(
+      eq(unifiClients.collectorId, collector.id),
+      eq(unifiClients.localSiteId, ''),
+      sql`${unifiClients.mac} = ANY(${textArray(legacyMacs)})`,
+    ));
+  }
   if (markStale) {
-    const existingClients = await db.select({ id: unifiClients.id, mac: unifiClients.mac })
+    const existingClients = await db.select({ id: unifiClients.id, mac: unifiClients.mac, localSiteId: unifiClients.localSiteId })
       .from(unifiClients).where(eq(unifiClients.collectorId, collector.id));
     for (const row of existingClients) {
-      if (!seenMacs.has(normalizeMac(row.mac))) {
+      if (!seenClientKeys.has(clientKey(row.localSiteId, normalizeMac(row.mac)))) {
         await db.update(unifiClients).set({ isStale: true, updatedAt: now }).where(eq(unifiClients.id, row.id));
         result.clientsStaled++;
       }
     }
   }
 
+  result.unmappedSiteIds = [...unmappedSiteIds].sort();
   return result;
 }

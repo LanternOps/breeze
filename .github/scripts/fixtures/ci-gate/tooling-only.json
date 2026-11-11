@@ -1,0 +1,245 @@
+{
+  "name": "tooling-only",
+  "source": {
+    "run_id": 41760851774,
+    "pr": 10957
+  },
+  "changed": [
+    ".github/release-provenance/server-only-tags.tsv",
+    "scripts/release/server-only-ledger.test.mjs"
+  ],
+  "flags": {
+    "code": "true",
+    "docs": "false",
+    "agent": "false",
+    "app": "false",
+    "api": "true",
+    "web": "true",
+    "portal": "true",
+    "addins": "true",
+    "m365": "true",
+    "rust": "true",
+    "topology_browser": "false",
+    "agent_code": "true",
+    "integration": "true",
+    "path_readers": "false",
+    "reader_tests": ""
+  },
+  "mobile": "false",
+  "jobs": [
+    {
+      "name": "Detect Code Changes",
+      "conclusion": "success"
+    },
+    {
+      "name": "Lint",
+      "conclusion": "success"
+    },
+    {
+      "name": "Release Ledger",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check Migrations",
+      "conclusion": "success"
+    },
+    {
+      "name": "Security Audit",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test M365 Graph Actions Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Docs Check",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Viewer",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Topology Production Browser Gate (Chromium)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test M365 Graph Read Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Shared",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Type Check",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test API (shard ${{ matrix.shard }}/8)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test M365 Communications Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Detect Mobile Native Changes",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Agent (race)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Check Migrations (non-superuser)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Workspace Runtime Smoke",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Agent Windows manifest guard",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Document UI",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Web (shard ${{ matrix.shard }}/4)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test PowerPoint Add-in",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Mobile",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Excel Add-in",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Portal",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Recovery media E2E (QEMU)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Path-read contracts",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Rust Check (Windows)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Word Add-in",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Rust Check (Tauri apps)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Agent",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Smoke Image (${{ matrix.image }})",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Mobile iOS (Simulator)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Office Add-in Core",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Integration Tests (shard ${{ matrix.shard }}/16)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Lint Agent (Go)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Outlook Add-in",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Portal Dev E2E (hydration, non-blocking)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Agent (Windows)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Smoke Test",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build API",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Windows Runtime Smoke",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Auth Browser Transition (Chromium)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build M365 Graph Read Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build M365 Graph Actions Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Guided Setup Smoke (self-host installer)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Web",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build M365 Communications Executor",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Portal",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Record CI Provenance",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Main Red Alert",
+      "conclusion": "skipped"
+    }
+  ],
+  "ci_success": "success",
+  "base_ci": "ci-22a50721f1a5.yml",
+  "head_ci": "ci-22a50721f1a5.yml",
+  "expect": {
+    "verdict": "pass"
+  }
+}

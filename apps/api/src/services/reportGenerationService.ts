@@ -1,6 +1,6 @@
 import { and, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import {
   devices,
   manualAssets,
@@ -28,6 +28,7 @@ import {
   emptyMrrRenewalsSummary,
   emptyQuoteWinRateSummary,
   emptyClientProfitabilitySummary,
+  emptyTicketSlaPerformanceSummary,
 } from '@breeze/shared';
 import {
   systemReportAuthorityFor,
@@ -53,7 +54,7 @@ import {
   UnsupportedReportScopeError,
 } from './reportErrors';
 
-import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { managedDeviceConditions } from './managedDeviceScope';
 export {
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
@@ -103,7 +104,7 @@ export async function previousBaselineFor(
   scopeFingerprint: string,
 ): Promise<ReportResult['previous']> {
   try {
-    const [prior] = await db
+    const [prior] = await withDbTransactionIfHeld(() => db
       .select({
         summary: sql<Record<string, unknown> | null>`${reportRuns.result}->'summary'`,
         generatedAt: sql<string | null>`${reportRuns.result}->>'generatedAt'`,
@@ -116,7 +117,7 @@ export async function previousBaselineFor(
         eq(reportRuns.executionScopeFingerprint, scopeFingerprint),
       ))
       .orderBy(desc(reportRuns.completedAt))
-      .limit(1);
+      .limit(1));
     if (!prior?.summary || typeof prior.summary !== 'object') return undefined;
     return {
       generatedAt: prior.generatedAt ?? prior.completedAt?.toISOString() ?? null,
@@ -414,7 +415,7 @@ export async function readDeviceInventoryRows(orgId: string, conditions: SQL[]) 
     })
     .from(devices)
     .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition(), ...conditions))
+    .where(and(...managedDeviceConditions(orgId), ...conditions))
     .orderBy(devices.hostname);
 }
 
@@ -435,7 +436,7 @@ export async function generateDeviceInventoryReport(
   // devices live in the partner's hidden 'quick_support' org, which deliberately
   // stays inside accessibleOrgIds so RLS lets a tech reach their own session.
   // Nothing filters them out for us — reports must exclude them explicitly.
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
@@ -535,7 +536,7 @@ export async function readSoftwareInventoryRows(orgId: string, conditions: SQL[]
     })
     .from(deviceSoftware)
     .innerJoin(devices, eq(deviceSoftware.deviceId, devices.id))
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition(), ...conditions))
+    .where(and(...managedDeviceConditions(orgId), ...conditions))
     .orderBy(deviceSoftware.name, devices.hostname);
 }
 
@@ -545,7 +546,7 @@ export async function generateSoftwareInventoryReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'software_inventory');
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
@@ -630,7 +631,7 @@ export async function generateComplianceReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'compliance');
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
@@ -701,7 +702,7 @@ export async function generatePerformanceReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'performance');
-  const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const deviceConditions: SQL[] = managedDeviceConditions(orgId);
   if (addAllowedSiteCondition(deviceConditions, authority)) {
     return emptyRowsReport();
   }
@@ -776,7 +777,7 @@ export async function generateExecutiveSummaryReport(
   // configured window, preset or explicit. The device figures are a
   // point-in-time snapshot of the fleet and are deliberately not windowed.
   const reportWindow = resolveReportDateRange(config.dateRange);
-  const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const deviceConditions: SQL[] = managedDeviceConditions(orgId);
   const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, authority);
   const deviceWhereCondition = and(...deviceConditions);
 
@@ -1112,6 +1113,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     // Business reports phase 2 W3 (#9828): invoices and time entries have no site column.
     case 'client_profitability':
       return { rows: [], rowCount: 0, summary: emptyClientProfitabilitySummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
+    // #11018: tickets have no site axis either, and this one reaches customers.
+    case 'ticket_sla_performance':
+      return { rows: [], rowCount: 0, summary: emptyTicketSlaPerformanceSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);

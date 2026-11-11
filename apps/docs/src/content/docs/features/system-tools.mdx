@@ -48,6 +48,7 @@ The File Browser tab lets you navigate the device's filesystem, download files, 
 - **View file details.** Each entry shows the file or directory name, size, last modified date, and permissions.
 - **Download files.** Select a file and click the download button. The file is transferred from the device and downloaded to your browser.
 - **Upload files.** Click the upload button to send a file to the device at the current path. You can upload text or binary files.
+- **Create folders.** Click **New folder** in the toolbar (v0.127.0), enter a name, and Breeze creates the folder in the current directory and refreshes the listing. Like uploads, this needs the `scripts:execute` permission in addition to device access, and it is recorded in the audit log.
 
 ### File Browser API reference
 
@@ -111,6 +112,7 @@ The **Processes** tab displays all running processes on the device, sorted by CP
 - **Search and filter.** Use the search bar to filter by process name, user, command line, or PID.
 - **Kill a process.** Click the kill button next to a process to terminate it. A confirmation is required. Force-kill sends SIGKILL (or the Windows equivalent) instead of a graceful SIGTERM.
 - **Refresh.** Click the refresh button to reload the process list from the device.
+- **Monitor this.** A process row's **Monitor this** action (v0.127.0) opens a new process monitor pre-filled with that process name. Choose the condition, severity and where to deploy it, then save as usual. See [Monitors](/features/monitors/).
 
 The Process Manager works on all platforms (Windows, macOS, Linux).
 
@@ -173,6 +175,7 @@ The **Services** tab lists all system services with their current status. Use it
 - **View services.** Each service shows its name, display name, status (Running, Stopped, Paused, Starting, Stopping), startup type (Automatic, Manual, Disabled), and service account.
 - **Search and filter.** Search by service name and filter by status (e.g., show only running services or only stopped services).
 - **Start, stop, or restart.** Click the corresponding action button next to a service. The action is sent to the agent and the service list refreshes automatically.
+- **Monitor this.** A service row's **Monitor this** action (v0.127.0) opens a new service monitor pre-filled with that service name, so you can alert when it stops. Save and deploy it as any other monitor.
 - **Agent service detection.** If you restart the Breeze agent service itself, the UI displays a "Agent Restarting" banner and automatically polls until the agent reconnects.
 
 <Aside>
@@ -554,6 +557,7 @@ All endpoints are prefixed with `/api/v1/system-tools/devices/:deviceId`. Replac
 | POST   | `/files/upload`         | Upload file       | `devices.execute` + `scripts.execute` |
 | POST   | `/files/copy`           | Copy files        | `devices.execute` + `scripts.execute` |
 | POST   | `/files/move`           | Move or rename files | `devices.execute` + `scripts.execute` |
+| POST   | `/files/mkdir`          | Create a folder and any missing parents | `devices.execute` + `scripts.execute` |
 
 ### Process Manager
 

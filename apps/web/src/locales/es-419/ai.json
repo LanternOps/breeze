@@ -35,6 +35,7 @@
     "expired": "Esta solicitud expiró antes de poder decidirse.",
     "notSoleApprover": "Ahora se requiere otro aprobador: ya no puedes aprobar tu propia solicitud.",
     "siteCeiling": "Esta aprobación otorga autoridad en toda la organización. Tu acceso está limitado a sitios específicos, así que otro aprobador debe decidir sobre esta solicitud.",
+    "approverScopeRequired": "Esta aprobación afecta a todas las organizaciones del partner, así que requiere un aprobador a nivel de partner con acceso a todas las organizaciones.",
     "noApproverDevice": "Aprobar tu propia solicitud requiere Touch ID / Windows Hello.",
     "freshFactorRequired": "Esta verificación requiere una confirmación nueva con passkey (Touch ID, Windows Hello o una llave de hardware) para esta aprobación. Inténtalo de nuevo.",
     "registerDevice": "Registrar este dispositivo",
@@ -562,7 +563,8 @@
     "overrideErrorStepUp": "Tu socio exige una aprobación más sólida de la que esta pantalla puede ofrecer.",
     "overrideErrorNoDevice": "Ningún dispositivo de destino aceptó el script, así que no se ejecutó nada. Puedes volver a intentarlo.",
     "overrideErrorPolicy": "La política de datos de IA rechaza este script porque lee una ruta de perfil de usuario.",
-    "overrideErrorStrict": "Reconocer estos patrones de riesgo requiere permiso de escritura de scripts y MFA, y hay que marcar todos los patrones."
+    "overrideErrorStrict": "Reconocer estos patrones de riesgo requiere permiso de escritura de scripts y MFA, y hay que marcar todos los patrones.",
+    "savedToLibrary": "Guardado en la biblioteca de scripts"
   },
   "aiRunCard": {
     "title": "Ejecución de análisis",
@@ -583,7 +585,16 @@
       "pending_other": "{{count}} pasos esperan tu aprobación",
       "waiting": "Hay pasos esperando tu aprobación",
       "review": "Revisar en Aprobaciones"
-    }
+    },
+    "stepApprovals": {
+      "title": "Esperando tu aprobación",
+      "wispFor": "Wisp para {{name}}",
+      "approve": "Aprobar",
+      "deny": "Denegar",
+      "waitingForApprover": "Esperando a un aprobador"
+    },
+    "continue": "Continuar",
+    "continueMessage": "Continuar la solución de problemas de la ejecución {{runId}}."
   },
   "aiModelPicker": {
     "chooseModel": "Elegir un modelo",
@@ -606,7 +617,11 @@
     "thinking": "Razonamiento"
   },
   "aiThinking": {
-    "label": "Pensando… {{seconds}} s"
+    "label": "Pensando… {{seconds}} s",
+    "waitingApproval": "Esperando tu aprobación",
+    "waitingApprovalPhone": "Esperando tu aprobación (enviada a tu teléfono)",
+    "waitingOthers": "Esperando a otro aprobador",
+    "openApprovals": "Abrir aprobaciones"
   },
   "aiTurnModel": {
     "answeredBy": "Respondido por {{model}}",
@@ -631,6 +646,10 @@
   "buyCredits": {
     "link": "Comprar créditos"
   },
+  "sessionClosed": {
+    "message": "Esta conversación se cerró en otro lugar, así que tu mensaje no se envió. Sigue en el cuadro de abajo. Inicia una sesión nueva para continuar.",
+    "startNew": "Iniciar una sesión nueva"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Esta conversación alcanzó su límite de turnos, así que Wisp abrió una nueva sesión en este hilo. Envía tu mensaje de nuevo.",
@@ -647,7 +666,7 @@
       "explain": "Wisp trabaja dentro de lo que tú tienes permitido hacer. Confirma que eres tú para continuar.",
       "code": "Código del autenticador",
       "passkey": "Confirmarás con tu passkey.",
-      "noFactor": "Wisp necesita una passkey o una app de autenticación. Configura una primero en tu perfil.",
+      "noFactor": "Wisp necesita una passkey o una app de autenticación. Configura una primero en <profileLink>tu perfil</profileLink>.",
       "noOrg": "Primero selecciona una organización en el encabezado.",
       "confirm": "Confirmar",
       "cancel": "Cancelar",
@@ -659,7 +678,8 @@
       "alreadyOnPartner": "Wisp ya está activado para todas las organizaciones.",
       "open": "Abrir",
       "opening": "Abriendo…",
-      "grantEnded": "Wisp ya no está activado para este alcance. Confirma que eres tú para volver a activarlo."
+      "grantEnded": "Wisp ya no está activado para este alcance. Confirma que eres tú para volver a activarlo.",
+      "unattendedReadsTitle": "Activar las lecturas sin supervisión"
     },
     "header": {
       "scopeAll": "Todas las organizaciones",
@@ -682,8 +702,22 @@
     "settings": {
       "title": "Presupuesto y revisión periódica",
       "budget": "Presupuesto diario",
+      "budgetHelp": "Incluye el chat. Cuando se agota, las comprobaciones en segundo plano se pausan hasta las 00:00 UTC y el chat sigue funcionando con una advertencia. El presupuesto de IA de la organización sigue aplicándose al chat.",
       "tick": "Revisión cada (minutos)",
-      "save": "Guardar"
+      "save": "Guardar",
+      "unattendedReads": {
+        "title": "Lecturas sin supervisión",
+        "description": "Cuando está activado, Wisp y sus ejecuciones en segundo plano hacen lo siguiente sin pedir confirmación:",
+        "registryKey": "Leer una clave del registro",
+        "registryValue": "Leer un valor del registro",
+        "securityLog": "Buscar en el registro de eventos de seguridad",
+        "deviceNote": "Guardar una nota sobre un dispositivo",
+        "applies": "Se aplica a las conversaciones nuevas y a las nuevas ejecuciones en segundo plano."
+      },
+      "summaryRefine": {
+        "title": "Notas de sesión escritas por el modelo",
+        "description": "Cuando termina una conversación, el modelo escribe lo que se concluyó y lo que sigue pendiente. Cada nota es una llamada al modelo y cuenta para el presupuesto diario de Wisp. Si está desactivado, Wisp guarda un resumen sencillo en su lugar."
+      }
     },
     "focus": {
       "label": "Trabajando en",
@@ -724,10 +758,18 @@
       "paused": "Wisp en pausa",
       "resumed": "Wisp reanudado",
       "pauseFailed": "No se pudo pausar Wisp",
-      "resumeFailed": "No se pudo reanudar Wisp"
+      "resumeFailed": "No se pudo reanudar Wisp",
+      "unattendedReadsOn": "Lecturas sin supervisión activadas",
+      "unattendedReadsOnFailed": "No se pudieron activar las lecturas sin supervisión",
+      "unattendedReadsOff": "Lecturas sin supervisión desactivadas",
+      "unattendedReadsOffFailed": "No se pudieron desactivar las lecturas sin supervisión",
+      "summaryRefineOn": "Notas de sesión activadas",
+      "summaryRefineOff": "Notas de sesión desactivadas",
+      "summaryRefineFailed": "No se pudieron cambiar las notas de sesión"
     },
     "spend": {
       "meter": "{{spent}} de {{budget}} hoy",
+      "breakdown": "Segundo plano {{background}} · Chat {{chat}} · {{spent}} de {{budget}} hoy",
       "resets": "se restablece en {{hours}} h",
       "raise": "Aumentar el presupuesto de hoy",
       "atCeiling": "El presupuesto de hoy está en el límite de su plan.",
@@ -740,8 +782,8 @@
       "byYou": "Pausaste Wisp. No hará revisiones ni te enviará avisos hasta que lo reanudes.",
       "partnerDisabled": "Wisp está desactivado para su partner. Un administrador puede volver a activarlo.",
       "system": {
-        "budgetExhausted": "Pausado por Breeze: se agotó el presupuesto de hoy. El presupuesto se restablece en {{hours}} h.",
-        "budgetExhaustedNoTime": "Pausado por Breeze: se agotó el presupuesto de hoy.",
+        "budgetExhausted": "Se superó el presupuesto de Wisp de hoy: las comprobaciones en segundo plano están en pausa hasta las {{time}} UTC. El chat sigue funcionando.",
+        "budgetExhaustedNoTime": "Se superó el presupuesto de Wisp de hoy: las comprobaciones en segundo plano están en pausa hasta las 00:00 UTC. El chat sigue funcionando.",
         "grantorAccessLost": "Pausado por Breeze: su acceso ya no cubre este permiso. Wisp se reanuda solo cuando recupere el acceso.",
         "grantorSuspended": "Pausado por Breeze: su cuenta está suspendida. Wisp se reanuda solo cuando se levante la suspensión.",
         "factorExpired": "Pausado por Breeze: venció su verificación de inicio de sesión para este permiso.",
@@ -864,15 +906,37 @@
     "post": {
       "brief": "Resumen matutino",
       "nudge": "Aviso",
+      "nudgeResolved": "Resuelto",
       "digest": "Compendio",
       "checkIn": "Revisión programada",
       "summary": "Resumen",
       "open": "Abrir",
-      "unread": "No leído"
+      "unread": "No leído",
+      "specialistResult": "Informe del especialista",
+      "firstLook": "Primera revisión",
+      "couldntLook": "Aún sin revisar"
+    },
+    "checkIn": {
+      "runNow": "Ejecutar ahora",
+      "runNowMessage": "Adelante con la revisión programada",
+      "scheduledAt": "Wisp volverá a revisar a las {{time}}",
+      "cancel": "Cancelar revisión programada",
+      "cancelled": "Revisión programada cancelada",
+      "cancelFailed": "No se pudo cancelar la revisión programada."
     },
     "welcome": {
       "title": "Estoy revisando {{scope}}.",
       "body": "Tu primer resumen llega cada mañana, una vez que haya echado un vistazo. Mientras tanto, pregúntame lo que quieras.",
+      "firstLookTitle": "Ya le di una primera revisión a {{scope}}.",
+      "firstLookBody": "Lo que encontré está en la publicación de arriba. Pregúntame lo que quieras al respecto.",
+      "couldntLookTitle": "Todavía no pude revisar {{scope}}.",
+      "couldntLookBody": "La publicación de arriba explica por qué y cuándo volveré a intentarlo. Mientras tanto, pregúntame lo que quieras.",
+      "couldntLookChat": "La página de inicio de Wisp explica por qué y cuándo volveré a intentarlo.",
+      "progress_one": "Organizaciones revisadas: {{lookedAt}} de {{count}}",
+      "progress_other": "Organizaciones revisadas: {{lookedAt}} de {{count}}",
+      "progressQueued": "{{count}} en cola",
+      "progressFailed": "{{count}} con error",
+      "briefAt": "Tu resumen de la mañana sale a las {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "¿Qué requiere mi atención hoy?",
@@ -916,6 +980,33 @@
       "buttonPlain": "Preguntar a la IA sobre esto",
       "draft": "Sobre {{label}}: ",
       "switchFocus": "Wisp se enfoca en {{from}}. ¿Cambiar a {{to}}?"
+    },
+    "plainChat": {
+      "new": "Nuevo chat simple",
+      "newDescription": "Breeze AI con todas las herramientas a las que tienes acceso. No es Wisp.",
+      "wispDescription": "Wisp, con tu permiso",
+      "label": "Breeze AI · no es Wisp"
+    },
+    "instruction": {
+      "remembered": "Recordado: {{text}}",
+      "conflictBanner": "Entra en conflicto con una instrucción recordada: «{{text}}»",
+      "enforcedForm": "Wisp no propondrá: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "sin fecha de fin",
+      "keep": "Conservar",
+      "keepForOrg": "Conservar para todos en {{org}}",
+      "forget": "Olvidar",
+      "unmatched": "Guardado como nota: no pude identificar todos los nombres de dispositivos.",
+      "kept": "Conservado",
+      "keptForOrg": "Conservado para todos en {{org}}",
+      "crossOrg": "Estos dispositivos están en más de una organización, así que solo se puede conservar para ti.",
+      "actionFailed": "Eso no funcionó. Inténtalo de nuevo.",
+      "verb": {
+        "reboot": "reiniciar",
+        "shutdown": "apagar",
+        "run_script": "ejecutar un script",
+        "patch_install": "instalar parches",
+        "any_change": "hacer cualquier cambio"
+      }
     }
   },
   "wispConcerns": {

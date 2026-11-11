@@ -619,7 +619,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			readOnly, bindErr := m.bindBrokeredJournal(runCtx, journal, issuer, dispatched)
 			switch {
 			case errors.Is(bindErr, errJournalUnusable):
-				log.Warn("checkpoint journal unusable for this brokered run, proceeding without resume support", "error", bindErr.Error())
+				warnJournalUnusable(job, bindErr)
 				journal.Abandon()
 				journal = nil
 			case bindErr != nil:
@@ -630,7 +630,11 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			default:
 				readOnlyCompletion = readOnly
 			}
-		} else if err := journal.BindRun(m.config.JobID, dispatched); err != nil {
+		} else if err := journal.BindRun(m.config.JobID, dispatched); errors.Is(err, errJournalUnusable) {
+			warnJournalUnusable(job, err)
+			journal.Abandon()
+			journal = nil
+		} else if err != nil {
 			log.Warn("failed to bind checkpoint journal to this run", "error", err.Error())
 		}
 	}
@@ -668,6 +672,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 		if journal.DiscardedOldFormat() {
 			appendWarning(job, warnJournalDiscardedOldFormat+": an interrupted run's checkpoint from an earlier helper version was discarded; this run started a new snapshot")
+		}
+		if journal.CheckpointingDisabled() {
+			appendWarning(job, warnJournalCheckpointingDisabled+": the interrupted run's checkpoint is damaged and could not be repaired, often because the disk is full; this run resumed from it but records no new progress")
 		}
 		if resumedJournal {
 			log.Info("resuming interrupted backup from checkpoint journal",
@@ -849,7 +856,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if vssSession != nil {
 			ssOpts.ShadowPaths = vssSession.ShadowPaths
 		}
-		manifest, stagingDir, ssErr := collectSystemState(ssOpts)
+		manifest, stagingDir, ssErr := collectSystemState(runCtx, ssOpts)
 		if ssErr != nil {
 			systemStateErr = ssErr
 			log.Warn("system state collection failed, proceeding without", "error", ssErr.Error())
@@ -1304,7 +1311,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// before the (throttled) per-file progress calls start arriving.
 		// No snapshot exists yet — createSnapshotWithProgress mints the ID
 		// below and emits it on its own first (forced) progress call.
-		progressFn(0, len(files), 0, bytesTotal, "")
+		progressFn(RunProgress{FilesTotal: len(files), BytesTotal: bytesTotal})
 	}
 
 	// D18 W03 hoisted the journal-open (and its stale-journal handling) to
@@ -1312,7 +1319,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// cleanup entirely (D18 §3.5) — see that block earlier in this
 	// function. D15's snapshotOpts/withSystemState wiring is independent of
 	// that and slots in here unchanged.
-	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions)}
+	snapshotOpts := []createSnapshotOption{
+		withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions),
+		// Mid-pass warnings (the window forecast, #11014) land on the job as
+		// they happen, so a run that later fails still reports them.
+		withRunWarning(func(w string) { appendWarning(job, w) }),
+	}
 	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
 		// Publish system state under this call's own snapshot ID, BEFORE its
 		// ordinary manifest.json — see withSystemState's doc comment. This
@@ -1598,6 +1610,14 @@ func removeWarning(job *BackupJob, fragment string) {
 	}
 }
 
+// warnJournalUnusable reports a checkpoint journal that could not be restarted
+// (see errJournalUnusable). The run still completes, but if it dies nothing
+// records how far it got, so the job says so.
+func warnJournalUnusable(job *BackupJob, err error) {
+	log.Warn("checkpoint journal could not be restarted, proceeding without resume support", "error", err.Error())
+	appendWarning(job, warnJournalCheckpointingDisabled+": the checkpoint journal could not be created, often because the disk is full; this run started a new snapshot and cannot resume if interrupted")
+}
+
 func appendWarning(job *BackupJob, fragment string) {
 	if fragment == "" {
 		return
@@ -1639,7 +1659,7 @@ func startRunKeepalive(ctx context.Context, onProgress ProgressFn) (stop func())
 				// the pre-upload phases. filesDone stays 0, so nothing the loop
 				// later reports can appear to go backwards. This keepalive only
 				// runs before the snapshot is created, so it never has an ID.
-				onProgress(0, 0, 0, 0, "")
+				onProgress(RunProgress{})
 			}
 		}
 	}()

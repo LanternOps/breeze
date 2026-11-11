@@ -1473,6 +1473,38 @@ describe('user routes', () => {
       expect(await res.json()).toMatchObject({ hasPassword: false });
     });
 
+    // #10650: the profile page decides whether to offer "Add backup" or
+    // "Remove" for the authenticator app off this flag. It is computed in SQL
+    // (the predicate's twin), so the secret column itself is never selected.
+    it('reports totpEnrolled from the SQL predicate without ever selecting the secret', async () => {
+      for (const totpEnrolled of [true, false]) {
+        vi.mocked(db.select).mockClear();
+        mockMeRow(meRow({ mfaEnabled: true, mfaMethod: 'passkey', passwordHash: 'hash', totpEnrolled }));
+
+        const res = await app.request('/users/me', {
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+        const body = await res.json() as Record<string, unknown>;
+        expect(body.totpEnrolled).toBe(totpEnrolled);
+        expect(body).not.toHaveProperty('mfaSecret');
+
+        const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+        expect(projection).toBeDefined();
+        expect(projection).toHaveProperty('totpEnrolled');
+        expect(projection).not.toHaveProperty('mfaSecret');
+      }
+    });
+
+    it('reports totpEnrolled false when the row predicate is null', async () => {
+      mockMeRow(meRow({ passwordHash: 'hash', totpEnrolled: null }));
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json() as Record<string, unknown>).totpEnrolled).toBe(false);
+    });
+
     it('reports hasPassword true for a password user and never leaks the hash', async () => {
       mockMeRow(meRow({ passwordHash: '$argon2id$v=19$m=65536$abc' }));
 
@@ -1484,6 +1516,29 @@ describe('user routes', () => {
       expect(body.hasPassword).toBe(true);
       expect(body).not.toHaveProperty('passwordHash');
       expect(JSON.stringify(body)).not.toContain('argon2id');
+    });
+
+    // #11621: the list /me returns must be resolved exactly as requirePermission
+    // resolves it, or the web gates a control (Connect Desktop) differently from
+    // the route behind it. requirePermission passes the token scope, which is
+    // what lets a system-scope platform-admin session (no partner/org axis)
+    // resolve at all; without it /me answered [] for that session.
+    it.each([
+      [{ scope: 'partner', partnerId: 'partner-123', orgId: null }, { partnerId: 'partner-123', orgId: undefined, scope: 'partner' }],
+      [{ scope: 'organization', partnerId: null, orgId: 'org-9' }, { partnerId: undefined, orgId: 'org-9', scope: 'organization' }],
+      [{ scope: 'system', partnerId: null, orgId: null }, { partnerId: undefined, orgId: undefined, scope: 'system' }],
+    ])('resolves permissions on the same axis + scope as requirePermission (%o)', async (authShape, expected) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', { ...authShape, user: { id: 'user-123', email: 'admin@example.com' } });
+        return next();
+      });
+      mockMeRow(meRow());
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', expected);
     });
 
     // The web app hides billing nav and action buttons off this list. If /me

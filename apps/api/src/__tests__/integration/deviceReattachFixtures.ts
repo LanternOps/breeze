@@ -104,6 +104,8 @@ export interface SeedDeviceOptions {
   watchdogLastSeen?: Date | null;
   isEphemeral?: boolean;
   hostname?: string;
+  /** Written alone, the way a writer from before wave 2-1 (#2764) does. */
+  possibleReplacementOfDeviceId?: string;
 }
 
 /** A device with real agent, watchdog and helper tokens (hashes stored). */
@@ -137,6 +139,7 @@ export async function seedAgentDevice(
     isEphemeral: options.isEphemeral ?? false,
     rebindProtocolVersion: options.rebindProtocolVersion ?? 0,
     ...(options.status === 'decommissioned' ? { decommissionedAt: new Date() } : {}),
+    ...(options.possibleReplacementOfDeviceId ? { possibleReplacementOfDeviceId: options.possibleReplacementOfDeviceId } : {}),
   };
   const row = options.parked
     ? await getTestDb().transaction(async (tx: any) => {

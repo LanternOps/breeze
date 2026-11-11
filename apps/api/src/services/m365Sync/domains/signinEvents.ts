@@ -237,14 +237,38 @@ export async function persistSigninEvents(
 }
 
 /**
- * The next run's window. `since` is MAX(signed_in_at) for the org MINUS an
- * overlap, because Graph sign-in records surface with delay — a bare watermark
- * would permanently skip anything that arrived late. Writes are idempotent
- * upserts on (org_id, graph_id), so the overlap costs nothing but a re-fetch.
+ * The next run's window. `since` is the watermark MINUS an overlap, because
+ * Graph sign-in records surface with delay — a bare watermark would
+ * permanently skip anything that arrived late. Writes are idempotent upserts on
+ * (org_id, graph_id), so the overlap costs nothing but a re-fetch.
  *
- * The checkpoint advances ONLY after pagination for the window completes: a
- * truncated page leaves the watermark where it was (nothing here writes it —
- * it IS the data) and the run returns a continuation.
+ * The watermark is MAX(signed_in_at) over the rows ingested by the time the
+ * last walk COMPLETED (`m365_sync_state.last_complete_snapshot_at`), not over
+ * every row (#9394). The executor walks a window without `$orderby`, and Graph
+ * was observed to serve it newest-first, so a walk that is cut off before it
+ * finishes — a lost continuation after an executor restart, a re-seed — has
+ * already stored the NEWEST rows of its window and none of the oldest. MAX over
+ * every row would start the next window after the part that was never read,
+ * and Graph purges at ~30 days. Every row ingested at or before a completion
+ * belongs to a walk that started before it, all of which had finished their
+ * windows by then, so this watermark never sits above unread events, whatever
+ * order Graph returns pages in.
+ *
+ * It is conservative. A completing run's own rows land just after its `now`
+ * and are left out: for a walk that spanned several runs that is the final
+ * run's pages; for a walk that finished in ONE run the watermark falls back to
+ * the walk before it, so the next walk re-reads one extra interval of a tenant
+ * small enough to finish in one run. Upserts make either a re-fetch, not a
+ * duplicate.
+ *
+ * No qualifying row at all after a completion is the usual state after a
+ * tenant's FIRST walk (it finished in one run, so all of its rows landed after
+ * its own `now`), and also of an unlicensed or quiet tenant. Then `since`
+ * walks on from the completion itself: a walk that stored nothing before its
+ * final run finished in that run (or every earlier page was empty), and a
+ * one-run walk's `until` is that run's `now`, which is exactly what
+ * `last_complete_snapshot_at` holds. A fresh cold start there would leave a
+ * hole whenever the next run came more than a day later.
  *
  * `since` is deliberately NOT clamped forward to a fixed lookback. An org whose
  * sync was down for a fortnight has a watermark older than any such clamp, and
@@ -258,9 +282,9 @@ export async function persistSigninEvents(
  * the walk finishes over successive pages rather than being silently truncated
  * in time.
  *
- * Only the COLD start (no events at all for the org) uses the fixed
- * `SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS` lookback: there is no watermark to walk
- * forward from, and a first run has nothing to lose by starting a week back.
+ * Only with no completed walk at all is the run a COLD start over the fixed
+ * `SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS` lookback; rows from walks that never
+ * completed prove nothing and are not read.
  */
 export const SIGNIN_EVENTS_OVERLAP_MINUTES = 60;
 
@@ -276,21 +300,29 @@ const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE;
 export async function signinEventsWindow(
   orgId: string,
   now: Date,
+  lastCompleteSnapshotAt: Date | null,
 ): Promise<{ since: string; until: string }> {
-  const read = await db.execute(sql`
-    select max(signed_in_at) as watermark
-    from m365_signin_events
-    where org_id = ${orgId}::uuid
-  `);
-  const raw = rowsOf(read)[0]?.watermark;
-  const watermark = raw instanceof Date
-    ? raw.getTime()
-    : (typeof raw === 'string' && Number.isFinite(Date.parse(raw)) ? Date.parse(raw) : null);
+  let watermark: number | null = null;
+  if (lastCompleteSnapshotAt !== null) {
+    // Bound as an ISO string and cast: a JS Date inside a raw drizzle fragment
+    // throws at bind time in postgres.js.
+    const read = await db.execute(sql`
+      select max(signed_in_at) as watermark
+      from m365_signin_events
+      where org_id = ${orgId}::uuid
+        and ingested_at <= ${lastCompleteSnapshotAt.toISOString()}::timestamptz
+    `);
+    const raw = rowsOf(read)[0]?.watermark;
+    watermark = raw instanceof Date
+      ? raw.getTime()
+      : (typeof raw === 'string' && Number.isFinite(Date.parse(raw)) ? Date.parse(raw) : null);
+  }
 
   const until = now.getTime();
-  const since = watermark === null
+  const provenThrough = watermark ?? lastCompleteSnapshotAt?.getTime() ?? null;
+  const since = provenThrough === null
     ? until - SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS * MS_PER_DAY
-    : watermark - SIGNIN_EVENTS_OVERLAP_MINUTES * MS_PER_MINUTE;
+    : provenThrough - SIGNIN_EVENTS_OVERLAP_MINUTES * MS_PER_MINUTE;
 
   return { since: new Date(since).toISOString(), until: new Date(until).toISOString() };
 }

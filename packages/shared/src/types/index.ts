@@ -13,6 +13,7 @@ export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
 export * from './scriptProposals';
 export * from './backupHealth';
+export * from './backupActiveJob';
 export * from './edr';
 export * from './aiModelRegistry';
 export * from './aiModelQuality';
@@ -260,6 +261,16 @@ export interface VpnPresence {
   reportedAt: string;
 }
 
+/**
+ * Why a newly enrolled (source) device was flagged as a probable reinstall of
+ * an older record (`devices.possible_replacement_reason`, #8318 §7.3):
+ * `hostname` (the #2764 collision path or a partner-wide hostname match),
+ * `hardware` (SMBIOS system UUID or serial + manufacturer), `tpm` (reserved for
+ * TPM endorsement-key continuity, wave T2). Ranked tpm > hardware > hostname.
+ */
+export const POSSIBLE_REPLACEMENT_REASONS = ['hostname', 'hardware', 'tpm'] as const;
+export type PossibleReplacementReason = (typeof POSSIBLE_REPLACEMENT_REASONS)[number];
+
 export interface DeviceHardware {
   deviceId: string;
   cpuModel: string | null;
@@ -277,6 +288,8 @@ export interface DeviceHardware {
   motherboardProduct: string | null;
   motherboardVersion: string | null;
   biosVersion: string | null;
+  /** SMBIOS system UUID, canonical lower-case form; a reinstall hint (#8318). */
+  systemUuid: string | null;
   /** Memory summary (#5351); all null until the agent reports slot inventory. */
   memorySlotsTotal: number | null;
   memoryMaxCapacityMb: number | null;
@@ -1026,6 +1039,7 @@ export * from './metricAnomalyEpisodes';
 
 // Business reports (#3198 W02)
 export * from './businessReports';
+export * from './ticketSlaPerformance';
 
 // ============================================
 // Backup Status Report (Backup Provider Integration W05)

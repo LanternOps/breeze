@@ -12,6 +12,13 @@ const shared = vi.hoisted(() => ({
   writeAuditEvent: vi.fn(),
   captureException: vi.fn(),
   wispEnabled: vi.fn(() => true),
+  // #11432: the thread row enforceWispCeiling reads for an org-less call's focus.
+  threadRows: [] as unknown[],
+  // #10428 W06: the standing-instruction release check (its rules: standingInstructionRelease.test.ts).
+  standingRelease: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+}));
+vi.mock('./standingInstructionRelease', () => ({
+  checkStandingInstructionsForRelease: (...args: unknown[]) => shared.standingRelease(...args),
 }));
 
 vi.mock('../../config/env', async (orig) => ({
@@ -19,13 +26,18 @@ vi.mock('../../config/env', async (orig) => ({
   wispEnabled: shared.wispEnabled,
 }));
 
-vi.mock('../../db', () => ({
-  db: {},
+vi.mock('../../db', () => {
+  const chain: Record<string, unknown> = {};
+  for (const m of ['from', 'where']) chain[m] = vi.fn(() => chain);
+  chain.limit = vi.fn(async () => shared.threadRows);
+  return {
+  db: { select: vi.fn(() => chain) },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   getCurrentDbAccessContext: vi.fn(() => undefined),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
-}));
+  };
+});
 vi.mock('./grantAuthority', async (orig) => ({
   ...(await orig<typeof import('./grantAuthority')>()),
   resolveGrantCeiling: shared.resolveGrantCeiling,
@@ -88,8 +100,57 @@ function intent(o: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  shared.threadRows = [];
   shared.lookupWispGrant.mockResolvedValue(GRANT);
   shared.resolveGrantCeiling.mockResolvedValue(ceiling());
+  shared.standingRelease.mockResolvedValue(null);
+});
+
+// #11432: a durable release rebuilds the requester's auth, so the thread-focus
+// write default is re-derived here, against the INTENT org the approval was
+// filed in, never carried over from the chat session.
+describe('checkWispCeilingForRelease — the focus write default (#11432)', () => {
+  const create = intent({ actionName: 'manage_configuration_policy', arguments: { action: 'create', name: 'Baseline Monitoring' } });
+  // A partner-wide grant over both orgs, both in the requester's reach, so only the focus rule decides.
+  const writes = () => ceiling({
+    permissionKeys: new Set(['devices:write']), orgIds: new Set([ORG_A, ORG_B]), scopeOrgId: null, partnerWide: true,
+  });
+
+  it('an org-less write of a thread focused on the intent org releases with that org as its write default', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes());
+    shared.threadRows = [{ focusOrgId: ORG_A }];
+    const r = await checkWispCeilingForRelease(create, releaseAuth([ORG_A, ORG_B]));
+    expect(r.ok && r.auth.aiWriteDefaultOrgId).toBe(ORG_A);
+  });
+
+  it('a focus moved to another org during the approval wait gives no default', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes());
+    shared.threadRows = [{ focusOrgId: ORG_B }];
+    const r = await checkWispCeilingForRelease(create, releaseAuth([ORG_A, ORG_B]));
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.auth.aiWriteDefaultOrgId).toBeUndefined();
+  });
+});
+
+// #11433: the release re-checks the intent's STORED arguments, so the action-level
+// floor holds across the approval wait: a run releases, an apply never does.
+describe('checkWispCeilingForRelease — Fleet Design actions (#11433)', () => {
+  const REPORT_RUN = '00000000-0000-4000-8000-0000000000f1';
+  beforeEach(() => { shared.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['*:*']) })); });
+
+  it('a run intent for the intent org releases', async () => {
+    const r = await checkWispCeilingForRelease(intent({ actionName: 'manage_fleet_designs', arguments: { action: 'run', orgId: ORG_A } }), releaseAuth());
+    expect(r.ok).toBe(true);
+  });
+
+  it.each(['apply', 'rollback'])('an %s intent is refused at release with the tool detail, and audited', async (action) => {
+    const r = await checkWispCeilingForRelease(
+      intent({ actionName: 'manage_fleet_designs', arguments: { action, reportRunId: REPORT_RUN } }),
+      releaseAuth(),
+    );
+    expect(r).toMatchObject({ ok: false, errorCode: 'wisp_ceiling_refused', details: { wispRefusal: 'tool' } });
+    expect(shared.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'wisp.ceiling_refused' }));
+  });
 });
 
 describe('checkWispCeilingForRelease', () => {
@@ -195,5 +256,49 @@ describe('checkWispCeilingForRelease', () => {
 
     shared.lookupWispGrant.mockRejectedValue(new Error('lookup failed'));
     await expect(checkWispCeilingForRelease(intent(), releaseAuth())).resolves.toMatchObject({ ok: false, errorCode: 'wisp_gate_unavailable' });
+  });
+});
+
+describe('checkWispCeilingForRelease — standing instructions (#10428 W06, Review Focus 3)', () => {
+  const REFUSAL = {
+    errorCode: 'standing_instruction_denied',
+    details: {
+      instructionId: 'i-1', text: "don't reboot PC-01",
+      reason: 'Refused: this now conflicts with a standing instruction. Ask the user to lift it, or act from the device page.',
+    },
+  };
+
+  it('an instruction confirmed after the card was raised refuses the release, audited', async () => {
+    shared.standingRelease.mockResolvedValue(REFUSAL);
+    const r = await checkWispCeilingForRelease(intent(), releaseAuth());
+    expect(r).toMatchObject({ ok: false, errorCode: 'standing_instruction_denied', details: { ...REFUSAL.details, grantId: 'g-1', aiSessionId: SESSION } });
+    expect(shared.standingRelease).toHaveBeenCalledWith(expect.objectContaining({ id: 'intent-1' }), expect.objectContaining({ grantId: 'g-1' }));
+    expect(shared.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'wisp.standing_instruction_refused', resourceType: 'action_intent', resourceId: 'intent-1', result: 'failure',
+    }));
+  });
+
+  it('is checked only once the ceiling passed (a ceiling refusal wins, no lookup)', async () => {
+    shared.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g-1', 'revoked'));
+    await checkWispCeilingForRelease(intent(), releaseAuth());
+    expect(shared.standingRelease).not.toHaveBeenCalled();
+  });
+
+  it('a non-Wisp intent never runs the check', async () => {
+    shared.lookupWispGrant.mockResolvedValue(null);
+    await checkWispCeilingForRelease(intent(), releaseAuth());
+    expect(shared.standingRelease).not.toHaveBeenCalled();
+  });
+
+  it('a check that throws fails closed with wisp_gate_unavailable', async () => {
+    shared.standingRelease.mockRejectedValue(new Error('db down'));
+    const r = await checkWispCeilingForRelease(intent(), releaseAuth());
+    expect(r).toMatchObject({ ok: false, errorCode: 'wisp_gate_unavailable' });
+  });
+
+  it('no refusal releases as before', async () => {
+    const r = await checkWispCeilingForRelease(intent(), releaseAuth());
+    expect(r.ok).toBe(true);
+    expect(shared.standingRelease).toHaveBeenCalledTimes(1);
   });
 });

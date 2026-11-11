@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
-import * as dbModule from '../../db';
+import { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated } from '../../db';
+import { reportBackupDbFallback } from './dbFallbackReport';
 import {
   backupJobs as backupJobsTable,
   backupSnapshots as backupSnapshotsTable,
@@ -43,11 +44,6 @@ import {
 import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
 import { ATTESTATION_FAILED_VERIFICATION_REASON } from '../../services/backupAttestationFailureSettlement';
 
-const { db } = dbModule;
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
-};
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -77,6 +73,8 @@ type VerificationFilters = {
   limit?: number;
   excludeSimulated?: boolean;
   allowedSiteIds?: readonly string[];
+  /** Called when the database read failed, so a caller can tell the fallback from a real empty result. */
+  onDbReadFailure?: () => void;
 };
 
 export type RunBackupVerificationInput = {
@@ -319,7 +317,7 @@ async function listBackupVerificationsFromDb(
   }
 
   try {
-    const rows = await runWithSystemDbAccess(() => db
+    const rows = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupVerificationsTable)
       .where(and(...conditions))
@@ -333,7 +331,8 @@ async function listBackupVerificationsFromDb(
       sizeBytes: row.sizeBytes as number | null,
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB verification read failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB verification read failed; falling back to memory', error);
+    filters.onDbReadFailure?.();
     if (filters.allowedSiteIds) return [];
     return null;
   }
@@ -344,7 +343,7 @@ export async function persistVerificationToDb(row: BackupVerification): Promise<
   if (row.snapshotId && !isUuid(row.snapshotId)) return;
 
   try {
-    await runWithSystemDbAccess(() => db.insert(backupVerificationsTable).values({
+    await withSystemDbAccessContextIsolated(() => db.insert(backupVerificationsTable).values({
       id: row.id,
       orgId: row.orgId,
       deviceId: row.deviceId,
@@ -373,14 +372,14 @@ export async function persistVerificationToDb(row: BackupVerification): Promise<
       }
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB verification write failed; keeping memory record only:', error);
+    reportBackupDbFallback('[backupVerification] DB verification write failed; keeping memory record only', error);
   }
 }
 
 async function resolveSnapshot(orgId: string, snapshotId: string): Promise<BackupSnapshot> {
   if (supportsDbOrg(orgId) && isUuid(snapshotId)) {
     try {
-      const [row] = await runWithSystemDbAccess(() => db
+      const [row] = await withSystemDbAccessContextIsolated(() => db
         .select()
         .from(backupSnapshotsTable)
         .where(and(
@@ -396,7 +395,7 @@ async function resolveSnapshot(orgId: string, snapshotId: string): Promise<Backu
         });
       }
     } catch (error) {
-      console.warn('[backupVerification] DB snapshot lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB snapshot lookup failed; falling back to memory', error);
     }
   }
 
@@ -424,7 +423,7 @@ async function resolveBackupJob(
   if (dbIdentityShape) {
     try {
       if (backupJobId) {
-        const [row] = await runWithSystemDbAccess(() => db
+        const [row] = await withSystemDbAccessContextIsolated(() => db
           .select()
           .from(backupJobsTable)
           .where(and(
@@ -448,7 +447,7 @@ async function resolveBackupJob(
           throw new Error('Backup job not found for organization');
         }
       } else {
-        const [row] = await runWithSystemDbAccess(() => db
+        const [row] = await withSystemDbAccessContextIsolated(() => db
           .select()
           .from(backupJobsTable)
           .where(and(
@@ -474,7 +473,7 @@ async function resolveBackupJob(
         throw error;
       }
       if (requireCurrentDbLineage) throw error;
-      console.warn('[backupVerification] DB backup job lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB backup job lookup failed; falling back to memory', error);
     }
   }
 
@@ -508,7 +507,7 @@ async function resolveSnapshotForBackupJob(
 ): Promise<BackupSnapshot | null> {
   if (supportsDbOrg(orgId) && isUuid(backupJob.id)) {
     try {
-      const rows = await runWithSystemDbAccess(() => db
+      const rows = await withSystemDbAccessContextIsolated(() => db
         .select()
         .from(backupSnapshotsTable)
         .where(and(
@@ -528,7 +527,7 @@ async function resolveSnapshotForBackupJob(
       if (requireCurrentDbLineage) return null;
     } catch (error) {
       if (requireCurrentDbLineage) throw error;
-      console.warn('[backupVerification] DB snapshot lookup by job failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB snapshot lookup by job failed; falling back to memory', error);
     }
   }
 
@@ -551,12 +550,12 @@ async function resolveVerificationProviderConfig(
 ): Promise<BackupProviderConfig | null> {
   if (supportsDbOrg(orgId) && isUuid(backupJob.configId)) {
     try {
-      const resolved = await runWithSystemDbAccess(() =>
+      const resolved = await withSystemDbAccessContextIsolated(() =>
         resolveBackupProviderConfig(backupJob.configId, orgId)
       );
       if (resolved) return resolved;
     } catch (error) {
-      console.warn('[backupVerification] DB provider config lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB provider config lookup failed; falling back to memory', error);
     }
   }
 
@@ -696,7 +695,7 @@ async function runBackupVerificationInternal(
         'verify',
       );
     const authorization = supportsDbOrg(input.orgId)
-      ? await runWithSystemDbAccess(authorizeCurrentLineage)
+      ? await withSystemDbAccessContext(authorizeCurrentLineage)
       : await authorizeCurrentLineage();
     const authorizedSnapshot = authorization.resources.resources.find(
       (resource) => resource.kind === 'snapshot' && resource.id === snapshot!.id,

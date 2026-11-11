@@ -100,6 +100,37 @@ describe('OrgDevicesTab', () => {
     expect(calls.filter(c => c.startsWith('/devices'))).toEqual([`/devices?limit=${ORG_DEVICES_LIMIT}&includeWarranty=true`]);
   });
 
+  it('loads disk inventory through the pinned fetch when the column is enabled', async () => {
+    const { orgFetch, calls } = makeRecordingOrgFetch({
+      'includeDisks=true': () => jsonResponse({ data: [{
+        ...DEVICE,
+        disks: [{ mountPoint: 'C:', totalGb: 100, usedGb: 25, freeGb: 75, usedPercent: 25 }],
+      }] }),
+      '/devices': () => jsonResponse({ data: [DEVICE] }),
+    });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme" orgFetch={orgFetch} />);
+    await screen.findByText('acme-laptop-01');
+    fireEvent.click(screen.getByTestId('column-chooser-trigger'));
+    const toggle = () => within(screen.getByTestId('column-chooser-option-diskUsage')).getByRole('checkbox');
+    fireEvent.click(toggle());
+    expect(screen.getByText('acme-laptop-01')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('device-d1-disk-usage')).toHaveTextContent('25%'));
+    fireEvent.click(toggle());
+    fireEvent.click(toggle());
+    expect(calls.filter(c => c.startsWith('/devices'))).toEqual([
+      `/devices?limit=${ORG_DEVICES_LIMIT}`,
+      `/devices?limit=${ORG_DEVICES_LIMIT}&includeDisks=true`,
+    ]);
+  });
+
+  it('requests remembered disk usage visibility on its first pinned fetch', async () => {
+    writeColumnVisibility([...ORG_TAB_COLUMN_PRESET.defaultVisible, 'diskUsage'], ORG_TAB_COLUMN_PRESET);
+    const { orgFetch, calls } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [DEVICE] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme" orgFetch={orgFetch} />);
+    await screen.findByText('acme-laptop-01');
+    expect(calls.filter(c => c.startsWith('/devices'))).toEqual([`/devices?limit=${ORG_DEVICES_LIMIT}&includeDisks=true`]);
+  });
+
   it('loads devices through orgFetch (org-pinned) and renders them with forceSingleOrg, while the store points elsewhere', async () => {
     useOrgStore.setState({ currentOrgId: OTHER_ORG, allOrgs: false } as never);
     const { orgFetch, calls } = makeRecordingOrgFetch({

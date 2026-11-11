@@ -384,5 +384,8 @@ func (p *SystemWingetProvider) GetInstalled() ([]InstalledPatch, error) {
 	if code != 0 && stdout == "" {
 		return nil, fmt.Errorf("winget list failed (exit %d): %s", code, strings.TrimSpace(stderr))
 	}
-	return parseWingetListOutput(stdout), nil
+	installed := parseWingetListOutput(stdout)
+	// winget list has no date column; the package's Uninstall key may (#9723).
+	withUninstallInstallDates(installed, p.ID())
+	return installed, nil
 }

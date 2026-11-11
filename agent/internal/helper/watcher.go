@@ -77,6 +77,15 @@ func (w *watcher) run() {
 			continue
 		}
 
+		// #10379: gone because nobody is signed in any more (sign-out, or
+		// a switch to the logon screen) is a wait, not a crash. The count
+		// is left as it was and Apply relaunches once a user signs in.
+		if !w.mgr.sessionHasSignedInUserLocked(w.state.key) {
+			w.mgr.noteWaitingForUserLocked(w.state, "no signed-in user in the session")
+			w.mgr.mu.Unlock()
+			return
+		}
+
 		// Helper is not running — this counts as a failure whether the
 		// spawn itself fails OR the previous spawn succeeded but the
 		// helper crashed before the next check.
@@ -105,6 +114,15 @@ func (w *watcher) run() {
 		}
 
 		err := w.mgr.ensureRunningSession(w.state)
+		if errors.Is(err, ErrNoActiveSession) {
+			// #10379: the launch found no user token (the user signed out
+			// after the check above). Not a crash: undo this tick's count
+			// and wait for Apply to relaunch.
+			w.state.crashFailures--
+			w.mgr.noteWaitingForUserLocked(w.state, err.Error())
+			w.mgr.mu.Unlock()
+			return
+		}
 		if errors.Is(err, ErrNotInstalled) || errors.Is(err, errWebView2Outdated) || errors.Is(err, errCrashLoop) {
 			// #6872: not a crash. The failure counted above is dropped,
 			// watcherGaveUp is left alone, and Apply starts a

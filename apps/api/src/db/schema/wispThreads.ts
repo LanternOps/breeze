@@ -40,8 +40,14 @@ export const wispThreads = pgTable('wisp_threads', {
   id: uuid('id').primaryKey().defaultRandom(),
   grantId: uuid('grant_id').notNull(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  // #10390: what the last session concluded and left open. Session close only.
   summary: text('summary').notNull().default(''),
   summaryUpdatedAt: timestamp('summary_updated_at', { withTimezone: true }),
+  // The session whose close wrote `summary`. Typed reference, no FK, as below.
+  summarySessionId: uuid('summary_session_id'),
+  // #10390: the deterministic concern rollup. rollupPartnerPicture only.
+  picture: text('picture').notNull().default(''),
+  pictureUpdatedAt: timestamp('picture_updated_at', { withTimezone: true }),
   // Typed reference, no FK: a closed session may be erased before its thread.
   lastSessionId: uuid('last_session_id'),
   // w00 A24: the customer this thread is "working on"; NULL = unfocused.
@@ -66,6 +72,7 @@ export const wispThreads = pgTable('wisp_threads', {
   partnerIdx: index('wisp_threads_partner_idx').on(t.partnerId),
   focusOrgIdx: index('wisp_threads_focus_org_idx').on(t.focusOrgId).where(sql`${t.focusOrgId} IS NOT NULL`),
   summaryLenChk: check('wisp_threads_summary_len_chk', sql`char_length(${t.summary}) <= 4000`),
+  pictureLenChk: check('wisp_threads_picture_len_chk', sql`char_length(${t.picture}) <= 4000`),
 }));
 
 export const wispThreadSessions = pgTable('wisp_thread_sessions', {

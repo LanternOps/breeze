@@ -170,7 +170,7 @@ pub fn show_consent_window(
         CONSENT_WINDOW_LABEL,
         WebviewUrl::App("index.html#consent".into()),
     )
-    .title("Remote Session Request")
+    .title(crate::native_string("native.consent.title"))
     .inner_size(380.0, 300.0)
     .center()
     .decorations(false)
@@ -244,7 +244,7 @@ pub fn show_banner_window(app: &AppHandle, req: &BannerShowRequest) {
         BANNER_WINDOW_LABEL,
         WebviewUrl::App("index.html#banner".into()),
     )
-    .title("Remote Session Active")
+    .title(crate::native_string("native.banner.title"))
     .inner_size(BANNER_W, BANNER_H)
     .decorations(false)
     .always_on_top(true)
@@ -425,7 +425,7 @@ pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> 
     }
     let size = prompt_window_size(plan.presentation);
     let builder = WebviewWindowBuilder::new(app, plan.label.clone(), WebviewUrl::App(plan.url.clone().into()))
-        .title("Notification from your IT provider")
+        .title(crate::native_string("native.notification.title"))
         .inner_size(size.width, size.height)
         .decorations(false)
         .always_on_top(true)
@@ -621,7 +621,7 @@ pub fn show_message_window(
         label,
         WebviewUrl::App(window_url(&view.message_id).into()),
     )
-    .title("Message from your IT provider")
+    .title(crate::native_string("native.message.title"))
     .inner_size(CARD_W, CARD_H)
     .decorations(false)
     .always_on_top(plan.always_on_top)
@@ -698,7 +698,7 @@ pub fn show_chat_window(app: &AppHandle, conversation_id: &str, user_initiated: 
     const CHAT_W: f64 = 380.0;
     const CHAT_H: f64 = 520.0;
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(window_url(conversation_id).into()))
-        .title("Chat with your IT provider")
+        .title(crate::native_string("native.chat.title"))
         .inner_size(CHAT_W, CHAT_H)
         .min_inner_size(300.0, 360.0)
         .decorations(true)

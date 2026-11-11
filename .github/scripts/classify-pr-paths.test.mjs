@@ -26,6 +26,11 @@ const job = (name) => {
   return match[1];
 };
 const summary = job('ci-success');
+// W05 (#10749): a job CI Success has a thin `case` arm for may end its `if:` with the
+// clause naming its own id; nothing else may follow the gates pinned here.
+const thinArms = new Set([...summary.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gmu)].map((m) => m[1]));
+const thinOpt = (name) => (thinArms.has(name)
+  ? `(?: && !contains\\(needs\\.changes\\.outputs\\.thin_skip, ',${name},'\\))?` : '');
 const classify = (paths) =>
   spawnSync('bash', [new URL('./classify-pr-paths.sh', import.meta.url).pathname], {
     encoding: 'utf8',
@@ -357,10 +362,12 @@ test('every code job is gated on the classifier', () => {
     'path-read-contracts', // gated on path_readers, independent of code; pinned in ci-pr-selection.test.mjs
     'changes', // the classifier itself
     'ci-success', // must report on docs-only PRs — that is the whole point
-    'main-red-alert', // workflow_dispatch on main only
+    'main-red-alert', // workflow_dispatch and the nightly schedule on main only
     // W4 (#10748): advisory provenance written after a green CI Success on any PR
     // (docs-only included); continue-on-error, never a gate. Pinned in queue-selection.test.mjs.
     'provenance-record',
+    // W02 (#10746): dispatch-only replay of the gate verdict; never a gate. Pinned in ci-gate.test.mjs.
+    'ci-gate-replay',
     'docs-check', // gated on the `docs` output instead — it is the one job a docs-only PR must run
     'build-mobile-ios', // inherits the gate through mobile-native-changes (pinned by mobile-native-ci.test.mjs)
     'recovery-media-e2e', // compound gate (code AND agent) — asserted separately below
@@ -378,7 +385,7 @@ test('every code job is gated on the classifier', () => {
   // Per-area jobs carry an extra area clause AFTER the code/app gate; the exact
   // per-area `if:` lines are pinned by ci-area-gating.test.mjs. The prefix is
   // still required here, so a docs-only or tooling-only PR still skips them.
-  const areaGated = /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && (needs\.changes\.outputs\.(api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|\(needs\.changes\.outputs\.api == 'true' \|\| needs\.changes\.outputs\.web == 'true' \|\| needs\.changes\.outputs\.portal == 'true'\))$/mu;
+  const areaGated = (name) => new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true' && (needs\\.changes\\.outputs\\.(api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|\\(needs\\.changes\\.outputs\\.api == 'true' \\|\\| needs\\.changes\\.outputs\\.web == 'true' \\|\\| needs\\.changes\\.outputs\\.portal == 'true'\\))${thinOpt(name)}$`, 'mu');
   for (const name of jobs) {
     if (exempt.has(name)) continue;
     const body = job(name);
@@ -386,14 +393,14 @@ test('every code job is gated on the classifier', () => {
     if (name === 'check-migrations') {
       // code AND api, never app: it is the release-lineage guard for tooling-only PRs.
       assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.api == 'true'$/mu, name);
-    } else if (areaGated.test(body)) {
+    } else if (areaGated(name).test(body)) {
       continue;
     } else if (codeOnly.has(name)) {
       assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, `${name} must be skipped on a docs-only PR, and stay code-only (not app-gated)`);
     } else {
       assert.match(
         body,
-        /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true'$/mu,
+        new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true'${thinOpt(name)}$`, 'mu'),
         `${name} must be skipped on a docs-only OR tooling-only PR`,
       );
     }
@@ -690,6 +697,10 @@ for (const path of [
   '.github/scripts/mobile-native-ci.test.mjs',
   // its drift test (agent/cmd/breeze-backup/ci_gate_test.go) runs in test-agent.
   '.github/scripts/qemu-gate-paths.txt',
+  // apps/api/vitest.integration.config.ts imports it: it shards integration-test (W07a, #10751).
+  '.github/scripts/shard-partition.mjs',
+  // ...and typecheck (tsconfig.tests.json) checks that import against these types.
+  '.github/scripts/shard-partition.d.mts',
 ]) {
   test(`classifier: ${path} is executed by a heavy job, so it is an app change`, () => {
     const r = classify([path]);
@@ -709,6 +720,8 @@ test('every explicit app=true carve-out in the classifier is still referenced by
     '.github/scripts/tauri-apt.sh',
     '.github/scripts/mobile-native-ci.test.mjs',
     '.github/scripts/qemu-gate-paths.txt',
+    '.github/scripts/shard-partition.mjs',
+    '.github/scripts/shard-partition.d.mts',
     'scripts/security/check-agent-binary-signatures.sh',
     'scripts/release/verify-release-images.sh',
   ]) {
@@ -716,6 +729,8 @@ test('every explicit app=true carve-out in the classifier is still referenced by
   }
   const smoke = readFileSync(new URL('../../scripts/smoke-guided-setup.sh', import.meta.url), 'utf8');
   assert.ok(smoke.includes('scripts/release/verify-release-images.sh'));
+  const integrationConfig = readFileSync(new URL('../../apps/api/vitest.integration.config.ts', import.meta.url), 'utf8');
+  assert.ok(integrationConfig.includes("from '../../.github/scripts/shard-partition.mjs'"));
 });
 
 test('the tooling-only path still validates workflow files: lint runs the workflow-security suite', () => {
@@ -998,7 +1013,7 @@ test('integration-test is gated on the integration output, which the changes job
   assert.match(job('changes'), /^      integration: \$\{\{ steps\.classify\.outputs\.integration \}\}$/mu);
   assert.match(
     job('integration-test'),
-    /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true' && needs\.changes\.outputs\.integration == 'true'$/mu,
+    new RegExp(`^    if: needs\\.changes\\.outputs\\.code == 'true' && needs\\.changes\\.outputs\\.app == 'true' && needs\\.changes\\.outputs\\.integration == 'true'${thinOpt('integration-test')}$`, 'mu'),
   );
   assert.match(summary, /^          INTEGRATION_CHANGED: \$\{\{ needs\.changes\.outputs\.integration \}\}$/mu);
   assert.match(
@@ -1032,3 +1047,79 @@ for (const [label, env, passes] of [
     });
   }
 }
+
+// ── W05 (#10749): the nightly full run on main ───────────────────────────
+// The thin merge queue's backstop. A scheduled run has no diff, so the classifier
+// takes the full-suite path (`workflow_dispatch and any other event` above), and it
+// never reads a queue selection, so nothing in it is thinned. `main-red-alert`
+// turns a red nightly into the `ci-red` issue. GitHub can delay or drop a
+// scheduled run: the freshness check (a completed scheduled run on main within
+// 30 h) is the first-week daily check, then the W06 shepherd's.
+test('the nightly schedule: one cron, its own concurrency group, never a thin run', () => {
+  const trigger = workflow.slice(0, workflow.indexOf('\njobs:\n'));
+  assert.match(trigger, /^  schedule:\n    - cron: '17 6 \* \* \*'$/mu);
+  assert.equal((trigger.match(/- cron:/gu) ?? []).length, 1, 'one nightly, no other schedule');
+  // A manual dispatch on main and the nightly must never cancel each other.
+  assert.match(trigger, /^concurrency:\n  group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\$\{\{ github\.event_name == 'schedule' && '-nightly' \|\| '' \}\}\n  cancel-in-progress: true$/mu);
+  // The only producer of `thin_skip` is the queue consumer, and it runs on
+  // merge_group alone (the output line is pinned in queue-selection.test.mjs).
+  assert.match(job('changes'), /^        id: queue_thin\n        if: github\.event_name == 'merge_group'$/mu);
+  assert.match(job('main-red-alert'),
+    /^    if: always\(\) && \(github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'schedule'\) && github\.ref == 'refs\/heads\/main'$/mu);
+  // The CI map documents the nightly and how to check that it ran.
+  const doc = readFileSync(new URL('../../docs/agents/testing.md', import.meta.url), 'utf8');
+  for (const text of ['`17 6 * * *`', 'gh run list --workflow CI --branch main --event schedule', '`main-red-alert`']) {
+    assert.ok(doc.includes(text), `testing.md must mention ${text}`);
+  }
+});
+
+// Derived, so a future dispatch-only branch fails here instead of silently
+// skipping on the nightly. Every non-comment line that names `workflow_dispatch`
+// in any form (an expression, either quote style, `==` or `!=`, or a shell test
+// on EVENT_NAME / GITHUB_EVENT_NAME) must also name `schedule`, except the
+// trigger key and the two lines named below. A multi-line condition that puts
+// `schedule` on another line is flagged too: write it on one line.
+const MOBILE_OUTPUT_LINE = "mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' || steps.lockfile.outputs.changed == 'true' }}";
+const DISPATCH_EXEMPT = new Map([
+  // The gate replay reads queue history; it says nothing about main's health.
+  ["if: github.event_name == 'workflow_dispatch'", 'ci-gate-replay'],
+  // Pinned byte-for-byte by the CI Gate (ci-gate.mjs MOBILE_OUTPUT); the
+  // schedule forces native through the job's steps (mobile-native-ci.test.mjs).
+  [MOBILE_OUTPUT_LINE, 'mobile-native-changes'],
+]);
+const jobIn = (text, name) => text.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'))?.[1] ?? '';
+function dispatchOnlyBranches(text) {
+  const lines = text.split('\n').map((line) => line.trim())
+    .filter((line) => !line.startsWith('#') && line !== 'workflow_dispatch:' && /workflow_dispatch/u.test(line));
+  return lines.filter((line) => {
+    const owner = DISPATCH_EXEMPT.get(line);
+    if (owner) return lines.filter((l) => l === line).length !== 1 || !jobIn(text, owner).split('\n').some((l) => l.trim() === line);
+    return !/\bschedule\b/u.test(line);
+  });
+}
+
+test('every workflow_dispatch branch in ci.yml also covers the nightly schedule', () => {
+  assert.deepEqual(dispatchOnlyBranches(workflow), []);
+  // The scan sees each exemption and the main-red-alert branch, so it is not passing on nothing.
+  const seen = workflow.split('\n').filter((line) => !line.trim().startsWith('#') && line.includes('workflow_dispatch')).length;
+  assert.ok(seen >= 4, `scan is stale (${seen} lines)`);
+});
+
+test('the dispatch scan flags every dispatch-only form it promises to', () => {
+  const inject = (line) => workflow.replace('\njobs:\n', `\njobs:\n  injected:\n    runs-on: ubuntu-latest\n    ${line}\n`);
+  for (const line of [
+    "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
+    'if: github.event_name == "workflow_dispatch"',
+    "if: github.event_name != 'workflow_dispatch'",
+    "if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}",
+    'run: \'[[ "${EVENT_NAME}" == "workflow_dispatch" ]] && echo full\'',
+    "if: (github.event_name == 'workflow_dispatch' ||",
+  ]) {
+    assert.deepEqual(dispatchOnlyBranches(inject(line)), [line], line);
+  }
+  // A covered branch passes; an exempt line outside its owner job does not.
+  assert.deepEqual(dispatchOnlyBranches(inject("if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'")), []);
+  // A second copy of an exempt line (here, in another job) flags both copies.
+  assert.deepEqual(dispatchOnlyBranches(inject("if: github.event_name == 'workflow_dispatch'")),
+    ["if: github.event_name == 'workflow_dispatch'", "if: github.event_name == 'workflow_dispatch'"]);
+});

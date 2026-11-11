@@ -117,6 +117,21 @@ function idleCpuMsPerMin(idle) {
   return delta < 0 ? null : (delta * 1000) / minutes;
 }
 
+const CRAWL_ROUTE = 'GET /workspace/agent/crawl-config';
+const WS_ROUTE = 'GET /agent-ws/:id/ws';
+
+/** Non-2xx answers acceptance did not exempt, e.g. "3 × 502 on POST /agents/:id/heartbeat". */
+function non2xxNotes(report) {
+  const notes = [];
+  for (const r of report.routes ?? []) {
+    if (r.route === CRAWL_ROUTE || r.route === WS_ROUTE) continue;
+    for (const [code, count] of Object.entries(r.status ?? {})) {
+      if (!/^2/.test(code) && count > 0) notes.push(`${count} × ${code} on ${r.route}`);
+    }
+  }
+  return notes;
+}
+
 /**
  * samples/idle: [{ ts: Date, cpuSeconds, xactCommit, wsConnections, elu, lagMax, poolWaiting, scrapeOk }]
  */
@@ -181,6 +196,7 @@ export function buildKpiRecord({ report, samples, idle, hardware, stack, gitSha,
       agentMinutes,
     },
     kpis,
+    notes: non2xxNotes(report),
     sources: sources ?? {},
   };
 }

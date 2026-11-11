@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Le scorciatoie a tasto singolo sono attive.",
       "charKeysOff": "Le scorciatoie a tasto singolo sono disattivate. Funzionano solo le scorciatoie con Ctrl/Cmd.",
-      "charKeysManage": "Modifica nelle impostazioni del profilo"
+      "charKeysManage": "Modifica nelle impostazioni del profilo",
+      "queueTitle": "Coda ticket",
+      "queueHint": "Nella pagina dei ticket, fuori da un campo di testo.",
+      "queue": {
+        "next": "Ticket successivo",
+        "previous": "Ticket precedente",
+        "open": "Apri il ticket (dopo una risoluzione: il successivo proposto)",
+        "toggleBulk": "Aggiungi o rimuovi dalla selezione multipla",
+        "assignMe": "Assegna a me",
+        "reply": "Scrivi una risposta",
+        "internal": "Scrivi una nota interna",
+        "resolve": "Risolvi con una nota",
+        "back": "Torna alla coda"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1461,10 @@
           "deviceOnline": {
             "description": "Attivato quando un dispositivo si connette.",
             "label": "Dispositivo online"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Si attiva quando un dispositivo appena registrato sembra una reinstallazione di un record di dispositivo esistente e inattivo.",
+            "label": "Possibile reinstallazione del dispositivo"
           },
           "deviceReinstalled": {
             "description": "Si attiva quando una macchina reinstallata viene ricollegata al record del dispositivo esistente.",
@@ -2935,5 +2952,8 @@
   "featureLock": {
     "lockedLabel": "Bloccato",
     "upgrade": "Vedi i piani"
+  },
+  "inheritChoice": {
+    "inherit": "Eredita — {{value}} ({{source}})"
   }
 }

@@ -65,6 +65,8 @@ vi.mock('./siteScope', async (importOriginal) => {
 
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' })),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -2116,6 +2118,10 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
     }
 
     it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      // #10431's split check reads the device's org; one org means no split.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId: 'org-2' }]) }),
+      } as never);
       const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
       expect(result.error).toBe('orgId is required: you have access to multiple organizations');
       expect(db.insert).not.toHaveBeenCalled();

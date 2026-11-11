@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import {
   discoveryProfiles,
   networkBaselines,
@@ -646,9 +646,13 @@ networkBaselineRoutes.delete(
             .where(eq(networkBaselines.id, baseline.id));
         });
       } else {
-        await db
-          .delete(networkBaselines)
-          .where(eq(networkBaselines.id, baseline.id));
+        // Savepoint so the caught FK violation cannot poison the request
+        // transaction and turn the 409 into a 500 at commit (#11203).
+        await withDbTransaction(async () =>
+          db
+            .delete(networkBaselines)
+            .where(eq(networkBaselines.id, baseline.id))
+        );
       }
     } catch (error) {
       // Read the SQLSTATE through `pgErrorCode` (utils/pgErrors.ts, which owns

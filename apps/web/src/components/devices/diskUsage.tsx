@@ -1,12 +1,15 @@
 import { widthPercentClass } from '@/lib/utils';
-import { formatNumber } from '@/lib/i18n/format';
+import { resolvedFormattingLocale } from '@/lib/i18n/format';
+import type { OSType } from './DeviceList';
 
 export interface DeviceDiskUsage {
+  id?: string;
   mountPoint: string;
   totalGb: number;
   usedGb: number;
   freeGb: number;
   usedPercent: number;
+  isOsVolume?: boolean | null;
 }
 
 export type DiskUsageScope = 'all' | 'os';
@@ -28,30 +31,60 @@ export function writeDiskUsageScope(scope: DiskUsageScope): void {
   }
 }
 
-export function displayedDisks(disks: DeviceDiskUsage[] | undefined, scope: DiskUsageScope): DeviceDiskUsage[] {
-  return (disks ?? []).filter((disk) => {
-    if (!Number.isFinite(disk.usedPercent) || !Number.isFinite(disk.totalGb) || disk.totalGb <= 0) return false;
-    // Match the OS mounts used by the hardware inventory. Do not guess an OS
-    // volume when it is absent from the inventory.
-    const mount = disk.mountPoint.replace(/\\/g, '/').toLowerCase();
-    return scope === 'all' || mount === '/' || /^c:\/?$/.test(mount);
-  });
+function isDisplayableDisk(disk: DeviceDiskUsage): boolean {
+  return typeof disk?.mountPoint === 'string'
+    && disk.mountPoint.length > 0
+    && Number.isFinite(disk.totalGb)
+    && disk.totalGb > 0
+    && Number.isFinite(disk.usedGb)
+    && Number.isFinite(disk.usedPercent);
 }
 
-export function diskUsageSortValue(disks: DeviceDiskUsage[] | undefined, scope: DiskUsageScope): number | null {
-  const shown = displayedDisks(disks, scope);
-  return shown.length ? Math.max(...shown.map((disk) => disk.usedPercent)) : null;
+export function displayedDisks(
+  disks: DeviceDiskUsage[] | undefined,
+  scope: DiskUsageScope,
+  os: OSType,
+): DeviceDiskUsage[] {
+  if (!disks) return [];
+  if (scope === 'all') return disks.filter(isDisplayableDisk);
+
+  const findVolume = (mountPoint: string) =>
+    disks.find((disk) => isDisplayableDisk(disk) && disk.mountPoint === mountPoint);
+  const volume = os === 'windows'
+    ? disks.find((disk) => isDisplayableDisk(disk) && disk.isOsVolume === true)
+    : (os === 'macos' ? findVolume('/System/Volumes/Data') : undefined) ?? findVolume('/');
+  return volume ? [volume] : [];
+}
+
+export function displayedDiskPercent(disk: DeviceDiskUsage): number {
+  const percent = Math.min(100, Math.max(0, disk.usedPercent));
+  return Math.round(percent * 10) / 10;
+}
+
+export function diskUsageSortValue(
+  disks: DeviceDiskUsage[] | undefined,
+  scope: DiskUsageScope,
+  os: OSType,
+): number | null {
+  let max: number | null = null;
+  for (const disk of displayedDisks(disks, scope, os)) {
+    const percent = displayedDiskPercent(disk);
+    if (max === null || percent > max) max = percent;
+  }
+  return max;
 }
 
 export function DiskUsageBars({ disks }: { disks: DeviceDiskUsage[] }) {
+  const locale = resolvedFormattingLocale();
+  const capacity = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
+  const percentage = new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 1 });
   return <div className="space-y-2">
     {disks.map((disk) => {
-      const percent = Math.min(100, Math.max(0, disk.usedPercent));
-      const formatGb = (value: number) => formatNumber(value, { maximumFractionDigits: 1 });
-      return <div key={disk.mountPoint} className="min-w-40" title={`${disk.mountPoint}: ${formatGb(disk.usedGb)} / ${formatGb(disk.totalGb)} GB`}>
+      const percent = displayedDiskPercent(disk);
+      return <div key={disk.id ?? disk.mountPoint} className="min-w-40" title={`${disk.mountPoint}: ${capacity.format(disk.usedGb)} / ${capacity.format(disk.totalGb)} GB`}>
         <div className="mb-1 flex items-center justify-between gap-3 text-xs tabular-nums">
           <span className="max-w-48 truncate">{disk.mountPoint}</span>
-          <span>{formatNumber(percent, { maximumFractionDigits: 1 })}%</span>
+          <span>{percentage.format(percent / 100)}</span>
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-muted">
           <div className={`h-full rounded-full ${percent >= 90 ? 'bg-destructive' : percent >= 75 ? 'bg-warning' : 'bg-primary/70'} ${widthPercentClass(percent)}`} />

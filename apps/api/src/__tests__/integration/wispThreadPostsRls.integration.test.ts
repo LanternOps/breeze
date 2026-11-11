@@ -210,6 +210,15 @@ describe('wisp_thread_posts RLS (partner-anchored, org-optional)', () => {
   });
 });
 
+describe('specialist_result isolation (W2 #11085)', () => {
+  it('a specialist_result post of org A1 is invisible to an org-A2 reader of the same partner thread', async () => {
+    const f = await seed();
+    const a1 = await insertPost(f, f.orgA1, { kind: 'specialist_result', dedupeKey: `wisp.specialist_result:${randomUUID()}:completed` });
+    expect(await visibleIds(orgContext(f.orgA1, f.partnerA))).toContain(a1.id);
+    expect(await visibleIds(orgContext(f.orgA2, f.partnerA))).not.toContain(a1.id);
+  });
+});
+
 describe('wisp_thread_posts constraints', () => {
   it('every composite FK pins the post to one partner (23503)', async () => {
     const f = await seed();
@@ -224,6 +233,25 @@ describe('wisp_thread_posts constraints', () => {
     await expectSqlState(() => insertPost(f, f.orgA1, { link: '//evil.example/x' }), '23514', 'wisp_thread_posts_link_relative_chk');
     await expectSqlState(() => insertPost(f, f.orgA1, { link: 'https://evil.example/x' }), '23514', 'wisp_thread_posts_link_relative_chk');
     await insertPost(f, f.orgA1, { link: null });
+  });
+
+  it('a first_look post inserts with no org (#10402)', async () => {
+    const f = await seed();
+    const row = await insertPost(f, null, { kind: 'first_look', dedupeKey: `wisp.first_look:${f.grantA}` });
+    expect(row.kind).toBe('first_look');
+    expect(row.orgId).toBeNull();
+    await expectSqlState(() => insertPost(f, null, { kind: 'first_look', dedupeKey: `wisp.first_look:${f.grantA}` }), '23505');
+    // Partner-level: an org token of the same partner never reads it.
+    expect(await visibleIds(partnerContext(f.partnerA, [f.orgA1, f.orgA2]))).toContain(row.id);
+    expect(await visibleIds(orgContext(f.orgA1, f.partnerA))).not.toContain(row.id);
+  });
+
+  it('a specialist_result post inserts (W2 #11085); an unknown kind still fails 23514', async () => {
+    const f = await seed();
+    const row = await insertPost(f, f.orgA1, { kind: 'specialist_result', dedupeKey: `wisp.specialist_result:${randomUUID()}:completed` });
+    expect(row.kind).toBe('specialist_result');
+    expect(row.orgId).toBe(f.orgA1);
+    await expectSqlState(() => insertPost(f, f.orgA1, { kind: 'specialist' as never }), '23514', 'wisp_thread_posts_kind_chk');
   });
 
   it('one post per (thread, dedupe_key) — 23505; the same key on another thread is a different post', async () => {

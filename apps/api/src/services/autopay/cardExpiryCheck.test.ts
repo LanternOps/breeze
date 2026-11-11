@@ -1,5 +1,5 @@
 import { beforeEach,describe,expect,it,vi } from 'vitest';
-const h=vi.hoisted(()=>({rows:[] as unknown[][],mint:vi.fn(),enqueue:vi.fn(),render:vi.fn(),disclosure:vi.fn(),chargeable:vi.fn(async()=>true)}));
+const h=vi.hoisted(()=>({rows:[] as unknown[][],mint:vi.fn(),enqueue:vi.fn(),render:vi.fn(),disclosure:vi.fn(),chargeable:vi.fn(async()=>true),billingOn:vi.fn(async()=>true)}));
 vi.mock('../../db',()=>({runOutsideDbContext:(fn:()=>unknown)=>fn(),withSystemDbAccessContext:(fn:()=>unknown)=>fn(),db:{
   select:()=>{const q:any={};for(const key of ['from','innerJoin','where','limit','for'])q[key]=()=>q;
     q.then=(f:(x:unknown)=>unknown)=>Promise.resolve(h.rows.shift()??[]).then(f);return q;},
@@ -8,6 +8,7 @@ vi.mock('./linkTokens',()=>({mintBillingLinkToken:h.mint,buildBillingLinkUrl:(_p
 vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:h.enqueue}));
 vi.mock('./renderBillingNotice',()=>({renderBillingNotice:h.render}));
 vi.mock('./consentText',()=>({buildAutopayDisclosure:h.disclosure}));
+vi.mock('../billingEnabled',()=>({isBillingEnabledForPartner:h.billingOn}));
 vi.mock('./autopayGate',async importOriginal=>({...await importOriginal<typeof import('./autopayGate')>(),isAutopayEnabledForPartner:h.chargeable}));
 import {checkExpiringAutopayCards,isCardExpiring} from './cardExpiryCheck';
 const methodId='11111111-1111-4111-8111-111111111111';
@@ -38,6 +39,13 @@ describe('autopay card expiry',()=>{
     h.rows.push([row],[row.org]);
     expect(await checkExpiringAutopayCards(new Date('2026-10-02T06:28:00Z'))).toEqual({enqueued:0});
     expect(h.chargeable).toHaveBeenCalledWith(expect.anything(),row.org.partnerId);
+    expect(h.mint).not.toHaveBeenCalled();expect(h.enqueue).not.toHaveBeenCalled();
+  });
+  it('skips a partner whose billing was switched off after the candidate read',async()=>{
+    h.billingOn.mockResolvedValueOnce(false);
+    h.rows.push([row],[row.org]);
+    expect(await checkExpiringAutopayCards(new Date('2026-10-02T06:28:00Z'))).toEqual({enqueued:0});
+    expect(h.billingOn).toHaveBeenCalledWith(row.org.partnerId);
     expect(h.mint).not.toHaveBeenCalled();expect(h.enqueue).not.toHaveBeenCalled();
   });
   it('skips a method removed after the candidate read',async()=>{

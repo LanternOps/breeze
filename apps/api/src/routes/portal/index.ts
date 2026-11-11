@@ -1,6 +1,8 @@
 import { Hono, type Context } from 'hono';
 import { brandingRoutes } from './branding';
 import { authRoutes, portalAuthMiddleware } from './auth';
+import { oidcRoutes } from './oidc';
+import { selfRegistrationRoutes } from './selfRegistration';
 import { deviceRoutes } from './devices';
 import { ticketRoutes, portalTicketsEnabledMiddleware } from './tickets';
 import { assetRoutes } from './assets';
@@ -47,6 +49,17 @@ const documentBytesGate = createPortalFeatureGateAny('enableDocuments', 'enableS
 
 // Public routes (no auth required)
 portalRoutes.route('/', authRoutes);
+// Self-registration (W6 #11383): public submit + verify. After authRoutes so
+// its `/auth/*` audit wrapper covers the submit (PORTAL_AUTH_AUDIT_ACTIONS).
+portalRoutes.route('/', selfRegistrationRoutes);
+// Sign in with Microsoft (W4 #11381, plan Task 7). Start, callback, discovery,
+// invite methods and the consent return are public and hold no DB context (the
+// callback's account resolution opens its own). Linking acts on the signed-in
+// account, so its two routes sit behind the portal session (link/start also
+// checks CSRF in its handler).
+portalRoutes.use('/auth/oidc/entra/link/*', portalAuthMiddleware);
+portalRoutes.use('/auth/oidc/entra/link-status', portalAuthMiddleware);
+portalRoutes.route('/', oidcRoutes);
 // Exact `/branding` requires auth (Task 3.3 — org-scoped projection with the
 // five visibility flags); `/branding/:domain` stays public below it because
 // this exact-path middleware does not match the wildcard segment.

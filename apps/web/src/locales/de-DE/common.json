@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Einzeltasten-Kürzel sind aktiviert.",
       "charKeysOff": "Einzeltasten-Kürzel sind deaktiviert. Nur Strg/Cmd-Kürzel funktionieren.",
-      "charKeysManage": "In den Profileinstellungen ändern"
+      "charKeysManage": "In den Profileinstellungen ändern",
+      "queueTitle": "Ticketwarteschlange",
+      "queueHint": "Auf der Ticketseite, außerhalb eines Textfelds.",
+      "queue": {
+        "next": "Nächstes Ticket",
+        "previous": "Vorheriges Ticket",
+        "open": "Ticket öffnen (nach dem Lösen: das angebotene nächste)",
+        "toggleBulk": "Zur Mehrfachauswahl hinzufügen oder daraus entfernen",
+        "assignMe": "Mir zuweisen",
+        "reply": "Antwort schreiben",
+        "internal": "Internen Hinweis schreiben",
+        "resolve": "Mit Notiz lösen",
+        "back": "Zurück zur Liste"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1461,10 @@
           "deviceOnline": {
             "description": "Wird ausgelöst, wenn ein Gerät eine Verbindung herstellt.",
             "label": "Gerät online"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Wird ausgelöst, wenn ein neu registriertes Gerät wie eine Neuinstallation eines bestehenden, inaktiven Gerätedatensatzes aussieht.",
+            "label": "Mögliche Neuinstallation"
           },
           "deviceReinstalled": {
             "description": "Wird ausgelöst, wenn ein neu installierter Rechner wieder mit seinem bestehenden Gerätedatensatz verknüpft wird.",
@@ -2935,5 +2952,8 @@
   "featureLock": {
     "lockedLabel": "Gesperrt",
     "upgrade": "Tarife ansehen"
+  },
+  "inheritChoice": {
+    "inherit": "Erben — {{value}} ({{source}})"
   }
 }

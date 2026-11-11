@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Sections du système",
         "connections": "Connexions",
-        "deprecations": "Dépréciations"
+        "deprecations": "Dépréciations",
+        "health": "Santé"
       },
       "connections": {
         "enabledMeaning": "Activé signifie configuré. Breeze ne contacte pas le service pour vérifier qu'il répond.",
@@ -720,6 +721,57 @@
           "load": "Impossible de charger l’état des tâches."
         },
         "retry": "Réessayer"
+      },
+      "health": {
+        "coverage": "Uniquement les travaux de fond partagés : nombres de files et heartbeats des tâches planifiées, lus depuis Redis. Cet onglet n’affiche pas de verdict global. La santé par processus et par hôte se trouve dans /health/ready et la superposition de surveillance.",
+        "loading": "Chargement de l’état des travaux de fond…",
+        "refresh": "Actualiser",
+        "never": "jamais",
+        "errors": {
+          "load": "Impossible de charger l’état des travaux de fond."
+        },
+        "status": {
+          "operational": "Opérationnel",
+          "degraded": "Dégradé",
+          "unavailable": "Indisponible",
+          "unknown": "Inconnu",
+          "disabled": "Désactivé"
+        },
+        "detail": {
+          "redis_unavailable": "Redis est indisponible, la lecture est impossible.",
+          "read_failed": "La lecture a échoué.",
+          "timeout": "La lecture a dépassé le délai.",
+          "stale": "Le dernier heartbeat est plus ancien que prévu.",
+          "missing": "Aucun heartbeat n’a été enregistré.",
+          "no_threshold": "Nombres seulement. Aucun seuil de santé n’est encore défini pour cette file."
+        },
+        "queues": {
+          "title": "Files",
+          "description": "Travail en attente dans chaque file partagée. Les nombres ne constituent pas un verdict de santé.",
+          "items": {
+            "connection-health-reconcile": "Réconciliateur de santé des connexions",
+            "connection-health-digest": "Synthèse de santé des connexions",
+            "alerts": "Alertes",
+            "event-dispatch": "Distribution des événements"
+          },
+          "counts": {
+            "waiting": "En attente",
+            "prioritized": "Prioritaires",
+            "delayed": "Différés",
+            "active": "Actifs"
+          }
+        },
+        "jobs": {
+          "title": "Tâches planifiées",
+          "description": "Dernière exécution enregistrée de chaque tâche de santé des connexions.",
+          "items": {
+            "reconcile": "Réconciliateur de santé des connexions",
+            "digest": "Synthèse de santé des connexions"
+          },
+          "kind": "Vérification de connexion : {{kind}}",
+          "lastRun": "Dernière exécution : {{when}}",
+          "failureStreak": "Série d’échecs : {{count}}"
+        }
       }
     },
     "aiModels": {
@@ -915,7 +967,11 @@
       "script.delete": "Script supprimé",
       "automation.create": "Automatisation créée",
       "automation.update": "Automatisation mise à jour",
-      "automation.delete": "Automatisation supprimée"
+      "automation.delete": "Automatisation supprimée",
+      "unifi.controller.register": "Contrôleur UniFi enregistré",
+      "unifi.controller.remove": "Contrôleur UniFi supprimé",
+      "unifi.site.map": "Site UniFi associé",
+      "unifi.site.unmap": "Association du site UniFi retirée"
     },
     "resourceTypes": {
       "abuse_signal": "Signal d'abus",
@@ -994,6 +1050,7 @@
       "client_ai_usage": "Utilisation AI client",
       "config_policy_alert_rules": "Règle d'alerte de politique",
       "config_policy_automations": "Automatisation de politique",
+      "config_policy_feature_link": "Lien de fonctionnalité de politique",
       "config_policy_monitoring_watches": "Surveillance de politique",
       "configuration_policy": "Politique de configuration",
       "contact": "Contact",
@@ -1001,6 +1058,7 @@
       "contract_document": "Document de contrat",
       "contract_template": "Modèle de contrat",
       "custom_field": "Champ personnalisé",
+      "customer_email_domain": "Domaine de courriel du client",
       "deployment": "Déploiement",
       "deployment_invite": "Invitation de déploiement",
       "deployment_target": "Cible de déploiement",
@@ -1096,6 +1154,7 @@
       "platform_admin": "Administrateur de la plateforme",
       "plugin": "Module externe",
       "policy": "Politique",
+      "portal_access_request": "Demande d'accès au portail",
       "portal_auth": "Connexion au portail",
       "portal_user": "Utilisateur du portail",
       "psa_connection": "Connexion PSA",
@@ -1181,6 +1240,8 @@
       "trust_page_template": "Modèle du Centre de confiance",
       "tunnel_allowlist": "Liste autorisée du tunnel",
       "tunnel_session": "Session de tunnel",
+      "unifi_collector": "Contrôleur UniFi",
+      "unifi_site_mapping": "Correspondance de site UniFi",
       "update_ring": "Anneau de mise à jour",
       "user": "Utilisateur",
       "user_risk_policy": "Politique de risque utilisateur",

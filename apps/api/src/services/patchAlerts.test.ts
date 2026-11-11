@@ -228,6 +228,32 @@ describe.each([ensurePatchJobFailureRule, ensureRebootPendingRule])('patch rule 
 });
 
 describe('emitPatchJobFailureAlert', () => {
+  it.each([
+    { name: 'retains multiline errors beyond 200 characters', error: 'x'.repeat(250) + '\nInstaller technology differs.' },
+    { name: 'retains a message at the code point limit', error: '😀'.repeat(4000 - '1 patch(es) failed to install on HOST-01. '.length) },
+    { name: 'caps oversized errors without splitting emoji', error: '😀'.repeat(5000) },
+  ])('$name', async ({ error }) => {
+    mockSelectOnce([{ hostname: 'HOST-01' }]);
+    mockSelectOnce([{ id: 'rule-1' }]);
+
+    await emitPatchJobFailureAlert({
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      patchJobId: JOB_ID,
+      failedCount: 1,
+      errorMessage: error,
+    });
+
+    const fullMessage = '1 patch(es) failed to install on HOST-01. ' + error;
+    const { message } = vi.mocked(createAlert).mock.calls[0]![0];
+    if (Array.from(fullMessage).length > 4000) {
+      expect(Array.from(message!)).toHaveLength(4000);
+      expect(message).toBe('1 patch(es) failed to install on HOST-01. ' + '😀'.repeat(3957) + '…');
+    } else {
+      expect(message).toBe(fullMessage);
+    }
+  });
+
   it('raises through createAlert with a ruleId, never inserting into alerts directly', async () => {
     mockSelectOnce([{ hostname: 'HOST-01' }]); // hostname lookup
     mockSelectOnce([{ id: 'rule-1' }]); // ensureRule: existing rule
@@ -237,7 +263,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 2,
-      errorExcerpt: 'disk full',
+      errorMessage: 'disk full',
     });
 
     expect(alertId).toBe('alert-1');
@@ -271,7 +297,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     const templateInsert = insertCalls.find((c) => c.table === alertTemplates);
@@ -299,7 +325,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     expect(result).toBeNull();
@@ -323,7 +349,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     expect(result).toBe('alert-1');
@@ -341,7 +367,7 @@ describe('emitPatchJobFailureAlert', () => {
         deviceId: DEVICE_ID,
         patchJobId: JOB_ID,
         failedCount: 1,
-        errorExcerpt: null,
+        errorMessage: null,
       }),
     ).resolves.toBeNull();
   });
@@ -356,7 +382,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     expect(result).toBeNull();
@@ -372,7 +398,7 @@ describe('emitPatchJobFailureAlert', () => {
       patchJobId: JOB_ID,
       hostname: 'GIVEN-HOST',
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     expect(vi.mocked(createAlert)).toHaveBeenCalledWith(

@@ -104,6 +104,8 @@ async function seedRemovedDevice(
   orgId: string,
   siteId: string,
   removedDaysAgo: number | null,
+  /** #11153 — seed a completed uninstall so the purge's confirmation gate passes. */
+  opts: { confirmedUninstall?: boolean } = {},
 ): Promise<{ id: string; hostname: string }> {
   const unique = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const hostname = `purge-host-${unique}`;
@@ -126,6 +128,17 @@ async function seedRemovedDevice(
     .returning({ id: devices.id });
   if (!row) throw new Error('seedRemovedDevice: insert returned no row');
   createdDevices.push(row.id);
+  if (opts.confirmedUninstall !== false) {
+    await getTestDb().insert(deviceCommands).values({
+      deviceId: row.id,
+      type: 'self_uninstall',
+      payload: { removeConfig: true },
+      status: 'completed',
+      targetRole: 'agent',
+      uninstallReasons: ['device_remove'],
+      completedAt: new Date(),
+    });
+  }
   return { id: row.id, hostname };
 }
 
@@ -317,7 +330,7 @@ describe('removedDevicePurge (integration)', () => {
       targetId: a.partner.id,
     });
 
-    const draining = await seedRemovedDevice(a.org.id, a.site.id, 10);
+    const draining = await seedRemovedDevice(a.org.id, a.site.id, 10, { confirmedUninstall: false });
     await queueRemoveUninstall(draining.id, a.user.id);
     const alsoEligible = await seedRemovedDevice(a.org.id, a.site.id, 10);
 
@@ -367,7 +380,7 @@ describe('removedDevicePurge (integration)', () => {
       cutoff,
     });
 
-    expect(outcome).toBe('NO_LONGER_ELIGIBLE');
+    expect(outcome).toEqual({ skip: 'NO_LONGER_ELIGIBLE' });
     expect(await deviceExists(device.id)).toBe(true);
   });
 
@@ -383,7 +396,7 @@ describe('removedDevicePurge (integration)', () => {
       cutoff: new Date(Date.now() - 7 * DAY_MS),
     });
 
-    expect(outcome).toBe('ORG_CHANGED');
+    expect(outcome).toEqual({ skip: 'ORG_CHANGED' });
     expect(await deviceExists(device.id)).toBe(true);
   });
 
@@ -397,7 +410,7 @@ describe('removedDevicePurge (integration)', () => {
       cutoff: new Date(Date.now() - 7 * DAY_MS),
     });
 
-    expect(outcome).toBeNull();
+    expect(outcome).toEqual({ skip: null, uninstallState: 'completed' });
     expect(await deviceExists(device.id)).toBe(false);
   });
 

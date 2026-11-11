@@ -2,7 +2,34 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const getCurrentDbAccessContextMock = vi.hoisted(() => vi.fn(() => undefined as { scope: string } | undefined));
 
+// Post-commit work (#4142 W2). With `held` true, work registered with
+// runAfterDbContextCommit waits for commit() and is dropped by rollback();
+// runAfterDbContextExit work runs either way. With no context held, work
+// starts at once, as in db/index.ts. `started` collects the promises so a test
+// can await the fire-and-forget work.
+const deferred = vi.hoisted(() => ({
+  held: false,
+  commitOnly: [] as Array<() => unknown>,
+  onExit: [] as Array<() => unknown>,
+  started: [] as Promise<unknown>[],
+  start(work: () => unknown) { this.started.push(Promise.resolve().then(work)); },
+  commit() { for (const w of [...this.commitOnly, ...this.onExit]) this.start(w); this.commitOnly = []; this.onExit = []; },
+  rollback() { for (const w of this.onExit) this.start(w); this.commitOnly = []; this.onExit = []; },
+  async settle() { while (this.started.length) await Promise.allSettled(this.started.splice(0)); },
+  reset() { this.held = false; this.commitOnly = []; this.onExit = []; this.started = []; },
+}));
+
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => deferred.held,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => {
+    if (deferred.held) deferred.commitOnly.push(work);
+    else deferred.start(work);
+  }),
+  runAfterDbContextExit: vi.fn((_label: string, work: () => unknown) => {
+    if (deferred.held) deferred.onExit.push(work);
+    else deferred.start(work);
+  }),
   db: { select: vi.fn(), update: vi.fn() },
   getCurrentDbAccessContext: getCurrentDbAccessContextMock,
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -33,14 +60,16 @@ vi.mock('./permissions', () => ({ clearPermissionCache: vi.fn(async () => undefi
 vi.mock('./tokenRevocation', () => ({ revokeAllUserTokens: vi.fn(async () => undefined) }));
 vi.mock('./tenantStatus', () => ({ invalidateAgentTenantCache: vi.fn(async () => undefined) }));
 
-// Finding #3(b): severAgentCredentialsForOrgIds dynamically imports agentWs to
-// sever live sockets. Default: no connected agents, so the disconnect branch is
-// skipped and the existing revoke/restore tests' db.select ordering is
-// untouched. Individual tests override getConnectedAgentIds to exercise it.
-vi.mock('../routes/agentWs', () => ({
-  disconnectAgent: vi.fn(),
-  getConnectedAgentIds: vi.fn(() => [] as string[]),
+// Finding #3(b) / #4142 W2: the live-socket sever goes through the relay
+// facade (every instance), never the socket-local map.
+vi.mock('./agentCommandRelayEvict', () => ({
+  evictAgentSockets: vi.fn(async (requests: Array<{ agentId: string }>) =>
+    new Map(requests.map((r) => [r.agentId, { status: 'queued' }]))),
 }));
+vi.mock('../routes/agentWs', () => {
+  throw new Error('tenantLifecycle must not load the socket-local agentWs module');
+});
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args) => ({ and: args })),
@@ -56,9 +85,11 @@ vi.mock('drizzle-orm', () => ({
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { apiKeys, devices, enrollmentKeys } from '../db/schema';
 import { invalidateAgentTenantCache } from './tenantStatus';
-import { disconnectAgent, getConnectedAgentIds } from '../routes/agentWs';
+import { evictAgentSockets } from './agentCommandRelayEvict';
+import { captureException } from './sentry';
 import {
   ARCHIVE_SUSPENDED_TOKEN_REASON,
+  disconnectLiveAgentSocketsForOrgIds,
   liftArchiveSuspension,
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
@@ -110,11 +141,20 @@ function andClauses(where: any): any[] {
   return Array.isArray(where?.and) ? where.and : [where];
 }
 
+function evictRequestsOf(callIndex = 0) {
+  return vi.mocked(evictAgentSockets).mock.calls[callIndex]![0];
+}
+
 describe('tenantLifecycle — agent fleet severance', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    deferred.reset();
     getCurrentDbAccessContextMock.mockReturnValue(undefined);
     setupUpdate();
+    // Any SELECT not queued by a test (the sever's device read, mostly) finds no rows.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
+    } as any);
   });
 
   it('revokeOrganizationTenantAccess suspends agent tokens (reason-tagged) and invalidates enrollment keys', async () => {
@@ -141,28 +181,133 @@ describe('tenantLifecycle — agent fleet severance', () => {
     expect(result.enrollmentKeysInvalidated).toBe(1);
   });
 
-  it('severs live agent WS sockets for connected devices in a suspended org (Finding #3b)', async () => {
+  it('severs the live agent sockets of a suspended org on every instance (Finding #3b, #4142)', async () => {
     queueSelect([{ userId: 'u1' }]); // organizationUsers
-    queueSelect([{ agentId: 'agent-live' }, { agentId: 'agent-offline' }]); // devices in org
-    // Only one of the two devices has a live socket right now.
-    vi.mocked(getConnectedAgentIds).mockReturnValueOnce(['agent-live']);
+    queueSelect([{ agentId: 'agent-a' }, { agentId: 'agent-b' }]); // devices in org
 
     await revokeOrganizationTenantAccess('org-1');
+    await deferred.settle();
 
-    // The connected agent's socket is force-closed immediately (containment is
-    // not deferred to its next auth gate); the offline device is left alone.
-    expect(disconnectAgent).toHaveBeenCalledTimes(1);
-    expect(disconnectAgent).toHaveBeenCalledWith('agent-live', 4001, 'Tenant suspended');
+    expect(evictAgentSockets).toHaveBeenCalledTimes(1);
+    expect(evictRequestsOf()).toEqual([
+      { agentId: 'agent-a', code: 4001, reason: 'Tenant suspended' },
+      { agentId: 'agent-b', code: 4001, reason: 'Tenant suspended' },
+    ]);
   });
 
-  it('does not query devices or disconnect when no agents are connected', async () => {
+  it('an org with no enrolled agents evicts nothing', async () => {
     queueSelect([{ userId: 'u1' }]); // organizationUsers
-    // getConnectedAgentIds defaults to [] — the disconnect branch is skipped
-    // entirely (no device SELECT is issued).
-    const result = await revokeOrganizationTenantAccess('org-1');
 
-    expect(disconnectAgent).not.toHaveBeenCalled();
+    const result = await revokeOrganizationTenantAccess('org-1');
+    await deferred.settle();
+
+    expect(evictAgentSockets).not.toHaveBeenCalled();
     expect(result.agentTokensSuspended).toBe(2);
+  });
+
+  describe('disconnectLiveAgentSocketsForOrgIds (#4142 W2)', () => {
+    it('enumerates every device agentId in the orgs (no local-connected filter) and evicts with code 4001 and awaitAck:false', async () => {
+      queueSelect([{ agentId: 'a-1' }, { agentId: null }, { agentId: 'a-2' }, { agentId: 'a-1' }]);
+
+      await disconnectLiveAgentSocketsForOrgIds(['org-1', 'org-2'], 'Tenant offboarding');
+      await deferred.settle();
+
+      expect(evictAgentSockets).toHaveBeenCalledWith(
+        [
+          { agentId: 'a-1', code: 4001, reason: 'Tenant offboarding' },
+          { agentId: 'a-2', code: 4001, reason: 'Tenant offboarding' },
+        ],
+        { awaitAck: false },
+      );
+    });
+
+    it('inside a held context nothing is evicted until the outer transaction commits', async () => {
+      deferred.held = true;
+      queueSelect([{ agentId: 'a-1' }]);
+
+      await disconnectLiveAgentSocketsForOrgIds(['org-1'], 'Tenant suspended');
+      await deferred.settle();
+      expect(evictAgentSockets).not.toHaveBeenCalled();
+
+      deferred.commit();
+      await deferred.settle();
+      expect(evictAgentSockets).toHaveBeenCalledTimes(1);
+    });
+
+    it('a rollback evicts nothing', async () => {
+      deferred.held = true;
+      queueSelect([{ agentId: 'a-1' }]);
+
+      await disconnectLiveAgentSocketsForOrgIds(['org-1'], 'Tenant suspended');
+      deferred.rollback();
+      await deferred.settle();
+
+      expect(evictAgentSockets).not.toHaveBeenCalled();
+    });
+
+    it('5,000 agents: evictAgentSockets receives all of them (batching is the facade\'s job)', async () => {
+      const rows = Array.from({ length: 5_000 }, (_, i) => ({ agentId: `agent-${i}` }));
+      queueSelect(rows);
+
+      await disconnectLiveAgentSocketsForOrgIds(['org-big'], 'Tenant suspended');
+      await deferred.settle();
+
+      expect(evictAgentSockets).toHaveBeenCalledTimes(1);
+      expect(evictRequestsOf()).toHaveLength(5_000);
+    });
+
+    it('an eviction that could not reach some sockets is captured, never thrown', async () => {
+      queueSelect([{ agentId: 'a-1' }, { agentId: 'a-2' }, { agentId: 'a-3' }]);
+      vi.mocked(evictAgentSockets).mockResolvedValueOnce(new Map([
+        ['a-1', { status: 'queued' }],
+        ['a-2', { status: 'unavailable', reason: 'presence_unavailable' }],
+        ['a-3', { status: 'close_failed', via: 'local' }],
+      ]) as never);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(disconnectLiveAgentSocketsForOrgIds(['org-1'], 'Tenant suspended')).resolves.toBeUndefined();
+      await deferred.settle();
+
+      expect(captureException).toHaveBeenCalledTimes(1);
+      const reported = vi.mocked(captureException).mock.calls[0]![0] as Error;
+      expect(reported.message).toContain('2 of 3');
+      expect(reported.message).toContain('presence_unavailable');
+      expect(reported.message).toContain('close_failed');
+      error.mockRestore();
+    });
+
+    it('an eviction that rejects (a facade contract violation) is captured, never thrown', async () => {
+      queueSelect([{ agentId: 'a-1' }]);
+      vi.mocked(evictAgentSockets).mockRejectedValueOnce(new Error('boom'));
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await disconnectLiveAgentSocketsForOrgIds(['org-1'], 'Tenant suspended');
+      await deferred.settle();
+
+      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'boom' }));
+      error.mockRestore();
+    });
+
+    it('a failed device read is captured and never fails the caller', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({ where: vi.fn().mockRejectedValue(new Error('statement timeout')) })),
+      } as any);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(disconnectLiveAgentSocketsForOrgIds(['org-1'], 'Tenant suspended')).resolves.toBeUndefined();
+      await deferred.settle();
+
+      expect(evictAgentSockets).not.toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'statement timeout' }));
+      error.mockRestore();
+    });
+
+    it('no org ids: no device read, no eviction', async () => {
+      await disconnectLiveAgentSocketsForOrgIds([], 'Tenant suspended');
+      await deferred.settle();
+      expect(db.select).not.toHaveBeenCalled();
+      expect(evictAgentSockets).not.toHaveBeenCalled();
+    });
   });
 
   it('revokePartnerTenantAccess severs agents across every org under the partner', async () => {
@@ -308,11 +453,11 @@ describe('tenantLifecycle — agent fleet severance', () => {
     it('drain mode still severs live WS sockets (interactive channel must not survive)', async () => {
       queueSelect([{ userId: 'u1' }]); // organizationUsers
       queueSelect([{ agentId: 'agent-live' }]); // devices in org
-      vi.mocked(getConnectedAgentIds).mockReturnValueOnce(['agent-live']);
 
       await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
+      await deferred.settle();
 
-      expect(disconnectAgent).toHaveBeenCalledWith('agent-live', 4001, 'Tenant offboarding');
+      expect(evictRequestsOf()).toEqual([{ agentId: 'agent-live', code: 4001, reason: 'Tenant offboarding' }]);
     });
 
     it('revokePartnerTenantAccess drain mode keeps agent tokens across partner orgs', async () => {
@@ -378,21 +523,22 @@ describe('tenantLifecycle — agent fleet severance', () => {
         }
       });
 
-      it('lifts the suspension AFTER the socket sever, before the final cache drop', async () => {
+      it('evicts after the unsuspend commits, then drops the tenant cache once more', async () => {
         const order: string[] = [];
+        deferred.held = true;
         queueSelect([{ userId: 'u1' }]); // organizationUsers
         queueSelect([{ agentId: 'agent-live' }]); // devices in org (socket sweep)
-        vi.mocked(getConnectedAgentIds).mockReturnValueOnce(['agent-live']);
         // ...Once variants so these implementations can't leak into later tests
         // (vi.clearAllMocks in beforeEach clears calls, not implementations).
-        vi.mocked(disconnectAgent).mockImplementationOnce(() => {
-          order.push('disconnect');
-          return 'closed';
+        vi.mocked(evictAgentSockets).mockImplementationOnce(async (requests) => {
+          order.push('evict');
+          return new Map(requests.map((r) => [r.agentId, { status: 'queued' }]));
         });
         const recordInvalidate = async () => {
           order.push('invalidate');
         };
         vi.mocked(invalidateAgentTenantCache)
+          .mockImplementationOnce(recordInvalidate)
           .mockImplementationOnce(recordInvalidate)
           .mockImplementationOnce(recordInvalidate);
         const baseUpdate = vi.mocked(db.update).getMockImplementation()!;
@@ -402,12 +548,15 @@ describe('tenantLifecycle — agent fleet severance', () => {
         });
 
         await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
+        order.push('commit');
+        deferred.commit();
+        await deferred.settle();
 
-        // Restore must not re-open the auth gate before live sockets are torn
-        // down, and the cache invalidation stays the LAST write (in drain mode
-        // the cache IS the narrowing gate).
-        expect(order.indexOf('unsuspend')).toBeGreaterThan(order.indexOf('disconnect'));
-        expect(order[order.length - 1]).toBe('invalidate');
+        // The sever reads leases only once the unsuspend (and whatever else the
+        // transaction wrote) is committed, so it closes every socket that
+        // exists by then, reconnects included. The cache drop that follows it
+        // is the LAST write: in drain mode the cache IS the narrowing gate.
+        expect(order).toEqual(['invalidate', 'unsuspend', 'invalidate', 'commit', 'evict', 'invalidate']);
       });
 
       it('partner drain lifts suspensions across every org under the partner', async () => {

@@ -17,8 +17,10 @@ export const wispNudgePreferences = pgTable('wisp_nudge_preferences', {
   lastDigestAt: timestamp('last_digest_at', { withTimezone: true }),
   /** 'HH:MM' local; NULL = brief off (w00 A28). */
   briefTimeLocal: text('brief_time_local').default('08:00'),
-  /** IANA zone; NULL = first registered mobile device zone, else UTC. */
+  /** IANA zone the user chose; NULL = inferred (resolveBriefTimezone in @breeze/shared). */
   briefTimezone: text('brief_timezone'),
+  /** #10402: the zone the user's browser last reported. Inferred, never overrides `briefTimezone`. */
+  browserTimezone: text('browser_timezone'),
   lastBriefAt: timestamp('last_brief_at', { withTimezone: true }),
   /** Push severity floor (w00 A29). */
   proactivity: text('proactivity').$type<'quiet' | 'normal' | 'chatty'>().notNull().default('normal'),

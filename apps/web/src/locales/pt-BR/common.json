@@ -903,7 +903,20 @@
       },
       "charKeysOn": "Os atalhos de tecla única estão ativados.",
       "charKeysOff": "Os atalhos de tecla única estão desativados. Apenas atalhos com Ctrl/Cmd funcionam.",
-      "charKeysManage": "Alterar nas configurações do perfil"
+      "charKeysManage": "Alterar nas configurações do perfil",
+      "queueTitle": "Fila de chamados",
+      "queueHint": "Na página de chamados, fora de um campo de texto.",
+      "queue": {
+        "next": "Próximo chamado",
+        "previous": "Chamado anterior",
+        "open": "Abrir o chamado (após resolver: o próximo sugerido)",
+        "toggleBulk": "Adicionar à seleção em massa ou remover dela",
+        "assignMe": "Atribuir a mim",
+        "reply": "Escrever uma resposta",
+        "internal": "Escrever uma nota interna",
+        "resolve": "Resolver com uma nota",
+        "back": "Voltar para a fila"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1461,10 @@
           "deviceOnline": {
             "description": "Acionado quando um dispositivo conecta.",
             "label": "Dispositivo online"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Acionado quando um dispositivo recém-registrado parece ser uma reinstalação de um registro de dispositivo existente e inativo.",
+            "label": "Possível reinstalação de dispositivo"
           },
           "deviceReinstalled": {
             "description": "Acionado quando uma máquina reinstalada é vinculada novamente ao registro de dispositivo existente.",
@@ -2935,5 +2952,8 @@
   "featureLock": {
     "lockedLabel": "Bloqueado",
     "upgrade": "Ver planos"
+  },
+  "inheritChoice": {
+    "inherit": "Herdar — {{value}} ({{source}})"
   }
 }

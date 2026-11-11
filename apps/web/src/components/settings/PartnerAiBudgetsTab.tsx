@@ -138,23 +138,6 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
         </div>
 
         <div className="space-y-2">
-          <FieldLabel htmlFor="partner-ai-budget-approval-mode" fieldId="aiBudgets.approvalMode">{t('partnerAiBudgets.approvalMode')}</FieldLabel>
-          <select
-            id="partner-ai-budget-approval-mode"
-            value={data.approvalMode ?? ''}
-            onChange={e => set({ approvalMode: (e.target.value || undefined) as InheritableAiBudgetSettings['approvalMode'] })}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-          >
-            <option value="">{t('partnerAiBudgets.notSet')}</option>
-            <option value="per_step">{t('partnerAiBudgets.modes.perStep')}</option>
-            <option value="action_plan">{t('partnerAiBudgets.modes.actionPlan')}</option>
-            <option value="auto_approve">{t('partnerAiBudgets.modes.autoApprove')}</option>
-            <option value="hybrid_plan">{t('partnerAiBudgets.modes.hybridPlan')}</option>
-          </select>
-          <InheritanceLine fieldId="aiBudgets.approvalMode" />
-        </div>
-
-        <div className="space-y-2">
           <FieldLabel htmlFor="partner-ai-budget-max-turns" fieldId="aiBudgets.maxTurnsPerSession">{t('partnerAiBudgets.maxTurns')}</FieldLabel>
           <input
             id="partner-ai-budget-max-turns"

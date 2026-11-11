@@ -43,7 +43,7 @@ import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, permanentDeleteDevice, requestWakeCommand, requestBulkWakeCommand, type WakeResponse, type BulkWakeSummary, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, requestWakeCommand, requestBulkWakeCommand, type WakeResponse, type BulkWakeSummary, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
 import type { BulkMaintenanceResponse } from '../../services/deviceActions';
 import MaintenanceModeDialog from './MaintenanceModeDialog';
 import { isInMaintenance } from '../../lib/maintenanceResource';
@@ -54,6 +54,7 @@ import AccessDenied from '../shared/AccessDenied';
 import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import ForcePermanentDeleteDialog, { permanentDeleteRequest, uninstallNotConfirmedState, type UninstallState } from './ForcePermanentDeleteDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { BULK_GROUP_MEMBERSHIP_CAP, BULK_SITE_MOVE_CAP, CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, bulkGroupMembershipBlock, bulkMoveSiteAgents, bulkMoveSiteBlock, isCommandQueueable } from './bulkActionGating';
@@ -380,6 +381,8 @@ export default function DevicesPage() {
   // not, so whether rebooting a production box asked "are you sure?" depended
   // on which screen you were on — and the list is the dense, easy-to-mis-click
   // one, with Reboot sitting next to Run Script and Wake.
+  // #11153: the API refused a permanent delete because the agent never confirmed its uninstall.
+  const [forceDelete, setForceDelete] = useState<{ device: Device; state: UninstallState } | null>(null);
   const [pendingDeviceAction, setPendingDeviceAction] = useState<{ action: string; device: Device } | null>(null);
   // #3987: bulk Remove asks the agent question ONCE for the whole selection,
   // then runBulkRemove runs the per-device DELETE loop with that one answer.
@@ -408,14 +411,14 @@ export default function DevicesPage() {
   const purgePollTokenRef = useRef(0);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   const [warrantyRequested, setWarrantyRequested] = useState(() => readColumnVisibility().has('warranty'));
-  // Read by fetchDevices through a ref so toggling the column never changes
-  // fetchDevices' identity (which would re-run the mount effect as a
-  // foreground reload and unmount the list). `rowsHaveWarrantyRef` records
-  // whether the rows on screen were loaded with warranty, so only an off→on
-  // toggle over warranty-less rows triggers a (background) refresh.
-  const warrantyRequestedRef = useRef(warrantyRequested);
-  warrantyRequestedRef.current = warrantyRequested;
-  const rowsHaveWarrantyRef = useRef(false);
+  const [diskUsageVisible, setDiskUsageVisible] = useState(() => readColumnVisibility().has('diskUsage'));
+  const diskUsageRequested = diskUsageVisible && viewMode === 'list';
+  // Read the latest column requirements without changing fetchDevices' identity
+  // and triggering a foreground reload that would unmount the list.
+  const requestedDetails = useRef({ includeWarranty: warrantyRequested, includeDisks: diskUsageRequested });
+  requestedDetails.current = { includeWarranty: warrantyRequested, includeDisks: diskUsageRequested };
+  const [rowsHaveWarranty, setRowsHaveWarranty] = useState(false);
+  const [rowsHaveDisks, setRowsHaveDisks] = useState(false);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
   const [advancedFilter, setAdvancedFilter] = useHashState<FilterConditionGroup | null>(null, (h) => decodeFilterFromHash(h) ?? undefined);
@@ -703,11 +706,12 @@ export default function DevicesPage() {
       // `signal` is wired by the mount useEffect's AbortController so a
       // navigate-away mid-walk stops the next page request and prevents
       // setState on an unmounted component (#778 review).
-      const includeWarranty = warrantyRequestedRef.current;
+      const { includeWarranty, includeDisks } = requestedDetails.current;
       const [devicesResult, networkResult, manualResult, orgsResponse, sitesResult, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
           includeWarranty,
+          includeDisks,
           signal,
           // Surface the silent-cap case (#778 review). Without this, hitting
           // the safety ceiling would render an incomplete device list and
@@ -905,7 +909,8 @@ export default function DevicesPage() {
       setDeviceGroups(groupsList);
       setGroupMembershipMap(memberMap);
       setDevices(devicesWithNames);
-      rowsHaveWarrantyRef.current = includeWarranty;
+      setRowsHaveWarranty(includeWarranty);
+      setRowsHaveDisks(includeDisks);
       setOrgs(orgsList);
       setSites(sitesList);
 
@@ -1008,17 +1013,14 @@ export default function DevicesPage() {
     return () => controller.abort();
   }, [fetchDevices, orgScopeResolving, orgContextFailed, orgScopeKey]);
 
-  // Column turned on over rows loaded without warranty → refresh in the
-  // background so the list (selection, page, column state) stays mounted.
-  // Turning it off, or back on over rows that already carry warranty, is a
-  // no-op. Waiting on `loading` covers a toggle during the first walk: that
-  // walk read the old flag, so this fires once it lands. An error card is left
-  // alone — the user's Retry reads the ref and asks for warranty itself.
+  // A newly visible optional column needs a background reload if the displayed
+  // rows lack its details. Waiting for the first walk keeps the initial load
+  // in charge, and the error card's Retry uses the latest column requirements.
   useEffect(() => {
-    if (!warrantyRequested || rowsHaveWarrantyRef.current || loading || error) return;
-    if (orgScopeResolving || orgContextFailed) return;
+    if (loading || error || orgScopeResolving || orgContextFailed) return;
+    if ((!warrantyRequested || rowsHaveWarranty) && (!diskUsageRequested || rowsHaveDisks)) return;
     void fetchDevices(undefined, { background: true });
-  }, [warrantyRequested, loading, error, fetchDevices, orgScopeResolving, orgContextFailed]);
+  }, [warrantyRequested, diskUsageRequested, rowsHaveWarranty, rowsHaveDisks, loading, error, fetchDevices, orgScopeResolving, orgContextFailed]);
 
   // Real-time device status updates
   const handleDeviceEvent = useCallback((event: { type: string; payload: Record<string, unknown> }) => {
@@ -1184,7 +1186,14 @@ export default function DevicesPage() {
           message: `${admitted.length} of ${result.targets.length} script targets queued; ${refused.length} not admitted (${reasons})`,
         });
       } else if (devices.length === 1) {
-        showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedOne', { script: script.name, hostname: devices[0].hostname }) });
+        // #11553: an offline device only picks the script up on reconnect; say so.
+        const queuedParams = { script: script.name, hostname: devices[0].hostname };
+        showToast({
+          type: 'success',
+          message: admitted[0]?.delivery === 'queued_offline'
+            ? t('devicesPage.toasts.scriptQueuedOneOffline', queuedParams)
+            : t('devicesPage.toasts.scriptQueuedOne', queuedParams),
+        });
       } else {
         showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedMany', { script: script.name, count: admitted.length }) });
       }
@@ -1194,6 +1203,31 @@ export default function DevicesPage() {
       showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.scriptQueueFailed') });
     } finally {
       setActionInProgress(false);
+    }
+  };
+
+  // #11153: `force` is only ever true when the operator chose "Delete anyway"
+  // in the force dialog after the API refused with UNINSTALL_NOT_CONFIRMED.
+  const runPermanentDelete = async (device: Device, force: boolean) => {
+    try {
+      await permanentDeleteRequest(device.id, {
+        force,
+        errorFallback: t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }),
+        onUnauthorized: handleSessionExpired,
+      });
+      // No warning branch: the API returns `{ success: true }` and nothing else since #2787.
+      showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
+      await refreshDevices();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      const state = uninstallNotConfirmedState(err);
+      if (state) {
+        setForceDelete({ device, state });
+        return;
+      }
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
+      }
     }
   };
 
@@ -1444,17 +1478,9 @@ export default function DevicesPage() {
               showToast({ type: 'success', message: t('devicesPage.toasts.permanentDeleteCancelled'), duration: 2000 });
             }
           });
-          setTimeout(async () => {
+          setTimeout(() => {
             if (pdCancelled) return;
-            try {
-              await permanentDeleteDevice(device.id);
-              // No warning branch: the API returns `{ success: true }` and
-              // nothing else since #2787 (see permanentDeleteDevice).
-              showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
-              await refreshDevices();
-            } catch (err) {
-              showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
-            }
+            void runPermanentDelete(device, false);
           }, 5000);
           break;
         }
@@ -2021,6 +2047,20 @@ export default function DevicesPage() {
   // unmount), and every terminal state stops the chain explicitly rather than
   // relying on the next tick not being scheduled.
   // -------------------------------------------------------------------------
+  // One sentence per refusal code, each already carrying its count and the
+  // "skipped" wording, so the toast templates never repeat or nest it.
+  const describePurgeSkips = useCallback(
+    (byCode: Record<string, number>) =>
+      Object.entries(byCode)
+        .map(([code, count]) =>
+          code === 'UNINSTALL_NOT_CONFIRMED'
+            ? t('devicesPage.toasts.bulkPurgeSkipUninstallNotConfirmed', { count })
+            : t('devicesPage.toasts.bulkPurgeSkipOther', { count, code }),
+        )
+        .join(' '),
+    [t],
+  );
+
   const stopPurgePolling = useCallback(() => {
     if (purgePollTimeoutRef.current !== null) {
       clearTimeout(purgePollTimeoutRef.current);
@@ -2063,7 +2103,7 @@ export default function DevicesPage() {
           // must not become 40 toasts, and a bare count would hide WHY.
           const byCode: Record<string, number> = {};
           for (const s of skipped) byCode[s.code] = (byCode[s.code] ?? 0) + 1;
-          const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+          const reasons = describePurgeSkips(byCode);
           showToast({
             type: 'warning',
             message: purged === 0
@@ -2091,7 +2131,7 @@ export default function DevicesPage() {
 
       scheduleNextTick(); // 'waiting' | 'active' | 'delayed'
     },
-    [refreshDevices, stopPurgePolling, t],
+    [describePurgeSkips, refreshDevices, stopPurgePolling, t],
   );
 
   const runBulkPurge = async (targets: Device[]) => {
@@ -2107,8 +2147,9 @@ export default function DevicesPage() {
         // survive a delete the operator believes they ordered.
         const byCode: Record<string, number> = {};
         for (const r of started.rejected) byCode[r.code] = (byCode[r.code] ?? 0) + 1;
-        const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
-        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { count: started.accepted, skipped: started.rejected.length, reasons }) });
+        // The success toast above already says how many are being deleted;
+        // nothing is deleted yet, so this one names only what was left out.
+        showToast({ type: 'warning', message: describePurgeSkips(byCode) });
       }
       stopPurgePolling(); // drop anything from a previous run
       const token = purgePollTokenRef.current;
@@ -2592,6 +2633,7 @@ export default function DevicesPage() {
       ) : viewMode === 'list' ? (
         <DeviceList
           onWarrantyRequiredChange={setWarrantyRequested}
+          onDiskUsageColumnVisibilityChange={setDiskUsageVisible}
           devices={classFilteredDevices}
           orgs={orgs}
           sites={sites}
@@ -2909,6 +2951,19 @@ export default function DevicesPage() {
         />
       )}
 
+      {forceDelete && (
+        <ForcePermanentDeleteDialog
+          hostname={forceDelete.device.hostname}
+          state={forceDelete.state}
+          onClose={() => setForceDelete(null)}
+          onConfirm={() => {
+            const target = forceDelete.device;
+            setForceDelete(null);
+            void runPermanentDelete(target, true);
+          }}
+          confirmTestId="permanent-delete-force-confirm"
+        />
+      )}
       {/* #3698: mirror of the device-detail confirm gate, reusing the SAME
           deviceActions.confirm.* copy so the two screens read identically and
           no new locale keys are needed. Double-click safety is the shared

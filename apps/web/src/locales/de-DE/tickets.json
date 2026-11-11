@@ -85,7 +85,8 @@
     },
     "checklistProgress": "{{done}}/{{total}} Schritte",
     "checklistTitle": "Checkliste: {{done}} von {{total}} Schritten erledigt",
-    "merged": "Zusammengeführt"
+    "merged": "Zusammengeführt",
+    "ageTitle": "Eröffnet {{created}} · Aktualisiert {{updated}}"
   },
   "ticketArchivedList": {
     "emptyTitle": "Keine archivierten Tickets.",
@@ -137,8 +138,25 @@
       "remove": "Datei entfernen",
       "tooMany": "Sie können höchstens {{max}} Dateien an einen Kommentar anhängen.",
       "tooLarge": "{{name}} ist größer als 10 MB.",
-      "sentWithoutAttachment_one": "Notiz gepostet, aber der Anhang konnte nicht hinzugefügt werden. Wiederholen oder entfernen.",
-      "sentWithoutAttachment_other": "Notiz gepostet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen."
+      "rejectedType": "{{name}} wurde nicht angehängt: Es werden nur JPEG-, PNG- und WebP-Bilder sowie PDFs unterstützt.",
+      "rejectedEmpty": "{{name}} wurde nicht angehängt: Die Datei ist leer.",
+      "sentWithoutAttachmentReply_one": "Antwort gesendet, aber der Anhang konnte nicht hinzugefügt werden. Wiederholen oder entfernen.",
+      "sentWithoutAttachmentNote_one": "Notiz gepostet, aber der Anhang konnte nicht hinzugefügt werden. Wiederholen oder entfernen.",
+      "sentWithoutAttachmentReply_other": "Antwort gesendet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen.",
+      "sentWithoutAttachmentNote_other": "Notiz gepostet, aber {{count}} Anhänge konnten nicht hinzugefügt werden. Wiederholen oder entfernen.",
+      "rejectedTicketDeleted": "{{name}} wurde nicht angehängt: Dieses Ticket wurde gelöscht.",
+      "rejectedTicketMerged": "{{name}} wurde nicht angehängt: Dieses Ticket wurde mit einem anderen Ticket zusammengeführt.",
+      "rejectedNotFound": "{{name}} wurde nicht angehängt: Das Ticket wurde nicht gefunden.",
+      "rejectedMalformed": "{{name}} wurde nicht angehängt: Der Upload war fehlerhaft. Versuchen Sie es erneut.",
+      "openMergedTicket": "Zusammengeführtes Ticket öffnen",
+      "notKept_one": "1 Anhang wurde mit diesem Entwurf nicht gespeichert ({{names}}). Hängen Sie ihn erneut an oder schließen Sie den Hinweis, um ohne ihn zu senden.",
+      "notKept_other": "{{count}} Anhänge wurden mit diesem Entwurf nicht gespeichert ({{names}}). Hängen Sie sie erneut an oder schließen Sie den Hinweis, um ohne sie zu senden.",
+      "notKeptDismiss": "Schließen"
+    },
+    "modeLabel": "Sichtbarkeit des Kommentars",
+    "recipient": {
+      "emails": "E-Mail an {{recipient}}",
+      "none": "Keine E-Mail-Adresse des Anforderers hinterlegt. Die Antwort wird im Ticket gespeichert, niemand erhält eine E-Mail."
     }
   },
   "ticketFeed": {
@@ -416,7 +434,18 @@
     },
     "filterByType": "Nach Typ filtern",
     "allTypes": "Alle Typen",
-    "showMerged": "Zusammengeführte anzeigen"
+    "showMerged": "Zusammengeführte anzeigen",
+    "shortcutsButton": "Kürzel",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, Priorität {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, Priorität {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA: {{relative}} übrig",
+        "atRisk": "SLA gefährdet, {{relative}} übrig",
+        "paused": "SLA pausiert, {{relative}} übrig",
+        "breached": "SLA durchbrochen"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "Ticket nicht gefunden. Möglicherweise wurde es gelöscht oder Sie haben keinen Zugriff darauf.",
@@ -842,6 +871,64 @@
       "SELF_LINK": "Ein Ticket kann nicht mit sich selbst verknüpft werden.",
       "NOT_FOUND": "Dieses Ticket wurde nicht gefunden oder ist nicht mehr verfügbar.",
       "LINK_GONE": "Diese Verknüpfung wurde bereits entfernt."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Ticket-Navigation",
+    "backTo": "Zurück zu {{tab}}",
+    "position": "{{index}} von {{total}}",
+    "previous": "Vorheriges Ticket",
+    "next": "Nächstes Ticket",
+    "more": "Weitere Aktionen",
+    "sections": "Ticketbereiche",
+    "tabs": {
+      "conversation": "Unterhaltung",
+      "details": "Angaben"
+    },
+    "descriptionAria": "Anfrage von {{author}}",
+    "invoiceDialogTitle": "Nicht alle Arbeit wurde abgerechnet",
+    "nextOffer": {
+      "label": "Als Nächstes",
+      "open": "Öffnen",
+      "openAria": "{{number}} {{subject}} öffnen",
+      "atRisk": "Gefährdet · {{relative}} übrig",
+      "noSla": "Kein SLA"
+    },
+    "requester": {
+      "noEmail": "Keine E-Mail hinterlegt"
+    },
+    "endpoint": {
+      "noDevice": "Kein Gerät verknüpft",
+      "lastSeen": "zuletzt gesehen {{ago}}",
+      "loading": "Gerät wird geladen",
+      "loadFailed": "Der Live-Zustand des Geräts konnte nicht geladen werden.",
+      "os": "Betriebssystem",
+      "signedIn": "Angemeldet",
+      "nobodySignedIn": "Niemand angemeldet",
+      "lastUser": "Letzter Benutzer {{user}}",
+      "activeAlerts": "Aktive Warnungen",
+      "noAlerts": "Keine aktiven Warnungen",
+      "alertsFailed": "Warnungen konnten nicht geladen werden.",
+      "untitledAlert": "Warnung ohne Titel",
+      "userSignedIn": "{{user}} angemeldet",
+      "alertCount": "{{count}} Warnungen",
+      "alertCount_one": "{{count}} Warnung",
+      "alertCount_other": "{{count}} Warnungen",
+      "openDetails": "{{device}}: Gerätedetails öffnen"
+    },
+    "details": {
+      "properties": "Eigenschaften",
+      "logged": "{{time}} erfasst",
+      "partCount": "{{count}} Teile",
+      "partCount_one": "{{count}} Teil",
+      "partCount_other": "{{count}} Teile",
+      "pendingApprovals": "{{count}} offen",
+      "pendingApprovals_one": "{{count}} offen",
+      "pendingApprovals_other": "{{count}} offen",
+      "linkCount": "{{count}} verknüpft",
+      "linkCount_one": "{{count}} verknüpft",
+      "linkCount_other": "{{count}} verknüpft",
+      "approvals": "Genehmigungen"
     }
   }
 }

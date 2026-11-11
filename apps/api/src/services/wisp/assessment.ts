@@ -4,23 +4,27 @@
  * engine (W05)", A33, A34).
  *
  *   enqueueAssessment      flag → entitlement → ceiling → org in ceiling →
- *                          budget → createAndEnqueueAgentRun({ grant,
- *                          profile: 'assessment' }). An exhausted budget never
- *                          pauses the grant: the grantor is told once per UTC
- *                          day and the deterministic digest path records the
- *                          event as a low concern instead (no model call).
+ *                          budget → no-changes gate → createAndEnqueueAgentRun({
+ *                          grant, profile: 'assessment' }). An exhausted budget
+ *                          never pauses the grant: the grantor is told once per
+ *                          UTC day and the deterministic digest path records the
+ *                          event as a low concern instead (no model call). A
+ *                          tick or watch with nothing new since the last clean
+ *                          assessment is recorded as a `skipped / no_changes`
+ *                          run, also without a model call (#11423).
  *   loadAssessmentContext  the run's bounded context: thread seed, the org's
  *                          live concerns with this grant's recipient state, a
- *                          five-table digest since the watermark (each read
+ *                          bounded digest since the watermark (each read
  *                          pinned to the run's org, gated on the grantor's
  *                          permission for it, ≤ 25 rows, sanitised; on a
  *                          first look the alerts are the org's open ones,
- *                          #10389), the
- *                          reason's watch, the org's readiness inventory, and
- *                          the grantor's nudge feedback. null = the grant is no
+ *                          #10389; metric anomalies are the open ones plus
+ *                          the reason's trigger, #11425), the reason's watch,
+ *                          the org's readiness inventory, and the grantor's
+ *                          nudge feedback. null = the grant is no
  *                          longer usable (the run finishes without a model call).
  *   rollupPartnerPicture   deterministic text of every live concern under the
- *                          ceiling → updateThreadSummary.
+ *                          ceiling → updateThreadPicture.
  *
  * DB access: every read here runs in a FRESH system context
  * (`runOutsideDbContext(withSystemDbAccessContext)`) — callers are the wake
@@ -30,23 +34,41 @@
  * seam as metricAnomalySubscriber.ts).
  */
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
-import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind } from '@breeze/shared';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import {
+  WISP_CHECK_IN_TRIGGER_EVENTS,
+  type Concern,
+  type ConcernSeverity,
+  type ConcernSubject,
+  type ConcernSubjectKind,
+  type WatchKind,
+} from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { alerts } from '../../db/schema/alerts';
 import { connectionHealthIncidents } from '../../db/schema/connectionHealth';
+import { devices } from '../../db/schema/devices';
+import { metricAnomalyEpisodes } from '../../db/schema/metricAnomalyEpisodes';
+import { metricAnomalyIncidents } from '../../db/schema/metricAnomalyIncidents';
 import { organizations } from '../../db/schema/orgs';
 import { tickets } from '../../db/schema/portal';
 import { wispGrants } from '../../db/schema/wisp';
+import { wispConcerns } from '../../db/schema/wispConcerns';
 import { wispEnabled } from '../../config/env';
 import { ASSESSMENT_BUDGET_CENTS_PER_RUN } from '../aiAgents/assessmentProfile';
-import { createAndEnqueueAgentRun, type AgentRunSkipReason } from '../aiAgents/runService';
+import {
+  createAndEnqueueAgentRun,
+  transitionRunStatus,
+  type AgentRunSkipReason,
+  type CreateAgentRunInput,
+  type CreateAgentRunResult,
+} from '../aiAgents/runService';
 import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
 import { captureException } from '../sentry';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce, utcDayWindow } from './budget';
+import { CHECK_IN_EVIDENCE_OUTPUT_MAX, type CheckInEvidence } from './checkInTriggers';
 import { ConcernSubjectHeldError, listConcernsForCeiling, resolveConcernBySignature, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
 import {
@@ -59,8 +81,9 @@ import {
 import { recallForGrant } from './memoryBroker';
 import { assessableOrgIds } from './assessableOrgs';
 import { readinessInventory } from './readiness';
-import { getOrCreateThread, seedContextForSession, updateThreadSummary } from './threads';
+import { getOrCreateThread, seedContextForSession, updateThreadPicture } from './threads';
 import { listWatches } from './watches';
+import { parseWatchHitSummary } from './watchHits';
 import { incWispAssessment } from '../wispMetrics';
 import type {
   AssessmentDigest,
@@ -73,6 +96,13 @@ import type {
 export type { AssessmentReason, AssessmentRunContext, AssessmentDigest, WispAssessmentTriggerRef } from './assessmentTypes';
 export { assessableOrgIds } from './assessableOrgs';
 
+/**
+ * W07 (#11496): every caller-supplied dedupe key starts with this, so it can
+ * never collide with a derived `wisp-assess-` key or another trigger's key.
+ * `checkInRunDedupeKey` (wisp/checkInRuns.ts) builds it.
+ */
+export const CHECK_IN_RUN_DEDUPE_PREFIX = 'wisp-check-in-';
+
 /** Rows per digest table (w00: bounded, newest first). */
 const DIGEST_ROW_LIMIT = 25;
 /** Digest window when the (grant, org) pair has no watermark yet (see lastAssessmentWatermark). */
@@ -81,7 +111,7 @@ const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const NUDGE_FEEDBACK_LIMIT = 20;
 const NUDGE_FEEDBACK_PREFIX = 'nudge_feedback:';
 
-/** updateThreadSummary's ceiling (W04 truncates at the same length). */
+/** updateThreadPicture's ceiling (it truncates at the same length). */
 const PICTURE_MAX_CHARS = 4000;
 const PICTURE_SUMMARIES_PER_ORG = 3;
 /** sanitizeSweepText appends one '…' past `max`, so 79 keeps each summary ≤ 80. */
@@ -193,13 +223,33 @@ export async function enqueueAssessment(
      * fixed in W07). Unset → a time-based key (direct callers).
      */
     occurrenceKey?: string;
+    /**
+     * W07 (#11496): the run's dedupe key, verbatim, in place of the derived
+     * one. Only a run-mode check-in sets it (`checkInRunDedupeKey`), so it
+     * must start with CHECK_IN_RUN_DEDUPE_PREFIX: one check-in admits at most
+     * one run, whichever path fires it and however often it retries.
+     */
+    dedupeKey?: string;
+    /**
+     * W07: admit only while this is still the grant's current revision (a
+     * run-mode check-in's scheduling revision). Anything else skips as
+     * `grant_revision_changed` before the ceiling is resolved or any budget
+     * is charged, so a revised grant, wider or narrower, never runs it.
+     */
+    requireRevisionId?: string;
   } & DeterministicDigestHint,
 ): Promise<{ runId: string } | { skipped: string }> {
+  if (input.dedupeKey !== undefined && !input.dedupeKey.startsWith(CHECK_IN_RUN_DEDUPE_PREFIX)) {
+    throw new Error(`enqueueAssessment: a dedupeKey must start with ${CHECK_IN_RUN_DEDUPE_PREFIX}`);
+  }
   if (!wispEnabled()) return skipAssessment('wisp_disabled', 'skipped_admission');
   const { grantId, orgId, reason } = input;
 
   const grant = await loadGrantPin(grantId);
   if (!grant?.currentRevisionId) return skipAssessment('grant_inactive', 'skipped_grant');
+  if (input.requireRevisionId !== undefined && grant.currentRevisionId !== input.requireRevisionId) {
+    return skipAssessment('grant_revision_changed', 'skipped_grant');
+  }
   // Spec §10 claim-time re-check: a partner that lost the entitlement admits nothing.
   if (!(await hasEntitlement(grant.partnerId, 'wisp'))) return skipAssessment('not_entitled', 'skipped_admission');
 
@@ -238,29 +288,315 @@ export async function enqueueAssessment(
     reason: watermark === null && reason.kind === 'tick' ? { kind: 'onboarding' } : reason,
     watermark: watermark?.toISOString() ?? null,
   };
-  // #1105: admission opens its own context and enqueues after commit, so it
-  // must not run inside a caller's (request or system) context.
-  const result = await runOutsideDbContext(() => createAndEnqueueAgentRun({
+  const admission: CreateAgentRunInput = {
     orgId,
     kind: 'triage',
     triggerKind: 'schedule',
     deviceId: null,
     profile: 'assessment',
-    dedupeKey: input.occurrenceKey
+    dedupeKey: input.dedupeKey ?? (input.occurrenceKey
       ? `wisp-assess-${grantId}-${orgId}-o${createHash('sha256').update(input.occurrenceKey).digest('hex').slice(0, 24)}`
-      : `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
+      : `wisp-assess-${grantId}-${orgId}-${Date.now()}`),
     triggerRef: { wisp: triggerRef },
     grant: { grantId, grantRevisionId: ceiling.revisionId },
-  }));
+  };
+
+  // #11423: a tick (or alert_pattern watch) for an org where nothing changed
+  // since its last clean assessment makes no model call. The model was the
+  // gate before: a Sonnet call to answer "Nothing changed" (issue #11423).
+  if (await nothingChangedSinceLastLook(ceiling, triggerRef.reason, watermark, orgId)) {
+    return recordNoChangesSkip(admission, grantId, ceiling.partnerId, orgId);
+  }
+
+  // #1105: admission opens its own context and enqueues after commit, so it
+  // must not run inside a caller's (request or system) context.
+  const result = await runOutsideDbContext(() => createAndEnqueueAgentRun(admission));
+  return settleAdmission(result, grantId, ceiling.partnerId, orgId);
+}
+
+/** The admission result → enqueueAssessment's result, with the no-agent readiness bookkeeping. */
+async function settleAdmission(
+  result: CreateAgentRunResult,
+  grantId: string,
+  partnerId: string,
+  orgId: string,
+): Promise<{ runId: string } | { skipped: string }> {
   if (result.created) {
     incWispAssessment('admitted');
-    await clearNoAgentReadiness(ceiling.partnerId, orgId);
+    await clearNoAgentReadiness(partnerId, orgId);
     return { runId: result.run.id };
   }
   // An enabled Triage agent resolved (the skip is something else), so a stale "no agent" concern is false: close it.
-  if (NO_ENABLED_TRIAGE_AGENT_SKIPS.has(result.skipped)) await raiseNoAgentReadiness(grantId, ceiling.partnerId, orgId);
-  else await clearNoAgentReadiness(ceiling.partnerId, orgId);
+  if (NO_ENABLED_TRIAGE_AGENT_SKIPS.has(result.skipped)) await raiseNoAgentReadiness(grantId, partnerId, orgId);
+  else await clearNoAgentReadiness(partnerId, orgId);
   return skipAssessment(result.skipped, 'skipped_admission');
+}
+
+// ---------------------------------------------------------------------------
+// No-changes gate (#11423)
+// ---------------------------------------------------------------------------
+
+/** `ai_agent_runs.error_code` of an assessment skipped because nothing changed. */
+export const NO_CHANGES_ERROR_CODE = 'no_changes';
+const NO_CHANGES_SUMMARY = 'Nothing changed since the last assessment, so Wisp made no model call.';
+
+/**
+ * Watch kinds whose hits are rows the probe reads, so "no change" means "no
+ * new or cleared hit": an alert_pattern watch's hits are alerts. Every other
+ * kind always runs:
+ *   ticket_waiting       fires BECAUSE a ticket did not change;
+ *   backup_health, patch_compliance, security_findings, custom_query
+ *                        are judged through tools, on state the digest does
+ *                        not read;
+ *   ticket_cluster       has its own deterministic poller.
+ * #11424 makes watches stateful (a stored hit-set), which supersedes this.
+ */
+const DIGEST_EVALUATED_WATCH_KINDS: ReadonlySet<WatchKind> = new Set<WatchKind>(['alert_pattern']);
+
+/**
+ * Pure. True when this request may be skipped because nothing changed. It
+ * needs an earlier clean assessment to compare against (a watermark; `reason`
+ * as recorded, so a first-look tick is already `onboarding`), and a tick, or
+ * a watch of a DIGEST_EVALUATED_WATCH_KINDS kind. An `event` names something
+ * to look at and `onboarding` is a first look: both always run, as does a
+ * watch whose kind is unknown (`watchKind` null: the watch is gone).
+ */
+export function noChangesGateApplies(reason: AssessmentReason, watermark: Date | null, watchKind: WatchKind | null = null): boolean {
+  if (watermark === null) return false;
+  if (reason.kind === 'tick') return true;
+  return reason.kind === 'watch' && watchKind !== null && DIGEST_EVALUATED_WATCH_KINDS.has(watchKind);
+}
+
+/**
+ * The gate's reads. Fails open: the gate only saves money, so if any read
+ * throws, the assessment runs as it did before the gate, and the error is
+ * reported rather than blocking every tick and watch until it is fixed.
+ */
+async function nothingChangedSinceLastLook(
+  ceiling: GrantCeiling,
+  reason: AssessmentReason,
+  watermark: Date | null,
+  orgId: string,
+): Promise<boolean> {
+  if (watermark === null || (reason.kind !== 'tick' && reason.kind !== 'watch')) return false;
+  try {
+    const watchKind = reason.kind === 'watch'
+      ? (await listWatches(ceiling)).find((w) => w.id === reason.watchId)?.kind ?? null
+      : null;
+    if (!noChangesGateApplies(reason, watermark, watchKind)) return false;
+    const since = await lastCleanAssessmentFinish(ceiling.grantId, orgId);
+    return since !== null && (await firstChangedDigestSource(ceiling, ceiling.grantId, orgId, since)) === null;
+  } catch (err) {
+    console.error('[wisp.assessment] no-changes probe failed; running the assessment', {
+      grantId: ceiling.grantId, orgId, reason: reason.kind, error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.noChangesProbe', grantId: ceiling.grantId, orgId });
+    return false;
+  }
+}
+
+/** What the gate probes, in probe order. */
+export type DigestChangeSource = 'alerts' | 'tickets' | 'incidents' | 'runs' | 'intents' | 'anomalies' | 'concerns';
+
+/**
+ * `finished_at` of the latest assessment of (grant, org) that finished
+ * cleanly: the same runs lastAssessmentWatermark reads, so it is the end of
+ * the run the next digest window starts at. null when there is none (or it
+ * has no finish time), and then the gate does not apply.
+ */
+async function lastCleanAssessmentFinish(grantId: string, orgId: string): Promise<Date | null> {
+  const [row] = await sys(() => db
+    .select({ at: sql<Date | string | null>`max(${aiAgentRuns.finishedAt})` })
+    .from(aiAgentRuns)
+    .where(and(
+      eq(aiAgentRuns.grantId, grantId),
+      eq(aiAgentRuns.orgId, orgId),
+      eq(aiAgentRuns.profile, 'assessment'),
+      inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
+      or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
+      notCheckInRun(),
+    )), 'wisp.assessment.noChangesAnchor');
+  return toDate(row?.at);
+}
+
+/**
+ * W07 (#11496): not a run check-in's assessment. That run answers one
+ * follow-up the person asked for, so it never moves the org's digest
+ * watermark or the no-changes anchor: the next tick still sees every change
+ * since the last full look. Null-safe: a row with no reason kind is kept.
+ */
+function notCheckInRun(): SQL {
+  return sql`coalesce(${aiAgentRuns.triggerRef} -> 'wisp' -> 'reason' ->> 'kind', '') <> ${'check_in'}`;
+}
+
+/** Not a row the no-changes gate wrote (null-safe: a null error_code is kept). */
+function notNoChangesSkip(): SQL {
+  return or(
+    ne(aiAgentRuns.status, 'skipped'),
+    isNull(aiAgentRuns.errorCode),
+    ne(aiAgentRuns.errorCode, NO_CHANGES_ERROR_CODE),
+  ) as SQL;
+}
+
+/**
+ * The first digest source with a change since `since` (the last clean
+ * assessment's FINISH), or null when there is none. Each probe starts from
+ * the digest's predicate for its table (loadDigest), widened where the digest
+ * would miss a change of state, and is gated on the same grantor permission,
+ * so a section that would render empty is not probed:
+ *
+ *   alerts     triggered, acknowledged, dismissed or resolved since (an
+ *              acknowledgement clears an "unacknowledged alert" watch hit)
+ *   tickets    updated since
+ *   incidents  opened since, with a view permission inside the ceiling
+ *   runs       queued or finished since — not a no_changes skip, not another
+ *              grant's assessment, not a specialist (depth > 0). Wisp's own
+ *              bookkeeping is not news: counting another grant's runs would
+ *              have two grants on one org wake each other for ever, and a
+ *              specialist's finish (or failure) is its own
+ *              `ai.agent.run.completed` / `.failed` event, which always runs.
+ *   intents    created, or changed status, since
+ *   anomalies  (#11425) the open set the digest shows changed since: an
+ *              incident announced since (anomalyIncidentAnnounced) whose
+ *              episode is still open joined it, or the episode of an
+ *              announced incident closed since and took it off. A close is
+ *              `resolved_at` since, or, for a `resolved` episode, `updated_at`
+ *              since: the automatic close (metricAnomalyEpisodes.ts) backdates
+ *              `resolved_at` to the end of the anomalous data, which can
+ *              precede `since`, but stamps `updated_at` with the close, and a
+ *              resolved episode is never live again, so that stamp stays. A
+ *              `dismissed` episode is read by `resolved_at` only (the
+ *              dismissal stamps it): a snoozed one stays live and keeps
+ *              refreshing `updated_at`, which would wake every tick. An open
+ *              incident's later detector updates do not count: they do not
+ *              change which anomalies are open. An incident with no episode
+ *              row is never listed as open, so the join is INNER.
+ *   concerns   (no permission: the run always reads them) updated since,
+ *              unless the last write was an assessment finalizer's — its
+ *              `last_assessed_run_id` names a run that finished at or after
+ *              the write. That covers the touch loop (assessmentFinalizer
+ *              stamps every open concern the run read, before finishRun sets
+ *              finished_at) and the run's other concern writes. Writes by
+ *              people, chat or the budget-exhausted path still count.
+ *
+ * Measuring from the FINISH, not the watermark (the start), keeps the last
+ * run's own writes out. The cost: a change that landed while that run was in
+ * flight, after it read its digest, waits for the next change or event; the
+ * next model run still reads it, because a skip never moves the watermark.
+ */
+async function firstChangedDigestSource(
+  ceiling: GrantCeiling,
+  grantId: string,
+  orgId: string,
+  since: Date,
+): Promise<DigestChangeSource | null> {
+  const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
+    ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
+  const any = async (rows: Promise<unknown[]>) => (await rows).length > 0;
+  return sys(async () => {
+    if (may('alerts') && await any(db.select({ id: alerts.id }).from(alerts)
+      .where(and(eq(alerts.orgId, orgId), or(
+        gte(alerts.triggeredAt, since), gte(alerts.acknowledgedAt, since), gte(alerts.dismissedAt, since), gte(alerts.resolvedAt, since),
+      )))
+      .limit(1))) return 'alerts';
+    if (may('tickets') && await any(db.select({ id: tickets.id }).from(tickets)
+      .where(and(eq(tickets.orgId, orgId), gte(tickets.updatedAt, since)))
+      .limit(1))) return 'tickets';
+    if (may('incidents')) {
+      const present = await db
+        .selectDistinct({ viewPermission: connectionHealthIncidents.viewPermission })
+        .from(connectionHealthIncidents)
+        .where(and(eq(connectionHealthIncidents.orgId, orgId), gte(connectionHealthIncidents.openedAt, since)));
+      if (present.some((p) => ceilingAllows(ceiling, orgId, p.viewPermission))) return 'incidents';
+    }
+    if (may('runs') && await any(db.select({ id: aiAgentRuns.id }).from(aiAgentRuns)
+      .where(and(
+        eq(aiAgentRuns.orgId, orgId),
+        or(gte(aiAgentRuns.queuedAt, since), gt(aiAgentRuns.finishedAt, since)),
+        eq(aiAgentRuns.depth, 0),
+        or(ne(aiAgentRuns.profile, 'assessment'), and(eq(aiAgentRuns.grantId, grantId), notNoChangesSkip())),
+      ))
+      .limit(1))) return 'runs';
+    if (may('intents') && await any(db.select({ id: actionIntents.id }).from(actionIntents)
+      .where(and(
+        eq(actionIntents.orgId, orgId),
+        or(gte(actionIntents.createdAt, since), gt(actionIntents.statusChangedAt, since)),
+      ))
+      .limit(1))) return 'intents';
+    if (may('anomalies') && await any(db.select({ id: metricAnomalyIncidents.id }).from(metricAnomalyIncidents)
+      .innerJoin(metricAnomalyEpisodes, and(
+        eq(metricAnomalyEpisodes.id, metricAnomalyIncidents.episodeId),
+        eq(metricAnomalyEpisodes.orgId, metricAnomalyIncidents.orgId),
+      ))
+      .where(and(
+        eq(metricAnomalyIncidents.orgId, orgId),
+        anomalyIncidentAnnounced(),
+        or(
+          and(eq(metricAnomalyEpisodes.status, 'open'), gte(metricAnomalyIncidents.dispatchedAt, since)),
+          and(ne(metricAnomalyEpisodes.status, 'open'), or(
+            gte(metricAnomalyEpisodes.resolvedAt, since),
+            and(eq(metricAnomalyEpisodes.status, 'resolved'), gte(metricAnomalyEpisodes.updatedAt, since)),
+          )),
+        ),
+      ))
+      .limit(1))) return 'anomalies';
+    if (await any(db.select({ id: wispConcerns.id }).from(wispConcerns)
+      .where(and(
+        eq(wispConcerns.orgId, orgId),
+        gte(wispConcerns.updatedAt, since),
+        sql`NOT EXISTS (SELECT 1 FROM ai_agent_runs r
+                         WHERE r.id = ${wispConcerns.lastAssessedRunId}
+                           AND r.profile = 'assessment'
+                           AND r.finished_at >= ${wispConcerns.updatedAt})`,
+      ))
+      .limit(1))) return 'concerns';
+    return null;
+  }, 'wisp.assessment.noChangesProbe');
+}
+
+/**
+ * Record the skip as an `ai_agent_runs` row — `skipped`, `no_changes`, zero
+ * cost, never started — so the brief can count what was saved (#11428) and
+ * the round-robin (wake.ts loadLastAssessedByOrg) moves on to the next org.
+ *
+ * The row goes through admission like any run (agent, policy snapshot, caps,
+ * dedupe, the no-agent readiness concern), with the enqueue deferred and
+ * never called; the queued → skipped transition is the one terminal write
+ * path (runService.terminalization contract). If that transition fails the
+ * admitted run is enqueued after all: an extra model call, never a row left
+ * `queued` with no job holding the org's concurrency slot.
+ */
+async function recordNoChangesSkip(
+  admission: CreateAgentRunInput,
+  grantId: string,
+  partnerId: string,
+  orgId: string,
+): Promise<{ runId: string } | { skipped: string }> {
+  const result = await runOutsideDbContext(() => createAndEnqueueAgentRun(admission, { deferEnqueue: true }));
+  if (!result.created) return settleAdmission(result, grantId, partnerId, orgId);
+  const runId = result.run.id;
+  let recorded = false;
+  try {
+    recorded = await runOutsideDbContext(() => transitionRunStatus(runId, 'queued', 'skipped', {
+      errorCode: NO_CHANGES_ERROR_CODE,
+      summary: NO_CHANGES_SUMMARY,
+      finishedAt: new Date(),
+    }));
+    if (!recorded) console.warn('[wisp.assessment] no_changes skip lost its queued → skipped CAS; enqueueing the run', { runId, grantId, orgId });
+  } catch (err) {
+    console.error('[wisp.assessment] could not record a no_changes skip; enqueueing the run', {
+      runId, grantId, orgId, error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.noChangesSkip', runId, orgId });
+  }
+  if (recorded) {
+    incWispAssessment('skipped_no_changes');
+    await clearNoAgentReadiness(partnerId, orgId);
+    return { skipped: NO_CHANGES_ERROR_CODE };
+  }
+  if (!result.enqueue) throw new Error(`createAndEnqueueAgentRun returned no deferred enqueue for run ${runId}`);
+  const enqueue = result.enqueue;
+  return settleAdmission(await runOutsideDbContext(() => enqueue()), grantId, partnerId, orgId);
 }
 
 /**
@@ -350,6 +686,7 @@ export async function lastAssessmentWatermark(grantId: string, orgId: string): P
       eq(aiAgentRuns.profile, 'assessment'),
       inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
       or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
+      notCheckInRun(),
     )), 'wisp.assessment.watermark');
   return toDate(row?.at);
 }
@@ -435,17 +772,52 @@ function parseReason(v: unknown): AssessmentReason | null {
           eventId: r.eventId,
           ...(isUuid(r.alertId) ? { alertId: r.alertId } : {}),
           ...(isUuid(r.deviceId) ? { deviceId: r.deviceId } : {}),
+          ...(isUuid(r.anomalyIncidentId) ? { anomalyIncidentId: r.anomalyIncidentId } : {}),
         }
         : null;
     case 'tick':
       return { kind: 'tick' };
-    case 'watch':
-      return isNonEmptyString(r.watchId) ? { kind: 'watch', watchId: r.watchId } : null;
+    case 'watch': {
+      if (!isNonEmptyString(r.watchId)) return null;
+      // #11424: the scheduler's hit summary; a malformed one is dropped, not the reason.
+      const hits = parseWatchHitSummary(r.hits);
+      return hits ? { kind: 'watch', watchId: r.watchId, hits } : { kind: 'watch', watchId: r.watchId };
+    }
     case 'onboarding':
       return { kind: 'onboarding' };
+    case 'on_demand':
+      return isNonEmptyString(r.requestId) ? { kind: 'on_demand', requestId: r.requestId } : null;
+    case 'check_in':
+      // W07: the instruction is rendered into the prompt (single-lined there);
+      // malformed evidence is dropped, never the reason.
+      return isUuid(r.checkInId) && isNonEmptyString(r.instruction)
+        ? { kind: 'check_in', checkInId: r.checkInId, instruction: r.instruction, evidence: parseCheckInEvidence(r.evidence) }
+        : null;
     default:
       return null;
   }
+}
+
+const TRIGGER_EVENTS: ReadonlySet<string> = new Set(WISP_CHECK_IN_TRIGGER_EVENTS);
+const EVIDENCE_STATUS_MAX = 64;
+
+/** A check_in reason's evidence as stored; null when absent or not the shape triggerConditionOf writes. */
+function parseCheckInEvidence(v: unknown): CheckInEvidence | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const e = v as Record<string, unknown>;
+  if (typeof e.kind !== 'string' || !TRIGGER_EVENTS.has(e.kind)) return null;
+  if (!isNonEmptyString(e.status) || e.status.length > EVIDENCE_STATUS_MAX) return null;
+  const at = typeof e.at === 'string' ? toDate(e.at) : null;
+  if (!at) return null;
+  const out: CheckInEvidence = { kind: e.kind as CheckInEvidence['kind'], status: e.status, at: at.toISOString() };
+  if (e.exitCode === null || (typeof e.exitCode === 'number' && Number.isInteger(e.exitCode))) out.exitCode = e.exitCode as number | null;
+  if (typeof e.outputHead === 'string' && e.outputHead !== '') out.outputHead = Array.from(e.outputHead).slice(0, CHECK_IN_EVIDENCE_OUTPUT_MAX).join('');
+  if (e.lastSeenAt === null) out.lastSeenAt = null;
+  else if (typeof e.lastSeenAt === 'string') {
+    const seen = toDate(e.lastSeenAt);
+    if (seen) out.lastSeenAt = seen.toISOString();
+  }
+  return out;
 }
 
 /** `ai_agent_runs.trigger_ref.wisp` → WispAssessmentTriggerRef; null when absent or malformed. */
@@ -479,6 +851,8 @@ export function parseWispTriggerRef(triggerRef: Record<string, unknown> | null |
  *              are read on its detail (routes/aiAgents.ts GET /runs/:runId),
  *              so they follow the runs section. approvals:decide is a DECIDE
  *              right, not a read one.
+ *   anomalies  devices:read (routes/devices/anomalies.ts GET list and the
+ *              episode reads; the `manage_device_anomalies` list action)
  */
 const DIGEST_SECTION_PERMISSION = {
   alerts: 'alerts:read',
@@ -486,6 +860,7 @@ const DIGEST_SECTION_PERMISSION = {
   incidents: 'organizations:read',
   runs: 'ai_agents:read',
   intents: 'ai_agents:read',
+  anomalies: 'devices:read',
 } as const;
 
 /** The grantor may read `permission` in `orgId` under this ceiling (org term included). */
@@ -500,11 +875,13 @@ function ceilingAllows(ceiling: GrantCeiling, orgId: string, permission: string)
 }
 
 /**
- * Five bounded reads, each pinned to `orgId` (the ceiling admitted the org;
- * the pin is the second lock) and each gated on the grantor's permission for
- * it (DIGEST_SECTION_PERMISSION): a section the grantor may not read renders
- * empty and issues no query. On a first look the alerts section is the org's
- * open alerts (loadOpenAlertRows); the other four keep the `since` window.
+ * Bounded reads, each pinned to `orgId` (the ceiling admitted the org; the
+ * pin is the second lock) and each gated on the grantor's permission for it
+ * (DIGEST_SECTION_PERMISSION): a section the grantor may not read renders
+ * empty and issues no query. The sections use the `since` window, except the
+ * alerts on a first look (the org's open alerts, loadOpenAlertRows) and the
+ * metric anomalies, which are always current state (loadAnomalySection). The
+ * metric anomalies read runs in its own system context, after the others.
  */
 async function loadDigest(
   ceiling: GrantCeiling,
@@ -512,10 +889,11 @@ async function loadDigest(
   currentRunId: string,
   since: Date,
   firstLook: boolean,
+  anomalyIncidentId: string | null,
 ): Promise<AssessmentDigest> {
   const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
     ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
-  return sys(async () => {
+  const base = await sys(async () => {
     const alertRows = !may('alerts') ? [] : firstLook ? await loadOpenAlertRows(orgId) : await db
       .select({
         id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status,
@@ -538,7 +916,9 @@ async function loadDigest(
     const runRows = !may('runs') ? [] : await db
       .select({ id: aiAgentRuns.id, profile: aiAgentRuns.profile, status: aiAgentRuns.status, summary: aiAgentRuns.summary })
       .from(aiAgentRuns)
-      .where(and(eq(aiAgentRuns.orgId, orgId), ne(aiAgentRuns.id, currentRunId), gte(aiAgentRuns.queuedAt, since)))
+      // #11423: a no_changes skip carries nothing to read, and skips do not
+      // move the watermark, so they would crowd out the real runs.
+      .where(and(eq(aiAgentRuns.orgId, orgId), ne(aiAgentRuns.id, currentRunId), gte(aiAgentRuns.queuedAt, since), notNoChangesSkip()))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(DIGEST_ROW_LIMIT);
     const intentRows = !may('intents') ? [] : await db
@@ -584,6 +964,116 @@ async function loadDigest(
       })),
     };
   }, 'wisp.assessment.digest');
+  const anomalies = may('anomalies') ? await loadAnomalySection(orgId, anomalyIncidentId, currentRunId) : null;
+  return { ...base, anomalies };
+}
+
+/**
+ * The first two parts of an open anomaly incident (loadDigestAnomalies):
+ * announced by the publisher, and not suppressed by its episode. Shared with
+ * the no-changes gate's `anomalies` probe so the two cannot drift apart.
+ */
+function anomalyIncidentAnnounced(): SQL {
+  return and(
+    isNotNull(metricAnomalyIncidents.dispatchedAt),
+    eq(metricAnomalyIncidents.suppressedByEpisode, false),
+  ) as SQL;
+}
+
+/** Metric names kept per anomaly incident (the detector's distinct metric names in the bucket). */
+const DIGEST_ANOMALY_METRIC_NAME_LIMIT = 10;
+
+/**
+ * #11425: the digest's metric anomalies, or null when they could not be read.
+ * The read has its own system context and transaction, and the catch sits
+ * outside it (CLAUDE.md: a catch around a query wraps the whole
+ * transaction). It is a join over tables no other section reads, so a failure
+ * there must not fail every assessment run. Like loadReadiness, a failure is
+ * logged and sent to Sentry, and the section degrades to null. The prompt
+ * then says the anomalies were not read, so it does not claim there are none
+ * while the reason names an anomaly incident.
+ */
+async function loadAnomalySection(
+  orgId: string,
+  triggerId: string | null,
+  runId: string,
+): Promise<AssessmentDigest['anomalies']> {
+  try {
+    const rows = await sys(() => loadDigestAnomalies(orgId, triggerId), 'wisp.assessment.digest.anomalies');
+    return rows.map((r) => ({
+      id: r.id,
+      deviceId: r.deviceId,
+      deviceName: r.deviceName ? sanitizeSweepText(r.deviceName, 120) : null,
+      anomalyType: sanitizeSweepText(r.anomalyType, 40),
+      metricNames: (r.metricNames ?? []).slice(0, DIGEST_ANOMALY_METRIC_NAME_LIMIT).map((m) => sanitizeSweepText(m, 120)),
+      // `numeric` arrives from the driver as a string.
+      peakScore: Number(r.peakScore),
+      openedAt: toIso(r.openedAt),
+      status: sanitizeSweepText(String(r.status), 20),
+    }));
+  } catch (err) {
+    console.warn('[wisp.assessment] metric anomaly read failed; digest carries anomalies: null', {
+      runId, orgId, error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.anomalies', runId, orgId });
+    return null;
+  }
+}
+
+/**
+ * #11425: the metric anomaly incidents section. These are the org's open
+ * incidents plus the run's trigger (`reason.anomalyIncidentId`), whatever its
+ * status. ≤ 25 rows, the trigger first, then newest `last_seen_at` (the
+ * metric_anomaly_incidents_org_last_seen_idx order).
+ *
+ * "Open" has three parts:
+ *   - announced: `dispatched_at` set by the publisher;
+ *   - not suppressed: the publisher dispatches one incident per episode and
+ *     marks the rest `suppressed_by_episode`, so this keeps about one row per
+ *     anomaly episode instead of one per 5-minute bucket;
+ *   - the episode is still open. The episode is the lifecycle a technician
+ *     resolves or dismisses. Incidents normally carry one: the incident
+ *     upsert's persistence gate requires `ma.episode_id IS NOT NULL`
+ *     (metricAnomalies.ts). But `episode_id` is nullable, and the publisher
+ *     dispatches an unlinked incident at once.
+ *
+ * `episode_id` has no FK (the cascade-cycle note in metricAnomalyIncidents.ts),
+ * so the joins are LEFT and org-pinned. An incident with no episode row (NULL
+ * `episode_id`, or an episode that is gone) is never listed as open; it shows
+ * only as the trigger, with status 'unknown'.
+ *
+ * The caller provides the DB context (loadAnomalySection). Exported for the
+ * integration test (wispAssessmentAnomalies.integration.test.ts), which runs
+ * it on real SQL.
+ */
+export function loadDigestAnomalies(orgId: string, triggerId: string | null) {
+  const openIncident = and(anomalyIncidentAnnounced(), eq(metricAnomalyEpisodes.status, 'open'));
+  return db
+    .select({
+      id: metricAnomalyIncidents.id,
+      deviceId: metricAnomalyIncidents.deviceId,
+      deviceName: sql<string | null>`COALESCE(${devices.displayName}, ${devices.hostname})`,
+      anomalyType: metricAnomalyIncidents.anomalyType,
+      metricNames: metricAnomalyIncidents.metricNames,
+      peakScore: metricAnomalyIncidents.peakScore,
+      openedAt: metricAnomalyIncidents.firstSeenAt,
+      status: sql<string>`COALESCE(${metricAnomalyEpisodes.status}, 'unknown')`,
+    })
+    .from(metricAnomalyIncidents)
+    .leftJoin(metricAnomalyEpisodes, and(
+      eq(metricAnomalyEpisodes.id, metricAnomalyIncidents.episodeId),
+      eq(metricAnomalyEpisodes.orgId, metricAnomalyIncidents.orgId),
+    ))
+    .leftJoin(devices, and(eq(devices.id, metricAnomalyIncidents.deviceId), eq(devices.orgId, metricAnomalyIncidents.orgId)))
+    .where(and(
+      eq(metricAnomalyIncidents.orgId, orgId),
+      triggerId ? or(eq(metricAnomalyIncidents.id, triggerId), openIncident) : openIncident,
+    ))
+    .orderBy(
+      ...(triggerId ? [sql`(${metricAnomalyIncidents.id} = ${triggerId}) desc`] : []),
+      desc(metricAnomalyIncidents.lastSeenAt),
+    )
+    .limit(DIGEST_ROW_LIMIT);
 }
 
 /** Alert statuses that are still open: what a first look reports as the org's current state. */
@@ -713,11 +1203,17 @@ export async function loadAssessmentContext(run: {
 
   const since = ref.watermark ? new Date(ref.watermark) : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
   // #10389: nothing earlier to diff against, so the alerts are the org's
-  // current open ones rather than the 24 h fallback window.
-  const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding';
-  const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook);
-
+  // current open ones rather than the 24 h fallback window. #10406: a person
+  // asking "go through the open alerts" gets the same open-alerts digest,
+  // whatever the watermark.
+  // W07: a check-in run is a follow-up on one thing the person asked about,
+  // never a look at the whole org's current state, whatever the watermark.
+  const firstLook = ref.reason.kind !== 'check_in'
+    && (ref.watermark === null || ref.reason.kind === 'onboarding' || ref.reason.kind === 'on_demand');
   const reason = ref.reason;
+  const anomalyIncidentId = reason.kind === 'event' ? reason.anomalyIncidentId ?? null : null;
+  const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook, anomalyIncidentId);
+
   const watchId = reason.kind === 'watch' ? reason.watchId : null;
   const watch = watchId !== null
     ? (await listWatches(ceiling)).find((w) => w.id === watchId) ?? null
@@ -734,6 +1230,7 @@ export async function loadAssessmentContext(run: {
     openConcerns,
     changedSince: since.toISOString(),
     firstLook,
+    noEarlierAssessment: ref.watermark === null,
     digest,
     watch,
     reason,
@@ -818,7 +1315,8 @@ export function renderPartnerPicture(input: { generatedAt: Date; orgs: { orgId: 
 
 /**
  * Deterministic (no model) picture of every live concern under the grant's
- * current ceiling, written to the grant's thread summary. Throws
+ * current ceiling, written to the picture column of the grant's thread (#10390:
+ * never the session summary, which session close owns). Throws
  * GrantInactiveError when the grant cannot be used.
  */
 export async function rollupPartnerPicture(grantId: string): Promise<string> {
@@ -862,6 +1360,6 @@ export async function rollupPartnerPicture(grantId: string): Promise<string> {
 
   const text = renderPartnerPicture({ generatedAt: new Date(), orgs });
   const thread = await getOrCreateThread(grantId);
-  await updateThreadSummary(thread.id, text);
+  await updateThreadPicture(thread.id, text);
   return text;
 }

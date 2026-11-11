@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle, Clock, Download, Loader2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AiAgentRunStatus } from '@breeze/shared';
+import type { AiAgentRunStatus, AiApprovalScope } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
+import { CeremonyError, decideIntentApproval, isNoApproverDeviceError } from '@/lib/intentApprovals';
+import { ActionError } from '@/lib/runAction';
+import { showToast } from '@/components/shared/Toast';
 import { downloadArtifact } from '@/lib/downloadArtifact';
 import type { ChatRunProgressEntry, ChatRunState } from '@/stores/processStreamEvent';
 
@@ -26,7 +29,23 @@ interface PolledRun {
   /** Progress ring from `GET /ai/agents/runs/:id` (routes/aiAgents.ts `progress`). */
   progress?: ChatRunProgressEntry[];
   /** `RunTraceIntentRowInput` rows linked to the run (`intents`). */
-  intents?: Array<{ status: string }>;
+  intents?: PolledIntent[];
+  /** Run profile; `device_troubleshooting` runs get the Continue button. */
+  profile?: string;
+  /** Set for a run launched under a Wisp grant. */
+  wisp?: { grantorName: string | null } | null;
+}
+
+interface PolledIntent {
+  id?: string;
+  status: string;
+  actionName?: string;
+  approvalScope?: AiApprovalScope | null;
+  decidedVia?: string | null;
+  /** The approval card's label copy for this step. */
+  actionLabel?: string | null;
+  /** The CALLER's own pending approval_requests row; null when they cannot decide it. */
+  approvalRequestId?: string | null;
 }
 
 interface AiRunCardProps {
@@ -35,6 +54,11 @@ interface AiRunCardProps {
   initialStatus: 'queued' | 'running' | 'completed' | 'failed';
   /** Live state from the SSE stream, when a turn happened to be open. */
   run: ChatRunState | undefined;
+  /**
+   * Device-troubleshooting runs: asks the hosting chat to send a follow-up
+   * message. Calls no API itself; the button renders only when provided.
+   */
+  onContinue?: (runId: string) => void;
 }
 
 /**
@@ -105,9 +129,13 @@ function formatBytes(bytes: number): string {
  * name is rendered as a React text child, so an artifact called
  * `<img src=x onerror=…>` is escaped, never parsed.
  */
-export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps) {
+export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiRunCardProps) {
   const { t } = useTranslation('ai');
   const [polled, setPolled] = useState<PolledRun | null>(null);
+  // Bumped after a decide so the poll effect restarts and re-reads at once
+  // (it also revives a poll that had stopped).
+  const [pollNonce, setPollNonce] = useState(0);
+  const [decidingIds, setDecidingIds] = useState<ReadonlySet<string>>(new Set());
 
   // A live settled result beats a poll that predates it.
   const status = run && isSettled(run.status) && !isSettled(polled?.status)
@@ -143,7 +171,13 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
           if (cancelled) return;
           if (body.data) {
             setPolled(body.data);
-            if (isSettled(body.data.status)) {
+            // Keep polling a settled run only while a pending step is THIS
+            // viewer's to decide (it leaves the list once decided). A step
+            // only someone else can decide never ends this tab's polling.
+            const hasActionable = (body.data.intents ?? []).some(
+              (i) => i.status === 'pending_approval' && !!i.approvalRequestId,
+            );
+            if (isSettled(body.data.status) && !hasActionable) {
               // A finished (or approval-parked) run never changes on its own; keep polling and every open
               // chat with an old run card becomes a background request forever.
               settled = true;
@@ -164,7 +198,7 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [runId, liveSettled]);
+  }, [runId, liveSettled, pollNonce]);
 
   const summary = polled?.summary ?? run?.summary ?? null;
   const artifacts: PolledArtifact[] = polled?.artifacts
@@ -186,6 +220,49 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
   const pendingCount = polled?.status === 'awaiting_approval' && polledPending !== undefined
     ? polledPending
     : run?.pendingIntentCount ?? polledPending;
+
+  const pendingIntents = (polled?.intents ?? []).filter(
+    (i): i is PolledIntent & { id: string } => i.status === 'pending_approval' && typeof i.id === 'string',
+  );
+
+  const decide = async (intent: PolledIntent & { id: string }, decision: 'approve' | 'deny') => {
+    const requestId = intent.approvalRequestId;
+    if (!requestId || decidingIds.has(intent.id)) return;
+    setDecidingIds((cur) => new Set(cur).add(intent.id));
+    try {
+      const outcome = await decideIntentApproval(requestId, decision, undefined, intent.approvalScope ?? null);
+      const copy =
+        outcome === 'needs_device' ? 'aiApprovalDialog.noApproverDevice'
+          : outcome === 'not_sole_approver' ? 'aiApprovalDialog.notSoleApprover'
+            : outcome === 'fresh_factor_required' ? 'aiApprovalDialog.freshFactorRequired'
+              : null;
+      // `refused` was already shown as an error by decideIntentApproval.
+      if (copy) showToast({ type: 'error', message: t(/* i18n-dynamic */ copy) });
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: 'error',
+          message: isNoApproverDeviceError(err)
+            ? t('aiApprovalDialog.noApproverDevice')
+            : err instanceof CeremonyError
+              ? t('aiApprovalDialog.verificationFailed')
+              : t('aiApprovalDialog.decideFailed'),
+        });
+      }
+    } finally {
+      setDecidingIds((cur) => {
+        const next = new Set(cur);
+        next.delete(intent.id);
+        return next;
+      });
+      setPollNonce((n) => n + 1);
+    }
+  };
+
+  const showContinue = onContinue !== undefined
+    && polled?.profile === 'device_troubleshooting'
+    && isSettled(status);
 
   const StatusIcon = status === 'completed'
     ? CheckCircle
@@ -231,6 +308,51 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
         </div>
       )}
 
+      {pendingIntents.length > 0 && (
+        <ul aria-label={t('aiRunCard.stepApprovals.title')} className="mt-2 space-y-1.5 text-xs">
+          {pendingIntents.map((intent) => (
+            <li
+              key={intent.id}
+              data-testid="ai-run-card-step-approval"
+              className="rounded border border-amber-200 bg-amber-50/50 p-2 dark:border-amber-900 dark:bg-amber-950/20"
+            >
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-medium">{intent.actionLabel ?? intent.actionName}</span>
+                {polled?.wisp?.grantorName && (
+                  <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] dark:bg-gray-700">
+                    {t('aiRunCard.stepApprovals.wispFor', { name: polled.wisp.grantorName })}
+                  </span>
+                )}
+              </div>
+              {intent.approvalRequestId ? (
+                <div className="mt-1.5 flex gap-1.5">
+                  <button
+                    type="button"
+                    data-testid={`ai-run-card-step-approve-${intent.id}`}
+                    disabled={decidingIds.has(intent.id)}
+                    onClick={() => void decide(intent, 'approve')}
+                    className="rounded bg-primary px-2 py-1 text-primary-foreground disabled:opacity-50"
+                  >
+                    {t('aiRunCard.stepApprovals.approve')}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`ai-run-card-step-deny-${intent.id}`}
+                    disabled={decidingIds.has(intent.id)}
+                    onClick={() => void decide(intent, 'deny')}
+                    className="rounded border border-gray-300 px-2 py-1 disabled:opacity-50 dark:border-gray-600"
+                  >
+                    {t('aiRunCard.stepApprovals.deny')}
+                  </button>
+                </div>
+              ) : (
+                <p className="mt-1 text-muted-foreground">{t('aiRunCard.stepApprovals.waitingForApprover')}</p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
       {summary && (
         <p data-testid="ai-run-card-summary" className="mt-2 whitespace-pre-wrap text-xs">
           {summary}
@@ -269,6 +391,17 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
         <p data-testid="ai-run-card-offline-notice" className="mt-2 text-xs text-muted-foreground">
           {t('aiRunCard.resultOnRunPage')}
         </p>
+      )}
+
+      {showContinue && (
+        <button
+          type="button"
+          data-testid="ai-run-card-continue"
+          onClick={() => onContinue?.(runId)}
+          className="mt-2 mr-3 rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-800"
+        >
+          {t('aiRunCard.continue')}
+        </button>
       )}
 
       {(runIsTerminal || status === 'awaiting_approval') && (

@@ -43,6 +43,19 @@ The script needs no root `.env`. It generates a throwaway one with random secret
 
 On macOS the record has `hardware.baselineGrade: false`: the figures describe the Docker VM, not fixed hardware. The comparator will not compare it with a baseline-grade record, so a local macOS run is for looking at numbers only.
 
+## Runner prerequisites
+
+A self-hosted runner for `perf.yml` needs:
+
+- Docker Engine with Compose v2
+- Go, at the version in `agent/go.mod`
+- Node, installed by the workflow's setup steps
+- `jq` and `openssl`
+- `build-essential`
+- `libpcap-dev` (the agent build imports `gopacket/pcap`; without it the build fails on `pcap.h`)
+
+After the simulator exits, `run-perf.sh` keeps the sampler running for `TAIL_SECONDS` (default `INTERVAL + 10`) so a sample lands after the window end; the comparator rejects a run without one.
+
 ## CLI
 
 ```bash
@@ -60,7 +73,10 @@ Exit codes: `0` pass, `1` regression (with `--confirm`, only if the confirm run 
 
 - **Nightly** (cron): runs only when the repository variable `PERF_NIGHTLY_ENABLED` is `true`. Measures `nightly-200`, compares with `baselines/nightly-200.json`, and runs a confirm run on a regression. On failure a second job opens or comments on the single open issue labelled `perf-regression`.
 - **Storm suite** (#8642, `storm` job, after the KPI job): `run-perf.sh --storm storm-suite` runs `load-tests/agentsim/storm.sh storm-suite` (400 agents, admission `enforce`, caddy port pinned) with `--gate-heartbeat-p95 1s --gate-pool-min-ratio 0.8 --gate-pool-recovery 30s` (values in the workflow `env`). **Warn-only** (`continue-on-error`) until the repository variable `PERF_GATES_ENFORCE` is `true`; flip it on or after 2026-10-31. Report: artifact `perf-storm-*`, `storm/storm.json`.
+- **Workspace ownership**: each self-hosted job ends with an `if: always()` step that chowns the workspace back to the runner user, because the lab stack's containers write as root into bind mounts of the checkout and would otherwise make the next run's `actions/checkout` fail to clean it. If a checkout is already wedged (`not a git repository`), delete `_work/<repo>/<repo>` on the runner.
 - **Manual dispatch**: same measurement, no issue filed. With input `inject=slow-heartbeat` it runs a clean run, applies `inject/slow-heartbeat.patch` to the throwaway checkout, runs again, and compares the two with `--expect regression`. That job **passes only if the gate goes red**, naming both agent cost and heartbeat p95. It needs no committed baseline and is the self-test that the gate can fail.
+
+**Inject acceptance allowance.** The injected run blocks the API event loop on purpose, and the proxy answers a few requests with 502 while it is blocked. Acceptance normally demands zero non-2xx outside crawl-config, which would invalidate the run before the comparator could prove the gate goes red. So `run-perf.sh --label inject` (and only that label) calls `check-acceptance.sh report --allow-non2xx 20`; the acceptance line prints `(relaxed allowance: 20)`. Clean, nightly and storm runs keep the zero default. The self-test is about the gate, not the simulator's acceptance. The non-2xx counts are recorded in the KPI record's `notes` (for example `3 × 502 on POST /agents/:id/heartbeat`) and echoed in the compare summary, so they are never hidden. The comparator step is unchanged: `--expect regression` still needs both `agentCostCpuMsPerAgentMin` and `heartbeatP95Ms`.
 
 ## Reading a red
 

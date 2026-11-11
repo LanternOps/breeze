@@ -84,11 +84,7 @@
  * assumption copied from a sibling: `workerEntrypointClosure.contract.test.ts`
  * (the mechanical authority) was run for BOTH values, and this module's
  * runtime import closure reaches neither `routes/agentWs.ts` nor
- * `services/agentCommandAwait.ts`. `alertVerdictScheduler` — same job shape,
- * `socket-owner` placement — reaches them only through
- * `alertVerdictSubscriber` -> `aiToolsOrgs` -> `tenantOffboarding` ->
- * `orgMerge` -> `routes/portal/helpers`, none of which this module imports.
- * The deepest AI dependency here is `createAndEnqueueAgentRun`, which inserts
+ * `services/agentCommandAwait.ts`. The deepest AI dependency here is `createAndEnqueueAgentRun`, which inserts
  * a run row and enqueues; socket dispatch happens later, in `aiAgentRunner`.
  * Do not relitigate the value by reasoning about it — run the tool.
  */

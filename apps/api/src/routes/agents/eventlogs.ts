@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withDbTransaction } from '../../db';
 import { devices, deviceEventLogs } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordAgentIngestSubmission } from '../metrics';
@@ -210,7 +210,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
 
     let settings: EventLogSettings | null;
     try {
-      settings = await getDeviceEventLogSettings(device.id, { orgId: device.orgId });
+      settings = await withDbTransaction(() => getDeviceEventLogSettings(device.id, { orgId: device.orgId }));
     } catch (err) {
       console.error(`[EventLogs] Failed to resolve settings for device ${device.id}, using conservative defaults:`, err);
       settings = EVENT_LOG_DEFAULTS;
@@ -353,11 +353,13 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
           // a window after a sub-collector failure (#2390 retry semantics), so
           // duplicates are expected — they must be absorbed here, not
           // re-forwarded to the org's SIEM below.
-          const insertedRows = await db.insert(deviceEventLogs).values(batch).onConflictDoNothing().returning({
+          // A savepoint per batch: a failed batch must keep the batches before it,
+          // which the partial-failure answer below reports (#11225).
+          const insertedRows = await withDbTransaction(() => db.insert(deviceEventLogs).values(batch).onConflictDoNothing().returning({
             source: deviceEventLogs.source,
             eventId: deviceEventLogs.eventId,
             timestamp: deviceEventLogs.timestamp,
-          });
+          }));
           inserted += insertedRows.length;
           for (const r of insertedRows) {
             insertedKeys.add(eventLogRowKey(r.source, r.eventId, r.timestamp));
@@ -365,7 +367,10 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         }
       } catch (err) {
         insertError = err;
-        console.error(`[EventLogs] Error batch inserting events for device ${deviceId}:`, err);
+        // The SQLSTATE or error name only: a Drizzle query error serializes its
+        // bound parameters, which here are the customer's event messages.
+        const { cause, name } = err as { cause?: { code?: unknown }; name?: unknown };
+        console.error(`[EventLogs] Error batch inserting events for device ${deviceId}: ${String(cause?.code ?? name ?? 'unknown')}`);
         return { inserted, insertError, forwardEvents: null };
       }
 
@@ -376,7 +381,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
       }
 
       try {
-        const fwdConfig = await getOrgForwardingConfig(orgId);
+        const fwdConfig = await withDbTransaction(() => getOrgForwardingConfig(orgId));
         if (!fwdConfig) {
           return { inserted, insertError, forwardEvents: null };
         }

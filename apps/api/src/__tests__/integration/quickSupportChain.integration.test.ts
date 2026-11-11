@@ -476,6 +476,29 @@ describe('endSupportSession', () => {
     expect(row?.endedReason).toBe('tech');
     expect(row?.deviceId).toBe(deviceId);
   });
+
+  // #4142 W2: the end reads the session, sends support_end outside any
+  // transaction, then ends it with a CAS on its non-terminal status. Two ends
+  // that both read it live (a technician's End racing the reaper's hard cap)
+  // must not both win.
+  it('two concurrent ends: exactly one wins the CAS, and the row records the winner', async () => {
+    const tenant = await seedSupportTenant();
+    const session = await mintSession(tenant.orgId, tenant.techId);
+    const { deviceId } = await redeemAndEnroll(session.code, 'qs-end-race');
+
+    const [byTech, byReaper] = await Promise.all([
+      endSupportSession(session.id, 'tech'),
+      endSupportSession(session.id, 'expired'),
+    ]);
+
+    expect([byTech.ended, byReaper.ended].filter(Boolean)).toHaveLength(1);
+    const row = await readSession(session.id);
+    expect(row?.endedReason).toBe(byTech.ended ? 'tech' : 'expired');
+    expect(row?.status).toBe(byTech.ended ? 'ended' : 'expired');
+    const device = await readDevice(deviceId);
+    expect(device?.status).toBe('decommissioned');
+    expect(device?.agentTokenHash).toBeNull();
+  });
 });
 
 // ============================================

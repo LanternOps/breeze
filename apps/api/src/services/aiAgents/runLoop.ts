@@ -95,6 +95,13 @@ import {
   type GrantCeiling,
 } from '../wisp/grantAuthority';
 
+import { classifyWispUnattendedRead } from '../wisp/unattendedReads';
+import {
+  STANDING_CHECK_UNAVAILABLE_MESSAGE,
+  evaluateStandingInstructions,
+  standingConflictDescription,
+} from '../wisp/standingInstructionGate';
+
 /** Wisp W02 — how long one run frame reuses a resolved delegation ceiling. */
 const GRANT_CEILING_MEMO_MS = 15_000;
 import { loadProposalGuardrailContext } from '../scriptProposals';
@@ -209,6 +216,7 @@ import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './anal
 import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
 import {
   isTroubleshootProfile, TROUBLESHOOT_MAX_ACTIONS_PER_RUN, troubleshootLimits, troubleshootToolAllowlist,
+  troubleshootPromptContextFromTriggerRef, type TroubleshootPromptContext,
 } from './troubleshootProfile';
 import { emitRunProgress, progressLabelFor } from './runProgress';
 import { loadAssessmentContext } from '../wisp/assessment';
@@ -1003,6 +1011,8 @@ export function createAgentRunPreToolUse(args: {
     toolName: string,
     input: Record<string, unknown>,
     downgradeReason?: string,
+    /** #10428 W06: a standing instruction this call conflicts with (warn, not refuse). */
+    standingConflictText?: string | null,
   ): Promise<{ allowed: false; error: string }> {
     const action = readToolAction(toolName, input);
     const entry: OutcomeProposedAction = {
@@ -1043,7 +1053,9 @@ export function createAgentRunPreToolUse(args: {
           input,
           source: 'ai_agent',
           orgId: run.orgId,
-          reason: `Proposed by ${agentName} for run ${run.id}`,
+          reason: standingConflictText
+            ? standingConflictDescription(standingConflictText, `Proposed by ${agentName} for run ${run.id}`)
+            : `Proposed by ${agentName} for run ${run.id}`,
           // #5205 W06, spec §6.2: "Every mutating tool call on a task-linked
           // run must enter the operation reservation path, even if the model
           // calls an existing tool directly." This IS that path — passing the
@@ -1157,6 +1169,17 @@ export function createAgentRunPreToolUse(args: {
     return actPin?.toolExecutionContext
       ? { allowed: true, context: { ...runFrame, ...actPin.toolExecutionContext } }
       : { allowed: true, context: runFrame };
+  }
+
+  /** #10973: the ledger row for an unattended read, or null when there is none to rely on. */
+  async function startUnattendedReadExecution(toolName: string, input: Record<string, unknown>): Promise<string | null> {
+    if (!sessionId) return null;
+    try {
+      return await startToolExecution({ sessionId, toolName, toolInput: input });
+    } catch (error) {
+      console.error('[aiAgentRunLoop] unattended read has no ledger row — asking instead', { runId: run.id, toolName, error });
+      return null;
+    }
   }
 
   return async (toolName, input, _mcpToolName, toolUseId) => {
@@ -1320,11 +1343,29 @@ export function createAgentRunPreToolUse(args: {
       return { allowed: false, error: `${reason}. Stay on the target device.` };
     }
 
+    // #10428 W06: the grantor's standing instructions, under the same ceiling.
+    // A confirmed exact deny refuses; any other match is carried onto the
+    // proposal's card. A check that cannot run refuses (fails closed).
+    let standingConflictText: string | null = null;
     if (grantCeiling) {
       const ceilingDenial = delegationCeilingDenial(grantCeiling, toolName, input);
       if (ceilingDenial) {
         outcome.deniedActions.push({ tool: toolName, reason: ceilingDenial });
         return { allowed: false, error: ceilingDenial };
+      }
+      let standingDenial: string | null = null;
+      try {
+        const standing = await evaluateStandingInstructions({ ceiling: grantCeiling, toolName, input, auth: agentAuth });
+        if (standing.action === 'refuse') standingDenial = standing.error;
+        if (standing.action === 'warn') standingConflictText = standing.text;
+      } catch (error) {
+        console.error('[aiAgentRunLoop] standing-instruction check failed; denying', { runId: run.id, toolName, error });
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        standingDenial = STANDING_CHECK_UNAVAILABLE_MESSAGE;
+      }
+      if (standingDenial) {
+        outcome.deniedActions.push({ tool: toolName, reason: standingDenial });
+        return { allowed: false, error: standingDenial };
       }
     }
 
@@ -1396,7 +1437,39 @@ export function createAgentRunPreToolUse(args: {
     }
 
     if (check.disposition === 'propose') {
-      return recordProposal(check, toolName, input);
+      // #10973 (plan Decision 9): the grant-level unattended-reads switch reaches
+      // a troubleshooting run here, and only as propose → allow; every structural
+      // refusal above has already returned. Nothing re-checks this read at
+      // release, so as in act mode the ceiling is re-resolved FRESH: a switch
+      // turned off inside the memo window applies to this very call. The memo
+      // only spares that read when the switch is already off.
+      const unattendedRead = isTroubleshootProfile(run) && grantCeiling?.unattendedReads === true
+        ? classifyWispUnattendedRead(toolName, input)
+        : null;
+      if (unattendedRead) {
+        const fresh = await resolvePinnedCeiling({ fresh: true });
+        if (!fresh.ok) {
+          outcome.deniedActions.push({ tool: toolName, reason: fresh.reason });
+          return { allowed: false, error: fresh.error };
+        }
+        const denial = delegationCeilingDenial(fresh.ceiling, toolName, input);
+        if (denial) {
+          outcome.deniedActions.push({ tool: toolName, reason: denial });
+          return { allowed: false, error: denial };
+        }
+        if (fresh.ceiling.unattendedReads) {
+          // Unlike an ordinary allowed call, this one needs its ledger row: with
+          // no card, the row is the only record that it ran. Under the forced
+          // shadow mode, any such row in this profile is one of these reads.
+          // No row: ask instead, as the chat gate refuses on a failed audit write.
+          const executionId = await startUnattendedReadExecution(toolName, input);
+          if (executionId) {
+            recordAllowedCall(pairing, toolName, toolUseId, { executionId, actPin: null });
+            return { allowed: true, context: { ...runFrame, pinnedWispUnattendedRead: unattendedRead } };
+          }
+        }
+      }
+      return recordProposal(check, toolName, input, undefined, standingConflictText);
     }
 
     if (check.disposition === 'act') {
@@ -1410,6 +1483,11 @@ export function createAgentRunPreToolUse(args: {
           outcome.deniedActions.push({ tool: toolName, reason: denial });
           return { allowed: false, error: fresh.ok ? denial : fresh.error };
         }
+      }
+      // #10428 W06: an effect that matches a standing instruction never runs
+      // unattended; a human decides it, with the conflict on the card.
+      if (standingConflictText) {
+        return recordProposal(check, toolName, input, 'matches a standing instruction', standingConflictText);
       }
       // Same pure resolver `checkAgentGuardrails` already called to reach
       // 'act' — deterministic on the same (toolName, input), so this can
@@ -1467,7 +1545,7 @@ export function createAgentRunPreToolUse(args: {
         // cheap nonblocking fix) is set only for a missing/malformed-identity
         // normalizeTarget downgrade — threaded through so the proposal a
         // human reviews carries WHY it wasn't auto-executed.
-        return recordProposal(check, toolName, input, revalidated.reason);
+        return recordProposal(check, toolName, input, revalidated.reason, standingConflictText);
       }
 
       if (op.key === 'execute_playbook') {
@@ -2100,9 +2178,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
 }
 
 /** #11084: the launcher writes `goal` into triggerRef (specialistLaunchers.ts); anything else reads as no goal. */
-function troubleshootPromptContext(triggerRef: unknown): { goal: string } | null {
-  const goal = (triggerRef as { goal?: unknown } | null)?.goal;
-  return typeof goal === 'string' && goal.trim().length > 0 ? { goal } : null;
+function troubleshootPromptContext(triggerRef: unknown): TroubleshootPromptContext | null {
+  // W2 (#11085): goal + the optional continuation seed, validated in one place.
+  return troubleshootPromptContextFromTriggerRef(triggerRef);
 }
 
 /**
@@ -3819,6 +3897,12 @@ async function recordActExecutionEvidence(
   }
 }
 
+/** W07: `trigger_ref.wisp.reason.kind === 'check_in'` (a run check-in's assessment). */
+function isCheckInRunRef(triggerRef: unknown): boolean {
+  const wisp = (triggerRef as { wisp?: { reason?: { kind?: unknown } } } | null | undefined)?.wisp;
+  return wisp?.reason?.kind === 'check_in';
+}
+
 async function finishRun(
   ctx: RunContext,
   status: keyof typeof TERMINAL_EVENT,
@@ -3851,6 +3935,64 @@ async function finishRun(
     costCents: result.costCents,
     ...(errorCode ? { errorCode } : {}),
   });
+
+  // Wisp delegation W2 (#11085): a device_troubleshooting run reports back
+  // into the Wisp thread it was handed off from — after the final status is
+  // committed (the post reads it), and never allowed to change it. A failure
+  // is reported here; the grant reconciler re-sweeps any run left without its
+  // post, and the post's dedupe key keeps that to exactly one. Lazy: the
+  // notify graph stays off every other profile's import path.
+  if (isTroubleshootProfile(ctx.run)) {
+    try {
+      const { postSpecialistResult } = await import('../wisp/specialistResult');
+      await runOutsideDbContext(() => postSpecialistResult(ctx.run.id));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] specialist post-back failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.specialistResult.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
+  // W07 (#11496): a run check-in's assessment posts its result to the
+  // thread — after the final status is committed (the post reads it), and
+  // never allowed to change it. The tick's reconcile re-sweeps a missed post;
+  // the check-in's dedupe key keeps that to one. Lazy, like the posts above,
+  // and gated on the reason so no other assessment pays a lookup.
+  if (ctx.run.profile === 'assessment' && isCheckInRunRef(ctx.run.triggerRef)) {
+    try {
+      const { postCheckInRunResult } = await import('../wisp/checkInRuns');
+      await runOutsideDbContext(() => postCheckInRunResult(ctx.run.id));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] check-in result post failed — the wake tick re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.checkInRuns.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
+  // #10402: this assessment may be the one that settles its grant's onboarding
+  // batch — after the final status is committed (the post counts it), and never
+  // allowed to change it. The grant reconciler re-sweeps a missed post; the
+  // dedupe key keeps that to exactly one. Lazy, like the specialist post above.
+  if (ctx.run.profile === 'assessment' && ctx.run.grantId) {
+    try {
+      const { postFirstLookIfDone } = await import('../wisp/firstLook');
+      const grantId = ctx.run.grantId;
+      await runOutsideDbContext(() => postFirstLookIfDone(grantId));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] first-look post failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.firstLook.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
 
   // Ledger cleanup happens in `executeAgentRun`'s `finally`, not here — this
   // function is skipped entirely on the `!moved` branch above (another

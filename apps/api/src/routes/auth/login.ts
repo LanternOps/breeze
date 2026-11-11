@@ -7,7 +7,6 @@ import { users } from '../../db/schema';
 import {
   verifyToken,
   verifyPassword,
-  hashPassword,
   rateLimiter,
   loginLimiter,
   getRefreshRateLimit,
@@ -75,6 +74,7 @@ import {
   authResponseFloorPromise,
   mintLoginRegisterGrant,
   validateStrictCookieCsrfRequest,
+  hasActiveTotpFactor,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
@@ -86,22 +86,13 @@ import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from '../../mi
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { waitForAuthTransitionFinalizationTestBarrier } from './authTransitionTestControl';
+import { getDummyPasswordHash } from '../../services/password';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
-// Lazily-computed dummy argon2id hash used to constant-time the
-// user-not-found branch of the login handler. The first miss after
-// startup computes and caches it; every miss after that reuses the same
-// hash. Without this, response timing reveals whether an email exists
-// in the users table (hit runs verifyPassword → ~100-500ms argon2; miss
-// returns immediately → ~1ms), trivially enabling email enumeration.
-let dummyPasswordHashPromise: Promise<string> | null = null;
-function getDummyPasswordHash(): Promise<string> {
-  if (!dummyPasswordHashPromise) {
-    dummyPasswordHashPromise = hashPassword('__login-timing-dummy-never-matches__');
-  }
-  return dummyPasswordHashPromise;
-}
+// The user-not-found branch verifies against a dummy argon2id hash
+// (getDummyPasswordHash, services/password.ts — shared with the portal login)
+// so response timing does not reveal whether an email exists.
 
 // Task 11: floor-the-clock timing equalizer for /login (audit finding H-4).
 //
@@ -514,7 +505,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 
   // Check if MFA is required. This happens after the SSO-only check so an
   // org-enforced SSO user cannot obtain an MFA temp token through password auth.
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
+  if (ENABLE_2FA && user.mfaEnabled && (hasActiveTotpFactor(user) || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
 
@@ -543,7 +534,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
     });
     const allowedMethods = {
-      totp: Boolean(user.mfaSecret) && pendingPolicy.allowedMethods.totp,
+      // #10650: the shared predicate, so a backup authenticator beside a
+      // passkey primary is offered and a stale secret beside SMS is not.
+      totp: hasActiveTotpFactor(user) && pendingPolicy.allowedMethods.totp,
       sms: user.mfaMethod === 'sms' && Boolean(user.phoneNumber) && pendingPolicy.allowedMethods.sms,
       passkey: passkeyAvailable && pendingPolicy.allowedMethods.passkey,
     };

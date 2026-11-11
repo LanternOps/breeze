@@ -22,7 +22,7 @@ vi.mock('../db', () => {
   chain.set = vi.fn((v: unknown) => { updated.push(v); return chain; });
   chain.transaction = vi.fn(async (run: (tx: unknown) => unknown) => run(chain));
   (chain as { then: unknown }).then = (r: (v: unknown) => unknown) => Promise.resolve(rows.shift() ?? []).then(r);
-  return { db: chain, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() };
+  return { db: chain, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn(), withDbTransaction: (fn: () => unknown) => fn(), withDbTransactionIfHeld: (fn: () => unknown) => fn() };
 });
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./reportGenerationService', () => ({

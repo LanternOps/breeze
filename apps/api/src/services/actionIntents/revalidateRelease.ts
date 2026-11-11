@@ -15,6 +15,7 @@ import { isFlowToolName } from '../flows/toolNames';
 import { isFlowBuiltinIntent } from '../flows/builtins/intentKind';
 import { flowBuiltinTierFor } from '@breeze/shared';
 import { isOrgWideGovernanceIntent } from './orgWideGovernanceTools';
+import { APPROVER_SCOPE_REQUIRED, APPROVER_SCOPE_REQUIRED_MESSAGE, mayHavePartnerWideEffect } from './partnerWideEffect';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { IntentScopeLostError } from './intentTargetScope';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
@@ -235,6 +236,35 @@ function isSystemDecided(intent: ActionIntent): boolean {
     // approval_requests row by construction, no human ever reviewed it —
     // decided at creation like ticket_autonomy, not by a post-commit attempt.
     || intent.decidedVia === 'script_reviewer';
+}
+
+/**
+ * The approver must STILL hold the partner axis at release, and an intent with no
+ * recorded approver has nobody to hold it. Loaded on demand: only a registered action
+ * reaches this, and every other release keeps its import graph.
+ *
+ * A throw must not escape: the intent is already CAS'd `executing`, and an escaping
+ * error leaves it to the stale-executing reaper's generic `execution_lost`. A failed
+ * read refuses under its own code, so nobody reads it as the approver lacking authority.
+ */
+async function refusePartnerWideRelease(
+  intent: ActionIntent,
+): Promise<{ ok: false; errorCode: string; details: Record<string, unknown> } | null> {
+  const refusal = { ok: false as const, errorCode: APPROVER_SCOPE_REQUIRED, details: { reason: APPROVER_SCOPE_REQUIRED_MESSAGE } };
+  try {
+    const { intentRequiresPartnerAxisApprover, isPartnerAxisApprover } = await import('./partnerAxisApprover');
+    if (!(await intentRequiresPartnerAxisApprover(intent))) return null;
+    if (!intent.decidedByUserId) return refusal;
+    return (await isPartnerAxisApprover(intent.decidedByUserId, intent.orgId)) ? null : refusal;
+  } catch (error) {
+    console.error('[revalidateRelease] could not verify a partner-axis approver; refusing the release', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return {
+      ok: false,
+      errorCode: 'approver_scope_check_failed',
+      details: { reason: "Could not verify the approver's partner-level access, so the release was refused." },
+    };
+  }
 }
 
 export async function revalidateApprovedIntentForRelease(
@@ -559,6 +589,13 @@ async function revalidateApprovedIntentCore(
   const activeOrg = await getActiveOrgTenant(intent.orgId);
   if (!activeOrg) {
     return { ok: false, errorCode: 'org_inactive' };
+  }
+
+  // (d') Approver scope on a partner-wide intent: the release-time twin of the decide
+  // gate. Placed before every origin's return below, so no origin skips it.
+  if (mayHavePartnerWideEffect(intent.actionName, intent.arguments)) {
+    const refused = await refusePartnerWideRelease(intent);
+    if (refused) return refused;
   }
 
   // (e) Authority re-check. For an AGENT-originated intent there is no user

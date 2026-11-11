@@ -530,7 +530,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     ]);
   });
 
-  it('maps intent rows to id/status/actionName/approvalScope/decidedVia only', () => {
+  it('maps intent rows to id/status/actionName/approvalScope/decidedVia (+ the caller\'s approval row, null when none) only', () => {
     const detail = buildRunTrace(
       baseRun(),
       AGENT,
@@ -553,6 +553,8 @@ describe('buildRunTrace — safe projection (#3828)', () => {
         actionName: 'manage_services.restart',
         approvalScope: 'four_eyes',
         decidedVia: null,
+        actionLabel: null,
+        approvalRequestId: null,
       },
     ]);
   });

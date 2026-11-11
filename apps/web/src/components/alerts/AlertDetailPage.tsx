@@ -35,6 +35,7 @@ import {
 } from './alertMlContext';
 import { fillDevicePlaceholders, type AlertAiVerdictSummaryDto } from '@breeze/shared';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
+import { alertLifecycleLine } from './alertLifecycleLine';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 
@@ -335,6 +336,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   }
 
   const StatusIcon = statusIcons[alert.status];
+  const lifecycleLine = alertLifecycleLine(t, alert.contextData);
 
   return (
     <div className="space-y-6" data-testid="alert-detail-page">
@@ -383,6 +385,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   />
                 )}
               </div>
+              {lifecycleLine && (
+                <p data-testid="alert-lifecycle-line" className="mt-2 text-sm text-muted-foreground">{lifecycleLine}</p>
+              )}
               {alert.aiVerdict && (
                 <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{alert.aiVerdict.rationale}</p>
               )}
@@ -467,7 +472,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       {/* Alert Message */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h3 className="text-sm font-semibold text-muted-foreground mb-2">{t('alertDetailPage.message')}</h3>
-        <p className="text-sm">{alert.message}</p>
+        <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-sm">{alert.message}</p>
       </div>
 
       <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} orgId={alert.orgId} />

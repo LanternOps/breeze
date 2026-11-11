@@ -1,12 +1,14 @@
 import { isIP } from 'net';
 import { parseCimdAllowedHosts } from '../oauth/cimdHosts';
-import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES } from '@breeze/shared';
+import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES, OEM_LANES } from '@breeze/shared';
 import { parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
 import { TICKET_IMPORT_LIMIT_ENV_VARS } from '../services/ticketImport/importLimits';
 import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
+import { getPortalEntraConfig } from './portalEntra';
+import { warnOnTrustedProxyCidrMismatch } from './proxyTrustBootCheck';
 import {
   OFFICIAL_RELEASE_REPOSITORY,
   RELEASE_SOURCE_REPOSITORY_SHAPE,
@@ -881,6 +883,12 @@ const envObjectSchema = z
     // read at runtime by wispEnabled() in env.ts. Boolean format + the
     // production IS_HOSTED coupling are checked in the superRefines below.
     BREEZE_WISP_ENABLED: z.string().optional(),
+    // Vendor updates (#11065): all dark by default. Read at runtime by
+    // services/oemUpdates/flags.ts; checked in the superRefine below.
+    BREEZE_OEM_UPDATES_ENABLED: z.string().optional(),
+    BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: z.string().optional(),
+    BREEZE_OEM_UPDATES_DISABLED_LANES: z.string().optional(),
+    BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: z.string().optional(),
     // 'vercel' | 'fake'. Resolved at runtime by resolveSandboxBackendName()
     // (services/workspace/sandboxBackend.ts), which refuses an unset value in
     // production; the superRefine below additionally refuses 'fake' there.
@@ -1060,6 +1068,25 @@ const envObjectSchema = z
     XERO_REDIRECT_URI: z.string().optional(),
     XERO_WEBHOOK_KEY: z.string().optional(),
     XERO_DAILY_CALL_LIMIT: z.string().optional(),
+
+    // Customer portal "Sign in with Microsoft" (portal registration W4). The
+    // portal's own Entra app; off unless BOTH the id and the secret are set.
+    // Parsed at call time by config/portalEntra.ts; validated at boot below so
+    // a malformed callback base fails here, not on a portal request.
+    PORTAL_ENTRA_CLIENT_ID: z.string().optional(),
+    PORTAL_ENTRA_CLIENT_SECRET: z.string().optional(),
+    PORTAL_ENTRA_CALLBACK_BASE_URL: z.string().optional(),
+
+    // Customer-portal self-registration kill switch (portal registration W6,
+    // plan D2). Unset/empty, true or 1 → on; false or 0 → off. Read at call
+    // time by config/portalSelfRegistration.ts (same accepted values); any
+    // other value fails boot here.
+    PORTAL_SELF_REGISTRATION_ENABLED: z
+      .string()
+      .optional()
+      .refine((v) => v === undefined || /^\s*(true|false|1|0)?\s*$/i.test(v), {
+        message: 'PORTAL_SELF_REGISTRATION_ENABLED must be one of true, 1, false or 0',
+      }),
 
     // S3 / object storage — required when S3_BUCKET is set.
     S3_BUCKET: z.string().optional(),
@@ -2504,6 +2531,46 @@ const envSchema = envObjectSchema
         message: 'BREEZE_AI_WORKSPACE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the workspace lane and artifact capture are dark).',
       });
     }
+    // Vendor updates (#11065). The lab override opens closed firmware gates, so it
+    // stays out of production. An unknown lane in the kill switch would stop nothing
+    // and look like it had, so a typo refuses the boot.
+    const oemFlag = (data.BREEZE_OEM_UPDATES_ENABLED ?? '').trim().toLowerCase();
+    if (oemFlag && !boolValues.has(oemFlag)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_OEM_UPDATES_ENABLED'],
+        message: 'BREEZE_OEM_UPDATES_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
+      });
+    }
+    if (isProduction && (data.BREEZE_OEM_UPDATES_LAB_DEVICE_IDS ?? '').trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_OEM_UPDATES_LAB_DEVICE_IDS'],
+        message: 'BREEZE_OEM_UPDATES_LAB_DEVICE_IDS must not be set in production: it opens closed vendor update gates and is for lab devices only.',
+      });
+    }
+    // An empty allowlist means every partner, so a value that parses to nothing
+    // would open the feature to everyone while looking like a restriction.
+    const oemAllowlistRaw = (data.BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST ?? '').trim();
+    if (oemAllowlistRaw && !oemAllowlistRaw.split(',').some((id) => id.trim())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST'],
+        message: 'BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST names no partner. Leave it unset to allow every partner.',
+      });
+    }
+    const unknownOemLanes = (data.BREEZE_OEM_UPDATES_DISABLED_LANES ?? '')
+      .split(',')
+      .map((lane) => lane.trim().toLowerCase())
+      .filter((lane) => lane && !(OEM_LANES as readonly string[]).includes(lane));
+    if (unknownOemLanes.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_OEM_UPDATES_DISABLED_LANES'],
+        message: `BREEZE_OEM_UPDATES_DISABLED_LANES names unknown lanes: ${unknownOemLanes.join(', ')}. Known lanes: ${OEM_LANES.join(', ')}.`,
+      });
+    }
+
     const wispRaw = (data.BREEZE_WISP_ENABLED ?? '').trim().toLowerCase();
     if (wispRaw && !boolValues.has(wispRaw)) {
       ctx.addIssue({
@@ -3201,11 +3268,21 @@ export function validateConfig(): AppConfig {
   // executor's, wrapped under a KEK the API's identity cannot get (§3.2).
   validateM365CommunicationsRuntimeConfigAtBoot(env);
 
+  // Portal Entra app (W4): read at call time on the portal sign-in paths, so
+  // a malformed PORTAL_ENTRA_CALLBACK_BASE_URL / client id would otherwise
+  // first throw on a customer's request. Throws only when the app is
+  // configured (both id and secret set).
+  getPortalEntraConfig(env);
+
   // (The APP_ENCRYPTION_KEY_ID ↔ M365_GRAPH_ACTIONS_TOOLS_ENABLED pairing rule
   // used to live here as a post-parse throw reading `env` directly. It now runs
   // in the schema superRefine on declared keys — see #3374.)
 
   _config = result.data;
+
+  // #2987: advisory only — warn when TRUSTED_PROXY_CIDRS overlaps none of the
+  // subnets this process is attached to (stale pinned proxy address). Never throws.
+  warnOnTrustedProxyCidrMismatch(env);
 
   // #1412: surface an off-default AI route at boot so there is an audit trail
   // (and a self-hoster sees confirmation their backend is active). Reaching

@@ -88,6 +88,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AUTH_LEGACY_INVITE_PREVIEW_PATH: 'legacy route toggle',
   AUTH_REFRESH_RATE_LIMIT: 'rate limit knob',
   AUTH_REFRESH_RATE_WINDOW_SECONDS: 'rate limit knob',
+  USER_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
   AUTH_TRANSITION_TEST_CONTROL_SECRET: 'test-only barrier secret',
   // AUTOMATION_*
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: 'legacy compatibility toggle',
@@ -99,6 +100,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BACKUP_BINARY_DIR: 'filesystem path',
   BACKUP_CRITICAL_DEVICE_TAGS: 'backup criticality tuning',
   BACKUP_GC_GRACE_MS: 'timing knob',
+  BACKUP_GC_LIVE_SET_MAX_BYTES: 'worker memory knob',
   BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS: 'timing knob',
   BACKUP_GC_MAX_DELETES_PER_RUN: 'worker throughput knob',
   BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS: 'timing knob',
@@ -130,6 +132,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_INTEGRATION_ALLOW_LEDGER_DRIFT: 'test harness (testUtils)',
   BREEZE_INTEGRATION_LOCK_NOWAIT: 'test harness (testUtils)',
   BREEZE_LEGACY_ALERTING_SWEEP: 'boot sweep opt-out (legacy alerting retirement)',
+  BREEZE_OEM_UPDATES_DISABLED_LANES: 'vendor update per-lane kill switch (#11065)',
+  BREEZE_OEM_UPDATES_ENABLED: 'vendor update rollout flag (#11065, dark by default)',
+  BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: 'vendor update lab-device gate override (refused in production)',
+  BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: 'vendor update rollout allowlist (#11065)',
   BREEZE_PLATFORM_ADMINS: 'platform-admin bootstrap list',
   BREEZE_REGION: 'hosted topology label',
   BREEZE_ROLE: 'process role (api/worker)',
@@ -372,6 +378,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // MFA_*
   MFA_FORCE_FOR_PARTNER_ADMIN: 'auth policy flag',
   // MIGRATION_*
+  MIGRATION_LOCK_TIMEOUT_MS: 'boot migration lock wait deadline',
   MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR: 'rate limit knob',
   MIGRATION_WINDOW_MAX_DAYS: 'timing knob',
   MIGRATION_WINDOW_MAX_WRITES_PER_HOUR: 'rate limit knob',
@@ -400,6 +407,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   OAUTH_DEBUG: 'debug logging flag',
   // OFFBOARDING_*
   OFFBOARDING_DRAIN_WINDOW_HOURS: 'timing knob',
+  // OEM_UPDATES_*
+  OEM_UPDATES_MAX_DISPATCH_PER_TICK: 'worker throughput knob (vendor update dispatch cap per tick, default 200)',
   // OFFLINE_*
   OFFLINE_DETECTOR_CHUNK_SIZE: 'worker throughput knob',
   OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN: 'worker throughput knob',
@@ -440,6 +449,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // PORTAL_*
   PORTAL_COOKIE_FORCE_SECURE: 'cookie policy override',
   PORTAL_COOKIE_SAME_SITE: 'cookie policy override',
+  PORTAL_SELF_REGISTRATION_ENABLED: 'portal self-registration deployment kill switch (portal registration W6, on by default)',
   PORTAL_STATE_BACKEND: 'portal rate-limit store selector',
   // PRE_*
   PRE_ASSIGNMENT_ENROLLMENT_ENABLED: 'pre-assignment enrollment rollout flag',
