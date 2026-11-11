@@ -12,19 +12,23 @@ import { isHumanizedKeyPlaceholder } from '../../../../scripts/i18n-humanized-ke
 const localesDir = dirname(fileURLToPath(import.meta.url));
 const locales = readdirSync(localesDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
 
-const PINNED: Array<[ns: string, key: string]> = [
-  ['alerts', 'notificationChannelsPage.deleteChannelConfirm'],
-  ['devices', 'devicesPage.toasts.wakeSentWatching'],
-  ['devices', 'devicesPage.toasts.alreadyPendingTail'],
-  ['devices', 'devicesPage.toasts.scriptQueuedOneOffline'],
-  ['remote', 'remoteFilesPage.deviceNotFoundTitle'],
-  ['remote', 'remoteFilesPage.deviceNotFoundDescription'],
-  ['remote', 'remoteFilesPage.deviceOfflineTitle'],
-  ['remote', 'remoteTerminalPage.deviceNotFoundTitle'],
-  ['remote', 'remoteTerminalPage.deviceNotFoundDescription'],
-  ['remote', 'servicesManager.agentRestartConfirm'],
-  ['remote', 'servicesManager.agentStopBlocked'],
-  ['remote', 'deleteConfirmDialog.recycleBinNotice'],
+// [namespace, key, interpolation tokens every locale must keep, min length].
+// The English-only humanized heuristic cannot see a machine-translated
+// placeholder ("Hinweis zum Papierkorb"), so sentence keys also need a
+// language-neutral floor: their tokens and a minimum length.
+const PINNED: Array<[ns: string, key: string, tokens: string[], minLength: number]> = [
+  ['alerts', 'notificationChannelsPage.deleteChannelConfirm', ['{{name}}'], 40],
+  ['devices', 'devicesPage.toasts.wakeSentWatching', ['{{hostname}}', '{{relay}}', '{{broadcast}}'], 40],
+  ['devices', 'devicesPage.toasts.alreadyPendingTail', ['{{count}}'], 0],
+  ['devices', 'devicesPage.toasts.scriptQueuedOneOffline', ['{{script}}', '{{hostname}}'], 40],
+  ['remote', 'remoteFilesPage.deviceNotFoundTitle', [], 0],
+  ['remote', 'remoteFilesPage.deviceNotFoundDescription', [], 30],
+  ['remote', 'remoteFilesPage.deviceOfflineTitle', [], 0],
+  ['remote', 'remoteTerminalPage.deviceNotFoundTitle', [], 0],
+  ['remote', 'remoteTerminalPage.deviceNotFoundDescription', [], 30],
+  ['remote', 'servicesManager.agentRestartConfirm', [], 40],
+  ['remote', 'servicesManager.agentStopBlocked', [], 40],
+  ['remote', 'deleteConfirmDialog.recycleBinNotice', [], 40],
 ];
 
 function lookup(locale: string, ns: string, key: string): unknown {
@@ -38,11 +42,15 @@ function lookup(locale: string, ns: string, key: string): unknown {
 describe('pinned user-facing copy is real, not a humanized key (#11553)', () => {
   it.each(locales)('%s', (locale) => {
     const bad: string[] = [];
-    for (const [ns, key] of PINNED) {
+    for (const [ns, key, tokens, minLength] of PINNED) {
       const value = lookup(locale, ns, key);
       const leaf = key.split('.').pop()!;
       if (typeof value !== 'string' || value.trim() === '') bad.push(`${ns}.${key}: missing`);
       else if (isHumanizedKeyPlaceholder(leaf, value)) bad.push(`${ns}.${key}: "${value}" is a humanized key`);
+      else {
+        for (const token of tokens) if (!value.includes(token)) bad.push(`${ns}.${key}: dropped ${token}`);
+        if (value.length < minLength) bad.push(`${ns}.${key}: "${value}" is too short to be real copy`);
+      }
     }
     expect(bad, bad.join('\n')).toEqual([]);
   });
