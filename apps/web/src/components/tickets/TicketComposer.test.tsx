@@ -9,7 +9,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 import TicketComposer from './TicketComposer';
 import { apiLogout, useAuthStore } from '@/stores/auth';
 import { ActionError } from '../../lib/runAction';
-import { clearTicketComposerDrafts } from '@/lib/ticketComposerDrafts';
+import { clearTicketComposerDrafts, getTicketComposerDraft } from '@/lib/ticketComposerDrafts';
 
 describe('TicketComposer', () => {
   const onSend = vi.fn().mockResolvedValue(undefined);
@@ -366,6 +366,38 @@ describe('TicketComposer', () => {
       expect(screen.getByTestId('ticket-composer-lost-attachments')).toBeInTheDocument();
       upload([png('a.png')]);
       await waitFor(() => expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull());
+    });
+
+    it('does not bring the notice back after the re-attached files are sent', async () => {
+      await draftWithAttachments('tk-att-6', ['a.png']);
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-6" />);
+      upload([png('a.png')]);
+      await waitFor(() => expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull());
+      await waitFor(() => expect(screen.getByTestId('ticket-composer-send')).not.toBeDisabled());
+      fireEvent.click(screen.getByTestId('ticket-composer-send'));
+      await waitFor(() => expect(onSend).toHaveBeenCalledWith('see attached', true, ['att-1']));
+      await waitFor(() => expect(screen.getByTestId('ticket-composer-input')).toHaveValue(''));
+      expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull();
+      expect(getTicketComposerDraft('tk-att-6')).toBeUndefined();
+    });
+
+    it('lists only the files still missing after a partial re-attach and keeps Send blocked', async () => {
+      await draftWithAttachments('tk-att-7', ['a.png', 'b.png']);
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-7" />);
+      upload([png('a.png')]);
+      await waitFor(() => expect(screen.getByTestId('ticket-composer-lost-attachments')).toHaveTextContent('1 attachment was not kept'));
+      expect(screen.getByTestId('ticket-composer-lost-attachments')).toHaveTextContent('b.png');
+      expect(screen.getByTestId('ticket-composer-send')).toBeDisabled();
+    });
+
+    it('does not show the notice again after it was dismissed and the composer remounted', async () => {
+      await draftWithAttachments('tk-att-8', ['a.png']);
+      const second = render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-8" />);
+      fireEvent.click(screen.getByTestId('ticket-composer-lost-attachments-dismiss'));
+      second.unmount();
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-8" />);
+      expect(screen.getByTestId('ticket-composer-input')).toHaveValue('see attached');
+      expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull();
     });
 
     it('shows no notice for a text-only draft', () => {

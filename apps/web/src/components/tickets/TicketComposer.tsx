@@ -166,7 +166,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
           type: 'error',
           message: messages[rejection],
           ...(survivorId
-            ? { action: { label: t('ticketComposer.attachments.openMergedTicket'), onClick: () => void navigateTo(`/tickets/${survivorId}`) } }
+            ? { action: { label: t('ticketComposer.attachments.openMergedTicket'), onClick: () => void navigateTo(`/tickets/${encodeURIComponent(survivorId)}`) } }
             : {}),
         });
         return;
@@ -237,6 +237,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
         });
       }
       setContent('');
+      setLostNames([]);
       setChips(failedChips);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch {
