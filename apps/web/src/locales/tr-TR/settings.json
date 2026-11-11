@@ -7219,6 +7219,7 @@
     },
     "verify": {
       "methodLegend": "Doğrulama yöntemi",
+      "panelTitle": "{{domain}} alan adını doğrula",
       "methodLocked": "Yöntemi değiştirmek için önce mevcut doğrulamayı kaldırın.",
       "openPortalTab": "Tenant’ı Müşteri Portalı › Oturum açma ve kayıt altında kanıtlayın.",
       "dnsStartHint": "Müşterinin DNS yöneticisinin yayımlaması için bir TXT kaydı alın.",
@@ -8555,6 +8556,26 @@
         "hintInvalid": "Bu, bir Microsoft kiracı kimliği ya da bir Microsoft kiracısı tarafından doğrulanmış bir etki alanı değil.",
         "hintLookupFailed": "Bu etki alanını aramak için Microsoft'a ulaşılamadı. Yeniden deneyin veya kiracı kimliğini girin.",
         "protectedOrg": "Bu kuruluş bir Microsoft kiracısına bağlanamaz."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "Portal oturum açma şifreye geri döndü",
+      "body": "Bu kuruluşun portalında Microsoft ile oturum açma kapalı. Kiracı yeniden kanıtlanana kadar kullanıcılar şifreyle oturum açar.",
+      "tenant": "(Kiracı {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Microsoft kiracı bağlantısı {{date}} tarihinde kaldırıldı.",
+        "ai_for_office_mapping_removed": "Kanıtı tutan AI for Office kiracı eşlemesi {{date}} tarihinde kaldırıldı.",
+        "ai_for_office_mapping_changed": "AI for Office kiracı eşlemesi {{date}} tarihinde başka bir kiracıyla değiştirildi ve kanıt silindi.",
+        "tenant_displaced": "Başka bir kuruluş bu Microsoft kiracısını {{date}} tarihinde kanıtladı.",
+        "unknown": "Microsoft kiracı kanıtı {{date}} tarihinde kayboldu."
+      },
+      "rerun": "Kiracı kanıtını yeniden çalıştır",
+      "dismiss": "Kapat",
+      "toasts": {
+        "dismissed": "Bildirim kapatıldı."
+      },
+      "errors": {
+        "dismiss": "Bildirim kapatılamadı."
       }
     },
     "ssoOnlyConfirm": {

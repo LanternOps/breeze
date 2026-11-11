@@ -692,6 +692,8 @@
         "override": "Override",
         "revertToParent": "Revert to Parent",
         "saving": "Saving...",
+        "notSaved": "Not saved: {{reason}}",
+        "saveBlocked": "Not saved. Fix the highlighted problem and try again.",
         "revertConfirmTitle": "Revert to parent policy?",
         "revertConfirmMessage": "This deletes the {{feature}} override on this policy. Its settings are lost and the parent policy's settings apply to every device using this policy. This cannot be undone.",
         "removeConfirmTitle": "Remove this configuration?",
@@ -725,7 +727,24 @@
         "endpointMessaging": "Endpoint messaging",
         "endpointMessagingHelp": "Lets technicians send messages to the person at the device.",
         "allowUserReply": "Allow replies from the user",
-        "allowUserReplyHelp": "Lets the person at the device reply in a chat a technician starts. When off, chats are one-way."
+        "allowUserReplyHelp": "Lets the person at the device reply in a chat a technician starts. When off, chats are one-way.",
+        "brandingTitle": "Helper branding",
+        "brandingHelp": "Text and colors shown in the Helper. Leave a field blank to inherit. Logos, links and custom styles are not supported.",
+        "brandingDisplayName": "Display name",
+        "brandingCompanyName": "Company name",
+        "brandingWelcomeTitle": "Welcome title",
+        "brandingWelcomeMessage": "Welcome message",
+        "brandingSupportLabel": "Support label",
+        "brandingPortalLabel": "Portal label",
+        "brandingPrimaryColor": "Primary color",
+        "brandingAccentColor": "Accent color",
+        "brandingInheritedFromParent": "Inherited from parent policy: {{value}}",
+        "brandingBlankUsesDefault": "Blank uses the Breeze default.",
+        "brandingCharCount": "{{used}} / {{max}}",
+        "brandingErrorTooLong": "Use at most {{max}} characters.",
+        "brandingErrorControl": "Remove control or invisible formatting characters.",
+        "brandingErrorColor": "Use a color in the form #RRGGBB, for example #1A3C8F.",
+        "brandingErrorContrast": "This color is hard to read on the Helper background. Choose a darker or lighter color."
       },
       "inlineEntityPicker": {
         "search": "Search...",
@@ -2048,7 +2067,9 @@
       "builtinVersionsReadOnly": "Managed by Breeze. Versions of built-in packages cannot be added or changed here.",
       "installScriptsReadOnlyOnEdit": "Install scripts can't be changed on an existing version, and they fix its target OS. To change them, add a new version: it starts with these scripts.",
       "partnerWideRequiresFullAccess": "Partner-wide packages can only be changed by a full-access partner admin.",
-      "builtinArgsDefault": "Leave blank to use the package's default arguments, including its per-organization key."
+      "builtinArgsDefault": "Leave blank to use the package's default arguments, including its per-organization key.",
+      "versionRequired": "Version is required",
+      "downloadUrlInvalid": "Enter a valid http(s) URL, for example https://example.com/package.msi"
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insert a deploy-time variable",

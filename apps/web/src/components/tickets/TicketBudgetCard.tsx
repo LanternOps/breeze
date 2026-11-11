@@ -38,19 +38,19 @@ function UsageBar({ testId, label, ceiling, consumed, held, usedText, heldText }
         data-testid={testId}
       >
         <div
-          className={over ? 'bg-red-500' : 'bg-primary'}
+          className={over ? 'bg-destructive' : 'bg-primary'}
           style={{ width: `${(consumed * 100) / denom}%` }}
           data-testid={`${testId}-consumed`}
         />
         <div
-          className="bg-amber-400"
+          className="bg-warning"
           style={{ width: `${(held * 100) / denom}%` }}
           data-testid={`${testId}-held`}
         />
       </div>
-      <p className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-muted-foreground">
+      <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
         <span>{usedText}</span>
-        {held > 0 && <span className="text-amber-700">{heldText}</span>}
+        {held > 0 && <span className="text-warning-ink">{heldText}</span>}
       </p>
     </div>
   );
@@ -263,7 +263,7 @@ export default function TicketBudgetCard({ ticketId, summary, onChanged, readOnl
           <p className="text-xs text-muted-foreground" data-testid="ticket-budget-none">{t('ticketApproval.budget.noBudget')}</p>
         )}
         {summary.held.unpricedEntryCount > 0 && (
-          <p className="text-[10px] text-muted-foreground" data-testid="ticket-budget-unpriced">
+          <p className="text-xs text-muted-foreground" data-testid="ticket-budget-unpriced">
             {t('ticketApproval.budget.unpriced', { count: summary.held.unpricedEntryCount })}
           </p>
         )}

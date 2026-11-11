@@ -909,12 +909,13 @@
       "queue": {
         "next": "Nächstes Ticket",
         "previous": "Vorheriges Ticket",
-        "open": "Ticket als ganze Seite öffnen",
+        "open": "Ticket öffnen (nach dem Lösen: das angebotene nächste)",
         "toggleBulk": "Zur Mehrfachauswahl hinzufügen oder daraus entfernen",
         "assignMe": "Mir zuweisen",
         "reply": "Antwort schreiben",
         "internal": "Internen Hinweis schreiben",
-        "resolve": "Mit Notiz lösen"
+        "resolve": "Mit Notiz lösen",
+        "back": "Zurück zur Liste"
       }
     }
   },
@@ -1460,6 +1461,10 @@
           "deviceOnline": {
             "description": "Wird ausgelöst, wenn ein Gerät eine Verbindung herstellt.",
             "label": "Gerät online"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Wird ausgelöst, wenn ein neu registriertes Gerät wie eine Neuinstallation eines bestehenden, inaktiven Gerätedatensatzes aussieht.",
+            "label": "Mögliche Neuinstallation"
           },
           "deviceReinstalled": {
             "description": "Wird ausgelöst, wenn ein neu installierter Rechner wieder mit seinem bestehenden Gerätedatensatz verknüpft wird.",

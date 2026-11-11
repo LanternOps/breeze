@@ -54,11 +54,8 @@ test.describe('tickets', () => {
     await tickets.resolveNote().waitFor();
     await tickets.resolveNote().fill('Resolved by e2e');
     await tickets.resolveSubmit().click();
-    // Resolving removes the ticket from the open queue, and the page
-    // auto-selects the first remaining open ticket — so verify on the closed
-    // tab (sort=newest orders by createdAt desc, not resolution time; our
-    // just-created ticket sorts first).
-    await tickets.tab('closed').click();
+    // Resolving keeps the ticket in focus (the next ticket is only offered,
+    // never opened), so the resolved state is checked in place.
     await expect(tickets.workbenchNumber()).toHaveText(ticketNumber!);
     await expect(tickets.statusSelect()).toHaveValue('resolved');
   });

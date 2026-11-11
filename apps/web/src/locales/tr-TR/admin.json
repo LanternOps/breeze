@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Sistem bölümleri",
         "connections": "Bağlantılar",
-        "deprecations": "Kullanımdan kaldırmalar"
+        "deprecations": "Kullanımdan kaldırmalar",
+        "health": "Sağlık"
       },
       "connections": {
         "enabledMeaning": "Etkin, yapılandırılmış anlamına gelir. Breeze, yanıt verip vermediğini kontrol etmek için hizmete bağlanmaz.",
@@ -720,6 +721,57 @@
           "load": "Görev durumu yüklenemedi."
         },
         "retry": "Yeniden dene"
+      },
+      "health": {
+        "coverage": "Yalnızca paylaşılan arka plan işleri: kuyruk sayıları ve zamanlanmış iş kalp atışları, Redis’ten okunur. Bu sekme genel bir karar göstermez. Süreç ve sunucu bazındaki sağlık /health/ready ve izleme katmanındadır.",
+        "loading": "Arka plan işi durumu yükleniyor…",
+        "refresh": "Yenile",
+        "never": "hiçbir zaman",
+        "errors": {
+          "load": "Arka plan işi durumu yüklenemedi."
+        },
+        "status": {
+          "operational": "Çalışıyor",
+          "degraded": "Bozulmuş",
+          "unavailable": "Kullanılamıyor",
+          "unknown": "Bilinmiyor",
+          "disabled": "Devre dışı"
+        },
+        "detail": {
+          "redis_unavailable": "Redis kullanılamıyor, bu yüzden okunamadı.",
+          "read_failed": "Okuma başarısız oldu.",
+          "timeout": "Okuma zaman aşımına uğradı.",
+          "stale": "Son kalp atışı beklenenden eski.",
+          "missing": "Kalp atışı kaydedilmedi.",
+          "no_threshold": "Yalnızca sayılar. Bu kuyruk için henüz bir sağlık eşiği tanımlanmadı."
+        },
+        "queues": {
+          "title": "Kuyruklar",
+          "description": "Paylaşılan her kuyruktaki bekleyen iş. Sayılar bir sağlık kararı değildir.",
+          "items": {
+            "connection-health-reconcile": "Bağlantı sağlığı uzlaştırıcısı",
+            "connection-health-digest": "Bağlantı sağlığı özeti",
+            "alerts": "Uyarılar",
+            "event-dispatch": "Olay gönderimi"
+          },
+          "counts": {
+            "waiting": "Bekliyor",
+            "prioritized": "Öncelikli",
+            "delayed": "Ertelenmiş",
+            "active": "Etkin"
+          }
+        },
+        "jobs": {
+          "title": "Zamanlanmış işler",
+          "description": "Bağlantı sağlığı işlerinin her birinin son kaydedilen çalışması.",
+          "items": {
+            "reconcile": "Bağlantı sağlığı uzlaştırıcısı",
+            "digest": "Bağlantı sağlığı özeti"
+          },
+          "kind": "Bağlantı denetimi: {{kind}}",
+          "lastRun": "Son çalışma: {{when}}",
+          "failureStreak": "Arka arkaya hata: {{count}}"
+        }
       }
     },
     "aiModels": {

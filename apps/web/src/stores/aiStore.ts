@@ -1155,7 +1155,7 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
-        if (refusal === 'expired' && get().wisp && !resendingAfterRoll) {
+        if ((refusal === 'expired' || refusal === 'closed') && get().wisp && !resendingAfterRoll) {
           // #11430: the server retired this session (idle, 24 h cap, or a
           // restart left the row behind) before the turn ran. One thread per
           // grant, so the user never chose this session: open the next one and
@@ -1165,7 +1165,7 @@ export const useAiStore = create<AiState>()(
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           if (!ownsStream()) return;
           if (await rollWispSession(get, model, { closeOld: false })) {
-            console.info(`[AiStore] Wisp session ${currentSessionId} had expired; continuing the thread on a fresh session`);
+            console.info(`[AiStore] Wisp session ${currentSessionId} was ${refusal === 'closed' ? 'closed elsewhere' : 'expired'}; continuing the thread on a fresh session`);
             resendingAfterRoll = true;
             try {
               await get().sendMessage(trimmedContent);
@@ -1178,6 +1178,22 @@ export const useAiStore = create<AiState>()(
           set(get().error
             ? { composerDraft: trimmedContent }
             : { composerDraft: trimmedContent, error: extractApiError(data, 'Failed to send message'), errorCode: code });
+          return;
+        }
+
+        if (refusal === 'closed') {
+          // #11609: the conversation was closed elsewhere (another tab or the
+          // API) before this turn ran, so nothing was stored. Never lose the
+          // text: it goes back to the composer, and the banner says what
+          // happened in plain words and offers a new session (errorCode drives it).
+          if (!ownsStream()) return;
+          set((s) => ({
+            messages: s.messages.filter((m) => m.id !== userMsgId),
+            composerDraft: trimmedContent,
+            error: i18n.t('ai:sessionClosed.message'),
+            errorCode: code,
+            isStreaming: false,
+          }));
           return;
         }
 

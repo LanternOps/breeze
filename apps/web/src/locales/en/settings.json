@@ -7214,6 +7214,7 @@
     },
     "verify": {
       "methodLegend": "Verification method",
+      "panelTitle": "Verify {{domain}}",
       "methodLocked": "To switch methods, remove the current verification first.",
       "openPortalTab": "Prove the tenant under Portal › Sign-in & registration.",
       "dnsStartHint": "Get a TXT record for the customer's DNS admin to publish.",
@@ -8555,6 +8556,26 @@
         "hintInvalid": "That isn't a Microsoft tenant ID or a domain verified by a Microsoft tenant.",
         "hintLookupFailed": "Couldn't reach Microsoft to look up that domain. Try again, or enter the tenant ID.",
         "protectedOrg": "This organization can't be linked to a Microsoft tenant."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "Portal sign-in fell back to password",
+      "body": "Microsoft sign-in is off for this organization's portal, so its users sign in with a password until the tenant is proven again.",
+      "tenant": "(Tenant {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "The Microsoft tenant link was removed on {{date}}.",
+        "ai_for_office_mapping_removed": "The AI for Office tenant mapping, which held the proof, was removed on {{date}}.",
+        "ai_for_office_mapping_changed": "The AI for Office tenant mapping was changed to another tenant on {{date}}, which cleared the proof.",
+        "tenant_displaced": "Another organization proved this Microsoft tenant on {{date}}.",
+        "unknown": "The Microsoft tenant proof was lost on {{date}}."
+      },
+      "rerun": "Re-run the tenant proof",
+      "dismiss": "Dismiss",
+      "toasts": {
+        "dismissed": "Notice dismissed."
+      },
+      "errors": {
+        "dismiss": "Couldn't dismiss the notice."
       }
     },
     "ssoOnlyConfirm": {

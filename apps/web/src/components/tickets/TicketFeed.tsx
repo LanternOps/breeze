@@ -20,6 +20,19 @@ function isSystemAuthored(c: TicketComment): boolean {
   return c.authorType === 'system' || c.originPrincipalKind === 'system';
 }
 
+/**
+ * Written by the requester: through the portal (authorType 'portal', or a
+ * portal login on the row) or by email ('email', inbound replies and imports).
+ * Their words are theirs: a tech may delete them (redaction) but never edit.
+ */
+export function isRequesterAuthored(c: TicketComment): boolean {
+  return c.authorType === 'portal' || c.authorType === 'email' || Boolean(c.portalUserId);
+}
+
+// Comment actions: revealed on hover and keyboard focus, always shown where
+// there is no hover (touch).
+const ACTION_REVEAL = 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100';
+
 type TFunction = ReturnType<typeof useTranslation>['t'];
 
 function systemLine(c: TicketComment, t: TFunction): string {
@@ -94,6 +107,7 @@ export default function TicketFeed({
   onDeleteAttachment,
   canManageComment,
   mergedFromNumbers,
+  embedded = false,
 }: {
   /** W08 #3902 — needed to build the authenticated attachment content URL.
    *  Optional so existing callers keep compiling; attachments simply do not
@@ -114,6 +128,8 @@ export default function TicketFeed({
   /** #8972: display numbers of the tombstones comments were moved from, keyed
    *  by `mergedFromTicketId`. A missing entry renders "from a merged ticket". */
   mergedFromNumbers?: Record<string, string>;
+  /** Inside the focus conversation, which already pads the thread. */
+  embedded?: boolean;
 }) {
   const { t } = useTranslation('tickets');
   const blocks = useMemo(() => groupFeed(comments), [comments]);
@@ -122,10 +138,11 @@ export default function TicketFeed({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   if (comments.length === 0) {
-    return <p className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="ticket-feed-empty">{t('ticketFeed.empty')}</p>;
+    return <p className={cn('text-sm text-muted-foreground', embedded ? 'px-1 py-2' : 'px-4 py-8 text-center')} data-testid="ticket-feed-empty">{t('ticketFeed.empty')}</p>;
   }
 
   const canManage = (c: TicketComment): boolean => !isSystemAuthored(c) && Boolean(canManageComment?.(c));
+  const canEdit = (c: TicketComment): boolean => canManage(c) && !isRequesterAuthored(c);
 
   const openEditor = (id: string, content: string) => {
     setEditingId(id);
@@ -148,7 +165,7 @@ export default function TicketFeed({
 
   return (
     <>
-      <div className="space-y-3 p-4" data-testid="ticket-feed">
+      <div className={cn('space-y-3', !embedded && 'p-4')} data-testid="ticket-feed">
         {blocks.map((b, i) =>
           b.kind === 'system-run' ? (
             <SystemRun key={`run-${i}`} items={b.items} />
@@ -164,7 +181,7 @@ export default function TicketFeed({
             <div
               key={b.item.id}
               className={cn(
-                'rounded-lg border p-3',
+                'group rounded-lg border p-3',
                 // The amber wash re-points muted ink at the foreground: grey
                 // --muted-foreground is 4.2–4.4:1 on it in light.
                 !b.item.isPublic && 'border-warning/30 bg-warning/10 [--muted-foreground:var(--foreground)_/_0.7]'
@@ -172,7 +189,11 @@ export default function TicketFeed({
               data-testid={`ticket-comment-${b.item.id}`}
             >
               <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">{b.item.authorName ?? (b.item.portalUserId ? t('ticketFeed.requester') : t('ticketFeed.technician'))}</span>
+                <span className="font-medium text-foreground">{b.item.authorName ?? (isRequesterAuthored(b.item) ? t('ticketFeed.requester') : t('ticketFeed.technician'))}</span>
+                {isRequesterAuthored(b.item) && b.item.authorName && (
+                  // Same tag as message 1 (the description): who is speaking.
+                  <span data-testid={`ticket-comment-requester-${b.item.id}`}>{t('ticketFeed.requester')}</span>
+                )}
                 {b.item.mergedFromTicketId && (
                   <span data-testid={`ticket-comment-merged-from-${b.item.id}`}>
                     {mergedFromNumbers?.[b.item.mergedFromTicketId]
@@ -187,10 +208,10 @@ export default function TicketFeed({
                 <span className="ml-auto" title={formatDateTime(b.item.createdAt)}>
                   {formatDateTime(b.item.createdAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                 </span>
-                {canManage(b.item) && onEditComment && (
+                {canEdit(b.item) && onEditComment && (
                   <button
                     type="button"
-                    className="text-xs hover:text-foreground"
+                    className={cn('text-xs hover:text-foreground', ACTION_REVEAL)}
                     data-testid={`ticket-comment-edit-${b.item.id}`}
                     onClick={() => openEditor(b.item.id, b.item.content)}
                   >
@@ -200,7 +221,7 @@ export default function TicketFeed({
                 {canManage(b.item) && onDeleteComment && (
                   <button
                     type="button"
-                    className="text-xs hover:text-destructive"
+                    className={cn('text-xs hover:text-destructive-ink', ACTION_REVEAL)}
                     data-testid={`ticket-comment-delete-${b.item.id}`}
                     onClick={() => setConfirmDeleteId(b.item.id)}
                   >
@@ -238,7 +259,7 @@ export default function TicketFeed({
                   </div>
                 </div>
               ) : (
-                <p className="whitespace-pre-wrap text-sm">{b.item.content}</p>
+                <p className="max-w-[72ch] whitespace-pre-wrap text-sm">{b.item.content}</p>
               )}
               {/* W08 #3902. A soft-deleted comment renders through the branch
                   above and therefore never reaches this line — its photos go

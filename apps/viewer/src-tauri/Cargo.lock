@@ -330,6 +330,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "url",
+ "webkit2gtk",
 ]
 
 [[package]]

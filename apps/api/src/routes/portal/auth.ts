@@ -62,6 +62,7 @@ import { portalOrgDbAccessContext } from './portalDbContext';
 import { purgeClientAiSessionsForUsers } from '../../services/clientAiSessionStore';
 import { portalSessionRevokedSql, revokePortalSessionDurably } from '../../services/portal/sessionRevocation';
 import { ANONYMOUS_ACTOR_ID, writeAuditEventAsync } from '../../services/auditEvents';
+import { portalLoginEmailEquals, portalLoginEmailMatchIsAmbiguous } from '../../services/portalLoginEmail';
 
 export const authRoutes = new Hono();
 const ALLOW_IN_MEMORY_PORTAL_STATE = !PORTAL_USE_REDIS;
@@ -516,6 +517,11 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   // other outcome is the ordinary 401 below (W2, spec §6 invariant 8 — the
   // response never reveals that an address has more than one account). Only
   // password logins WITH browser access are candidates.
+  //
+  // The address matches case-insensitively (#11541). Two logins in one org
+  // whose addresses differ only by case are therefore both candidates; they are
+  // separate accounts with separate passwords, so the rule above still holds:
+  // the password picks the account, and a password both share is the 401.
   const userRows = await withSystemDbAccessContext(() =>
     db
       .select({
@@ -533,7 +539,7 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
       .from(portalUsers)
       .where(and(
         ...(orgId ? [eq(portalUsers.orgId, orgId)] : []),
-        eq(portalUsers.email, normalizedEmail),
+        portalLoginEmailEquals(normalizedEmail),
         eq(portalUsers.authMethod, 'password'),
         eq(portalUsers.browserAccess, 'granted'),
       ))
@@ -621,7 +627,14 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
-  const [user] = await withSystemDbAccessContext(() =>
+  // The address matches case-insensitively (#11541). Only password logins with
+  // browser access are candidates (the token's only use is a browser sign-in),
+  // so a stale row without access neither receives a token nor blocks one.
+  // One address in several orgs keeps its existing behaviour (the first row is
+  // reset). Two candidates in ONE org whose addresses differ only by case have
+  // no principled pick, so no token is issued for the address at all; the
+  // response below is the same uniform 200.
+  const candidates = await withSystemDbAccessContext(() =>
     db
       .select({
         id: portalUsers.id,
@@ -657,11 +670,22 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
       .leftJoin(partners, eq(partners.id, organizations.partnerId))
       .where(
         orgId
-          ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
-          : and(eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
+          ? and(eq(portalUsers.orgId, orgId), portalLoginEmailEquals(normalizedEmail), eq(portalUsers.authMethod, 'password'), eq(portalUsers.browserAccess, 'granted'))
+          : and(portalLoginEmailEquals(normalizedEmail), eq(portalUsers.authMethod, 'password'), eq(portalUsers.browserAccess, 'granted'))
       )
-      .limit(1)
+      .limit(PORTAL_LOGIN_CANDIDATE_CAP + 1)
   );
+  const ambiguous = candidates.length > PORTAL_LOGIN_CANDIDATE_CAP || portalLoginEmailMatchIsAmbiguous(candidates);
+  if (ambiguous) {
+    // Operator signal only, never in the response: the rows need cleanup.
+    // Internal ids only, never the address.
+    console.warn('[portal] password reset not issued: the address matches several logins in one org, or more than the candidate cap; every org for the address is refused', {
+      candidates: candidates.length,
+      orgIds: [...new Set(candidates.map((r) => r.orgId))],
+      portalUserIds: candidates.map((r) => r.id),
+    });
+  }
+  const user = ambiguous ? undefined : candidates[0];
 
   if (user) setPortalAuthAuditIdentity(c, user);
 

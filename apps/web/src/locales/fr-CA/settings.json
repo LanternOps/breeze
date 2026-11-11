@@ -7212,6 +7212,7 @@
     },
     "verify": {
       "methodLegend": "Méthode de vérification",
+      "panelTitle": "Vérifier {{domain}}",
       "methodLocked": "Pour changer de méthode, supprimez d’abord la vérification actuelle.",
       "openPortalTab": "Prouvez le locataire sous Portail client › Connexion et inscription.",
       "dnsStartHint": "Obtenez un enregistrement TXT à faire publier par l’administrateur DNS du client.",
@@ -8555,6 +8556,26 @@
         "hintInvalid": "Ce n’est ni un ID de locataire Microsoft ni un domaine vérifié par un locataire Microsoft.",
         "hintLookupFailed": "Impossible de joindre Microsoft pour rechercher ce domaine. Réessayez ou saisissez l’ID du locataire.",
         "protectedOrg": "Cette organisation ne peut pas être liée à un locataire Microsoft."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "La connexion au portail est revenue au mot de passe",
+      "body": "La connexion Microsoft est désactivée pour le portail de cette organisation. Ses utilisateurs se connectent donc avec un mot de passe jusqu’à ce que le locataire soit prouvé de nouveau.",
+      "tenant": "(Locataire {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Le lien du locataire Microsoft a été supprimé le {{date}}.",
+        "ai_for_office_mapping_removed": "Le mappage de locataire AI for Office, qui contenait la preuve, a été supprimé le {{date}}.",
+        "ai_for_office_mapping_changed": "Le mappage de locataire AI for Office a été remplacé par un autre locataire le {{date}}, ce qui a effacé la preuve.",
+        "tenant_displaced": "Une autre organisation a prouvé ce locataire Microsoft le {{date}}.",
+        "unknown": "La preuve du locataire Microsoft a été perdue le {{date}}."
+      },
+      "rerun": "Refaire la preuve du locataire",
+      "dismiss": "Ignorer",
+      "toasts": {
+        "dismissed": "Avis ignoré."
+      },
+      "errors": {
+        "dismiss": "Impossible d’ignorer l’avis."
       }
     },
     "ssoOnlyConfirm": {
