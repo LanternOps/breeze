@@ -216,9 +216,17 @@ describe('POST /auth/self-register (D3, Review Focus 1)', () => {
     const off = await submit({ email: 'pat@contoso.example.com', name: 'Pat' });
     expect(off.status).toBe(404);
     expect(h.enqueue).not.toHaveBeenCalled();
-    // Off is the W06a default: the real capability.
+    // The real capability (W06b): the kill switch off is a 404 whatever the
+    // email configuration, for submit and verify alike.
     policyTestOnly.setCapabilities(null);
-    expect((await submit({ email: 'pat@contoso.example.com', name: 'Pat' })).status).toBe(404);
+    vi.stubEnv('PORTAL_SELF_REGISTRATION_ENABLED', 'false');
+    try {
+      expect((await submit({ email: 'pat@contoso.example.com', name: 'Pat' })).status).toBe(404);
+      expect((await verify('any-token')).status).toBe(404);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(h.enqueue).not.toHaveBeenCalled();
   });
 
   it('on the in-memory backend a missing Redis client changes nothing (the Redis-backend 503 is address-independent by construction)', async () => {
