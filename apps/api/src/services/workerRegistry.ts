@@ -2122,6 +2122,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
     },
   },
+  // #11737 — hourly report-first retention for agent health and software
+  // inventory observation history. `global`: its closure is db + the
+  // retention runner, nothing socket-local.
+  {
+    name: 'observationRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/observationRetention');
+      return { init: m.initializeObservationRetention, shutdown: m.shutdownObservationRetention };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

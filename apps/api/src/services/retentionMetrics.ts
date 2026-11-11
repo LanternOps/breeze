@@ -26,6 +26,7 @@ import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
  * already has its own dedicated instrument set in `services/backupMetrics.ts`.
  */
 export const RETENTION_JOB_NAMES = [
+  'agent_health_observation_retention',
   'agent_log_retention',
   'ai_agent_op_evidence_retention',
   'ai_invocation_retention',
@@ -55,6 +56,7 @@ export const RETENTION_JOB_NAMES = [
   'restore_point_attempt_retention',
   'service_process_check_retention',
   'snmp_retention',
+  'software_inventory_observation_retention',
   'ticket_outbox_retention',
   'user_risk_retention',
   'wake_attempt_retention',

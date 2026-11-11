@@ -368,6 +368,14 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `USER_RISK_RETENTION_DAYS` | `90` | Days to keep resolved user-risk signal history, floored at 30 |
 | `USER_RISK_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
 | `USER_RISK_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `AGENT_HEALTH_OBSERVATION_RETENTION_DAYS` | `30` | Report-only until `AGENT_HEALTH_OBSERVATION_RETENTION_ENFORCE=true` (see below). Days to keep: 1–365. **Hourly** at :41. Removes: agent self-health observations (one per heartbeat, so about 1,440 per device per day) received before the window, except the one each device's health view currently shows. Nothing reads older observations. |
+| `AGENT_HEALTH_OBSERVATION_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `AGENT_HEALTH_OBSERVATION_RETENTION_MAX_BATCHES` | `200` | Maximum batches per hourly run. The default keeps up with about 16,000 devices (one row per device per minute); raise it for a larger fleet |
+| `AGENT_HEALTH_OBSERVATION_RETENTION_ENFORCE` | `false` | `true` or `1` (any letter case) turns deletion on; unset, empty or anything else keeps the target report-only: it counts eligible rows, logs a `REPORT-ONLY` line and sets `breeze_retention_rows_eligible`, and deletes nothing. See [Report-only retention jobs](#report-only-retention-jobs) |
+| `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_DAYS` | `90` | Report-only until `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_ENFORCE=true` (see below). Days to keep: 1–365. **Hourly** at :41. Removes: software inventory reports received before the window, except any report the device's current inventory, its software list or a resolved vulnerability still points at. |
+| `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_BATCH_SIZE` | `500` | Rows deleted per batch (each row carries a full software list) |
+| `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_MAX_BATCHES` | `100` | Maximum batches per hourly run. The default keeps up with about 12,500 devices (one report per device per 15 minutes); raise it for a larger fleet |
+| `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_ENFORCE` | `false` | `true` or `1` (any letter case) turns deletion on; unset, empty or anything else keeps the target report-only: it counts eligible rows, logs a `REPORT-ONLY` line and sets `breeze_retention_rows_eligible`, and deletes nothing. See [Report-only retention jobs](#report-only-retention-jobs) |
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
 

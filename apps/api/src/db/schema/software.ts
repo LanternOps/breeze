@@ -200,6 +200,8 @@ export const softwareInventoryObservations = pgTable('software_inventory_observa
   identityOwnerUq: uniqueIndex('software_inventory_observations_identity_owner_uq').on(table.id, table.orgId, table.deviceId),
   deviceReceivedIdx: index('software_inventory_observations_device_received_idx').on(table.deviceId, table.receivedAt, table.id),
   orgReceivedIdx: index('software_inventory_observations_org_received_idx').on(table.orgId, table.receivedAt),
+  // Age scan for jobs/observationRetention.ts (#11737).
+  receivedAtIdx: index('software_inventory_observations_received_at_idx').on(table.receivedAt),
   deviceOrgFk: foreignKey({
     columns: [table.deviceId, table.orgId],
     foreignColumns: [devices.id, devices.orgId],

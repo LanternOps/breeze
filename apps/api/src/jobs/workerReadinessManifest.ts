@@ -391,6 +391,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // (the kill switch gates the public route, not the consumer), attached under
   // its registry name.
   consumers('portalSelfRegistrationWorker'),
+  // #11737 — plain Redis-required consumer, no feature flag.
+  consumers('observationRetention'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {

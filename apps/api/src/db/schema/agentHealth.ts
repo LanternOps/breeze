@@ -40,6 +40,8 @@ export const agentHealthObservations = pgTable('agent_health_observations', {
   index('agent_health_observations_device_received_idx')
     .on(table.deviceId, table.receivedAt.desc(), table.id.desc()),
   index('agent_health_observations_org_idx').on(table.orgId),
+  // Age scan for jobs/observationRetention.ts (#11737).
+  index('agent_health_observations_received_at_idx').on(table.receivedAt),
   check('agent_health_observations_schema_version_chk', sql`${table.schemaVersion} > 0`),
   check(
     'agent_health_observations_overall_chk',
