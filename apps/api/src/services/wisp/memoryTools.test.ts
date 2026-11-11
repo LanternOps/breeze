@@ -152,6 +152,11 @@ describe('wisp memory tools', () => {
 
     recallForGrant.mockResolvedValue([]);
     expect(await run('recall', {})).toBe('No memory blocks match.');
+
+    // #11630: every recalled block lapsed -> render returns '' -> not an empty tool result.
+    recallForGrant.mockResolvedValue([block()]);
+    renderMemoryForPrompt.mockReturnValue('');
+    expect(await run('recall', {})).toBe('No memory blocks match.');
   });
 
   it('remember maps ownerKind/orgId to a MemoryOwner and surfaces CeilingViolationError as {"error":"ceiling_violation","code":"org"}', async () => {

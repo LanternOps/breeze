@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import M365TenantSection from "./M365TenantSection";
 import { fetchWithAuth } from "../../stores/auth";
-import { navigateTo } from "@/lib/navigation";
+import { navigateTo, navigateToMicrosoftLogin } from "@/lib/navigation";
 
 // Renders the REAL legacy card and both consent steps behind a URL-routed
 // fetch mock, so the availability ordering is exercised against the envelopes
@@ -64,6 +64,7 @@ vi.mock("@/lib/dateTimeFormat", () => ({
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const navigateToMock = vi.mocked(navigateTo);
+const navigateToMicrosoftLoginMock = vi.mocked(navigateToMicrosoftLogin);
 
 const ORG_A = "11111111-1111-4111-8111-111111111111";
 const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
@@ -540,10 +541,12 @@ describe("M365TenantSection — tenant panel", () => {
     );
     fireEvent.click(within(preflight).getByRole("button", { name: "Continue to Microsoft" }));
     await waitFor(() =>
-      expect(navigateToMock).toHaveBeenCalledWith(
+      expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(
         "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned",
       ),
     );
+    // The cross-origin Microsoft hand-off must not go through the same-origin helper.
+    expect(navigateToMock).not.toHaveBeenCalled();
   });
 
   it("names the organization in the pre-flight before any tenant is connected", async () => {

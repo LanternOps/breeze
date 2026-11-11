@@ -377,11 +377,23 @@ describe('firing a run check-in', () => {
 
   runDb('any other admission skip posts "the check could not start"', async () => {
     const fx = await seed();
-    h.enqueueAssessment.mockResolvedValue({ skipped: 'no_effective_agent' });
+    h.enqueueAssessment.mockResolvedValue({ skipped: 'some_unclassified_skip' });
     const row = await scheduleRun(fx, new Date());
     await makeDue(row.id, new Date());
     expect(await fireCheckIn(row.id, new Date())).toBe('fired');
     expect((await postsFor(fx.thread.id))[0]!.body).toBe(`I couldn't check on my own: the check could not start. Run it now? ${INSTRUCTION}`);
+  });
+
+  // #11610: an agent-readiness skip names what to fix instead of the generic text.
+  runDb('a no_effective_agent skip posts "no Triage agent is switched on for this organization"', async () => {
+    const fx = await seed();
+    h.enqueueAssessment.mockResolvedValue({ skipped: 'no_effective_agent' });
+    const row = await scheduleRun(fx, new Date());
+    await makeDue(row.id, new Date());
+    expect(await fireCheckIn(row.id, new Date())).toBe('fired');
+    expect((await postsFor(fx.thread.id))[0]!.body).toBe(
+      `I couldn't check on my own: no Triage agent is switched on for this organization. Run it now? ${INSTRUCTION}`,
+    );
   });
 
   runDb('a revoked grant cancels with grant_inactive and admits nothing', async () => {

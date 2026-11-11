@@ -414,15 +414,19 @@ describe('recordEntraTenantProof', () => {
     expect(await findOrgByProvenEntraTenant(tenant)).toEqual({ orgId: org.id, partnerId: partner.id });
   });
 
-  it('removePortalEntraTenant deletes the mapping and reports the tenant it held', async () => {
+  it('removePortalEntraTenant deletes the mapping and reports the tenant it held and whether it was proven', async () => {
     const { org, tech } = await tenantOrg();
     const tenant = newTenant();
     await recordEntraTenantProof(proofRun(org.id, tenant, tech.id));
 
-    expect(await removePortalEntraTenant(org.id)).toEqual({ removed: true, tenantId: tenant });
+    expect(await removePortalEntraTenant(org.id)).toEqual({ removed: true, tenantId: tenant, wasProven: true });
     expect(await mappingFor(org.id)).toBeNull();
     expect(await findOrgByProvenEntraTenant(tenant)).toBeNull();
-    expect(await removePortalEntraTenant(org.id)).toEqual({ removed: false, tenantId: null });
+    expect(await removePortalEntraTenant(org.id)).toEqual({ removed: false, tenantId: null, wasProven: false });
+
+    const unproven = newTenant();
+    await seedMapping(org.id, unproven);
+    expect(await removePortalEntraTenant(org.id)).toEqual({ removed: true, tenantId: unproven, wasProven: false });
   });
 
   it("displacement emails the displaced partner's active admins after commit; a send failure keeps the proof", async () => {
@@ -758,7 +762,7 @@ describe('MSP tenant-proof routes through the real router (Task 8)', () => {
     const before = await call('GET', env.organization.id);
     expect(before.status).toBe(200);
     expect((await before.json()).data).toEqual({
-      tenantId: null, state: 'none', provenAt: null, provenVia: null, connectionTenantId: tenant, consentUrl: null,
+      tenantId: null, state: 'none', provenAt: null, provenVia: null, connectionTenantId: tenant, consentUrl: null, passwordFallback: null,
     });
 
     const proved = await call('POST', env.organization.id, '/prove-from-connection');

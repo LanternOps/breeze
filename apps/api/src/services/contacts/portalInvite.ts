@@ -27,7 +27,7 @@
  * the address; it does not stop a concurrent disable, accept or password
  * change, which is what the epoch guard is for.
  */
-import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { AlreadyHasAccessReason } from '@breeze/shared';
 import { contacts } from '../../db/schema/contacts';
 import { portalUsers } from '../../db/schema';
@@ -39,18 +39,18 @@ import {
   type PortalAccountTarget,
 } from '../portalAccountState';
 import { portalUserHasIdentitySql } from '../portalUserIdentities';
-import { normalizeContactEmail, updateContact, type ContactExecutor } from './crud';
+import { normalizeContactEmail, updateContact, type ContactActor, type ContactExecutor } from './crud';
+import { portalLoginEmailEquals } from '../portalLoginEmail';
 
 /**
  * The ONE comparison every portal-invite path uses to find an existing login
- * for an address (#11529): stored `email` lower-cased against the address
- * lower-cased and trimmed. An exact `eq(email, ...)` treats `Ada@X` and
+ * for an address (#11529). An exact `eq(email, ...)` treats `Ada@X` and
  * `ada@x` as two people, so the plain-email invite and the contact invite
- * could each mint a login for the same person.
+ * could each mint a login for the same person. Defined in
+ * `services/portalLoginEmail.ts` and shared with login, password reset,
+ * inbound email and the add-in (#11541); re-exported here for the invite paths.
  */
-export function portalLoginEmailEquals(email: string): SQL {
-  return sql`lower(${portalUsers.email}) = ${email.trim().toLowerCase()}`;
-}
+export { portalLoginEmailEquals };
 
 export interface InviteableContact {
   id: string;
@@ -359,4 +359,35 @@ export async function bindContactLoginForInvite(
     await updateContact(exec, contact.id, orgId, { roles: [...roles, 'portal'] }, actor);
   }
   return decision;
+}
+
+/**
+ * The `portal` role follows the login's lifecycle (#11599): when a login bound
+ * to a contact is removed, take `portal` off that contact unless another login
+ * in the organization is still bound to it. Only `portal` is removed, and both
+ * reads are scoped to the organization. Call inside the same transaction as the
+ * login delete.
+ */
+export async function dropPortalRoleForRemovedLogin(
+  exec: ContactExecutor,
+  input: { orgId: string; contactId: string; actor: ContactActor },
+): Promise<void> {
+  const { orgId, contactId, actor } = input;
+  const [row] = await exec
+    .select({ roles: contacts.roles })
+    .from(contacts)
+    .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
+    // FOR UPDATE conflicts with a concurrent invite's FOR KEY SHARE on this row,
+    // so a bind cannot slip a new login in between the check below and the write.
+    .for('update')
+    .limit(1);
+  const roles = row?.roles ?? [];
+  if (!roles.includes('portal')) return;
+  const [remaining] = await exec
+    .select({ id: portalUsers.id })
+    .from(portalUsers)
+    .where(and(eq(portalUsers.contactId, contactId), eq(portalUsers.orgId, orgId)))
+    .limit(1);
+  if (remaining) return;
+  await updateContact(exec, contactId, orgId, { roles: roles.filter((r) => r !== 'portal') }, actor);
 }

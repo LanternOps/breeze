@@ -85,7 +85,8 @@
     },
     "checklistProgress": "{{done}}/{{total}} pasos",
     "checklistTitle": "Lista de verificación: {{done}} de {{total}} pasos completados",
-    "merged": "Fusionado"
+    "merged": "Fusionado",
+    "ageTitle": "Abierto {{created}} · Actualizado {{updated}}"
   },
   "ticketArchivedList": {
     "emptyTitle": "No hay tickets archivados.",
@@ -142,9 +143,21 @@
       "sentWithoutAttachmentReply_one": "Respuesta publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
       "sentWithoutAttachmentNote_one": "Nota publicada, pero no se pudo agregar el archivo adjunto. Reinténtalo o quítalo.",
       "sentWithoutAttachmentReply_other": "Respuesta publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos.",
-      "sentWithoutAttachmentNote_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos."
+      "sentWithoutAttachmentNote_other": "Nota publicada, pero no se pudieron agregar {{count}} archivos adjuntos. Reinténtalo o quítalos.",
+      "rejectedTicketDeleted": "{{name}} no se adjuntó: este ticket fue eliminado.",
+      "rejectedTicketMerged": "{{name}} no se adjuntó: este ticket se fusionó con otro ticket.",
+      "rejectedNotFound": "{{name}} no se adjuntó: no se encontró el ticket.",
+      "rejectedMalformed": "{{name}} no se adjuntó: la carga estaba mal formada. Intenta adjuntarlo de nuevo.",
+      "openMergedTicket": "Abrir el ticket fusionado",
+      "notKept_one": "1 adjunto no se conservó con este borrador ({{names}}). Adjúntalo de nuevo o descarta el aviso para enviar sin él.",
+      "notKept_other": "{{count}} adjuntos no se conservaron con este borrador ({{names}}). Adjúntalos de nuevo o descarta el aviso para enviar sin ellos.",
+      "notKeptDismiss": "Descartar"
     },
-    "modeLabel": "Visibilidad del comentario"
+    "modeLabel": "Visibilidad del comentario",
+    "recipient": {
+      "emails": "Se envía por correo a {{recipient}}",
+      "none": "No hay correo del solicitante registrado. La respuesta se guarda en el ticket y no se envía ningún correo."
+    }
   },
   "ticketFeed": {
     "empty": "Aún no hay actividad.",
@@ -858,6 +871,64 @@
       "SELF_LINK": "Un ticket no se puede vincular consigo mismo.",
       "NOT_FOUND": "No se encontró ese ticket o ya no está disponible.",
       "LINK_GONE": "Ese vínculo ya fue eliminado."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Navegación de tickets",
+    "backTo": "Volver a {{tab}}",
+    "position": "{{index}} de {{total}}",
+    "previous": "Ticket anterior",
+    "next": "Ticket siguiente",
+    "more": "Más acciones",
+    "sections": "Secciones del ticket",
+    "tabs": {
+      "conversation": "Conversación",
+      "details": "Detalles"
+    },
+    "descriptionAria": "Solicitud de {{author}}",
+    "invoiceDialogTitle": "Parte del trabajo no se facturó",
+    "nextOffer": {
+      "label": "Siguiente",
+      "open": "Abrir",
+      "openAria": "Abrir {{number}} {{subject}}",
+      "atRisk": "En riesgo · quedan {{relative}}",
+      "noSla": "Sin SLA"
+    },
+    "requester": {
+      "noEmail": "Sin correo registrado"
+    },
+    "endpoint": {
+      "noDevice": "Ningún equipo vinculado",
+      "lastSeen": "visto por última vez {{ago}}",
+      "loading": "Cargando el equipo",
+      "loadFailed": "No se pudo cargar el estado en vivo del equipo.",
+      "os": "Sistema operativo",
+      "signedIn": "Sesión de",
+      "nobodySignedIn": "Nadie con sesión iniciada",
+      "lastUser": "Último usuario {{user}}",
+      "activeAlerts": "Alertas activas",
+      "noAlerts": "Sin alertas activas",
+      "alertsFailed": "No se pudieron cargar las alertas.",
+      "untitledAlert": "Alerta sin título",
+      "userSignedIn": "{{user}} con sesión iniciada",
+      "alertCount": "{{count}} alertas",
+      "alertCount_one": "{{count}} alerta",
+      "alertCount_other": "{{count}} alertas",
+      "openDetails": "{{device}}: abrir los detalles del equipo"
+    },
+    "details": {
+      "properties": "Propiedades",
+      "logged": "{{time}} registrado",
+      "partCount": "{{count}} partes",
+      "partCount_one": "{{count}} parte",
+      "partCount_other": "{{count}} partes",
+      "pendingApprovals": "{{count}} pendientes",
+      "pendingApprovals_one": "{{count}} pendiente",
+      "pendingApprovals_other": "{{count}} pendientes",
+      "linkCount": "{{count}} vinculados",
+      "linkCount_one": "{{count}} vinculado",
+      "linkCount_other": "{{count}} vinculados",
+      "approvals": "Aprobaciones"
     }
   }
 }

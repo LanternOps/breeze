@@ -384,9 +384,13 @@ describe("M365CustomerGraphActionsCard", () => {
       `/m365/customer-graph-actions/connections/consent?orgId=${ORG_A}`,
       { method: "POST" },
     );
-    expect(navigateToMock).toHaveBeenCalledWith(
+    // #11572: the hand-off to Microsoft must go through the origin-pinned
+    // external helper. `navigateTo` accepts same-origin paths only and sends
+    // anything else to "/" — the dashboard — so Microsoft was never reached.
+    expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(
       "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned",
     );
+    expect(navigateToMock).not.toHaveBeenCalled();
   });
 
   it("rejects a non-Microsoft consent URL returned by the server", async () => {
@@ -399,6 +403,7 @@ describe("M365CustomerGraphActionsCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft" }));
 
     await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
+    expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
@@ -528,7 +533,8 @@ describe("M365CustomerGraphActionsCard", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Grant admin actions…" }));
       fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft" }));
 
-      await waitFor(() => expect(navigateToMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(navigateToMicrosoftLoginMock).toHaveBeenCalledTimes(1));
+      expect(navigateToMock).not.toHaveBeenCalled();
       expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
         2,
         `/m365/customer-graph-actions/connections/consent?orgId=${ORG_A}`,
@@ -568,6 +574,25 @@ describe("M365CustomerGraphActionsCard", () => {
         "for Northwind Tenant.",
       );
       expect(runActionMock).not.toHaveBeenCalled();
+    });
+
+    it("re-consent continues to Microsoft, not the dashboard (#11572)", async () => {
+      const consentUrl = "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned";
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+        .mockResolvedValueOnce(makeResponse({ adminConsentUrl: consentUrl }));
+      render(<M365CustomerGraphActionsCard />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Re-consent" }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft" }));
+
+      await waitFor(() => expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(consentUrl));
+      expect(navigateToMock).not.toHaveBeenCalled();
+      expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
+        2,
+        `/m365/customer-graph-actions/connections/consent?orgId=${ORG_A}`,
+        { method: "POST" },
+      );
     });
   });
 

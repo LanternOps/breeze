@@ -60,6 +60,35 @@ export interface PortalEntraTenantView {
   provenVia: PortalEntraProofVia | null;
   connectionTenantId: string | null;
   consentUrl: string | null;
+  /**
+   * #11582: the org lost a proven tenant while Microsoft sign-in was on, so its
+   * portal fell back to password. Null once the tenant is proven again or an
+   * admin dismissed it. Absent from servers older than #11582.
+   */
+  passwordFallback?: PortalPasswordFallbackNotice | null;
+}
+
+export type PortalPasswordFallbackCause =
+  | 'tenant_removed'
+  | 'ai_for_office_mapping_removed'
+  | 'ai_for_office_mapping_changed'
+  | 'tenant_displaced';
+
+/** `GET …/portal-entra-tenant` → `passwordFallback` (API `services/portalPasswordFallback.ts`). */
+export interface PortalPasswordFallbackNotice {
+  /** When the fallback took effect (ISO). */
+  since: string;
+  tenantId: string | null;
+  /** Null when the server could not name the cause. */
+  cause: PortalPasswordFallbackCause | null;
+}
+
+export function isPortalPasswordFallbackNotice(value: unknown): value is PortalPasswordFallbackNotice {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.since === 'string'
+    && (v.tenantId === null || typeof v.tenantId === 'string')
+    && (v.cause === null || typeof v.cause === 'string');
 }
 
 export function isPortalEntraTenantView(value: unknown): value is PortalEntraTenantView {
@@ -68,6 +97,14 @@ export function isPortalEntraTenantView(value: unknown): value is PortalEntraTen
   return (v.state === 'none' || v.state === 'unproven' || v.state === 'proven')
     && (v.tenantId === null || typeof v.tenantId === 'string')
     && (v.connectionTenantId === null || typeof v.connectionTenantId === 'string');
+}
+
+/** The view's notice, or null; a malformed one is ignored (the notice is advisory) rather than failing the view. */
+export function passwordFallbackOf(view: PortalEntraTenantView): PortalPasswordFallbackNotice | null {
+  if (view.state === 'proven' || view.passwordFallback == null) return null;
+  if (isPortalPasswordFallbackNotice(view.passwordFallback)) return view.passwordFallback;
+  console.warn('[portalAccess] ignoring a malformed passwordFallback notice');
+  return null;
 }
 
 /** `POST …/portal-entra-tenant/proof-links`. */

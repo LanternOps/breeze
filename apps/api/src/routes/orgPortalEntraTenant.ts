@@ -5,7 +5,7 @@ import { runOutsideDbContext } from '../db';
 import { getPortalEntraConfig } from '../config/portalEntra';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
-import { writeRouteAudit } from '../services/auditEvents';
+import { writeAuditEventStrict, writeRouteAudit } from '../services/auditEvents';
 import {
   PortalEntraProofError,
   getPortalEntraTenantStatus,
@@ -14,8 +14,15 @@ import {
   type PortalEntraTenantStatus,
 } from '../services/portalEntraTenantProof';
 import { buildPortalAppAdminConsentUrl } from '../services/portalOidc/entraClient';
+import {
+  AUDIT_PORTAL_PASSWORD_FALLBACK_DISMISSED,
+  auditPortalPasswordFallback,
+  getPortalPasswordFallbackNotice,
+  type PortalPasswordFallbackNotice,
+} from '../services/portalPasswordFallback';
 import { PORTAL_ENTRA_PROOF_RUN_PATH, createPortalEntraProofRun } from '../services/portalOidc/proofRunStore';
 import { parseTenantHint, resolveEntraTenantIdFromDomain } from '../services/portalOidc/tenantHint';
+import { captureException } from '../services/sentry';
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 import { resolveAccessibleOrg } from './orgPortalSettings';
@@ -24,7 +31,9 @@ import { resolveAccessibleOrg } from './orgPortalSettings';
  * MSP routes for the org's Entra tenant proof (portal registration W4 #11381,
  * plan Task 8, D6/D7, OD3; spec §5.4): read the proof state, prove the tenant
  * from the org's identity-first M365 connection, create a proof-run link for
- * the customer's tenant admin, and remove the tenant link.
+ * the customer's tenant admin, and remove the tenant link. The read also
+ * carries the password-fallback notice, which an admin can dismiss (#11582,
+ * services/portalPasswordFallback.ts).
  *
  * Registered onto orgRoutes so every route inherits its authMiddleware. Every
  * route is a 404 `PORTAL_ENTRA_NOT_CONFIGURED` while the portal Entra app env
@@ -131,6 +140,26 @@ function readStatus(orgId: string): Promise<PortalEntraTenantStatus> {
   return runOutsideDbContext(() => getPortalEntraTenantStatus(orgId));
 }
 
+function readFallbackNotice(orgId: string, status: PortalEntraTenantStatus): Promise<PortalPasswordFallbackNotice | null> {
+  return runOutsideDbContext(() => getPortalPasswordFallbackNotice(orgId, status.state === 'proven'));
+}
+
+/**
+ * The GET's notice is advisory: a failed read shows no notice rather than
+ * taking down the panel that holds the proof controls. It runs on its own
+ * system-scope connection (runOutsideDbContext), so catching it cannot poison
+ * the request transaction.
+ */
+async function readFallbackNoticeForView(orgId: string, status: PortalEntraTenantStatus): Promise<PortalPasswordFallbackNotice | null> {
+  try {
+    return await readFallbackNotice(orgId, status);
+  } catch (err) {
+    console.error('[orgPortalEntraTenant] password-fallback notice read failed', { orgId }, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
+
 export function registerPortalEntraTenantRoutes(orgRoutes: Hono): void {
   const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
   const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
@@ -149,7 +178,38 @@ export function registerPortalEntraTenantRoutes(orgRoutes: Hono): void {
       const consentUrl = status.state === 'proven' && status.tenantId
         ? buildPortalAppAdminConsentUrl(cfg, status.tenantId)
         : null;
-      return c.json({ data: { ...status, consentUrl } });
+      const passwordFallback = await readFallbackNoticeForView(org.id, status);
+      return c.json({ data: { ...status, consentUrl, passwordFallback } });
+    },
+  );
+
+  // #11582: the admin acknowledges the password-fallback notice. Not a security
+  // change (sign-in is unaffected), so no MFA step-up. Writes the dismissal row
+  // only while a notice is showing; awaited, so the next read no longer sees it.
+  orgRoutes.post(
+    '/organizations/:id/portal-entra-tenant/password-fallback/dismiss',
+    requireScope('partner', 'system'),
+    requireOrgWrite,
+    async (c) => {
+      if (!getPortalEntraConfig()) return c.json(NOT_CONFIGURED_BODY, 404);
+      const org = await resolveAccessibleOrg(c);
+      if (org instanceof Response) return org;
+
+      const notice = await readFallbackNotice(org.id, await readStatus(org.id));
+      if (notice) {
+        const user = (c.get('auth') as AuthContext).user;
+        await writeAuditEventStrict(c, {
+          orgId: org.id,
+          action: AUDIT_PORTAL_PASSWORD_FALLBACK_DISMISSED,
+          resourceType: 'organization',
+          resourceId: org.id,
+          resourceName: notice.tenantId,
+          details: { since: notice.since, tenantId: notice.tenantId, cause: notice.cause },
+          actorId: user.id,
+          actorEmail: user.email,
+        });
+      }
+      return c.json({ data: { dismissed: notice !== null } });
     },
   );
 
@@ -242,7 +302,12 @@ export function registerPortalEntraTenantRoutes(orgRoutes: Hono): void {
           details: { tenantId: result.tenantId },
         });
       }
-      return c.json({ data: result });
+      const lostTenantId = result.wasProven ? result.tenantId : null;
+      if (lostTenantId) {
+        await runOutsideDbContext(() =>
+          auditPortalPasswordFallback(c, { orgId: org.id, tenantId: lostTenantId, cause: 'tenant_removed' }));
+      }
+      return c.json({ data: { removed: result.removed, tenantId: result.tenantId } });
     },
   );
 }

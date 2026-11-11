@@ -967,7 +967,11 @@
       "script.delete": "Script eliminado",
       "automation.create": "Automatización creada",
       "automation.update": "Automatización actualizada",
-      "automation.delete": "Automatización eliminada"
+      "automation.delete": "Automatización eliminada",
+      "unifi.controller.register": "Controlador UniFi registrado",
+      "unifi.controller.remove": "Controlador UniFi eliminado",
+      "unifi.site.map": "Sitio UniFi asignado",
+      "unifi.site.unmap": "Asignación de sitio UniFi eliminada"
     },
     "resourceTypes": {
       "abuse_signal": "Señal de abuso",

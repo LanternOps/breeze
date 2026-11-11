@@ -4,9 +4,10 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../services/inboundEmail/resolveOrg';
 
 const { valuesSpy, setSpy, executeSpy, updateWhereSpy, selectWhereSpy, issueTokenMock } = vi.hoisted(() => ({ valuesSpy: vi.fn(), setSpy: vi.fn(), executeSpy: vi.fn(), updateWhereSpy: vi.fn(), selectWhereSpy: vi.fn(), issueTokenMock: vi.fn(async () => 'raw-token') }));
-const { authRef, selectResult, insertReturning, sendInvite, createContactMock, updateContactMock, auditMock } = vi.hoisted(() => ({
+const { authRef, selectResult, insertReturning, sendInvite, createContactMock, updateContactMock, dropPortalRoleMock, auditMock } = vi.hoisted(() => ({
   createContactMock: vi.fn(),
   updateContactMock: vi.fn(),
+  dropPortalRoleMock: vi.fn(),
   auditMock: vi.fn(),
   authRef: { current: { scope: 'partner' as string, user: { id: 'u-1', name: 'Tess', email: 'tess@msp.example' }, partnerId: 'p-1' as string | null, canAccessOrg: (_id: string) => true } },
   selectResult: vi.fn(),
@@ -85,6 +86,10 @@ vi.mock('../services/auditEvents', () => ({ writeRouteAudit: auditMock }));
 vi.mock('../services/contacts/crud', async () => {
   const actual = await vi.importActual<typeof import('../services/contacts/crud')>('../services/contacts/crud');
   return { ...actual, createContact: createContactMock, updateContact: updateContactMock };
+});
+vi.mock('../services/contacts/portalInvite', async () => {
+  const actual = await vi.importActual<typeof import('../services/contacts/portalInvite')>('../services/contacts/portalInvite');
+  return { ...actual, dropPortalRoleForRemovedLogin: dropPortalRoleMock };
 });
 vi.mock('../routes/portal/capabilityTokens', () => ({ issuePortalCapabilityToken: issueTokenMock }));
 vi.mock('../routes/portal/helpers', () => ({
@@ -517,8 +522,28 @@ describe('DELETE /organizations/:id/portal-users/:userId', () => {
       .mockResolvedValueOnce([]) // comments ref
       .mockResolvedValueOnce([]); // checkouts ref
     // delete().where() resolves (mock deleteChain below)
+    txState.impl = async (fn) => fn();
     const res = await del('pu-1');
     expect(res.status).toBe(200);
+    expect(dropPortalRoleMock).not.toHaveBeenCalled(); // no contact bound
+  });
+  it('drops the contact portal role in the same transaction as the login delete (#11599)', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, contactId: 'ct-1' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    txState.impl = async (fn) => {
+      events.push('tx:begin');
+      try { return await fn(); } finally { events.push('tx:end'); }
+    };
+    dropPortalRoleMock.mockImplementation(async () => { events.push('drop-role'); });
+    const res = await del('pu-1');
+    expect(res.status).toBe(200);
+    expect(dropPortalRoleMock).toHaveBeenCalledWith(expect.anything(), { orgId: ORG_ID, contactId: 'ct-1', actor: { userId: 'u-1' } });
+    expect(events.indexOf('tx:begin')).toBeLessThan(events.indexOf('drop-role'));
+    expect(events.indexOf('drop-role')).toBeLessThan(events.indexOf('tx:end'));
   });
 });
 

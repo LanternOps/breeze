@@ -35,8 +35,28 @@ vi.mock('./portalSsoOnly', async (importOriginal) => {
 const findProvenTenant = vi.hoisted(() => vi.fn(async (_orgId: string) => store.provenTenant));
 vi.mock('./portalEntraTenantProof', () => ({ findProvenEntraTenantForOrg: findProvenTenant }));
 
+// W6 D11/OD6: the org's verified domains, read through W5's read API OUTSIDE
+// the request context (it throws inside a transaction). `outside` is true only
+// inside runOutsideDbContext; `calls` records it and the open savepoint.
+const w5 = vi.hoisted(() => ({
+  domains: [] as Array<{ domain: string; orgId: string }>,
+  outside: { current: false },
+  calls: [] as Array<{ orgId: string; outside: boolean; tx: number | undefined }>,
+}));
+vi.mock('./portalDomainVerification', () => ({
+  listVerifiedDomainsForOrg: vi.fn(async (orgId: string) => {
+    w5.calls.push({ orgId, outside: w5.outside.current, tx: store.txStack.at(-1) });
+    return w5.domains;
+  }),
+}));
+
 vi.mock('../db', () => ({
   hasDbAccessContext: () => true,
+  runOutsideDbContext: async (fn: () => Promise<unknown>) => {
+    const prev = w5.outside.current;
+    w5.outside.current = true;
+    try { return await fn(); } finally { w5.outside.current = prev; }
+  },
   withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
   withDbTransactionIfHeld: async (fn: () => Promise<unknown>) => fn(),
   withDbTransaction: async (fn: () => Promise<unknown>) => {
@@ -116,6 +136,9 @@ beforeEach(() => {
   store.provenTenant = null;
   store.txStack = [];
   store.txOf = { flips: [], insert: [], clear: [] };
+  w5.domains = [];
+  w5.outside.current = false;
+  w5.calls = [];
   findProvenTenant.mockClear();
   sso.computeFlips.mockReset().mockResolvedValue([]);
   sso.lockImpact.mockReset().mockResolvedValue({ flips: [], clearableUserIds: [] });
@@ -357,6 +380,29 @@ describe('views', () => {
     expect(v.entraTenantProven).toBeNull();
     expect(v.effective.entraEnabled).toEqual({ value: true, source: 'partner' });
     expect(findProvenTenant).not.toHaveBeenCalled();
+  });
+
+  it('the org view carries verifiedDomainCount; the partner view carries null', async () => {
+    w5.domains = [{ domain: 'example.com', orgId: ORG.id }, { domain: 'sub.example.com', orgId: ORG.id }];
+    const org = await getOrgPortalAccessPolicyView(ORG);
+    expect(org.verifiedDomainCount).toBe(2);
+    expect(w5.calls).toEqual([{ orgId: ORG.id, outside: true, tx: undefined }]);
+
+    // The save's view carries it too, read before (never inside) the write savepoint.
+    w5.calls = [];
+    const saved = await updateOrgPortalAccessPolicy(ORG, { ssoSessionMaxHours: null });
+    expect(saved.view.verifiedDomainCount).toBe(2);
+    expect(w5.calls).toEqual([{ orgId: ORG.id, outside: true, tx: undefined }]);
+
+    w5.domains = [];
+    expect((await getOrgPortalAccessPolicyView(ORG)).verifiedDomainCount).toBe(0);
+
+    w5.calls = [];
+    const partner = await getPartnerPortalAccessPolicyView(fullPartner, ORG.partnerId);
+    expect(partner.verifiedDomainCount).toBeNull();
+    const partnerSaved = await updatePartnerPortalAccessPolicy(fullPartner, ORG.partnerId, { ssoSessionMaxHours: null });
+    expect(partnerSaved.view.verifiedDomainCount).toBeNull();
+    expect(w5.calls).toEqual([]);
   });
 
   it('org view with no rows: values all null, inherited and effective are the defaults', async () => {

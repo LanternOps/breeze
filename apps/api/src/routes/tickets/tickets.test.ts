@@ -194,6 +194,7 @@ vi.mock('../../db/schema', () => ({
     slaBreachReason: 'sla_breach_reason', statusId: 'statusId',
     deletedAt: 'deletedAt', deletedBy: 'deletedBy', ticketType: 'ticket_type',
     mergedIntoTicketId: 'mergedIntoTicketId', mergedAt: 'merged_at',
+    submitterName: 'submitter_name',
     // #8973 W3 stored deadlines.
     responseDueAt: 'response_due_at', resolutionDueAt: 'resolution_due_at',
     responseWarnAt: 'response_warn_at', resolutionWarnAt: 'resolution_warn_at',
@@ -308,6 +309,20 @@ describe('GET /tickets', () => {
       await makeApp().request('/tickets');
       expect(checklistCountsMock).not.toHaveBeenCalled();
     });
+  });
+
+  it('selects the requester name for queue rows (triage row line 2)', async () => {
+    dbSelectMock.mockResolvedValue([{ id: 't-1', internalNumber: 'T-2026-0001', subject: 'Printer', submitterName: 'Dana Whitfield' }]);
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].submitterName).toBe('Dana Whitfield');
+
+    const { db } = await import('../../db');
+    const listSelection = (db.select as any).mock.calls
+      .map((args: unknown[]) => args[0])
+      .find((cols: any) => cols && typeof cols === 'object' && 'internalNumber' in cols && 'subject' in cols);
+    expect(listSelection).toHaveProperty('submitterName', 'submitter_name');
   });
 
   it('selects SLA fields and returns them in list rows (SLA chips)', async () => {

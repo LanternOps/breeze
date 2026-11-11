@@ -646,6 +646,10 @@
   "buyCredits": {
     "link": "Acheter des crédits"
   },
+  "sessionClosed": {
+    "message": "Cette conversation a été fermée ailleurs, votre message n'a donc pas été envoyé. Il est toujours dans la zone de saisie. Démarrez une nouvelle session pour continuer.",
+    "startNew": "Démarrer une nouvelle session"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Cette conversation a atteint sa limite de tours; Wisp a donc ouvert une nouvelle session dans ce fil. Renvoyez votre message.",

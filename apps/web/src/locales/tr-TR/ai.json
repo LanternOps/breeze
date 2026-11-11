@@ -646,6 +646,10 @@
   "buyCredits": {
     "link": "Kredi satın al"
   },
+  "sessionClosed": {
+    "message": "Bu görüşme başka bir yerde kapatıldı, bu yüzden mesajınız gönderilmedi. Mesaj aşağıdaki kutuda duruyor. Devam etmek için yeni bir oturum başlatın.",
+    "startNew": "Yeni oturum başlat"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Bu görüşme tur sınırına ulaştı, bu nedenle Wisp bu konu başlığında yeni bir oturum açtı. Mesajınızı yeniden gönderin.",
