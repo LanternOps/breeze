@@ -22,6 +22,7 @@ Lab checks owed before the next tag:
 - [ ] **Built-in H.264 encoder fallback** (#11639, open). If a fix lands, re-check picture quality after a burst on a static screen.
 - [ ] **Windows self-uninstall** (#11349, still open) — on hold for its lab leg.
 - [ ] **Viewer clipboard** (#11325, still open) — on hold for its lab leg.
+- [ ] **YARA scan skips its own rule cache** (#11728). On a Windows host with YARA rule sets and auto-quarantine on, run a full scan: no threat under `%ProgramData%\Breeze\data\yara\cache\`, and the `.byrc` files are still there afterwards (the default rule set previously matched one and quarantined it).
 
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
