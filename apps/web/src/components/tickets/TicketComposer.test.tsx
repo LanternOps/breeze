@@ -3,10 +3,13 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
+const { navigateToMock } = vi.hoisted(() => ({ navigateToMock: vi.fn() }));
+vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
 import TicketComposer from './TicketComposer';
 import { apiLogout, useAuthStore } from '@/stores/auth';
 import { ActionError } from '../../lib/runAction';
+import { clearTicketComposerDrafts } from '@/lib/ticketComposerDrafts';
 
 describe('TicketComposer', () => {
   const onSend = vi.fn().mockResolvedValue(undefined);
@@ -328,6 +331,71 @@ describe('TicketComposer', () => {
     expect(input).not.toBeDisabled();
   });
 
+  describe('restored draft that had attachments (#11710)', () => {
+    const png = (name: string) => new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: 'image/png' });
+    const upload = (files: File[]) =>
+      fireEvent.change(screen.getByTestId('ticket-composer-file-input'), { target: { files } });
+    const okUpload = () => vi.fn(async () => ({ id: 'att-1' }));
+
+    async function draftWithAttachments(key: string, names: string[]) {
+      const first = render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey={key} />);
+      fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'see attached' } });
+      upload(names.map(png));
+      for (const n of names) await waitFor(() => expect(screen.queryByTestId(`ticket-composer-chip-uploading-${n}`)).toBeNull());
+      first.unmount();
+    }
+
+    it('warns that the attachments were not kept and blocks Send until dismissed', async () => {
+      await draftWithAttachments('tk-att-1', ['a.png', 'b.png']);
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-1" />);
+      expect(screen.getByTestId('ticket-composer-input')).toHaveValue('see attached');
+      const notice = screen.getByTestId('ticket-composer-lost-attachments');
+      expect(notice).toHaveTextContent('2 attachments were not kept');
+      expect(notice).toHaveTextContent('a.png');
+      expect(screen.getByTestId('ticket-composer-send')).toBeDisabled();
+      fireEvent.click(screen.getByTestId('ticket-composer-lost-attachments-dismiss'));
+      expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull();
+      expect(screen.getByTestId('ticket-composer-send')).not.toBeDisabled();
+      fireEvent.click(screen.getByTestId('ticket-composer-send'));
+      await waitFor(() => expect(onSend).toHaveBeenCalledWith('see attached', true, []));
+    });
+
+    it('resolves the notice when the files are attached again', async () => {
+      await draftWithAttachments('tk-att-2', ['a.png']);
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-2" />);
+      expect(screen.getByTestId('ticket-composer-lost-attachments')).toBeInTheDocument();
+      upload([png('a.png')]);
+      await waitFor(() => expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull());
+    });
+
+    it('shows no notice for a text-only draft', () => {
+      const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-att-3" />);
+      fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'just text' } });
+      unmount();
+      render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-att-3" />);
+      expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull();
+    });
+
+    it('does not remember attachments once the draft was sent', async () => {
+      const first = render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-4" />);
+      fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'hi' } });
+      upload([png('a.png')]);
+      await waitFor(() => expect(screen.queryByTestId('ticket-composer-chip-uploading-a.png')).toBeNull());
+      fireEvent.click(screen.getByTestId('ticket-composer-send'));
+      await waitFor(() => expect(onSend).toHaveBeenCalled());
+      first.unmount();
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-4" />);
+      expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull();
+    });
+
+    it('forgets attachment names on sign-out like the draft text', async () => {
+      await draftWithAttachments('tk-att-5', ['a.png']);
+      clearTicketComposerDrafts();
+      render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={okUpload()} draftKey="tk-att-5" />);
+      expect(screen.queryByTestId('ticket-composer-lost-attachments')).toBeNull();
+    });
+  });
+
   // ── W08 #3902: attachments ────────────────────────────────────────────────
 
   describe('attachments', () => {
@@ -479,6 +547,34 @@ describe('TicketComposer', () => {
         expect(showToastMock).toHaveBeenCalledWith(
           expect.objectContaining({ type: 'error', message: expect.stringContaining(name) })
         );
+      });
+
+      it.each([
+        ['ticket deleted', new ActionError('gone', 409, 'TICKET_DELETED'), 'was deleted'],
+        ['ticket merged', new ActionError('merged', 409, 'TICKET_MERGED', { code: 'TICKET_MERGED', details: { mergedIntoTicketId: 'tk-surv' } }), 'was merged'],
+        ['ticket not found', new ActionError('nope', 404), 'could not be found'],
+        ['malformed upload', new ActionError('bad', 400, 'INVALID_MULTIPART'), 'upload was malformed'],
+      ])('treats %s as permanent: no chip, no Retry, a toast saying why', async (_label, err, reason) => {
+        const onUpload = vi.fn(async () => { throw err; });
+        render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={onUpload} />);
+        upload([png('a.png')]);
+        await waitFor(() => expect(screen.queryByTestId('ticket-composer-chip-a.png')).toBeNull());
+        expect(screen.queryByTestId('ticket-composer-chip-retry-a.png')).toBeNull();
+        expect(showToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringContaining(reason) })
+        );
+      });
+
+      it('links to the surviving ticket when the ticket was merged', async () => {
+        navigateToMock.mockClear();
+        const err = new ActionError('merged', 409, 'TICKET_MERGED', { details: { mergedIntoTicketId: 'tk-surv' } });
+        render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={vi.fn(async () => { throw err; })} />);
+        upload([png('a.png')]);
+        await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+        const toast = showToastMock.mock.calls.at(-1)![0];
+        expect(toast.action).toBeTruthy();
+        toast.action.onClick();
+        expect(navigateToMock).toHaveBeenCalledWith('/tickets/tk-surv');
       });
 
       it.each([
