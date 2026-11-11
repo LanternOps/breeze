@@ -24,7 +24,7 @@
  * row or a global template, both visible there. An ancestor hidden by RLS
  * reads as missing and ends the walk (fails closed).
  */
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { permissions, rolePermissions, roles } from '../db/schema';
 
@@ -383,6 +383,30 @@ export async function expandToInheritingRoleIds(
     (lineages.get(id) ?? []).slice(1).some((entry) => grantors.has(entry.id)),
   );
   return [...grantors, ...new Set(inheriting)];
+}
+
+/**
+ * Every role that holds `permission` at runtime: the roles whose OWN rows
+ * grant it — including the wildcard forms permissionGrantMatches honours
+ * (`*` resource and/or `*` action) — plus every role that inherits through
+ * one of them (expandToInheritingRoleIds). Global: callers narrow it by
+ * membership (org, partner) as they did before.
+ */
+export async function getRoleIdsHoldingPermission(
+  permission: PermissionGrant,
+  exec: RoleReadExecutor = db,
+): Promise<string[]> {
+  const direct = await exec
+    .select({ roleId: rolePermissions.roleId })
+    .from(rolePermissions)
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(
+      and(
+        inArray(permissions.resource, [permission.resource, '*']),
+        inArray(permissions.action, [permission.action, '*']),
+      ),
+    );
+  return expandToInheritingRoleIds([...new Set((direct as Array<{ roleId: string }>).map((row) => row.roleId))], exec);
 }
 
 /**

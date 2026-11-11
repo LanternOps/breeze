@@ -18,6 +18,8 @@ const roleLookups: string[] = [];
 const grantsByRole = new Map<string, Array<{ resource: string; action: string }>>();
 const childrenQueue: Array<Array<{ id: string }>> = [];
 const frontiers: string[][] = [];
+const directGrantors: string[] = [];
+const grantorFilters: string[][][] = [];
 
 vi.mock('drizzle-orm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('drizzle-orm')>();
@@ -25,6 +27,7 @@ vi.mock('drizzle-orm', async (importOriginal) => {
     ...actual,
     eq: (col: unknown, value: unknown) => ({ op: 'eq', col, value }),
     inArray: (col: unknown, values: unknown) => ({ op: 'inArray', col, values }),
+    and: (...conds: unknown[]) => ({ op: 'and', conds }),
   };
 });
 
@@ -51,7 +54,12 @@ vi.mock('../db', () => ({
           throw new Error(`unexpected where on ${String(cond.col)}`);
         },
         innerJoin: () => ({
-          where: (cond: Cond) => {
+          where: (cond: Cond & { conds?: Cond[] }) => {
+            if (cond.op === 'and') {
+              // getRoleIdsHoldingPermission's wildcard-aware direct-grantor read.
+              grantorFilters.push(cond.conds!.map((c) => c.values!));
+              return Promise.resolve(directGrantors.map((roleId) => ({ roleId })));
+            }
             const ids = cond.op === 'eq' ? [cond.value!] : cond.values!;
             return Promise.resolve(ids.flatMap((id) => (grantsByRole.get(id) ?? []).map((g) => ({ ...g, roleId: id }))));
           },
@@ -73,6 +81,7 @@ import {
   getEffectiveRolePermissionSources,
   getLineagePermissionGrants,
   getRoleGrantRows,
+  getRoleIdsHoldingPermission,
   getRolePermissionGrants,
   getRolesPermissionGrants,
   getRoleSubtreeHeight,
@@ -93,6 +102,8 @@ beforeEach(() => {
   grantsByRole.clear();
   childrenQueue.length = 0;
   frontiers.length = 0;
+  directGrantors.length = 0;
+  grantorFilters.length = 0;
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   warn.mockClear();
 });
@@ -344,6 +355,23 @@ describe('expandToInheritingRoleIds (#11702)', () => {
 
   it('returns nothing for no grantors without querying', async () => {
     expect(await expandToInheritingRoleIds([])).toEqual([]);
+    expect(frontiers).toEqual([]);
+  });
+});
+
+describe('getRoleIdsHoldingPermission (#11702)', () => {
+  it('seeds from wildcard-aware direct grantors and adds the roles that inherit through them', async () => {
+    roleRows.set('g', partnerRole('g', 'p1'));
+    roleRows.set('c', partnerRole('c', 'p1', 'g'));
+    directGrantors.push('g', 'g');
+    childrenQueue.push([{ id: 'c' }], []);
+
+    expect((await getRoleIdsHoldingPermission({ resource: 'billing', action: 'manage' })).sort()).toEqual(['c', 'g']);
+    expect(grantorFilters).toEqual([[['billing', '*'], ['manage', '*']]]);
+  });
+
+  it('returns nothing when no role grants the permission directly', async () => {
+    expect(await getRoleIdsHoldingPermission({ resource: 'billing', action: 'manage' })).toEqual([]);
     expect(frontiers).toEqual([]);
   });
 });
