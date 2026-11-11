@@ -245,6 +245,18 @@ func TestSecurityEventAllowlist(t *testing.T) {
 			t.Errorf("event %d must not be allowed", id)
 		}
 	}
+	// The XPath and securityEventAllowed must describe the same set: every
+	// listed ID is an EventID term, and the account range is the range term.
+	selection := securityEventSelection()
+	for _, id := range securityAuditEventIDs {
+		if !strings.Contains(selection, fmt.Sprintf("EventID=%d ", id)) && !strings.Contains(selection, fmt.Sprintf("EventID=%d)", id)) {
+			t.Errorf("allowlisted %d missing from selection %q", id, selection)
+		}
+	}
+	wantRange := fmt.Sprintf("(EventID>=%d and EventID<=%d)", securityAccountFirstEventID, securityAccountLastEventID)
+	if !strings.Contains(selection, wantRange) {
+		t.Errorf("selection %q missing account range %q", selection, wantRange)
+	}
 }
 
 func TestMapSecurityEventLevel(t *testing.T) {
@@ -260,6 +272,15 @@ func TestMapSecurityEventLevel(t *testing.T) {
 		{"audit failure", 0, int64(failure), 4625, "warning"},
 		{"curated success", 0, int64(success), 4740, "warning"},
 		{"ordinary success", 0, int64(success), 4624, "info"},
+		{"failed logon without keyword", 0, 0, 4625, "warning"},
+		{"account created", 0, int64(success), 4720, "warning"},
+		{"account enabled", 0, int64(success), 4722, "warning"},
+		{"password change", 0, int64(success), 4723, "warning"},
+		{"password reset", 0, int64(success), 4724, "warning"},
+		{"account disabled", 0, int64(success), 4725, "warning"},
+		{"account deleted", 0, int64(success), 4726, "warning"},
+		{"special privileges", 0, int64(success), 4672, "info"},
+		{"outside account range", 0, int64(success), 4727, "info"},
 		{"error", 2, int64(failure), 1104, "error"},
 		{"critical", 1, int64(failure), 1, "critical"},
 		{"warning", 3, 0, 1, "warning"},

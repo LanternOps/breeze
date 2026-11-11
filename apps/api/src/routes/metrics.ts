@@ -277,7 +277,7 @@ const agentIngestSubmissionsTotal = new Counter({
 // list, so its cardinality is fixed.
 const agentEventLogNoiseDroppedTotal = new Counter({
   name: 'breeze_agent_eventlog_noise_dropped_total',
-  help: 'Windows Security event-log records dropped at ingest as known noise, by Windows event id',
+  help: 'Windows Security event-log records dropped at ingest as known noise, by Windows event id (a re-sent batch is counted again)',
   labelNames: ['event_id'] as const,
   registers: [register]
 });

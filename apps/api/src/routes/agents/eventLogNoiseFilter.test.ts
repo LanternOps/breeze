@@ -48,6 +48,13 @@ describe('Windows Security event-log noise filter (#11735)', () => {
     expect(windowsSecurityNoiseEventId(securityEvent(5157, { eventId: '5157', details: undefined }))).toBe(5157);
   });
 
+  it('never drops a record whose eventId prefix and details.eventId disagree', () => {
+    // A failed logon must not be dropped because one of its two agent-supplied
+    // ids names a noise event, and vice versa.
+    expect(windowsSecurityNoiseEventId(securityEvent(4625, { details: { logName: 'Security', eventId: 5157 } }))).toBeNull();
+    expect(windowsSecurityNoiseEventId(securityEvent(5157, { details: { logName: 'Security', eventId: 4625 } }))).toBeNull();
+  });
+
   it.each([
     ['another provider reusing the numeric id', { source: 'Application Error' }],
     ['a non-security category', { category: 'application' }],

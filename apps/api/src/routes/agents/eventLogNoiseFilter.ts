@@ -39,13 +39,15 @@ const PROVIDER_LOWER = WINDOWS_SECURITY_AUDITING_PROVIDER.toLowerCase();
 // ids start with a non-numeric source name, so they never match.
 const WINDOWS_EVENT_ID_PREFIX = /^(\d{1,5})(?::|$)/;
 
+// Both ids are agent-supplied. When they disagree the record is ambiguous and
+// is kept: a failed logon must never be dropped because one id says 5157.
 function windowsEventId(event: EventLogLike): number | null {
-  const fromDetails = event.details?.eventId;
-  if (typeof fromDetails === 'number' && Number.isInteger(fromDetails)) {
-    return fromDetails;
-  }
+  const raw = event.details?.eventId;
+  const fromDetails = typeof raw === 'number' && Number.isInteger(raw) ? raw : null;
   const match = event.eventId ? WINDOWS_EVENT_ID_PREFIX.exec(event.eventId) : null;
-  return match ? Number(match[1]) : null;
+  const fromPrefix = match ? Number(match[1]) : null;
+  if (fromDetails !== null && fromPrefix !== null && fromDetails !== fromPrefix) return null;
+  return fromDetails ?? fromPrefix;
 }
 
 /**

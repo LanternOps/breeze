@@ -740,6 +740,53 @@ describe('agent event log routes', () => {
       expect(await res.json()).toMatchObject({ success: true, count: 4, noiseDropped: 0 });
       expect(recordEventLogNoiseDropped).not.toHaveBeenCalled();
     });
+
+    it('drops noise before minimumLevel, so `filtered` counts only level-filtered signal', async () => {
+      mocks.getDeviceEventLogSettings.mockResolvedValueOnce({ minimumLevel: 'critical', rateLimitPerHour: 1000 });
+      mockDeviceLookup();
+      const values = mockInsertSuccess();
+
+      const res = await submit([
+        securityEvent(5038, 1), // warning noise
+        securityEvent(4625, 2), // warning signal, below the minimum level
+        securityEvent(1102, 3, { level: 'critical' }),
+      ]);
+
+      expect(res.status).toBe(200);
+      expect(values).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({ eventId: '1102:3' })]);
+      expect(await res.json()).toMatchObject({ success: true, count: 1, filtered: 1, noiseDropped: 1 });
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledExactlyOnceWith(5038, 1);
+    });
+
+    it('reports noiseDropped on a rate-limited batch and charges the limiter for signal only', async () => {
+      mockDeviceLookup();
+      const values = mockInsertSuccess();
+      mocks.rateLimiter.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date('2026-05-02T13:00:00.000Z') });
+
+      const res = await submit([securityEvent(5038, 1), securityEvent(4625, 2)]);
+
+      expect(res.status).toBe(429);
+      expect(await res.json()).toMatchObject({ error: 'Rate limit exceeded', noiseDropped: 1 });
+      expect(mocks.rateLimiter).toHaveBeenCalledWith(expect.anything(), `eventlog:rate:device:${DEVICE_ID}`, 1000, 3600, 1);
+      expect(values).not.toHaveBeenCalled();
+    });
+
+    it('records noiseDroppedCount on an audited (failed) submit', async () => {
+      mockDeviceLookup();
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const returning = vi.fn().mockRejectedValue(new Error('db down'));
+      mocks.insert.mockReturnValue({ values: vi.fn().mockReturnValue({ onConflictDoNothing: vi.fn().mockReturnValue({ returning }) }) });
+
+      const res = await submit([securityEvent(5038, 1), securityEvent(4625, 2)]);
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toMatchObject({ success: false, noiseDropped: 1 });
+      expect(mocks.writeAuditEvent.mock.calls[0]![1]).toMatchObject({
+        result: 'failure',
+        details: { submittedCount: 2, insertedCount: 0, noiseDroppedCount: 1 },
+      });
+      consoleError.mockRestore();
+    });
   });
 });
 
