@@ -99,9 +99,11 @@ async function replaceCanonicalSet(
  *   - Device Group  => never touched by a re-pin; a legacy writer has no
  *                      authority over them (§8.4).
  *
- * Un-pinning (site_id back to NULL) is the inverse derivation (§7.4): the
- * kept roles held at the previously pinned Site (`previousSiteId`) move back to
- * Organization scope. Rows at other Sites and Device Group rows are never touched.
+ * Un-pinning (site_id back to NULL) with an unchanged role set leaves every row
+ * where it is. Un-pinning while the role set changes is refused when a kept role
+ * sits at the previously pinned Site (`previousSiteId`): moving it to Organization
+ * would silently broaden it (§31). Rows at other Sites and Device Group rows are
+ * never touched.
  *
  * `contacts.roles[]` is then re-projected from the resulting canonical set.
  *
@@ -158,12 +160,26 @@ async function planLegacyRolesWrite(exec: ContactExecutor, input: LegacyRolesWri
   const noop = removed.length === 0 && added.length === 0;
   const representable = existing.every((row) =>
     row.deviceGroupId === null && row.siteId === legacyScopeBeforeWrite);
-  return { desired, owned, existing, removed, added, noop, representable };
+  // An un-pin that also changes roles would move every kept role from the previous
+  // Site up to the whole Organization: a silent broadening. Refuse it instead.
+  const wouldWiden = !noop
+    && input.siteId === null
+    && !!input.previousSiteId
+    && existing.some((row) =>
+      desired.has(row.role) && row.deviceGroupId === null && row.siteId === input.previousSiteId);
+  return { desired, owned, existing, removed, added, noop, representable, wouldWiden };
 }
 
 function refuseUnrepresentable(): never {
   throw new ResponsibilityValidationError(
     'This contact has scoped responsibilities (a Device Group, or a Site other than its current pin) that a roles update cannot express, so the roles were not changed.',
+    'legacy-write-cannot-represent-scoped-responsibilities',
+  );
+}
+
+function refuseWidening(): never {
+  throw new ResponsibilityValidationError(
+    'Removing the Site pin while changing roles would widen this contact\'s existing roles from that Site to the whole Organization, so nothing was changed. Edit its responsibilities directly instead.',
     'legacy-write-cannot-represent-scoped-responsibilities',
   );
 }
@@ -177,15 +193,17 @@ function refuseUnrepresentable(): never {
 export async function assertLegacyRolesWritable(exec: ContactExecutor, input: LegacyRolesWriteInput): Promise<void> {
   const plan = await planLegacyRolesWrite(exec, input);
   if (!plan.noop && !plan.representable) refuseUnrepresentable();
+  if (plan.wouldWiden) refuseWidening();
 }
 
 export async function syncLegacyContactRoles(
   exec: ContactExecutor,
   input: LegacyRolesWriteInput,
 ): Promise<void> {
-  const { desired, owned, existing, removed, added, noop, representable } = await planLegacyRolesWrite(exec, input);
+  const { desired, owned, existing, removed, added, noop, representable, wouldWiden } = await planLegacyRolesWrite(exec, input);
   if (noop) return;
   if (!representable) refuseUnrepresentable();
+  if (wouldWiden) refuseWidening();
 
   if (removed.length > 0) {
     await exec.delete(contactRoles).where(and(owned, inArray(contactRoles.role, removed)));
@@ -214,26 +232,6 @@ export async function syncLegacyContactRoles(
       ));
       for (const role of staleRoles) {
         inserts.push({ role, isPrimary: stale.some((row) => row.role === role && row.isPrimary) });
-      }
-    }
-  }
-
-  if (input.siteId === null && input.previousSiteId) {
-    // Un-pin: kept roles the pin scoped to the previous Site go back to
-    // Organization (no row can already sit there: see the gate note above).
-    const previous = input.previousSiteId;
-    const atPreviousSite = existing.filter((row) =>
-      desired.has(row.role) && row.deviceGroupId === null && row.siteId === previous);
-    const widenRoles = [...new Set(atPreviousSite.map((row) => row.role))];
-    if (widenRoles.length > 0) {
-      await exec.delete(contactRoles).where(and(
-        owned,
-        inArray(contactRoles.role, widenRoles),
-        isNull(contactRoles.deviceGroupId),
-        eq(contactRoles.siteId, previous),
-      ));
-      for (const role of widenRoles) {
-        inserts.push({ role, isPrimary: atPreviousSite.some((row) => row.role === role && row.isPrimary) });
       }
     }
   }

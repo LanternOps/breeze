@@ -7,6 +7,7 @@ import { deviceGroupMemberships, deviceGroups } from '../../db/schema/devices';
 import type { ContactExecutor } from './compat';
 import {
   syncLegacyContactRoles,
+  assertLegacyRolesWritable,
   addLegacyDerivedContactRoles,
   removeContactResponsibility,
   replaceContactResponsibilities,
@@ -279,28 +280,30 @@ describe('syncLegacyContactRoles', () => {
     expect(f.updates).toHaveLength(0);
   });
 
-  it('un-pin with changed roles: moves kept roles at the previous Site back to Organization and keeps their primacy', async () => {
+  it('un-pin with changed roles is refused when a kept role sits at the previous Site: it would broaden to Organization', async () => {
     const f = makeExec([[{ role: 'billing', siteId: SITE, deviceGroupId: null, isPrimary: true }]]);
-    await sync(f, null, ['billing', 'technical'], SITE);
-    expect(f.deletes).toHaveLength(1);
-    const where = compile(f.deletes[0]!.where);
-    expect(where.sql).toMatch(/"device_group_id" is null/);
-    expect(where.params).toEqual(expect.arrayContaining([CONTACT, ORG, 'billing', SITE]));
-    expect(f.inserts[0]!.values).toEqual([
-      { contactId: CONTACT, orgId: ORG, role: 'technical', isPrimary: false, siteId: null, deviceGroupId: null },
-      { contactId: CONTACT, orgId: ORG, role: 'billing', isPrimary: true, siteId: null, deviceGroupId: null },
-    ]);
-    expect(f.updates.at(-1)!.values.roles).toEqual(['billing', 'technical']);
+    await expect(sync(f, null, ['billing', 'technical'], SITE)).rejects.toMatchObject({
+      code: 'legacy-write-cannot-represent-scoped-responsibilities',
+    });
+    expect(f.deletes).toHaveLength(0);
+    expect(f.inserts).toHaveLength(0);
+    expect(f.updates).toHaveLength(0);
   });
 
-  it('un-pin with changed roles: widens every kept role held at the previous Site to Organization', async () => {
-    const f = makeExec([[
-      { role: 'technical', siteId: SITE, deviceGroupId: null, isPrimary: false },
-      { role: 'billing', siteId: SITE, deviceGroupId: null, isPrimary: false },
-    ]]);
-    await sync(f, null, ['technical', 'billing', 'admin'], SITE);
-    expect(f.inserts[0]!.values.map((v) => [v.role, v.siteId])).toEqual([['admin', null], ['technical', null], ['billing', null]]);
-    expect(compile(f.deletes.at(-1)!.where).params).toEqual(expect.arrayContaining([SITE]));
+  it('un-pin with changed roles is allowed when no kept role sits at the previous Site (nothing to broaden)', async () => {
+    const f = makeExec([[{ role: 'billing', siteId: SITE, deviceGroupId: null, isPrimary: true }]]);
+    await sync(f, null, ['technical'], SITE);
+    expect(f.deletes).toHaveLength(1);
+    expect(f.inserts[0]!.values).toEqual([
+      { contactId: CONTACT, orgId: ORG, role: 'technical', isPrimary: false, siteId: null, deviceGroupId: null },
+    ]);
+  });
+
+  it('assertLegacyRolesWritable refuses the same un-pin that would broaden, before any write', async () => {
+    const f = makeExec([[{ role: 'technical', siteId: SITE, deviceGroupId: null, isPrimary: false }]]);
+    await expect(assertLegacyRolesWritable(f.exec, {
+      contactId: CONTACT, orgId: ORG, siteId: null, previousSiteId: SITE, roles: ['technical', 'admin'],
+    })).rejects.toMatchObject({ code: 'legacy-write-cannot-represent-scoped-responsibilities' });
   });
 
   it('un-pin that changes roles fails closed rather than touching a Device Group row', async () => {

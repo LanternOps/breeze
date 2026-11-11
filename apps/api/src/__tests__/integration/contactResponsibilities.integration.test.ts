@@ -149,7 +149,7 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     expect(after!.roles).toEqual(['technical', 'admin']);
   });
 
-  runDb('roles + siteId in one patch with a CHANGED role set re-scopes a legacy-shaped contact atomically (pin, then un-pin)', async () => {
+  runDb('roles + siteId in one patch with a CHANGED role set re-scopes a legacy-shaped contact atomically on pin; the un-pin that would broaden is refused', async () => {
     const testDb = getTestDb();
     const f = await seedTwoOrgs();
     await testDb.update(contacts).set({ siteId: null, roles: ['technical'] }).where(eq(contacts.id, f.contactA.id));
@@ -163,11 +163,14 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     expect(held).toHaveLength(2);
     expect(held.every((r) => r.siteId === f.siteA.id && r.deviceGroupId === null)).toBe(true);
 
-    await withDbAccessContext(ctx, () =>
-      updateContact(db, f.contactA.id, f.orgA.id, { siteId: null, roles: ['technical', 'admin', 'escalation'] }, { userId: null }));
+    // Un-pin with a changed role set would broaden the kept Site roles to
+    // Organization: refused, and nothing is written.
+    await expect(withDbAccessContext(ctx, () =>
+      updateContact(db, f.contactA.id, f.orgA.id, { siteId: null, roles: ['technical', 'admin', 'escalation'] }, { userId: null })))
+      .rejects.toMatchObject({ code: 'legacy-write-cannot-represent-scoped-responsibilities' });
     held = await rows();
-    expect(held).toHaveLength(3);
-    expect(held.every((r) => r.siteId === null && r.deviceGroupId === null)).toBe(true);
+    expect(held).toHaveLength(2);
+    expect(held.every((r) => r.siteId === f.siteA.id && r.deviceGroupId === null)).toBe(true);
   });
 
   runDb('UI-style PATCH {siteId, roles: sameRoles} leaves contact_roles untouched (no re-scope, no broadening)', async () => {
