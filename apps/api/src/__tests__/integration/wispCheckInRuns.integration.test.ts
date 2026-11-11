@@ -402,7 +402,7 @@ describe('firing a run check-in', () => {
     await makeDue(row.id, new Date());
     await withSystemDbAccessContext(() => db.update(wispGrants).set({ status: 'revoked', revokedAt: new Date() }).where(eq(wispGrants.id, fx.grantId)));
     expect(await fireCheckIn(row.id, new Date())).toBe('cancelled');
-    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive' });
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive', cancelledBy: 'breeze' });
     expect(h.enqueueAssessment).not.toHaveBeenCalled();
     expect(await postsFor(fx.thread.id)).toHaveLength(0);
   });
@@ -542,7 +542,7 @@ describe('posting the settled run', () => {
     await setRun(runId, { status: 'completed', summary: 'Done.', finishedAt: new Date() });
     await withSystemDbAccessContext(() => db.update(wispGrants).set({ status: 'revoked', revokedAt: new Date() }).where(eq(wispGrants.id, fx.grantId)));
     expect(await postCheckInRunResult(runId)).toBe('cancelled');
-    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive' });
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive', cancelledBy: 'breeze' });
     expect(await postsFor(fx.thread.id)).toHaveLength(0);
   });
 

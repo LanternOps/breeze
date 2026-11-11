@@ -701,7 +701,9 @@ export async function listUserConcernActionsSince(ceiling: GrantCeiling, since: 
       eq(wispConcernRecipients.grantId, ceiling.grantId),
     ))
     .where(and(visible, or(resolvedByPerson, gte(dismissedAt, since))))
-    .orderBy(sql`GREATEST(${wispConcerns.resolvedAt}, ${dismissedAt}) DESC NULLS LAST`)
+    // By the newest PERSON action: a later Wisp / Breeze resolve must not lift
+    // an old dismissal over a newer user action and push it past the limit.
+    .orderBy(sql`GREATEST(CASE WHEN ${wispConcerns.resolvedByUserId} IS NOT NULL THEN ${wispConcerns.resolvedAt} END, ${dismissedAt}) DESC NULLS LAST`)
     .limit(limit));
 }
 

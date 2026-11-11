@@ -44,6 +44,12 @@ const FACTS_CACHE_MAX_ENTRIES = 500;
 type TurnFacts = StandingStateFacts | 'paused' | null;
 type CachedFacts = { readAt: number; facts: TurnFacts };
 const factsCache = new Map<string, CachedFacts>();
+/**
+ * Per grant, how many times its facts were forgotten. A read caches its
+ * result only if this did not move while it ran. Bounded like the cache: a
+ * grant evicted here can at worst re-cache one read from before the action.
+ */
+const forgetGeneration = new Map<string, number>();
 
 /** What a dispatched turn records with `markStandingStateSent`. */
 export type StandingStateTurn = { block: string; hash: string };
@@ -53,6 +59,7 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 /** Tests only: forget every cached fact read. */
 export function clearStandingStateCache(): void {
   factsCache.clear();
+  forgetGeneration.clear();
 }
 
 /**
@@ -66,6 +73,14 @@ export function forgetStandingStateFacts(grantId: string): void {
   const prefix = `${grantId}:`;
   for (const key of factsCache.keys()) {
     if (key.startsWith(prefix)) factsCache.delete(key);
+  }
+  // A read already in flight saw the pre-action rows: it must not re-cache them.
+  forgetGeneration.delete(grantId);
+  forgetGeneration.set(grantId, (forgetGeneration.get(grantId) ?? 0) + 1);
+  while (forgetGeneration.size > FACTS_CACHE_MAX_ENTRIES) {
+    const oldest = forgetGeneration.keys().next().value;
+    if (oldest === undefined) break;
+    forgetGeneration.delete(oldest);
   }
 }
 
@@ -102,6 +117,7 @@ async function cachedFacts(input: { grantId: string; revisionId: string; auth: A
   const hit = factsCache.get(key);
   if (hit && now.getTime() - hit.readAt < STANDING_FACTS_TTL_MS) return hit.facts;
 
+  const generation = forgetGeneration.get(input.grantId) ?? 0;
   let facts: TurnFacts;
   try {
     // The live ceiling only: a paused one is reserved for history reads
@@ -120,6 +136,8 @@ async function cachedFacts(input: { grantId: string; revisionId: string; auth: A
     }
     facts = err.kind === 'paused' ? 'paused' : null;
   }
+  // Forgotten while this read ran (a user action, #11611): use it for this turn, never cache it.
+  if ((forgetGeneration.get(input.grantId) ?? 0) !== generation) return facts;
   factsCache.delete(key);
   factsCache.set(key, { readAt: now.getTime(), facts });
   while (factsCache.size > FACTS_CACHE_MAX_ENTRIES) {

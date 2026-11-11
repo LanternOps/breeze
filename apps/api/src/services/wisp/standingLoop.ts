@@ -412,7 +412,8 @@ const DROP_ORDER: Keep[] = [
   { alerts: false, assessed: false, top: 0, actions: 1, checkIns: false },
 ];
 
-const quoted = (text: string, maxChars: number) => `"${oneLine(text, maxChars)}"`;
+/** Tenant text in double quotes; a `"` inside becomes `'`, so the text cannot end its own quote and pose as Breeze's words. */
+const quoted = (text: string, maxChars: number) => `"${oneLine(text, maxChars).replaceAll('"', "'")}"`;
 
 function userActionLine(a: StandingUserAction, now: Date): string {
   const when = clock(a.at, now);

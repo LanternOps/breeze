@@ -25,7 +25,7 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
-  aiAgentRuns, aiAgents, organizations, partners, userNotifications, wispCheckIns, wispConcerns, wispGrantRevisions, wispGrants, wispThreadPosts,
+  aiAgentRuns, aiAgents, organizations, partners, userNotifications, wispCheckIns, wispConcernRecipients, wispConcerns, wispGrantRevisions, wispGrants, wispThreadPosts,
   wispWatches,
 } from '../../db/schema';
 import { wispNudgePreferences } from '../../db/schema/wispNudgePreferences';
@@ -638,5 +638,47 @@ describe('standing-state facts (real Postgres, #10426)', () => {
     expect(block).toContain('the user cancelled check-in "Re-check FS-01 backups"');
     expect(block).toContain('the user resolved concern "Backups failing on FS-01" with outcome "Replaced the USB target"');
     expect(block).not.toContain('dropped this one');
+  });
+
+  it('concern actions: only inside the ceiling, only this grant\'s dismissals, a colleague named as such, ranked by the person\'s action (#11611)', async () => {
+    const t = await seedTenant(1);
+    const org = t.orgs[0]!;
+    const now = new Date();
+    const ago = (min: number) => new Date(now.getTime() - min * 60_000);
+    const concern = async (summary: string, orgId: string = org) => (await sys(() => db.insert(wispConcerns).values({
+      partnerId: t.partnerId, orgId, subjectKind: 'ticket', subjectId: randomUUID(), summary, severity: 'high',
+    }).returning({ id: wispConcerns.id })))[0]!.id;
+    // A colleague with their own grant over the same org.
+    const colleague = await createUser({ partnerId: t.partnerId, email: `wisp-standing-colleague-${randomUUID()}@wisp.test` });
+    const colleagueGrant = await sys(async () => (await db.insert(wispGrants).values({
+      partnerId: t.partnerId, orgId: null, grantorUserId: colleague.id, status: 'active', expiresAt: new Date(Date.now() + 86_400_000),
+    }).returning({ id: wispGrants.id }))[0]!.id);
+
+    // An org of the same partner outside this grant's ceiling.
+    const outside = await createOrganization({ partnerId: t.partnerId });
+    await resolveConcern(await concern('Outside the ceiling', outside.id), { userId: t.grantorId }, 'secret outcome');
+    // The colleague's grant dismissed it, not this one.
+    await dismissConcern(await concern('Colleague dismissed'), { grantId: colleagueGrant, userId: colleague.id });
+    // The colleague resolved it.
+    await resolveConcern(await concern('Colleague resolved'), { userId: colleague.id }, 'Rebooted');
+    // Five concerns this grantor dismissed 20 h ago that Breeze resolved after everything else: ranked by
+    // that resolve (not the dismissal), they would crowd the colleague's newer resolve out of the limit.
+    for (let i = 0; i < 5; i += 1) {
+      const id = await concern(`Old dismissal ${i}`);
+      await sys(async () => {
+        await db.insert(wispConcernRecipients).values({ concernId: id, partnerId: t.partnerId, orgId: org, grantId: t.grantId, dismissedAt: ago(20 * 60), answeredAt: ago(20 * 60) });
+        await db.update(wispConcerns).set({ status: 'resolved', outcome: 'auto_closed', resolvedAt: new Date(Date.now() + 60 * 60_000) }).where(eq(wispConcerns.id, id));
+      });
+    }
+
+    const ceiling = await resolveGrantCeiling(t.grantId, t.revisionId);
+    const facts = await loadStandingStateFacts(ceiling, { user: { id: t.grantorId }, accessibleOrgIds: null } as never, now);
+
+    const texts = facts!.userActions.map((a) => a.text);
+    expect(texts).not.toContain('Outside the ceiling');
+    expect(texts).not.toContain('Colleague dismissed');
+    expect(facts!.userActions[0]).toMatchObject({ kind: 'resolved_concern', text: 'Colleague resolved', outcome: 'Rebooted', byViewer: false });
+    expect(renderStandingStateBlock(facts!, now)).toContain('another user resolved concern "Colleague resolved" with outcome "Rebooted"');
+    expect(JSON.stringify(facts)).not.toContain('secret outcome');
   });
 });
