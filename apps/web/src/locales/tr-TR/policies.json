@@ -692,6 +692,8 @@
         "override": "Geçersiz kıl",
         "revertToParent": "Ebeveyne Geri Dön",
         "saving": "Kaydediliyor...",
+        "notSaved": "Kaydedilmedi: {{reason}}",
+        "saveBlocked": "Kaydedilmedi. Vurgulanan sorunu düzeltip tekrar deneyin.",
         "revertConfirmTitle": "Üst ilkeye geri dönülsün mü?",
         "revertConfirmMessage": "Bu işlem bu ilkedeki {{feature}} geçersiz kılmasını siler. Ayarları kaybolur ve bu ilkeyi kullanan tüm cihazlarda üst ilkenin ayarları geçerli olur. Bu işlem geri alınamaz.",
         "removeConfirmTitle": "Bu yapılandırma kaldırılsın mı?",
@@ -725,7 +727,24 @@
         "endpointMessaging": "Uç nokta mesajları",
         "endpointMessagingHelp": "Teknisyenlerin cihazdaki kişiye mesaj göndermesini sağlar.",
         "allowUserReply": "Kullanıcının yanıtlarına izin ver",
-        "allowUserReplyHelp": "Cihazdaki kişinin, teknisyenin başlattığı bir sohbette yanıt vermesine izin verir. Kapalıyken sohbetler tek yönlüdür."
+        "allowUserReplyHelp": "Cihazdaki kişinin, teknisyenin başlattığı bir sohbette yanıt vermesine izin verir. Kapalıyken sohbetler tek yönlüdür.",
+        "brandingTitle": "Helper markalaması",
+        "brandingHelp": "Helper'da gösterilen metinler ve renkler. Devralmak için alanı boş bırakın. Logolar, bağlantılar ve özel stiller desteklenmez.",
+        "brandingDisplayName": "Görünen ad",
+        "brandingCompanyName": "Şirket adı",
+        "brandingWelcomeTitle": "Karşılama başlığı",
+        "brandingWelcomeMessage": "Karşılama mesajı",
+        "brandingSupportLabel": "Destek etiketi",
+        "brandingPortalLabel": "Portal etiketi",
+        "brandingPrimaryColor": "Ana renk",
+        "brandingAccentColor": "Vurgu rengi",
+        "brandingInheritedFromParent": "Üst ilkeden devralındı: {{value}}",
+        "brandingBlankUsesDefault": "Boş bırakılırsa Breeze varsayılanı kullanılır.",
+        "brandingCharCount": "{{used}} / {{max}}",
+        "brandingErrorTooLong": "En fazla {{max}} karakter kullanın.",
+        "brandingErrorControl": "Kontrol veya görünmez biçimlendirme karakterlerini kaldırın.",
+        "brandingErrorColor": "#RRGGBB biçiminde bir renk kullanın, örneğin #1A3C8F.",
+        "brandingErrorContrast": "Bu renk Helper arka planında zor okunuyor. Daha koyu veya daha açık bir renk seçin."
       },
       "inlineEntityPicker": {
         "search": "Ara...",
@@ -2048,7 +2067,9 @@
       "builtinVersionsReadOnly": "Breeze tarafından yönetilir. Dahili paketlerin sürümleri burada eklenemez veya değiştirilemez.",
       "installScriptsReadOnlyOnEdit": "Mevcut bir sürümün yükleme betikleri değiştirilemez ve hedef işletim sistemini sabitler. Değiştirmek için yeni bir sürüm ekleyin: yeni sürüm bu betiklerle başlar.",
       "partnerWideRequiresFullAccess": "İş ortağı genelindeki paketler yalnızca tam erişimli bir iş ortağı yöneticisi tarafından değiştirilebilir.",
-      "builtinArgsDefault": "Paketin varsayılan bağımsız değişkenlerini (kuruluş başına anahtarı dahil) kullanmak için boş bırakın."
+      "builtinArgsDefault": "Paketin varsayılan bağımsız değişkenlerini (kuruluş başına anahtarı dahil) kullanmak için boş bırakın.",
+      "versionRequired": "Sürüm gereklidir",
+      "downloadUrlInvalid": "Geçerli bir http(s) URL'si girin, örneğin https://example.com/package.msi"
     },
     "variableInput": {
       "insertADeployTimeVariable": "Dağıtım zamanı değişkeni ekleyin",

@@ -309,7 +309,9 @@ export default function OrgSwitcher() {
         aria-haspopup="true"
         aria-expanded={isOpen}
         className={cn(
-          'flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-sm sm:gap-2 sm:px-3',
+          // w-full/max-w-full: a <button> sizes to its content, so without them it
+          // ignores the shrunken header wrapper and paints under the icon group (#11598).
+          'flex w-full min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1.5 text-sm sm:gap-2 sm:px-3',
           // The ambient fleet-view signal: the trigger itself carries the mode,
           // Stripe-test-mode style, so "I'm looking at everything" is visible
           // from anywhere without a banner.
@@ -330,7 +332,7 @@ export default function OrgSwitcher() {
         )}
         <span
           data-testid="org-switcher-label"
-          className="inline-block min-w-0 max-w-[7.5rem] truncate sm:max-w-40 lg:max-w-[200px]"
+          className="inline-block min-w-0 max-w-[7.5rem] truncate max-sm:sr-only sm:max-w-40 lg:max-w-[200px]"
         >
           {displayText}
         </span>

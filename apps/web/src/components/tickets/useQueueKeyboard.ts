@@ -11,7 +11,8 @@ export interface QueueKeyboardHandlers {
   onResolve: () => void;
   /** `x`: add/remove the active ticket from the bulk selection. */
   onToggleBulk?: () => void;
-  onEscape: () => void;
+  /** Escape fires even from inputs (the host decides: blur, or back to the queue). */
+  onEscape: (e: KeyboardEvent) => void;
 }
 
 const ACTION_BY_KEY = new Map<string, QueueAction>(
@@ -19,7 +20,8 @@ const ACTION_BY_KEY = new Map<string, QueueAction>(
 );
 
 /** Elements whose own activation key is Enter. Queue rows (role=option) are
- *  not here: Enter on a row is the "open full page" shortcut. */
+ *  not here: Enter on a row opens the ticket (the row handles it itself and
+ *  marks the event handled, see the defaultPrevented check). */
 const ENTER_OWNERS =
   'a[href],button,summary,[role="button"],[role="link"],[role="tab"],[role="menuitem"],' +
   '[role="menuitemcheckbox"],[role="menuitemradio"],[role="checkbox"],[role="radio"],[role="switch"]';
@@ -43,7 +45,10 @@ export function useQueueKeyboard(h: QueueKeyboardHandlers): void {
       // they skip the typing-cadence check (they still feed the clock).
       const bare = shouldHandleBareKey(e, { ignoreCadence: e.key === 'j' || e.key === 'k' });
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === 'Escape') { h.onEscape(); return; } // Escape works even from inputs (blur + back)
+      if (e.key === 'Escape') { h.onEscape(e); return; } // Escape works even from inputs (blur + back)
+      // A widget already handled this key (a queue row's own Enter, a menu):
+      // the page shortcut stands aside rather than acting twice.
+      if (e.defaultPrevented) return;
       if (!bare || isFormDirtyBlocking()) return;
       const action = ACTION_BY_KEY.get(e.key);
       if (!action || ownedByFocus(e)) return;

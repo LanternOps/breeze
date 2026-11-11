@@ -113,6 +113,7 @@ export async function recentRemovals(gh, { repo, since, until = null, maxPages =
 const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $n) {
+      id
       number
       state
       headRefOid
@@ -129,7 +130,7 @@ const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   }
 }`;
 
-// PrSnapshot = { pr, state: 'OPEN'|'CLOSED'|'MERGED', headSha, headRef, isFork,
+// PrSnapshot = { pr, id (node id), state: 'OPEN'|'CLOSED'|'MERGED', headSha, headRef, isFork,
 // autoMerge, queue: {state, position}|null, labels, files, events }.
 // `files` includes both sides of a rename; `events` are oldest first.
 export async function prSnapshot(gh, { repo, pr, withFiles = true }) {
@@ -149,6 +150,7 @@ export async function prSnapshot(gh, { repo, pr, withFiles = true }) {
   }
   return {
     pr,
+    id: p.id,
     state: p.state,
     headSha: p.headRefOid,
     headRef: p.headRefName,
@@ -499,7 +501,9 @@ async function gateFor(gh, repo, headSha) {
 // annotations and log fetched; any retry-shard job's flake report is read when
 // the job failed or uploaded one. A fetch that fails is recorded on the fact
 // (`errors`, `logStatus`, `reportError`), never dropped.
-export async function runFacts(gh, { repo, runId, ciYml }) {
+// `labelledOnly` (sightings ingest): annotations and logs are read only for
+// retry-shard jobs, the only ones a sighting can come from.
+export async function runFacts(gh, { repo, runId, ciYml, withGate = true, labelledOnly = false }) {
   const r = await getJson(gh, `repos/${repo}/actions/runs/${runId}`);
   const queuePr = QUEUE_BRANCH_PR.exec(r.head_branch ?? '');
   const run = {
@@ -541,7 +545,7 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
       errors: [],
     };
     const failed = isFailedConclusion(j.conclusion) && j.name !== CI_SUCCESS;
-    if (failed) {
+    if (failed && (!labelledOnly || ident.label)) {
       const ann = await annotationsOf(gh, repo, j.id);
       fact.annotations = ann.annotations;
       if (ann.error) fact.errors.push(ann.error);
@@ -565,6 +569,52 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
     jobs,
     jobsComplete,
     ciSuccess: apiJobs.some((j) => j.name === CI_SUCCESS) ? 'present' : 'missing',
-    gate: await gateFor(gh, repo, run.headSha),
+    gate: withGate ? await gateFor(gh, repo, run.headSha) : null,
   };
+}
+
+// ── Head and queue state (W06b) ──────────────────────────────────────────
+
+// When the PR's current head was pushed, as the creation time of its first
+// non-merge_group workflow run (a same-repo push starts CI within seconds).
+// Null when no run exists. A removal's `beforeCommit` is the group commit,
+// so this is how the shepherd tells which head a removal belonged to.
+export async function headPushedAt(gh, { repo, headSha }) {
+  const body = await getJson(gh, `repos/${repo}/actions/runs?head_sha=${headSha}&per_page=100`);
+  const times = (body.workflow_runs ?? []).filter((r) => r.head_sha === headSha && r.event !== 'merge_group').map((r) => ms(r.created_at));
+  return times.length ? toIso(Math.min(...times)) : null;
+}
+
+const QUEUE_QUERY = `query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    mergeQueue(branch: "main") {
+      entries(first: 100) {
+        nodes { position state enqueuedAt headCommit { oid } pullRequest { number } }
+      }
+    }
+  }
+}`;
+
+// QueueEntry = { pr, position, state, enqueuedAt, groupSha }. `groupSha` is
+// the entry's head commit: the merge-group commit its CI run tests.
+export async function mergeQueueEntries(gh, { repo }) {
+  const [owner, name] = repo.split('/');
+  const q = (await gh.graphql(QUEUE_QUERY, { owner, name })).repository.mergeQueue;
+  return (q?.entries?.nodes ?? [])
+    .filter((e) => e.pullRequest)
+    .map((e) => ({ pr: e.pullRequest.number, position: e.position, state: e.state, enqueuedAt: e.enqueuedAt, groupSha: e.headCommit?.oid ?? null }));
+}
+
+// The newest merge_group CI run of a group commit, or null.
+export async function groupRunBySha(gh, { repo, groupSha }) {
+  const q = new URLSearchParams({ event: 'merge_group', head_sha: groupSha, per_page: '20' });
+  const body = await getJson(gh, `repos/${repo}/actions/workflows/ci.yml/runs?${q}`);
+  const run = newest((body.workflow_runs ?? []).filter((r) => r.head_sha === groupSha && r.path === CI_WORKFLOW));
+  return run ? { ...runRef(run), status: run.status, updatedAt: run.updated_at } : null;
+}
+
+// Names of a run's latest jobs, and whether the listing is complete.
+export async function jobNames(gh, { repo, runId }) {
+  const { jobs, complete } = await listJobs(gh, repo, runId);
+  return { names: jobs.map((j) => j.name), complete };
 }

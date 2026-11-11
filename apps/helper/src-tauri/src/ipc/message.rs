@@ -157,6 +157,9 @@ pub struct MessageView {
     pub branding: Branding,
     /// Oversize content: the frontend renders it as plain text.
     pub plain: bool,
+    /// Session UI locale for the card's static copy, filled in by the
+    /// `get_message_view` command so the card needs no other command.
+    pub locale: Option<String>,
 }
 
 /// Window flags for a card.
@@ -273,6 +276,7 @@ impl MessageTracker {
             expires_at: req.expires_at.clone(),
             branding,
             plain,
+            locale: None,
         };
         self.arrivals += 1;
         self.active.insert(

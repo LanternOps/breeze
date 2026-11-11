@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { EndSupportSessionResult } from '../services/quickSupportEnd';
 
 /**
  * The reaper is the only thing standing between a failed teardown and an
@@ -9,7 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  */
 
 const { endSupportSession, deleteDeviceCascade, hasProtectedBackupSnapshots } = vi.hoisted(() => ({
-  endSupportSession: vi.fn(async () => ({ ended: true, disconnect: null, commandDelivered: true })),
+  endSupportSession: vi.fn(async (..._args: unknown[]): Promise<EndSupportSessionResult> => (
+    { ended: true, disconnect: null, commandDelivered: true })),
   deleteDeviceCascade: vi.fn(async () => undefined),
   hasProtectedBackupSnapshots: vi.fn(async () => false),
 }));
@@ -70,6 +72,8 @@ const selectJoins: boolean[] = [];
 const callOrder: string[] = [];
 /** Device ids handed to deleteDeviceCascade. */
 const purgedDeviceIds: string[] = [];
+/** Depth of withSystemDbAccessContext calls in progress. */
+const ctx = vi.hoisted(() => ({ depth: 0 }));
 
 vi.mock('../db', () => {
   const select = vi.fn(() => {
@@ -101,7 +105,10 @@ vi.mock('../db', () => {
 
   return {
     db: { select, update, transaction },
-    withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => {
+      ctx.depth += 1;
+      try { return await fn(); } finally { ctx.depth -= 1; }
+    }),
     runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
   };
 });
@@ -310,6 +317,37 @@ describe('reapOnce — non-ephemeral purge guard', () => {
     await reapOnce();
 
     expect(purgedDeviceIds).toEqual(['ephemeral-device']);
+  });
+});
+
+// #4142 W2: an end sends support_end and evicts the socket through the relay,
+// which may wait on Redis. The reaper must not hold its system transaction (a
+// pooled connection) across up to MAX_PER_PASS of those waits.
+describe('reapOnce — ends run outside the reaper transaction', () => {
+  it('calls endSupportSession for hard-cap and end-user sessions with no system context held', async () => {
+    const depthAtEnd: number[] = [];
+    endSupportSession.mockImplementation(async () => {
+      depthAtEnd.push(ctx.depth);
+      return { ended: true, disconnect: 'closed', commandDelivered: true };
+    });
+    selectResults.push([{ id: 'sess-a' }], [{ id: 'sess-c' }], []);
+
+    await reapOnce();
+
+    expect(endSupportSession).toHaveBeenCalledWith('sess-a', 'expired');
+    expect(endSupportSession).toHaveBeenCalledWith('sess-c', 'end_user');
+    expect(depthAtEnd).toEqual([0, 0]);
+  });
+
+  it('warns about an end whose socket close was not confirmed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    endSupportSession.mockImplementation(async () => ({ ended: true, disconnect: 'unconfirmed', commandDelivered: false }));
+    selectResults.push([{ id: 'sess-a' }], [], []);
+
+    await reapOnce();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('sess-a'), 'unconfirmed');
+    warn.mockRestore();
   });
 });
 

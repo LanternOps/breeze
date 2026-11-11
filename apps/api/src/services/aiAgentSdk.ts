@@ -501,6 +501,11 @@ export type PreFlightResult = {
   code?: ResolveFailureReason | 'turn_limit_reached';
   /** The credit / plan gate refused the turn (status is 402): the code the client switches on. */
   billingCode?: AiDenialClientCode;
+  /**
+   * #11609: the session was closed elsewhere before this turn ran. Typed, not
+   * a message match, so the route answers a coded 410 `session_closed`.
+   */
+  sessionRefusal?: 'session_closed';
 };
 
 /**
@@ -637,13 +642,11 @@ async function runPreFlightAdmission(
     // below would have produced that wording lazily. Without this, the same
     // terminal state surfaced as 410 or 400 depending purely on which path
     // got there first.
-    return {
-      ok: false,
-      error:
-        session.status === 'expired'
-          ? 'Session has expired. Please start a new session.'
-          : 'Session is not active',
-    };
+    // #11609: 'closed' (ended elsewhere, e.g. DELETE /ai/sessions/:id) is worded
+    // the same way so the route can code it (410 session_closed) instead of a
+    // bare 400 the client can only show raw.
+    if (session.status === 'expired') return { ok: false, error: 'Session has expired. Please start a new session.' };
+    return { ok: false, error: 'This conversation was closed. Please start a new session.', sessionRefusal: 'session_closed' };
   }
 
   if (session.turnCount >= session.maxTurns) {

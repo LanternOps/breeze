@@ -342,7 +342,7 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
 
     const alertId = await createWithTransactionHeldOpen(() => emitPatchJobFailureAlert({
       orgId: f.orgId, deviceId: f.deviceId, patchJobId: randomUUID(), hostname: 'publish-after-commit',
-      failedCount: 2, errorExcerpt: null,
+      failedCount: 2, errorMessage: null,
     }));
 
     const [row] = await withSystemDbAccessContext(() => db.select().from(alerts).where(eq(alerts.id, alertId)));
@@ -518,7 +518,7 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
     try {
       alertId = await createWithTransactionHeldOpen(() => emitPatchJobFailureAlert({
         orgId: f.orgId, deviceId: f.deviceId, patchJobId: randomUUID(), hostname: 'publish-after-commit',
-        failedCount: 1, errorExcerpt: null,
+        failedCount: 1, errorMessage: null,
       }));
     } finally {
       h.dropAlertDispatch = false;
@@ -543,7 +543,7 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
     try {
       alertId = await createWithTransactionHeldOpen(() => emitPatchJobFailureAlert({
         orgId: f.orgId, deviceId: f.deviceId, patchJobId: randomUUID(), hostname: 'publish-after-commit',
-        failedCount: 1, errorExcerpt: null,
+        failedCount: 1, errorMessage: null,
       }));
       // Published and delivered, but the acknowledgement failed: the envelope
       // stays for a replay, and the effects wait for that replay.

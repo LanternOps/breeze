@@ -100,6 +100,10 @@ function checkInResultTitle(instruction: string): string {
 export function degradeReasonText(skipped: string): string {
   if (skipped === 'budget_exhausted') return "today's budget is spent";
   if (skipped === 'grant_revision_changed') return 'the grant changed since this was scheduled';
+  // #11610: the agent-readiness skips, named so the grantor knows what to fix.
+  if (skipped === 'no_effective_agent' || skipped === 'agent_disabled') return 'no Triage agent is switched on for this organization';
+  if (skipped === 'mode_off') return "the organization's Triage agent is set to mode Off";
+  if (skipped === 'kill_switch_off') return 'AI agents are turned off on this server';
   return 'the check could not start';
 }
 

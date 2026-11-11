@@ -7219,6 +7219,7 @@
     },
     "verify": {
       "methodLegend": "Doğrulama yöntemi",
+      "panelTitle": "{{domain}} alan adını doğrula",
       "methodLocked": "Yöntemi değiştirmek için önce mevcut doğrulamayı kaldırın.",
       "openPortalTab": "Tenant’ı Müşteri Portalı › Oturum açma ve kayıt altında kanıtlayın.",
       "dnsStartHint": "Müşterinin DNS yöneticisinin yayımlaması için bir TXT kaydı alın.",
