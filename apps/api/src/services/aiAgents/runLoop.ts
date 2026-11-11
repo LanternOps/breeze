@@ -2946,6 +2946,8 @@ async function driveSdkLoop(
           key: hopIndex === 0 ? `agent-run:${run.id}` : `agent-run:${run.id}:${hopIndex}`,
           orgId: run.orgId,
           aiSessionId: ctx.sessionId ?? null,
+          // #11395: the run's tool profile compacts advertised schemas on a gateway hop.
+          ...(toolProfile.exposure.compactSchemas ? { compactSchemas: true } : {}),
         });
       } catch (error) {
         await releaseUnusedAiBudgetReservation({ orgId: run.orgId, reservationId: hopReservationId })

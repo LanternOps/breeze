@@ -1363,6 +1363,8 @@ export class StreamingSessionManager {
     // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
     const child = await timePreStreamPhase('prepareSdkChild', () => prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
+      // #11395: a constrained profile on a gateway connection compacts the advertised schemas.
+      ...(sessionTools.exposure.compactSchemas ? { compactSchemas: true } : {}),
     }));
     const revokeEgressGrant = child.revoke;
     session.revokeEgressGrant = revokeEgressGrant;

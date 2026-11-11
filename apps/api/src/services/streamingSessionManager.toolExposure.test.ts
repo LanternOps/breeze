@@ -73,6 +73,11 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (input: Record<string, unknown>) => input,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+// #11395: spy on the one SDK-child seam (real behaviour) to see what the exposure hands the grant.
+vi.mock('./aiModels/connectionFactory', async (orig) => {
+  const real = await orig<typeof import('./aiModels/connectionFactory')>();
+  return { ...real, prepareSdkChild: vi.fn(real.prepareSdkChild) };
+});
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
@@ -81,6 +86,7 @@ import { liveQueryKey, turnBindingFrom } from './aiModels/turnBinding';
 import { CHAT_MINIMAL_TOOLS } from './aiModels/toolProfiles';
 import { DEFAULT_TOOL_PROFILE_FACTS, type ToolProfileFacts } from './aiModels/toolExposure';
 import { createBreezeMcpServer } from './aiAgentSdkTools';
+import { prepareSdkChild } from './aiModels/connectionFactory';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -226,5 +232,15 @@ describe('tool exposure wiring (#11393 W01)', () => {
     ).rejects.toMatchObject({ code: 'tool_profile_underpowered' });
     expect(queryMock).not.toHaveBeenCalled();
     expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('#11395: the exposure decides compactSchemas on the SDK child (minimal + gateway: true; identity: absent)', async () => {
+    await create('s-cs-full', modelWith());
+    expect(vi.mocked(prepareSdkChild).mock.calls.at(-1)![1]).not.toHaveProperty('compactSchemas');
+    await create('s-cs-min', modelWith(MINIMAL));
+    expect(vi.mocked(prepareSdkChild).mock.calls.at(-1)![1]).toMatchObject({ compactSchemas: true });
+    // A constrained profile on a non-gateway transport keeps full schemas (plan Decision 1).
+    await create('s-cs-anth', modelWith(facts({ toolProfile: 'minimal', transport: 'anthropic' })));
+    expect(vi.mocked(prepareSdkChild).mock.calls.at(-1)![1]).not.toHaveProperty('compactSchemas');
   });
 });
