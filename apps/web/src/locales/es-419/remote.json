@@ -105,6 +105,7 @@
       "missingEntitlement": "El escritorio de la ventana de inicio de sesión está bloqueado hasta que se apruebe el derecho de Apple requerido",
       "missingPermission": "Todavía faltan los permisos macOS necesarios para el acceso al escritorio desatendido",
       "noDisplaySession": "No hay una sesión gráfica activa — inicie sesión primero mediante RDP o la consola",
+      "remoteAccessPermission": "El escritorio remoto requiere el permiso de acceso remoto (remote:access), que tu rol no incluye. Pide a un administrador que lo agregue a tu rol.",
       "unsupportedOs": "macOS bloquea la entrada remota de teclado y mouse en la ventana de inicio de sesión, por lo que Escritorio remoto no puede controlar esta Mac allí. Habilite VNC Relay en la política de configuración del dispositivo para conectarse en la pantalla de inicio de sesión.",
       "virtualDisplay": "No hay ninguna pantalla capturable disponible para esta Mac. Habilite el relé VNC para conectarse a través de macOS Screen Sharing.",
       "waylandUnsupported": "Este es un escritorio Wayland — el escritorio remoto requiere un agente más reciente",

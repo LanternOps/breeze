@@ -105,6 +105,7 @@
       "missingEntitlement": "Il desktop nella finestra di login è bloccato finché l'autorizzazione Apple richiesta non viene approvata",
       "missingPermission": "Mancano ancora le autorizzazioni macOS necessarie per l'accesso desktop non presidiato",
       "noDisplaySession": "Nessuna sessione grafica attiva: accedi prima tramite RDP o dalla console",
+      "remoteAccessPermission": "Il desktop remoto richiede l'autorizzazione Accesso remoto (remote:access), che il tuo ruolo non include. Chiedi a un amministratore di aggiungerla al tuo ruolo.",
       "unsupportedOs": "macOS blocca l’input remoto di tastiera e mouse nella finestra di login, quindi Desktop remoto non può controllare questo Mac in quella schermata. Abilita il relay VNC nel criterio di configurazione del dispositivo per connetterti dalla schermata di login.",
       "virtualDisplay": "Non è disponibile alcuno schermo acquisibile per questo Mac. Abilita il relay VNC per connetterti tramite Condivisione schermo di macOS.",
       "waylandUnsupported": "Questo è un desktop Wayland: per il desktop remoto è necessario un agente più recente",

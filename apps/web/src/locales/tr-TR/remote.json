@@ -105,6 +105,7 @@
       "missingEntitlement": "Oturum açma penceresi masaüstü, gerekli Apple yetkisi onaylanana kadar engellenir",
       "missingPermission": "macOS gözetimsiz masaüstü erişimi için gereken izinler hâlâ eksik",
       "noDisplaySession": "Aktif grafik oturumu yok — önce RDP veya konsol aracılığıyla oturum açın",
+      "remoteAccessPermission": "Uzak masaüstü, rolünüzde bulunmayan Uzaktan Erişim (remote:access) iznini gerektirir. Bir yöneticiden bu izni rolünüze eklemesini isteyin.",
       "unsupportedOs": "macOS, oturum açma penceresinde uzaktan klavye ve fare girişini engeller; bu nedenle Uzak Masaüstü bu Mac'i orada denetleyemez. Oturum açma ekranına bağlanmak için cihazın yapılandırma ilkesinde VNC Aktarmasını etkinleştirin.",
       "virtualDisplay": "Bu Mac için yakalanabilir ekran mevcut değil. macOS Ekran Paylaşımı yoluyla bağlanmak için VNC Aktarmasını etkinleştirin.",
       "waylandUnsupported": "Bu bir Wayland masaüstü — uzak masaüstünün daha yeni bir aracıya ihtiyacı var",

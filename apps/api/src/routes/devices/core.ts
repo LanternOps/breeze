@@ -34,6 +34,7 @@ import {
   type AuthContext,
 } from '../../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import { REMOTE_ACCESS_DENIAL } from '../remote/remoteAccessDenial';
 import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
@@ -2096,7 +2097,10 @@ coreRoutes.post(
   // Same gate as the WebRTC initiate flow (apps/api/src/routes/remote/index.ts:12).
   // This endpoint issues URLs containing substituted provider credentials, so it
   // needs to match (not loosen) the existing remote-desktop session gate.
-  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
+  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action, {
+    // #11621: name the missing grant instead of a bare "Permission denied".
+    denial: REMOTE_ACCESS_DENIAL,
+  }),
   requireMfa(),
   requireCapability('remote_control'),
   async (c) => {
