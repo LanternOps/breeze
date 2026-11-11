@@ -226,8 +226,7 @@ describe('mfaStepUpSchema operation field', () => {
   const reattachResource = {
     sourceDeviceId: '00000000-0000-4000-8000-000000000060',
     targetDeviceId: '00000000-0000-4000-8000-000000000061',
-    targetAgentId: 'a'.repeat(64),
-    targetIncarnation: 3,
+    targetVersion: 'a'.repeat(43),
     evidenceLevel: 'hint',
     restoreDecommissioned: true,
   } as const;
@@ -241,8 +240,8 @@ describe('mfaStepUpSchema operation field', () => {
   it.each([
     ['an extra key', { ...reattachResource, targetOrgId: '00000000-0000-4000-8000-000000000062' }],
     ['a non-uuid source', { ...reattachResource, sourceDeviceId: 'nope' }],
-    ['an agent id longer than the column', { ...reattachResource, targetAgentId: 'a'.repeat(65) }],
-    ['an incarnation below 1', { ...reattachResource, targetIncarnation: 0 }],
+    ['a raw agent id instead of the opaque version', { ...reattachResource, targetVersion: undefined, targetAgentId: 'a'.repeat(64) }],
+    ['a version that is not a MAC', { ...reattachResource, targetVersion: 'short' }],
     ['an unknown evidence level', { ...reattachResource, evidenceLevel: 'tpm' }],
     ['no restore choice', { ...reattachResource, restoreDecommissioned: undefined }],
   ])('rejects a device_reattach binding with %s', (_label, resource) => {

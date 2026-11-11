@@ -23,6 +23,10 @@ const state = vi.hoisted(() => ({
   assured: true,
   validate: true,
   consume: true,
+  // Device ids the requester may not reach; `inTx` only under the locks (a move meanwhile).
+  unreachable: new Set<string>(),
+  unreachableInTx: new Set<string>(),
+  versionMatches: true,
 }));
 
 const tx = vi.hoisted(() => ({
@@ -37,7 +41,7 @@ const tx = vi.hoisted(() => ({
 
 vi.mock('../../db', () => ({
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: async () => (state.target ? [{ agentId: state.target.agentId }] : []) }) }) }),
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ agentId: state.target?.agentId ?? null, partnerId: 'partner-1' }] }) }) }),
     transaction: async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
   },
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -65,8 +69,21 @@ vi.mock('./intentStore', () => ({
 
 vi.mock('./access', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./access')>()),
-  loadReattachActor: vi.fn(async () => ({})),
+  loadReattachActor: vi.fn(async () => ({ userId: 'user-1', status: 'active', partnerId: 'partner-1', membership: { orgAccess: 'all', reachableOrgIds: [], grants: [] } })),
   canActorReattach: vi.fn(() => state.access),
+}));
+
+vi.mock('./reachability', () => ({
+  readReattachDeviceLocations: vi.fn(async () => { calls.push('locations'); return new Map(); }),
+  isReattachDeviceReachable: vi.fn((_actor: unknown, _partnerId: string, device: { id: string } | undefined, role: 'source' | 'target') => {
+    const id = device?.id ?? (role === 'source' ? SOURCE : TARGET);
+    if (state.unreachable.has(id)) return false;
+    return !(calls.includes('deviceLocks') && state.unreachableInTx.has(id));
+  }),
+}));
+
+vi.mock('./targetVersion', () => ({
+  reattachTargetVersionMatches: vi.fn(() => state.versionMatches),
 }));
 
 vi.mock('./liveness', () => ({
@@ -99,11 +116,13 @@ vi.mock('../mfaStepUpGrant', async (importOriginal) => {
 });
 
 import { requestDeviceReattach, type RequestDeviceReattachInput } from './requestIntent';
+import { lockReattachDevices } from './intentStore';
 import { consumeStepUpGrant, deviceReattachResourceDigest, validateStepUpGrant } from '../mfaStepUpGrant';
 
 const SOURCE = '00000000-0000-4000-8000-000000000001';
 const TARGET = '00000000-0000-4000-8000-000000000002';
 const GRANT = '00000000-0000-4000-8000-0000000000aa';
+const VERSION = 'V'.repeat(43);
 
 function device(id: string, over: Record<string, unknown> = {}) {
   return {
@@ -140,7 +159,8 @@ function input(over: Partial<RequestDeviceReattachInput> = {}): RequestDeviceRea
     evidenceLevel: 'hint',
     restoreDecommissioned: false,
     confirmTargetName: 'PC-OLD',
-    stepUp: { grantId: GRANT, auth, binding: { authEpoch: 1, mfaEpoch: 2, sid: 'sid-1' } },
+    targetVersion: VERSION,
+    stepUp: { kind: 'grant', grantId: GRANT, auth, binding: { authEpoch: 1, mfaEpoch: 2, sid: 'sid-1' } },
     ...over,
   };
 }
@@ -154,8 +174,7 @@ const expectedBinding = () => ({
   resourceDigest: deviceReattachResourceDigest({
     sourceDeviceId: SOURCE,
     targetDeviceId: TARGET,
-    targetAgentId: 'agent-2',
-    targetIncarnation: 3,
+    targetVersion: VERSION,
     evidenceLevel: 'hint',
     restoreDecommissioned: false,
   }),
@@ -175,6 +194,9 @@ beforeEach(() => {
     assured: true,
     validate: true,
     consume: true,
+    unreachable: new Set<string>(),
+    unreachableInTx: new Set<string>(),
+    versionMatches: true,
   });
 });
 
@@ -182,25 +204,25 @@ describe('requestDeviceReattach — step-up (#8318 §8)', () => {
   it('consumes a matching grant once, after every lock and check, just before the insert, and records it', async () => {
     const result = await requestDeviceReattach(input());
     expect(result.ok).toBe(true);
-    expect(calls).toEqual(['holdingLock', 'deviceLocks', 'actorLock', 'sessionLock', 'validate', 'consume', 'insert']);
+    expect(calls).toEqual(['locations', 'holdingLock', 'deviceLocks', 'actorLock', 'sessionLock', 'validate', 'consume', 'insert']);
     expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, expectedBinding());
     expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expectedBinding());
     if (result.ok) expect(result.intent.stepUpGrantRef).toBe(GRANT);
   });
 
-  it('binds the target install as it is under the lock: a re-enrolled target never matches', async () => {
-    state.target = device(TARGET, { installIncarnation: 4 });
+  it('a grant bound to anything else is refused and not burned', async () => {
     state.validate = false;
     const result = await requestDeviceReattach(input());
     expect(result).toMatchObject({ ok: false, status: 403, code: 'STEP_UP_REQUIRED' });
-    expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({
-      resourceDigest: deviceReattachResourceDigest({
-        sourceDeviceId: SOURCE, targetDeviceId: TARGET, targetAgentId: 'agent-2', targetIncarnation: 4, evidenceLevel: 'hint', restoreDecommissioned: false,
-      }),
-    }));
-    // A mismatched grant is not burned, and nothing is written.
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
     expect(calls).not.toContain('insert');
+  });
+
+  it('a target whose install changed since the read answers target_changed before the grant is touched', async () => {
+    state.versionMatches = false;
+    expect(await requestDeviceReattach(input())).toMatchObject({ ok: false, status: 409, code: 'target_changed' });
+    expect(validateStepUpGrant).not.toHaveBeenCalled();
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
   });
 
   it('binds the restore choice', async () => {
@@ -208,18 +230,18 @@ describe('requestDeviceReattach — step-up (#8318 §8)', () => {
     await requestDeviceReattach(input({ restoreDecommissioned: true }));
     expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({
       resourceDigest: deviceReattachResourceDigest({
-        sourceDeviceId: SOURCE, targetDeviceId: TARGET, targetAgentId: 'agent-2', targetIncarnation: 3, evidenceLevel: 'hint', restoreDecommissioned: true,
+        sourceDeviceId: SOURCE, targetDeviceId: TARGET, targetVersion: VERSION, evidenceLevel: 'hint', restoreDecommissioned: true,
       }),
     }));
   });
 
   it('answers STEP_UP_REQUIRED for a missing grant, after every other refusal', async () => {
-    expect(await requestDeviceReattach(input({ stepUp: { grantId: undefined, auth, binding: { authEpoch: 1, mfaEpoch: 2, sid: 'sid-1' } } })))
+    expect(await requestDeviceReattach(input({ stepUp: { kind: 'grant', grantId: undefined, auth, binding: { authEpoch: 1, mfaEpoch: 2, sid: 'sid-1' } } })))
       .toMatchObject({ ok: false, status: 403, code: 'STEP_UP_REQUIRED' });
     expect(validateStepUpGrant).not.toHaveBeenCalled();
     // …and a refusal still wins over the missing grant.
     state.openIntent = true;
-    expect(await requestDeviceReattach(input({ stepUp: { grantId: undefined, auth, binding: { authEpoch: 1, mfaEpoch: 2, sid: 'sid-1' } } })))
+    expect(await requestDeviceReattach(input({ stepUp: { kind: 'grant', grantId: undefined, auth, binding: { authEpoch: 1, mfaEpoch: 2, sid: 'sid-1' } } })))
       .toMatchObject({ code: 'device_in_open_intent' });
   });
 
@@ -236,11 +258,28 @@ describe('requestDeviceReattach — step-up (#8318 §8)', () => {
     expect(calls).not.toContain('insert');
   });
 
-  it('asks for no grant when the deployment has two-factor authentication off', async () => {
-    const result = await requestDeviceReattach(input({ stepUp: null }));
+  it('asks for no grant only when told explicitly that none is required, and records no grant ref', async () => {
+    const result = await requestDeviceReattach(input({ stepUp: { kind: 'not_required' } }));
+    if (result.ok) expect(result.intent.stepUpGrantRef).toBeNull();
     expect(result.ok).toBe(true);
     expect(validateStepUpGrant).not.toHaveBeenCalled();
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['of an unknown kind', { kind: 'none' }],
+  ])('fails closed on a step-up that is %s', async (_label, stepUp) => {
+    expect(await requestDeviceReattach(input({ stepUp: stepUp as never }))).toMatchObject({ ok: false, status: 403, code: 'STEP_UP_REQUIRED' });
+    expect(calls).not.toContain('insert');
+    expect(calls).not.toContain('deviceLocks');
+  });
+
+  it('records no unchecked grant reference, whatever a caller passes', async () => {
+    const result = await requestDeviceReattach({ ...input({ stepUp: { kind: 'not_required' } }), stepUpGrantRef: 'forged' } as never);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.intent.stepUpGrantRef).toBeNull();
   });
 
   it('never accepts a step-up of another user', async () => {
@@ -250,6 +289,7 @@ describe('requestDeviceReattach — step-up (#8318 §8)', () => {
 
 describe('requestDeviceReattach — every refusal leaves the grant unspent (#8318 §8)', () => {
   const cases: Array<[string, number, () => void | Partial<RequestDeviceReattachInput>]> = [
+    // Reachable at the unlocked check, in another partner under the lock: a move during the request.
     ['partner_mismatch', 409, () => { state.target = device(TARGET, { orgPartnerId: 'partner-2' }); }],
     ['org_draining', 409, () => { state.target = device(TARGET, { orgStatus: 'suspended' }); }],
     ['target_ineligible', 409, () => { state.target = device(TARGET, { orgType: 'unassigned_pool' }); }],
@@ -272,6 +312,8 @@ describe('requestDeviceReattach — every refusal leaves the grant unspent (#831
     ['confirm_target_name_mismatch', 400, () => ({ confirmTargetName: 'PC-OTHER' })],
     ['device_not_found', 404, () => { state.target = null; }],
     ['same_device', 400, () => ({ targetDeviceId: SOURCE })],
+    ['target_changed', 409, () => { state.versionMatches = false; }],
+    ['invalid_target_version', 400, () => ({ targetVersion: 'short' })],
   ];
 
   it.each(cases)('%s answers %i and never validates or consumes the grant', async (code, status, arrange) => {
@@ -293,6 +335,33 @@ describe('requestDeviceReattach — every refusal leaves the grant unspent (#831
   });
 
   it('asks for no typed name with TPM continuity evidence', async () => {
-    expect((await requestDeviceReattach(input({ evidenceLevel: 'tpm_continuity', confirmTargetName: null, stepUp: null }))).ok).toBe(true);
+    expect((await requestDeviceReattach(input({ evidenceLevel: 'tpm_continuity', confirmTargetName: null, stepUp: { kind: 'not_required' } }))).ok).toBe(true);
+  });
+});
+
+describe('requestDeviceReattach — reachability before any lock (#8318 wave 2-2 review)', () => {
+  it.each([
+    ['an unreachable source', SOURCE],
+    ['an unreachable target', TARGET],
+  ])('%s is the same 404 as a missing device, and no row is locked', async (_label, id) => {
+    state.unreachable.add(id);
+    const result = await requestDeviceReattach(input());
+    expect(result).toEqual({ ok: false, status: 404, code: 'device_not_found', message: 'Device not found' });
+    expect(lockReattachDevices).not.toHaveBeenCalled();
+    expect(calls).not.toContain('holdingLock');
+    expect(validateStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('answers 404, not a state refusal, for an unreachable device in a draining org', async () => {
+    state.target = device(TARGET, { orgStatus: 'suspended' });
+    state.unreachable.add(TARGET);
+    expect(await requestDeviceReattach(input())).toMatchObject({ status: 404, code: 'device_not_found' });
+  });
+
+  it('a device that left the requester\'s reach between the check and the lock is the same 404', async () => {
+    state.unreachableInTx.add(TARGET);
+    expect(await requestDeviceReattach(input())).toEqual({ ok: false, status: 404, code: 'device_not_found', message: 'Device not found' });
+    expect(calls).toContain('deviceLocks');
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
   });
 });

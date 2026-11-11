@@ -1,3 +1,4 @@
+import { REATTACH_TARGET_VERSION_PATTERN } from '../../services/deviceReattach/protocol';
 import { MIGRATION_WINDOW_MAX_ORGS } from '../../services/migrationWindowLimits';
 import { z } from 'zod';
 import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, launchPurchaseSelectionSchema, signupIntentSchema } from '@breeze/shared';
@@ -243,15 +244,14 @@ export const parkedBulkAssignStepUpResource = z.object({
   items: z.array(parkedAssignStepUpResource).min(1).max(PARKED_ASSIGN_MAX_BULK_ITEMS),
 });
 // Reinstall reattach (#8318 spec §8): mirrors what POST /devices/:id/reattach
-// binds — the pair, the target's install (agent id + incarnation, as the
-// candidates read showed them), the evidence level and the restore choice.
+// binds — the pair, the target's install (its opaque `targetVersion`, as the
+// candidates read showed it), the evidence level and the restore choice.
 // Strict, and FIRST in the coarse union below, so no other binding can swallow
 // it and no extra key is silently dropped.
 export const deviceReattachStepUpResource = z.object({
   sourceDeviceId: z.string().uuid(),
   targetDeviceId: z.string().uuid(),
-  targetAgentId: z.string().min(1).max(64),
-  targetIncarnation: z.number().int().min(1),
+  targetVersion: z.string().regex(REATTACH_TARGET_VERSION_PATTERN),
   evidenceLevel: z.enum(['hint', 'tpm_continuity']),
   restoreDecommissioned: z.boolean(),
 }).strict();

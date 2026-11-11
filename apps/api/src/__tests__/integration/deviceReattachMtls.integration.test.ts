@@ -48,6 +48,7 @@ import {
   silentTarget,
   stagedSet,
   type SeededAgentDevice,
+  targetVersionOf,
 } from './deviceReattachFixtures';
 import { getTestDb } from './setup';
 
@@ -136,6 +137,7 @@ async function arrange() {
   const result = await requestDeviceReattach({
     actor: { userId: tenant.admin.id }, sourceDeviceId: source.id, targetDeviceId: target.id,
     evidenceLevel: 'hint', restoreDecommissioned: false, confirmTargetName: target.hostname,
+    targetVersion: await targetVersionOf(target.id), stepUp: { kind: 'not_required' },
   });
   if (!result.ok) throw new Error(result.code);
   return { tenant, source, target, sourceCert, targetCert, intent: result.intent };

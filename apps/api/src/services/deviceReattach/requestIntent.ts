@@ -6,21 +6,29 @@
  * (routes/devices/reattach.ts, wave 2-2) calls. Besides the §8 refusals it
  * owns the two typed confirmations of the dialog — `confirmTargetName` for
  * `hint` evidence and `acknowledgeOsChange` — and, when the deployment has
- * two-factor authentication on, the `device_reattach` step-up: its binding is
- * built HERE from the locked rows (the target's agent_id and incarnation as
- * they are now), and the grant is consumed (Redis GETDEL, F20) after every
+ * two-factor authentication on, the `device_reattach` step-up: its binding
+ * carries the opaque target version (targetVersion.ts), verified HERE against
+ * the locked target row (its agent_id and incarnation as they are now), and
+ * the grant is consumed (Redis GETDEL, F20) after every
  * refusal check, just before the insert, so a refusal never burns it. The
- * consumed grant id is stored as `step_up_grant_ref` (then on the ledger).
+ * consumed grant id is the only value ever stored as `step_up_grant_ref`
+ * (then on the ledger).
  *
- * Everything runs in ONE system transaction (the conflict and eligibility
- * checks must see every intent and the ledger, which a technician's context
- * cannot):
+ * First, unlocked (reachability.ts): the requester and where both devices
+ * are. A device that does not exist, is in another partner, or is outside the
+ * requester's reach answers one 404 `device_not_found`, and its row is never
+ * locked.
+ *
+ * Then everything runs in ONE system transaction (the conflict and
+ * eligibility checks must see every intent and the ledger, which a
+ * technician's context cannot):
  *   1. the partner's holding-area advisory lock, unconditionally (every intent
  *      creation takes it, which makes "a device is in at most one open intent
  *      in either role" race-free; the partial unique indexes are the
  *      backstop);
  *   2. both device rows FOR UPDATE, ascending id order;
- *   3. the refusals of §8 and the typed confirmations;
+ *   3. reachability again (authoritative), the refusals of §8, the target
+ *      version (`target_changed`) and the typed confirmations;
  *   4. with step-up: the actor's assurance and live session (FOR SHARE), the
  *      grant validated against the binding (a mismatch keeps it), then
  *      consumed;
@@ -48,7 +56,7 @@ import {
   type LockedReattachDevice,
 } from './intentStore';
 import { decideTargetLiveness, readRedisLivenessSignals } from './liveness';
-import { REATTACH_REQUESTED_TTL_MS, type ReattachCancelReason } from './protocol';
+import { REATTACH_REQUESTED_TTL_MS, REATTACH_TARGET_VERSION_PATTERN, type ReattachCancelReason } from './protocol';
 import { isLiveOrg } from './revalidation';
 import { clearReattachSourceMarker, setReattachSourceMarker } from './sourceMarker';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
@@ -61,6 +69,8 @@ import {
 } from '../mfaStepUpGrant';
 import { lockActorAssurance } from '../stepUpActorAssurance';
 import { lockLiveUserSession } from '../unassignedPool/assignParkedDeviceSteps';
+import { isReattachDeviceReachable, readReattachDeviceLocations } from './reachability';
+import { reattachTargetVersionMatches } from './targetVersion';
 
 const ACCESS_DENIAL_STATUS: Record<ReattachAccessDenial, 403 | 409> = {
   not_partner_user: 403,
@@ -87,11 +97,12 @@ export interface RequestDeviceReattachInput {
   evidenceLevel: DeviceReattachEvidenceLevel;
   restoreDecommissioned: boolean;
   /**
-   * A grant reference recorded as given, with no step-up check (the wave 1b
-   * seam the service tests use). Ignored when `stepUp` is set: then the
-   * consumed grant id is recorded.
+   * The opaque version of the target's install the requester was shown
+   * (targetVersion.ts, from the candidates read). Compared in constant time
+   * with the version of the LOCKED target row: a target that re-enrolled or
+   * was reattached since answers 409 `target_changed`.
    */
-  stepUpGrantRef?: string | null;
+  targetVersion: string;
   /**
    * The target's hostname, typed by the requester. Required for `hint`
    * evidence (§8 "Confirmation"): compared, trimmed and case-insensitively,
@@ -101,20 +112,29 @@ export interface RequestDeviceReattachInput {
   /** The requester saw that the two installs report different operating systems (§8). */
   acknowledgeOsChange?: boolean;
   /**
-   * The `device_reattach` step-up (§8). Absent or null: the deployment has
-   * two-factor authentication off and no grant is asked for. Set: `grantId`
-   * must name a grant minted for exactly this pair and the target's current
-   * install; a missing one answers 403 `STEP_UP_REQUIRED` after every other
-   * refusal.
+   * The `device_reattach` step-up (§8). Required, and explicit:
+   *  - `grant`: `grantId` must name a grant minted for exactly this pair,
+   *    target version, evidence level and restore choice; a missing one
+   *    answers 403 `STEP_UP_REQUIRED` after every other refusal. The consumed
+   *    grant id is the only `step_up_grant_ref` ever recorded.
+   *  - `not_required`: ONLY when the deployment has two-factor authentication
+   *    off (`ENABLE_2FA`), as on the pre-assignment routes.
+   * Any other value (a JS caller omitting it) is refused, never treated as
+   * "no step-up".
    */
-  stepUp?: {
-    grantId: string | null | undefined;
-    auth: AuthContext;
-    binding: Pick<StepUpGrantBinding, 'authEpoch' | 'mfaEpoch' | 'sid'>;
-  } | null;
+  stepUp: ReattachStepUp;
   /** Test seam. */
   now?: Date;
 }
+
+export type ReattachStepUp =
+  | {
+    kind: 'grant';
+    grantId: string | null | undefined;
+    auth: AuthContext;
+    binding: Pick<StepUpGrantBinding, 'authEpoch' | 'mfaEpoch' | 'sid'>;
+  }
+  | { kind: 'not_required' };
 
 export type RequestDeviceReattachResult =
   | { ok: true; intent: DeviceReattachIntent }
@@ -136,6 +156,9 @@ function refuseDrainingOrg(device: LockedReattachDevice, role: 'source' | 'targe
 }
 
 const STEP_UP_REQUIRED_MESSAGE = 'Step-up required';
+
+/** One answer for "does not exist" and "not yours": the same status, code and message. */
+const DEVICE_NOT_FOUND = reattachRefusal(404, 'device_not_found', 'Device not found');
 
 /** How a hostname is compared for the typed confirmation: trimmed, case-insensitive (DNS names are). */
 function sameHostname(typed: string, actual: string): boolean {
@@ -160,9 +183,42 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
   if (input.evidenceLevel !== 'hint' && input.evidenceLevel !== 'tpm_continuity') {
     return reattachRefusal(400, 'invalid_evidence_level', 'Unknown evidence level');
   }
-  if (input.stepUp && input.stepUp.auth.user.id !== input.actor.userId) {
+  // Fail closed: a step-up that is neither a grant nor an explicit
+  // "not required" is a missing grant, not an exemption.
+  const stepUp = input.stepUp as ReattachStepUp | null | undefined;
+  if (!stepUp || (stepUp.kind !== 'grant' && stepUp.kind !== 'not_required')) {
+    return reattachRefusal(403, 'STEP_UP_REQUIRED', STEP_UP_REQUIRED_MESSAGE);
+  }
+  if (stepUp.kind === 'grant' && stepUp.auth.user.id !== input.actor.userId) {
     throw new Error('requestDeviceReattach: the step-up actor is not the requester');
   }
+  if (typeof input.targetVersion !== 'string' || !REATTACH_TARGET_VERSION_PATTERN.test(input.targetVersion)) {
+    return reattachRefusal(400, 'invalid_target_version', 'The target version is missing or malformed');
+  }
+
+  // Reachability, BEFORE any lock and before any state-specific refusal
+  // (reachability.ts): a device the requester may not reach is the same 404
+  // as one that does not exist, and its row is never locked.
+  const pre = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [user] = await db
+      .select({ partnerId: users.partnerId })
+      .from(users)
+      .where(eq(users.id, input.actor.userId))
+      .limit(1);
+    if (!user?.partnerId) return reattachRefusal(403, 'not_partner_user', ACCESS_DENIAL_MESSAGES.not_partner_user);
+    const actor = await loadReattachActor(db, input.actor.userId, user.partnerId);
+    if (!actor?.membership) return reattachRefusal(403, 'not_partner_user', ACCESS_DENIAL_MESSAGES.not_partner_user);
+    if (actor.status !== 'active') return reattachRefusal(403, 'user_inactive', ACCESS_DENIAL_MESSAGES.user_inactive);
+    const locations = await readReattachDeviceLocations(db, [input.sourceDeviceId, input.targetDeviceId]);
+    if (
+      !isReattachDeviceReachable(actor, user.partnerId, locations.get(input.sourceDeviceId), 'source')
+      || !isReattachDeviceReachable(actor, user.partnerId, locations.get(input.targetDeviceId), 'target')
+    ) {
+      return DEVICE_NOT_FOUND;
+    }
+    return null;
+  }));
+  if (pre) return pre;
 
   // §6.5 at request (§8 refusals `target_alive` / `liveness_unknown`): the
   // Redis half is read BEFORE any lock, outside every DB context; the DB half
@@ -180,18 +236,28 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
         .from(users)
         .where(eq(users.id, input.actor.userId))
         .limit(1);
-      if (!user) refuse(403, 'not_partner_user', ACCESS_DENIAL_MESSAGES.not_partner_user);
+      if (!user?.partnerId) refuse(403, 'not_partner_user', ACCESS_DENIAL_MESSAGES.not_partner_user);
       const partnerId = user.partnerId;
 
       await lockPartnerHoldingArea(tx, partnerId);
       const locked = await lockReattachDevices(tx, [input.sourceDeviceId, input.targetDeviceId], 'update');
       const source = locked.get(input.sourceDeviceId);
       const target = locked.get(input.targetDeviceId);
-      if (!source || !target) refuse(404, 'device_not_found', 'Device not found');
+      if (!source || !target) throw new ReattachRefusedError(DEVICE_NOT_FOUND);
 
-      // One partner: the requester's, the source's and the target's (§8).
+      // One partner (§8). Both rows were in the requester's partner at the
+      // unlocked check, so a mismatch here is a move during the request.
       if (source.orgPartnerId !== partnerId || target.orgPartnerId !== partnerId) {
         refuse(409, 'partner_mismatch', ACCESS_DENIAL_MESSAGES.partner_mismatch);
+      }
+      // Reachability again, authoritative under the locks: a row that left the
+      // requester's reach meanwhile is the same 404.
+      const actor = await loadReattachActor(tx, input.actor.userId, partnerId);
+      if (
+        !isReattachDeviceReachable(actor, partnerId, source, 'source')
+        || !isReattachDeviceReachable(actor, partnerId, target, 'target')
+      ) {
+        throw new ReattachRefusedError(DEVICE_NOT_FOUND);
       }
       // Before the access rule: a draining org is out of everyone's reach,
       // and this is the precise answer.
@@ -205,7 +271,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       }
       const sourceParked = isUnassignedPoolOrgType(source.orgType);
 
-      const access = canActorReattach(await loadReattachActor(tx, input.actor.userId, partnerId), {
+      const access = canActorReattach(actor, {
         partnerId,
         sourceOrgId: source.orgId,
         sourceParked,
@@ -213,6 +279,15 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       });
       if (!access.allowed) {
         refuse(ACCESS_DENIAL_STATUS[access.code], access.code, ACCESS_DENIAL_MESSAGES[access.code]);
+      }
+
+      // The install the requester was shown is still the target's install.
+      if (!reattachTargetVersionMatches(input.targetVersion, {
+        targetDeviceId: target.id,
+        agentId: target.agentId,
+        installIncarnation: target.installIncarnation,
+      })) {
+        refuse(409, 'target_changed', 'The existing device record changed since it was shown; reload and try again');
       }
 
       // The source: a new install that speaks the rebind protocol.
@@ -266,11 +341,12 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       }
 
       // The step-up, last: every refusal above leaves the grant unspent. The
-      // binding is the target's install as it is NOW, under the row lock, so a
-      // grant minted for an install that has since re-enrolled never matches.
-      let stepUpGrantRef: string | null = input.stepUpGrantRef ?? null;
-      if (input.stepUp) {
-        const { grantId, auth, binding: epochs } = input.stepUp;
+      // binding carries the target version just verified against the locked
+      // row, so a grant minted for an install that has since re-enrolled
+      // never matches.
+      let stepUpGrantRef: string | null = null;
+      if (stepUp.kind === 'grant') {
+        const { grantId, auth, binding: epochs } = stepUp;
         if (!grantId) refuse(403, 'STEP_UP_REQUIRED', STEP_UP_REQUIRED_MESSAGE);
         const binding: StepUpGrantBinding = {
           userId: input.actor.userId,
@@ -281,8 +357,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
           resourceDigest: deviceReattachResourceDigest({
             sourceDeviceId: source.id,
             targetDeviceId: target.id,
-            targetAgentId: target.agentId,
-            targetIncarnation: target.installIncarnation,
+            targetVersion: input.targetVersion,
             evidenceLevel: input.evidenceLevel,
             restoreDecommissioned: input.restoreDecommissioned,
           }),
@@ -360,7 +435,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       targetIncarnation: intent.targetIncarnation,
       expiresAt: intent.expiresAt.toISOString(),
       stepUpGrantRecorded: Boolean(intent.stepUpGrantRef),
-      stepUp: input.stepUp ? 'grant' : 'none',
+      stepUp: stepUp.kind === 'grant' ? 'grant' : 'not_required',
       acknowledgeOsChange: input.acknowledgeOsChange === true,
     },
   });

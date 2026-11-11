@@ -61,9 +61,11 @@ import { reattachRoutes } from './reattach';
 const SOURCE = '33333333-3333-4333-8333-333333333333';
 const TARGET = '44444444-4444-4444-8444-444444444444';
 const GRANT = '11111111-1111-4111-8111-111111111111';
+const VERSION = 'V'.repeat(43);
 
 const body = (over: Record<string, unknown> = {}) => ({
   targetDeviceId: TARGET,
+  targetVersion: VERSION,
   possessionConfirmed: true,
   confirmTargetName: 'PC-OLD',
   stepUpGrant: GRANT,
@@ -119,11 +121,12 @@ describe('POST /devices/:id/reattach (#8318 §8)', () => {
       actor: { userId: 'user-123' },
       sourceDeviceId: SOURCE,
       targetDeviceId: TARGET,
+      targetVersion: VERSION,
       evidenceLevel: 'hint',
       restoreDecommissioned: true,
       acknowledgeOsChange: true,
       confirmTargetName: 'PC-OLD',
-      stepUp: { grantId: GRANT, auth: expect.objectContaining({ user: expect.objectContaining({ id: 'user-123' }) }), binding: { authEpoch: 4, mfaEpoch: 5, sid: 'sid-1' } },
+      stepUp: { kind: 'grant', grantId: GRANT, auth: expect.objectContaining({ user: expect.objectContaining({ id: 'user-123' }) }), binding: { authEpoch: 4, mfaEpoch: 5, sid: 'sid-1' } },
     });
   });
 
@@ -132,7 +135,7 @@ describe('POST /devices/:id/reattach (#8318 §8)', () => {
     expect(requestMock).toHaveBeenCalledWith(expect.objectContaining({
       restoreDecommissioned: false,
       acknowledgeOsChange: false,
-      stepUp: expect.objectContaining({ grantId: null }),
+      stepUp: expect.objectContaining({ kind: 'grant', grantId: null }),
     }));
   });
 
@@ -144,7 +147,7 @@ describe('POST /devices/:id/reattach (#8318 §8)', () => {
   it('asks for no step-up when two-factor authentication is off on the deployment', async () => {
     enable2faState.value = false;
     await post(body());
-    expect(requestMock).toHaveBeenCalledWith(expect.objectContaining({ stepUp: null }));
+    expect(requestMock).toHaveBeenCalledWith(expect.objectContaining({ stepUp: { kind: 'not_required' } }));
     expect(epochsMock).not.toHaveBeenCalled();
   });
 
@@ -194,6 +197,10 @@ describe('POST /devices/:id/reattach (#8318 §8)', () => {
       // The server decides the evidence level; a client cannot raise it.
       ['an evidenceLevel field', { evidenceLevel: 'tpm_continuity' }],
       ['an unknown field', { force: true }],
+      ['no targetVersion', { targetVersion: undefined }],
+      ['a malformed targetVersion', { targetVersion: 'short' }],
+      // The raw install identifiers are never part of the contract.
+      ['a raw targetAgentId', { targetAgentId: 'agent-1' }],
     ])('refuses %s with 400', async (_label, over) => {
       expect((await post(body(over))).status).toBe(400);
       expect(requestMock).not.toHaveBeenCalled();
@@ -207,6 +214,7 @@ describe('POST /devices/:id/reattach (#8318 §8)', () => {
 
   // Every §8 refusal reaches the client with its status and code unchanged.
   it.each([
+    [409, 'target_changed'],
     [409, 'target_alive'],
     [409, 'liveness_unknown'],
     [409, 'device_quarantined'],

@@ -2731,10 +2731,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                           flagged: { type: 'boolean', description: 'The candidate the source is flagged as a possible replacement of' },
                           osChanged: { type: 'boolean', description: 'The request needs acknowledgeOsChange' },
                           requiresRestore: { type: 'boolean', description: 'The record is removed; the request needs restoreDecommissioned' },
-                          stepUpBinding: {
-                            type: 'object',
-                            properties: { targetAgentId: { type: 'string' }, targetIncarnation: { type: 'integer' } },
-                          },
+                          targetVersion: { type: 'string', description: 'Opaque version of the target\'s install; send it back with the reattach request and bind it in the device_reattach step-up' },
                         },
                       },
                     },
@@ -2757,7 +2754,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'reattachReinstalledDevice',
         tags: ['Devices'],
         summary: 'Reattach a reinstalled machine to its existing device record',
-        description: 'Requests the reattach of SOURCE device {id} (a new install) onto `targetDeviceId` (the older record of the same machine). The answer is the `requested` intent; the source agent then stages its own new credentials and confirms (the bounded rebind), after which the target record carries the new install and the source record is retired. Only partner users reattach: full partner admins anywhere in the partner; technicians limited to selected orgs when both orgs are theirs (a parked source needs a full partner admin). Requires partner scope, an interactive user session (API keys, MCP grants and AI agents are refused), devices:write + devices:delete, an MFA-assured session, and, while two-factor authentication is enabled, a single-use step-up grant minted by POST /auth/mfa/step-up for operation `device_reattach` bound to { sourceDeviceId, targetDeviceId, targetAgentId, targetIncarnation, evidenceLevel, restoreDecommissioned } as GET /devices/{id}/reinstall-candidates returned them. The grant is consumed only once every check has passed, so a refusal leaves it spendable. Audited in both organizations.',
+        description: 'Requests the reattach of SOURCE device {id} (a new install) onto `targetDeviceId` (the older record of the same machine). The answer is the `requested` intent; the source agent then stages its own new credentials and confirms (the bounded rebind), after which the target record carries the new install and the source record is retired. Only partner users reattach: full partner admins anywhere in the partner; technicians limited to selected orgs when both orgs are theirs (a parked source needs a full partner admin). Requires partner scope, an interactive user session (API keys, MCP grants and AI agents are refused), devices:write + devices:delete, an MFA-assured session, and, while two-factor authentication is enabled, a single-use step-up grant minted by POST /auth/mfa/step-up for operation `device_reattach` bound to { sourceDeviceId, targetDeviceId, targetVersion, evidenceLevel, restoreDecommissioned }, with targetVersion and evidenceLevel as GET /devices/{id}/reinstall-candidates returned them. A device that does not exist, is in another partner or is outside the caller\'s reach is one 404. The grant is consumed only once every check has passed, so a refusal leaves it spendable. Audited in both organizations.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         requestBody: {
           required: true,
@@ -2766,9 +2763,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               schema: {
                 type: 'object',
                 additionalProperties: false,
-                required: ['targetDeviceId', 'possessionConfirmed'],
+                required: ['targetDeviceId', 'targetVersion', 'possessionConfirmed'],
                 properties: {
                   targetDeviceId: { type: 'string', format: 'uuid' },
+                  targetVersion: { type: 'string', description: 'The candidate\'s targetVersion from GET /devices/{id}/reinstall-candidates' },
                   possessionConfirmed: { type: 'boolean', enum: [true], description: 'The operator confirmed out of band that the new install runs on the machine the record describes' },
                   confirmTargetName: { type: 'string', maxLength: 255, description: 'The target\'s hostname, typed. Required for hint evidence (every reattach until TPM evidence ships); compared trimmed and case-insensitively' },
                   restoreDecommissioned: { type: 'boolean', default: false, description: 'Required to reattach onto a removed record' },
@@ -2807,8 +2805,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           },
           '400': { description: 'Invalid body; `same_device`; `confirm_target_name_required` / `confirm_target_name_mismatch` (the typed name does not match the target)' },
           '403': { description: 'Scope, interactive-session, permission or MFA gate; `STEP_UP_REQUIRED` (grant missing, stale, bound to another pair or install, or consumed); `not_partner_user`, `user_inactive`, `permission_denied`, `org_access_denied`, `full_admin_required` (a parked source needs a full partner admin)' },
-          '404': { description: '`device_not_found`' },
-          '409': { description: 'A refusal, each with a code: `target_alive`, `liveness_unknown`, `device_quarantined`, `device_suspended`, `target_ephemeral`, `target_retired` (the target was the source of a confirmed reattach), `target_decommissioned` (without restoreDecommissioned), `target_ineligible`, `source_decommissioned`, `source_ineligible`, `org_draining`, `os_changed` (without acknowledgeOsChange), `rebind_unsupported` (the source agent lacks the rebind protocol), `device_in_open_intent`, `partner_mismatch`' },
+          '404': { description: '`device_not_found`: the device does not exist, or is not one the caller may reach (the same answer)' },
+          '409': { description: 'A refusal, each with a code: `target_changed` (the target re-enrolled since targetVersion was read), `target_alive`, `liveness_unknown`, `device_quarantined`, `device_suspended`, `target_ephemeral`, `target_retired` (the target was the source of a confirmed reattach), `target_decommissioned` (without restoreDecommissioned), `target_ineligible`, `source_decommissioned`, `source_ineligible`, `org_draining`, `os_changed` (without acknowledgeOsChange), `rebind_unsupported` (the source agent lacks the rebind protocol), `device_in_open_intent`, `partner_mismatch` (a device moved partner during the request)' },
           '503': { description: 'Step-up binding could not be established (auth state or session id unavailable); retry' },
         },
       },

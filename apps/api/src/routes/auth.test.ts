@@ -5297,8 +5297,7 @@ describe('auth routes', () => {
 			const resource = {
 				sourceDeviceId: '00000000-0000-4000-8000-000000000010',
 				targetDeviceId: '00000000-0000-4000-8000-000000000011',
-				targetAgentId: 'agent-target',
-				targetIncarnation: 1,
+				targetVersion: 'v'.repeat(43),
 				evidenceLevel: 'hint',
 				restoreDecommissioned: false,
 			};

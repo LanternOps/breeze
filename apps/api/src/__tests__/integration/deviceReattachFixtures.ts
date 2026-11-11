@@ -12,6 +12,7 @@ import { deviceReattachIntents, devices, manifestSigningKeys, partnerUsers } fro
 import { sha256Hex } from '../../services/agentCredentialHashes';
 import { ensureActiveSigningKey, invalidateManifestTrustCaches } from '../../services/manifestSigning';
 import { declareParkedDeviceAdmission } from '../../services/unassignedPool/admission';
+import { reattachTargetVersion } from '../../services/deviceReattach/targetVersion';
 import { createOrganization, createPartner, createRole, createSite, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
 import { seedHoldingOrg } from './unassignedPoolFixtures';
@@ -172,6 +173,17 @@ export async function readIntent(intentId: string) {
 export async function readDevice(deviceId: string) {
   const [row] = await getTestDb().select().from(devices).where(eq(devices.id, deviceId));
   return row;
+}
+
+/**
+ * The opaque version of a device's current install, as the candidates read
+ * hands it out (wave 2-2). A device that does not exist gets a well-formed
+ * version that matches nothing.
+ */
+export async function targetVersionOf(deviceId: string): Promise<string> {
+  const row = await readDevice(deviceId);
+  if (!row) return 'x'.repeat(43);
+  return reattachTargetVersion({ targetDeviceId: row.id, agentId: row.agentId, installIncarnation: row.installIncarnation });
 }
 
 /**

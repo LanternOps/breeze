@@ -557,8 +557,7 @@ describe('deviceReattachResourceDigest (#8318 §8)', () => {
   const base = {
     sourceDeviceId: '00000000-0000-4000-8000-000000000001',
     targetDeviceId: '00000000-0000-4000-8000-000000000002',
-    targetAgentId: 'agent-target-1',
-    targetIncarnation: 1,
+    targetVersion: 'v'.repeat(43),
     evidenceLevel: 'hint' as const,
     restoreDecommissioned: false,
   };
@@ -572,8 +571,7 @@ describe('deviceReattachResourceDigest (#8318 §8)', () => {
       { ...base, targetDeviceId: '00000000-0000-4000-8000-000000000003' },
       // Swapping the roles is a different reattach.
       { ...base, sourceDeviceId: base.targetDeviceId, targetDeviceId: base.sourceDeviceId },
-      { ...base, targetAgentId: 'agent-target-2' },
-      { ...base, targetIncarnation: 2 },
+      { ...base, targetVersion: 'w'.repeat(43) },
       { ...base, evidenceLevel: 'tpm_continuity' as const },
       { ...base, restoreDecommissioned: true },
     ];
@@ -590,7 +588,7 @@ describe('deviceReattachResourceDigest (#8318 §8)', () => {
     const binding = { ...bind('device_reattach'), resourceDigest: deviceReattachResourceDigest(base) };
     const id = await mintStepUpGrant(binding);
     expect(id).toBeTruthy();
-    expect(await validateStepUpGrant(id!, { ...binding, resourceDigest: deviceReattachResourceDigest({ ...base, targetIncarnation: 2 }) })).toBe(false);
+    expect(await validateStepUpGrant(id!, { ...binding, resourceDigest: deviceReattachResourceDigest({ ...base, targetVersion: 'w'.repeat(43) }) })).toBe(false);
     expect(await validateStepUpGrant(id!, { ...binding, operation: 'device_force_reboot' })).toBe(false);
     expect(await consumeStepUpGrant(id!, binding)).toBe(true);
     expect(await consumeStepUpGrant(id!, binding)).toBe(false);

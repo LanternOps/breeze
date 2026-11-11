@@ -21,10 +21,10 @@
  * services/deviceReattach/requestIntent.ts, under the partner's holding-area
  * lock and both device row locks. While two-factor authentication is enabled
  * the request needs a `device_reattach` step-up grant (POST /auth/mfa/step-up)
- * bound to { sourceDeviceId, targetDeviceId, targetAgentId, targetIncarnation,
- * evidenceLevel, restoreDecommissioned } — the last four as the candidates
- * read returned them — consumed in the creating transaction after every
- * refusal, so a refusal never burns it.
+ * bound to { sourceDeviceId, targetDeviceId, targetVersion, evidenceLevel,
+ * restoreDecommissioned } — `targetVersion` and `evidenceLevel` as the
+ * candidates read returned them — consumed in the creating transaction after
+ * every refusal, so a refusal never burns it.
  *
  * Both routes are self-managed DB context routes
  * (middleware/selfManagedDbContextRoutes.ts): the request path reads Redis
@@ -47,8 +47,9 @@ import { PERMISSIONS } from '../../services/permissions';
 import { getUserEpochs } from '../../services/authEpochs';
 import { ENABLE_2FA } from '../auth/schemas';
 import { captureException } from '../../services/sentry';
-import { requestDeviceReattach } from '../../services/deviceReattach/requestIntent';
+import { requestDeviceReattach, type ReattachStepUp } from '../../services/deviceReattach/requestIntent';
 import { refusalBody } from '../../services/deviceReattach/errors';
+import { REATTACH_TARGET_VERSION_PATTERN } from '../../services/deviceReattach/protocol';
 import { readReinstallCandidatesForViewer } from '../../services/reinstallCandidates/viewer';
 
 export const reattachRoutes = new Hono();
@@ -64,6 +65,10 @@ const sourceParamSchema = z.object({ id: z.string().uuid() });
  */
 export const reattachBodySchema = z.object({
   targetDeviceId: z.string().uuid(),
+  // The opaque version of the target's install the dialog showed (the
+  // candidates read). A target that re-enrolled since answers 409
+  // `target_changed`.
+  targetVersion: z.string().regex(REATTACH_TARGET_VERSION_PATTERN),
   // The technician confirmed out of band that the new install runs on the
   // machine the existing record describes: every identifier shown is reported
   // by the device itself.
@@ -111,12 +116,15 @@ reattachRoutes.post(
     const sourceDeviceId = c.req.valid('param').id.toLowerCase();
     const body = c.req.valid('json');
 
-    let stepUp: Parameters<typeof requestDeviceReattach>[0]['stepUp'] = null;
+    // Explicit both ways: `not_required` only with two-factor authentication
+    // off on the deployment (as routes/preAssignment.ts).
+    let stepUp: ReattachStepUp = { kind: 'not_required' };
     if (ENABLE_2FA) {
       const epochs = await getUserEpochs(auth.user.id);
       const sid = auth.token?.sid;
       if (!epochs || !sid) return c.json({ error: 'Service temporarily unavailable' }, 503);
       stepUp = {
+        kind: 'grant',
         grantId: body.stepUpGrant ?? null,
         auth,
         binding: { authEpoch: epochs.authEpoch, mfaEpoch: epochs.mfaEpoch, sid },
@@ -129,6 +137,7 @@ reattachRoutes.post(
         actor: { userId: auth.user.id },
         sourceDeviceId,
         targetDeviceId: body.targetDeviceId.toLowerCase(),
+        targetVersion: body.targetVersion,
         evidenceLevel: 'hint',
         restoreDecommissioned: body.restoreDecommissioned,
         acknowledgeOsChange: body.acknowledgeOsChange,
