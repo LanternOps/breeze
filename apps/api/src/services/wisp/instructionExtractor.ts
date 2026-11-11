@@ -83,7 +83,7 @@ import {
   type GrantCeiling,
 } from './grantAuthority';
 import { finishInstructionCapture } from './instructionCaptureStatus';
-import { recallForGrant, rememberInstructionGroupForGrant, type RememberInput } from './memoryBroker';
+import { MEMORY_RECALL_MAX_LIMIT, recallForGrant, rememberInstructionGroupForGrant, type RememberInput } from './memoryBroker';
 import { isMemoryBlockLapsed, standingInstructionRuleKey, standingInstructionSubjectKey } from './standingInstructions';
 
 /** Model calls one grant may spend on extraction per UTC day. */
@@ -98,9 +98,10 @@ export const INSTRUCTION_EXTRACT_PREVIOUS_REPLY_MAX_CHARS = 2_000;
 export const INSTRUCTION_EXTRACT_MAX_INSTRUCTIONS = 5;
 /** 26 h: the day key outlives its UTC day, so a late INCR never restarts the count. */
 const CAP_KEY_TTL_SECONDS = 93_600;
+/** "Already saved" prompt lines: this turn's clauses and the thread's, combined (#11614). */
 const ALREADY_REMEMBERED_MAX_ITEMS = 20;
-/** The thread's saved standing instructions read per capture (#11614). */
-export const THREAD_SAVED_INSTRUCTIONS_MAX_ROWS = 50;
+/** The thread's saved standing instructions read per capture (#11614): the broker's maximum, so the rule check sees them all. */
+export const THREAD_SAVED_INSTRUCTIONS_MAX_ROWS = MEMORY_RECALL_MAX_LIMIT;
 const ALREADY_REMEMBERED_ITEM_MAX_CHARS = 300;
 const DEVICE_MATCH_LIMIT = 500;
 const RESERVATION_KEY_PREFIX = 'wisp-instruction-extract:';
@@ -289,7 +290,7 @@ async function takeDailySlot(grantId: string, now: Date): Promise<boolean> {
   }
 }
 
-/** This turn's clauses first, then the thread's newest; one line per distinct clause. */
+/** This turn's clauses first, then the thread's (confirmed first, then newest); one line per distinct clause. */
 function alreadySavedLines(input: ExtractStandingInstructionsInput, thread: ThreadSavedInstructions): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
@@ -355,7 +356,7 @@ function parseModelOutput(
 function blocksForInstruction(
   instruction: ExtractedInstruction,
   resolved: Map<string, ResolvedDeviceName[]>,
-  ctx: { ceiling: GrantCeiling; input: ExtractStandingInstructionsInput; held: ReadonlySet<string> },
+  ctx: { ceiling: GrantCeiling; input: ExtractStandingInstructionsInput; held: ReadonlySet<string>; dropped: { count: number } },
 ): RememberInput[] {
   const names = [...new Set(instruction.targets.map((t) => t.trim()))].filter((t) => t !== '');
   const base = {
@@ -382,7 +383,9 @@ function blocksForInstruction(
 
   return contents.filter((content) => {
     const key = standingInstructionRuleKey(content);
-    return key === null || !ctx.held.has(key);
+    if (key === null || !ctx.held.has(key)) return true;
+    ctx.dropped.count += 1;
+    return false;
   }).map((content) => {
     const valid = standingInstructionContentSchema.parse(content);
     return {
@@ -527,9 +530,16 @@ async function extract(input: ExtractStandingInstructionsInput, now: Date): Prom
 
   const names = [...new Set(instructions.flatMap((i) => i.targets.map((t) => t.trim())).filter((t) => t !== ''))];
   const resolvedNames = await resolveDeviceNamesInCeiling(ceiling, names);
+  const dropped = { count: 0 };
   const blocks = instructions.flatMap((instruction) => blocksForInstruction(instruction, resolvedNames, {
-    ceiling, input, held: thread.ruleKeys,
+    ceiling, input, held: thread.ruleKeys, dropped,
   }));
+  if (dropped.count > 0) {
+    // Tells a `none` that came from the thread's held rules apart from a model miss.
+    console.info('[wisp] instruction capture: rules the thread already holds were not saved again', {
+      captureId: input.captureId, extracted: instructions.length, droppedBlocks: dropped.count, savedBlocks: blocks.length,
+    });
+  }
   if (blocks.length === 0) return 'none';
 
   try {

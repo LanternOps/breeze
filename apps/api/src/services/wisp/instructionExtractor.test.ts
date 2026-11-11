@@ -402,8 +402,33 @@ describe('#11614: instructions an earlier turn of the thread already saved', () 
     await extractStandingInstructions(input);
     expect(h.recallForGrant).toHaveBeenCalledWith(
       expect.objectContaining({ grantId: GRANT }),
-      expect.objectContaining({ blockTypes: ['standing_instruction'], sourceSessionId: SESSION }),
+      { blockTypes: ['standing_instruction'], sourceSessionId: SESSION, limit: 200 },
     );
+  });
+
+  it('caps the already-saved list at 20 lines, this turn\'s clauses first, then the thread\'s in broker order', async () => {
+    h.sessionRows = Array.from({ length: 30 }, (_, i) => ({ content: { text: `thread rule ${i}` } }));
+    await extractStandingInstructions({ ...input, alreadyRemembered: ['turn rule a', 'turn rule b'] });
+    const lines = savedPrompt().split('\n').filter((l) => l.startsWith('- '));
+    expect(lines).toHaveLength(20);
+    expect(lines.slice(0, 3)).toEqual(['- turn rule a', '- turn rule b', '- thread rule 0']);
+    expect(lines[19]).toBe('- thread rule 17');
+  });
+
+  it('a free-form `remember` row is prompt-only: the code check cannot match it, so the model\'s skip decides', async () => {
+    h.sessionRows = [{ content: { text: "don't reboot PC-01 and PC-02" } }];
+    await expect(extractStandingInstructions(input)).resolves.toBe('saved');
+    expect(savedPrompt()).toContain("don't reboot PC-01 and PC-02");
+  });
+
+  it('logs how many blocks the held-rule check dropped', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    h.sessionRows = [savedCapture()];
+    await extractStandingInstructions(input);
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('already holds'), {
+      captureId: CAPTURE, extracted: 1, droppedBlocks: 1, savedBlocks: 1,
+    });
+    info.mockRestore();
   });
 
   it('lists a standing instruction an earlier turn saved with `remember` (free-form) as already saved', async () => {
