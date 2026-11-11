@@ -20,7 +20,7 @@ tracking_issue: LanternOps/breeze#11377
 
 **Spec:** `docs/superpowers/specs/portal/2026-11-07-portal-registration-options-design.md`. Relevant sections:
 - §3: G4, G5 and the anti-goals (wrong org; an SSO sign-in taking over an existing login because an email matched);
-- §4: the card's Google row ("hd contoso.com ✓ verified") and the first-SSO-sign-in default;
+- §4: the card's Google row ("hd contoso.example.com ✓ verified") and the first-SSO-sign-in default;
 - §5.1 (transition table), §5.2 (identity key; "Google `hd` is a per-sign-in domain assertion… not part of the identity key");
 - §5.4 (requirements table: "Sign in with Google — verified domain equal to the `hd` claim");
 - §5.5 (the SSO invite email variant), **§5.6 (all of it), §5.8 (all of it)**, §5.10 (audit names), §5.11 (session caps, `sso_only`);
