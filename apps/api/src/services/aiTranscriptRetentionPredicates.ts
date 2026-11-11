@@ -45,9 +45,8 @@ import { CLIENT_SESSION_TYPES } from './clientAiHosts';
  * `enforced` so the cards say "once retention is enforced" vs "in the next
  * nightly run".
  */
-export const AI_TRANSCRIPT_RETENTION_ENFORCE = retentionEnforceFromEnv(
-  '[AiTranscriptRetention]', 'AI_TRANSCRIPT_RETENTION_ENFORCE', false,
-);
+const LOG = '[AiTranscriptRetention]';
+export const AI_TRANSCRIPT_RETENTION_ENFORCE = retentionEnforceFromEnv(LOG, 'AI_TRANSCRIPT_RETENTION_ENFORCE', false);
 
 /**
  * Longer than the 2 h in-memory idle eviction (`SESSION_IDLE_TIMEOUT_MS`,
