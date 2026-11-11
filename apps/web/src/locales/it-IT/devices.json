@@ -3841,7 +3841,8 @@
     "viewOldDevice": "Visualizza il vecchio dispositivo",
     "reattach": "Ricollega",
     "reattachPending": "Un ricollegamento al vecchio record è in sospeso: la nuova installazione lo completa quando il suo agente si collega. La richiesta scade il {{expiresAt}}.",
-    "reviewPending": "Una possibile reinstallazione attende la revisione del partner."
+    "reviewPending": "Una possibile reinstallazione attende la revisione del partner.",
+    "reattachPendingOther": "Un ricollegamento di questo dispositivo è in sospeso. La richiesta scade il {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "Impossibile caricare i rilievi di sicurezza sull'accesso remoto per questa vista.",
@@ -4278,7 +4279,8 @@
     "modeLegend": "Cosa fare con questo dispositivo",
     "modeAssign": "Assegna come nuovo dispositivo",
     "modeReattach": "Ricollega a {{hostname}} (reinstallazione di un record esistente)",
-    "reattachPending": "Un ricollegamento di questo dispositivo è in sospeso: la nuova installazione lo completa quando il suo agente si collega. La richiesta scade il {{expiresAt}}."
+    "reattachPending": "Un ricollegamento di questo dispositivo è in sospeso: la nuova installazione lo completa quando il suo agente si collega. La richiesta scade il {{expiresAt}}.",
+    "cancelReattachConfirm": "Assegnare questo dispositivo come nuovo annulla il ricollegamento in sospeso. Ho capito."
   },
   "timeFleet": {
     "title": "Sincronizzazione dell’ora",
@@ -5132,6 +5134,7 @@
       "confirm_target_name_mismatch": "Il nome digitato non corrisponde a {{hostname}}.",
       "same_device": "Un dispositivo non può essere ricollegato a sé stesso.",
       "invalid_target_version": "Manca la versione del record esistente. Riapri il ricollegamento."
-    }
+    },
+    "stepUpHeld": "La tua verifica è ancora valida per questo ricollegamento."
   }
 }

@@ -3841,7 +3841,8 @@
     "viewOldDevice": "Eski cihazı görüntüle",
     "reattach": "Yeniden bağla",
     "reattachPending": "Eski kayda bekleyen bir yeniden bağlama var: yeni kurulum, ajanı bağlandığında işlemi tamamlar. İstek {{expiresAt}} tarihinde sona erer.",
-    "reviewPending": "Olası bir yeniden kurulum iş ortağı incelemesini bekliyor."
+    "reviewPending": "Olası bir yeniden kurulum iş ortağı incelemesini bekliyor.",
+    "reattachPendingOther": "Bu cihaz için bekleyen bir yeniden bağlama var. İstek {{expiresAt}} tarihinde sona erer."
   },
   "fleetPosture": {
     "securityUnavailable": "Bu görünüm için uzaktan erişim güvenliği bulguları yüklenemedi.",
@@ -4278,7 +4279,8 @@
     "modeLegend": "Bu cihazla ne yapılacak",
     "modeAssign": "Yeni cihaz olarak ata",
     "modeReattach": "{{hostname}} kaydına yeniden bağla (mevcut bir kaydın yeniden kurulumu)",
-    "reattachPending": "Bu cihaz için bekleyen bir yeniden bağlama var: yeni kurulum, ajanı bağlandığında işlemi tamamlar. İstek {{expiresAt}} tarihinde sona erer."
+    "reattachPending": "Bu cihaz için bekleyen bir yeniden bağlama var: yeni kurulum, ajanı bağlandığında işlemi tamamlar. İstek {{expiresAt}} tarihinde sona erer.",
+    "cancelReattachConfirm": "Bu cihazı yeni olarak atamak bekleyen yeniden bağlamayı iptal eder. Anladım."
   },
   "timeFleet": {
     "title": "Saat eşitleme",
@@ -5132,6 +5134,7 @@
       "confirm_target_name_mismatch": "Yazılan ad {{hostname}} ile eşleşmiyor.",
       "same_device": "Bir cihaz kendisine yeniden bağlanamaz.",
       "invalid_target_version": "Mevcut kaydın sürümü eksik. Yeniden bağlamayı tekrar açın."
-    }
+    },
+    "stepUpHeld": "Doğrulamanız bu yeniden bağlama için hâlâ geçerli."
   }
 }

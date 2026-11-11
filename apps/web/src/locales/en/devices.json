@@ -3861,7 +3861,8 @@
     "viewOldDevice": "View old device",
     "reattach": "Reattach",
     "reattachPending": "A reattach onto the old record is pending: the new install completes it when its agent checks in. The request expires {{expiresAt}}.",
-    "reviewPending": "A possible reinstall awaits partner review."
+    "reviewPending": "A possible reinstall awaits partner review.",
+    "reattachPendingOther": "A reattach of this device is pending. The request expires {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "Remote-access security findings could not be loaded for this view.",
@@ -4278,7 +4279,8 @@
     "modeLegend": "What to do with this device",
     "modeAssign": "Assign as a new device",
     "modeReattach": "Reattach to {{hostname}} (a reinstall of an existing record)",
-    "reattachPending": "A reattach of this device is pending: its new install completes it when its agent checks in. The request expires {{expiresAt}}."
+    "reattachPending": "A reattach of this device is pending: its new install completes it when its agent checks in. The request expires {{expiresAt}}.",
+    "cancelReattachConfirm": "Assigning this device as new cancels its pending reattach. I understand."
   },
   "timeFleet": {
     "title": "Time synchronization",
@@ -5132,6 +5134,7 @@
       "confirm_target_name_mismatch": "The name typed does not match {{hostname}}.",
       "same_device": "A device cannot be reattached onto itself.",
       "invalid_target_version": "The existing record’s version is missing. Open the reattach again."
-    }
+    },
+    "stepUpHeld": "Your verification is still valid for this reattach."
   }
 }

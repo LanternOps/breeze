@@ -3841,7 +3841,8 @@
     "viewOldDevice": "Altes Gerät anzeigen",
     "reattach": "Neu verknüpfen",
     "reattachPending": "Eine Neuverknüpfung mit dem alten Eintrag steht aus: Die neue Installation schließt sie ab, sobald sich ihr Agent meldet. Die Anfrage läuft am {{expiresAt}} ab.",
-    "reviewPending": "Eine mögliche Neuinstallation wartet auf die Prüfung durch den Partner."
+    "reviewPending": "Eine mögliche Neuinstallation wartet auf die Prüfung durch den Partner.",
+    "reattachPendingOther": "Eine Neuverknüpfung dieses Geräts steht aus. Die Anfrage läuft am {{expiresAt}} ab."
   },
   "fleetPosture": {
     "securityUnavailable": "Sicherheitsbefunde zum Fernzugriff konnten für diese Ansicht nicht geladen werden.",
@@ -4278,7 +4279,8 @@
     "modeLegend": "Was mit diesem Gerät geschehen soll",
     "modeAssign": "Als neues Gerät zuweisen",
     "modeReattach": "Mit {{hostname}} neu verknüpfen (Neuinstallation eines vorhandenen Eintrags)",
-    "reattachPending": "Eine Neuverknüpfung dieses Geräts steht aus: Die neue Installation schließt sie ab, sobald sich ihr Agent meldet. Die Anfrage läuft am {{expiresAt}} ab."
+    "reattachPending": "Eine Neuverknüpfung dieses Geräts steht aus: Die neue Installation schließt sie ab, sobald sich ihr Agent meldet. Die Anfrage läuft am {{expiresAt}} ab.",
+    "cancelReattachConfirm": "Wenn dieses Gerät als neues Gerät zugewiesen wird, wird seine ausstehende Neuverknüpfung abgebrochen. Ich habe verstanden."
   },
   "timeFleet": {
     "title": "Zeitsynchronisierung",
@@ -5132,6 +5134,7 @@
       "confirm_target_name_mismatch": "Der eingegebene Name stimmt nicht mit {{hostname}} überein.",
       "same_device": "Ein Gerät kann nicht mit sich selbst neu verknüpft werden.",
       "invalid_target_version": "Die Version des vorhandenen Eintrags fehlt. Öffnen Sie die Neuverknüpfung erneut."
-    }
+    },
+    "stepUpHeld": "Ihre Bestätigung gilt weiterhin für diese Neuverknüpfung."
   }
 }

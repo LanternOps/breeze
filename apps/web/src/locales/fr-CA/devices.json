@@ -3841,7 +3841,8 @@
     "viewOldDevice": "Voir l’ancien appareil",
     "reattach": "Rattacher",
     "reattachPending": "Un rattachement à l’ancienne fiche est en attente : la nouvelle installation le termine lorsque son agent se connecte. La demande expire le {{expiresAt}}.",
-    "reviewPending": "Une réinstallation possible attend l’examen du partenaire."
+    "reviewPending": "Une réinstallation possible attend l’examen du partenaire.",
+    "reattachPendingOther": "Un rattachement de cet appareil est en attente. La demande expire le {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "Impossible de charger les constats de sécurité d'accès distant pour cette vue.",
@@ -4278,7 +4279,8 @@
     "modeLegend": "Que faire de cet appareil",
     "modeAssign": "Affecter comme nouvel appareil",
     "modeReattach": "Rattacher à {{hostname}} (réinstallation d’une fiche existante)",
-    "reattachPending": "Un rattachement de cet appareil est en attente : la nouvelle installation le termine lorsque son agent se connecte. La demande expire le {{expiresAt}}."
+    "reattachPending": "Un rattachement de cet appareil est en attente : la nouvelle installation le termine lorsque son agent se connecte. La demande expire le {{expiresAt}}.",
+    "cancelReattachConfirm": "Affecter cet appareil comme nouvel appareil annule son rattachement en attente. Je comprends."
   },
   "timeFleet": {
     "title": "Synchronisation de l’heure",
@@ -5132,6 +5134,7 @@
       "confirm_target_name_mismatch": "Le nom saisi ne correspond pas à {{hostname}}.",
       "same_device": "Un appareil ne peut pas être rattaché à lui-même.",
       "invalid_target_version": "La version de la fiche existante est manquante. Rouvrez le rattachement."
-    }
+    },
+    "stepUpHeld": "Votre vérification est toujours valable pour ce rattachement."
   }
 }

@@ -3841,7 +3841,8 @@
     "viewOldDevice": "Ver dispositivo antiguo",
     "reattach": "Volver a vincular",
     "reattachPending": "Hay una revinculación pendiente con el registro anterior: la nueva instalación la completa cuando su agente se conecte. La solicitud vence el {{expiresAt}}.",
-    "reviewPending": "Una posible reinstalación espera la revisión del socio."
+    "reviewPending": "Una posible reinstalación espera la revisión del socio.",
+    "reattachPendingOther": "Hay una revinculación pendiente de este dispositivo. La solicitud vence el {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "No se pudieron cargar los hallazgos de seguridad de acceso remoto para esta vista.",
@@ -4278,7 +4279,8 @@
     "modeLegend": "Qué hacer con este dispositivo",
     "modeAssign": "Asignar como dispositivo nuevo",
     "modeReattach": "Volver a vincular a {{hostname}} (reinstalación de un registro existente)",
-    "reattachPending": "Hay una revinculación pendiente de este dispositivo: la nueva instalación la completa cuando su agente se conecte. La solicitud vence el {{expiresAt}}."
+    "reattachPending": "Hay una revinculación pendiente de este dispositivo: la nueva instalación la completa cuando su agente se conecte. La solicitud vence el {{expiresAt}}.",
+    "cancelReattachConfirm": "Asignar este dispositivo como nuevo cancela su revinculación pendiente. Lo entiendo."
   },
   "timeFleet": {
     "title": "Sincronización de hora",
@@ -5132,6 +5134,7 @@
       "confirm_target_name_mismatch": "El nombre escrito no coincide con {{hostname}}.",
       "same_device": "Un dispositivo no se puede volver a vincular consigo mismo.",
       "invalid_target_version": "Falta la versión del registro existente. Abre la revinculación de nuevo."
-    }
+    },
+    "stepUpHeld": "Tu verificación sigue siendo válida para esta revinculación."
   }
 }
