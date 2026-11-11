@@ -1413,6 +1413,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	if runtime.GOOS == "windows" && cfg.IsService {
 		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithSessionLocale(h.helperSessionLocale),
 			helper.WithAgentVersion(version),
 			// Providers, not values: both fields are replaced at runtime (the
 			// manifest-trust-pin path and applyManifestKeyDelegations rewrite
@@ -1452,6 +1453,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		// session broker after it exists.
 		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
+			helper.WithSessionLocale(h.helperSessionLocale),
 			helper.WithAgentVersion(version),
 			// Providers, not values: both fields are replaced at runtime (the
 			// manifest-trust-pin path and applyManifestKeyDelegations rewrite
