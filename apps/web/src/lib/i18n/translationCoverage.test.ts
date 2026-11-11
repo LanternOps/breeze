@@ -188,7 +188,7 @@ const namespaceDuplicateBaselines = {
     // +1 Sites page (#9794): "Sites" (sites.page.title / siteDetailPage.breadcrumbs.sites) is the pt-BR loanword.
     // +1 Wisp memory: wispMemory.columns.status "Status" is spelled identically in pt-BR (main landed it without bumping this cap).
     // +4 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
-    'settings.json': 155, // +1 contactsCard.portal.column "Portal" (product name, identical in pt-BR); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); columns.status x2 "Status"
+    'settings.json': 156, // +1 contactsCard.portal.column "Portal" (product name, identical in pt-BR); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); columns.status x2 "Status" // +1 contactsCard.responsibilities.scopes.site "Site" cognate (Phase 4b)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -589,7 +589,7 @@ const namespaceDuplicateBaselines = {
     // +3 Wisp memory: wispMemory.tabs.org "Client", columns.type "Type", columns.actions "Actions" are identical in French.
     // +2 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
     // +2 Sites page (#9794): sites.page.title and siteDetailPage.breadcrumbs.sites "Sites" are the identical French word.
-    'settings.json': 203, // +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
+    'settings.json': 204, // +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain) // +1 contactsCard.responsibilities.scopes.site "Site" cognate (Phase 4b)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -800,7 +800,7 @@ const namespaceDuplicateBaselines = {
     // +3 Wisp memory: wispMemory.tabs.org "Client", columns.type "Type", columns.actions "Actions" are identical in French.
     // +2 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
     // +2 Sites page (#9794): sites.page.title and siteDetailPage.breadcrumbs.sites "Sites" are the identical French word.
-    'settings.json': 208, // +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
+    'settings.json': 209, // +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain) // +1 contactsCard.responsibilities.scopes.site "Site" cognate (Phase 4b)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1314,7 +1314,7 @@ const namespaceDuplicateBaselines = {
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // #7609 aiModels.quality.groupBy.model: "Model" is the identical word in Turkish.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 89, // +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
+    'settings.json': 90, // +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain) // +1 contactsCard.responsibilities.scopes.site "Site" cognate (Phase 4b)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,
