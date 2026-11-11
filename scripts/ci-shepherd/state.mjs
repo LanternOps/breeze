@@ -6,7 +6,7 @@
 //   lock            {token, at}; older than 15 min is stale and taken over
 //   decisions.jsonl one line per decision applied or recorded (shadow)
 //   sightings.jsonl flake sightings from completed CI runs (evidence.mjs)
-import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -46,8 +46,8 @@ export const emptyState = () => ({
 // a comment it already posted.
 export function loadState(dir) {
   const path = join(dir, 'state.json');
-  if (!existsSync(path)) return { state: emptyState(), corrupt: null };
-  const text = readFileSync(path, 'utf8');
+  const text = readIfPresent(path);
+  if (text === null) return { state: emptyState(), corrupt: null };
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
@@ -70,24 +70,37 @@ export function saveState(dir, state) {
 // A killed writer can leave a last line without its newline; start a new
 // line rather than glue this record onto the torn one.
 export function appendJsonl(path, obj) {
-  let lead = '';
-  if (existsSync(path)) {
-    const size = statSync(path).size;
+  // One descriptor for the size check and the write: no gap between them.
+  const fd = openSync(path, 'a+');
+  try {
+    let lead = '';
+    const size = fstatSync(fd).size;
     if (size > 0) {
-      const fd = openSync(path, 'r');
       const b = Buffer.alloc(1);
       readSync(fd, b, 0, 1, size - 1);
-      closeSync(fd);
       if (b[0] !== 0x0a) lead = '\n';
     }
+    writeSync(fd, `${lead}${JSON.stringify(obj)}\n`);
+  } finally {
+    closeSync(fd);
   }
-  appendFileSync(path, `${lead}${JSON.stringify(obj)}\n`);
+}
+
+// Read-or-null in one call; a separate existence check would race the read.
+function readIfPresent(path) {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
 }
 
 export function readJsonl(path) {
-  if (!existsSync(path)) return [];
+  const text = readIfPresent(path);
+  if (text === null) return [];
   const out = [];
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
+  for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     try {
       out.push(JSON.parse(line));

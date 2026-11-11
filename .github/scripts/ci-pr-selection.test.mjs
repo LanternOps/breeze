@@ -180,6 +180,8 @@ test('reader map scan: every docs path a test reads by literal path is declared'
     'ee/workspace/src/__tests__/support/provisionTestDb.test.ts': ['README.md'],
     'apps/api/src/jobs/wingetIndexSyncWorker.test.ts': ['README.md'],
     'apps/api/src/services/aiModels/prepareSdkChild.test.ts': ['CLAUDE.md'],
+    // Reads its own directory's README.md (scripts/ci-shepherd/), not the root one.
+    'scripts/ci-shepherd/packaging.test.mjs': ['README.md'],
   };
   const map = readerMap();
   const findings = new Set();
