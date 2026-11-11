@@ -221,6 +221,9 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
           typeof data.possibleReplacementOfDeviceId === "string"
             ? data.possibleReplacementOfDeviceId
             : null,
+        // #8318 "Reinstalled on <date>" badge. Same whitelist hazard.
+        lastReattachedAt:
+          typeof data.lastReattachedAt === "string" ? data.lastReattachedAt : null,
         desktopAccess: data.desktopAccess ?? undefined,
         remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
         // #10922 — the Connect button's tool menu. Dropped here, the menu
