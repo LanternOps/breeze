@@ -3012,13 +3012,15 @@ const changedLines = (a, b) => {
   return left.flatMap((line, i) => line === right[i] ? [] : [[right[i], line]]);
 };
 
-test('N3 tamper: one ci.yml line hard-codes a thinnable job, and the two test pins follow it', () => {
+test('N3 tamper: one ci.yml line hard-codes a thinnable job, and the three test pins follow it', () => {
   assert.ok(thin.THINNABLE.includes(n3.N3_JOB), 'N3 must skip a job the base could thin');
   assert.deepEqual(changedLines(tamperedCi, untamperedCi),
     [['      thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}', `      thin_skip: ',${n3.N3_JOB},'`]]);
   const qs = readFileSync(join(REPO_ROOT, QS_TEST), 'utf8');
   const tamperedQs = n3.applyN3(QS_TEST, qs);
-  assert.equal(changedLines(tamperedQs, n3.revertN3(QS_TEST, qs)).length, 2);
+  const pins = changedLines(tamperedQs, n3.revertN3(QS_TEST, qs));
+  assert.equal(pins.length, 3);
+  assert.ok(pins.every(([before]) => before.includes('steps.queue_thin.outputs.thin_skip') || before.includes('outputLines.length, 3')), JSON.stringify(pins));
   // The tampered test file still parses: the literal sits inside single quotes.
   const dir = tempDir();
   writeFileSync(join(dir, 'queue-selection.test.mjs'), tamperedQs);

@@ -13,14 +13,14 @@
 //     automated N3, on every PR).
 //   - The live N3 runs this file on a throwaway branch:
 //       node .github/scripts/thin-queue-n3.mjs apply
-//     It also rewrites the two literals in queue-selection.test.mjs that pin the
-//     untampered output line, so the throwaway passes its own PR CI and can be
-//     enqueued (the first live attempt, PR 11583, could not). Runbook:
-//     docs/agents/merge-and-deploy.md, "Thin queue negative leg (N3)".
+//     It also rewrites the three pins in queue-selection.test.mjs that the
+//     untampered output line satisfies, so the throwaway passes its own PR CI
+//     and can be enqueued (the first live attempt, PR 11583, could not).
+//     Runbook: docs/agents/merge-and-deploy.md, "Thin queue negative leg (N3)".
 //
 // Both directions are idempotent and count their matches, so a ci.yml or test
-// change that moves the pinned line turns ci-gate.test.mjs red here instead of
-// breaking the runbook silently.
+// change that moves a pinned line turns ci-gate.test.mjs red here instead of
+// breaking the runbook silently. Every replacement keeps the line count.
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,10 +28,17 @@ import { fileURLToPath } from 'node:url';
 export const N3_JOB = 'test-shared';
 
 const CONSUMER = 'thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}';
-// ci.yml carries the YAML literal; the test file carries it inside a single-quoted JS string.
 export const N3_EDITS = Object.freeze([
-  { file: '.github/workflows/ci.yml', from: CONSUMER, to: `thin_skip: ',${N3_JOB},'`, count: 1 },
-  { file: '.github/scripts/queue-selection.test.mjs', from: CONSUMER, to: `thin_skip: \\',${N3_JOB},\\'`, count: 2 },
+  { file: '.github/workflows/ci.yml', replacements: [{ from: CONSUMER, to: `thin_skip: ',${N3_JOB},'`, count: 1 }] },
+  {
+    file: '.github/scripts/queue-selection.test.mjs',
+    replacements: [
+      // The two literals of the output line, inside single-quoted JS strings.
+      { from: CONSUMER, to: `thin_skip: \\',${N3_JOB},\\'`, count: 2 },
+      // T6 counts the lines that read the consume step: thin_skip no longer does.
+      { from: '  assert.equal(outputLines.length, 3);', to: '  assert.equal(outputLines.length, 2); // N3 throwaway', count: 1 },
+    ],
+  },
 ]);
 
 const occurrences = (text, needle) => text.split(needle).length - 1;
@@ -42,14 +49,18 @@ const occurrences = (text, needle) => text.split(needle).length - 1;
 export function n3Text(file, text, direction) {
   const edit = N3_EDITS.find((e) => e.file === file);
   if (!edit) throw Error(`thin-queue-n3: no edit for ${file}`);
-  const [from, to] = direction === 'apply' ? [edit.from, edit.to] : direction === 'revert' ? [edit.to, edit.from] : [];
-  if (!from) throw Error(`thin-queue-n3: unknown direction ${direction}`);
-  const have = occurrences(text, from), done = occurrences(text, to);
-  if (have === 0 && done === edit.count) return text;
-  if (have !== edit.count || done !== 0) {
-    throw Error(`thin-queue-n3: ${file} has ${have} of ${edit.count} lines to ${direction} and ${done} already done; the N3 tamper is stale`);
+  if (direction !== 'apply' && direction !== 'revert') throw Error(`thin-queue-n3: unknown direction ${direction}`);
+  let out = text;
+  for (const r of edit.replacements) {
+    const [from, to] = direction === 'apply' ? [r.from, r.to] : [r.to, r.from];
+    const have = occurrences(out, from), done = occurrences(out, to);
+    if (have === 0 && done === r.count) continue;
+    if (have !== r.count || done !== 0) {
+      throw Error(`thin-queue-n3: ${file} has ${have} of ${r.count} matches to ${direction} for ${JSON.stringify(r.from)} and ${done} already done; the N3 tamper is stale`);
+    }
+    out = out.split(from).join(to);
   }
-  return text.split(from).join(to);
+  return out;
 }
 
 export const applyN3 = (file, text) => n3Text(file, text, 'apply');
