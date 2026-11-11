@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => {
     materialize: vi.fn(), captureException: vi.fn(), ingest: vi.fn(), authority: { producerEpoch: '', sourceIdentity: '' },
   };
 });
-vi.mock('../../db', async (original) => ({ ...await original<object>(), assertInTransaction: vi.fn(), db: mocks.db }));
+vi.mock('../../db', async (original) => ({ ...await original<object>(), assertInTransaction: vi.fn(), db: mocks.db,
+  withDbTransaction: vi.fn(async (fn: () => unknown) => fn()) }));
 vi.mock('./unifiWifiMaterializer', () => ({ materializeUnifiWifiCurrentState: mocks.materialize }));
 vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
 vi.mock('./collectionIngest', () => ({ ingestTopologySourceReport: mocks.ingest }));
