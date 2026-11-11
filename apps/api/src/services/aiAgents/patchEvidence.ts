@@ -15,18 +15,17 @@
  *
  * A real fleet has thousands of (device, patch) pairs; 40 rows at 24 KiB
  * would truncate it into nonsense. So the bundle leads with a SCALAR rollup
- * (device/patch/severity counts, oldest outstanding age, the latest compliance
- * snapshot's scalars), then per-ring posture, then the worst devices with a
- * small per-device sample of their outstanding patches, then the reboot
- * backlog. Counts are real (`COUNT(*) OVER ()` / aggregates); rows are samples.
+ * (device/patch/severity counts, oldest outstanding age), then per-ring
+ * posture, then the worst devices with a small per-device sample of their
+ * outstanding patches, then the reboot backlog. Counts are real (`COUNT(*) OVER ()` / aggregates); rows are samples.
  *
  * ## The properties this module holds (copied from sweepEvidence.ts)
  *
  *  - **Display scalars only, off named columns.** No jsonb/bytea/free-text
  *    column reaches the bundle: `patch_policies.targets/schedule/
  *    reboot_policy/category_rules`, `patch_jobs.patches/targets`,
- *    `patch_job_results.output`, `patch_compliance_snapshots.
- *    details_by_category`, `patches.description/metadata/install_command`,
+ *    `patch_job_results.output`,
+ *    `patches.description/metadata/install_command`,
  *    `device_patches.last_error` are never selected. The ONE jsonb read is
  *    `patch_policies.auto_approve`, parsed server-side through the canonical
  *    `parseRingAutoApprove` into a short summary string — the raw object is
@@ -169,18 +168,6 @@ export interface PatchEvidenceSection {
   truncated: boolean;
 }
 
-export interface PatchComplianceSnapshotScalars {
-  date: string | null;
-  totalDevices: number | null;
-  compliantDevices: number | null;
-  nonCompliantDevices: number | null;
-  criticalMissing: number | null;
-  importantMissing: number | null;
-  patchesPendingApproval: number | null;
-  patchesInstalled24h: number | null;
-  failedInstalls24h: number | null;
-}
-
 export interface PatchEvidenceRollup {
   devicesTotal: number;
   devicesNonCompliant: number;
@@ -190,8 +177,6 @@ export interface PatchEvidenceRollup {
   /** Outstanding (device, patch) pairs by vendor severity. */
   outstandingBySeverity: { critical: number; important: number; moderate: number; low: number; unrated: number };
   oldestOutstandingDays: number | null;
-  /** Latest org-wide `patch_compliance_snapshots` scalars, when recent. */
-  snapshot: PatchComplianceSnapshotScalars | null;
 }
 
 export interface PatchEvidence {
@@ -408,10 +393,6 @@ function iso(value: unknown): string | null {
   }
   return null;
 }
-function dateOnly(value: unknown): string | null {
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
-  return typeof value === 'string' ? value.slice(0, 10) : null;
-}
 const str = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 const bool = (value: unknown): boolean | null => (typeof value === 'boolean' ? value : null);
 const strArray = (value: unknown): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []);
@@ -451,7 +432,7 @@ const SEVERITY_RANK = sql`CASE p.severity WHEN 'critical' THEN 0 WHEN 'important
 // Loaders
 // ---------------------------------------------------------------------------
 
-async function loadRollup(orgId: string): Promise<Omit<PatchEvidenceRollup, 'snapshot'>> {
+async function loadRollup(orgId: string): Promise<PatchEvidenceRollup> {
   const rows = await dbModule.db.execute<{
     devices_total: unknown; devices_non_compliant: unknown; outstanding_patches: unknown;
     critical: unknown; important: unknown; moderate: unknown; low: unknown; unrated: unknown;
@@ -490,35 +471,6 @@ async function loadRollup(orgId: string): Promise<Omit<PatchEvidenceRollup, 'sna
       low: int(row.low), unrated: int(row.unrated),
     },
     oldestOutstandingDays: num(row.oldest_since_days),
-  };
-}
-
-async function loadSnapshot(orgId: string): Promise<PatchComplianceSnapshotScalars | null> {
-  // The org-wide (ring_id IS NULL) snapshot from today or yesterday only — a
-  // stale snapshot would contradict the live rollup above.
-  const rows = await dbModule.db.execute<Record<string, unknown>>(sql`
-    SELECT snapshot_date, total_devices, compliant_devices, non_compliant_devices,
-           critical_missing, important_missing, patches_pending_approval,
-           patches_installed_24h, failed_installs_24h
-    FROM patch_compliance_snapshots
-    WHERE org_id = ${orgId}
-      AND ring_id IS NULL
-      AND snapshot_date >= current_date - 1
-    ORDER BY snapshot_date DESC, created_at DESC
-    LIMIT 1
-  `);
-  const row = [...rows][0];
-  if (!row) return null;
-  return {
-    date: dateOnly(row.snapshot_date),
-    totalDevices: num(row.total_devices),
-    compliantDevices: num(row.compliant_devices),
-    nonCompliantDevices: num(row.non_compliant_devices),
-    criticalMissing: num(row.critical_missing),
-    importantMissing: num(row.important_missing),
-    patchesPendingApproval: num(row.patches_pending_approval),
-    patchesInstalled24h: num(row.patches_installed_24h),
-    failedInstalls24h: num(row.failed_installs_24h),
   };
 }
 
@@ -1034,14 +986,13 @@ async function settled<T>(orgId: string, loader: string, load: () => Promise<T>)
  * read allowed to fail the run.
  */
 export async function loadPatchEvidence(orgId: string, partnerId: string | null): Promise<PatchEvidence> {
-  let rollup: Omit<PatchEvidenceRollup, 'snapshot'>;
+  let rollup: PatchEvidenceRollup;
   try {
     rollup = await loadRollup(orgId);
   } catch (error) {
     reportLoaderFailure(orgId, 'rollup', error);
     throw error instanceof PatchEvidenceUnavailableError ? error : new PatchEvidenceUnavailableError();
   }
-  const snapshot = await settled(orgId, 'snapshot', () => loadSnapshot(orgId));
 
   const rings: RawSection = partnerId === null
     ? { unavailable: 'no_partner' }
@@ -1055,7 +1006,7 @@ export async function loadPatchEvidence(orgId: string, partnerId: string | null)
   if (reboot) await enrichRebootBacklog(orgId, reboot.rows);
 
   return assemblePatchEvidence({
-    rollup: { ...rollup, snapshot },
+    rollup,
     sections: {
       ringPosture: rings,
       topNonCompliant: top ?? { unavailable: 'loader_failed' },

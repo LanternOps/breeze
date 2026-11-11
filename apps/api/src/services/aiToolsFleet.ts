@@ -1401,8 +1401,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         // Computed live from device_patches for every caller. The precomputed
         // `patch_compliance_snapshots` table this used to read for unrestricted
-        // callers has no writer, so that path always answered "No compliance
-        // data available yet" (#10396).
+        // callers had no writer, so that path always answered "No compliance
+        // data available yet" (#10396); the table is now dropped (#11593).
         //
         // Site AND exact-device axes (app-layer only; RLS does NOT enforce
         // either): a narrowed caller is counted over its in-scope devices only

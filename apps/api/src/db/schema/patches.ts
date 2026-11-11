@@ -344,23 +344,6 @@ export const patchRollbacks = pgTable('patch_rollbacks', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 
-export const patchComplianceSnapshots = pgTable('patch_compliance_snapshots', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
-  ringId: uuid('ring_id').references(() => patchPolicies.id),
-  snapshotDate: date('snapshot_date').notNull(),
-  totalDevices: integer('total_devices').notNull().default(0),
-  compliantDevices: integer('compliant_devices').notNull().default(0),
-  nonCompliantDevices: integer('non_compliant_devices').notNull().default(0),
-  criticalMissing: integer('critical_missing').notNull().default(0),
-  importantMissing: integer('important_missing').notNull().default(0),
-  patchesPendingApproval: integer('patches_pending_approval').notNull().default(0),
-  patchesInstalled24h: integer('patches_installed_24h').notNull().default(0),
-  failedInstalls24h: integer('failed_installs_24h').notNull().default(0),
-  detailsByCategory: jsonb('details_by_category').notNull().default({}),
-  createdAt: timestamp('created_at').defaultNow().notNull()
-});
-
 export const patchComplianceReports = pgTable('patch_compliance_reports', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),

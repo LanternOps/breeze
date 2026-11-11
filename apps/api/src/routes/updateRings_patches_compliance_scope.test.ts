@@ -71,7 +71,6 @@ vi.mock('../db/schema', () => ({
     devicesFailed: 'devicesFailed',
     createdAt: 'createdAt'
   },
-  patchComplianceSnapshots: {},
   patches: {
     id: 'id',
     title: 'title',
