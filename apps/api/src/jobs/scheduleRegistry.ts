@@ -203,6 +203,10 @@ export const JOB_SCHEDULES = {
   // days; open/in_progress/unknown are never pruned. Hour 20 held :03 and :27;
   // :08 keeps the daily = 3 (mod 5) lane.
   'edr-detection-retention': '8 20 * * *',
+  // High-volume table retention W2 (#4342, #11589) — script executions,
+  // report-only until SCRIPT_EXECUTION_RETENTION_ENFORCE=true. Daily tier lane
+  // (≡ 3 mod 5), slot pre-allocated by the retention plan.
+  'script-execution-retention': '8 12 * * *',
   // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
   // the hosted drift report (listDomains vs local rows + outbox) and, on a
   // `static` instance, the re-check that a domain the operator removed from
