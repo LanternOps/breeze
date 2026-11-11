@@ -933,6 +933,36 @@ enroll and in the hardware report.
 - **Conventions:** every mutation goes through `runAction`, and every element the E2E tests touch
   has a `data-testid`.
 
+### Decided in wave 2-2
+
+Choices the sections above leave open, made when the API half of the action shipped:
+
+- **The server decides the evidence level.** The body has no `evidenceLevel`; every request is
+  `hint` until wave T2, so `confirmTargetName` is always required. It is compared trimmed and
+  case-insensitively with the locked target row (400 `confirm_target_name_required` /
+  `confirm_target_name_mismatch`), after the access rule, so it is no hostname oracle.
+- **OS change.** `os_changed` (409) when the two rows' `os_type` differ and
+  `acknowledgeOsChange` is not set.
+- **The step-up binding is read under the lock.** The service builds the `device_reattach`
+  digest from the locked target row (its `agent_id` and `install_incarnation` now). It then locks
+  the actor's assurance and live session (after the device rows, as `assignParkedDevice` does),
+  validates the grant, and only then consumes it (GETDEL). A grant bound to another pair or to an
+  install that has since re-enrolled answers 403 `STEP_UP_REQUIRED` and stays unspent. A missing
+  grant answers the same, after every other refusal. With two-factor authentication off on the
+  deployment no grant is asked for, as on every other step-up route.
+- **The answer is 202** with the `requested` intent; the rebind finishes asynchronously.
+- **The candidates read** is `GET /devices/:id/reinstall-candidates`. It returns the detection's
+  own ranking, every qualifying candidate instead of the best, with the comparison fields and the
+  two values the step-up binds (`targetAgentId`, `targetIncarnation`). Candidates are listed only
+  to partner users, in orgs and sites they reach. An organization user, or a technician lacking a
+  candidate's org, gets `reviewPending: true` and nothing else. A parked source is a 404 to
+  anyone but a full partner admin until wave H.
+- **The badge** reads `devices.last_reattached_at`, now a public device field. The audit actions
+  `device.reinstall_suspected` and `device.reinstall.*` have activity-feed labels; the web feed's
+  allow-list is wave 2-3.
+- **Restoring a removed record** is not admitted against capacity at request; confirm does it
+  (`device_limit_reached`, §6.4).
+
 ## 9. Holding-area triage by technicians limited to selected orgs
 
 Today the holding area is a full-partner-admin surface: listing, assigning, the deploy-key switch
