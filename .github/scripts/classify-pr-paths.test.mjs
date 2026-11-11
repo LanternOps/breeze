@@ -362,7 +362,7 @@ test('every code job is gated on the classifier', () => {
     'path-read-contracts', // gated on path_readers, independent of code; pinned in ci-pr-selection.test.mjs
     'changes', // the classifier itself
     'ci-success', // must report on docs-only PRs — that is the whole point
-    'main-red-alert', // workflow_dispatch on main only
+    'main-red-alert', // workflow_dispatch and the nightly schedule on main only
     // W4 (#10748): advisory provenance written after a green CI Success on any PR
     // (docs-only included); continue-on-error, never a gate. Pinned in queue-selection.test.mjs.
     'provenance-record',
@@ -1047,3 +1047,53 @@ for (const [label, env, passes] of [
     });
   }
 }
+
+// ── W05 (#10749): the nightly full run on main ───────────────────────────
+// The thin merge queue's backstop. A scheduled run has no diff, so the classifier
+// takes the full-suite path (`workflow_dispatch and any other event` above), and it
+// never reads a queue selection, so nothing in it is thinned. `main-red-alert`
+// turns a red nightly into the `ci-red` issue. GitHub can delay or drop a
+// scheduled run: the freshness check (a completed scheduled run on main within
+// 30 h) is the first-week daily check, then the W06 shepherd's.
+test('the nightly schedule: one cron, its own concurrency group, never a thin run', () => {
+  const trigger = workflow.slice(0, workflow.indexOf('\njobs:\n'));
+  assert.match(trigger, /^  schedule:\n    - cron: '17 6 \* \* \*'$/mu);
+  assert.equal((trigger.match(/- cron:/gu) ?? []).length, 1, 'one nightly, no other schedule');
+  // A manual dispatch on main and the nightly must never cancel each other.
+  assert.match(trigger, /^concurrency:\n  group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\$\{\{ github\.event_name == 'schedule' && '-nightly' \|\| '' \}\}\n  cancel-in-progress: true$/mu);
+  // The only producer of `thin_skip` is the queue consumer, and it runs on
+  // merge_group alone (the output line is pinned in queue-selection.test.mjs).
+  assert.match(job('changes'), /^        id: queue_thin\n        if: github\.event_name == 'merge_group'$/mu);
+  assert.match(job('main-red-alert'),
+    /^    if: always\(\) && \(github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'schedule'\) && github\.ref == 'refs\/heads\/main'$/mu);
+  // The CI map documents the nightly and how to check that it ran.
+  const doc = readFileSync(new URL('../../docs/agents/testing.md', import.meta.url), 'utf8');
+  for (const text of ['`17 6 * * *`', 'gh run list --workflow CI --branch main --event schedule', '`main-red-alert`']) {
+    assert.ok(doc.includes(text), `testing.md must mention ${text}`);
+  }
+});
+
+// Derived, so a future dispatch-only branch fails here instead of silently
+// skipping on the nightly: every `== 'workflow_dispatch'` comparison also accepts
+// `schedule`, except the two named below.
+test('every workflow_dispatch branch in ci.yml also covers the nightly schedule', () => {
+  const mobileOutput = "mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' || steps.lockfile.outputs.changed == 'true' }}";
+  const exempt = new Map([
+    // The gate replay reads queue history; it says nothing about main's health.
+    ["if: github.event_name == 'workflow_dispatch'", 'ci-gate-replay'],
+    // Pinned byte-for-byte by the CI Gate (ci-gate.mjs MOBILE_OUTPUT); the
+    // schedule forces native through the job's steps (mobile-native-ci.test.mjs).
+    [mobileOutput, 'mobile-native-changes'],
+  ]);
+  const lines = workflow.split('\n').map((line) => line.trim())
+    .filter((line) => !line.startsWith('#') && line.includes("github.event_name == 'workflow_dispatch'"));
+  assert.ok(lines.length >= 3, 'scan is stale');
+  for (const line of lines) {
+    if (exempt.has(line)) {
+      assert.equal(lines.filter((l) => l === line).length, 1, line);
+      assert.ok(job(exempt.get(line)).split('\n').some((l) => l.trim() === line), `${line} belongs to ${exempt.get(line)}`);
+      continue;
+    }
+    assert.ok(line.includes("github.event_name == 'schedule'"), `dispatch-only branch, the nightly would miss it: ${line}`);
+  }
+});
