@@ -29,7 +29,7 @@ import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { canSelfDecideAccessReviewItem, type AccessReviewOwner } from './accessReviewSelfDecision';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
-import { getRolesPermissionGrants } from './roleInheritance';
+import { getRolesPermissionGrants, type PermissionGrant } from './roleInheritance';
 import { canMutateOrgWideGovernance } from './siteCeilingAccess';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { isRestrictedCaller } from './aiToolsNetworkMonitoringShared';
@@ -160,7 +160,9 @@ async function handle(input: Record<string, unknown>, auth: AuthContext): Promis
     // Permissions once per role (not per item), so a large review stays inside the result budget.
     const roleIds = [...new Set(pageItems.map((item) => item.roleId))];
     // Runtime grants (own + inherited, #9600/#11702), resolved once for the page's roles.
-    const grantsByRole = roleIds.length ? await getRolesPermissionGrants(roleIds) : new Map();
+    const grantsByRole = roleIds.length > 0
+      ? await getRolesPermissionGrants(roleIds)
+      : new Map<string, PermissionGrant[]>();
     const roleMap: Record<string, { name: string; permissions: string[] }> = {};
     for (const item of pageItems) {
       roleMap[item.roleId] ??= {

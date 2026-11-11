@@ -22,7 +22,7 @@ import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 import { assertCanManageTarget } from '../services/roleAssignment';
-import { getRolesPermissionGrants } from '../services/roleInheritance';
+import { getRolesPermissionGrants, type PermissionGrant } from '../services/roleInheritance';
 import { canSelfDecideAccessReviewItem } from '../services/accessReviewSelfDecision';
 import { jsonError } from '../lib/jsonError';
 import { ERROR_CODES } from '@breeze/shared';
@@ -264,7 +264,9 @@ accessReviewRoutes.get(
 
     const roleIds = Array.from(new Set(items.map((item) => item.roleId)));
     // Runtime grants: the role's own rows plus every ancestor's (#9600/#11702).
-    const grantsByRole = roleIds.length > 0 ? await getRolesPermissionGrants(roleIds) : new Map();
+    const grantsByRole = roleIds.length > 0
+      ? await getRolesPermissionGrants(roleIds)
+      : new Map<string, PermissionGrant[]>();
     const permissionsByRole = new Map<string, string[]>();
     for (const [roleId, grants] of grantsByRole) {
       permissionsByRole.set(roleId, grants.map((g) => `${g.resource}:${g.action}`));
