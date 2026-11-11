@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -305,6 +305,33 @@ describe('offline IP classifier data', () => {
 
     expect(fetchMock.mock.calls.map((c) => c[0])).not.toContain(ASN_URL);
     await expect(offlineClassify('192.0.2.10')).resolves.toMatchObject({ asn: 64500, provider: 'offline' });
+  });
+
+  it('downloads quietly when there is no ASN cache file yet', async () => {
+    const warn = vi.mocked(console.warn);
+    stubFetch(allFresh());
+    await ensureOfflineData({ waitMs: 10_000 });
+
+    await expect(readOfflineClassifierStatus()).resolves.toMatchObject({ asn: { source: 'download' } });
+    expect(warn.mock.calls.map((c) => String(c[0]))).not.toContainEqual(expect.stringContaining('cache'));
+  });
+
+  it('ignores an unreadable ASN cache file with a warning and downloads instead', async () => {
+    stubFetch(allFresh());
+    await ensureOfflineData({ waitMs: 10_000 });
+    // Corrupt every cached database file in place.
+    for (const name of readdirSync(cacheDir)) writeFileSync(join(cacheDir, name), 'not a database');
+
+    __resetOfflineDataForTests();
+    __setOfflineCacheDirForTests(cacheDir);
+    const warn = vi.mocked(console.warn);
+    warn.mockClear();
+    const fetchMock = stubFetch(allFresh());
+    await ensureOfflineData({ waitMs: 10_000 });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unreadable ASN database cache'));
+    expect(fetchMock.mock.calls.map((c) => c[0])).toContain(ASN_URL);
+    await expect(readOfflineClassifierStatus()).resolves.toMatchObject({ asn: { source: 'download', entries: 10_002 } });
   });
 
   it('publishes its status to Redis so another process can show it', async () => {

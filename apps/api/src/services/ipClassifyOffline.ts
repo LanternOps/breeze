@@ -371,17 +371,24 @@ async function readAsnCache(url: string): Promise<{ table: AsnTable; mtime: Date
   const dir = await privateCacheDir();
   if (!dir) return null;
   const path = join(dir, asnCacheName(url));
-  let stat;
+  // One handle for both the age and the bytes, so they describe the same file.
+  let handle: Awaited<ReturnType<typeof fs.open>>;
   try {
-    stat = await fs.stat(path);
-  } catch {
-    return null; // no cache yet
+    handle = await fs.open(path, 'r');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; // no cache yet
+    console.warn(`[IPClassify] ignoring an unreadable ASN database cache: ${errorText(error)}`);
+    return null;
   }
   try {
-    return { table: await parseAsnBuffer(await fs.readFile(path), ASN_MIN_RANGES), mtime: stat.mtime };
+    const stat = await handle.stat();
+    const body = await handle.readFile();
+    return { table: await parseAsnBuffer(body, ASN_MIN_RANGES), mtime: stat.mtime };
   } catch (error) {
     console.warn(`[IPClassify] ignoring an unreadable ASN database cache: ${errorText(error)}`);
     return null;
+  } finally {
+    await handle.close().catch(() => undefined);
   }
 }
 
