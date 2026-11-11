@@ -175,6 +175,7 @@ async function requestIntent(tenant: ReattachTenant, source: SeededAgentDevice, 
     targetDeviceId: target.id,
     evidenceLevel: 'hint',
     restoreDecommissioned: false,
+    confirmTargetName: target.hostname,
     ...extra,
   });
   if (!result.ok) throw new Error(`request refused: ${result.code}`);

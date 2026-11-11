@@ -37,6 +37,7 @@ beforeEach(() => {
 });
 import {
   parkedSource,
+  readDevice,
   readIntent,
   seedAgentDevice,
   seedReattachTenant,
@@ -46,12 +47,15 @@ import {
 import { getTestDb } from './setup';
 
 async function request(tenant: ReattachTenant, sourceDeviceId: string, targetDeviceId: string, overrides: Partial<Parameters<typeof requestDeviceReattach>[0]> = {}) {
+  // The typed confirmation of `hint` evidence (wave 2-2): the target's name.
+  const targetRow = await readDevice(targetDeviceId);
   return requestDeviceReattach({
     actor: { userId: tenant.admin.id },
     sourceDeviceId,
     targetDeviceId,
     evidenceLevel: 'hint',
     restoreDecommissioned: false,
+    confirmTargetName: targetRow?.hostname ?? null,
     ...overrides,
   });
 }

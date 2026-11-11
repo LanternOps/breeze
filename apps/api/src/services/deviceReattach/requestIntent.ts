@@ -2,11 +2,15 @@
  * Creating and cancelling reattach intents (#8318 wave 1b, spec §4.3, §6.5,
  * §8).
  *
- * `requestDeviceReattach` is what the wave 2 route (`POST /devices/:sourceId/
- * reattach`, with its step-up and dialog) will call. In wave 1b NO HTTP route
- * creates an intent: the feature stays dark in production and the tests drive
- * the service directly. It accepts an optional `stepUpGrantRef` and only
- * stores it (on the intent, then the ledger); the step-up itself is wave 2.
+ * `requestDeviceReattach` is what `POST /devices/:sourceId/reattach`
+ * (routes/devices/reattach.ts, wave 2-2) calls. Besides the §8 refusals it
+ * owns the two typed confirmations of the dialog — `confirmTargetName` for
+ * `hint` evidence and `acknowledgeOsChange` — and, when the deployment has
+ * two-factor authentication on, the `device_reattach` step-up: its binding is
+ * built HERE from the locked rows (the target's agent_id and incarnation as
+ * they are now), and the grant is consumed (Redis GETDEL, F20) after every
+ * refusal check, just before the insert, so a refusal never burns it. The
+ * consumed grant id is stored as `step_up_grant_ref` (then on the ledger).
  *
  * Everything runs in ONE system transaction (the conflict and eligibility
  * checks must see every intent and the ledger, which a technician's context
@@ -16,8 +20,12 @@
  *      in either role" race-free; the partial unique indexes are the
  *      backstop);
  *   2. both device rows FOR UPDATE, ascending id order;
- *   3. the refusals of §8, then the insert of the `requested` intent with the
- *      versions the human authorized and `expires_at = now + 60 min`.
+ *   3. the refusals of §8 and the typed confirmations;
+ *   4. with step-up: the actor's assurance and live session (FOR SHARE), the
+ *      grant validated against the binding (a mismatch keeps it), then
+ *      consumed;
+ *   5. the insert of the `requested` intent with the versions the human
+ *      authorized and `expires_at = now + 60 min`.
  * Audit `device.reinstall.requested` in both orgs after commit.
  */
 import { randomUUID } from 'node:crypto';
@@ -44,6 +52,15 @@ import { REATTACH_REQUESTED_TTL_MS, type ReattachCancelReason } from './protocol
 import { isLiveOrg } from './revalidation';
 import { clearReattachSourceMarker, setReattachSourceMarker } from './sourceMarker';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import type { AuthContext } from '../../middleware/auth';
+import {
+  consumeStepUpGrant,
+  deviceReattachResourceDigest,
+  validateStepUpGrant,
+  type StepUpGrantBinding,
+} from '../mfaStepUpGrant';
+import { lockActorAssurance } from '../stepUpActorAssurance';
+import { lockLiveUserSession } from '../unassignedPool/assignParkedDeviceSteps';
 
 const ACCESS_DENIAL_STATUS: Record<ReattachAccessDenial, 403 | 409> = {
   not_partner_user: 403,
@@ -69,8 +86,32 @@ export interface RequestDeviceReattachInput {
   targetDeviceId: string;
   evidenceLevel: DeviceReattachEvidenceLevel;
   restoreDecommissioned: boolean;
-  /** The wave 2 step-up grant id; stored only (on the intent and the ledger). */
+  /**
+   * A grant reference recorded as given, with no step-up check (the wave 1b
+   * seam the service tests use). Ignored when `stepUp` is set: then the
+   * consumed grant id is recorded.
+   */
   stepUpGrantRef?: string | null;
+  /**
+   * The target's hostname, typed by the requester. Required for `hint`
+   * evidence (§8 "Confirmation"): compared, trimmed and case-insensitively,
+   * with the locked target row.
+   */
+  confirmTargetName?: string | null;
+  /** The requester saw that the two installs report different operating systems (§8). */
+  acknowledgeOsChange?: boolean;
+  /**
+   * The `device_reattach` step-up (§8). Absent or null: the deployment has
+   * two-factor authentication off and no grant is asked for. Set: `grantId`
+   * must name a grant minted for exactly this pair and the target's current
+   * install; a missing one answers 403 `STEP_UP_REQUIRED` after every other
+   * refusal.
+   */
+  stepUp?: {
+    grantId: string | null | undefined;
+    auth: AuthContext;
+    binding: Pick<StepUpGrantBinding, 'authEpoch' | 'mfaEpoch' | 'sid'>;
+  } | null;
   /** Test seam. */
   now?: Date;
 }
@@ -94,6 +135,13 @@ function refuseDrainingOrg(device: LockedReattachDevice, role: 'source' | 'targe
   if (!isLiveOrg(device)) refuse(409, 'org_draining', `The ${role} device's organization is not active`);
 }
 
+const STEP_UP_REQUIRED_MESSAGE = 'Step-up required';
+
+/** How a hostname is compared for the typed confirmation: trimmed, case-insensitive (DNS names are). */
+function sameHostname(typed: string, actual: string): boolean {
+  return typed.trim().toLowerCase() === actual.trim().toLowerCase();
+}
+
 /** The target's install, read unlocked before the transaction, for the Redis liveness half. */
 async function readTargetInstall(targetDeviceId: string): Promise<{ agentId: string } | null> {
   const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
@@ -111,6 +159,9 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
   }
   if (input.evidenceLevel !== 'hint' && input.evidenceLevel !== 'tpm_continuity') {
     return reattachRefusal(400, 'invalid_evidence_level', 'Unknown evidence level');
+  }
+  if (input.stepUp && input.stepUp.auth.user.id !== input.actor.userId) {
+    throw new Error('requestDeviceReattach: the step-up actor is not the requester');
   }
 
   // §6.5 at request (§8 refusals `target_alive` / `liveness_unknown`): the
@@ -200,6 +251,55 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
         refuse(409, 'target_alive', 'The target device is in use: it authenticated recently');
       }
 
+      // The two confirmations of the dialog (§8), checked against the locked
+      // rows and only after the access rule, so they are no hostname or OS
+      // oracle for someone who may not reattach these devices.
+      if (source.osType !== target.osType && input.acknowledgeOsChange !== true) {
+        refuse(409, 'os_changed', `The new install reports ${source.osType}, the existing record ${target.osType}; confirm the operating system change`);
+      }
+      if (input.evidenceLevel === 'hint') {
+        const typed = input.confirmTargetName?.trim() ?? '';
+        if (!typed) refuse(400, 'confirm_target_name_required', 'Type the existing device\'s name to confirm the reattach');
+        if (!sameHostname(typed, target.hostname)) {
+          refuse(400, 'confirm_target_name_mismatch', 'The name typed does not match the existing device\'s name');
+        }
+      }
+
+      // The step-up, last: every refusal above leaves the grant unspent. The
+      // binding is the target's install as it is NOW, under the row lock, so a
+      // grant minted for an install that has since re-enrolled never matches.
+      let stepUpGrantRef: string | null = input.stepUpGrantRef ?? null;
+      if (input.stepUp) {
+        const { grantId, auth, binding: epochs } = input.stepUp;
+        if (!grantId) refuse(403, 'STEP_UP_REQUIRED', STEP_UP_REQUIRED_MESSAGE);
+        const binding: StepUpGrantBinding = {
+          userId: input.actor.userId,
+          operation: 'device_reattach',
+          authEpoch: epochs.authEpoch,
+          mfaEpoch: epochs.mfaEpoch,
+          sid: epochs.sid,
+          resourceDigest: deviceReattachResourceDigest({
+            sourceDeviceId: source.id,
+            targetDeviceId: target.id,
+            targetAgentId: target.agentId,
+            targetIncarnation: target.installIncarnation,
+            evidenceLevel: input.evidenceLevel,
+            restoreDecommissioned: input.restoreDecommissioned,
+          }),
+        };
+        const assured = await lockActorAssurance(tx, auth, binding)
+          && await lockLiveUserSession(tx, { userId: input.actor.userId, sid: binding.sid });
+        // Validate (GET) before consuming (GETDEL): a grant for another pair or
+        // another install stays spendable for the one it was minted for.
+        if (!assured || !(await validateStepUpGrant(grantId, binding))) {
+          refuse(403, 'STEP_UP_REQUIRED', STEP_UP_REQUIRED_MESSAGE);
+        }
+        // F20: if the transaction fails after this, the grant is gone and the
+        // technician steps up again.
+        if (!(await consumeStepUpGrant(grantId, binding))) refuse(403, 'STEP_UP_REQUIRED', STEP_UP_REQUIRED_MESSAGE);
+        stepUpGrantRef = grantId;
+      }
+
       const [intent] = await tx
         .insert(deviceReattachIntents)
         .values({
@@ -213,7 +313,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
           requestedBy: input.actor.userId,
           requestedAt: now,
           expiresAt: new Date(now.getTime() + REATTACH_REQUESTED_TTL_MS),
-          stepUpGrantRef: input.stepUpGrantRef ?? null,
+          stepUpGrantRef,
           sourceAgentId: source.agentId,
           sourceOrgId: source.orgId,
           targetAgentId: target.agentId,
@@ -260,6 +360,8 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       targetIncarnation: intent.targetIncarnation,
       expiresAt: intent.expiresAt.toISOString(),
       stepUpGrantRecorded: Boolean(intent.stepUpGrantRef),
+      stepUp: input.stepUp ? 'grant' : 'none',
+      acknowledgeOsChange: input.acknowledgeOsChange === true,
     },
   });
   return { ok: true, intent };

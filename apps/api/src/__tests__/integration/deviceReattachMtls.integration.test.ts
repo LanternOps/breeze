@@ -135,7 +135,7 @@ async function arrange() {
   const targetCert = await giveActiveCertificate(target);
   const result = await requestDeviceReattach({
     actor: { userId: tenant.admin.id }, sourceDeviceId: source.id, targetDeviceId: target.id,
-    evidenceLevel: 'hint', restoreDecommissioned: false,
+    evidenceLevel: 'hint', restoreDecommissioned: false, confirmTargetName: target.hostname,
   });
   if (!result.ok) throw new Error(result.code);
   return { tenant, source, target, sourceCert, targetCert, intent: result.intent };

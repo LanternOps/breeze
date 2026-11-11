@@ -63,7 +63,7 @@ async function partnerUser(
     orgAccess: access.orgAccess,
     orgIds: access.orgIds ?? null,
   });
-  return user;
+  return Object.assign(user, { roleId: role.id as string });
 }
 
 export async function seedReattachTenant() {
@@ -91,6 +91,7 @@ export interface SeededAgentDevice {
   agentId: string;
   orgId: string;
   siteId: string;
+  hostname: string;
   agentToken: string;
   watchdogToken: string;
   helperToken: string;
@@ -104,6 +105,7 @@ export interface SeedDeviceOptions {
   watchdogLastSeen?: Date | null;
   isEphemeral?: boolean;
   hostname?: string;
+  osType?: 'windows' | 'macos' | 'linux';
   /** Written alone, the way a writer from before wave 2-1 (#2764) does. */
   possibleReplacementOfDeviceId?: string;
 }
@@ -123,7 +125,7 @@ export async function seedAgentDevice(
     siteId: place.siteId,
     agentId,
     hostname: options.hostname ?? `reattach-${suffix}`,
-    osType: 'windows' as const,
+    osType: options.osType ?? ('windows' as const),
     osVersion: '11',
     architecture: 'amd64',
     agentVersion: '0.99.0',
@@ -148,7 +150,7 @@ export async function seedAgentDevice(
       return inserted!;
     })
     : (await getTestDb().insert(devices).values(values).returning({ id: devices.id }))[0]!;
-  return { id: row.id, agentId, orgId: place.orgId, siteId: place.siteId, agentToken, watchdogToken, helperToken };
+  return { id: row.id, agentId, orgId: place.orgId, siteId: place.siteId, hostname: values.hostname, agentToken, watchdogToken, helperToken };
 }
 
 /** A silent target: its newest credential use is two hours old. */
