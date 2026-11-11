@@ -51,6 +51,8 @@ export type ScriptExecution = {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
+  // #4342 W2 — set once the retention job removed stdout/stderr (ISO).
+  outputPurgedAt?: string | null;
   duration?: number; // in seconds
   // NULL/absent for every run that emitted no `::breeze:custom-fields::`
   // marker. Only present once the execution-detail endpoint has been fetched

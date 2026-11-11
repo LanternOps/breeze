@@ -1478,7 +1478,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           exitCode: scriptExecutions.exitCode,
           stdout: sql<string | null>`left(${scriptExecutions.stdout}, 16385)`,
           stderr: sql<string | null>`left(${scriptExecutions.stderr}, 8193)`,
-          errorMessage: scriptExecutions.errorMessage,
+          errorMessage: scriptExecutions.errorMessage, outputPurgedAt: scriptExecutions.outputPurgedAt, // #4342 W2: set = output removed by retention, not "no output"
           createdAt: scriptExecutions.createdAt,
           startedAt: scriptExecutions.startedAt,
           completedAt: scriptExecutions.completedAt,
@@ -1572,7 +1572,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           stdoutChars: sql<number>`length(coalesce(${scriptExecutions.stdout}, ''))`,
           stderr: sql<string>`left(coalesce(${scriptExecutions.stderr}, ''), ${stderrMax})`,
           stderrChars: sql<number>`length(coalesce(${scriptExecutions.stderr}, ''))`,
-          errorMessage: scriptExecutions.errorMessage,
+          errorMessage: scriptExecutions.errorMessage, outputPurgedAt: scriptExecutions.outputPurgedAt, // #4342 W2: set = output removed by retention, not "no output"
           startedAt: scriptExecutions.startedAt,
           completedAt: scriptExecutions.completedAt,
           createdAt: scriptExecutions.createdAt,
