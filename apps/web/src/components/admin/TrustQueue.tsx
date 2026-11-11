@@ -73,11 +73,15 @@ type QueueResponse = {
 function BlockersCell({ row }: { row: TrustQueueRow }) {
   if (row.trustState !== 'probation') return <span className="text-muted-foreground">Held by restriction</span>;
   if (!row.promotionBlockers) return <span className="text-muted-foreground">Not evaluated yet</span>;
-  if (row.promotionBlockers.blockers.length === 0) return <span className="text-muted-foreground">None</span>;
+  const asOf = <div className="mt-1 text-muted-foreground">as of {formatDate(row.promotionBlockers.evaluatedAt)}</div>;
+  if (row.promotionBlockers.blockers.length === 0) return <><span className="text-muted-foreground">None</span>{asOf}</>;
   return (
-    <ul className="space-y-0.5">
-      {row.promotionBlockers.blockers.map((blocker) => <li key={blocker}>{blockerLabel(blocker)}</li>)}
-    </ul>
+    <>
+      <ul className="space-y-0.5">
+        {row.promotionBlockers.blockers.map((blocker) => <li key={blocker}>{blockerLabel(blocker)}</li>)}
+      </ul>
+      {asOf}
+    </>
   );
 }
 

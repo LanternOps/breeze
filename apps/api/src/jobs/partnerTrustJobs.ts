@@ -6,6 +6,7 @@ import { partnerTrustMode } from '../config/partnerTrustMode';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, partners } from '../db/schema';
 import { classifyIp, type IpClassifyTarget } from '../services/ipClassify';
+import { offlineDataRefreshedAt } from '../services/ipClassifyOffline';
 import { classifierFor, isOfflineBaselineClear } from '../services/ipClassifyOfflineData';
 import { partnerForDevice } from '../services/partnerTrust.repo';
 import { restrictOnHardDeny, tryAutoPromote } from '../services/partnerTrustPromotion';
@@ -42,14 +43,21 @@ type ProbationPartner = {
  * review.
  *
  * With no keyed provider the offline baseline (#11698) classifies instead.
- * Its "checked, nothing found" (`unknown` + source `offline`) is final while
- * the baseline is the active classifier, so it is not re-checked; a partial
- * (Tor-only) result or a row classified before the source was recorded is.
+ * Its "checked, nothing found" (`unknown` + source `offline`) is left alone
+ * while it is still valid: younger than OFFLINE_CLEAR_MAX_AGE_MS and newer
+ * than the last refresh of the offline data. Otherwise it is re-checked, as
+ * is a partial (Tor-only/stale-data) result or a row classified before the
+ * source was recorded.
  */
 async function backfillSignupIpClass(partner: ProbationPartner): Promise<void> {
   if (!partner.signupIp || partner.signupIpClass !== 'unknown') return;
   const classifier = classifierFor(ipClassifyProvider());
-  if (isOfflineBaselineClear(partner.signupIpClass, partner.signupIpClassSource, classifier)) return;
+  const classifiedAt = partner.signupIpClassifiedAt;
+  if (isOfflineBaselineClear(partner.signupIpClass, partner.signupIpClassSource, classifier, classifiedAt, new Date())) {
+    const refreshedAt = offlineDataRefreshedAt();
+    const superseded = refreshedAt !== null && classifiedAt !== null && classifiedAt < refreshedAt;
+    if (!superseded) return;
+  }
   const lastAttempt = partner.signupIpClassifiedAt?.getTime();
   if (lastAttempt !== undefined && Date.now() - lastAttempt < IP_BACKFILL_RETRY_MS) return;
 
@@ -61,7 +69,9 @@ async function backfillSignupIpClass(partner: ProbationPartner): Promise<void> {
     // bounds the retry cadence above.
     signupIpClassifiedAt: new Date(),
     signupIpClassSource: classification.provider,
-  }).where(eq(partners.id, partner.id)), 'partnerTrustJobs.backfillSignupIpClass'));
+  // Only while still unknown: the ip-classify job may have written a real
+  // class while this lookup waited on the offline data.
+  }).where(and(eq(partners.id, partner.id), eq(partners.signupIpClass, 'unknown'))), 'partnerTrustJobs.backfillSignupIpClass'));
 }
 
 export async function runPartnerTrustPromote(): Promise<{ processed: number; promoted: number }> {

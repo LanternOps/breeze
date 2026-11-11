@@ -5,6 +5,7 @@ import {
   IP_CLASS_SOURCE_NONE,
   IP_CLASS_SOURCE_OFFLINE,
   IP_CLASS_SOURCE_OFFLINE_PARTIAL,
+  OFFLINE_CLEAR_MAX_AGE_MS,
   classifyWithOfflineData,
   isNonPublicAddress,
   isOfflineBaselineClear,
@@ -92,44 +93,55 @@ describe('classifyWithOfflineData', () => {
   const hosting = parseHostingAsnList('ASN,Entity\n64500,Example Hosting\n');
 
   it('flags a Tor exit as tor even without ASN data', () => {
-    expect(classifyWithOfflineData('203.0.113.66', { tor, hosting, asn: null })).toEqual({
+    expect(classifyWithOfflineData('203.0.113.66', { tor, hosting, asn: null, current: true })).toEqual({
       ipClass: 'tor', asn: null, provider: IP_CLASS_SOURCE_OFFLINE_PARTIAL,
     });
-    expect(classifyWithOfflineData('203.0.113.66', { tor, hosting, asn: table() })).toEqual({
+    expect(classifyWithOfflineData('203.0.113.66', { tor, hosting, asn: table(), current: true })).toEqual({
       ipClass: 'tor', asn: 64501, provider: IP_CLASS_SOURCE_OFFLINE,
     });
   });
 
   it('flags an address in a hosting ASN as hosting', () => {
-    expect(classifyWithOfflineData('198.51.100.7', { tor, hosting, asn: table() })).toEqual({
+    expect(classifyWithOfflineData('198.51.100.7', { tor, hosting, asn: table(), current: true })).toEqual({
       ipClass: 'hosting', asn: 64500, provider: IP_CLASS_SOURCE_OFFLINE,
     });
   });
 
   it('returns unknown (never residential) with the offline marker when nothing is found', () => {
-    expect(classifyWithOfflineData('203.0.113.10', { tor, hosting, asn: table() })).toEqual({
+    expect(classifyWithOfflineData('203.0.113.10', { tor, hosting, asn: table(), current: true })).toEqual({
       ipClass: 'unknown', asn: 64501, provider: IP_CLASS_SOURCE_OFFLINE,
     });
   });
 
   it('degrades to the partial marker without ASN data or when the address is not routed', () => {
-    expect(classifyWithOfflineData('203.0.113.10', { tor, hosting, asn: null })).toEqual({
+    expect(classifyWithOfflineData('203.0.113.10', { tor, hosting, asn: null, current: true })).toEqual({
       ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_OFFLINE_PARTIAL,
     });
-    expect(classifyWithOfflineData('192.0.2.1', { tor, hosting, asn: table() })).toEqual({
+    expect(classifyWithOfflineData('192.0.2.1', { tor, hosting, asn: table(), current: true })).toEqual({
       ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_OFFLINE_PARTIAL,
     });
   });
 
   it('degrades to the partial marker when the hosting list is empty', () => {
-    expect(classifyWithOfflineData('203.0.113.10', { tor, hosting: new Set(), asn: table() })).toEqual({
+    expect(classifyWithOfflineData('203.0.113.10', { tor, hosting: new Set(), asn: table(), current: true })).toEqual({
       ipClass: 'unknown', asn: 64501, provider: IP_CLASS_SOURCE_OFFLINE_PARTIAL,
+    });
+  });
+
+  it('never yields the promotion-clearing marker from data that is not freshly downloaded', () => {
+    // Snapshot-only or past its maximum age: the loader passes current=false.
+    expect(classifyWithOfflineData('203.0.113.10', { tor, hosting, asn: table(), current: false })).toEqual({
+      ipClass: 'unknown', asn: 64501, provider: IP_CLASS_SOURCE_OFFLINE_PARTIAL,
+    });
+    // Positive evidence still counts; it blocks anyway.
+    expect(classifyWithOfflineData('198.51.100.7', { tor, hosting, asn: table(), current: false })).toEqual({
+      ipClass: 'hosting', asn: 64500, provider: IP_CLASS_SOURCE_OFFLINE_PARTIAL,
     });
   });
 
   it('keeps private, loopback and invalid addresses unknown with no source', () => {
     for (const ip of ['10.0.0.5', '127.0.0.1', '::1', 'nope']) {
-      expect(classifyWithOfflineData(ip, { tor, hosting, asn: table() })).toEqual({
+      expect(classifyWithOfflineData(ip, { tor, hosting, asn: table(), current: true })).toEqual({
         ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_NONE,
       });
     }
@@ -137,13 +149,24 @@ describe('classifyWithOfflineData', () => {
 });
 
 describe('isOfflineBaselineClear', () => {
-  it('is true only for unknown + offline source while the offline classifier is active', () => {
-    expect(isOfflineBaselineClear('unknown', 'offline', 'offline')).toBe(true);
-    expect(isOfflineBaselineClear('unknown', 'offline', 'ipinfo')).toBe(false);
-    expect(isOfflineBaselineClear('unknown', 'offline-partial', 'offline')).toBe(false);
-    expect(isOfflineBaselineClear('unknown', 'none', 'offline')).toBe(false);
-    expect(isOfflineBaselineClear('unknown', null, 'offline')).toBe(false);
-    expect(isOfflineBaselineClear('hosting', 'offline', 'offline')).toBe(false);
-    expect(isOfflineBaselineClear('tor', 'offline', 'offline')).toBe(false);
+  const now = new Date('2026-11-11T12:00:00.000Z');
+  const recent = new Date(now.getTime() - 60 * 60 * 1_000);
+
+  it('is true only for unknown + offline source, a recent check, and the offline classifier active', () => {
+    expect(isOfflineBaselineClear('unknown', 'offline', 'offline', recent, now)).toBe(true);
+    expect(isOfflineBaselineClear('unknown', 'offline', 'ipinfo', recent, now)).toBe(false);
+    expect(isOfflineBaselineClear('unknown', 'offline-partial', 'offline', recent, now)).toBe(false);
+    expect(isOfflineBaselineClear('unknown', 'none', 'offline', recent, now)).toBe(false);
+    expect(isOfflineBaselineClear('unknown', null, 'offline', recent, now)).toBe(false);
+    expect(isOfflineBaselineClear('hosting', 'offline', 'offline', recent, now)).toBe(false);
+    expect(isOfflineBaselineClear('tor', 'offline', 'offline', recent, now)).toBe(false);
+  });
+
+  it('expires: a clear older than the maximum age, or with no timestamp, no longer counts', () => {
+    const edge = new Date(now.getTime() - OFFLINE_CLEAR_MAX_AGE_MS);
+    const stale = new Date(now.getTime() - OFFLINE_CLEAR_MAX_AGE_MS - 1);
+    expect(isOfflineBaselineClear('unknown', 'offline', 'offline', edge, now)).toBe(true);
+    expect(isOfflineBaselineClear('unknown', 'offline', 'offline', stale, now)).toBe(false);
+    expect(isOfflineBaselineClear('unknown', 'offline', 'offline', null, now)).toBe(false);
   });
 });

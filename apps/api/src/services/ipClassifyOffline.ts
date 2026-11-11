@@ -3,16 +3,30 @@
  * datasets behind classifyWithOfflineData, used when no keyed provider is
  * configured.
  *
- *   - Tor exit list   — refreshed daily; bundled snapshot as the floor.
- *   - Hosting ASNs    — refreshed weekly; bundled snapshot as the floor.
+ *   - Tor exit list   — refreshed daily; bundled snapshot until the first
+ *                       download. A download replaces the list (exits churn),
+ *                       but one smaller than 80% of the last accepted list is
+ *                       rejected as truncated or tampered.
+ *   - Hosting ASNs    — refreshed weekly from a commit-pinned default URL. A
+ *                       download is UNIONED with the bundled snapshot: it can
+ *                       add hosting ASNs, never remove one.
  *   - ASN database    — refreshed weekly; NOT bundled (downloaded at runtime
- *                       and cached on local disk), so without a download the
- *                       classifier is Tor-only and says so ('offline-partial').
+ *                       and cached on local disk). Same 80% floor against the
+ *                       last accepted copy.
  *
- * Every download has a timeout, a size cap and a minimum-size sanity check; a
- * failure keeps whatever was loaded before and is retried at most hourly.
- * Nothing here runs at boot — the first classification triggers the loads, and
- * a lookup only waits for an in-flight load when its caller asks it to.
+ * Freshness is what lets a result clear the promotion gate: only when all
+ * three sources come from an accepted download within their maximum age
+ * (refresh interval plus the same again as grace) does a lookup return the
+ * 'offline' marker. The snapshots alone, a stale download, or a rejected
+ * refresh all yield 'offline-partial', which keeps blocking. A rejected
+ * download keeps the last good data AND its age, so it ages out rather than
+ * looking fresh.
+ *
+ * Downloads are https-only (redirects followed manually, and only to https),
+ * with a timeout and a size cap. A failure is logged once per attempt and
+ * retried at most hourly. Nothing runs at boot: the first classification
+ * triggers the loads, and a lookup only waits for an in-flight load when its
+ * caller asks it to.
  *
  * Each process holds its own copy (the lookups are in-memory). The loader
  * publishes a small status record to Redis so the admin trust page, which may
@@ -44,20 +58,25 @@ const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
 const TOR_TTL_MS = DAY_MS;
 const LIST_TTL_MS = 7 * DAY_MS;
+/** Refresh interval plus the same again as grace. */
+export const TOR_MAX_AGE_MS = 2 * TOR_TTL_MS;
+export const LIST_MAX_AGE_MS = 2 * LIST_TTL_MS;
 const RETRY_AFTER_FAILURE_MS = HOUR_MS;
 
 const SMALL_DOWNLOAD_TIMEOUT_MS = 15_000;
 const ASN_DOWNLOAD_TIMEOUT_MS = 120_000;
+const MAX_REDIRECTS = 3;
 const TOR_MAX_BYTES = 4 * 1024 * 1024;
 const HOSTING_MAX_BYTES = 2 * 1024 * 1024;
 const ASN_MAX_BYTES = 64 * 1024 * 1024;
 const ASN_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
 
 /**
- * A download smaller than this is not the real list (a captive portal, an
- * error page, a truncated body) and is rejected rather than replacing good
- * data with an empty set.
+ * Integrity floors. A download smaller than the absolute minimum, or smaller
+ * than SHRINK_FLOOR of the last accepted copy (the snapshot when nothing was
+ * downloaded yet), is treated as truncated or tampered and rejected.
  */
+const SHRINK_FLOOR = 0.8;
 const TOR_MIN_ENTRIES = 50;
 const HOSTING_MIN_ENTRIES = 50;
 const ASN_MIN_RANGES = 10_000;
@@ -78,6 +97,8 @@ export type OfflineClassifierStatus = {
   tor: OfflineSourceStatus;
   hosting: OfflineSourceStatus;
   asn: OfflineSourceStatus;
+  /** True when every source is a fresh download, i.e. lookups can clear the gate. */
+  current: boolean;
   reportedAt: string;
 };
 
@@ -85,6 +106,7 @@ type SourceState<T> = {
   value: T;
   source: SourceKind;
   entries: number;
+  /** When the data was produced: the snapshot date, the accepted download, or the disk cache mtime. */
   updatedAt: Date | null;
   lastError: string | null;
   nextAttemptAt: number;
@@ -99,7 +121,27 @@ type State = {
   touched: boolean;
 };
 
-let cacheDir = join(tmpdir(), 'breeze-ip-classify');
+const SNAPSHOT_HOSTING: ReadonlySet<number> = new Set(HOSTING_ASN_SNAPSHOT);
+
+// Per-user directory, created 0700 and verified before use, so another local
+// user cannot plant a database file for this process to load.
+let cacheDir = join(tmpdir(), `breeze-ip-classify-${process.getuid?.() ?? 'user'}`);
+
+async function privateCacheDir(): Promise<string | null> {
+  try {
+    await fs.mkdir(cacheDir, { recursive: true, mode: 0o700 });
+    const stat = await fs.lstat(cacheDir);
+    const uid = process.getuid?.();
+    if (!stat.isDirectory() || (uid !== undefined && stat.uid !== uid) || (stat.mode & 0o077) !== 0) {
+      console.warn('[IPClassify] the ASN cache directory is not private to this user; not using it');
+      return null;
+    }
+    return cacheDir;
+  } catch (error) {
+    console.warn(`[IPClassify] ASN cache directory unavailable: ${errorText(error)}`);
+    return null;
+  }
+}
 let state = initialState();
 
 function snapshotDate(value: string): Date | null {
@@ -109,15 +151,14 @@ function snapshotDate(value: string): Date | null {
 
 function initialState(): State {
   const tor = parseTorExitList(TOR_EXIT_SNAPSHOT);
-  const hosting = new Set(HOSTING_ASN_SNAPSHOT);
   return {
     tor: {
       value: tor, source: 'snapshot', entries: tor.size, updatedAt: snapshotDate(TOR_EXIT_SNAPSHOT_DATE),
       lastError: null, nextAttemptAt: 0, inflight: null,
     },
     hosting: {
-      value: hosting, source: 'snapshot', entries: hosting.size, updatedAt: snapshotDate(HOSTING_ASN_SNAPSHOT_DATE),
-      lastError: null, nextAttemptAt: 0, inflight: null,
+      value: SNAPSHOT_HOSTING, source: 'snapshot', entries: SNAPSHOT_HOSTING.size,
+      updatedAt: snapshotDate(HOSTING_ASN_SNAPSHOT_DATE), lastError: null, nextAttemptAt: 0, inflight: null,
     },
     asn: {
       value: null, source: 'unavailable', entries: 0, updatedAt: null,
@@ -131,33 +172,86 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isFresh(slot: SourceState<unknown>, maxAgeMs: number, now: number): boolean {
+  if (slot.source !== 'download' && slot.source !== 'disk') return false;
+  if (!slot.updatedAt) return false;
+  const age = now - slot.updatedAt.getTime();
+  return age >= 0 && age <= maxAgeMs;
+}
+
+/** All three sources are accepted downloads within their maximum age. */
+function dataIsCurrent(now = Date.now()): boolean {
+  return state.asn.value !== null
+    && isFresh(state.tor, TOR_MAX_AGE_MS, now)
+    && isFresh(state.hosting, LIST_MAX_AGE_MS, now)
+    && isFresh(state.asn, LIST_MAX_AGE_MS, now);
+}
+
+function minimumEntries(absolute: number, reference: number): number {
+  return Math.max(absolute, Math.floor(reference * SHRINK_FLOOR));
+}
+
+/**
+ * https only. Redirects are followed by hand so that a hop to plain http is
+ * refused before any request is sent to it.
+ */
 async function download(url: string, timeoutMs: number, maxBytes: number): Promise<Buffer> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
   try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'user-agent': 'breeze-rmm-ip-classify' },
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const declared = Number(response.headers.get('content-length'));
-    if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`response larger than ${maxBytes} bytes`);
-    const body = Buffer.from(await response.arrayBuffer());
-    if (body.length > maxBytes) throw new Error(`response larger than ${maxBytes} bytes`);
-    return body;
+    let target = url;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+      if (new URL(target).protocol !== 'https:') throw new Error('refusing a non-https URL');
+      const response = await fetch(target, {
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: { 'user-agent': 'breeze-rmm-ip-classify' },
+      });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('location');
+        if (!location) throw new Error(`HTTP ${response.status} without a location`);
+        target = new URL(location, target).toString();
+        continue;
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const declared = Number(response.headers.get('content-length'));
+      if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`response larger than ${maxBytes} bytes`);
+      return await readCapped(response, maxBytes, controller);
+    }
+    throw new Error(`more than ${MAX_REDIRECTS} redirects`);
   } finally {
     clearTimeout(timer);
   }
 }
 
+/** Reads the body chunk by chunk and aborts as soon as it passes the cap. */
+async function readCapped(response: Response, maxBytes: number, controller: AbortController): Promise<Buffer> {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      controller.abort();
+      throw new Error(`response larger than ${maxBytes} bytes`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
+}
+
 async function publishStatus(): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
   try {
+    const redis = getRedis();
+    if (!redis) return;
     await redis.set(OFFLINE_STATUS_REDIS_KEY, JSON.stringify(localStatus()), 'EX', STATUS_TTL_SECONDS);
-  } catch {
+  } catch (error) {
     // Status display only; the classifier itself does not depend on Redis.
+    console.warn(`[IPClassify] could not publish the offline classifier status: ${errorText(error)}`);
   }
 }
 
@@ -175,42 +269,68 @@ function localStatus(): OfflineClassifierStatus {
     tor: sourceStatus(state.tor),
     hosting: sourceStatus(state.hosting),
     asn: sourceStatus(state.asn),
+    current: dataIsCurrent(),
     reportedAt: new Date().toISOString(),
   };
 }
 
-function refreshList<T>(
-  slot: SourceState<ReadonlySet<T>>,
+/**
+ * Runs one refresh of a slot. `accept` turns the downloaded body into the new
+ * value or throws to reject it; a rejection keeps the previous value and its
+ * updatedAt (so freshness does not advance) and schedules a retry.
+ */
+function refreshSlot<T>(
+  slot: SourceState<T>,
   url: string | null,
-  ttlMs: number,
-  maxBytes: number,
-  minEntries: number,
-  parse: (text: string) => Set<T>,
   label: string,
+  ttlMs: number,
+  load: () => Promise<{ value: T; entries: number; source: SourceKind; updatedAt: Date; body?: Buffer } | null>,
+  afterAccept?: (body: Buffer) => Promise<void>,
 ): void {
   if (!url || slot.inflight || Date.now() < slot.nextAttemptAt) return;
-  const current = slot;
   slot.inflight = (async () => {
     try {
-      const parsed = parse((await download(url, SMALL_DOWNLOAD_TIMEOUT_MS, maxBytes)).toString('utf8'));
-      if (parsed.size < minEntries) {
-        throw new Error(`only ${parsed.size} entries (expected at least ${minEntries})`);
-      }
-      current.value = parsed;
-      current.source = 'download';
-      current.entries = parsed.size;
-      current.updatedAt = new Date();
-      current.lastError = null;
-      current.nextAttemptAt = Date.now() + ttlMs;
+      const loaded = await load();
+      if (!loaded) return;
+      slot.value = loaded.value;
+      slot.source = loaded.source;
+      slot.entries = loaded.entries;
+      slot.updatedAt = loaded.updatedAt;
+      slot.lastError = null;
+      slot.nextAttemptAt = loaded.updatedAt.getTime() + ttlMs;
+      if (loaded.body && afterAccept) await afterAccept(loaded.body);
     } catch (error) {
-      current.lastError = errorText(error);
-      current.nextAttemptAt = Date.now() + RETRY_AFTER_FAILURE_MS;
-      console.warn(`[IPClassify] ${label} download failed; keeping the ${current.source} data: ${current.lastError}`);
+      slot.lastError = errorText(error);
+      slot.nextAttemptAt = Date.now() + RETRY_AFTER_FAILURE_MS;
+      console.warn(`[IPClassify] ${label} refresh rejected; keeping the ${slot.source} data: ${slot.lastError}`);
     } finally {
-      current.inflight = null;
+      slot.inflight = null;
       await publishStatus();
     }
   })();
+}
+
+function refreshTor(url: string | null): void {
+  const slot = state.tor;
+  refreshSlot(slot, url, 'Tor exit list', TOR_TTL_MS, async () => {
+    const parsed = parseTorExitList((await download(url!, SMALL_DOWNLOAD_TIMEOUT_MS, TOR_MAX_BYTES)).toString('utf8'));
+    const floor = minimumEntries(TOR_MIN_ENTRIES, slot.entries);
+    if (parsed.size < floor) throw new Error(`only ${parsed.size} addresses (expected at least ${floor})`);
+    return { value: parsed, entries: parsed.size, source: 'download', updatedAt: new Date() };
+  });
+}
+
+function refreshHosting(url: string | null): void {
+  const slot = state.hosting;
+  refreshSlot(slot, url, 'Hosting ASN list', LIST_TTL_MS, async () => {
+    const parsed = parseHostingAsnList((await download(url!, SMALL_DOWNLOAD_TIMEOUT_MS, HOSTING_MAX_BYTES)).toString('utf8'));
+    const floor = minimumEntries(HOSTING_MIN_ENTRIES, SNAPSHOT_HOSTING.size);
+    if (parsed.size < floor) throw new Error(`only ${parsed.size} ASNs (expected at least ${floor})`);
+    // A download may add hosting ASNs but never remove a bundled one.
+    const union = new Set<number>(SNAPSHOT_HOSTING);
+    for (const asn of parsed) union.add(asn);
+    return { value: union, entries: union.size, source: 'download', updatedAt: new Date() };
+  });
 }
 
 /** Fails the stream once more than `limit` bytes pass through (a gzip bomb guard). */
@@ -225,7 +345,7 @@ function byteLimit(limit: number): Transform {
   });
 }
 
-async function parseAsnBuffer(buffer: Buffer): Promise<AsnTable> {
+async function parseAsnBuffer(buffer: Buffer, minRanges: number): Promise<AsnTable> {
   const gzipped = buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
   const raw = Readable.from([buffer]);
   // pipeline() propagates an error from any stage (corrupt gzip, size limit)
@@ -237,32 +357,41 @@ async function parseAsnBuffer(buffer: Buffer): Promise<AsnTable> {
   const lines = createInterface({ input, crlfDelay: Infinity });
   for await (const line of lines) builder.add(line);
   const table = builder.build();
-  if (table.ranges < ASN_MIN_RANGES) {
-    throw new Error(`only ${table.ranges} ASN ranges (expected at least ${ASN_MIN_RANGES})`);
+  if (table.ranges < minRanges) {
+    throw new Error(`only ${table.ranges} ASN ranges (expected at least ${minRanges})`);
   }
   return table;
 }
 
-function asnCachePath(url: string): string {
-  return join(cacheDir, `asn-${createHash('sha256').update(url).digest('hex').slice(0, 16)}.db`);
+function asnCacheName(url: string): string {
+  return `asn-${createHash('sha256').update(url).digest('hex').slice(0, 16)}.db`;
 }
 
 async function readAsnCache(url: string): Promise<{ table: AsnTable; mtime: Date } | null> {
+  const dir = await privateCacheDir();
+  if (!dir) return null;
+  const path = join(dir, asnCacheName(url));
+  let stat;
   try {
-    const path = asnCachePath(url);
-    const stat = await fs.stat(path);
-    return { table: await parseAsnBuffer(await fs.readFile(path)), mtime: stat.mtime };
+    stat = await fs.stat(path);
   } catch {
+    return null; // no cache yet
+  }
+  try {
+    return { table: await parseAsnBuffer(await fs.readFile(path), ASN_MIN_RANGES), mtime: stat.mtime };
+  } catch (error) {
+    console.warn(`[IPClassify] ignoring an unreadable ASN database cache: ${errorText(error)}`);
     return null;
   }
 }
 
 async function writeAsnCache(url: string, body: Buffer): Promise<void> {
   try {
-    await fs.mkdir(cacheDir, { recursive: true });
-    const path = asnCachePath(url);
+    const dir = await privateCacheDir();
+    if (!dir) return;
+    const path = join(dir, asnCacheName(url));
     const temp = `${path}.${process.pid}.tmp`;
-    await fs.writeFile(temp, body);
+    await fs.writeFile(temp, body, { mode: 0o600 });
     await fs.rename(temp, path);
   } catch (error) {
     console.warn(`[IPClassify] could not cache the ASN database on disk: ${errorText(error)}`);
@@ -271,45 +400,27 @@ async function writeAsnCache(url: string, body: Buffer): Promise<void> {
 
 function refreshAsn(url: string | null): void {
   const slot = state.asn;
-  if (!url || slot.inflight || Date.now() < slot.nextAttemptAt) return;
-  slot.inflight = (async () => {
-    try {
-      // A process that has not loaded anything yet tries the disk cache first,
-      // so a restart does not re-download the database.
-      if (!slot.value) {
-        const cached = await readAsnCache(url);
-        if (cached) {
-          slot.value = cached.table;
-          slot.source = 'disk';
-          slot.entries = cached.table.ranges;
-          slot.updatedAt = cached.mtime;
-          slot.lastError = null;
-          if (Date.now() - cached.mtime.getTime() < LIST_TTL_MS) {
-            slot.nextAttemptAt = cached.mtime.getTime() + LIST_TTL_MS;
-            return;
-          }
+  refreshSlot(slot, url, 'ASN database', LIST_TTL_MS, async () => {
+    // A process that has not loaded anything yet tries the disk cache first,
+    // so a restart does not re-download the database. The cache file's mtime
+    // is its age, so an old cache is not fresh.
+    if (!slot.value) {
+      const cached = await readAsnCache(url!);
+      if (cached) {
+        slot.value = cached.table;
+        slot.source = 'disk';
+        slot.entries = cached.table.ranges;
+        slot.updatedAt = cached.mtime;
+        slot.lastError = null;
+        if (Date.now() - cached.mtime.getTime() < LIST_TTL_MS) {
+          return { value: cached.table, entries: cached.table.ranges, source: 'disk', updatedAt: cached.mtime };
         }
       }
-      const body = await download(url, ASN_DOWNLOAD_TIMEOUT_MS, ASN_MAX_BYTES);
-      const table = await parseAsnBuffer(body);
-      slot.value = table;
-      slot.source = 'download';
-      slot.entries = table.ranges;
-      slot.updatedAt = new Date();
-      slot.lastError = null;
-      slot.nextAttemptAt = Date.now() + LIST_TTL_MS;
-      await writeAsnCache(url, body);
-    } catch (error) {
-      slot.lastError = errorText(error);
-      slot.nextAttemptAt = Date.now() + RETRY_AFTER_FAILURE_MS;
-      console.warn(
-        `[IPClassify] ASN database download failed; ${slot.value ? `keeping the ${slot.source} copy` : 'classifying Tor-only'}: ${slot.lastError}`,
-      );
-    } finally {
-      slot.inflight = null;
-      await publishStatus();
     }
-  })();
+    const body = await download(url!, ASN_DOWNLOAD_TIMEOUT_MS, ASN_MAX_BYTES);
+    const table = await parseAsnBuffer(body, minimumEntries(ASN_MIN_RANGES, slot.entries));
+    return { value: table, entries: table.ranges, source: 'download', updatedAt: new Date(), body };
+  }, (body) => writeAsnCache(url!, body));
 }
 
 /**
@@ -321,11 +432,8 @@ export async function ensureOfflineData(opts: { waitMs?: number } = {}): Promise
     state.touched = true;
     void publishStatus();
   }
-  refreshList(state.tor, ipClassifyTorListUrl(), TOR_TTL_MS, TOR_MAX_BYTES, TOR_MIN_ENTRIES, parseTorExitList, 'Tor exit list');
-  refreshList(
-    state.hosting, ipClassifyHostingAsnUrl(), LIST_TTL_MS, HOSTING_MAX_BYTES, HOSTING_MIN_ENTRIES,
-    parseHostingAsnList, 'Hosting ASN list',
-  );
+  refreshTor(ipClassifyTorListUrl());
+  refreshHosting(ipClassifyHostingAsnUrl());
   refreshAsn(ipClassifyAsnDbUrl());
 
   const waitMs = opts.waitMs ?? 0;
@@ -344,9 +452,24 @@ export async function ensureOfflineData(opts: { waitMs?: number } = {}): Promise
   if (timer) clearTimeout(timer);
 }
 
-/** True once an ASN database is loaded, i.e. the full baseline can run. */
+/** True when lookups can return the full ('offline') result: every source loaded and fresh. */
 export function offlineBaselineComplete(): boolean {
-  return state.asn.value !== null && state.hosting.value.size > 0;
+  return dataIsCurrent();
+}
+
+/**
+ * The newest accepted refresh of any source in this process, or null. A
+ * stored "checked, nothing found" older than this was judged against data
+ * that has since been replaced, so the promote job re-checks it.
+ */
+export function offlineDataRefreshedAt(): Date | null {
+  let newest: Date | null = null;
+  for (const slot of [state.tor, state.hosting, state.asn] as SourceState<unknown>[]) {
+    if ((slot.source === 'download' || slot.source === 'disk') && slot.updatedAt) {
+      if (!newest || slot.updatedAt > newest) newest = slot.updatedAt;
+    }
+  }
+  return newest;
 }
 
 export async function offlineClassify(ip: string, opts: { waitMs?: number } = {}): Promise<IpClassification> {
@@ -355,6 +478,7 @@ export async function offlineClassify(ip: string, opts: { waitMs?: number } = {}
     tor: state.tor.value,
     hosting: state.hosting.value,
     asn: state.asn.value,
+    current: dataIsCurrent(),
   });
 }
 
@@ -380,8 +504,10 @@ export async function readOfflineClassifierStatus(): Promise<OfflineClassifierSt
     const raw = await redis.get(OFFLINE_STATUS_REDIS_KEY);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isStatus(parsed) ? parsed : null;
-  } catch {
+    if (!isStatus(parsed)) return null;
+    return { ...parsed, current: parsed.current === true };
+  } catch (error) {
+    console.warn(`[IPClassify] could not read the offline classifier status: ${errorText(error)}`);
     return null;
   }
 }

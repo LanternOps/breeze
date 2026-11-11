@@ -26,7 +26,8 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, partners } from '../db/schema';
 import { classifyIp, type IpClassification } from '../services/ipClassify';
 import { ensureOfflineData, offlineBaselineComplete } from '../services/ipClassifyOffline';
-import { classifierFor, type IpClassifier } from '../services/ipClassifyOfflineData';
+import { classifierFor, isNonPublicAddress, type IpClassifier } from '../services/ipClassifyOfflineData';
+import { partnerForDevice } from '../services/partnerTrust.repo';
 import { restrictOnHardDeny } from '../services/partnerTrustPromotion';
 import { getRedis } from '../services/redis';
 
@@ -44,20 +45,31 @@ export type IpClassifyBackfillResult = {
   classifier: IpClassifier;
   partners: number;
   devices: number;
-  /** False when the offline baseline ran without its ASN database. */
+  /** Rows that could not be re-classified (lookup or write failed). */
+  failed: number;
+  /**
+   * False when the offline baseline was not fully current, or any row failed.
+   * Only a complete run sets the done marker; otherwise the next boot retries.
+   */
   complete: boolean;
 };
 
 export async function runIpClassifyBackfill(): Promise<IpClassifyBackfillResult> {
   const classifier = classifierFor(ipClassifyProvider());
   if (classifier === 'offline') await ensureOfflineData({ waitMs: OFFLINE_LOAD_WAIT_MS });
-  const complete = classifier !== 'offline' || offlineBaselineComplete();
+  const baselineComplete = classifier !== 'offline' || offlineBaselineComplete();
+  let failed = 0;
 
   const seen = new Map<string, IpClassification>();
   const lookup = async (ip: string): Promise<IpClassification> => {
     const cached = seen.get(ip);
     if (cached) return cached;
     const result = await classifyIp(ip);
+    // A keyed provider that failed reports source 'none'; a public address
+    // must have been judged by the active classifier to count as done.
+    if (classifier !== 'offline' && result.provider !== classifier && !isNonPublicAddress(ip)) {
+      throw new Error(`${classifier} lookup failed`);
+    }
     seen.set(ip, result);
     return result;
   };
@@ -91,6 +103,7 @@ export async function runIpClassifyBackfill(): Promise<IpClassifyBackfillResult>
         partnersUpdated += 1;
       } catch (error) {
         console.warn(`[ipClassifyBackfill] partner ${row.id} could not be re-classified`, error);
+        failed += 1;
         continue;
       }
       if (seen.get(row.ip)?.ipClass === 'tor') {
@@ -133,25 +146,42 @@ export async function runIpClassifyBackfill(): Promise<IpClassifyBackfillResult>
         devicesUpdated += 1;
       } catch (error) {
         console.warn(`[ipClassifyBackfill] device ${row.id} could not be re-classified`, error);
+        failed += 1;
+        continue;
+      }
+      if (seen.get(row.ip)?.ipClass === 'tor') {
+        // Mirrors the ip-classify job's device path.
+        try {
+          const partnerId = await partnerForDevice(row.id);
+          if (partnerId) await restrictOnHardDeny(partnerId);
+        } catch (error) {
+          console.warn(`[ipClassifyBackfill] hard-deny evaluation failed for device ${row.id}`, error);
+        }
       }
     }
     cursor = batch.at(-1)?.id;
     if (batch.length < BATCH_SIZE) break;
   }
 
+  const complete = baselineComplete && failed === 0;
   if (complete) {
     const redis = getRedis();
-    try {
-      await redis?.set(doneKey(classifier), new Date().toISOString());
-    } catch (error) {
-      // Without the marker the next boot runs the backfill again: idempotent.
-      console.warn('[ipClassifyBackfill] could not record completion', error);
+    if (!redis) {
+      console.warn('[ipClassifyBackfill] Redis unavailable; completion not recorded, the next boot runs the backfill again');
+    } else {
+      try {
+        await redis.set(doneKey(classifier), new Date().toISOString());
+      } catch (error) {
+        // Without the marker the next boot runs the backfill again: idempotent.
+        console.warn('[ipClassifyBackfill] could not record completion', error);
+      }
     }
   }
+  const pending = !baselineComplete ? ' (offline data not current; will retry)' : failed > 0 ? ` (${failed} failed; will retry)` : '';
   console.log(
-    `[ipClassifyBackfill] ${classifier}: re-classified ${partnersUpdated} partner(s), ${devicesUpdated} device(s)${complete ? '' : ' (partial baseline; will retry)'}`,
+    `[ipClassifyBackfill] ${classifier}: re-classified ${partnersUpdated} partner(s), ${devicesUpdated} device(s)${pending}`,
   );
-  return { classifier, partners: partnersUpdated, devices: devicesUpdated, complete };
+  return { classifier, partners: partnersUpdated, devices: devicesUpdated, failed, complete };
 }
 
 /**

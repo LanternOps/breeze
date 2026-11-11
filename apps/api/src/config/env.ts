@@ -625,8 +625,13 @@ export function activeIpClassifier(source: NodeJS.ProcessEnv = process.env): 'of
 }
 
 export const IP_CLASSIFY_TOR_LIST_DEFAULT_URL = 'https://check.torproject.org/torbulkexitlist';
+/**
+ * Pinned to a commit, not a branch: the hosting list feeds a security gate, so
+ * a change upstream reaches deployments only through a reviewed bump of this
+ * pin. Bump it together with services/ipClassifyData/hostingAsnSnapshot.ts.
+ */
 export const IP_CLASSIFY_HOSTING_ASN_DEFAULT_URL =
-  'https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv';
+  'https://raw.githubusercontent.com/brianhama/bad-asn-list/b825d2e0e09684842599b75881fc76cb42f0e8c6/bad-asn-list.csv';
 export const IP_CLASSIFY_ASN_DB_DEFAULT_URL = 'https://iptoasn.com/data/ip2asn-combined.tsv.gz';
 
 const warnedIpClassifySourceVars = new Set<string>();
@@ -634,8 +639,9 @@ const warnedIpClassifySourceVars = new Set<string>();
 /**
  * Unset or empty → the default URL; `none`/`off`/`false` → null (download
  * disabled, the bundled snapshot or nothing is used); any other value must be
- * an http(s) URL. An invalid value warns once and disables the download
- * rather than silently using the default the operator tried to replace.
+ * an https URL. An invalid value (including plain http) warns once and
+ * disables the download rather than silently using the default the operator
+ * tried to replace.
  */
 function resolveIpClassifySourceUrl(name: string, raw: string | undefined, fallback: string): string | null {
   const value = (raw ?? '').trim();
@@ -643,13 +649,13 @@ function resolveIpClassifySourceUrl(name: string, raw: string | undefined, fallb
   if (['none', 'off', 'false', '0'].includes(value.toLowerCase())) return null;
   try {
     const url = new URL(value);
-    if (url.protocol === 'https:' || url.protocol === 'http:') return url.toString();
+    if (url.protocol === 'https:') return url.toString();
   } catch {
     // fall through to the warning
   }
   if (!warnedIpClassifySourceVars.has(name)) {
     warnedIpClassifySourceVars.add(name);
-    console.warn(`[IPClassify] ${name} is not an http(s) URL; that offline source will not be downloaded`);
+    console.warn(`[IPClassify] ${name} is not an https URL; that offline source will not be downloaded`);
   }
   return null;
 }

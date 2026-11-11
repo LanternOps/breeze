@@ -175,12 +175,17 @@ describe('classifyIp', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('returns unknown instead of throwing on provider failure', async () => {
+  it('returns unknown with source none (not the provider) instead of throwing on provider failure', async () => {
     process.env.IP_CLASSIFY_PROVIDER = 'ipinfo';
     process.env.IP_CLASSIFY_API_KEY = 'secret';
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('down'); }));
     await expect(classifyIp('198.51.100.1')).resolves.toEqual({
-      ipClass: 'unknown', asn: null, provider: 'ipinfo',
+      ipClass: 'unknown', asn: null, provider: 'none',
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })));
+    await expect(classifyIp('198.51.100.1')).resolves.toEqual({
+      ipClass: 'unknown', asn: null, provider: 'none',
     });
   });
 

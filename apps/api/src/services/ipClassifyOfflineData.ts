@@ -43,18 +43,33 @@ export type IpClassification = {
 };
 
 /**
+ * How long an offline "checked, nothing found" stays valid for the promotion
+ * gate: the Tor list's refresh interval (24 h) plus the same again as grace.
+ * An older clear blocks until the promote job re-checks the address against
+ * current data. A clear can only have been produced from freshly downloaded
+ * data (see OfflineDataset.current), so this bounds how old the evidence
+ * behind a promotion can be.
+ */
+export const OFFLINE_CLEAR_MAX_AGE_MS = 48 * 60 * 60 * 1_000;
+
+/**
  * True when an `unknown` signup class is the offline baseline's "checked,
- * nothing found" rather than "never classified". Only meaningful while the
- * offline classifier is the active one: once a keyed provider is configured,
- * an offline result is no longer the best evidence available and the address
- * is re-classified by the provider instead.
+ * nothing found" rather than "never classified", and that check is recent.
+ * Only meaningful while the offline classifier is the active one: once a keyed
+ * provider is configured, an offline result is no longer the best evidence
+ * available and the address is re-classified by the provider instead.
  */
 export function isOfflineBaselineClear(
   ipClass: IpClass,
   source: string | null,
   activeClassifier: IpClassifier,
+  classifiedAt: Date | null,
+  now: Date,
 ): boolean {
-  return ipClass === 'unknown' && source === IP_CLASS_SOURCE_OFFLINE && activeClassifier === 'offline';
+  if (ipClass !== 'unknown' || source !== IP_CLASS_SOURCE_OFFLINE || activeClassifier !== 'offline') return false;
+  if (!classifiedAt) return false;
+  const age = now.getTime() - classifiedAt.getTime();
+  return age >= -5 * 60 * 1_000 && age <= OFFLINE_CLEAR_MAX_AGE_MS;
 }
 
 function expandIpv6(ip: string): string[] | null {
@@ -262,19 +277,26 @@ export type OfflineDataset = {
   tor: ReadonlySet<string>;
   hosting: ReadonlySet<number>;
   asn: AsnTable | null;
+  /**
+   * True only when the Tor list, the hosting list and the ASN database all
+   * come from a successful download within their maximum age. The bundled
+   * snapshots alone, or a download past its maximum age, are never current.
+   */
+  current: boolean;
 };
 
 /**
  * The offline baseline. It can prove `tor` (Tor exit list) and `hosting`
  * (the address's ASN is on the hosting-ASN list); it can never prove
  * `residential` or `business`, so everything else stays `unknown` — with the
- * source saying how much of the baseline actually ran.
+ * source saying how much of the baseline actually ran. Only current data can
+ * produce the promotion-clearing IP_CLASS_SOURCE_OFFLINE marker.
  */
 export function classifyWithOfflineData(raw: string, data: OfflineDataset): IpClassification {
   if (isNonPublicAddress(raw)) return { ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_NONE };
   const ip = normalizeIp(raw)!;
   const asn = data.asn ? lookupAsn(data.asn, ip) : null;
-  const complete = asn !== null && data.hosting.size > 0;
+  const complete = data.current && asn !== null && data.hosting.size > 0;
   const provider = complete ? IP_CLASS_SOURCE_OFFLINE : IP_CLASS_SOURCE_OFFLINE_PARTIAL;
   if (data.tor.has(ip)) return { ipClass: 'tor', asn, provider };
   if (asn !== null && data.hosting.has(asn)) return { ipClass: 'hosting', asn, provider };

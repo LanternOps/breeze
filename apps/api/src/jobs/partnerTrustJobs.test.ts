@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   update, select, runOutside, withSystem, classify, tryAutoPromote,
-  restrictOnHardDeny, partnerForDevice, ipClassifyProvider, runIpClassifyBackfill,
+  restrictOnHardDeny, partnerForDevice, ipClassifyProvider, runIpClassifyBackfill, offlineDataRefreshedAt,
 } = vi.hoisted(() => ({
+  offlineDataRefreshedAt: vi.fn(),
   runIpClassifyBackfill: vi.fn(),
   update: vi.fn(),
   select: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock('../db/schema', () => ({
   devices: { id: 'devices.id' },
 }));
 vi.mock('../services/ipClassify', () => ({ classifyIp: classify }));
+vi.mock('../services/ipClassifyOffline', () => ({ offlineDataRefreshedAt }));
 vi.mock('../config/env', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config/env')>()),
   ipClassifyProvider,
@@ -87,6 +89,7 @@ describe('processPartnerTrustJob', () => {
     restrictOnHardDeny.mockResolvedValue(false);
     partnerForDevice.mockResolvedValue('partner-for-device');
     ipClassifyProvider.mockReturnValue('none');
+    offlineDataRefreshedAt.mockReturnValue(null);
     set.mockReturnValue({ where });
     update.mockReturnValue({ set });
   });
@@ -194,6 +197,26 @@ describe('processPartnerTrustJob', () => {
 
         expect(classify).not.toHaveBeenCalled();
         expect(update).not.toHaveBeenCalled();
+      });
+
+      it('re-checks a clear made before the offline data was last refreshed', async () => {
+        const classifiedAt = new Date(Date.now() - 2 * 60 * 60 * 1_000);
+        offlineDataRefreshedAt.mockReturnValue(new Date(classifiedAt.getTime() + 60_000));
+        withBatch([probationRow({ signupIpClassSource: 'offline', signupIpClassifiedAt: classifiedAt })]);
+        classify.mockResolvedValue({ ipClass: 'tor', asn: 64501, provider: 'offline' });
+
+        await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ signupIpClass: 'tor', signupIpClassSource: 'offline' }));
+      });
+
+      it('re-checks a clear older than its maximum age', async () => {
+        withBatch([probationRow({ signupIpClassSource: 'offline', signupIpClassifiedAt: new Date(Date.now() - 49 * 60 * 60 * 1_000) })]);
+        classify.mockResolvedValue({ ipClass: 'unknown', asn: 64501, provider: 'offline' });
+
+        await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+        expect(classify).toHaveBeenCalledWith('198.51.100.7');
       });
 
       it('retries a partial (Tor-only) result once the retry window has passed', async () => {

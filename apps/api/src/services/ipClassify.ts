@@ -147,7 +147,10 @@ export async function classifyIp(ip: string): Promise<IpClassification> {
   if (provider === 'none') return offlineClassification(ip);
 
   const prefix = ipCachePrefix(ip);
-  if (!prefix) return { ipClass: 'unknown', asn: null, provider };
+  // Nothing was judged (unparseable address, or the lookup failed below):
+  // source 'none', so the result is never mistaken for the provider's answer
+  // and the backfills retry it.
+  if (!prefix) return { ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_NONE };
   const cacheKey = `ipclass:v1:${prefix}`;
   const redis = getRedis();
   if (redis) {
@@ -179,8 +182,9 @@ export async function classifyIp(ip: string): Promise<IpClassification> {
       }
     }
     return result;
-  } catch {
-    return { ipClass: 'unknown', asn: null, provider };
+  } catch (error) {
+    console.warn(`[IPClassify] ${provider} lookup failed: ${error instanceof Error ? error.message : String(error)}`);
+    return { ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_NONE };
   } finally {
     clearTimeout(timeout);
   }

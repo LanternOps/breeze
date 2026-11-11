@@ -64,6 +64,7 @@ const baseFacts = (): PromotionFacts => ({
   settledCard: { chargeId: 'ch_1', settledAt: hoursAgo(24) },
   signupIpClass: 'residential',
   signupIpClassSource: 'ipinfo',
+  signupIpClassifiedAt: hoursAgo(47),
   ipClassifier: 'ipinfo',
   deviceIpClasses: ['business'],
   unresolvedAlerts: 0,
@@ -294,7 +295,8 @@ describe('promotionDecision', () => {
 
   describe('offline baseline (#11698)', () => {
     const offline = (overrides: Partial<PromotionFacts>) => ({
-      ...baseFacts(), signupIpClass: 'unknown' as IpClass, ipClassifier: 'offline' as const, ...overrides,
+      ...baseFacts(), signupIpClass: 'unknown' as IpClass, ipClassifier: 'offline' as const,
+      signupIpClassifiedAt: hoursAgo(1), ...overrides,
     });
 
     it('does not block on "checked, nothing found" while no keyed provider is configured', () => {
@@ -309,6 +311,8 @@ describe('promotionDecision', () => {
       ['a private address (nothing checked)', { signupIpClassSource: 'none' }],
       ['a keyed provider is configured now', { signupIpClassSource: 'offline', ipClassifier: 'ipinfo' as const }],
       ['the keyed provider returned unknown', { signupIpClassSource: 'ipinfo', ipClassifier: 'ipinfo' as const }],
+      ['the clear is older than its maximum age', { signupIpClassSource: 'offline', signupIpClassifiedAt: hoursAgo(49) }],
+      ['the clear has no timestamp', { signupIpClassSource: 'offline', signupIpClassifiedAt: null }],
     ])('still blocks as signup_ip_unclassified when %s', (_name, overrides) => {
       expect(promotionDecision(offline(overrides), now)).toEqual({
         promote: false, blockers: ['signup_ip_unclassified'],
@@ -724,8 +728,10 @@ describe('gatherPromotionFacts billing hold mapping', () => {
     select.mockImplementation((fields: Record<string, unknown>) => {
       if ('createdAt' in fields) {
         expect(fields).toHaveProperty('signupIpClassSource');
+        expect(fields).toHaveProperty('signupIpClassifiedAt');
         return { from: () => ({ where: () => ({ limit: async () => [{
           createdAt: hoursAgo(48), emailVerifiedAt: hoursAgo(47), signupIpClass: 'unknown', signupIpClassSource: 'offline',
+          signupIpClassifiedAt: hoursAgo(2),
         }] }) }) };
       }
       if ('ipClass' in fields) return { from: () => ({ innerJoin: () => ({ where: async () => [] }) }) };
@@ -734,7 +740,7 @@ describe('gatherPromotionFacts billing hold mapping', () => {
 
     delete process.env.IP_CLASSIFY_PROVIDER;
     await expect(gatherPromotionFacts('p1')).resolves.toMatchObject({
-      signupIpClass: 'unknown', signupIpClassSource: 'offline', ipClassifier: 'offline',
+      signupIpClass: 'unknown', signupIpClassSource: 'offline', signupIpClassifiedAt: hoursAgo(2), ipClassifier: 'offline',
     });
     process.env.IP_CLASSIFY_PROVIDER = 'ipdata';
     process.env.IP_CLASSIFY_API_KEY = 'k';

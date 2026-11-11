@@ -330,10 +330,11 @@ describe("the evidence card's sending domains (W06)", () => {
 });
 
 describe('IP classifier and promotion blockers (#11698)', () => {
-  const offlineStatus = (asn: { source: string; entries: number }) => ({
+  const offlineStatus = (asn: { source: string; entries: number }, current = false) => ({
     tor: { source: 'download', entries: 1200, updatedAt: '2026-11-11T00:00:00.000Z', lastError: null },
-    hosting: { source: 'snapshot', entries: 700, updatedAt: '2026-11-11T00:00:00.000Z', lastError: null },
+    hosting: { source: current ? 'download' : 'snapshot', entries: 700, updatedAt: '2026-11-11T00:00:00.000Z', lastError: current ? null : 'HTTP 503' },
     asn: { ...asn, updatedAt: null, lastError: null },
+    current,
     reportedAt: '2026-11-11T00:05:00.000Z',
   });
 
@@ -355,12 +356,34 @@ describe('IP classifier and promotion blockers (#11698)', () => {
     fetchWithAuth.mockResolvedValue(jsonResponse({
       partners: [row],
       nextCursor: null,
-      classifier: { active: 'offline', offline: offlineStatus({ source: 'download', entries: 500000 }) },
+      classifier: { active: 'offline', offline: offlineStatus({ source: 'download', entries: 500000 }, true) },
     }));
     render(<TrustQueue />);
 
     expect((await screen.findByTestId('trust-queue-classifier')).textContent).toContain('500,000');
     expect(screen.queryByTestId('trust-queue-classifier-degraded')).toBeNull();
+  });
+
+  it('warns when the data is loaded but not current (snapshot or stale), and shows the source error', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      partners: [row],
+      nextCursor: null,
+      classifier: { active: 'offline', offline: offlineStatus({ source: 'download', entries: 500000 }, false) },
+    }));
+    render(<TrustQueue />);
+
+    const degraded = await screen.findByTestId('trust-queue-classifier-degraded');
+    expect(degraded.textContent).toContain('not current');
+    expect(screen.getByTestId('trust-queue-classifier').textContent).toContain('HTTP 503');
+  });
+
+  it('warns when the offline classifier has published no status', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      partners: [row], nextCursor: null, classifier: { active: 'offline', offline: null },
+    }));
+    render(<TrustQueue />);
+
+    expect((await screen.findByTestId('trust-queue-classifier-degraded')).textContent).toContain('No status');
   });
 
   it('names a keyed provider when one is configured', async () => {
@@ -389,6 +412,7 @@ describe('IP classifier and promotion blockers (#11698)', () => {
     const blockers = await screen.findByTestId('trust-queue-blockers-partner-1');
     expect(blockers.textContent).toContain('Card not settled');
     expect(blockers.textContent).toContain('Partner younger than 24 hours');
+    expect(blockers.textContent).toContain('as of');
     expect(screen.getByTestId('trust-queue-ip-source-partner-1').textContent).toContain('offline: nothing found');
   });
 

@@ -13,6 +13,8 @@ export type TrustQueueClassifier = {
     tor: OfflineSourceStatus;
     hosting: OfflineSourceStatus;
     asn: OfflineSourceStatus;
+    /** Every source is a fresh download, so lookups can clear the promotion gate. */
+    current?: boolean;
     reportedAt: string;
   } | null;
 };
@@ -54,13 +56,15 @@ function sourceText(label: string, status: OfflineSourceStatus, unit: string): s
   if (status.source === 'unavailable') return `${label}: unavailable`;
   const origin = status.source === 'snapshot' ? 'bundled snapshot' : status.source === 'disk' ? 'cached download' : 'downloaded';
   const date = status.updatedAt ? `, ${status.updatedAt.slice(0, 10)}` : '';
-  return `${label}: ${count(status.entries)} ${unit} (${origin}${date})`;
+  const error = status.lastError ? `; last refresh failed: ${status.lastError}` : '';
+  return `${label}: ${count(status.entries)} ${unit} (${origin}${date}${error})`;
 }
 
 /**
- * Which IP classifier the trust gate is using (#11698). With the offline
- * baseline missing its ASN database, only Tor exits are detected and every
- * other signup stays unclassified, which blocks auto-promotion: say so.
+ * Which IP classifier the trust gate is using (#11698). The offline baseline
+ * clears a signup only when all three sources are fresh downloads; on bundled
+ * snapshots, stale data, or no ASN database, signups stay unclassified and
+ * block auto-promotion. Say so, rather than look healthy.
  */
 export function TrustClassifierBanner({ classifier }: { classifier: TrustQueueClassifier | undefined }) {
   if (!classifier) return null;
@@ -74,7 +78,7 @@ export function TrustClassifierBanner({ classifier }: { classifier: TrustQueueCl
   }
 
   const offline = classifier.offline;
-  const degraded = !offline || offline.asn.source === 'unavailable';
+  const current = offline ? (offline.current ?? offline.asn.source !== 'unavailable') : false;
   return (
     <div className="space-y-2 rounded-lg border bg-card p-4 text-sm" data-testid="trust-queue-classifier">
       <div className="flex items-start gap-2">
@@ -96,10 +100,14 @@ export function TrustClassifierBanner({ classifier }: { classifier: TrustQueueCl
           )}
         </div>
       </div>
-      {degraded && offline && (
+      {!current && (
         <p className="flex items-start gap-2 text-amber-700 dark:text-amber-400" data-testid="trust-queue-classifier-degraded">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          The ASN database is unavailable, so only Tor exits are detected. Other signup IPs stay unclassified and block auto-promotion until it loads.
+          {!offline
+            ? 'No status from the classifying worker. Until it reports fresh data, signup IPs stay unclassified and block auto-promotion.'
+            : offline.asn.source === 'unavailable'
+              ? 'The ASN database is unavailable, so only Tor exits are detected. Other signup IPs stay unclassified and block auto-promotion until it loads.'
+              : 'Offline data is not current (a bundled snapshot or a download past its maximum age). Signup IPs stay unclassified and block auto-promotion until every source refreshes.'}
         </p>
       )}
     </div>

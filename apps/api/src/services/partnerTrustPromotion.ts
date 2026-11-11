@@ -93,6 +93,8 @@ export interface PromotionFacts {
    * row classified before the source was recorded.
    */
   signupIpClassSource: string | null;
+  /** When signupIpClass was last written; an offline clear only counts while recent. */
+  signupIpClassifiedAt: Date | null;
   /** The classifier in effect when the facts were gathered. */
   ipClassifier: IpClassifier;
   deviceIpClasses: IpClass[];
@@ -438,11 +440,14 @@ export function promotionDecision(
   if (!facts.settledCard) blockers.push('card_not_settled');
   else if (now.getTime() - facts.settledCard.settledAt.getTime() < DAY_MS) blockers.push('settled_too_recent');
   // `unknown` blocks unless it is the offline baseline's "checked, nothing
-  // found" AND no keyed provider is configured (#11698). Never classified,
-  // a partial (Tor-only) check, a private address, and a keyed provider's own
-  // `unknown` all still block.
+  // found" from fresh data, checked within OFFLINE_CLEAR_MAX_AGE_MS, AND no
+  // keyed provider is configured (#11698). Never classified, a partial or
+  // stale-data check, an expired clear, a private address, and a keyed
+  // provider's own `unknown` all still block.
   if (facts.signupIpClass === 'unknown') {
-    if (!isOfflineBaselineClear(facts.signupIpClass, facts.signupIpClassSource, facts.ipClassifier)) {
+    if (!isOfflineBaselineClear(
+      facts.signupIpClass, facts.signupIpClassSource, facts.ipClassifier, facts.signupIpClassifiedAt, now,
+    )) {
       blockers.push('signup_ip_unclassified');
     }
   } else if (['hosting', 'vpn', 'tor'].includes(facts.signupIpClass)) blockers.push('signup_ip_hosting');
@@ -464,6 +469,7 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
         emailVerifiedAt: partners.emailVerifiedAt,
         signupIpClass: partners.signupIpClass,
         signupIpClassSource: partners.signupIpClassSource,
+        signupIpClassifiedAt: partners.signupIpClassifiedAt,
       }).from(partners).where(eq(partners.id, partnerId)).limit(1),
       db.select({ ipClass: devices.enrollmentIpClass }).from(devices)
         .innerJoin(organizations, eq(devices.orgId, organizations.id))
@@ -480,6 +486,7 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
       emailVerified: partner.emailVerifiedAt !== null,
       signupIpClass: partner.signupIpClass,
       signupIpClassSource: partner.signupIpClassSource ?? null,
+      signupIpClassifiedAt: partner.signupIpClassifiedAt ?? null,
       ipClassifier: activeIpClassifier(),
       deviceIpClasses: deviceRows.map((row) => row.ipClass),
       unresolvedAlerts: alertRow?.count ?? 0,

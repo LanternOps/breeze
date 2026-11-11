@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   select, update, runOutside, withSystem, classify, ensureOfflineData, offlineBaselineComplete,
-  restrictOnHardDeny, ipClassifyProvider, redis,
+  restrictOnHardDeny, ipClassifyProvider, redis, partnerForDevice,
 } = vi.hoisted(() => ({
+  partnerForDevice: vi.fn(),
   select: vi.fn(),
   update: vi.fn(),
   runOutside: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -31,6 +32,7 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/ipClassify', () => ({ classifyIp: classify }));
 vi.mock('../services/ipClassifyOffline', () => ({ ensureOfflineData, offlineBaselineComplete }));
 vi.mock('../services/partnerTrustPromotion', () => ({ restrictOnHardDeny }));
+vi.mock('../services/partnerTrust.repo', () => ({ partnerForDevice }));
 vi.mock('../services/redis', () => ({ getRedis: () => redis }));
 vi.mock('../config/env', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config/env')>()),
@@ -62,6 +64,7 @@ describe('runIpClassifyBackfill', () => {
     offlineBaselineComplete.mockReturnValue(true);
     ensureOfflineData.mockResolvedValue(undefined);
     restrictOnHardDeny.mockResolvedValue(false);
+    partnerForDevice.mockResolvedValue('partner-of-device');
     redis.get.mockResolvedValue(null);
     redis.set.mockResolvedValue('OK');
     set.mockReturnValue({ where });
@@ -80,7 +83,7 @@ describe('runIpClassifyBackfill', () => {
     })[ip]);
 
     await expect(runIpClassifyBackfill()).resolves.toEqual({
-      classifier: 'offline', partners: 2, devices: 1, complete: true,
+      classifier: 'offline', partners: 2, devices: 1, failed: 0, complete: true,
     });
 
     expect(ensureOfflineData).toHaveBeenCalledWith({ waitMs: expect.any(Number) });
@@ -111,15 +114,35 @@ describe('runIpClassifyBackfill', () => {
     expect(redis.set).not.toHaveBeenCalled();
   });
 
-  it('keeps going when one row fails', async () => {
+  it('keeps going when one row fails, and does not mark the backfill done', async () => {
     withRows([{ id: 'p1', ip: '203.0.113.10' }, { id: 'p2', ip: '203.0.113.11' }], []);
     classify.mockResolvedValue({ ipClass: 'unknown', asn: 64501, provider: 'offline' });
     where.mockRejectedValueOnce(new Error('db exploded'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    await expect(runIpClassifyBackfill()).resolves.toMatchObject({ partners: 1 });
+    await expect(runIpClassifyBackfill()).resolves.toMatchObject({ partners: 1, failed: 1, complete: false });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('p1'), expect.any(Error));
+    expect(redis.set).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('sends a device that turned out to be on Tor to its partner\'s hard-deny evaluation', async () => {
+    withRows([], [{ id: 'd1', ip: '203.0.113.66' }]);
+    classify.mockResolvedValue({ ipClass: 'tor', asn: 64501, provider: 'offline' });
+
+    await runIpClassifyBackfill();
+    expect(partnerForDevice).toHaveBeenCalledWith('d1');
+    expect(restrictOnHardDeny).toHaveBeenCalledWith('partner-of-device');
+  });
+
+  it('counts a keyed-provider lookup that failed as a failure, not a result', async () => {
+    ipClassifyProvider.mockReturnValue('ipinfo');
+    withRows([{ id: 'p1', ip: '203.0.113.10' }], []);
+    // classifyIp reports a provider failure with source 'none'.
+    classify.mockResolvedValue({ ipClass: 'unknown', asn: null, provider: 'none' });
+
+    await expect(runIpClassifyBackfill()).resolves.toMatchObject({ failed: 1, complete: false });
+    expect(redis.set).not.toHaveBeenCalled();
   });
 
   it('uses the keyed provider without waiting for offline data when one is configured', async () => {
