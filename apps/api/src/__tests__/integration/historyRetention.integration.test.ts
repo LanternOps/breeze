@@ -25,6 +25,8 @@ vi.hoisted(() => {
   process.env.SUPPORT_SESSION_RETENTION_ENFORCE = 'true';
   process.env.AUTH_SESSION_RETENTION_ENFORCE = 'true';
   process.env.NETWORK_CHANGE_EVENT_RETENTION_ENFORCE = 'true';
+  // Below the 30-day user-risk lookback: the job must floor it back to 30.
+  process.env.AUTH_SESSION_RETENTION_DAYS = '7';
 });
 
 import './setup';
@@ -41,6 +43,7 @@ import {
   aiAgents,
   aiAlertVerdicts,
   aiRunArtifacts,
+  aiRunWorkspaces,
   alertCorrelationGroups,
   automationRunDeviceResults,
   automationRuns,
@@ -48,6 +51,7 @@ import {
   cisBaselineResults,
   cisBaselines,
   discoveryProfiles,
+  fleetDesignAppliedItems,
   networkBaselines,
   networkChangeEvents,
   patchJobResults,
@@ -201,8 +205,25 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         runningFinished: await run('running', daysAgo(500)),
         runningNoFinish: await run('running', null),
         recent: await run('completed', daysAgo(10)),
+        workspaceRun: await run('completed', daysAgo(500)),
+        deletedExpired: await run('expired', daysAgo(500)),
+        deletedSkipped: await run('skipped', daysAgo(500)),
+        deletedBlocked: await run('blocked', daysAgo(500)),
+        queuedOld: await run('queued', daysAgo(500)),
+        awaitingOld: await run('awaiting_approval', daysAgo(500)),
+        terminalNoFinish: await run('completed', null),
       };
       const all = Object.values(ids);
+
+      // A run only an ai_run_workspaces row points at: the workspace reaper owns that row.
+      await db.insert(aiRunWorkspaces).values({
+        orgId,
+        runId: ids.workspaceRun,
+        backend: 'fake' as const,
+        providerRef: `fake-${randomUUID()}`,
+        region: 'eu' as const,
+        deadlineAt: new Date(Date.now() + HOUR_MS),
+      });
 
       await db.insert(actionIntents).values({
         orgId,
@@ -265,13 +286,16 @@ describe('history retention (#4342 W5, real Postgres)', () => {
       });
 
       const left = await surviving(aiAgentRuns, aiAgentRuns.id, all);
-      for (const k of ['deletedRun', 'deletedFailed', 'deletedThird'] as const) {
+      for (const k of ['deletedRun', 'deletedFailed', 'deletedThird', 'deletedExpired', 'deletedSkipped', 'deletedBlocked'] as const) {
         expect(left.has(ids[k]), `${k} should be deleted`).toBe(false);
       }
-      for (const k of ['intentRun', 'draftRun', 'artifactRun', 'runningFinished', 'runningNoFinish', 'recent'] as const) {
+      for (const k of [
+        'intentRun', 'draftRun', 'artifactRun', 'workspaceRun', 'runningFinished', 'runningNoFinish', 'recent',
+        'queuedOld', 'awaitingOld', 'terminalNoFinish',
+      ] as const) {
         expect(left.has(ids[k]), `${k} should survive`).toBe(true);
       }
-      expect(affected(enforce[IDX.aiAgentRuns])).toBe(3);
+      expect(affected(enforce[IDX.aiAgentRuns])).toBe(6);
 
       const verdicts = await db.select({ id: aiAlertVerdicts.id }).from(aiAlertVerdicts)
         .where(eq(aiAlertVerdicts.runId, ids.deletedRun));
@@ -306,6 +330,7 @@ describe('history retention (#4342 W5, real Postgres)', () => {
       const doneJob = await job('completed');
       const runningJob = await job('running');
       const patchA = await patch();
+      const patchB = await patch();
 
       async function result(o: {
         jobId?: string; deviceId: string; patchId: string | null; ago: Date;
@@ -330,6 +355,7 @@ describe('history retention (#4342 W5, real Postgres)', () => {
       const d5 = await device(false); // running parent job
       const d6 = await device(false); // pending row
       const d7 = await device(false); // window edge
+      const d8 = await device(false); // two patches
 
       const ids = {
         c1: await result({ deviceId: d1, patchId: patchA, ago: daysAgo(500) }),
@@ -347,6 +373,11 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         pendingNewest: await result({ deviceId: d6, patchId: patchA, ago: daysAgo(450) }),
         edgeOld: await result({ deviceId: d7, patchId: patchA, ago: justPast(365) }),
         edgeNew: await result({ deviceId: d7, patchId: patchA, ago: justInside(365) }),
+        // Two patches on one device: each pair keeps exactly its own newest.
+        pairAOld: await result({ deviceId: d8, patchId: patchA, ago: daysAgo(500) }),
+        pairANew: await result({ deviceId: d8, patchId: patchA, ago: daysAgo(400) }),
+        pairBOld: await result({ deviceId: d8, patchId: patchB, ago: daysAgo(480) }),
+        pairBNew: await result({ deviceId: d8, patchId: patchB, ago: daysAgo(420) }),
       };
       const all = Object.values(ids);
 
@@ -358,11 +389,11 @@ describe('history retention (#4342 W5, real Postgres)', () => {
       });
 
       const left = await surviving(patchJobResults, patchJobResults.id, all);
-      const deleted = ['c1', 'c2', 'nullOld', 'noRebootDeleted', 'edgeOld'] as const;
+      const deleted = ['c1', 'c2', 'nullOld', 'noRebootDeleted', 'edgeOld', 'pairAOld', 'pairBOld'] as const;
       for (const k of deleted) expect(left.has(ids[k]), `${k} should be deleted`).toBe(false);
       const kept = [
         'c3', 'nullNew', 'rebootKept', 'rebootNewest', 'noRebootNewest',
-        'runningParent', 'runningParentNewest', 'pendingRow', 'pendingNewest', 'edgeNew',
+        'runningParent', 'runningParentNewest', 'pendingRow', 'pendingNewest', 'edgeNew', 'pairANew', 'pairBNew',
       ] as const;
       for (const k of kept) expect(left.has(ids[k]), `${k} should survive`).toBe(true);
       expect(affected(enforce[IDX.patchJobResults])).toBe(deleted.length);
@@ -390,6 +421,9 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         s2: await snapshot(daysAgo(450)),
         s3: await snapshot(daysAgo(400)),
       };
+      // A second device whose only snapshot is old: it is that device's newest.
+      const otherDeviceId = (await createDevice({ orgId, siteId })).id;
+      const otherSnap = await snapshot(daysAgo(500), otherDeviceId);
 
       async function baseline(name: string): Promise<string> {
         const [row] = await db.insert(cisBaselines).values({
@@ -412,16 +446,16 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         a3: await cis(baselineA, daysAgo(400)),
         bOnly: await cis(baselineB, daysAgo(500)),
       };
-      const snapIds = Object.values(snaps);
+      const snapIds = [...Object.values(snaps), otherSnap];
       const cisIds = Object.values(results);
 
       const enforce = await reportThenEnforce(async () => {
-        expect((await surviving(securityPostureSnapshots, securityPostureSnapshots.id, snapIds)).size).toBe(3);
+        expect((await surviving(securityPostureSnapshots, securityPostureSnapshots.id, snapIds)).size).toBe(4);
         expect((await surviving(cisBaselineResults, cisBaselineResults.id, cisIds)).size).toBe(4);
       });
 
       const snapLeft = await surviving(securityPostureSnapshots, securityPostureSnapshots.id, snapIds);
-      expect([...snapLeft]).toEqual([snaps.s3]);
+      expect([...snapLeft].sort()).toEqual([snaps.s3, otherSnap].sort());
       expect(affected(enforce[IDX.securityPosture])).toBe(2);
 
       const cisLeft = await surviving(cisBaselineResults, cisBaselineResults.id, cisIds);
@@ -513,7 +547,12 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         running: await run(busy, 'running', daysAgo(460)),
         pending: await run(busy, 'pending', daysAgo(440)),
         busyNewest: await run(busy, 'completed', daysAgo(400)),
+        fleetCited: await run(busy, 'completed', daysAgo(490)),
       };
+      // Two runs tied on the newest created_at: neither has a strictly newer sibling.
+      const tied = await report('Tied');
+      const tiedAt = daysAgo(450);
+      const tiedIds = [await run(tied, 'completed', tiedAt), await run(tied, 'completed', tiedAt)];
       const all = Object.values(ids);
 
       // `cited` is evidence for a service deliverable occurrence.
@@ -530,18 +569,24 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         orgId, occurrenceId: occurrence!.id, kind: 'report_run', reportId: busy, reportRunId: ids.cited,
       });
 
+      await db.insert(fleetDesignAppliedItems).values({
+        orgId, reportRunId: ids.fleetCited, itemRef: 'retention-item', itemKind: 'policy', step: 1,
+      });
+
       const [delivery] = await db.insert(reportRunDeliveries).values({
         reportRunId: ids.plain1, recipientUserId: userId, channel: 'email',
       }).returning({ id: reportRunDeliveries.id });
 
+      const everyRun = [...all, ...tiedIds];
       const enforce = await reportThenEnforce(async () => {
-        expect((await surviving(reportRuns, reportRuns.id, all)).size).toBe(all.length);
+        expect((await surviving(reportRuns, reportRuns.id, everyRun)).size).toBe(everyRun.length);
       });
 
-      const left = await surviving(reportRuns, reportRuns.id, all);
+      const left = await surviving(reportRuns, reportRuns.id, everyRun);
+      for (const id of tiedIds) expect(left.has(id), 'tied newest runs both survive').toBe(true);
       const deleted = ['dormantOld', 'plain1', 'plain2'] as const;
       for (const k of deleted) expect(left.has(ids[k]), `${k} should be deleted`).toBe(false);
-      for (const k of ['dormantNewest', 'cited', 'running', 'pending', 'busyNewest'] as const) {
+      for (const k of ['dormantNewest', 'cited', 'fleetCited', 'running', 'pending', 'busyNewest'] as const) {
         expect(left.has(ids[k]), `${k} should survive`).toBe(true);
       }
       expect(affected(enforce[IDX.reportRuns])).toBe(deleted.length);
@@ -606,7 +651,7 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         endedRecent: await remote('disconnected', daysAgo(10), daysAgo(11)),
       };
 
-      async function support(status: 'ended' | 'pending', endedAt: Date | null, createdAt: Date) {
+      async function support(status: 'ended' | 'expired' | 'pending', endedAt: Date | null, createdAt: Date) {
         const [row] = await db.insert(supportSessions).values({
           orgId,
           createdByUserId: userId,
@@ -623,11 +668,14 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         ended: await support('ended', daysAgo(400), daysAgo(401)),
         pending: await support('pending', null, daysAgo(400)),
         endedRecent: await support('ended', daysAgo(10), daysAgo(11)),
+        expiredNoEnd: await support('expired', null, daysAgo(400)),
+        endedInside: await support('ended', justInside(365), daysAgo(366)),
+        endedPast: await support('ended', justPast(365), daysAgo(366)),
       };
 
       const enforce = await reportThenEnforce(async () => {
         expect((await surviving(remoteSessions, remoteSessions.id, Object.values(remoteIds))).size).toBe(3);
-        expect((await surviving(supportSessions, supportSessions.id, Object.values(supportIds))).size).toBe(3);
+        expect((await surviving(supportSessions, supportSessions.id, Object.values(supportIds))).size).toBe(6);
       });
 
       const remoteLeft = await surviving(remoteSessions, remoteSessions.id, Object.values(remoteIds));
@@ -640,7 +688,10 @@ describe('history retention (#4342 W5, real Postgres)', () => {
       expect(supportLeft.has(supportIds.ended)).toBe(false);
       expect(supportLeft.has(supportIds.pending)).toBe(true);
       expect(supportLeft.has(supportIds.endedRecent)).toBe(true);
-      expect(affected(enforce[IDX.supportSessions])).toBe(1);
+      expect(supportLeft.has(supportIds.expiredNoEnd), 'expired with NULL ended_at ages by created_at').toBe(false);
+      expect(supportLeft.has(supportIds.endedInside)).toBe(true);
+      expect(supportLeft.has(supportIds.endedPast)).toBe(false);
+      expect(affected(enforce[IDX.supportSessions])).toBe(3);
     });
   });
 
@@ -655,7 +706,11 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         return row!.id;
       }
       const ids = {
+        // AUTH_SESSION_RETENTION_DAYS=7 (hoisted above): only the 30-day floor keeps this row,
+        // since a 7-day window would delete it.
         youngExpired: await session(daysAgo(20), daysAgo(13)),
+        oldJustExpired: await session(daysAgo(40), new Date(NOW - HOUR_MS)),
+        oldAboutToExpire: await session(daysAgo(40), new Date(NOW + HOUR_MS)),
         oldExpired: await session(daysAgo(31), daysAgo(24)),
         oldStillValid: await session(daysAgo(31), new Date(NOW + 7 * DAY_MS)),
         oldExpiredB: await session(daysAgo(60), daysAgo(50)),
@@ -668,13 +723,13 @@ describe('history retention (#4342 W5, real Postgres)', () => {
       });
 
       const left = await surviving(sessions, sessions.id, all);
-      for (const k of ['oldExpired', 'oldExpiredB', 'oldExpiredC'] as const) {
+      for (const k of ['oldExpired', 'oldExpiredB', 'oldExpiredC', 'oldJustExpired'] as const) {
         expect(left.has(ids[k]), `${k} should be deleted`).toBe(false);
       }
-      for (const k of ['youngExpired', 'oldStillValid'] as const) {
+      for (const k of ['youngExpired', 'oldStillValid', 'oldAboutToExpire'] as const) {
         expect(left.has(ids[k]), `${k} should survive`).toBe(true);
       }
-      expect(affected(enforce[IDX.authSessions])).toBe(3);
+      expect(affected(enforce[IDX.authSessions])).toBe(4);
     });
   });
 
@@ -695,6 +750,9 @@ describe('history retention (#4342 W5, real Postgres)', () => {
       const thirty = await profile('thirty', { enabled: true, changeRetentionDays: 30 });
       const junk = await profile('junk', { enabled: true, changeRetentionDays: 'abc' });
       const disabled = await profile('disabled', { enabled: false, changeRetentionDays: 30 });
+      const wide = await profile('wide', { enabled: true, changeRetentionDays: 200 });
+      const zero = await profile('zero', { enabled: true, changeRetentionDays: 0 });
+      const fourDigits = await profile('four-digits', { enabled: true, changeRetentionDays: '1000' });
 
       let n = 0;
       async function event(profileId: string | null, ago: Date): Promise<string> {
@@ -713,6 +771,15 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         junkOld: await event(junk, daysAgo(91)),
         junkFresh: await event(junk, daysAgo(89)),
         disabledOld: await event(disabled, daysAgo(31)),
+        // The profile window can exceed the 90-day job window.
+        wideFresh: await event(wide, daysAgo(100)),
+        wideOld: await event(wide, daysAgo(201)),
+        // 0 clamps up to a 1-day window.
+        zeroOld: await event(zero, daysAgo(2)),
+        zeroFresh: await event(zero, new Date(NOW - HOUR_MS)),
+        // 4 digits is not a valid setting: falls back to the 90-day job window.
+        fourOld: await event(fourDigits, daysAgo(91)),
+        fourFresh: await event(fourDigits, daysAgo(89)),
       };
       const all = Object.values(ids);
 
@@ -721,9 +788,9 @@ describe('history retention (#4342 W5, real Postgres)', () => {
       });
 
       const left = await surviving(networkChangeEvents, networkChangeEvents.id, all);
-      const deleted = ['thirtyOld', 'noProfileOld', 'junkOld', 'disabledOld'] as const;
+      const deleted = ['thirtyOld', 'noProfileOld', 'junkOld', 'disabledOld', 'wideOld', 'zeroOld', 'fourOld'] as const;
       for (const k of deleted) expect(left.has(ids[k]), `${k} should be deleted`).toBe(false);
-      for (const k of ['thirtyFresh', 'noProfileFresh', 'junkFresh'] as const) {
+      for (const k of ['thirtyFresh', 'noProfileFresh', 'junkFresh', 'wideFresh', 'zeroFresh', 'fourFresh'] as const) {
         expect(left.has(ids[k]), `${k} should survive`).toBe(true);
       }
       expect(affected(enforce[IDX.networkChangeEvents])).toBe(deleted.length);

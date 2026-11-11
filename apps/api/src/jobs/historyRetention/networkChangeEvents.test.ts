@@ -30,19 +30,21 @@ describe('network_change_events target (#4342 W5)', () => {
     const { NETWORK_CHANGE_EVENT_RETENTION_TARGET: t } = await load();
     const { sql, params } = render(t.where(CUTOFF, NOW));
     expect(sql).toBe(
-      'detected_at < COALESCE(('
+      // Index-friendly prefilter, implied by the per-row bound (every window >= 1 d).
+      `detected_at < ($1::timestamptz AT TIME ZONE 'UTC') - interval '1 day' AND `
+      + 'detected_at < COALESCE(('
       // Per-profile window, counted back from the run instant (UTC wall time).
-      + `SELECT ($1::timestamptz AT TIME ZONE 'UTC') - make_interval(days => LEAST(365, GREATEST(1, (p.alert_settings->>'changeRetentionDays')::int))) `
+      + `SELECT ($2::timestamptz AT TIME ZONE 'UTC') - make_interval(days => LEAST(365, GREATEST(1, (p.alert_settings->>'changeRetentionDays')::int))) `
       + 'FROM discovery_profiles p WHERE p.id = network_change_events.profile_id '
       // Only a 1-3 digit value is ever cast, so "abc", "-5", "1e9" or true can
       // never make the statement throw: those rows fall back to the job cutoff.
       + `AND p.alert_settings->>'changeRetentionDays' ~ '^[0-9]{1,3}$'`
       // No profile (profile_id NULL or the profile deleted): the job cutoff.
-      + `), ($2::timestamptz AT TIME ZONE 'UTC'))`,
+      + `), ($3::timestamptz AT TIME ZONE 'UTC'))`,
     );
     // The dead handler only swept profiles with alerts enabled; the target does not.
     expect(sql).not.toContain(`'enabled'`);
-    expect(params).toEqual([NOW, CUTOFF]);
+    expect(params).toEqual([NOW, NOW, CUTOFF]);
   });
 
   it('reads its default window from NETWORK_CHANGE_EVENT_RETENTION_DAYS', async () => {

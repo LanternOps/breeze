@@ -34,8 +34,12 @@ export const NETWORK_CHANGE_EVENT_RETENTION_TARGET: RetentionTarget = {
   table: 'network_change_events',
   action: { kind: 'delete' },
   // The outer table is referenced by its bare name (retentionBatch selects FROM
-  // it unaliased).
-  where: (cutoffIso, nowIso) => sql`detected_at < COALESCE((SELECT ${utcWallTime(nowIso)} - make_interval(days => LEAST(365, GREATEST(1, (p.alert_settings->>'changeRetentionDays')::int)))
+  // it unaliased). The first conjunct is implied by the second (every window,
+  // profile or job, is at least 1 day) and exists only so the planner can use
+  // network_change_events_detected_at_idx instead of evaluating the
+  // per-row subquery on every recent event.
+  where: (cutoffIso, nowIso) => sql`detected_at < ${utcWallTime(nowIso)} - interval '1 day'
+    AND detected_at < COALESCE((SELECT ${utcWallTime(nowIso)} - make_interval(days => LEAST(365, GREATEST(1, (p.alert_settings->>'changeRetentionDays')::int)))
       FROM discovery_profiles p
      WHERE p.id = network_change_events.profile_id
        AND p.alert_settings->>'changeRetentionDays' ~ '^[0-9]{1,3}$'), ${utcWallTime(cutoffIso)})`,
