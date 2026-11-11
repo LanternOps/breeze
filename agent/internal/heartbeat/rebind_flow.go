@@ -92,9 +92,9 @@ type rebindState struct {
 	clientMu  sync.Mutex
 	client    *http.Client
 	clientKey string
-	// running counts the goroutines the flow starts (a drive from a trigger,
-	// the restart once idle). Nothing in the agent waits on it; the tests do,
-	// before they put the package seams back.
+	// running counts the goroutines the flow starts (the start-up resume, a
+	// drive from a trigger, the restart once idle). Nothing in the agent
+	// waits on it; the tests do, before they put the package seams back.
 	running sync.WaitGroup
 }
 

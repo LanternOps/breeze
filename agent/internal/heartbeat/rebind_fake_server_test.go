@@ -529,9 +529,14 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 		// A trigger drives the flow on its own goroutine, which reads these
 		// seams; put them back only once every one has finished.
 		if !r.waitForFlowGoroutines() {
-			// Put back anyway; -race may then report the goroutine.
 			t.Errorf("a goroutine the rebind flow started was still running 10s after the test")
+			// It may still reach the restart: never hand it the real one
+			// (updater.RestartSelf), which restarts the service or execs.
+			origRestart = func() error { return errors.New("restart refused: a rebind goroutine outlived its test") }
 		}
+		// After the wait, so what the flow's goroutines logged once the test
+		// body returned is checked too.
+		r.assertNoSecretsLogged()
 		rebindNow, restartForIdentityFn, newRebindHTTPClient = origNow, origRestart, origClient
 		rebindWriteStaged, rebindApplyIdentity, rebindConfigFile, rebindReadStaged = origWrite, origApply, origFile, origRead
 		rebindPushWatchdogToken, identityRestartPollInterval, identitySyncNow = origPush, origPoll, origIdentityNow
@@ -579,7 +584,6 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 		return nil
 	}
 	r.fake.onCall = r.event
-	t.Cleanup(r.assertNoSecretsLogged)
 
 	r.restart()
 	return r
