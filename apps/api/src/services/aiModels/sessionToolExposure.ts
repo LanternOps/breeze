@@ -13,7 +13,9 @@ import {
   TOOL_PROFILE_UNDERPOWERED,
   checkSurfaceCoverage,
 } from './surfaceRequiredTools';
-import { effectiveToolProfile, resolveToolExposure, type ExtraToolInput, type ToolExposure, type ToolProfileFacts } from './toolExposure';
+import { DEFAULT_TOOL_PROFILE_FACTS, effectiveToolProfile, resolveToolExposure, toolProfileKey, type ExtraToolInput, type ToolExposure, type ToolProfileFacts } from './toolExposure';
+import { liveQueryKey, turnBindingFrom } from './turnBinding';
+import type { ResolvedModel } from './resolveModel';
 
 const MCP_NAME = /^mcp__.+?__(.+)$/;
 
@@ -129,6 +131,17 @@ export function chatPromptExposure(
     surfaceBaseSet: constrained ? deps.registryNames() : [],
     extraTools: [],
   }, { domainOf: deps.domainOf });
+}
+
+/**
+ * The live-query key `getOrCreate` uses for this resolved model, including
+ * the tool profile's segment (#11395). The topology answer cache keys on it,
+ * so an answer computed under one tool exposure is never served under
+ * another. The identity exposure keeps the one-argument key byte-identical.
+ */
+export function resolvedLiveQueryKey(resolved: ResolvedModel): string {
+  const facts = resolved.toolProfileFacts ?? DEFAULT_TOOL_PROFILE_FACTS;
+  return liveQueryKey(turnBindingFrom(resolved), toolProfileKey(facts, resolved.surface));
 }
 
 /**

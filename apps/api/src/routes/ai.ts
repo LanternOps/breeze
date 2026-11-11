@@ -103,7 +103,8 @@ import { loadFiredCheckIns, markCheckInsConsumed, renderCheckInBlock, type Fired
 import type { SpecialistResultsTurn } from '../services/wisp/specialistResultsTurn';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
-import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
+import { turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
+import { resolvedLiveQueryKey } from '../services/aiModels/sessionToolExposure';
 import { continuationMessage, planModelTransition, planTransitionWithFailover, readPreviousTurn, readSessionOfferingId } from '../services/aiModels/modelTransition';
 import { lastTurnModelOf, turnDisplayFrom } from '../services/aiModels/turnModel';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
@@ -164,7 +165,8 @@ import {
  * env OpenAI-compatible deployments included, resolves through the registry.
  */
 function topologyProviderRevision(model: ResolvedModel): string {
-  return `sdk:${liveQueryKey(turnBindingFrom(model))}`;
+  // #11395: the full live-query key, tool profile segment included.
+  return `sdk:${resolvedLiveQueryKey(model)}`;
 }
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
