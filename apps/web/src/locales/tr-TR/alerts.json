@@ -952,7 +952,7 @@
     "createNotificationChannel": "Bildirim Kanalı Oluştur",
     "editNotificationChannel": "Bildirim Kanalını Düzenle",
     "createChannel": "Kanal Oluştur",
-    "deleteChannelConfirm": "Kanalı Sil Onayla",
+    "deleteChannelConfirm": "“{{name}}” kanalı silinsin mi? Yalnızca bu kanala yönlendirilen uyarılar artık iletilmeyecek.",
     "deleting": "Siliniyor",
     "editRoutingRule": "Yönlendirme Kuralını Düzenle",
     "newRoutingRule": "Yeni Yönlendirme Kuralı",

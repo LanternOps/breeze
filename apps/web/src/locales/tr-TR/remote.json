@@ -148,7 +148,7 @@
     "headingSingle": "{{name}} silinsin mi?",
     "itemCount": "Öğe Sayısı",
     "moveToTrash": "Çöp Kutusuna Taşı",
-    "recycleBinNotice": "Geri Dönüşüm Kutusu Bildirimi",
+    "recycleBinNotice": "Çöp kutusuna taşınan öğeler geri alınabilir. Kalıcı silme geri alınamaz.",
     "totalSize": "Toplam: {{size}}",
     "itemCount_one": "{{count}} öğe",
     "itemCount_other": "{{count}} öğe"
@@ -464,10 +464,10 @@
       "devices": "Cihazlar",
       "fileManager": "Dosya Yöneticisi"
     },
-    "deviceNotFoundDescription": "Cihaz Bulunamadı Açıklama",
-    "deviceNotFoundTitle": "Cihaz Bulunamadı Başlığı",
+    "deviceNotFoundDescription": "Aradığınız cihaz mevcut değil veya erişiminiz yok.",
+    "deviceNotFoundTitle": "Cihaz bulunamadı",
     "deviceOfflineDescription": "Cihaz şu anda {{status}}. Uzaktan dosya erişimi yalnızca cihaz çevrimiçi olduğunda kullanılabilir.",
-    "deviceOfflineTitle": "Cihaz Çevrimdışı Başlığı",
+    "deviceOfflineTitle": "Cihaz çevrimdışı",
     "errorTitle": "Hata Başlığı",
     "errors": {
       "deviceNotFound": "Cihaz bulunamadı",
@@ -507,8 +507,8 @@
     "welcome": "Hoş geldiniz"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Cihaz Bulunamadı Açıklama",
-    "deviceNotFoundTitle": "Cihaz Bulunamadı Başlığı",
+    "deviceNotFoundDescription": "Aradığınız cihaz mevcut değil veya erişiminiz yok.",
+    "deviceNotFoundTitle": "Cihaz bulunamadı",
     "errorTitle": "Hata Başlığı",
     "errors": {
       "deviceNotFound": "Cihaz bulunamadı",
@@ -635,8 +635,8 @@
     },
     "actionBlocked": "İşlem Engellendi",
     "adjustHint": "Aramanızı veya filtrelerinizi değiştirmeyi deneyin.",
-    "agentRestartConfirm": "Temsilciyi Yeniden Başlat Onayla",
-    "agentStopBlocked": "Temsilci Durdurma Engellendi",
+    "agentRestartConfirm": "Breeze temsilcisini yeniden başlatmak bu cihazın Breeze ile bağlantısını kısa süreliğine keser. Devam edilsin mi?",
+    "agentStopBlocked": "Breeze temsilcisi buradan durdurulamaz; durdurmak bu cihazın uzaktan yönetimini keser.",
     "allStatus": "Tüm Durumlar",
     "cannotStopAgent": "Temsilci Durdurulamıyor",
     "changeStartupType": "Başlangıç Türünü Değiştir",

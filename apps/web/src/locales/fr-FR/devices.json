@@ -2706,7 +2706,7 @@
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
       "agentOnlyAction": "Cette action s’applique uniquement aux dispositifs agents. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "agentOnlyActionManual": "Cette action s’applique uniquement aux dispositifs agents. Les actifs manuels n’ont pas d’agent.",
-      "alreadyPendingTail": "Déjà en attente de Tail",
+      "alreadyPendingTail": ", {{count}} déjà en attente",
       "bulkActionFailed": "Échec de l'action groupée {{action}}",
       "bulkMaintenanceSuccess": "{{count}} appareils {{verb}} mode maintenance",
       "bulkMaintenanceSuccess_one": "{{count}} appareil {{verb}} mode maintenance",
@@ -2751,7 +2751,7 @@
       "selectTwoForMultiboot": "Sélectionnez au moins deux appareils à lier comme profils à démarrage multiple.",
       "unknownAction": "Action inconnue : {{action}}",
       "unknownBulkAction": "Action groupée inconnue : {{action}}",
-      "wakeSentWatching": "Commande de réveil envoyée ; surveillance en cours",
+      "wakeSentWatching": "Wake-on-LAN envoyé à {{hostname}} via {{relay}} ({{broadcast}}). En attente de sa connexion…",
       "wakeTimeout": "{{hostname}} n'est pas passé en ligne en 4 minutes. Vérifiez l'ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} en file d'attente pour des appareils hors ligne",
       "runsWhenOnline": "S'exécute quand l'appareil est en ligne — expire le {{date}}",
@@ -2805,7 +2805,8 @@
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (introuvable ; il a peut-être été supprimé)",
       "bulkMoveSiteNotMovedError": "{{devices}} (une erreur inattendue s’est produite ; réessayez)",
       "deviceMovedToSite": "{{hostname}} a été déplacé vers un nouveau site",
-      "bulkWakeResult": "Envoyé à {{sent}}, {{skipped}} ignorés"
+      "bulkWakeResult": "Envoyé à {{sent}}, {{skipped}} ignorés",
+      "scriptQueuedOneOffline": "Script « {{script}} » mis en file pour {{hostname}} — s'exécutera à la reconnexion de l'appareil"
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",

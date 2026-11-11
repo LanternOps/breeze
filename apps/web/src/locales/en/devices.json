@@ -2712,7 +2712,7 @@
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
       "agentOnlyActionManual": "This action applies to agent devices only. Manual assets have no agent.",
-      "alreadyPendingTail": "Already Pending Tail",
+      "alreadyPendingTail": ", {{count}} already pending",
       "bulkActionFailed": "Failed bulk {{action}}",
       "bulkMaintenanceSuccess": "{{count}} devices {{verb}} maintenance mode",
       "bulkMaintenanceSuccess_one": "{{count}} device {{verb}} maintenance mode",
@@ -2760,7 +2760,7 @@
       "selectTwoForMultiboot": "Select at least two devices to link as multi-boot profiles.",
       "unknownAction": "Unknown action: {{action}}",
       "unknownBulkAction": "Unknown bulk action: {{action}}",
-      "wakeSentWatching": "Wake Sent Watching",
+      "wakeSentWatching": "Wake-on-LAN sent to {{hostname}} via {{relay}} ({{broadcast}}). Watching for it to come online…",
       "wakeTimeout": "{{hostname}} did not come online within 4 minutes. Check ethernet + BIOS WoL.",
       "deleteManualFailed": "Failed to delete {{hostname}}.",
       "mfaRequired": "This action requires multi-factor authentication. Please sign in again.",
@@ -2811,7 +2811,8 @@
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (no longer found; it may have been deleted)",
       "bulkMoveSiteNotMovedError": "{{devices}} (an unexpected error occurred; try again)",
       "deviceMovedToSite": "{{hostname}} moved to a new site",
-      "bulkWakeResult": "Sent to {{sent}}, skipped {{skipped}}"
+      "bulkWakeResult": "Sent to {{sent}}, skipped {{skipped}}",
+      "scriptQueuedOneOffline": "Script \"{{script}}\" queued for {{hostname}} — runs when the device reconnects"
     },
     "tryAgain": "Try again",
     "unknownDevice": "Unknown",

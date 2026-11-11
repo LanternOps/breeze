@@ -148,7 +148,7 @@
     "headingSingle": "Delete {{name}}?",
     "itemCount": "Item Count",
     "moveToTrash": "Move To Trash",
-    "recycleBinNotice": "Recycle Bin Notice",
+    "recycleBinNotice": "Moving to the trash keeps items recoverable. Permanent deletion cannot be undone.",
     "totalSize": "Total: {{size}}",
     "itemCount_one": "{{count}} item",
     "itemCount_other": "{{count}} items"
@@ -464,10 +464,10 @@
       "devices": "Devices",
       "fileManager": "File Manager"
     },
-    "deviceNotFoundDescription": "Device Not Found Description",
-    "deviceNotFoundTitle": "Device Not Found Title",
+    "deviceNotFoundDescription": "The device you're looking for doesn't exist or you don't have access to it.",
+    "deviceNotFoundTitle": "Device not found",
     "deviceOfflineDescription": "The device is currently {{status}}. Remote file access is only available when the device is online.",
-    "deviceOfflineTitle": "Device Offline Title",
+    "deviceOfflineTitle": "Device is offline",
     "errorTitle": "Error Title",
     "errors": {
       "deviceNotFound": "Device not found",
@@ -507,8 +507,8 @@
     "welcome": "Welcome"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Device Not Found Description",
-    "deviceNotFoundTitle": "Device Not Found Title",
+    "deviceNotFoundDescription": "The device you're looking for doesn't exist or you don't have access to it.",
+    "deviceNotFoundTitle": "Device not found",
     "errorTitle": "Error Title",
     "errors": {
       "deviceNotFound": "Device not found",
@@ -635,8 +635,8 @@
     },
     "actionBlocked": "Action Blocked",
     "adjustHint": "Try adjusting your search or filters.",
-    "agentRestartConfirm": "Agent Restart Confirm",
-    "agentStopBlocked": "Agent Stop Blocked",
+    "agentRestartConfirm": "Restarting the Breeze agent will briefly disconnect this device from Breeze. Continue?",
+    "agentStopBlocked": "The Breeze agent can't be stopped from here — stopping it would cut off remote management of this device.",
     "allStatus": "All Status",
     "cannotStopAgent": "Cannot Stop Agent",
     "changeStartupType": "Change Startup Type",

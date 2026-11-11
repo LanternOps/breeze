@@ -2707,7 +2707,7 @@
       "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
       "agentOnlyActionManual": "Diese Aktion gilt nur für Agent-Geräte. Manuelle Assets haben keinen Agenten.",
-      "alreadyPendingTail": "Tail ist bereits ausstehend",
+      "alreadyPendingTail": ", {{count}} bereits ausstehend",
       "bulkActionFailed": "Massenaktion {{action}} fehlgeschlagen",
       "bulkMaintenanceSuccess": "Wartungsmodus für {{count}} Geräte {{verb}}",
       "bulkMaintenanceSuccess_one": "Wartungsmodus für {{count}} Gerät {{verb}}",
@@ -2752,7 +2752,7 @@
       "selectTwoForMultiboot": "Wählen Sie mindestens zwei Geräte aus, um sie als Multi-Boot-Profile zu verknüpfen.",
       "unknownAction": "Unbekannte Aktion: {{action}}",
       "unknownBulkAction": "Unbekannte Massenaktion: {{action}}",
-      "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
+      "wakeSentWatching": "Wake-on-LAN an {{hostname}} über {{relay}} gesendet ({{broadcast}}). Warte darauf, dass das Gerät online geht …",
       "wakeTimeout": "{{hostname}} ist innerhalb von 4 Minuten nicht online gegangen. Prüfen Sie Ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} für Offline-Geräte in die Warteschlange gestellt",
       "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist — läuft ab am {{date}}",
@@ -2806,7 +2806,8 @@
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (nicht mehr gefunden; das Gerät wurde möglicherweise gelöscht)",
       "bulkMoveSiteNotMovedError": "{{devices}} (ein unerwarteter Fehler ist aufgetreten; bitte erneut versuchen)",
       "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben",
-      "bulkWakeResult": "An {{sent}} gesendet, {{skipped}} übersprungen"
+      "bulkWakeResult": "An {{sent}} gesendet, {{skipped}} übersprungen",
+      "scriptQueuedOneOffline": "Skript „{{script}}“ für {{hostname}} eingereiht – wird ausgeführt, sobald das Gerät wieder verbunden ist"
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
