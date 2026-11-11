@@ -212,7 +212,7 @@ Create `scenarios/<letter>-<id>.json`. Files run in name order.
 - `node run.cjs --list` validates every file: unknown kinds, bad regexes,
   references to unknown steps, unknown templates.
 - `score.cjs` is pure. Add a test to `score.test.cjs` for any new check kind, and
-  run it with `node --test e2e-tests/wisp-eval/score.test.cjs`.
+  run both suites with `node --test "e2e-tests/wisp-eval/*.test.cjs"`.
 
 ## Cost
 
@@ -249,7 +249,7 @@ rm -rf e2e-tests/wisp-eval/.state  # TOTP secret, passkeys, cookies, reports
   `make-env.sh` blanks a fixed list (mail, Stripe, billing, signing, OpenAI, NVD)
   and every other key whose name looks like a credential, unless it is on the
   script's KEEP list of the local stack's own secrets. It prints the names it
-  blanked, never a value. `node --test e2e-tests/wisp-eval/` covers it.
+  blanked, never a value. `node --test "e2e-tests/wisp-eval/*.test.cjs"` covers it.
   `.env.stack` blanks mail again.
 
 ## Not in scope (yet)
