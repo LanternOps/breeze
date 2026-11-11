@@ -2109,6 +2109,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeImageCurrencyWorker, shutdown: m.shutdownImageCurrencyWorker };
     },
   },
+  // Portal registration W6 (#11383): customer-portal self-registration
+  // submits (one event-driven job each; no schedule). `global`: its import
+  // closure (routes/portal helpers, capabilityTokens, email, redis) no longer
+  // reaches socket-local dispatch since the cross-process socket teardown
+  // (#11526), and it touches no agent socket or process-local state.
+  {
+    name: 'portalSelfRegistrationWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('./portalSelfRegistration/worker');
+      return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
+    },
+  },
   {
     // #4342 W1 — report-only retention sweep (deviceCommandRetention).
     name: 'deviceCommandRetention',

@@ -387,6 +387,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // AI Suggested Fixes W1 — attachWorkerObservability name == registry name.
   consumers('fixOutcomeWorker'),
   consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
+  // Portal registration W6 (#11383): one Worker, constructed unconditionally
+  // (the kill switch gates the public route, not the consumer), attached under
+  // its registry name.
+  consumers('portalSelfRegistrationWorker'),
   // #4342 W1. Plain Redis-required consumers, no feature flag.
   consumers('deviceCommandRetention'),
   consumers('filesystemSnapshotRetention'),

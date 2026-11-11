@@ -8407,6 +8407,7 @@
       "updated": "Aggiornato",
       "actions": "Azioni"
     },
+    "expired": "Scaduta",
     "statusValue": {
       "unconfirmed": "Non confermato",
       "confirmed": "Confermato",

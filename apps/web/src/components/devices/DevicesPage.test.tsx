@@ -791,6 +791,39 @@ describe('DevicesPage — multi-select run script keeps its target devices', () 
     expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2, DEV_3].sort());
   });
 
+  // #11553: a single-device run toasted "Script Queued One" (a humanized key)
+  // and never said the device was offline. The offline variant must say the
+  // script runs on reconnect, with real copy and the script/host interpolated.
+  it.each([
+    ['queued_offline', /queued for .* — runs when the device reconnects/i],
+    ['queued_live', /queued for [^—]*$/i],
+  ])('single-device run with delivery %s toasts real copy', async (delivery, expected) => {
+    const { executeScript } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(executeScript).mockResolvedValue({
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      status: 'queued',
+      targets: [{ requestedDeviceId: DEV_1, admission: 'admitted' as const, executionId: 'execution-1', delivery }],
+    } as never);
+
+    await renderAgentFleet();
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-run-script-${DEV_1}`));
+    fireEvent.click(await screen.findByTestId('pick-script'));
+    const confirm = screen.queryByTestId('confirm-fleet-action');
+    if (confirm) fireEvent.click(confirm);
+
+    await waitFor(() => expect(vi.mocked(executeScript)).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const successes = vi.mocked(showToast).mock.calls
+        .map(([toast]) => toast)
+        .filter((toast) => toast.type === 'success')
+        .map((toast) => toast.message ?? '');
+      expect(successes.some((m) => expected.test(m))).toBe(true);
+      expect(successes.some((m) => /Script Queued One/.test(m))).toBe(false);
+    });
+  });
+
   it('does not show a queued-success toast when a valid 201 rejects every target', async () => {
     const { executeScript } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
@@ -4020,7 +4053,10 @@ describe('DevicesPage wake refusals', () => {
       relay: { hostname: 'relay-example' }, broadcast: '192.0.2.255',
     }, 202));
     fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Wake Sent Watching' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({
+      type: 'success',
+      message: expect.stringMatching(/Wake-on-LAN sent to .* via relay-example \(192\.0\.2\.255\)/),
+    }));
     expect(watchWakeOutcome).toHaveBeenCalledWith(DEV_1, { signal: expect.any(AbortSignal) });
     expect(showToast).toHaveBeenCalledTimes(1);
   });

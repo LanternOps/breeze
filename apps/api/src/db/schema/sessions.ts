@@ -45,7 +45,7 @@ export const deviceSessions = pgTable('device_sessions', {
   deviceActiveIdx: index('device_sessions_device_active_idx').on(table.deviceId, table.isActive),
   deviceLoginIdx: index('device_sessions_device_login_idx').on(table.deviceId, table.loginAt),
   deviceUserIdx: index('device_sessions_device_user_idx').on(table.deviceId, table.username),
-  // #4342 W1 retention (2027-01-23-093000, built CONCURRENTLY): closed-session age scan.
+  // #4342 W1 retention (2027-01-23-101000, built CONCURRENTLY): closed-session age scan.
   closedAgeIdx: index('device_sessions_closed_age_idx')
     .on(sql`(COALESCE(${table.logoutAt}, ${table.updatedAt}))`)
     .where(sql`${table.isActive} = false`),

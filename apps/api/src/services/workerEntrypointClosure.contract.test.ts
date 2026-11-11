@@ -178,6 +178,8 @@ const EXPECTED_NAMES = [
   'imageCurrencyWorker',
   // Trust Center W1 (#8768).
   'trustPageSnapshotWorker',
+  // Portal registration W6 (#11383).
+  'portalSelfRegistrationWorker',
   // High-volume table retention W1 (#4342, #11588) — report-only.
   'deviceCommandRetention', 'filesystemSnapshotRetention', 'networkMonitorResultRetention', 'deviceSessionRetention',
 ];

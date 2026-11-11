@@ -1077,6 +1077,17 @@ const envObjectSchema = z
     PORTAL_ENTRA_CLIENT_SECRET: z.string().optional(),
     PORTAL_ENTRA_CALLBACK_BASE_URL: z.string().optional(),
 
+    // Customer-portal self-registration kill switch (portal registration W6,
+    // plan D2). Unset/empty, true or 1 → on; false or 0 → off. Read at call
+    // time by config/portalSelfRegistration.ts (same accepted values); any
+    // other value fails boot here.
+    PORTAL_SELF_REGISTRATION_ENABLED: z
+      .string()
+      .optional()
+      .refine((v) => v === undefined || /^\s*(true|false|1|0)?\s*$/i.test(v), {
+        message: 'PORTAL_SELF_REGISTRATION_ENABLED must be one of true, 1, false or 0',
+      }),
+
     // S3 / object storage — required when S3_BUCKET is set.
     S3_BUCKET: z.string().optional(),
     S3_ACCESS_KEY: z.string().optional(),

@@ -59,6 +59,7 @@ export default defineConfig({
               label: 'Remote Management',
               items: [
                 { slug: 'features/remote-access' },
+                { slug: 'features/end-user-experience' },
                 { slug: 'features/scripts' },
                 { slug: 'scripts/stopping-a-running-script' },
                 { slug: 'features/automations' },

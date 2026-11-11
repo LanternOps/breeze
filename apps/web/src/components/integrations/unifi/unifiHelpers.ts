@@ -3,6 +3,7 @@
 // defaultControllerSiteId are newer (#11502).
 
 import { fetchAllDevices } from "@/lib/devicesFetch";
+import { fetchWithAuth } from "@/stores/auth";
 import type {
   AgentDevice,
   BreezeSiteOption,
@@ -119,6 +120,9 @@ export async function loadAgentDevices(): Promise<AgentLoad> {
       // The route already hides decommissioned devices unless asked; preserve
       // that. A decommissioned box is not a collector candidate.
       includeDecommissioned: false,
+      // Partner-wide panel: list collector agents across every accessible org
+      // rather than only the org switcher's (#11604).
+      fetcher: (url, init) => fetchWithAuth(url, { ...init, orgIdOverride: null }),
       onTruncated: () => {
         truncated = true;
       },

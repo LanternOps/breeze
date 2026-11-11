@@ -373,6 +373,25 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('PORTAL_SELF_REGISTRATION_ENABLED (portal registration W6)', () => {
+    it('boots when unset, empty, true, 1, false or 0', () => {
+      // Unset is the base validEnv case every other test boots with.
+      for (const value of ['', 'true', '1', 'false', '0', 'TRUE', ' false ']) {
+        withEnv({ ...validEnv, PORTAL_SELF_REGISTRATION_ENABLED: value }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      }
+    });
+
+    it('refuses boot on any other value', () => {
+      for (const value of ['yes', 'off', '2']) {
+        withEnv({ ...validEnv, PORTAL_SELF_REGISTRATION_ENABLED: value }, () => {
+          expect(() => validateConfig()).toThrow(/PORTAL_SELF_REGISTRATION_ENABLED/);
+        });
+      }
+    });
+  });
+
   describe('M365 customer Graph-actions onboarding + reveal key', () => {
     it('refuses boot when actions onboarding is enabled without a complete descriptor', () => {
       withEnv({

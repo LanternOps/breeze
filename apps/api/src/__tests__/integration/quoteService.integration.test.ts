@@ -27,7 +27,7 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { quotes, quoteLines, quoteBlocks } from '../../db/schema/quotes';
-import { catalogItemOrgPricing, catalogItemPrices, catalogItems } from '../../db/schema/catalog';
+import { catalogItemImages, catalogItemOrgPricing, catalogItemPrices, catalogItems } from '../../db/schema/catalog';
 import { createOrganization, createPartner } from './db-utils';
 import {
   createQuote,
@@ -45,6 +45,7 @@ import {
   moveLineToBlock,
 } from '../../services/quoteService';
 import { createCatalogItem, getCatalogItem, type CatalogActor } from '../../services/catalogService';
+import { loadCustomerLineImage } from '../../services/quoteImageStorage';
 import { type QuoteActor } from '../../services/quoteTypes';
 import { computeQuoteTotals } from '../../services/quoteMath';
 import { toCents } from '../../services/invoiceMath';
@@ -673,6 +674,91 @@ describe('quoteService (breeze_app, real DB)', () => {
     expect(line.unitPrice).toBe('10.00');
     expect(line.name).toBe('Own SKU');
     expect(line.lineTotal).toBe('30.00'); // 3 * 10.00
+  });
+
+  // A manual line may carry an optional catalogItemId (the line keeps showing the
+  // item's product image). It must resolve against the quote's OWN partner exactly
+  // as addCatalogLine does — the FK alone accepts any partner's item.
+  const manualLineInput = (catalogItemId: string) => ({
+    sourceType: 'manual' as const,
+    catalogItemId,
+    name: 'Hand-priced line',
+    quantity: 1,
+    unitPrice: 25,
+    taxable: true,
+    customerVisible: true,
+    recurrence: 'one_time' as const,
+    depositEligible: false,
+  });
+
+  runDb('addManualLine rejects a catalogItemId owned by a different partner (partner and system scope)', async () => {
+    const fx = await seedFixture();
+    const partnerB = await withSystemDbAccessContext(() => createPartner());
+    const foreignItem = await seedCatalogItem(partnerB.id, { name: 'Partner B item', unitPrice: '5.00' });
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+
+    await expect(
+      withDbAccessContext(fx.ctxA, () => addManualLine(quote.id, manualLineInput(foreignItem.id), fx.actorA))
+    ).rejects.toMatchObject({ code: 'CATALOG_ITEM_NOT_FOUND', status: 404 });
+    await expect(
+      withSystemDbAccessContext(() => addManualLine(quote.id, manualLineInput(foreignItem.id), fx.actorA))
+    ).rejects.toMatchObject({ code: 'CATALOG_ITEM_NOT_FOUND', status: 404 });
+
+    const lines = await withSystemDbAccessContext(() =>
+      db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id))
+    );
+    expect(lines).toHaveLength(0);
+  });
+
+  runDb('addManualLine keeps a catalogItemId owned by the quote partner', async () => {
+    const fx = await seedFixture();
+    const item = await seedCatalogItem(fx.partnerA.id, { name: 'Own item', unitPrice: '5.00' });
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    const line = await withDbAccessContext(fx.ctxA, () =>
+      addManualLine(quote.id, manualLineInput(item.id), fx.actorA)
+    );
+    expect(line.catalogItemId).toBe(item.id);
+    // The manual price stands; nothing is snapshotted from the catalog item.
+    expect(line.unitPrice).toBe('25.00');
+    expect(line.name).toBe('Hand-priced line');
+  });
+
+  // The customer-facing line image (public quote link + portal) runs under system
+  // scope, so the read itself must stay inside the quote's partner — this also
+  // covers lines stored before the writer check existed.
+  runDb('loadCustomerLineImage serves only catalog images of the quote partner', async () => {
+    const fx = await seedFixture();
+    const partnerB = await withSystemDbAccessContext(() => createPartner());
+    const ownItem = await seedCatalogItem(fx.partnerA.id, { name: 'Own item', unitPrice: '5.00' });
+    const foreignItem = await seedCatalogItem(partnerB.id, { name: 'Partner B item', unitPrice: '5.00' });
+    const ownBytes = Buffer.from('own-partner-image');
+    const foreignBytes = Buffer.from('other-partner-image');
+    await withSystemDbAccessContext(() => db.insert(catalogItemImages).values([
+      { catalogItemId: ownItem.id, partnerId: fx.partnerA.id, imageData: ownBytes, mime: 'image/png', byteSize: ownBytes.length, sha256: 'a'.repeat(64) },
+      { catalogItemId: foreignItem.id, partnerId: partnerB.id, imageData: foreignBytes, mime: 'image/png', byteSize: foreignBytes.length, sha256: 'b'.repeat(64) },
+    ]));
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    const ownLine = await withDbAccessContext(fx.ctxA, () =>
+      addManualLine(quote.id, manualLineInput(ownItem.id), fx.actorA)
+    );
+    const storedLine = await withDbAccessContext(fx.ctxA, () =>
+      addManualLine(quote.id, manualLineInput(ownItem.id), fx.actorA)
+    );
+    // A pre-existing row that references another partner's item.
+    await withSystemDbAccessContext(() =>
+      db.update(quoteLines).set({ catalogItemId: foreignItem.id }).where(eq(quoteLines.id, storedLine.id))
+    );
+
+    const own = await withSystemDbAccessContext(() => loadCustomerLineImage(quote.id, ownLine.id));
+    expect(own?.data.equals(ownBytes)).toBe(true);
+    const foreign = await withSystemDbAccessContext(() => loadCustomerLineImage(quote.id, storedLine.id));
+    expect(foreign).toBeNull();
   });
 
   // ---------------------------------------------------------------------------

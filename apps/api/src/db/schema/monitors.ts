@@ -95,7 +95,7 @@ export const networkMonitorResults = pgTable('network_monitor_results', {
   orgIdIdx: index('network_monitor_results_org_id_idx').on(table.orgId),
   deviceIdIdx: index('network_monitor_results_device_id_idx').on(table.deviceId),
   timestampIdx: index('network_monitor_results_timestamp_idx').on(table.timestamp),
-  // #4342 W1 retention (2027-01-23-093000, built CONCURRENTLY): newer result per monitor.
+  // #4342 W1 retention (2027-01-23-101000, built CONCURRENTLY): newer result per monitor.
   monitorTsIdx: index('network_monitor_results_monitor_ts_idx').on(table.monitorId, sql`${table.timestamp} DESC`)
 }));
 

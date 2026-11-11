@@ -479,8 +479,12 @@ async function annotationsOf(gh, repo, jobId) {
 }
 
 const GATE_LINE = /^ci-gate: verdict=(\S+) reason=(\S+)/m;
+// W05 (#10749): the queue selection the same job published before it judged.
+// `reason=` is empty for a thin selection. Absent from gates older than W05a.
+const SELECTION_LINE = /^ci-gate-selection: mode=(\S+) reason=(\S*)/m;
 
 // The newest `CI Gate` run's verdict for this head, or null when none ran.
+// `selection` is { mode, reason } from its ci-gate-selection line, or null.
 async function gateFor(gh, repo, headSha) {
   const res = await gh.rest('GET', `repos/${repo}/actions/workflows/ci-gate.yml/runs?head_sha=${headSha}&per_page=5`);
   if (res.status === 404) return null;
@@ -490,10 +494,13 @@ async function gateFor(gh, repo, headSha) {
   const { jobs } = await listJobs(gh, repo, run.id);
   for (const job of jobs) {
     const log = await gh.raw(`repos/${repo}/actions/jobs/${job.id}/logs`);
-    const m = log.text && GATE_LINE.exec(cleanLog(log.text).join('\n'));
-    if (m) return { verdict: m[1], reason: m[2], run: run.id };
+    const text = log.text ? cleanLog(log.text).join('\n') : '';
+    const m = GATE_LINE.exec(text);
+    if (!m) continue;
+    const s = SELECTION_LINE.exec(text);
+    return { verdict: m[1], reason: m[2], run: run.id, selection: s ? { mode: s[1], reason: s[2] } : null };
   }
-  return { verdict: null, reason: 'gate_line_missing', run: run.id };
+  return { verdict: null, reason: 'gate_line_missing', run: run.id, selection: null };
 }
 
 // RunFacts = { run, jobs: JobFact[], jobsComplete, ciSuccess: 'present'|'missing', gate }.

@@ -148,7 +148,7 @@
     "headingSingle": "Excluir {{name}}?",
     "itemCount": "Quantidade de itens",
     "moveToTrash": "Mover para a lixeira",
-    "recycleBinNotice": "Aviso sobre a lixeira",
+    "recycleBinNotice": "Itens movidos para a lixeira podem ser recuperados. A exclusão permanente não pode ser desfeita.",
     "totalSize": "Total: {{size}}",
     "itemCount_one": "{{count}} item",
     "itemCount_other": "{{count}} itens"
@@ -464,7 +464,7 @@
       "devices": "Dispositivos",
       "fileManager": "Gerenciador de Arquivos"
     },
-    "deviceNotFoundDescription": "Não foi possível encontrar o dispositivo solicitado.",
+    "deviceNotFoundDescription": "O dispositivo solicitado não existe ou você não tem acesso a ele.",
     "deviceNotFoundTitle": "Dispositivo não encontrado",
     "deviceOfflineDescription": "O dispositivo está {{status}}. O acesso remoto a arquivos só fica disponível quando ele está online.",
     "deviceOfflineTitle": "Dispositivo offline",
@@ -507,7 +507,7 @@
     "welcome": "Bem-vindo"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Não foi possível encontrar o dispositivo solicitado.",
+    "deviceNotFoundDescription": "O dispositivo solicitado não existe ou você não tem acesso a ele.",
     "deviceNotFoundTitle": "Dispositivo não encontrado",
     "errorTitle": "Erro no terminal remoto",
     "errors": {
@@ -635,8 +635,8 @@
     },
     "actionBlocked": "Ação bloqueada",
     "adjustHint": "Tente ajustar a pesquisa ou os filtros.",
-    "agentRestartConfirm": "Confirmar reinicialização do agente",
-    "agentStopBlocked": "Não é possível parar o serviço do agente",
+    "agentRestartConfirm": "Reiniciar o agente do Breeze desconectará brevemente este dispositivo do Breeze. Continuar?",
+    "agentStopBlocked": "O agente do Breeze não pode ser parado daqui: isso interromperia o gerenciamento remoto deste dispositivo.",
     "allStatus": "Todos os status",
     "cannotStopAgent": "Não é possível parar o agente",
     "changeStartupType": "Alterar tipo de inicialização",
