@@ -4,7 +4,7 @@ import { TicketServiceError } from '../ticketService';
 import type { ImportedTicket } from './importedTicket';
 import type { ImportTicketResult } from './importWriter';
 import { ticketImportLimits } from './importLimits';
-import { normalizeCursor } from './runCursor';
+import { normalizeCursor, PREDICTED_CONTACT_KEYS_MAX } from './runCursor';
 import {
   applyNotes,
   clampTicketTimes,
@@ -13,6 +13,8 @@ import {
   conversionIdentityViolation,
   importedTicketBytes,
   isInfrastructureError,
+  predictedContactKey,
+  predictRequesterContact,
   predictTicket,
   recordImportResult,
   versionKey,
@@ -50,6 +52,8 @@ const result = (overrides: Partial<ImportTicketResult> = {}): ImportTicketResult
   attachmentsWritten: 1,
   attachmentsSkipped: [],
   attachmentBytes: 300,
+  contactsCreated: 0,
+  requesterResolution: null,
   requesterChanged: false,
   orgChanged: false,
   commentsChangedInSource: [],
@@ -266,5 +270,63 @@ describe('versionKey (review #15)', () => {
     // Truncation would have made these equal.
     expect(a.slice(0, 64)).toBe(b.slice(0, 64));
     expect(versionKey(a)).not.toBe(versionKey(b));
+  });
+});
+
+describe('created contacts in the run report (W4b, spec 2026-10-19 §5.10, §5.13)', () => {
+  const ORG_A = '11111111-1111-4111-8111-111111111111';
+  const ORG_B = '22222222-2222-4222-8222-222222222222';
+  const target = { key: '1', number: null };
+
+  it('counts a created contact, and a createContact requester the writer left display-only', () => {
+    const counters = emptyCounters();
+    const issues = new IssueBuffer(counters, 10);
+    recordImportResult(result({ contactsCreated: 1, requesterResolution: 'created' }), counters, issues, target);
+    recordImportResult(result({ requesterResolution: 'linked' }), counters, issues, target);
+    recordImportResult(result({ requesterResolution: 'matched' }), counters, issues, target);
+    recordImportResult(result({ requesterResolution: 'display_only' }), counters, issues, target);
+    expect(counters.contactsCreated).toBe(1);
+    expect(counters.requestersWithoutContact).toBe(1);
+    // Contacts are listed from their links, never as issue rows.
+    expect(issues.take()).toEqual([]);
+  });
+
+  it('predicts a contact once per (org, email) across the run, case-insensitively, and per org', () => {
+    const counters = emptyCounters();
+    const seen = new Set<string>();
+    predictRequesterContact('create', ORG_A, 'maya@customer.example', counters, seen, 100);
+    predictRequesterContact('create', ORG_A, 'Maya@Customer.example', counters, seen, 100);
+    predictRequesterContact('create', ORG_B, 'maya@customer.example', counters, seen, 100);
+    predictRequesterContact('linked', ORG_A, 'old@customer.example', counters, seen, 100);
+    predictRequesterContact('matched', ORG_A, 'one@customer.example', counters, seen, 100);
+    predictRequesterContact('display_only', ORG_A, 'shared@customer.example', counters, seen, 100);
+    expect(counters.predicted.contactsToCreate).toEqual({ [ORG_A]: 1, [ORG_B]: 1 });
+    expect(counters.requestersWithoutContact).toBe(1);
+    expect(seen.size).toBe(2);
+  });
+
+  it('keeps digests, never addresses, and counts without dedupe past the bound', () => {
+    expect(predictedContactKey(ORG_A, 'maya@customer.example')).toMatch(/^[0-9a-f]{16}$/);
+    expect(predictedContactKey(ORG_A, ' MAYA@customer.example ')).toBe(predictedContactKey(ORG_A, 'maya@customer.example'));
+    const counters = emptyCounters();
+    const seen = new Set<string>();
+    predictRequesterContact('create', ORG_A, 'a@x.example', counters, seen, 1);
+    predictRequesterContact('create', ORG_A, 'b@x.example', counters, seen, 1);
+    predictRequesterContact('create', ORG_A, 'b@x.example', counters, seen, 1);
+    expect(counters.predicted.contactsToCreate[ORG_A]).toBe(3);
+    expect(seen.size).toBe(1);
+  });
+
+  it('the cursor keeps the digests across slices, bounded', () => {
+    expect(normalizeCursor({})).not.toHaveProperty('predictedContacts');
+    expect(normalizeCursor({ predictedContacts: ['a', 7, 'b'] }).predictedContacts).toEqual(['a', 'b']);
+    const many = Array.from({ length: PREDICTED_CONTACT_KEYS_MAX + 5 }, (_, i) => `k${i}`);
+    expect(normalizeCursor({ predictedContacts: many }).predictedContacts).toHaveLength(PREDICTED_CONTACT_KEYS_MAX);
+  });
+
+  it('a stored run keeps contactsCreated and the per-org prediction', () => {
+    const counters = normalizeCounters({ contactsCreated: 4, predicted: { contactsToCreate: { [ORG_A]: 3 } } });
+    expect(counters.contactsCreated).toBe(4);
+    expect(counters.predicted.contactsToCreate).toEqual({ [ORG_A]: 3 });
   });
 });
