@@ -179,6 +179,7 @@ let refreshRuntimeMetrics: (() => void) | null = null;
 // Assigned once the dynamically-imported db/redis modules are available
 // (start of main(), before any readiness probe can actually be reached).
 let probeDb: () => Promise<boolean> = async () => false;
+let probeDbReadOnly: () => Promise<boolean> = async () => false;
 let probeRedis: () => Promise<boolean> = async () => false;
 
 /**
@@ -191,6 +192,7 @@ const readinessTiming = resolveReadinessTiming(process.env, (name, requested, ef
 
 const readiness = createReadinessEvaluator({
   checkDb: () => probeDb(),
+  checkDbReadOnly: () => probeDbReadOnly(),
   checkRedis: () => probeRedis(),
   workerRegistry: workerReadinessRegistry,
   workersInitialized: () => workerInitPhase === 'started',
@@ -227,7 +229,7 @@ function currentPhaseLabel(): string {
 
 /**
  * `/health/ready`. Structured 503 bodies with a single `reason`:
- * `'migrations-pending' | 'db' | 'redis' | 'workers-pending' | 'shutting-down'`.
+ * `'migrations-pending' | 'db' | 'db-read-only' | 'redis' | 'workers-pending' | 'shutting-down'`.
  * Before migration parity is reached, this answers directly (the live
  * evaluator's db/redis probes aren't meaningful yet); afterward it delegates
  * to `readiness.get()` and translates the snapshot into one reason.
@@ -247,6 +249,7 @@ async function handleReadyRequest(res: ServerResponse): Promise<void> {
       role: 'worker' as const,
       ready: snapshot.ready,
       db: snapshot.db,
+      dbReadOnly: snapshot.dbReadOnly,
       redis: snapshot.redis,
       workers: snapshot.workers,
       checkedAt: snapshot.checkedAt,
@@ -259,8 +262,7 @@ async function handleReadyRequest(res: ServerResponse): Promise<void> {
       writeJson(res, 200, body);
       return;
     }
-    const reason = !snapshot.db ? 'db' : !snapshot.redis ? 'redis' : 'workers-pending';
-    writeJson(res, 503, { reason, ...body });
+    writeJson(res, 503, { reason: snapshot.reason ?? 'workers-pending', ...body });
   } catch (error) {
     console.error('[worker][ready] readiness evaluation failed:', error);
     captureException(error instanceof Error ? error : new Error(String(error)));
@@ -436,6 +438,7 @@ export async function bootWorker(): Promise<void> {
   // Everything below is dynamically imported — see the header comment for
   // why (several of these modules' own static closures reach `routes/`).
   const dbModule = await import('./db');
+  const { isReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } = await import('./db/readOnlyDatabase');
   const { getRedis, closeRedis } = await import('./services/redis');
   const { waitForMigrationParity } = await import('./db/migrationParity');
   const { loadBuiltinExtensions } = await import('./extensions/builtinExtensions');
@@ -536,6 +539,11 @@ export async function bootWorker(): Promise<void> {
       return false;
     }
   };
+  // #11731: reachable but rejecting writes. Throws on failure; the evaluator
+  // reports it and treats the answer as unknown.
+  probeDbReadOnly = async () => runWithSystemDbAccess(async () =>
+    isReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
+  );
   probeRedis = async () => {
     try {
       const redis = getRedis();
