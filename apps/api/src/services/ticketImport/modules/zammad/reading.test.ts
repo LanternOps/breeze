@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { classifySourceError } from '../../runOutcomes';
+import { listRoles, listUsers } from './api';
 import { SourceAuthError, SourceShapeError, SourceUnavailableError } from '../../sourceFetch';
 import { clearZammadDirectoryCache, hasZammadDirectory, takeZammadInvalidRows, ZAMMAD_DIRECTORY_TTL_MS, zammadPeople } from './directory';
 import { zammadTicketImportModule } from './index';
@@ -442,6 +443,47 @@ describe('the directory (users cached 30 min per source; one read per missing us
     // Another source never shares the entry.
     await zammadPeople(zammadTestHandle(fake, { sourceId: 'dir-2' }), [3], 1_000);
     expect(fake.requestedPaths().filter((p) => p === '/api/v1/users?page=1&per_page=1000')).toHaveLength(3);
+  });
+});
+
+describe('directory lists keep only the fields the module uses, page by page (#11296 follow-up)', () => {
+  it('trims each users row as its page arrives: unknown keys are dropped, named ones kept', async () => {
+    const fake = new FakeZammad();
+    // Real users carry many more keys (preferences, image, notes, custom attributes).
+    fake.data.users = fake.data.users.map((u) => ({ ...u, preferences: { notification_config: 'x'.repeat(4096) }, image: 'y'.repeat(4096), note: 'z', custom_attr: 1 }));
+    const { rows, invalid } = await listUsers(zammadTestHandle(fake));
+    expect(invalid).toBe(0);
+    expect(rows.length).toBe(fake.data.users.length);
+    const allowed = new Set(['id', 'login', 'firstname', 'lastname', 'email', 'active', 'role_ids', 'group_ids']);
+    for (const row of rows) expect(Object.keys(row).filter((k) => !allowed.has(k))).toEqual([]);
+    const alice = rows.find((u) => u.id === 3)!;
+    expect(alice).toMatchObject({ firstname: 'Alice', email: 'alice.agent@msp.example.test' });
+    // A key the row does not have is not added as undefined.
+    const source = fake.data.users.find((u) => u.id === 3)!;
+    expect(Object.keys(alice).sort()).toEqual(Object.keys(source).filter((k) => allowed.has(k)).sort());
+  });
+
+  it('keeps the fields access reads from roles (permissions, group_ids)', async () => {
+    const fake = new FakeZammad();
+    const { rows } = await listRoles(zammadTestHandle(fake));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Object.keys(row).every((k) => ['id', 'name', 'active', 'permissions', 'group_ids'].includes(k))).toBe(true);
+    }
+    expect(rows.some((r) => (r.permissions ?? []).length > 0)).toBe(true);
+  });
+
+  it('still stops on a server that answers the same page again (repeated-page detection)', async () => {
+    const fake = new FakeZammad();
+    const template = fake.data.users[0]!;
+    fake.data.users = Array.from({ length: 1000 }, (_, i) => ({ ...template, id: 5000 + i }));
+    const original = fake.handle.bind(fake);
+    // A server that ignores `page`: every page is page 1.
+    fake.handle = (method, url, auth) => {
+      if (url.pathname === '/api/v1/users') url.searchParams.set('page', '1');
+      return original(method, url, auth);
+    };
+    await expect(listUsers(zammadTestHandle(fake), 1)).rejects.toThrow(/repeated page/);
   });
 });
 

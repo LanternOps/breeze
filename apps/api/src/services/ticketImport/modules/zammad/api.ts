@@ -67,12 +67,25 @@ async function zammadArray(src: SourceHandle<unknown>, path: ReadonlyArray<strin
 /** Rows read one by one: a malformed row is skipped and counted, never the page. */
 export type ZammadRows<T> = { rows: T[]; invalid: number };
 
-function rowsOf<S extends z.ZodType>(items: readonly unknown[], schema: S): ZammadRows<z.infer<S>> {
+/**
+ * A row reduced to the fields its schema names. The schemas are loose (they
+ * keep unknown keys, shapes.ts), which suits a single answer; a list keeps
+ * only what the module uses, so what it holds is bounded by those fields,
+ * not by the raw rows (#11296 follow-up).
+ */
+function keptFields<T extends object>(row: T, keys: readonly string[]): T {
+  const out: Record<string, unknown> = {};
+  for (const key of keys) if (Object.hasOwn(row, key)) out[key] = (row as Record<string, unknown>)[key];
+  return out as T;
+}
+
+function rowsOf<S extends z.ZodObject>(items: readonly unknown[], schema: S): ZammadRows<z.infer<S>> {
+  const keys = Object.keys(schema.shape);
   const rows: Array<z.infer<S>> = [];
   let invalid = 0;
   for (const item of items) {
     const parsed = schema.safeParse(item);
-    if (parsed.success) rows.push(parsed.data);
+    if (parsed.success) rows.push(keptFields(parsed.data as object, keys) as z.infer<S>);
     else invalid += 1;
   }
   return { rows, invalid };
@@ -87,11 +100,14 @@ export const ZAMMAD_USER_PAGES_IN_FLIGHT = 2;
 
 /**
  * Every row of a paged index, until a short page (Z15, Z18), each row
- * checked on its own. `inFlight` pages are read at once (the source client's
+ * checked on its own and trimmed to the fields its schema names as its page
+ * arrives: the raw pages are dropped once read, so what the list holds is
+ * bounded by the kept fields, not by up to MAX_INDEX_PAGES raw pages
+ * (#11296 follow-up). `inFlight` pages are read at once (the source client's
  * semaphore still bounds the requests); they are taken in order, and a page
  * past the short one is ignored.
  */
-async function allPages<S extends z.ZodType>(
+async function allPages<S extends z.ZodObject>(
   src: SourceHandle<unknown>,
   path: ReadonlyArray<string | number>,
   row: S,
