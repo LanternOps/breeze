@@ -159,11 +159,15 @@ const EXPECTED_NAMES = [
   'aiAgentGraduation',
   'scriptReviewWorker',
   'scriptVerifyWorker',
+  // High-volume table retention W2 (#4342, #11589) — report-only.
+  'scriptExecutionRetention',
   'aiBudgetReservationSweep',
   'mfaEnrollmentNoticeWorker',
   'monitorEpisodeRetention',
   // EDR provider framework W02 (#8164).
   'edrDetectionRetentionWorker',
+  // #4342 W3 — closed-alert retention (global, system-scope sweep).
+  'alertRetention',
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
