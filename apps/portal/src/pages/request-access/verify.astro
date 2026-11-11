@@ -1,0 +1,18 @@
+---
+// Emailed "confirm your request" landing (W6 plan D9). The single-use token is
+// in the URL fragment, never sent to the server, so there is no SSR data work
+// here: the island reads and scrubs the fragment, then waits for an explicit
+// Confirm click. middleware.ts serves it no-referrer, no-store and noindex.
+import AuthLayout from '../../layouts/AuthLayout.astro';
+import VerifyAccessRequest from '../../components/portal/VerifyAccessRequest';
+---
+
+<AuthLayout title="Confirm your request">
+  <VerifyAccessRequest client:load />
+  <noscript>
+    <p class="mt-4 text-center text-sm text-muted-foreground">
+      JavaScript is required to confirm your request. Please enable JavaScript
+      and reload this page.
+    </p>
+  </noscript>
+</AuthLayout>
