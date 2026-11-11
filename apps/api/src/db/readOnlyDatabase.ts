@@ -1,3 +1,5 @@
+import { pgErrorCode } from '@breeze/shared/pgErrors';
+
 /**
  * Read-only database handling (#11731).
  *
@@ -49,10 +51,5 @@ export function isReadOnlyProbeResult(result: unknown): boolean {
  * also when wrapped (drizzle puts the driver error on `cause`).
  */
 export function isReadOnlySqlError(error: unknown): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 3 && current && typeof current === 'object'; depth++) {
-    if ((current as { code?: unknown }).code === '25006') return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
+  return pgErrorCode(error) === '25006';
 }
