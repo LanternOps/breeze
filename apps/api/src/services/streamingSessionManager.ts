@@ -988,6 +988,14 @@ export class StreamingSessionManager {
        * (spike D3) — silently: the user asked for it.
        */
       modelSwitch?: boolean;
+      /**
+       * #11395: the caller's `mcpServerFactory` registers the Breeze registry
+       * (`createBreezeMcpServer`, e.g. the helper's per-level factory), so the
+       * tool exposure narrows it like the default server. Unset for a factory
+       * that registers its own tools (client-declared helper tools, Office,
+       * the script builder).
+       */
+      registersBreezeServer?: boolean;
     },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
@@ -1201,7 +1209,7 @@ export class StreamingSessionManager {
       allowedTools,
       // Lambdas, not references: read only under a constrained profile.
       registryNames: () => listChatSurfaceToolNames(),
-      breezeServer: !mcpServerFactory,
+      breezeServer: !mcpServerFactory || options?.registersBreezeServer === true,
       domainOf: (name) => chatToolDomain(name),
       extraTools: [
         ...tenantDescriptors.map((d) => ({ name: d.qualifiedName, domain: 'integrations' as const })),

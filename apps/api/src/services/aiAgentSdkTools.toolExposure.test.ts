@@ -57,6 +57,11 @@ describe('createBreezeMcpServer under a tool exposure (#11395)', () => {
     for (const [name, description] of compact) expect(description.length, name).toBeLessThanOrEqual(200);
   });
 
+  it('names kept as extras count as exposed (a session whose tools are all kept extras keeps them)', () => {
+    const server = serve(fakeAuth as never, undefined, undefined, sessionWith(exposure({ names: [], extraToolNames: ['query_devices'] })));
+    expect(server.tools.map((t) => t.name)).toEqual(['query_devices']);
+  });
+
   it('extra tools are never filtered here (the caller filters them by the exposure)', () => {
     const extra = { name: 'submit_alert_verdict', description: 'outcome', inputSchema: {}, handler: async () => ({ content: [] }) };
     const server = serve(fakeAuth as never, undefined, undefined, undefined, [extra as never], { toolExposure: exposure({}) });

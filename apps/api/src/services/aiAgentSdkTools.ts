@@ -6181,7 +6181,7 @@ export function createBreezeMcpServer(
      * of `onlyTools`) with compact descriptions; the identity exposure, or
      * none, changes nothing.
      */
-    toolExposure?: Pick<ToolExposure, 'names' | 'promptMode'>;
+    toolExposure?: Pick<ToolExposure, 'names' | 'promptMode'> & Partial<Pick<ToolExposure, 'extraToolNames'>>;
   },
 ) {
   // #11004: the static declarations come from the per-process template; only
@@ -6189,7 +6189,9 @@ export function createBreezeMcpServer(
   const template = breezeToolTemplate();
   const tools = template.declarations;
   const exposure = options?.toolExposure ?? sessionToolExposureOf(getActiveSession);
-  const exposedNames = exposure?.names ? new Set(exposure.names) : null;
+  // Kept extras count too: a helper session whose tools are all kept as
+  // extras (client-declared) must not lose its registry tools here.
+  const exposedNames = exposure?.names ? new Set([...exposure.names, ...(exposure.extraToolNames ?? [])]) : null;
   const compactDescriptions = exposure?.promptMode === 'constrained';
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are
