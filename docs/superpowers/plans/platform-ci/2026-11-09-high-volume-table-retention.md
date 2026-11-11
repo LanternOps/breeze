@@ -107,7 +107,7 @@ Each wave ships as **two PRs**:
 | W2 | `2027-01-22-230711-script-executions-terminal-age-idx.sql` | `-- @no-transaction` | 1 partial index plus a guard |
 | W3 | `2027-01-22-230720-alert-retention-fk-set-null.sql` | transactional | `log_correlations.alert_id`, `network_change_events.alert_id` → SET NULL |
 | W3 | `2027-01-22-230721-alerts-closed-age-idx.sql` | `-- @no-transaction` | 1 partial index plus a guard |
-| W4 | `2027-01-22-230730-ai-transcript-retention-columns.sql` | transactional, **writes rows** | 2 columns + CHECK + partner backfill (system scope first) + 2 FKs → CASCADE |
+| W4 | `2027-01-23-242000-ai-transcript-retention-columns.sql` | transactional, **writes rows** | 2 columns + CHECK + partner backfill (system scope first) + 2 FKs → CASCADE |
 | W4 | `2027-01-22-230731-ai-sessions-retention-idx.sql` | `-- @no-transaction` | 1 partial index plus a guard |
 | W5 | `2027-01-22-230740-history-retention-indexes.sql` | `-- @no-transaction` | 7 indexes listed in W5, plus a guard (no FK migration: correction 11) |
 
