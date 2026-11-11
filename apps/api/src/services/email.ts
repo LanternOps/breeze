@@ -198,6 +198,30 @@ export interface PortalAccessApprovedEmailParams extends PortalAccessDecisionEma
 export type PortalAccessDeclinedEmailParams = PortalAccessDecisionEmailParams;
 
 /**
+ * Portal registration W6 (#11383): the two mails of the self-registration
+ * flow. Partner lane, `support` stream; `partnerId` comes from the org row the
+ * caller read, never from request input. There is deliberately NO `name`:
+ * nothing the requester typed may appear in a mail sent to an address they
+ * may not own.
+ */
+export interface PortalSelfRegistrationLinkEmailParams {
+  to: string;
+  verifyUrl: string;
+  orgName: string;
+  partnerId: string | null;
+  partnerName: string | null;
+}
+
+export interface PortalSelfRegistrationExistingAccountEmailParams {
+  to: string;
+  loginUrl: string;
+  forgotPasswordUrl: string;
+  orgName: string;
+  partnerId: string | null;
+  partnerName: string | null;
+}
+
+/**
  * Portal registration W4 (#11381, plan D7): another organization proved the
  * Microsoft tenant one of this partner's orgs was linked to, so the link was
  * removed. Platform mail from Breeze to the partner's active admins; it never
@@ -716,6 +740,32 @@ export class EmailService {
       purpose: 'portal.access_request.declined',
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
+    });
+  }
+
+  async sendPortalSelfRegistrationLink(params: PortalSelfRegistrationLinkEmailParams): Promise<void> {
+    const template = buildPortalSelfRegistrationLinkTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'portal.self_registration.verify',
+      partnerId: params.partnerId,
+      partnerName: params.partnerName,
+    });
+  }
+
+  async sendPortalSelfRegistrationExistingAccount(params: PortalSelfRegistrationExistingAccountEmailParams): Promise<void> {
+    const template = buildPortalSelfRegistrationExistingAccountTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'portal.self_registration.existing_account',
+      partnerId: params.partnerId,
+      partnerName: params.partnerName,
     });
   }
 
@@ -1281,6 +1331,51 @@ export function buildPortalAccessApprovedTemplate(params: PortalAccessApprovedEm
     brandName: params.partnerName?.trim() || undefined,
   });
   const text = [lead, `Sign in: ${params.loginUrl}`].join('\n');
+  return { subject, html, text };
+}
+
+/**
+ * Self-registration verify link (W6 #11383): the only copy that proves the
+ * address is the requester's. No requester-typed text; `orgName` comes from
+ * the org row.
+ */
+export function buildPortalSelfRegistrationLinkTemplate(params: PortalSelfRegistrationLinkEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const subject = `Confirm your request for access to ${orgName}'s portal`;
+  const lead = `Someone, hopefully you, asked for access to ${orgName}'s customer portal with this address. Confirm within 30 minutes:`;
+  const ignore = "If you didn't ask for this, ignore this email.";
+  const html = renderLayout({
+    title: subject,
+    preheader: lead,
+    heading: 'Confirm your request',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      ${renderButton('Confirm my request', params.verifyUrl)}
+      <p style="${BODY_PARA}">${escapeHtml(ignore)}</p>
+    `,
+    brandName: params.partnerName?.trim() || undefined,
+  });
+  const text = [lead, `Confirm my request: ${params.verifyUrl}`, ignore].join('\n');
+  return { subject, html, text };
+}
+
+/** Self-registration for an address that already has a portal account (W6 #11383). */
+export function buildPortalSelfRegistrationExistingAccountTemplate(params: PortalSelfRegistrationExistingAccountEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const subject = `You already have an account for ${orgName}'s portal`;
+  const lead = `You already have an account for ${orgName}'s customer portal. Sign in with your password or with Microsoft. If you can't sign in, contact your IT provider.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: lead,
+    heading: 'You already have an account',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      ${renderButton('Sign in', params.loginUrl)}
+      ${renderLinkRow([{ label: 'Reset your password', url: params.forgotPasswordUrl }])}
+    `,
+    brandName: params.partnerName?.trim() || undefined,
+  });
+  const text = [lead, `Sign in: ${params.loginUrl}`, `Reset your password: ${params.forgotPasswordUrl}`].join('\n');
   return { subject, html, text };
 }
 

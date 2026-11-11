@@ -88,6 +88,13 @@ export interface PortalAccessPolicyView {
    * is a fact about one org; the partner default means "on wherever a tenant is proven").
    */
   entraTenantProven: boolean | null;
+  /**
+   * Org view: how many of the org's email domains are verified right now (W5's
+   * read API; W6 #11383). Self-registration needs at least one, so the card
+   * warns when the mode is on with none (W6 OD6: a warning, not a refusal).
+   * Partner view: null (verification is a fact about one org).
+   */
+  verifiedDomainCount: number | null;
 }
 
 export const PORTAL_ACCESS_POLICY_ERROR_CODES = {
