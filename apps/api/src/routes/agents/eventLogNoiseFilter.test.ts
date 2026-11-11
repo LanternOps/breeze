@@ -22,7 +22,7 @@ describe('Windows Security event-log noise filter (#11735)', () => {
     expect([...WINDOWS_SECURITY_NOISE_EVENT_IDS.keys()].sort()).toEqual([4957, 5038, 5061, 5152, 5157]);
     // 4625 (failed logon) and 4719 (audit policy changed) are the signal the
     // Security stream exists for; they must never be classified as noise.
-    for (const keep of [4625, 4719, 4740, 1102, 4720, 4726, 4728, 4732, 4756]) {
+    for (const keep of [4625, 4719, 4740, 1102, 4720, 4726, 4728, 4732, 4756, 4771]) {
       expect(WINDOWS_SECURITY_NOISE_EVENT_IDS.has(keep)).toBe(false);
     }
     for (const reason of WINDOWS_SECURITY_NOISE_EVENT_IDS.values()) {
@@ -34,7 +34,7 @@ describe('Windows Security event-log noise filter (#11735)', () => {
     expect(windowsSecurityNoiseEventId(securityEvent(id))).toBe(id);
   });
 
-  it.each([4625, 4719, 4740, 1102])('keeps Security-Auditing %i', (id) => {
+  it.each([4625, 4719, 4740, 1102, 4771])('keeps Security-Auditing %i', (id) => {
     expect(windowsSecurityNoiseEventId(securityEvent(id))).toBeNull();
   });
 

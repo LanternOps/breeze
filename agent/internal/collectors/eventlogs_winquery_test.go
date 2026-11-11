@@ -53,7 +53,7 @@ func TestBuildWinEventXPath(t *testing.T) {
 
 func TestWindowsStreamSelections(t *testing.T) {
 	security := securityEventSelection()
-	for _, want := range []string{"Level=1", "Level=2", "Level=3", "EventID=1102", "EventID=4625", "EventID=4719", "(EventID>=4720 and EventID<=4726)", "EventID=4728", "EventID=4732", "EventID=4740", "EventID=4756"} {
+	for _, want := range []string{"(Level>=1 and Level<=3)", "EventID=1102", "EventID=4625", "EventID=4771", "EventID=4719", "(EventID>=4720 and EventID<=4726)", "EventID=4728", "EventID=4732", "EventID=4740", "EventID=4756"} {
 		if !strings.Contains(security, want) {
 			t.Errorf("Security selection %q missing %q", security, want)
 		}
@@ -70,7 +70,8 @@ func TestWindowsStreamSelections(t *testing.T) {
 	}
 	// Event-log XPath queries fail as "invalid" past a small number of
 	// expressions; stay within the count the #10702 query shipped with (12).
-	if n := strings.Count(security, "Level=") + strings.Count(security, "EventID"); n > 12 {
+	// Each Level/EventID comparison is one term; a range is two.
+	if n := strings.Count(security, "Level") + strings.Count(security, "EventID"); n > 12 {
 		t.Errorf("Security selection has %d expressions, want <= 12: %q", n, security)
 	}
 	power := powerEventSelection()
@@ -235,12 +236,12 @@ func TestWinEventMessage(t *testing.T) {
 // TestSecurityEventAllowlist pins the Security-log allowlist (#11735): the
 // events #10496 asked for, and none of the Audit Failure noise.
 func TestSecurityEventAllowlist(t *testing.T) {
-	for _, id := range []int{1102, 4625, 4719, 4720, 4722, 4723, 4724, 4725, 4726, 4728, 4732, 4740, 4756} {
+	for _, id := range []int{1102, 4625, 4719, 4720, 4722, 4723, 4724, 4725, 4726, 4728, 4732, 4740, 4756, 4771} {
 		if !securityEventAllowed(id) {
 			t.Errorf("security-relevant event %d must be allowed", id)
 		}
 	}
-	for _, id := range []int{4624, 4672, 4727, 5038, 5061, 5152, 5157, 4957, 4673} {
+	for _, id := range []int{4624, 4672, 4727, 4776, 5038, 5061, 5152, 5157, 4957, 4673} {
 		if securityEventAllowed(id) {
 			t.Errorf("event %d must not be allowed", id)
 		}
@@ -273,6 +274,7 @@ func TestMapSecurityEventLevel(t *testing.T) {
 		{"curated success", 0, int64(success), 4740, "warning"},
 		{"ordinary success", 0, int64(success), 4624, "info"},
 		{"failed logon without keyword", 0, 0, 4625, "warning"},
+		{"kerberos pre-auth failed", 0, int64(failure), 4771, "warning"},
 		{"account created", 0, int64(success), 4720, "warning"},
 		{"account enabled", 0, int64(success), 4722, "warning"},
 		{"password change", 0, int64(success), 4723, "warning"},

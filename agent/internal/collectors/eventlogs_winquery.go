@@ -23,6 +23,8 @@ const (
 // pulled in code-integrity, firewall and crypto-operation failures at ~100x
 // the useful volume, so the stream now selects these IDs only. Level 1-3
 // records (for example 1104 "security log full") are still selected by level.
+// 4776 (NTLM validation) is not listed: it also fires on every success, so it
+// needs a failures-only term; that is an open decision (#11735).
 //
 // Deliberately excluded: 4672 (every SYSTEM/service/admin logon emits it; a
 // follow-up could include it with a SubjectUserSid filter) and 4624 (every
@@ -35,10 +37,12 @@ var securityAuditEventIDs = []int{
 	4732, // Member added to a security-enabled local group.
 	4740, // Account locked out.
 	4756, // Member added to a security-enabled universal group.
+	4771, // Kerberos pre-authentication failed: brute force against a domain controller.
 }
 
-// Account lifecycle 4720-4726 is selected as one range to keep the XPath
-// short (Windows rejects a query with too many expressions as invalid):
+// Levels 1-3 and account lifecycle 4720-4726 are each selected as one range
+// to keep the XPath at 12 terms, the count #10702 shipped (Windows rejects a
+// query with too many expressions as invalid). Account lifecycle:
 // 4720 created, 4722 enabled, 4723 password change attempt, 4724 password
 // reset attempt, 4725 disabled, 4726 deleted. 4721 is not assigned.
 const (
@@ -59,7 +63,7 @@ func securityEventAllowed(id int) bool {
 }
 
 func securityEventSelection() string {
-	parts := []string{"Level=1", "Level=2", "Level=3"}
+	parts := []string{"(Level>=1 and Level<=3)"}
 	for _, id := range securityAuditEventIDs {
 		parts = append(parts, fmt.Sprintf("EventID=%d", id))
 	}
