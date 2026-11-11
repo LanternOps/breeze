@@ -36,6 +36,13 @@ export interface PortalAccessRequestListItem {
   decidedBy: { id: string; name: string | null } | null;
   portalUserId: string | null;
   accountExists: boolean;
+  /**
+   * W6 D11 (#11383): for a `self` request, whether the address's domain is
+   * still verified for this org (approve refuses with
+   * PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED when it is not). Null for every
+   * other source.
+   */
+  domainVerified: boolean | null;
 }
 
 /** One row of `POST …/portal-access-requests/decide`: 'approved' | 'denied' | an error code. */

@@ -35,6 +35,7 @@ import type { RateSnapshot } from './pricing';
 import type { PromptProfile } from './promptProfiles';
 import { defaultTransport, transportCarries, type DispatchTransport, type TransportCarriage } from './transport';
 import { buildWireParams, type WireParams } from './wireParams';
+import type { ToolProfileFacts } from './toolProfileFacts';
 
 /** Re-export of the shared list (one definition, #9496). */
 export const PLATFORM_ONLY_SURFACES = PLATFORM_ONLY_AI_SURFACES;
@@ -109,6 +110,12 @@ export interface ResolvedModel {
   failover: ResolvedFailover | null;
   /** W09: fallback ids a dispatch could still try (unfiltered for eligibility; the re-resolution filters). */
   failoverRemaining: readonly string[];
+  /**
+   * #11393: facts only (profile, allow-list, window, transport), never the
+   * exposure: each surface entry finalizes its own exposure from these plus
+   * its declarations. Absent = DEFAULT_TOOL_PROFILE_FACTS (`full`).
+   */
+  toolProfileFacts?: ToolProfileFacts;
 }
 
 export interface ModelUnavailable {
@@ -303,6 +310,7 @@ async function finalize(
     fellBack,
     failover,
     failoverRemaining,
+    ...(c.toolProfileFacts ? { toolProfileFacts: c.toolProfileFacts } : {}),
   };
 }
 

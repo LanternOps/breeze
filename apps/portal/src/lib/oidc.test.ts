@@ -34,9 +34,16 @@ afterEach(() => {
 
 describe('getSignInMethods', () => {
   it('GETs the public methods endpoint', async () => {
-    reply(200, { password: true, microsoft: true });
-    expect(await getSignInMethods()).toEqual({ password: true, microsoft: true });
+    reply(200, { password: true, microsoft: true, requestAccess: true });
+    expect(await getSignInMethods()).toEqual({ password: true, microsoft: true, requestAccess: true });
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/portal/auth/methods');
+  });
+
+  it('requestAccess is true only for a literal true (W6)', async () => {
+    for (const requestAccess of [false, undefined, 'true', 1, null]) {
+      reply(200, { password: true, microsoft: false, requestAccess });
+      expect(await getSignInMethods()).toEqual({ password: true, microsoft: false, requestAccess: false });
+    }
   });
 
   it('returns null on failure (caller falls back to password only)', async () => {

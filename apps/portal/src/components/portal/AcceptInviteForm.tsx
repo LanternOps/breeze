@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils';
 import { usePortalAuth } from '@/lib/auth';
 import { navigateTo } from '@/lib/navigation';
 import { safeNextPath } from '@/lib/nextPath';
-import { getInviteMethods, startMicrosoftSignIn, type SignInMethods } from '@/lib/oidc';
+import { getInviteMethods, startMicrosoftSignIn, type InviteMethods } from '@/lib/oidc';
 import { MicrosoftSignInButton } from './MicrosoftSignInButton';
 import { BTN_PRIMARY, INPUT } from './ui';
 
@@ -54,7 +54,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   }, []);
 
   // null = still asking the API which options this invite offers.
-  const [methods, setMethods] = useState<SignInMethods | null>(null);
+  const [methods, setMethods] = useState<InviteMethods | null>(null);
   const [inviteInvalid, setInviteInvalid] = useState(false);
   const [msBusy, setMsBusy] = useState(false);
   const autoStarted = useRef(false);

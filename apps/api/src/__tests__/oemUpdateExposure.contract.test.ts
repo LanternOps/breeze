@@ -45,6 +45,8 @@ const ALLOWED: Record<string, string> = {
   'services/oemUpdates/dispatch.ts': 'the one seam that queues it',
   'services/oemUpdates/revalidation.ts': 'claim-time recheck of the gates',
   'services/oemUpdates/results.ts': 'refuses a result for any other command type',
+  'jobs/deviceCommandRetention.ts': 'retention DELETE predicate keeps the newest row per device; never queues (#4342 W1)',
+  'db/schema/devices.ts': 'partial-index predicate for that retention probe; never queues (#4342 W1)',
 };
 
 // The literal, or the constant, as whole words.
@@ -133,6 +135,8 @@ const ALLOWED_RELEASE: Record<string, string> = {
   'services/commandResultHandlers.ts': 'result handler registration: the ack that ends a takeover',
   'routes/agents/commands.ts': 'HTTP result transport reaches the same handler',
   'services/oemUpdates/dispatch.ts': 'the one seam that queues it',
+  'jobs/deviceCommandRetention.ts': 'retention DELETE predicate keeps the newest row per device; never queues (#4342 W1)',
+  'db/schema/devices.ts': 'partial-index predicate for that retention probe; never queues (#4342 W1)',
 };
 
 const RELEASE_WORD = /(?<![A-Za-z0-9_])(?:oem_update_release|OEM_UPDATE_RELEASE)(?![A-Za-z0-9_])/;

@@ -2,7 +2,7 @@
  * #10432 (W09 Task 2): the Wisp replay regression suite.
  *
  * Synthetic sessions, one per defect class filed from the 2026-10-28
- * review, played through the real session manager (harness.ts) and scored
+ * review (plus #11671's specialist verdict and #11685's back-online check-in), played through the real session manager (harness.ts) and scored
  * (score.ts). Each asserts the thresholds the merged waves (W01–W08) meet. A
  * fixture that fails is a regression: fix the code, never the threshold.
  *
@@ -44,6 +44,12 @@ vi.mock('../../db', async () => {
       case 'partners':
         return [{ settings: {} }];
       case 'ai_budgets':
+        return [];
+      // #11671: the specialist-results read (runs, then their files and pending steps).
+      case 'ai_agent_runs':
+        return replayWorld.agentRuns;
+      case 'ai_run_artifacts':
+      case 'action_intents':
         return [];
       case 'ai_messages':
         // The previous assistant reply for the extractor: none in a fresh session.
@@ -228,6 +234,7 @@ import { dontRebootFixture } from './fixtures/dontReboot';
 import { needsAttentionFixture } from './fixtures/needsAttention';
 import { noopDispatchFixture } from './fixtures/noopDispatch';
 import { stillLookingFixture } from './fixtures/stillLooking';
+import { specialistVerdictFixture } from './fixtures/specialistVerdict';
 
 const FIXTURES: ReplayFixture[] = [
   stillLookingFixture,
@@ -236,6 +243,7 @@ const FIXTURES: ReplayFixture[] = [
   dontRebootFixture,
   noopDispatchFixture,
   backOnlineFixture,
+  specialistVerdictFixture,
 ];
 
 function expectTurn(turn: ReplayTurnTrace | undefined, want: ReplayTurnExpectation, where: string): void {
@@ -243,6 +251,9 @@ function expectTurn(turn: ReplayTurnTrace | undefined, want: ReplayTurnExpectati
   const t = turn!;
   expect(t.done, `${where}: the turn ended without done`).toBe(true);
   if (want.standingStateSent !== undefined) expect(t.standingStateSent, `${where}: standing state sent`).toBe(want.standingStateSent);
+  if (want.specialistResultsGiven !== undefined) {
+    expect(t.specialistResultsGiven, `${where}: specialist results given`).toEqual(want.specialistResultsGiven);
+  }
   if (want.maxToolCalls !== undefined) {
     expect(t.toolCalls.length, `${where}: tool calls (${t.toolCalls.map((c) => c.tool).join(', ')})`).toBeLessThanOrEqual(want.maxToolCalls);
   }

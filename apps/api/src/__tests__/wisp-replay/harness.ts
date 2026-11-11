@@ -11,7 +11,9 @@
  *    (`standingStateForTurn`: facts → render → the per-session send gate),
  *    put ahead of the user's text the way `POST /ai/sessions/:id/messages`
  *    does (the route's content sanitising and fired check-in block are not
- *    replayed); the promise linter and the correction message; the
+ *    replayed); the specialist-results block, outermost (#11671:
+ *    `specialistResultsForTurn` → the chat run bridge's renderer → the
+ *    per-session delivered set); the promise linter and the correction message; the
  *    instruction prefilter,
  *    the capture status and the extractor (parse, name resolution, blocks);
  *    the standing-instruction check (verb map, registry device args, matcher,
@@ -48,12 +50,14 @@ import { normaliseDispatchResult } from '../../services/wisp/dispatchEvidence';
 import type { GrantCeiling } from '../../services/wisp/grantAuthority';
 import { readInstructionCapture } from '../../services/wisp/instructionCaptureStatus';
 import { STANDING_STATE_TAG, type StandingStateFacts } from '../../services/wisp/standingLoop';
+import { markSpecialistResultsDelivered, specialistResultsForTurn } from '../../services/wisp/specialistResultsTurn';
 import { checkStandingInstructionsForCall } from '../../services/wisp/standingInstructionGate';
 import { clearStandingStateCache, markStandingStateSent, standingStateForTurn } from '../../services/wisp/standingStateTurn';
 import { WISP_BEHAVIOUR_BLOCK } from '../../services/wisp/threads';
 import { recordWispToolOutcome } from '../../services/wisp/turnRecord';
+import { drainPendingRunResults } from '../../services/workspace/chatRunBridge';
 import type { ReplayInventory, ReplayScore, ReplayToolCall, ReplayTrace, ReplayTurnTrace } from './score';
-import { replayWorld, resetReplayWorld } from './world';
+import { replayWorld, resetReplayWorld, type ReplayAgentRunRow } from './world';
 
 /** What the scripted model can see when it decides its next step. */
 export type ModelView = {
@@ -61,7 +65,7 @@ export type ModelView = {
   systemPrompt: string;
   /** The registry descriptions of the Wisp concern and check-in tools, by bare name. */
   toolDescriptions: Readonly<Record<string, string>>;
-  /** This turn's content as the model receives it (standing-state block first, the user's text last). */
+  /** This turn's content as the model receives it (specialist results, then the standing-state block, the user's text last). */
   turnContent: string;
   /** The newest `<wisp_standing_state>` block in the conversation so far, or null. */
   standingState: string | null;
@@ -77,7 +81,9 @@ export type ScriptedModelStep =
 /** Something the technician does between turns, outside chat. */
 export type ReplayAction =
   /** Taps Keep on the instruction chip: every unconfirmed standing instruction becomes confirmed. */
-  | 'keep_captured_instructions';
+  | 'keep_captured_instructions'
+  /** #11671: a specialist this session handed work to settles (its run row is written). */
+  | { specialistSettles: ReplayAgentRunRow };
 
 export type ReplayTurn = {
   user: string;
@@ -97,6 +103,8 @@ export type ReplayTurn = {
 
 export type ReplayTurnExpectation = {
   standingStateSent?: boolean;
+  /** #11671: exactly these specialist runs' results rode on the turn ([] = none). */
+  specialistResultsGiven?: string[];
   maxToolCalls?: number;
   /** Exactly these corrections, in order ([] = none). */
   corrections?: string[];
@@ -305,6 +313,10 @@ async function settledCaptureStatus(captureId: string): Promise<string | null> {
 }
 
 function applyAction(action: ReplayAction): void {
+  if (typeof action === 'object') {
+    replayWorld.agentRuns.push(action.specialistSettles);
+    return;
+  }
   switch (action) {
     case 'keep_captured_instructions':
       for (const row of replayWorld.memoryRows) {
@@ -360,17 +372,23 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
         replayWorld.standingFacts = turn.standingFacts;
         clearStandingStateCache();
       }
-      // As POST /ai/sessions/:id/messages builds the turn: the standing state, then the user's text.
+      // As POST /ai/sessions/:id/messages builds the turn: settled specialist
+      // results (outermost), the standing state, then the user's text.
+      const specialist = await specialistResultsForTurn({
+        grantId: fixture.ceiling.grantId, revisionId: fixture.ceiling.revisionId, sessionId: SESSION_ID,
+      });
       const standing = await standingStateForTurn({
         grantId: fixture.ceiling.grantId, revisionId: fixture.ceiling.revisionId, sessionId: SESSION_ID, auth,
       });
-      const content = [standing?.block, turn.user].filter(Boolean).join('\n\n');
+      const results = drainPendingRunResults(live, specialist?.results ?? []);
+      const content = [results, standing?.block, turn.user].filter(Boolean).join('\n\n');
       if (!manager.tryTransitionToProcessing(live, undefined, { userMessage: turn.user })) {
         throw new Error(`replay fixture "${fixture.name}": turn ${index} could not start (session ${live.state})`);
       }
       active = { turn, calls: [] };
       const events = await nextTurnEvents(live, `replay-${index}`, () => live.inputController.pushMessage(content));
       if (standing) await markStandingStateSent(SESSION_ID, standing.hash);
+      if (specialist) await markSpecialistResultsDelivered(SESSION_ID, specialist.keys);
 
       const deltas = events.flatMap((e) => (e.type === 'content_delta' ? [e.delta] : []));
       const corrections = deltas.filter((d) => d.startsWith(CORRECTION_PREFIX)).flatMap((d) => d.split('\n'));
@@ -380,6 +398,7 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
       turns.push({
         user: turn.user,
         standingStateSent: standing !== null,
+        specialistResultsGiven: specialist?.results.map((r) => r.runId) ?? [],
         toolCalls: active.calls,
         assistantText,
         corrections,

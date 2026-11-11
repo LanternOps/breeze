@@ -1,0 +1,15 @@
+{
+  "id": "stop-is-not-an-error",
+  "title": "Pressing Stop mid-reply does not show an error banner",
+  "issue": 11676,
+  "expect": "known-red",
+  "door": "wisp",
+  "steps": [
+    { "name": "stop", "type": "stop_stream", "afterSec": 3, "maxSec": 60,
+      "text": "Write me a ten-step checklist for onboarding a new dental-office customer. One line per step. Do not call any tools." }
+  ],
+  "checks": [
+    { "kind": "no_error_banner", "step": "stop",
+      "note": "#11676: 'An internal error occurred. Please try again.' after a user-requested stop" }
+  ]
+}
