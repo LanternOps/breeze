@@ -16026,6 +16026,7 @@
       "First sign-in",
       "Session length",
       "Microsoft-only sign-in",
+      "When the tenant proof is lost",
       "Give browser access to add-in users",
       "AI for Office add-in sessions",
       "For the customer's admin",
@@ -16077,6 +16078,11 @@
         "heading": "Microsoft-only sign-in",
         "anchor": "microsoft-only-sign-in",
         "text": "Setting **Password sign-in** to **Off — Microsoft/Google only** (SSO only) stops people using passwords.\n\nWhen you save it, Breeze shows a confirmation dialog listing what will change:\n\n- **Passwords removed.** People who are already connected to Microsoft. Their password is cleared, they are signed out once, and from then on they sign in with Microsoft.\n- **Can't sign in yet.** People who have not connected a Microsoft account. They keep their password but can't use it, so they can't sign in until they accept a Microsoft sign-in invite. The dialog names them.\n\nNothing changes until you confirm. If the numbers change while the dialog is open (for example someone connects Microsoft in the meantime), Breeze shows the new numbers and asks again.\n\nTo invite the people who can't sign in yet, tick **Send Microsoft sign-in invites to these accounts after saving** in the dialog, or use **Send Microsoft sign-in invite** (one person) or **Invite all** in the **Can't sign in yet** list that the card shows while password sign-in is off. The email links their Microsoft account to their existing portal login the first time they sign in. Sending it moves an active account that still has a password to *invited*.\n\nSaving the partner default shows the same confirmation, listing each organization it affects with a link to that organization's settings. Send invites from each organization's own page.\n\nIf the tenant proof is lost, password sign-in comes back automatically. Passwords that were cleared are not restored."
+      },
+      {
+        "heading": "When the tenant proof is lost",
+        "anchor": "when-the-tenant-proof-is-lost",
+        "text": "An organization loses its proof when its tenant link is removed, when its AI for Office tenant mapping is removed or changed to another tenant, or when another organization proves the same tenant. Microsoft sign-in then turns off for that organization's portal and its users sign in with a password, so nobody is locked out.\n\nIf Microsoft sign-in was on for the organization, Breeze records this in the audit log (`organization.portal_sign_in.password_fallback`, with the cause) and shows a notice on the **Sign-in & registration** card and on **Organization › Domains**. The notice stays until the tenant is proven again or an admin dismisses it. **Re-run the tenant proof** takes you to the proof controls."
       },
       {
         "heading": "Give browser access to add-in users",
