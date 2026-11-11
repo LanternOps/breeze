@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { ensureAppRole } from './ensureAppRole';
+import { ReadOnlyDatabaseError } from './readOnlyDatabase';
 import {
   acquireMigrationAdvisoryLock,
   releaseMigrationAdvisoryLock,
@@ -565,6 +566,33 @@ async function ensureTrackingTable(client: postgres.Sql): Promise<void> {
   `);
 }
 
+/**
+ * Whether this session can write. `transaction_read_only` reflects both a
+ * database/role default of `default_transaction_read_only = on` (how a managed
+ * provider fences a full disk) and a hot standby. #11731.
+ */
+async function sessionIsReadOnly(client: postgres.Sql): Promise<boolean> {
+  const rows = await client`SELECT current_setting('transaction_read_only') AS ro`;
+  return rows[0]?.ro === 'on';
+}
+
+/**
+ * Startup needs a write the database will not take. Called only on the
+ * read-only path, so a writable boot never reaches it.
+ */
+export function readOnlyStartupError(needs: string): ReadOnlyDatabaseError {
+  return new ReadOnlyDatabaseError(
+    `[auto-migrate] Refusing to start: the database is read-only ` +
+      `(transaction_read_only = on, SQLSTATE 25006) and startup needs to ${needs}. ` +
+      'Nothing was changed. Common causes: the database provider switched it to read-only ' +
+      '(often because its storage is full: `default_transaction_read_only = on`), or ' +
+      'DATABASE_URL points at a read replica / hot standby. Make the database writable ' +
+      '(free or add storage, or point DATABASE_URL at the primary) and restart the API. ' +
+      'If this image is newer than the schema, starting the previous image (which needs no ' +
+      'new migrations) also works while the database stays read-only.',
+  );
+}
+
 /** Load already-applied migration checksums from the tracking table. */
 async function loadApplied(client: postgres.Sql): Promise<Map<string, string>> {
   const rows = await client.unsafe<{ filename: string; checksum: string }[]>(
@@ -771,8 +799,27 @@ async function runCoreMigrations(
   const migrationsDir = resolveMigrationsDir();
   console.log(`[auto-migrate] Migrations directory: ${migrationsDir}`);
 
+  // ── 0. Read-only database? (#11731) ─────────────────────────────────
+  //    A read-only database rejects every write and every DDL statement,
+  //    idempotent ones included (`CREATE TABLE IF NOT EXISTS` fails with
+  //    25006 even when the table exists). When it is read-only, this run only
+  //    reads: it proceeds if the schema is already current, and otherwise
+  //    stops with a ReadOnlyDatabaseError that names the condition. The
+  //    writable path below is unchanged.
+  const readOnly = await sessionIsReadOnly(client);
+  if (readOnly) {
+    console.warn(
+      '[auto-migrate] Database is read-only (transaction_read_only = on). ' +
+        'Checking the ledger without writing; startup continues only if no migration is pending.',
+    );
+  }
+
   // ── 1. Ensure the tracking table exists ──────────────────────────────
-  await ensureTrackingTable(client);
+  if (!readOnly) {
+    await ensureTrackingTable(client);
+  } else if (!(await tableExists(client, MIGRATION_TABLE))) {
+    throw readOnlyStartupError(`create the \`${MIGRATION_TABLE}\` ledger (this looks like a fresh database)`);
+  }
 
   // ── 2. Detect database state ─────────────────────────────────────────
   const usersExist = await tableExists(client, 'users');
@@ -805,6 +852,11 @@ async function runCoreMigrations(
   const applied = await loadApplied(client);
 
   // ── 5. Handle fresh/legacy: baseline pre-consolidation migrations ───
+  if (readOnly && state !== 'normal') {
+    throw readOnlyStartupError(
+      state === 'fresh' ? 'apply the baseline schema to a fresh database' : 'baseline a legacy database ledger',
+    );
+  }
   if (state === 'fresh') {
     // Fresh DB: run the baseline (0001) then mark 0002-0065 as applied
     // since they're already reflected in the baseline.
@@ -877,6 +929,9 @@ async function runCoreMigrations(
         reconciliation.from === priorChecksum &&
         reconciliation.to === currentChecksum
       ) {
+        if (readOnly) {
+          throw readOnlyStartupError(`reconcile the recorded checksum of ${filename}`);
+        }
         // Known, verified-safe forward-fix to a shipped migration: heal the
         // recorded checksum instead of crashing the upgrade. Exact from->to
         // match only; any other change still throws below.
@@ -895,6 +950,28 @@ async function runCoreMigrations(
           'The file changed after being applied. Add a new migration instead.',
       );
     }
+  }
+
+  // ── 6a. Read-only: stop here if anything is pending; otherwise skip every
+  //        write below. ensureAppRole is skipped too: it re-applies the role
+  //        password and grants (ALTER ROLE / GRANT / REVOKE, all rejected on a
+  //        read-only database) and they are still in place from the last
+  //        writable boot, because nothing can change them while writes fail.
+  if (readOnly) {
+    const pending = migrationPlan.filter((m) => !applied.has(m.ledgerName)).map((m) => m.ledgerName);
+    if (pending.length > 0) {
+      const shown = pending.slice(0, 5).join(', ');
+      const more = pending.length > 5 ? ` and ${pending.length - 5} more` : '';
+      throw readOnlyStartupError(
+        `apply ${pending.length} pending migration(s) (${shown}${more})`,
+      );
+    }
+    console.warn(
+      '[auto-migrate] All migrations already applied; database is read-only, so the ' +
+        'breeze_app role/grant refresh is skipped this boot (it re-runs on the next writable boot).',
+    );
+    await assertSeededReadOnly(client);
+    return;
   }
 
   // ── 6b. Ensure the unprivileged `breeze_app` role exists BEFORE applying
@@ -983,18 +1060,33 @@ async function runCoreMigrations(
   await ensureAppRole();
 
   // ── 8. Auto-seed if no users exist ───────────────────────────────────
-  //    `users` is FORCE ROW LEVEL SECURITY. For a migrating role that does not
-  //    bypass RLS, an unscoped read sees zero rows and would re-seed on every
-  //    boot (#8991), so read under system scope like the migrations above.
-  const userCheck = await client.begin(async (tx) => {
-    await tx.unsafe(`SELECT set_config('breeze.scope', 'system', true)`);
-    return tx`SELECT id FROM users LIMIT 1`;
-  });
-  if (userCheck.length === 0) {
+  if (!(await hasAnyUser(client))) {
     console.log('[auto-migrate] No users found, running initial seed...');
     await seed();
     console.log('[auto-migrate] Initial seed complete');
   } else {
     console.log('[auto-migrate] Database already seeded');
   }
+}
+
+/**
+ * Whether any user exists. `users` is FORCE ROW LEVEL SECURITY. For a migrating
+ * role that does not bypass RLS, an unscoped read sees zero rows and would
+ * re-seed on every boot (#8991), so read under system scope like the
+ * migrations. A read only: `set_config` is allowed on a read-only database.
+ */
+async function hasAnyUser(client: postgres.Sql): Promise<boolean> {
+  const userCheck = await client.begin(async (tx) => {
+    await tx.unsafe(`SELECT set_config('breeze.scope', 'system', true)`);
+    return tx`SELECT id FROM users LIMIT 1`;
+  });
+  return userCheck.length > 0;
+}
+
+/** Read-only counterpart of step 8: an unseeded database cannot be seeded now. */
+async function assertSeededReadOnly(client: postgres.Sql): Promise<void> {
+  if (!(await hasAnyUser(client))) {
+    throw readOnlyStartupError('run the initial seed (no users exist yet)');
+  }
+  console.log('[auto-migrate] Database already seeded');
 }

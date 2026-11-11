@@ -19,8 +19,10 @@ const internalConsumer: ConsumerReadinessState = {
 const snapshot = (overrides: Partial<ReadinessSnapshot> = {}): ReadinessSnapshot => ({
   ready: true,
   db: true,
+  dbReadOnly: false,
   redis: true,
   workers: true,
+  reason: null,
   checkedAt: '2026-07-31T18:23:48.511Z',
   consumers: { secretWorker: internalConsumer },
   ...overrides
@@ -45,6 +47,7 @@ describe('GET /ready', () => {
     await expect(res.json()).resolves.toEqual({
       ready: true,
       db: true,
+      dbReadOnly: false,
       redis: true,
       workers: true,
       checkedAt: '2026-07-31T18:23:48.511Z',
@@ -58,8 +61,30 @@ describe('GET /ready', () => {
     });
   });
 
+  it('reports a read-only database as a distinct 503 reason (#11731)', async () => {
+    const readOnly = snapshot({ ready: false, dbReadOnly: true, reason: 'db-read-only' });
+    const { app } = mount({ get: async () => readOnly, invalidate: vi.fn() });
+
+    for (const path of ['/ready', '/health/ready']) {
+      const res = await app.request(path);
+      expect(res.status).toBe(503);
+      await expect(res.json()).resolves.toMatchObject({
+        ready: false,
+        reason: 'db-read-only',
+        db: true,
+        dbReadOnly: true,
+      });
+    }
+  });
+
+  it('carries no reason on a ready 200', async () => {
+    const { app } = mount({ get: async () => snapshot(), invalidate: vi.fn() });
+    const body = (await (await app.request('/ready')).json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('reason');
+  });
+
   it('returns 503 with the snapshot when not ready', async () => {
-    const notReady = snapshot({ ready: false, workers: false });
+    const notReady = snapshot({ ready: false, workers: false, reason: 'workers-pending' });
     const { app } = mount({ get: async () => notReady, invalidate: vi.fn() });
 
     const res = await app.request('/ready');
@@ -67,6 +92,7 @@ describe('GET /ready', () => {
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toMatchObject({
       ready: false,
+      reason: 'workers-pending',
       workers: false,
       consumerSummary: { required: 1, runnable: 1, unavailable: 0 },
     });
@@ -114,6 +140,7 @@ describe('GET /ready', () => {
     const body = (await (await app.request('/ready')).json()) as Record<string, unknown>;
 
     expect(body.db).toBeNull();
+    expect(body.dbReadOnly).toBeNull();
     expect(body.redis).toBeNull();
     expect(body.workers).toBeNull();
   });
@@ -167,6 +194,7 @@ describe('GET /ready', () => {
     expect(JSON.parse(body)).toEqual({
       ready: true,
       db: true,
+      dbReadOnly: false,
       redis: true,
       workers: true,
       checkedAt: '2026-07-31T18:23:48.511Z',

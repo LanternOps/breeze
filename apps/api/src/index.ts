@@ -360,6 +360,7 @@ import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
 import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { isReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
@@ -457,6 +458,7 @@ let warnedWorkersNeverStarted = false;
 
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
+  checkDbReadOnly: () => checkDatabaseReadOnly(),
   checkRedis: () => checkRedisConnectivity(),
   workerRegistry: workerReadinessRegistry,
   workersInitialized: () => {
@@ -1431,6 +1433,19 @@ async function checkDatabaseConnectivity(): Promise<boolean> {
     console.error('[startup] Database connectivity check failed:', error);
     return false;
   }
+}
+
+/**
+ * #11731: reachable but read-only (a provider's `default_transaction_read_only
+ * = on`, or a standby). `select 1` still succeeds there, so readiness needs
+ * this to report `db-read-only` instead of claiming a healthy database.
+ * Throws on failure; the readiness evaluator reports it and treats the
+ * answer as unknown.
+ */
+async function checkDatabaseReadOnly(): Promise<boolean> {
+  return runWithSystemDbAccess(async () =>
+    isReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
+  );
 }
 
 async function checkRedisConnectivity(): Promise<boolean> {

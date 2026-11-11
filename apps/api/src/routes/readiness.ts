@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { ReadinessEvaluator } from '../services/readiness';
+import type { ReadinessEvaluator, ReadinessFailureReason } from '../services/readiness';
 import {
   summarizeConsumerReadiness,
   type PublicConsumerReadinessSummary,
@@ -8,7 +8,10 @@ import {
 export type PublicReadinessResponse =
   | {
       ready: boolean;
+      /** Present only on a 503: the single most fundamental cause. */
+      reason?: ReadinessFailureReason;
       db: boolean;
+      dbReadOnly: boolean;
       redis: boolean;
       workers: boolean;
       checkedAt: string;
@@ -17,6 +20,7 @@ export type PublicReadinessResponse =
   | {
       ready: false;
       db: null;
+      dbReadOnly: null;
       redis: null;
       workers: null;
       checkedAt: string;
@@ -58,6 +62,7 @@ export function createReadinessHandler({ evaluator, onEvaluationError }: Readine
       const response: PublicReadinessResponse = {
           ready: false,
           db: null,
+          dbReadOnly: null,
           redis: null,
           workers: null,
           checkedAt: new Date().toISOString(),
@@ -69,7 +74,9 @@ export function createReadinessHandler({ evaluator, onEvaluationError }: Readine
 
     const response: PublicReadinessResponse = {
       ready: snapshot.ready,
+      ...(!snapshot.ready && snapshot.reason ? { reason: snapshot.reason } : {}),
       db: snapshot.db,
+      dbReadOnly: snapshot.dbReadOnly,
       redis: snapshot.redis,
       workers: snapshot.workers,
       checkedAt: snapshot.checkedAt,

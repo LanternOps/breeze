@@ -594,7 +594,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     const ok = await getJson(port, '/health/ready');
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({
-      role: 'worker', ready: true, db: true, redis: true, workers: true, checkedAt: expect.any(String),
+      role: 'worker', ready: true, db: true, dbReadOnly: false, redis: true, workers: true, checkedAt: expect.any(String),
       consumerSummary: { required: 1, runnable: 1, unavailable: 0, optionalRunning: 0, optionalDisabled: 0 },
     });
 
@@ -603,7 +603,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     const degraded = await getText(port, '/health/ready');
     expect(degraded.status).toBe(503);
     expect(JSON.parse(degraded.text)).toEqual({
-      reason: 'workers-pending', role: 'worker', ready: false, db: true, redis: true, workers: false, checkedAt: expect.any(String),
+      reason: 'workers-pending', role: 'worker', ready: false, db: true, dbReadOnly: false, redis: true, workers: false, checkedAt: expect.any(String),
       consumerSummary: { required: 1, runnable: 0, unavailable: 1, optionalRunning: 0, optionalDisabled: 0 },
     });
     // The three redaction assertions the API-side test carries: name, timestamp, error code.
@@ -612,6 +612,28 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     expect(degraded.text).not.toContain('RedisSecretError');         // error code
     expect(degraded.text).not.toContain('secret.internal');          // error message / endpoint
     expect(degraded.text).not.toContain('"consumers"');              // the snapshot map itself
+  });
+
+  it('reports a reachable but read-only database as reason db-read-only on /health/ready (#11731)', async () => {
+    mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
+      registry.expect('ro-consumer', true);
+    });
+    const consumer = fakeBullmqWorker();
+    mocks.startRegisteredWorkers.mockImplementation(async (_role, hooks) => {
+      (await liveRegistry()).attach('ro-consumer', consumer as unknown as Worker);
+      hooks.onResult('ro-consumer', true);
+    });
+    // `select 1` and every other read answer; only the read-only probe says on.
+    mocks.dbExecute.mockImplementation(async (...args: unknown[]) =>
+      JSON.stringify(args[0]).includes('transaction_read_only') ? [{ ro: 'on' }] : [],
+    );
+    const worker = await importFreshWorker();
+    const port = await waitForListening(worker);
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    const res = await getJson(port, '/health/ready');
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({ reason: 'db-read-only', ready: false, db: true, dbReadOnly: true });
   });
 
   it('reports migrations-pending over HTTP while parity is pending, then exits non-zero on failure', async () => {
