@@ -1260,12 +1260,12 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	var stagedBytes int64
 	next, head := 0, 0
 	// runEnding is set once a worker hands back an outcome that ends the run
-	// when its file reaches the head (writer still active, source gone,
-	// stopped). Nothing is admitted after that: the run ends at that file
-	// whatever the files before it do, so a new upload could only run
-	// against a fence that will not open or a dead snapshot and be
-	// discarded. The serial loop never started the file after its abort
-	// point either (#8490).
+	// (writer still active, source gone, end-run, stopped). Nothing is
+	// admitted after that: the run ends at that file whatever the files before
+	// it do (or earlier, for an end-run outcome: see runEndedBy), so a new
+	// upload could only run against a fence that will not open, a dead
+	// snapshot or a refusing destination and be discarded. The serial loop
+	// never started the file after its abort point either (#8490).
 	runEnding := false
 	// runEndedBy is the first endsRun outcome handed back (destination refused
 	// every request, storage session gone). Unlike the other run-ending
@@ -1483,14 +1483,18 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if s == nil {
 			// Nothing admitted at the head: admission stops only on cancel.
 			// (It also stops on runEnding, but the slot that set it was
-			// admitted, so head reaches that slot and returns there first.)
+			// admitted, so head reaches that slot, or an earlier head still
+			// uploading ends the run through runEndedBy, and returns there
+			// first.)
 			return abortStopped()
 		}
 		if s.kind == slotUpload && !s.done {
-			if runEndedBy != nil {
+			if runEndedBy != nil && ctx.Err() == nil {
 				// A later file's upload already showed the run cannot go on.
 				// Do not wait for the head: it may be sitting out its
-				// per-file retry backoff against the same destination.
+				// per-file retry backoff against the same destination. A stop
+				// that came in meanwhile wins: it takes the select's stop
+				// exit below.
 				return endRunNow(runEndedBy)
 			}
 			select {
@@ -1522,11 +1526,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// like the serial loop, which checked for a stop before each file
 		// and never between a returned upload and its journal append, it is
 		// accounted (and journaled) first. Every other head, including an
-		// upload that failed, was refused or lost its source, takes the stop
-		// exit, as the serial loop's stop did.
+		// upload that failed, was refused, lost its source or ended the run,
+		// takes the stop exit, as the serial loop's stop did.
 		succeeded := s.kind == slotUpload && s.done &&
 			s.outcome.writerStillActive == nil && s.outcome.sourceGone == nil &&
-			!s.outcome.stopped && s.outcome.err == nil
+			s.outcome.endRun == nil && !s.outcome.stopped && s.outcome.err == nil
 		if err := ctx.Err(); err != nil && !succeeded {
 			return abortStopped()
 		}

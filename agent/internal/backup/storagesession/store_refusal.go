@@ -146,13 +146,21 @@ var objectLevelNotFoundCodes = map[string]struct{}{
 
 // countsAsDestinationRefusal reports whether a store answer is the kind a
 // refusing destination gives: 401, 403, or a 404 that does not name a missing
-// object (NoSuchBucket, or no code at all). 5xx, 429 and transport failures
-// are the transient path and never count.
-func countsAsDestinationRefusal(e *storageStatusError) bool {
+// object. A 404 with a code counts unless the code is object-level
+// (NoSuchBucket counts, NoSuchKey does not). A 404 with no code counts only on
+// a write: a PUT creates its object, so a 404 there is the bucket or the
+// destination missing, while a codeless 404 on a read may be a proxy or a
+// store answering a missing object without an S3 body, and a read-back pass
+// over missing objects must never fail the run. 5xx, 429 and transport
+// failures are the transient path and never count.
+func countsAsDestinationRefusal(e *storageStatusError, write bool) bool {
 	switch e.status {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return true
 	case http.StatusNotFound:
+		if e.code == "" {
+			return write
+		}
 		_, objectLevel := objectLevelNotFoundCodes[e.code]
 		return !objectLevel
 	}
@@ -202,16 +210,16 @@ func (t *refusalTracker) succeeded() {
 	}
 }
 
-// refused records a non-2xx store answer for key and returns the error the
-// caller should return: the destination error once the threshold is (or
-// already was) reached, otherwise statusErr itself.
-func (t *refusalTracker) refused(key string, statusErr *storageStatusError) error {
+// refused records a non-2xx store answer for key (write: it answered a PUT)
+// and returns the error the caller should return: the destination error once
+// the threshold is (or already was) reached, otherwise statusErr itself.
+func (t *refusalTracker) refused(key string, write bool, statusErr *storageStatusError) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.tripped != nil {
 		return t.tripped
 	}
-	if !countsAsDestinationRefusal(statusErr) {
+	if !countsAsDestinationRefusal(statusErr, write) {
 		return statusErr
 	}
 	if t.refusedKeys == nil {

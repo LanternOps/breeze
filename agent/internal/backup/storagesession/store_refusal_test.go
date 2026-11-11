@@ -391,3 +391,105 @@ func TestSessionUnavailableIsTheSharedSentinel(t *testing.T) {
 		t.Fatalf("message changed: %q", ErrSessionUnavailable.Error())
 	}
 }
+
+// A 404 without a code on a READ is ambiguous: a proxy or a store that
+// answers a missing object with a bare 404 is still answering about the
+// object. It neither counts nor resets, so a read-back pass over missing
+// objects never fails the run.
+func TestWriteProviderCodelessReadNotFoundDoesNotTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer func(w http.ResponseWriter)
+	}{
+		{"empty body", func(w http.ResponseWriter) { w.WriteHeader(http.StatusNotFound) }},
+		{"plain text", func(w http.ResponseWriter) { http.Error(w, "Not Found", http.StatusNotFound) }},
+		{"truncated xml", func(w http.ResponseWriter) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("<Error><Code>NoSuch"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			noSleep(t)
+			b := newFakeWriteBackend(t)
+			b.storageHook = func(w http.ResponseWriter, r *http.Request) bool {
+				tc.answer(w)
+				return true
+			}
+			p := newTestWriteProvider(t, b, Options{})
+			for i := 0; i < destinationRefusalThreshold*3; i++ {
+				_, err := p.StoredObjectDigest(t.Context(), objKey(fmt.Sprintf("files/missing-%d", i)))
+				if !errors.Is(err, providers.ErrObjectNotFound) {
+					t.Fatalf("read %d: err = %v, want ErrObjectNotFound", i, err)
+				}
+			}
+		})
+	}
+}
+
+// A 404 without a code on a WRITE counts: a PUT creates the object, so a
+// 404 there is the bucket (or the whole destination) missing.
+func TestWriteProviderCodelessWriteNotFoundTrips(t *testing.T) {
+	noSleep(t)
+	b := newFakeWriteBackend(t)
+	b.storageHook = func(w http.ResponseWriter, r *http.Request) bool {
+		w.WriteHeader(http.StatusNotFound)
+		return true
+	}
+	p := newTestWriteProvider(t, b, Options{})
+	src := writeTempData(t, []byte("abc"))
+	var last error
+	for i := 0; i < destinationRefusalThreshold; i++ {
+		last = p.UploadContext(t.Context(), src, objKey(fmt.Sprintf("files/f%03d", i)))
+	}
+	want := "backup destination refused every request: storage answered status 404"
+	if !errors.Is(last, providers.ErrDestinationRefused) || last.Error() != want {
+		t.Fatalf("last error = %v, want %q", last, want)
+	}
+}
+
+// Every part of a multipart upload is the same object: refused parts count
+// once per object, and a stored part is a success that resets the count.
+func TestWriteProviderMultipartPartsCountOncePerObject(t *testing.T) {
+	noSleep(t)
+	b := newFakeWriteBackend(t)
+	var refuseParts atomic.Bool
+	refuseParts.Store(true)
+	b.storageHook = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path == "/part" && refuseParts.Load() {
+			answerS3Error(w, http.StatusForbidden, "AccessDenied")
+			return true
+		}
+		return false
+	}
+	p := newTestWriteProvider(t, b, Options{})
+	p.singlePutMax = 4 << 10
+	p.partSize = 3 << 10
+	p.minPartSize = 1 << 10
+	big := writeTempData(t, patternBytes(10<<10+17))
+	// One object refused many times over: never the destination.
+	for i := 0; i < destinationRefusalThreshold*2; i++ {
+		err := p.UploadContext(t.Context(), big, objKey("files/big.bin"))
+		if err == nil || errors.Is(err, providers.ErrDestinationRefused) {
+			t.Fatalf("attempt %d: err = %v, want a per-object refusal", i, err)
+		}
+	}
+	// A stored part resets the count: 30 more refused objects (31 with the
+	// one above), a stored multipart object, then 31 more never trip.
+	for i := 0; i < destinationRefusalThreshold-2; i++ {
+		_ = p.UploadContext(t.Context(), big, objKey(fmt.Sprintf("files/big-a%d.bin", i)))
+	}
+	refuseParts.Store(false)
+	if err := p.UploadContext(t.Context(), big, objKey("files/big-ok.bin")); err != nil {
+		t.Fatalf("multipart upload on a working store: %v", err)
+	}
+	refuseParts.Store(true)
+	for i := 0; i < destinationRefusalThreshold-1; i++ {
+		if err := p.UploadContext(t.Context(), big, objKey(fmt.Sprintf("files/big-b%d.bin", i))); errors.Is(err, providers.ErrDestinationRefused) {
+			t.Fatalf("object %d after a stored multipart upload tripped the destination", i)
+		}
+	}
+	// The next distinct refused object is the threshold'th in a row: it trips.
+	if err := p.UploadContext(t.Context(), big, objKey("files/big-last.bin")); !errors.Is(err, providers.ErrDestinationRefused) {
+		t.Fatalf("the %dth distinct refused object: err = %v, want the destination error", destinationRefusalThreshold, err)
+	}
+}

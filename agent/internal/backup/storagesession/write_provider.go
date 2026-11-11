@@ -626,7 +626,7 @@ func (p *WriteProvider) sendPut(ctx context.Context, obj *resolvedWrite, key str
 	case isRedirect(resp.StatusCode):
 		return "", sessionErr("storage answered an upload with a redirect (status %d); redirects are not followed", resp.StatusCode)
 	default:
-		return "", p.refusals.refused(key, newStorageStatusError(resp))
+		return "", p.refusals.refused(key, true, newStorageStatusError(resp))
 	}
 }
 
@@ -1234,7 +1234,7 @@ func (p *WriteProvider) getAttempt(ctx context.Context, key string, sink func(io
 	default:
 		statusErr := newStorageStatusError(resp)
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-		return p.refusals.refused(key, statusErr)
+		return p.refusals.refused(key, false, statusErr)
 	}
 	if err := sink(&progressReader{r: resp.Body, onRead: touch}); err != nil {
 		if ctx.Err() != nil {

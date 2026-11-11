@@ -43,6 +43,99 @@ func (c *attemptCounter) max() (maxAttempts, files int) {
 	return maxAttempts, len(c.attempts)
 }
 
+// A stop that lands while the destination is failing is a stop, not a
+// destination failure: the job is reported stopped (a stop closes the session
+// too, which would otherwise read as "no longer usable").
+func TestStopDuringRunEndingFailureIsAStop(t *testing.T) {
+	defer setUploadConcurrencyForTest(1)()
+	fastUploadRetries(t)
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"session lost", errTestSessionGone},
+		{"destination refused", errTestDestinationRefused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			files := poolFiles(t, 4)
+			provider := newPoolProvider()
+			provider.hold = func(_ context.Context, remotePath string) error {
+				if poolKeyIs(remotePath, "f01") {
+					cancel()
+					return tc.err
+				}
+				return nil
+			}
+			_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil, nil, nil)
+			if !errors.Is(err, errBackupStopped) || endsRun(err) {
+				t.Fatalf("err = %v, want errBackupStopped", err)
+			}
+		})
+	}
+}
+
+// The resume read-back pass treats a stop the same way.
+func TestStopDuringResumeReadBackIsAStop(t *testing.T) {
+	fastUploadRetries(t)
+	src := t.TempDir()
+	a := settledFile(t, src, "a.txt", "alpha")
+	staging := t.TempDir()
+	ea := journaledEntry(t, a, brokeredJournalID, "alpha")
+	backing := continuingIssuer(map[string]string{ea.BackupPath: "alpha"})
+	identity := backupIdentity(backing, []string{src})
+	seedVerifiedJournal(t, staging, identity, brokeredJournalID, brokeredOtherJob, journalEntryLine{SnapshotFile: ea})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := &cancellingDigester{fakeIssuer: backing, cancel: cancel}
+	job, err := brokeredManager(p, src, staging, testJobID).RunBackupContext(ctx, nil)
+	if !errors.Is(err, errBackupStopped) || job == nil || job.Status != jobStatusStopped {
+		t.Fatalf("job=%+v err=%v, want a stopped job", job, err)
+	}
+}
+
+// cancellingDigester stops the job from inside a read-back, then answers
+// with the session error a stop produces.
+type cancellingDigester struct {
+	*fakeIssuer
+	cancel context.CancelFunc
+}
+
+func (d *cancellingDigester) StoredObjectDigest(context.Context, string) (providers.UploadDigest, error) {
+	d.cancel()
+	return providers.UploadDigest{}, fmt.Errorf("%w: closed", providers.ErrStorageSessionUnavailable)
+}
+
+// A run-ending answer to the per-file RETRY ends the run too: the first
+// attempt failed on its own (a 500), the retry met the refusing destination.
+func TestDestinationRefusedOnTheRetryEndsTheRun(t *testing.T) {
+	defer setUploadConcurrencyForTest(1)()
+	fastUploadRetries(t)
+	measured := recordMeasuredForTest(t)
+	files := poolFiles(t, 5)
+	var counter attemptCounter
+	provider := newPoolProvider()
+	provider.hold = func(_ context.Context, remotePath string) error {
+		if counter.note(remotePath) == 1 {
+			return errors.New("storage session: storage answered status 500")
+		}
+		return errTestDestinationRefused
+	}
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, nil)
+	if !errors.Is(err, providers.ErrDestinationRefused) || snapshot != nil {
+		t.Fatalf("snapshot=%v err=%v, want the destination error and no snapshot", snapshot != nil, err)
+	}
+	if attempts, started := counter.max(); attempts != 2 || started != 1 {
+		t.Fatalf("attempts per file = %d over %d files, want 2 attempts of 1 file", attempts, started)
+	}
+	for _, later := range files[2:] {
+		if measured(later.sourcePath) {
+			t.Fatalf("%s was admitted after the retry met the refusing destination", later.snapshotPath)
+		}
+	}
+}
+
 // A destination that refuses every request ends the run with that one error:
 // the failing file is not retried, and no later file is started.
 func TestDestinationRefusedEndsTheRun(t *testing.T) {
