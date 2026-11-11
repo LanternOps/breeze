@@ -35,7 +35,7 @@
  */
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Readable, Transform, pipeline } from 'node:stream';
@@ -123,9 +123,11 @@ type State = {
 
 const SNAPSHOT_HOSTING: ReadonlySet<number> = new Set(HOSTING_ASN_SNAPSHOT);
 
-// Per-user directory, created 0700 and verified before use, so another local
-// user cannot plant a database file for this process to load.
-let cacheDir = join(tmpdir(), `breeze-ip-classify-${process.getuid?.() ?? 'user'}`);
+// The API user's own cache directory, not the shared temp directory: created
+// 0700 and verified before use, so another local user cannot plant a database
+// file for this process to load. If it cannot be created (read-only home), the
+// cache is skipped and the database is downloaded on each process start.
+let cacheDir = join(homedir(), '.cache', 'breeze', 'ip-classify');
 
 async function privateCacheDir(): Promise<string | null> {
   try {
