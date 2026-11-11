@@ -160,7 +160,18 @@ export type StepUpOperation =
   // server-computed ceiling hash the user was shown (GET /wisp/grants/preview),
   // so a grant can never be spent on a different scope or a wider ceiling.
   // TTL 600 s (OPERATION_TTL_SECONDS below).
-  | 'wisp_grant';
+  | 'wisp_grant'
+  // Reinstall reattach (#8318 spec §8): reattaching a reinstalled machine to
+  // an existing device record retires the source row and hands the target's
+  // identity, history and configuration to the new install. Bound by
+  // resourceDigest to { sourceDeviceId, targetDeviceId, targetAgentId,
+  // targetIncarnation, evidenceLevel, restoreDecommissioned }: the exact pair
+  // and the exact install of the target the technician was shown, so a grant
+  // can never be spent on another pair, on a target that re-enrolled since, or
+  // to restore a removed record nobody agreed to restore. Consumed inside the
+  // intent's creating transaction, after every refusal
+  // (services/deviceReattach/requestIntent.ts), so a refusal never burns it.
+  | 'device_reattach';
 
 export interface StepUpGrant {
   id: string;
@@ -305,6 +316,36 @@ export function maintenanceResourceDigest(input: {
  */
 export function forceRebootResourceDigest(input: { deviceId: string }): `sha256:${string}` {
   const canonical = JSON.stringify({ deviceId: canonicalId(input.deviceId) });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+export interface DeviceReattachResource {
+  sourceDeviceId: string;
+  targetDeviceId: string;
+  /** devices.agent_id of the target's current install; not a uuid, hashed as given. */
+  targetAgentId: string;
+  targetIncarnation: number;
+  evidenceLevel: 'hint' | 'tpm_continuity';
+  restoreDecommissioned: boolean;
+}
+
+/**
+ * Canonical digest for a `device_reattach` grant (#8318 spec §8). The two
+ * device ids are uuid-typed at their source and folded (#10119); the agent id
+ * is free text to this module and hashed exactly as given. Keys in fixed
+ * order, booleans and the incarnation normalised, so the mint and the route
+ * hash byte-identical input for the same intent.
+ */
+export function deviceReattachResourceDigest(input: DeviceReattachResource): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'device_reattach',
+    sourceDeviceId: canonicalId(input.sourceDeviceId),
+    targetDeviceId: canonicalId(input.targetDeviceId),
+    targetAgentId: input.targetAgentId,
+    targetIncarnation: Math.trunc(input.targetIncarnation),
+    evidenceLevel: input.evidenceLevel,
+    restoreDecommissioned: input.restoreDecommissioned === true,
+  });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

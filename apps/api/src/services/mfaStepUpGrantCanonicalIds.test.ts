@@ -102,6 +102,11 @@ const FIXTURES = {
     { grantorUserId: up(LOWER.user), partnerId: up(LOWER.partner), orgId: up(LOWER.org), requestedCeilingHash: 'a'.repeat(64) },
   ],
   passkeyRemovalResourceDigest: [LOWER.passkey, up(LOWER.passkey)],
+  // #8318: the agent id is not a uuid and is hashed as given.
+  deviceReattachResourceDigest: [
+    { sourceDeviceId: LOWER.device, targetDeviceId: LOWER.device2, targetAgentId: 'Agent-AbC', targetIncarnation: 2, evidenceLevel: 'hint', restoreDecommissioned: false },
+    { sourceDeviceId: up(LOWER.device), targetDeviceId: up(LOWER.device2), targetAgentId: 'Agent-AbC', targetIncarnation: 2, evidenceLevel: 'hint', restoreDecommissioned: false },
+  ],
 } as Record<string, Fixture>;
 
 type DigestFn = (arg: unknown) => string;
