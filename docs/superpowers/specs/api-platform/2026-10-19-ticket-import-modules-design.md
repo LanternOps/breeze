@@ -867,6 +867,8 @@ The MCP coverage entry is `human_only_migration` (F30).
 | `TICKET_IMPORT_MAX_CLOCK_SKEW_MS` | 300,000 | §5.2 |
 | `TICKET_IMPORT_MAX_ISSUES_PER_RUN` | 50,000 | §5.10 |
 | `TICKET_IMPORT_MAX_TICKET_BYTES` | 256 MiB | §11 |
+| `TICKET_IMPORT_MAX_TICKET_ARTICLES` | 10,000 | §11 (#11296 follow-up) |
+| `TICKET_IMPORT_MAX_TICKET_READ_BYTES` | 256 MiB | §11 (#11296 follow-up) |
 
 ### 5.9 Passes, the delta and what is report-only
 
@@ -1483,6 +1485,12 @@ Step 1's §8 is binding except for these points. A one-line note in that section
   per article. The converted ticket is held in memory, because `importTicket` takes a whole ticket
   (F2 has no comment ceiling). A ticket whose converted content passes
   `TICKET_IMPORT_MAX_TICKET_BYTES` (default 256 MiB) fails with `ticket_too_large` and is listed.
+  The read is bounded too (#11296 follow-up): each answer is capped, and one ticket's load holds
+  at most `TICKET_IMPORT_MAX_TICKET_ARTICLES` articles (default 10,000) and
+  `TICKET_IMPORT_MAX_TICKET_READ_BYTES` of article JSON (default 256 MiB), charged as each article
+  arrives. Past either the load stops at once and the ticket fails with `ticket_too_large`, so a
+  broken server cannot hold memory in the shared API process. Attachment files are not read at
+  load and do not count.
 - **Zammad load.** About 107k requests for the bulk pass. Each one writes the token's
   `last_used_at` (Z11). Concurrency is 2, backoff is honoured, and the bulk runs off-hours.
 - **Partial runs** are safe by construction: every write is resumable (F3), a slice crash

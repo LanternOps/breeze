@@ -1384,6 +1384,8 @@ describe('validateConfig', () => {
     ['TICKET_IMPORT_SLICE_MS', '5min'],
     ['TICKET_IMPORT_LEASE_MS', '-1'],
     ['TICKET_IMPORT_MAX_TICKET_BYTES', '256MiB'],
+    ['TICKET_IMPORT_MAX_TICKET_ARTICLES', '10k'],
+    ['TICKET_IMPORT_MAX_TICKET_READ_BYTES', '256MiB'],
   ])('warns at boot when %s=%j is not a plain positive integer', (key, value) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     withEnv({ ...validEnv, [key]: value }, () => {

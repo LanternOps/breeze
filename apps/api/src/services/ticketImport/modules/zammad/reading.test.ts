@@ -1,9 +1,22 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { classifySourceError } from '../../runOutcomes';
 import { SourceAuthError, SourceShapeError, SourceUnavailableError } from '../../sourceFetch';
 import { clearZammadDirectoryCache, hasZammadDirectory, takeZammadInvalidRows, ZAMMAD_DIRECTORY_TTL_MS, zammadPeople } from './directory';
 import { zammadTicketImportModule } from './index';
 import { FakeZammad, FAKE_ZAMMAD_BASE_URL, loadZammadFixtures, zammadTestHandle } from './fakeZammad.fixtures';
-import { __zammadReadingTestHooks, boundedInOrder, forgetFileLocations, loadZammad, rememberedFileLocation, scanZammad, zammadCursorAfterRow, zammadRow, type ZammadCursor } from './reading';
+import {
+  __zammadReadingTestHooks,
+  boundedInOrder,
+  forgetFileLocations,
+  loadZammad,
+  rememberedFileLocation,
+  scanZammad,
+  ticketArticleBudget,
+  zammadCursorAfterRow,
+  zammadRow,
+  ZammadTicketTooLargeError,
+  type ZammadCursor,
+} from './reading';
 import { ZammadShapeError, type ZammadLoadedData } from './shapes';
 
 /**
@@ -14,6 +27,8 @@ import { ZammadShapeError, type ZammadLoadedData } from './shapes';
 afterEach(() => {
   clearZammadDirectoryCache();
   forgetFileLocations();
+  vi.unstubAllEnvs();
+  __zammadReadingTestHooks.setBigTicketArticles(null);
 });
 
 function ticketRows(count: number, from = 1) {
@@ -283,6 +298,68 @@ describe('load (§6.2: by_ticket, tags, the survivor of a merge, people)', () =>
     const { data } = await load(fake, 113);
     expect(data.articles.map((a) => a.id)).toEqual([1025, 1026]);
     expect(fake.requestedPaths()).toContain('/api/v1/tickets/113?expand=true');
+  });
+
+  describe('the per-ticket budget (#11296 follow-up: articles and article bytes, charged as they arrive)', () => {
+    const articleReads = (fake: FakeZammad) => fake.requestedPaths().filter((p) => /^\/api\/v1\/ticket_articles\/\d+$/.test(p));
+
+    it('defaults that real tickets pass: 10,000 articles and 256 MiB of article JSON', () => {
+      expect(ticketArticleBudget()).toEqual({ maxArticles: 10_000, maxBytes: 256 * 1024 * 1024, articles: 0, bytes: 0 });
+    });
+
+    it('a ticket listing more articles than the budget fails ticket_too_large before any article is read', async () => {
+      vi.stubEnv('TICKET_IMPORT_MAX_TICKET_ARTICLES', '5');
+      const fake = new FakeZammad();
+      // 114 has six articles in all, System ones included.
+      const error = await load(fake, 114).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ZammadTicketTooLargeError);
+      expect(error).toMatchObject({ limit: 'articles' });
+      // The runner fails just this ticket as ticket_too_large (ticketSourceTrouble).
+      expect(classifySourceError(error)).toEqual({ kind: 'too_large' });
+      expect(articleReads(fake)).toEqual([]);
+      expect(fake.requestedPaths()).not.toContain('/api/v1/ticket_articles/by_ticket/114');
+      // At the limit it loads.
+      vi.stubEnv('TICKET_IMPORT_MAX_TICKET_ARTICLES', '6');
+      expect((await load(fake, 114)).data.articles).toHaveLength(6);
+    });
+
+    it('read article by article, the load stops at the article that passes the byte budget', async () => {
+      vi.stubEnv('TICKET_IMPORT_MAX_TICKET_READ_BYTES', String(1024 * 1024));
+      const fake = new FakeZammad();
+      const template = fake.data.byTicket.get(114)![0]!;
+      // 40 articles of 400 KiB each: 16 MiB in all, the third passes 1 MiB.
+      const body = 'x'.repeat(400 * 1024);
+      fake.data.byTicket.set(114, Array.from({ length: 40 }, (_, i) => ({ ...template, id: 3000 + i, body, created_at: `2026-07-05T08:${String(i).padStart(2, '0')}:00.000Z` })));
+      __zammadReadingTestHooks.setBigTicketArticles(5);
+      const error = await load(fake, 114).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ZammadTicketTooLargeError);
+      expect(error).toMatchObject({ limit: 'bytes' });
+      expect(classifySourceError(error)).toEqual({ kind: 'too_large' });
+      // Two in flight at a time: no read starts once the third article passed the budget (was: all 40).
+      expect(articleReads(fake).length).toBeLessThanOrEqual(4);
+    });
+
+    it('a by_ticket answer is charged too: more articles than the budget fails the ticket', async () => {
+      vi.stubEnv('TICKET_IMPORT_MAX_TICKET_ARTICLES', '2');
+      const fake = new FakeZammad();
+      // An expand answer without article_ids: only by_ticket reads the ticket (three articles).
+      fake.data.ticketsExpand.set(101, { ...fake.data.tickets.find((t) => t.id === 101)! });
+      const error = await load(fake, 101).catch((e: unknown) => e);
+      expect(error).toMatchObject({ name: 'ZammadTicketTooLargeError', limit: 'articles' });
+      expect(classifySourceError(error)).toEqual({ kind: 'too_large' });
+      // Not mistaken for an over-cap by_ticket answer: no fallback to one article at a time.
+      expect(articleReads(fake)).toEqual([]);
+    });
+
+    it('a by_ticket answer over the byte budget fails the ticket rather than falling back', async () => {
+      vi.stubEnv('TICKET_IMPORT_MAX_TICKET_READ_BYTES', String(1024 * 1024));
+      const fake = new FakeZammad();
+      const big = 'x'.repeat(700 * 1024);
+      fake.data.byTicket.set(113, fake.data.byTicket.get(113)!.map((a) => ({ ...a, body: big })));
+      const error = await load(fake, 113).catch((e: unknown) => e);
+      expect(error).toMatchObject({ name: 'ZammadTicketTooLargeError', limit: 'bytes' });
+      expect(articleReads(fake)).toEqual([]);
+    });
   });
 
   it('remembers where each file lives, for the download right after the load', async () => {

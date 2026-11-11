@@ -693,6 +693,14 @@ const envObjectSchema = z
       .string()
       .optional()
       .describe('Converted content of one imported ticket in bytes. Default 268435456 (256 MiB), between 1 MiB and 2 GiB.'),
+    TICKET_IMPORT_MAX_TICKET_ARTICLES: z
+      .string()
+      .optional()
+      .describe('Articles one imported ticket may have when read from the source. Default 10000, between 1 and 1000000.'),
+    TICKET_IMPORT_MAX_TICKET_READ_BYTES: z
+      .string()
+      .optional()
+      .describe('Article bytes one imported ticket may hold while it is read from the source. Default 268435456 (256 MiB), between 1 MiB and 2 GiB.'),
     MFA_RECOVERY_CODE_PEPPER: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_EMAIL: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
