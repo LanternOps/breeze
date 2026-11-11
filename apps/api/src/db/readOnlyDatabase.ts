@@ -28,13 +28,23 @@ export const TRANSACTION_READ_ONLY_PROBE_SQL = "select current_setting('transact
 
 /**
  * Interpret the probe's result. Drizzle's postgres-js `execute` returns the
- * row array itself; other drivers wrap it in `{ rows }`. Anything unexpected
- * reads as "not read-only" rather than inventing a degraded state.
+ * row array itself; other drivers wrap it in `{ rows }`. The query always
+ * yields one row with a text `ro`, so any other shape throws: the readiness
+ * evaluator then reports a probe failure instead of quietly reading it as
+ * "writable".
  */
 export function isReadOnlyProbeResult(result: unknown): boolean {
   const rows = Array.isArray(result)
     ? result
     : (result as { rows?: unknown } | null | undefined)?.rows;
-  if (!Array.isArray(rows)) return false;
-  return (rows[0] as { ro?: unknown } | undefined)?.ro === 'on';
+  const ro = Array.isArray(rows) ? (rows[0] as { ro?: unknown } | undefined)?.ro : undefined;
+  if (typeof ro !== 'string') {
+    throw new Error('transaction_read_only probe returned an unexpected result shape');
+  }
+  return ro === 'on';
+}
+
+/** True for Postgres's "cannot execute <command> in a read-only transaction". */
+export function isReadOnlySqlError(error: unknown): boolean {
+  return (error as { code?: unknown } | null | undefined)?.code === '25006';
 }

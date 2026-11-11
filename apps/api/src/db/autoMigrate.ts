@@ -953,10 +953,13 @@ async function runCoreMigrations(
   }
 
   // ── 6a. Read-only: stop here if anything is pending; otherwise skip every
-  //        write below. ensureAppRole is skipped too: it re-applies the role
-  //        password and grants (ALTER ROLE / GRANT / REVOKE, all rejected on a
-  //        read-only database) and they are still in place from the last
-  //        writable boot, because nothing can change them while writes fail.
+  //        write below. ensureAppRole is skipped too: ALTER ROLE / GRANT /
+  //        REVOKE are all rejected on a read-only database. The role, its
+  //        password and its grants stay as the last writable boot left them,
+  //        so a BREEZE_APP_DB_PASSWORD rotated since then is NOT applied (the
+  //        request pool then fails to authenticate, and the warning below is
+  //        the explanation). The request-role check in databaseStartup still
+  //        runs and still refuses an unsafe role.
   if (readOnly) {
     const pending = migrationPlan.filter((m) => !applied.has(m.ledgerName)).map((m) => m.ledgerName);
     if (pending.length > 0) {
@@ -968,7 +971,9 @@ async function runCoreMigrations(
     }
     console.warn(
       '[auto-migrate] All migrations already applied; database is read-only, so the ' +
-        'breeze_app role/grant refresh is skipped this boot (it re-runs on the next writable boot).',
+        'breeze_app role refresh (password from BREEZE_APP_DB_PASSWORD/POSTGRES_PASSWORD, grants) ' +
+        'is skipped this boot. A password rotated since the last writable boot is not applied ' +
+        'until the database is writable again.',
     );
     await assertSeededReadOnly(client);
     return;

@@ -82,8 +82,12 @@ export interface ReadinessEvaluatorOptions {
   /**
    * Resolves true when the database is reachable but read-only. Runs only
    * after `checkDb` succeeded. Optional: without it, `dbReadOnly` is false.
-   * A failure is reported through `onProbeFailure` and counts as "not known to
-   * be read-only", since `checkDb` already showed the database answering.
+   *
+   * Policy for a failed or timed-out probe: reported through `onProbeFailure`
+   * (log + Sentry) and treated as not read-only, so admission stays as it was
+   * before this probe existed. A second query hiccup must not drop a database
+   * that just answered `checkDb` out of admission; a database that really is
+   * read-only answers this probe as reliably as `select 1`.
    */
   checkDbReadOnly?: () => Promise<boolean>;
   /** Live Redis probe. */
@@ -186,6 +190,8 @@ export function createReadinessEvaluator(
       if (shuttingDown) reason = 'shutting-down';
       else if (!db) reason = 'db';
       else if (dbReadOnly) reason = 'db-read-only';
+      // `redis`, not `redisReady`: with Redis optional, a Redis outage still
+      // stops every consumer, so it is the root cause of `workers: false`.
       else if (!redis) reason = 'redis';
       else reason = 'workers-pending';
     }

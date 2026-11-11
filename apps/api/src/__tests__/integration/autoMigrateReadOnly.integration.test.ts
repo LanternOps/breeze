@@ -49,13 +49,15 @@ async function ledgerRows(): Promise<Array<{ filename: string; checksum: string 
  * read-only. `omitLast` leaves the newest migration out of the ledger, so the
  * image has exactly one pending migration.
  */
-async function seedMigratedDatabase(options: { omitLast?: boolean; versionRow?: string } = {}): Promise<string[]> {
+async function seedMigratedDatabase(
+  options: { omitLast?: boolean; versionRow?: string; withVersionTable?: boolean; noUsers?: boolean } = {},
+): Promise<string[]> {
   const fixture = postgres(scratchUrl, { max: 1, onnotice: () => {} });
   try {
     const rows = await ledgerRows();
     const recorded = options.omitLast ? rows.slice(0, -1) : rows;
     await fixture.unsafe(`CREATE TABLE users (id uuid PRIMARY KEY)`);
-    await fixture`INSERT INTO users (id) VALUES (${crypto.randomUUID()})`;
+    if (!options.noUsers) await fixture`INSERT INTO users (id) VALUES (${crypto.randomUUID()})`;
     await fixture.unsafe(`
       CREATE TABLE ${MIGRATION_TABLE} (
         filename TEXT PRIMARY KEY,
@@ -64,14 +66,16 @@ async function seedMigratedDatabase(options: { omitLast?: boolean; versionRow?: 
       )
     `);
     await fixture`INSERT INTO ${fixture(MIGRATION_TABLE)} ${fixture(recorded, 'filename', 'checksum')}`;
-    if (options.versionRow) {
+    if (options.versionRow || options.withVersionTable) {
       await fixture.unsafe(`
         CREATE TABLE ${BREEZE_VERSION_HISTORY_TABLE} (
           version TEXT PRIMARY KEY,
           first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `);
-      await fixture`INSERT INTO ${fixture(BREEZE_VERSION_HISTORY_TABLE)} (version) VALUES (${options.versionRow})`;
+      if (options.versionRow) {
+        await fixture`INSERT INTO ${fixture(BREEZE_VERSION_HISTORY_TABLE)} (version) VALUES (${options.versionRow})`;
+      }
     }
     return rows.slice(recorded.length).map((r) => r.filename);
   } finally {
@@ -111,7 +115,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  process.env.DATABASE_URL = savedDatabaseUrl;
+  if (savedDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = savedDatabaseUrl;
   await admin.unsafe(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
   await admin.end({ timeout: 5 });
 });
@@ -152,6 +157,56 @@ describe('autoMigrate against a read-only database (#11731)', () => {
 
     expect(error).toBeInstanceOf(ReadOnlyDatabaseError);
     expect((error as Error).message).toMatch(/read-only/);
+    expect((error as Error).message).toContain('`breeze_migrations` ledger');
+  });
+
+  it('refuses to baseline a fresh database whose ledger table exists but has no schema', async () => {
+    const fixture = postgres(scratchUrl, { max: 1, onnotice: () => {} });
+    try {
+      await fixture.unsafe(
+        `CREATE TABLE ${MIGRATION_TABLE} (filename TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+      );
+    } finally {
+      await fixture.end({ timeout: 5 });
+    }
+    await makeReadOnly();
+
+    const error = await autoMigrate().then(() => null, (err: unknown) => err);
+
+    expect(error).toBeInstanceOf(ReadOnlyDatabaseError);
+    expect((error as Error).message).toContain('apply the baseline schema');
+  });
+
+  it('refuses to start an unseeded database rather than serving one nobody can log in to', async () => {
+    await seedMigratedDatabase({ noUsers: true });
+    await makeReadOnly();
+
+    const error = await autoMigrate().then(() => null, (err: unknown) => err);
+
+    expect(error).toBeInstanceOf(ReadOnlyDatabaseError);
+    expect((error as Error).message).toContain('initial seed');
+  });
+
+  it('keeps booting when a new version cannot be recorded, and says the database is read-only', async () => {
+    await seedMigratedDatabase({ withVersionTable: true });
+    await makeReadOnly();
+    const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    await expect(
+      initializeDatabaseForStartup({
+        autoMigrateEnabled: true,
+        production: true,
+        upgradeChecks: true,
+        env: { ...process.env, DATABASE_URL: scratchUrl, APP_VERSION: '0.128.0' },
+        logger,
+        readRequestRole: async () => ({ currentUser: 'breeze_app', isSuperuser: false, bypassesRls: false }),
+      }),
+    ).resolves.toBeUndefined();
+
+    const warnings = logger.warn.mock.calls.map((c) => String(c[0]));
+    const recordWarnings = warnings.filter((w) => w.includes('0.128.0') && /not recorded/.test(w));
+    expect(recordWarnings).toHaveLength(1);
+    expect(recordWarnings[0]).toMatch(/read-only/);
   });
 
   it('runs the whole database startup sequence (preflight, migrate, version record) without throwing', async () => {

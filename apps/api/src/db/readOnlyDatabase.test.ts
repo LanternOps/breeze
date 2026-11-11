@@ -14,9 +14,9 @@ describe('isReadOnlyProbeResult (#11731)', () => {
   });
 
   it.each([undefined, null, [], {}, { rows: null }, [{}], [{ ro: true }], 'on'])(
-    'treats an unexpected shape (%j) as not read-only',
+    'throws on an unexpected shape (%j) so the probe failure is reported, never read as a healthy answer',
     (value) => {
-      expect(isReadOnlyProbeResult(value)).toBe(false);
+      expect(() => isReadOnlyProbeResult(value)).toThrow(/transaction_read_only probe/);
     },
   );
 });

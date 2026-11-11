@@ -18,6 +18,7 @@
  * and out of scope here — this suite never touches a real database or Redis.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
@@ -56,7 +57,9 @@ const mocks = vi.hoisted(() => {
     startWedgedBackendMonitor: vi.fn<() => number | null>(() => 60_000),
     stopWedgedBackendMonitor: vi.fn(),
     updateRuntimeMetrics: vi.fn(),
-    dbExecute: vi.fn(async () => [] as unknown[]),
+    // One row with `ro: 'off'`: what every query here needs, including the
+    // read-only readiness probe (#11731), which rejects any other shape.
+    dbExecute: vi.fn(async () => [{ ro: 'off' }] as unknown[]),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     closeDb: vi.fn(async () => {}),
     redisPing: vi.fn(async () => 'PONG'),
@@ -321,7 +324,7 @@ beforeEach(() => {
   // Baseline "everything healthy" defaults; individual tests override.
   mocks.breezeRole.mockReturnValue('worker');
   mocks.validateConfig.mockReturnValue({ NODE_ENV: 'test' });
-  mocks.dbExecute.mockResolvedValue([]);
+  mocks.dbExecute.mockResolvedValue([{ ro: 'off' }]);
   mocks.withSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
   mocks.closeDb.mockResolvedValue(undefined);
   mocks.redisPing.mockResolvedValue('PONG');
@@ -625,7 +628,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     });
     // `select 1` and every other read answer; only the read-only probe says on.
     mocks.dbExecute.mockImplementation(async (...args: unknown[]) =>
-      JSON.stringify(args[0]).includes('transaction_read_only') ? [{ ro: 'on' }] : [],
+      JSON.stringify(args[0]).includes(TRANSACTION_READ_ONLY_PROBE_SQL) ? [{ ro: 'on' }] : [{ ro: 'off' }],
     );
     const worker = await importFreshWorker();
     const port = await waitForListening(worker);
