@@ -128,15 +128,17 @@ func TestRebindConfirmedSetNeverUndoesANewerEnrollment(t *testing.T) {
 	}
 }
 
-// waitRestartReleased waits for the restart goroutine to give the gate back.
+// waitRestartReleased waits for the restart goroutine to finish and checks
+// it gave the gate back. It waits for the goroutine, not for the gate: the
+// goroutine releases the gate first and logs why after, so a caller that
+// checks the log must not start on the release alone.
 func (r *rebindHarness) waitRestartReleased() {
 	r.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for r.h.identitySync.restartRequested.Load() {
-		if time.Now().After(deadline) {
-			r.t.Fatal("the restart gate was never released")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !r.waitForFlowGoroutines() {
+		r.t.Fatal("the restart goroutine never finished")
+	}
+	if r.h.identitySync.restartRequested.Load() {
+		r.t.Fatal("the restart gate was never released")
 	}
 }
 
