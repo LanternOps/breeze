@@ -239,7 +239,7 @@ describe('PortalAccessRequestsList', () => {
     it('an approve that races a domain loss (409) shows the reason and refreshes the row', async () => {
       const onChanged = vi.fn();
       mockApi([[req('r1')], [req('r1', { domainVerified: false })]], () => res({
-        error: "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
+        error: 'server-side wording that the UI must not show verbatim',
         code: 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED',
       }, 409));
       render(<PortalAccessRequestsList orgId={ORG} onChanged={onChanged} />);

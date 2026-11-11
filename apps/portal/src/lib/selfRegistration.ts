@@ -27,8 +27,18 @@ export type ConfirmAccessResult =
   | { status: 'invalid_link' }
   /** 404: this server does not run self-registration. */
   | { status: 'not_available' }
-  /** 429 / 503 / network / an unexpected body. `message` is the server's copy when it sent one. */
-  | { status: 'error'; message: string | null };
+  /** Retryable (the token was NOT consumed): 429, the pre-consume 503, a network failure. */
+  | { status: 'error'; message: string | null }
+  /**
+   * Terminal: the server consumed the token but could not finish (a 503 marked
+   * SELF_REGISTER_LINK_SPENT), or answered a 200 this page cannot act on. A
+   * retry could only 400, so the page offers none. `message` is the server's
+   * copy when it sent one.
+   */
+  | { status: 'spent'; message: string | null };
+
+/** Must match SELF_REGISTER_LINK_SPENT in apps/api/src/routes/portal/selfRegistration.ts. */
+const LINK_SPENT_CODE = 'SELF_REGISTER_LINK_SPENT';
 
 /** The fallback copy when the server's 200 body has no message (it always sends one). */
 export const REQUEST_ACCESS_SENT_FALLBACK = "If this address can request access, we've emailed you.";
@@ -82,8 +92,11 @@ export async function confirmPortalAccessRequest(token: string): Promise<Confirm
   if (response.status === 400) return { status: 'invalid_link' };
   if (response.status === 404) return { status: 'not_available' };
   if (!response.ok) {
-    return { status: 'error', message: typeof data?.error === 'string' && data.error ? data.error : null };
+    const message = typeof data?.error === 'string' && data.error ? data.error : null;
+    return data?.code === LINK_SPENT_CODE ? { status: 'spent', message } : { status: 'error', message };
   }
+  // Any 200 means the server consumed the token: a body we cannot act on is
+  // terminal, never a retry.
   switch (data?.outcome) {
     case 'request_sent':
     case 'request_unavailable':
@@ -95,8 +108,8 @@ export async function confirmPortalAccessRequest(token: string): Promise<Confirm
       if (typeof data.next === 'string' && ACCEPT_INVITE_NEXT.test(data.next)) {
         return { status: 'account_created', next: data.next };
       }
-      return { status: 'error', message: null };
+      return { status: 'spent', message: null };
     default:
-      return { status: 'error', message: null };
+      return { status: 'spent', message: null };
   }
 }

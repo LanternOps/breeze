@@ -79,6 +79,15 @@ describe('RequestAccessForm', () => {
     expect((await screen.findByRole('alert')).textContent).toMatch(/Check your name and email/);
     cleanup();
 
+    for (const status of [500, 503]) {
+      reply = { status, body: { error: 'Service temporarily unavailable' } };
+      render(<RequestAccessForm />);
+      await fillAndSubmit('Pat', 'pat@contoso.example.com');
+      expect((await screen.findByRole('alert')).textContent).toMatch(/couldn't send your request/);
+      expect(screen.queryByTestId('request-access-sent')).toBeNull();
+      cleanup();
+    }
+
     reply = 'throw';
     render(<RequestAccessForm />);
     await fillAndSubmit('Pat', 'pat@contoso.example.com');

@@ -97,18 +97,58 @@ describe('VerifyAccessRequest', () => {
     render(<VerifyAccessRequest />);
     await confirm();
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/accept-invite?token=invite-abc', { replace: true }));
+    expect(screen.getByTestId('request-access-created')).toBeTruthy();
   });
 
-  it('account_created with a next that is not the accept-invite page navigates nowhere', async () => {
-    for (const next of ['https://evil.example.com/accept-invite?token=x', '//evil.example.com/x', '/dashboard', 42]) {
+  it('account_created with a next that is not the accept-invite page navigates nowhere, and offers no retry', async () => {
+    // The server consumed the token on any 200, so a retry could only 400.
+    for (const next of [
+      'https://evil.example.com/accept-invite?token=x', '//evil.example.com/x', '/dashboard', 42,
+      '/accept-invite?token=', '/accept-invite?token=x#y', '/accept-invite?token=a/b', '/portal/accept-invite?token=x',
+    ]) {
       cleanup();
       openLink();
       reply = { status: 200, body: { outcome: 'account_created', next } };
       render(<VerifyAccessRequest />);
       await confirm();
-      expect(await screen.findByTestId('request-access-error')).toBeTruthy();
+      expect(await screen.findByTestId('request-access-spent'), String(next)).toBeTruthy();
+      expect(screen.queryByTestId('request-access-confirm'), String(next)).toBeNull();
     }
     expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('an unrecognised 200 body is a spent link, not a retry', async () => {
+    reply = { status: 200, body: { outcome: 'something_new' } };
+    render(<VerifyAccessRequest />);
+    await confirm();
+    expect(await screen.findByTestId('request-access-spent')).toBeTruthy();
+    expect(screen.queryByTestId('request-access-confirm')).toBeNull();
+  });
+
+  it('a 503 sent after the link was consumed shows the server copy and drops Confirm', async () => {
+    for (const error of [
+      "Your account was created, but we couldn't finish setting it up. Ask your IT provider to resend your invitation.",
+      'Something went wrong. Request access again in a few minutes.',
+    ]) {
+      cleanup();
+      openLink();
+      reply = { status: 503, body: { error, code: 'SELF_REGISTER_LINK_SPENT' } };
+      render(<VerifyAccessRequest />);
+      await confirm();
+      expect((await screen.findByTestId('request-access-spent')).textContent).toContain(error);
+      expect(screen.queryByTestId('request-access-confirm')).toBeNull();
+    }
+  });
+
+  it('a retry after a retryable failure posts the same token again and can succeed', async () => {
+    reply = { status: 503, body: { error: 'Service temporarily unavailable' } };
+    render(<VerifyAccessRequest />);
+    await confirm();
+    await screen.findByTestId('request-access-error');
+    reply = { status: 200, body: { outcome: 'request_sent' } };
+    fireEvent.click(screen.getByTestId('request-access-confirm'));
+    expect(await screen.findByTestId('request-access-request-sent')).toBeTruthy();
+    expect(calls.map((c) => c.body)).toEqual([{ token: TOKEN }, { token: TOKEN }]);
   });
 
   it('a 400 says the link is invalid or expired and links back to request access', async () => {
@@ -142,13 +182,6 @@ describe('VerifyAccessRequest', () => {
       expect(await screen.findByTestId('request-access-error')).toBeTruthy();
       expect(screen.getByTestId('request-access-confirm')).toBeTruthy();
     }
-    // The server's own 503 copy is shown (e.g. the D10 "account created" residual).
-    cleanup();
-    openLink();
-    reply = { status: 503, body: { error: "Your account was created, but we couldn't finish setting it up. Ask your IT provider to resend your invitation." } };
-    render(<VerifyAccessRequest />);
-    await confirm();
-    expect((await screen.findByTestId('request-access-error')).textContent).toMatch(/resend your invitation/);
   });
 
   it('a 404 says requesting access is not available here', async () => {

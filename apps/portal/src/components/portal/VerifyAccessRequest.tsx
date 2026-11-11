@@ -27,9 +27,12 @@ type Phase =
   | { kind: 'invalid' }
   | { kind: 'not_available' }
   /** Retryable: the button stays, so the requester can try again without reopening the email. */
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  /** Terminal: the link was consumed; no retry (it could only 400 and would hide this message). */
+  | { kind: 'spent'; message: string };
 
 const GENERIC_ERROR = 'Something went wrong. Try again in a few minutes.';
+const SPENT_ERROR = 'Something went wrong. Request access again in a few minutes.';
 
 function readFragmentToken(): string | null {
   const hash = window.location.hash.replace(/^#/, '');
@@ -71,6 +74,9 @@ export function VerifyAccessRequest() {
         return;
       case 'error':
         setPhase({ kind: 'error', message: result.message ?? GENERIC_ERROR });
+        return;
+      case 'spent':
+        setPhase({ kind: 'spent', message: result.message ?? SPENT_ERROR });
         return;
       default:
         setPhase({ kind: result.status });
@@ -122,6 +128,15 @@ export function VerifyAccessRequest() {
       {phase.kind === 'account_created' && (
         <div role="status" data-testid="request-access-created" className="text-center text-sm text-foreground">
           Your account is ready. Taking you to set it up…
+        </div>
+      )}
+
+      {phase.kind === 'spent' && (
+        <div role="alert" data-testid="request-access-spent" className="space-y-2 text-center text-sm text-foreground">
+          <p>{phase.message}</p>
+          <a href={withBase('/login')} className={LINK}>
+            Back to sign in
+          </a>
         </div>
       )}
 
