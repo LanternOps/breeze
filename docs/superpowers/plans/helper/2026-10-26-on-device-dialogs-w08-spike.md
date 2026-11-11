@@ -9,25 +9,47 @@
 
 **No-go for 8B–8D as planned.** W07 stays the shipped behaviour (spec §3.4, last line).
 
+The No-go rests mainly on the installer cases. Those are a property of dismissing UAC first, and the conclusion is inferred from documented Windows behaviour. The other basis is that two fields are not demonstrated anywhere in the capture path: the working directory and the requester's identity.
+
+Result per field, with the same result expected in all four cells [inferred, §3]:
+
+| Field | Result |
+|---|---|
+| 1. Arguments | Partial: captured, but with parser losses |
+| 2. Working directory | Fail: no source found |
+| 3. Requester SID | Proxy only |
+| 4. Logon id | Proxy only, and not read today |
+| 5. Environment | Not captured; possibly not needed |
+
 The recommendation rests on three facts:
 
-1. **The working directory is not captured in any of the four cells, and no reliable source exists.** Event 15028 carries the target path (twice) and the command line, and nothing else readable [verified, fixture]. No documented API returns the working directory of a process that does not exist yet. The elevated process is created by the Application Information service only *after* consent [verified, MS UAC architecture]. A relaunch therefore cannot be faithful for any command whose arguments are relative paths. A routine MSP example is `setup.exe /configure configuration.xml` run from the folder that holds both files.
-2. **The requester's SID and logon session are not captured. The agent infers them from whichever session owns `consent.exe`.** The 15028 header's session information belongs to the session-0 AppInfo writer [verified, repo lab doc]. The agent attributes the request to the newest `consent.exe` and looks up that session's user. When that fails it falls back to the console user [verified, code]. That gives the *session owner*, not the requesting process. The two differ for `runas /user:` inside a session, and the console fallback can name the wrong user outright on RDS or with fast user switching.
-3. **The installer cases cannot be relaunched faithfully, whatever is captured.** A bootstrapper that elevates a child and waits gets `ERROR_CANCELLED` from `ShellExecuteEx` when Breeze dismisses UAC [verified, MS doc: "the user canceled the request"]. It then unwinds, often deleting the child it extracted [inferred]. An MSI install asks the Application Information service for *authorization*; there is no elevated child process to relaunch [verified, MS "Using Windows Installer with UAC"]. A relaunch as `~breeze_elev` also moves any per-user install into the wrong profile [inferred]. This is a property of *dismissing first*, not of capture.
+1. **No source for the working directory was found.** The one captured 15028 payload carries the target path (twice), the command line, and an empty, unidentified fourth string [verified, fixture]. No documented API returns the working directory of a process that does not exist yet. The elevated process is created by the Application Information service only *after* consent [verified, MS UAC architecture]. A relaunch therefore cannot be faithful for any command whose arguments are relative paths. A routine MSP example is `setup.exe /configure configuration.xml` run from the folder that holds both files. If L4 (§6) shows the fourth slot is the working directory, this fact falls.
+2. **The requester's SID and logon session are not captured. The agent infers them from whichever session owns `consent.exe`.** The agent attributes the request to the newest `consent.exe` and looks up that session's user. When that fails it falls back to the console user [verified, code]. That gives the *session owner*, not the requesting process. The two differ for `runas /user:` inside a session [inferred]. The console fallback names the wrong user whenever the requester is not the console user, for example on RDS or with fast user switching [verified: fallback path; inferred: frequency].
+3. **The installer cases are not expected to relaunch faithfully, whatever is captured.**
+   - A bootstrapper that elevates a child and waits gets `ERROR_CANCELLED` from `ShellExecuteEx` when Breeze dismisses UAC [verified, MS doc: "the user canceled the request"]. It then unwinds, often deleting the child it extracted [inferred].
+   - An MSI install asks the Application Information service for *authorization* [verified, MS "Using Windows Installer with UAC"], so there is no elevated child process to relaunch [inferred]. Re-running `msiexec` restarts the install and loses the choices made in its UI. As `~breeze_elev` it also moves any per-user install into the wrong profile [inferred]. At best that is "partly" relaunchable (§5).
+   - This is a property of *dismissing first*, not of capture.
 
-**Narrower W08?** Slicing by prompt kind or `PromptOnSecureDesktop` gives no Go. Every failing field fails the same way in all four cells, because capture happens in the SYSTEM agent and does not depend on the desktop or on the prompt UI (§3). The only narrower cut that could become a Go is a different one: **dismiss first only for a top-level launch whose command line is self-contained.** That means the requester is the shell, nothing waits on the child, and no argument depends on the working directory. It needs two facts the lab may or may not supply: whether the 15028 header carries the requesting PID, and whether its fourth string slot is the working directory (§6 L1, L4). Even with both, installers, the main PAM workload, stay on the W07 path. That is a scope cut for Todd to weigh, not a recommendation from this spike.
+**Narrower W08?** Slicing by prompt kind or `PromptOnSecureDesktop` is not expected to yield a Go. Capture happens in the SYSTEM agent and does not depend on the desktop or on the prompt UI, so the failing fields should fail the same way in all four cells [inferred, §3; L1 checks it].
+
+The only narrower cut that could become a Go is a different one: **dismiss first only for a top-level launch whose command line is self-contained.** That means the requester is the shell, nothing waits on the child, and no argument depends on the working directory. It needs two facts the lab may or may not supply:
+
+- the requesting PID or SID (§6 L1 or L10);
+- whether the fourth string slot is the working directory (§6 L4).
+
+Even with both, installers, which we expect to be most PAM requests [inferred], stay on the W07 path. That is a scope cut for Todd to weigh, not a recommendation from this spike.
 
 ## 2. What the capture path actually has
 
 **Source.** ETW real-time session `Breeze-LUA-Discovery` on Microsoft-Windows-LUA `{93c05d69-…}` (`etwlua/etwlua_windows.go:22,56`). Only event **15028** is consumed (`:35`, `:93`). The provider is enabled with no extended-data properties, so no SID or session id is requested in the event header (`:61`) [verified].
 
-**Payload.** `decodeConsentRequest` (`etwlua_windows.go:161-198`) scans UserData for UTF-16 runs (`consent_payload.go:18-28`). It takes the first drive-rooted string as the target path and the first string that starts with `"` as the command line [verified]. The only real fixture is `consent_payload_test.go:14`, Windows 11 build 26200, `breeze-agent.exe version`. I decoded it by hand:
+**Payload.** `decodeConsentRequest` (`etwlua_windows.go:161-198`) scans UserData for UTF-16 runs (`consent_payload.go:18-28`). It takes the first drive-rooted string as the target path and the first string that starts with `"` as the command line [verified]. The only real fixture is `consent_payload_test.go:14`, Windows 11 build 26200, `breeze-agent.exe version`. Decoded with `bytes.fromhex` and read as little-endian 64-bit fields; the review re-ran the decode independently:
 
 | Offset | Value | Reading |
 |---|---|---|
 | `0x00` | 482 | total size [verified] |
 | `0x38` | `M2ComW6KO020T+rMtxPDHQ.0` (ASCII) | correlation-vector-shaped string [inferred] |
-| `0xC0`–`0xC8`, `0xF0` | 64-bit integers, e.g. `0xF0` = 39796 | **unidentified.** One might be the requesting PID, but nothing confirms it [not checked] |
+| `0xC0`, `0xC8`, `0xF0` | `0xCEB077E078`, 1296, 39796 | **unidentified.** `0xC8` or `0xF0` might be the requesting PID, and `0xC0` looks like an address. Nothing confirms any of these [not checked] |
 | `0xD0`, `0xD8` | offsets 248, 318 → `C:\breeze-pamtest\breeze-agent.exe` (×2) | target path [verified] |
 | `0xE0` | offset 388 → `"C:\breeze-pamtest\breeze-agent.exe" version ` | command line, trailing space [verified] |
 | `0xE8` | offset 480 → empty string | **fourth string slot, empty in this sample.** Might be the working directory or the "reason" text [not checked] |
@@ -55,27 +77,27 @@ No SID, logon id, working directory or environment string appears in this sample
 
 The four cells are consent prompt (split-token admin) and credential prompt (standard user, over the shoulder), each with `PromptOnSecureDesktop` = 1 and 0.
 
-**Why the cells barely differ.** Everything in §2 runs in the SYSTEM agent in session 0. It reads an ETW event written by AppInfo [verified, `docs/superpowers/plans/pam/2026-07-03-pam-path-b-vm-validation.md:73-75`] and a system-wide Toolhelp snapshot [verified, code]. Neither touches a desktop. `PromptOnSecureDesktop` only changes which desktop `consent.exe` draws on: "If the secure desktop is enabled, all elevation requests go to the secure desktop … If the secure desktop isn't enabled, all elevation requests go to the interactive user's desktop" [verified, [MS UAC architecture](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/architecture)]. The prompt kind is chosen by `consent.exe` after AppInfo has decided to prompt, so the 15028 payload is not expected to differ by kind [inferred; L1 checks it]. The setting matters for *dismissal* (#10177 window classes, `pamactuator/dismiss_instance_windows.go:25-28`) and for *where W07 draws the first question*. It does not matter for capture.
+**Why the cells barely differ.** Everything in §2 runs in the SYSTEM agent in session 0. It reads an ETW event written by AppInfo. `docs/superpowers/plans/pam/2026-07-03-pam-path-b-vm-validation.md:73-75` states this as a design-time finding, not a lab measurement [inferred] and a system-wide Toolhelp snapshot [verified, code]. Neither touches a desktop. `PromptOnSecureDesktop` only changes which desktop `consent.exe` draws on: "If the secure desktop is enabled, all elevation requests go to the secure desktop … If the secure desktop isn't enabled, all elevation requests go to the interactive user's desktop" [verified, [MS UAC architecture](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/architecture)]. The prompt kind is chosen by `consent.exe` after AppInfo has decided to prompt, so the 15028 payload is not expected to differ by kind [inferred; L1 checks it]. The setting matters for *dismissal* (#10177 window classes, `pamactuator/dismiss_instance_windows.go:25-28`) and for *where W07 draws the first question*. It does not matter for capture.
 
 Lab evidence per cell [verified, repo records]:
 
-- **Consent prompt, setting 1:** the fixture (Windows 11; the setting was not recorded).
-- **Credential prompt, setting 0:** the 2026-10-17 lab captured Notepad from a standard user on Server 2022 with the prompt drawn on the normal desktop (`docs/testing/release-sweeps/2026-10-17-v0.123.0-lab-pass.md:106-111,132`). The command-line content was not recorded there.
-- **Credential prompt, setting 1** and **consent prompt, setting 0:** no record [not checked].
+- **Consent prompt, setting unknown:** the fixture (Windows 11; neither the prompt kind nor the setting was recorded, and the consent kind is assumed from the comment "UAC consent" [inferred]).
+- **Credential prompt, apparently setting 0:** the 2026-10-17 lab captured Notepad from a standard user on Server 2022 (`docs/testing/release-sweeps/2026-10-17-v0.123.0-lab-pass.md:106-111,132`). The record shows the prompt drawn on the normal desktop. The registry value itself was not recorded, so the setting is inferred from where the prompt appeared. The command-line content was not recorded there.
+- **The other two cells:** no record [not checked].
 
 | Field | All four cells | Source today | Reliability | Label |
 |---|---|---|---|---|
 | **1. Argument list** | Available | 15028 command-line string (`etwlua_windows.go:162,182`) | Raw string, quoting kept verbatim. **Parser losses** (`consent_payload.go`): a command line that does not start with `"` is dropped (`:20`); any code unit outside `0x20–0xD7FF` splits the string, so a tab, a non-BMP character or U+E000–U+FFFF truncates the arguments or even the path (`:58`); UNC targets are rejected entirely, so the event is dropped (`:32-38`, `etwlua_windows.go:163-166`). Same-exe, different-args requests within 30 s are deduped away (`etwlua.go:444-447`) | Content [verified, 1 sample]; whether AppInfo always quotes [not checked] |
-| **2. Working directory** | **Not available** | None. Not in the sample payload. The fourth string slot (`0xE8`) is empty and unidentified | **Fails** | [verified absent in 1 sample]; slot meaning [not checked] |
-| **3. Requester SID** | **Proxy only** | SID of the user of the session that owns the newest `consent.exe` (`requester_session_windows.go:114-137`), currently discarded after name lookup. Console-user fallback when attribution fails (`requester_session.go:105-108`) | Right for "user elevates from their own desktop". **Wrong** for `runas /user:X` inside another user's session (the prompt is in A's session, the requester is X) [inferred]. **Wrong** whenever the console fallback fires on RDS or with fast user switching [verified, code path]. With two prompts within 30 s, "newest" is a guess (`:98-100`) | Mechanism [verified]; the runas gap [inferred] |
+| **2. Working directory** | **No source found** | None. Not in the sample payload. The fourth string slot (`0xE8`) is empty and unidentified | **Fails** unless L4 identifies the slot | [verified absent in 1 sample]; all four cells [inferred]; slot meaning [not checked] |
+| **3. Requester SID** | **Proxy only** | SID of the user of the session that owns the newest `consent.exe` (`requester_session_windows.go:114-137`), currently discarded after name lookup. Console-user fallback when attribution fails (`requester_session.go:105-108`) | Right for "user elevates from their own desktop". **Wrong** for `runas /user:X` inside another user's session (the prompt is in A's session, the requester is X) [inferred]. **Wrong** when the console fallback fires and the requester is not the console user, e.g. on RDS or with fast user switching. With two prompts within 30 s, "newest" is a guess (`:98-100`). The order of 15028 and `consent.exe` start is unknown, so "newest" could be the previous prompt [not checked → L12] | Mechanism [verified]; the runas and fallback gaps [inferred] |
 | **4. Logon session (LUID)** | **Proxy only, not read today** | Could be read from the same `WTSQueryUserToken` token via `TokenStatistics` / `TokenGroupsAndPrivileges` ("the authentication ID associated with the token") [verified, [MS TOKEN_INFORMATION_CLASS](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ne-winnt-token_information_class)] | Same proxy limit as the SID: the *session's* logon, not the requesting process's. For a split-token admin, the filtered and elevated tokens are separate linked logon sessions, so the LUID depends on which token is read [inferred]. Good enough to *bind* a launch to "the logon that was live at capture" (refuse after log-off/log-on). Not proof of who asked | API [verified]; binding semantics [inferred] |
-| **5. Environment** | **Not available, and arguably not needed** | Not in the payload. The relaunch uses `CreateEnvironmentBlock(~breeze_elev)` (`tokenlaunch_windows.go:1000`) | The elevated child UAC itself creates is a new process with the admin's full token [verified, MS UAC architecture]. Whether it inherits the caller's environment [not checked]; I expect it does not [inferred]. If so, a fresh block for the *launch* account is what UAC does too, and the spec's "environment" clause can be dropped | [inferred] |
+| **5. Environment** | **Not available, and arguably not needed** | Not in the payload. The relaunch uses `CreateEnvironmentBlock(~breeze_elev)` (`tokenlaunch_windows.go:1000`) | The elevated child UAC itself creates is a new process with the admin's full token [verified, MS UAC architecture]. Whether it inherits the caller's environment [not checked]. The expectation is that it does not [inferred]. If L11 confirms that, a fresh block for the *launch* account is what UAC does too, and the spec's "environment" clause may be droppable | [inferred] |
 
-**What differs by kind** (identity of the launched process, not capture) [verified code + inferred]:
+**What differs by kind** (identity of the launched process, not capture):
 
-- **Consent prompt:** UAC would run the target as the requester's own elevated token, with their profile, HKCU and mapped drives. The W08 relaunch runs it as `~breeze_elev` (D3).
-- **Credential prompt:** UAC runs it as whichever admin typed credentials, so `~breeze_elev` is the closer analogue.
-- Either way the relaunch is faithful in arguments at best, not in identity, for the consent-prompt kind.
+- **Consent prompt:** UAC would run the target as the requester's own elevated token, with their profile, HKCU and mapped drives [inferred]. The W08 relaunch runs it as `~breeze_elev` [verified, D3 and `tokenlaunch_windows.go:925`].
+- **Credential prompt:** UAC runs it as whichever admin typed credentials [inferred], so `~breeze_elev` is the closer analogue.
+- So identity can be faithful only for the credential-prompt kind. Arguments are the best case for both kinds.
 
 ## 4. Other Windows sources for the missing fields
 
@@ -93,7 +115,7 @@ Lab evidence per cell [verified, repo records]:
 | Case | What capture gets | After Breeze dismisses UAC | Relaunchable faithfully? |
 |---|---|---|---|
 | **`msiexec /i <path>`** | [not checked] whether 15028 fires at all for the MSI path, and what it names: `msiexec.exe` with arguments, or the `.msi` | Windows Installer "can call to the Application Information Service (AIS) to request administrator authorization to elevate an installation" [verified, [MS Using Windows Installer with UAC](https://learn.microsoft.com/en-us/windows/win32/msi/using-windows-installer-with-uac)], so the elevated work runs in the installer service, not in a child AppInfo launches [inferred]. A cancel ends that install, probably with 1602 user-exit [not checked] | **Partly.** Re-running `msiexec /i "<path>" <props>` elevated restarts the install from scratch (the user re-walks the UI; UI-chosen properties are lost) [inferred]. As `~breeze_elev`, a per-user or `ALLUSERS=""` package installs into **`~breeze_elev`'s profile, not the user's** [inferred]. A relative `.msi` path needs the working directory, which is §3 field 2 |
-| **Bootstrapper `ShellExecuteEx(runas)` + wait** (setup.exe, Burn bundles, Office ODT) | Child path and arguments, if the parser keeps them | The bootstrapper's `ShellExecuteEx` fails with `ERROR_CANCELLED`, "the user canceled the request" [verified, [MS ShellExecuteEx](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw)]. It gets no process handle and typically aborts or reports failure [inferred]. Many delete the payload they extracted to `%TEMP%` on exit [inferred], so the captured target is gone or replaced. Hash pinning (`tokenlaunch_windows.go` `pinAndVerifyTokenLaunchTarget`) then fails the launch, which is correct but means it never runs. Burn-style elevated companions take a pipe name and the parent PID on their command line and connect back [inferred, WiX public source]; with the parent gone they fail | **No.** Dismiss-first breaks the parent/child contract whatever is captured |
+| **Bootstrapper `ShellExecuteEx(runas)` + wait** (setup.exe, Burn bundles, Office ODT) | Child path and arguments, if the parser keeps them | The bootstrapper's `ShellExecuteEx` fails with `ERROR_CANCELLED`, "the user canceled the request" [verified, [MS ShellExecuteEx](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw)]. It gets no process handle and typically aborts or reports failure [inferred]. Many delete the payload they extracted to `%TEMP%` on exit [inferred], so the captured target is gone or replaced. Hash pinning (`pinAndVerifyTokenLaunchTarget`, `tokenlaunch_windows.go:286`) would then fail the launch, which is correct but means it never runs [inferred]. Burn-style elevated companions take a pipe name and the parent PID on their command line and connect back [inferred, WiX public source]; with the parent gone they fail | **No.** Dismiss-first breaks the parent/child contract whatever is captured |
 | **Arguments with spaces / quotes** | Verbatim if the command line starts with `"` and contains only `0x20–0xD7FF` | — | **Yes for the common case**, after fixing the parser losses in §3 field 1 and passing the string through instead of `:183` |
 | **Relative paths that depend on cwd** | Argument text only | — | **No.** The working directory is not captured (§3 field 2). The relaunch's working directory is nil today (`:1039`) |
 
@@ -104,7 +126,7 @@ Run on **Windows 11** (client) and **Server 2022** (RDS host, `helper_lifecycle_
 Tooling:
 
 - **probe.exe:** a tiny console app that, when it starts, writes its `GetCommandLineW`, `GetCurrentDirectoryW`, full environment, token user SID, `TokenStatistics.AuthenticationId`, session id and parent PID to a file.
-- **ETW dump:** temporarily log the raw 15028 UserData as hex, as the fixture was captured. Do this on a lab build only, never on a shipped one.
+- **ETW dump:** temporarily log the raw 15028 UserData as hex, as the fixture was captured. The hook point is the callback at `etwlua_windows.go:105-106`. Do this on a lab build only, never on a shipped one.
 
 | # | Experiment | Answers |
 |---|---|---|
@@ -119,8 +141,9 @@ Tooling:
 | L9 | While a prompt is open (setting 1), read `consent.exe`'s command line as SYSTEM | Does it carry AppInfo PID / size / address? (§4) |
 | L10 | Enable the LUA provider with `EVENT_ENABLE_PROPERTY_SID` and `EVENT_ENABLE_PROPERTY_TS_ID` on a lab build and log the extended data for 15028 | Is the writer's SID the requester's (impersonated) or AppInfo's? |
 | L11 | For L1's approved run, compare probe.exe's environment with the caller's (set `FOO=1` in the calling shell first) | Does UAC itself carry the caller's environment? Settles the spec's "environment" clause |
+| L12 | With a timestamped trace, record the ETW 15028 receive time and the creation time of the matching `consent.exe`. Raise two prompts within 30 s from two sessions | Event/process ordering. Can "newest `consent.exe`" attribute a request to the previous or another prompt? |
 
-**What would change the verdict:** L4 showing the working directory *and* L1 or L10 yielding the requester PID or SID. With both, field 2 and fields 3–4 can be made reliable, and the narrower cut in §1 is worth a Gate. L5 and L6 cannot change the installer conclusion. Dismissing first breaks a waiting parent however good the capture is.
+**What would change the verdict:** L4 showing the working directory *and* L1 or L10 yielding the requester PID or SID. With both, field 2 and fields 3–4 can be made reliable, and the narrower cut in §1 is worth a Gate. L5 and L6 are expected to confirm the installer conclusion, not reverse it. Reversing it would need the common bootstrappers to survive `ERROR_CANCELLED` and leave their child in place, and an MSI relaunch to land per-user state in the requester's profile.
 
 ## 7. Not sourced
 
@@ -130,5 +153,7 @@ Tooling:
 - The MSI cancel exit code.
 - The environment an elevated child inherits under UAC.
 - Whether ETW extended-data SID reflects the caller.
+- The ordering of event 15028 relative to `consent.exe` creation, and ETW real-time buffer loss under load.
+- Which `PromptOnSecureDesktop` value was in force for the one fixture.
 - `RAiLaunchAdminProcess` parameters and the `consent.exe` command-line format. Both come only from non-Microsoft reverse engineering, so they are [inferred].
 - Bootstrapper behaviour on `ERROR_CANCELLED` beyond the documented error code. This is vendor-specific.
