@@ -294,7 +294,8 @@ describe('chatRunBridge (spec §5.5)', () => {
 
     expect(published).toEqual([expect.objectContaining({ type: 'run_result', runId: RUN, status: 'completed' })]);
     expect(session.pendingRunResults).toEqual([]);
-    expect(incChatRunDelivery).toHaveBeenCalledWith('completed');
+    expect(incChatRunDelivery).toHaveBeenCalledWith('card_only');
+    expect(incChatRunDelivery).not.toHaveBeenCalledWith('completed');
   });
 
   it('#11671: the drain renders queued and durable results in one block, each run and status once', () => {

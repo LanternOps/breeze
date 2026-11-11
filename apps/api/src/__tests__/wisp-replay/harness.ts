@@ -8,10 +8,10 @@
  *    text buffer, the turn-end hooks and `done`); the standing-state block
  *    (`standingStateForTurn`: facts → render → the per-session send gate),
  *    put ahead of the user's text the way `POST /ai/sessions/:id/messages`
- *    does, and the specialist-results block outermost (#11671:
+ *    does (the route's content sanitising and fired check-in block are not
+ *    replayed); the specialist-results block, outermost (#11671:
  *    `specialistResultsForTurn` → the chat run bridge's renderer → the
- *    per-session delivered set) (the route's content sanitising and fired
- *    check-in block are not replayed); the promise linter and the correction message; the
+ *    per-session delivered set); the promise linter and the correction message; the
  *    instruction prefilter,
  *    the capture status and the extractor (parse, name resolution, blocks);
  *    the standing-instruction check (verb map, registry device args, matcher,

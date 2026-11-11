@@ -2,9 +2,12 @@
  * Worker run events → a live chat session (execution-plane spec §5.5).
  *
  * Chat-initiated launch is currently disabled (#6086; the launch tool is
- * fully deregistered — see `workspaceLaunchLimits.ts`), so nothing seeds this
- * bridge from within a turn today. The wiring is retained for when delegated
- * authorization lands: a launch admits a run and returns immediately, the run
+ * fully deregistered — see `workspaceLaunchLimits.ts`); the one seeder today is
+ * a Wisp hand-off (`watchRunForOriginSession`, #11084), which streams the run's
+ * progress and card here while its result text reaches the model from the run
+ * row on the next turn (`services/wisp/specialistResultsTurn.ts`, #11671). The
+ * generic wiring is retained for when delegated authorization lands: a launch
+ * admits a run and returns immediately, the run
  * then executes on the WORKER role, and its terminal event is published to
  * Redis by `finishRun` (`aiAgents/runLoop.ts`) — but `EventBus.subscribe` handlers fire
  * only in the publishing process — so an API process holding the technician's
@@ -374,7 +377,7 @@ export async function deliverRunEvent(event: {
 
   // #11671: a Wisp hand-off's result is read from the run row on the next turn.
   if (watch.resultDeliveredByTurn) {
-    incChatRunDelivery(delivery.status);
+    incChatRunDelivery('card_only');
     return;
   }
 

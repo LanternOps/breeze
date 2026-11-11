@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   sets: new Map<string, Set<string>>(),
   expires: [] as Array<[string, number]>,
   redisFails: false,
+  expireFails: false,
   redisAvailable: true,
 }));
 
@@ -32,16 +33,29 @@ vi.mock('../redis', () => ({
       if (h.redisFails) throw new Error('redis down');
       return [...(h.sets.get(key) ?? [])];
     },
-    sadd: async (key: string, ...members: string[]) => {
-      if (h.redisFails) throw new Error('redis down');
-      const set = h.sets.get(key) ?? new Set<string>();
-      for (const m of members) set.add(m);
-      h.sets.set(key, set);
-      return members.length;
-    },
-    expire: async (key: string, seconds: number) => {
-      h.expires.push([key, seconds]);
-      return 1;
+    multi: () => {
+      const ops: Array<() => void> = [];
+      const chain = {
+        sadd: (key: string, ...members: string[]) => {
+          ops.push(() => {
+            const set = h.sets.get(key) ?? new Set<string>();
+            for (const m of members) set.add(m);
+            h.sets.set(key, set);
+          });
+          return chain;
+        },
+        expire: (key: string, seconds: number) => {
+          ops.push(() => { h.expires.push([key, seconds]); });
+          return chain;
+        },
+        exec: async () => {
+          if (h.redisFails) throw new Error('redis down');
+          if (h.expireFails) return [[null, 1], [new Error('EXPIRE refused'), null]];
+          for (const op of ops) op();
+          return ops.map(() => [null, 1]);
+        },
+      };
+      return chain;
     },
   } : null),
 }));
@@ -101,6 +115,7 @@ beforeEach(() => {
   h.sets = new Map();
   h.expires = [];
   h.redisFails = false;
+  h.expireFails = false;
   h.redisAvailable = true;
 });
 
@@ -222,6 +237,14 @@ describe('markSpecialistResultsDelivered', () => {
   it('does nothing for no keys', async () => {
     await markSpecialistResultsDelivered(SESSION, []);
     expect(h.sets.size).toBe(0);
+  });
+
+  it('logs a command the MULTI reports as failed (the TTL), never throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.expireFails = true;
+    await expect(markSpecialistResultsDelivered(SESSION, ['run-1:completed'])).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('failed to record them as delivered'), expect.objectContaining({ error: 'EXPIRE refused' }));
+    warn.mockRestore();
   });
 
   it('never throws on a Redis failure (the result is given again next turn)', async () => {

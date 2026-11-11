@@ -151,8 +151,9 @@ async function readResults(chosen: RunRow[], orgIds: string[]): Promise<Speciali
 /**
  * The specialist results to put in front of this turn, or null: Wisp off; the
  * grant paused, revoked, gone or its pin corrupt; nothing new has settled; or
- * the read failed (reported). Never throws for a read failure; the route still
- * guards the call.
+ * the run read failed (reported). An error resolving the ceiling other than an
+ * inactive grant (a DB failure) propagates: the route catches it, reports it
+ * and sends the turn without results.
  */
 export async function specialistResultsForTurn(input: {
   grantId: string;
@@ -207,8 +208,10 @@ export async function markSpecialistResultsDelivered(sessionId: string, keys: re
     const redis = getRedis();
     if (!redis) return;
     const key = deliveredKey(sessionId);
-    await redis.sadd(key, ...keys);
-    await redis.expire(key, SPECIALIST_DELIVERED_TTL_SECONDS);
+    // One MULTI, so the set never exists without its TTL.
+    const replies = await redis.multi().sadd(key, ...keys).expire(key, SPECIALIST_DELIVERED_TTL_SECONDS).exec();
+    const failed = replies?.find(([err]) => err)?.[0];
+    if (!replies || failed) throw failed ?? new Error('the MULTI was discarded');
   } catch (err) {
     console.warn('[wisp] specialist results: failed to record them as delivered; they are given again next turn', { sessionId, error: errText(err) });
   }

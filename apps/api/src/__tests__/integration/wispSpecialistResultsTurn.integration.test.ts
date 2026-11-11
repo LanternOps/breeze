@@ -74,21 +74,27 @@ async function seedTenant() {
     recipients: { userIds: [], roleIds: [] }, instructions: null, cooldownSeconds: 0, createdBy: grantor.id,
   } as never));
 
-  const grant = await sys(async () => {
-    const [g] = await db.insert(wispGrants).values({
-      partnerId: partner.id, orgId: null, grantorUserId: grantor.id, status: 'active',
-      expiresAt: new Date(Date.now() + 30 * 86_400_000),
-    }).returning({ id: wispGrants.id });
+  /** A revision of `grantId` whose ceiling covers `orgIds`. */
+  const addRevision = (grantId: string, revision: number, orgIds: string[]) => sys(async () => {
     const snapshot: WispCeilingSnapshot = {
-      version: 1, permissionKeys: PERMS.map((p) => `${p.resource}:${p.action}`), orgIds: [org.id], siteIds: null, toolAllowlist: null, deniedTools: [],
+      version: 1, permissionKeys: PERMS.map((p) => `${p.resource}:${p.action}`), orgIds, siteIds: null, toolAllowlist: null, deniedTools: [],
     };
     const [r] = await db.insert(wispGrantRevisions).values({
-      grantId: g!.id, partnerId: partner.id, revision: 1, ceilingSnapshot: snapshot,
+      grantId, partnerId: partner.id, revision, ceilingSnapshot: snapshot,
       factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
     }).returning({ id: wispGrantRevisions.id });
-    await db.update(wispGrants).set({ currentRevisionId: r!.id }).where(eq(wispGrants.id, g!.id));
-    return { grantId: g!.id, revisionId: r!.id };
+    await db.update(wispGrants).set({ currentRevisionId: r!.id }).where(eq(wispGrants.id, grantId));
+    return r!.id;
   });
+  /** An active grant of the same grantor over `orgIds` (partner-wide unless `scopeOrgId`; one live grant per scope). */
+  const addGrant = async (orgIds: string[], scopeOrgId: string | null = null) => {
+    const [g] = await sys(() => db.insert(wispGrants).values({
+      partnerId: partner.id, orgId: scopeOrgId, grantorUserId: grantor.id, status: 'active',
+      expiresAt: new Date(Date.now() + 30 * 86_400_000),
+    }).returning({ id: wispGrants.id }));
+    return { grantId: g!.id, revisionId: await addRevision(g!.id, 1, orgIds) };
+  };
+  const grant = await addGrant([org.id]);
 
   /** The technician chatting in Wisp session `sessionId` (what `launch_specialist` runs under). */
   const chatAuth = (sessionId: string) => ({
@@ -119,7 +125,7 @@ async function seedTenant() {
   const settle = (runId: string, set: Record<string, unknown>) =>
     sys(() => db.update(aiAgentRuns).set({ finishedAt: new Date(), ...set } as never).where(eq(aiAgentRuns.id, runId)));
 
-  return { partner, org, grantor, device: device!, grant, handOff, settle };
+  return { partner, org, grantor, device: device!, grant, handOff, settle, addRevision, addGrant };
 }
 
 beforeEach(() => {
@@ -191,6 +197,24 @@ describe('specialistResultsForTurn (#11671)', () => {
     const turn = await specialistResultsForTurn({ grantId: t.grant.grantId, revisionId: t.grant.revisionId, sessionId: session });
     expect(turn?.results).toEqual([expect.objectContaining({ runId, status: 'awaiting_approval', pendingIntentCount: 1 })]);
     expect(turn?.keys).toEqual([`${runId}:awaiting_approval`]);
+  });
+
+  it('gives nothing under another grant, or once its org has left the live ceiling', async () => {
+    const t = await seedTenant();
+    const session = randomUUID();
+    const runId = await t.handOff(session);
+    await t.settle(runId, { status: 'completed', summary: 'Found it.' });
+    const input = { grantId: t.grant.grantId, revisionId: t.grant.revisionId, sessionId: session };
+    expect((await specialistResultsForTurn(input))?.results.map((r) => r.runId)).toEqual([runId]);
+
+    // Same session id, same org, but a different (org-scoped) grant of the same grantor.
+    const other = await t.addGrant([t.org.id], t.org.id);
+    expect(await specialistResultsForTurn({ ...input, ...other })).toBeNull();
+
+    // The grant's ceiling now covers another org of the partner, not the run's.
+    const org2 = await createOrganization({ partnerId: t.partner.id });
+    const narrowed = await t.addRevision(t.grant.grantId, 2, [org2.id]);
+    expect(await specialistResultsForTurn({ ...input, revisionId: narrowed })).toBeNull();
   });
 
   it('does not give a run that settled before the session could have existed', async () => {

@@ -33,7 +33,7 @@ export type ReplayAgentRunRow = {
   summary: string | null;
 };
 
-/** The subset of ioredis the Wisp turn paths use: get, set (EX, NX), del, a set's SADD/SMEMBERS, EXPIRE and a MULTI of INCR/EXPIRE. */
+/** The subset of ioredis the Wisp turn paths use: get, set (EX, NX), del, SMEMBERS and a MULTI of INCR/SADD/EXPIRE. */
 export class FakeRedis {
   readonly store = new Map<string, string>();
   readonly sets = new Map<string, Set<string>>();
@@ -42,20 +42,8 @@ export class FakeRedis {
     return this.store.get(key) ?? null;
   }
 
-  async sadd(key: string, ...members: string[]): Promise<number> {
-    const set = this.sets.get(key) ?? new Set<string>();
-    const before = set.size;
-    for (const m of members) set.add(m);
-    this.sets.set(key, set);
-    return set.size - before;
-  }
-
   async smembers(key: string): Promise<string[]> {
     return [...(this.sets.get(key) ?? [])];
-  }
-
-  async expire(_key: string, _seconds: number): Promise<number> {
-    return 1;
   }
 
   async set(key: string, value: string, ...args: Array<string | number>): Promise<'OK' | null> {
@@ -83,6 +71,15 @@ export class FakeRedis {
       },
       expire: (_key: string, _seconds: number) => {
         ops.push(() => [null, 1]);
+        return chain;
+      },
+      sadd: (key: string, ...members: string[]) => {
+        ops.push(() => {
+          const set = this.sets.get(key) ?? new Set<string>();
+          for (const m of members) set.add(m);
+          this.sets.set(key, set);
+          return [null, members.length];
+        });
         return chain;
       },
       exec: async () => ops.map((op) => op()),
