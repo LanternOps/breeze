@@ -286,7 +286,10 @@ export function convertZammadTicket(loaded: LoadedTicket, ctx: ConversionContext
     comments.push(composed(zammadIds.timeNote(t.id, timeUnit), `Time accounted in Zammad: ${timeUnit} ${options.timeUnitLabel}`));
   }
 
-  const { requester, withoutContact } = mapRequester(t, data.people, ctx);
+  const { requester, withoutContact } = mapRequester(t, data.people, ctx, {
+    enabled: options.createRequesterContacts,
+    ...(options.createRequesterContactsUpdatedSince ? { updatedSince: options.createRequesterContactsUpdatedSince } : {}),
+  });
   if (withoutContact) notes.push({ kind: 'requester_without_contact' });
   const tags = mapTags(data.tags);
   if (truncated > 0) notes.push({ kind: 'content_truncated', count: truncated });

@@ -30,6 +30,8 @@ describe('the Zammad module', () => {
   it('defaults: no priority or state map, System articles skipped, the time note on, in minutes', () => {
     expect(zammadOptionsSchema.parse({})).toEqual({
       priorityMap: {}, stateMap: {}, systemArticles: 'skip', timeAccountingNote: true, timeUnitLabel: 'minutes',
+      // W4b: no contact is created unless the admin turns it on (#8313 answer 3).
+      createRequesterContacts: false,
     });
   });
 

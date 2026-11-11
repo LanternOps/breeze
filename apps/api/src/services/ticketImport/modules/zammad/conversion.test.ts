@@ -94,6 +94,38 @@ describe('every fixture ticket (§6.8)', () => {
   });
 });
 
+describe('created contacts (W4b, §5.13)', () => {
+  it('the option is off by default, and a date filter must be a date', () => {
+    const defaults = zammadOptionsSchema.parse({});
+    expect(defaults.createRequesterContacts).toBe(false);
+    expect(defaults).not.toHaveProperty('createRequesterContactsUpdatedSince');
+    expect(zammadOptionsSchema.parse({ createRequesterContacts: true, createRequesterContactsUpdatedSince: '2026-01-31' }))
+      .toMatchObject({ createRequesterContacts: true, createRequesterContactsUpdatedSince: '2026-01-31' });
+    expect(zammadOptionsSchema.safeParse({ createRequesterContactsUpdatedSince: '2026-13-01' }).success).toBe(false);
+    expect(zammadOptionsSchema.safeParse({ createRequesterContactsUpdatedSince: 'last week' }).success).toBe(false);
+  });
+
+  it('off: the unmatched requester of 103 stays display-only with its note', async () => {
+    const { conversion } = await convert(103);
+    expect(ticketOf(conversion).ticket.requester).toEqual({ name: 'Frank Shared', email: 'frank@globex.example.test' });
+    expect(conversion.notes).toContainEqual({ kind: 'requester_without_contact' });
+  });
+
+  it('on: it asks for a contact, the writer\'s schema accepts it, and the conversion carries no without-contact note', async () => {
+    const { conversion } = await convert(103, { options: { createRequesterContacts: true } });
+    const { ticket } = ticketOf(conversion);
+    expect(ticket.requester).toEqual({ createContact: { name: 'Frank Shared', email: 'frank@globex.example.test', sourceUserKey: '12' } });
+    expect(conversion.notes).not.toContainEqual({ kind: 'requester_without_contact' });
+    expect(parseImportedTicket(ticket, NOW).requester).toEqual(ticket.requester);
+  });
+
+  it('on, with "updated since" after the ticket\'s last update: display-only, as off', async () => {
+    const { conversion } = await convert(103, { options: { createRequesterContacts: true, createRequesterContactsUpdatedSince: '2026-05-01' } });
+    expect(ticketOf(conversion).ticket.requester).toEqual({ name: 'Frank Shared', email: 'frank@globex.example.test' });
+    expect(conversion.notes).toContainEqual({ kind: 'requester_without_contact' });
+  });
+});
+
 describe('a plain mail ticket (101)', () => {
   it('maps the header, the description, a reply with To/Cc and an internal note', async () => {
     const { ticket, links } = ticketOf((await convert(101)).conversion);
