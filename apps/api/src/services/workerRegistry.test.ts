@@ -147,6 +147,8 @@ const EXPECTED_WORKER_NAMES = [
   'aiModelDiscoveryWorker',
   // Workload image currency W05 (#8194).
   'imageCurrencyWorker',
+  // High-volume table retention W5 (#4342, #11592) — report-only.
+  'historyRetention',
 ];
 
 describe('workerRegistry: losslessness', () => {

@@ -178,6 +178,15 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
+### Unreleased — history retention settings mapped
+
+Both Compose files gain 26 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings for the report-only history retention job: `HISTORY_RETENTION_BATCH_SIZE`, `HISTORY_RETENTION_MAX_BATCHES`, and a `_DAYS` and `_ENFORCE` pair for each of `AI_AGENT_RUN_RETENTION_*`, `PATCH_JOB_RESULT_RETENTION_*`, `SECURITY_POSTURE_SNAPSHOT_RETENTION_*`, `CIS_BASELINE_RESULT_RETENTION_*`, `AUTOMATION_RUN_RETENTION_*`, `REPORT_RUN_RETENTION_*`, `USER_NOTIFICATION_READ_RETENTION_*`, `USER_NOTIFICATION_RETENTION_*`, `REMOTE_SESSION_RETENTION_*`, `SUPPORT_SESSION_RETENTION_*`, `AUTH_SESSION_RETENTION_*`, `NETWORK_CHANGE_EVENT_RETENTION_*`. | Nothing. Each target only counts eligible rows and deletes nothing until you set its own `_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+| The network baseline worker no longer handles the `prune-change-events` job type. Nothing ever scheduled it. | Nothing. Change-event cleanup moves to `NETWORK_CHANGE_EVENT_RETENTION_*`. |
+
 ### v0.128.0 — portal Microsoft sign-in, migration lock wait, worker container name, monitoring images pinned
 
 The [v0.128.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.128.0/docker-compose.yml) change the `api` and `web` environments, the optional `worker` service and `docker-compose.monitoring.yml`. Both Compose files gain the same lines. Every new mapping is optional; leaving it out of `.env` keeps the built-in default.

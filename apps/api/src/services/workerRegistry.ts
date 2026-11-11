@@ -2109,6 +2109,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeImageCurrencyWorker, shutdown: m.shutdownImageCurrencyWorker };
     },
   },
+  {
+    // #4342 W5 — report-only history retention sweep (twelve targets).
+    name: 'historyRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/historyRetention');
+      return {
+        init: m.initializeHistoryRetention,
+        shutdown: m.shutdownHistoryRetention,
+      };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

@@ -178,6 +178,8 @@ const EXPECTED_NAMES = [
   'imageCurrencyWorker',
   // Trust Center W1 (#8768).
   'trustPageSnapshotWorker',
+  // High-volume table retention W5 (#4342, #11592) — report-only.
+  'historyRetention',
 ];
 
 // ---------------------------------------------------------------------------
