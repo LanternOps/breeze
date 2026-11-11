@@ -6156,7 +6156,22 @@ export function attachRegistryMeta(def: SdkTool): SdkTool {
  * `console.error` line is the only surviving signal — an operator has to be
  * watching API logs, not a Sentry inbox, to catch it there.
  */
-export function createBreezeMcpServer(
+export function createBreezeMcpServer(...args: Parameters<typeof breezeServerTools>) {
+  return createSdkMcpServer({
+    name: 'breeze',
+    version: '1.0.0',
+    tools: breezeServerTools(...args),
+  });
+}
+
+/**
+ * #11395: the exact tool list `createBreezeMcpServer` registers (bound
+ * registry tools, then wrapped extras), so an offline measurement of the
+ * advertised prefix (llm/toolCapture/advertisedPrefix.ts) reads the same
+ * names, descriptions and schemas production sends. See createBreezeMcpServer
+ * above for every option.
+ */
+export function breezeServerTools(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
@@ -6254,9 +6269,5 @@ export function createBreezeMcpServer(
     { getAuth, getActiveSession, onPreToolUse, onPostToolUse },
   );
 
-  return createSdkMcpServer({
-    name: 'breeze',
-    version: '1.0.0',
-    tools: [...boundTools, ...wrappedExtraTools.filter((t) => admit(t.name))],
-  });
+  return [...boundTools, ...wrappedExtraTools.filter((t) => admit(t.name))];
 }

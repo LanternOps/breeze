@@ -15,9 +15,14 @@
  * Pure; never mutates its input.
  */
 
-/** Exactly these keywords are stripped; nothing structural. */
+/**
+ * Exactly these keywords are stripped; nothing structural. The plan's eight
+ * size/format keywords, plus `$schema`: the dialect tag the SDK's MCP server
+ * puts on every advertised schema (draft-07), which constrains nothing and
+ * costs ~45 bytes per tool.
+ */
 export const COMPACTED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
-  'maxLength', 'minLength', 'maximum', 'minimum', 'pattern', 'format', 'examples', 'default',
+  'maxLength', 'minLength', 'maximum', 'minimum', 'pattern', 'format', 'examples', 'default', '$schema',
 ]);
 
 /** Keywords whose value is ONE subschema. */
@@ -50,7 +55,7 @@ function compactSchemaNode(node: unknown): unknown {
   return out;
 }
 
-/** A copy of `schema` without the eight size/format keywords, at every schema position. */
+/** A copy of `schema` without the compacted keywords, at every schema position. */
 export function compactInputSchema(schema: Record<string, unknown>): Record<string, unknown> {
   return compactSchemaNode(schema) as Record<string, unknown>;
 }

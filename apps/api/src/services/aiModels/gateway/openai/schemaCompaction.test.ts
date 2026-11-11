@@ -2,10 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { COMPACTED_SCHEMA_KEYWORDS, compactInputSchema } from './schemaCompaction';
 
 describe('compactInputSchema (#11395)', () => {
-  it('strips exactly the eight size/format keywords', () => {
+  it('strips exactly the eight size/format keywords plus the $schema meta keyword', () => {
     expect([...COMPACTED_SCHEMA_KEYWORDS].sort()).toEqual(
-      ['default', 'examples', 'format', 'maxLength', 'maximum', 'minLength', 'minimum', 'pattern'],
+      ['$schema', 'default', 'examples', 'format', 'maxLength', 'maximum', 'minLength', 'minimum', 'pattern'],
     );
+  });
+
+  it('drops the root $schema the SDK MCP server advertises (a dialect tag, not a constraint)', () => {
+    expect(compactInputSchema({ $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: {} }))
+      .toEqual({ type: 'object', properties: {} });
   });
 
   it('removes only the eight keywords; keeps required/enum/type/properties/additionalProperties/description', () => {

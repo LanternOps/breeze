@@ -194,5 +194,21 @@ export function composeStaticSystemPrompt(toolNames: readonly string[], mode: To
  * so it is a byte-stable prompt-cache prefix across turns and pages.
  */
 export function composeConstrainedSystemPrompt(toolNames: readonly string[]): string {
-  return [AI_SYSTEM_PROMPT_COMPACT, renderToolIndexByDomain(toolNames)].join('\n');
+  return [AI_SYSTEM_PROMPT_COMPACT, renderConstrainedToolLines(toolNames)].join('\n');
+}
+
+/**
+ * The constrained prompt's tool lines: each present domain with its tool
+ * names only. No action lists (each schema's `action` enum carries them, and
+ * every schema is inline), no notes and no vocabulary: the prefix stays
+ * small and names nothing the exposure lacks.
+ */
+function renderConstrainedToolLines(toolNames: readonly string[]): string {
+  const entries = listToolIndex(toolNames);
+  const lines = ['## Your Tools'];
+  for (const domain of AI_TOOL_DOMAINS) {
+    const inDomain = entries.filter((e) => e.domain === domain);
+    if (inDomain.length > 0) lines.push(`- **${AI_TOOL_DOMAIN_LABELS[domain]}**: ${inDomain.map((e) => e.name).join(', ')}`);
+  }
+  return lines.join('\n');
 }

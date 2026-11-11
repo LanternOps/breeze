@@ -463,17 +463,27 @@ export function createScriptBuilderMcpServer(
    */
   getActiveSession?: () => ActiveSession | undefined,
 ) {
+  return createSdkMcpServer({
+    name: SCRIPT_BUILDER_MCP_SERVER_NAME,
+    tools: scriptBuilderServerTools(getAuth, onPreToolUse, onPostToolUse, getActiveSession),
+  });
+}
+
+/** #11395: the exact tool list `createScriptBuilderMcpServer` registers (offline prefix measurement reads it). */
+export function scriptBuilderServerTools(
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+  getActiveSession?: () => Pick<ActiveSession, 'toolExposure'> | undefined,
+) {
   let exposure: Pick<ToolExposure, 'names' | 'promptMode'> | undefined;
   try { exposure = getActiveSession?.()?.toolExposure; } catch { exposure = undefined; }
   const tools = buildScriptBuilderTools(getAuth, onPreToolUse, onPostToolUse);
   const exposed = exposure?.names ? new Set(exposure.names) : null;
   const compact = exposure?.promptMode === 'constrained';
-  return createSdkMcpServer({
-    name: SCRIPT_BUILDER_MCP_SERVER_NAME,
-    tools: exposed === null
-      ? tools
-      : tools
-        .filter((t) => exposed.has(t.name))
-        .map((t) => (compact ? { ...t, description: compactDescriptionFor(t.name, t.description) } : t)),
-  });
+  return exposed === null
+    ? tools
+    : tools
+      .filter((t) => exposed.has(t.name))
+      .map((t) => (compact ? { ...t, description: compactDescriptionFor(t.name, t.description) } : t));
 }
