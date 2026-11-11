@@ -1,10 +1,11 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { upsertJobSchedulerMock, runTargetsMock, captureExceptionMock } = vi.hoisted(() => ({
+const { upsertJobSchedulerMock, runTargetsMock, captureExceptionMock, workerOnMock } = vi.hoisted(() => ({
   upsertJobSchedulerMock: vi.fn(),
   runTargetsMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  workerOnMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -14,7 +15,7 @@ vi.mock('bullmq', () => ({
   },
   Worker: class {
     constructor(public name: string, public processor: unknown, public opts: unknown) {}
-    on = vi.fn();
+    on = workerOnMock;
     close = vi.fn();
   },
 }));
@@ -185,6 +186,15 @@ describe('observation retention (#11737)', () => {
     expect(err).toBeInstanceOf(ObservationRetentionTargetsFailedError);
     expect((err as Error).message).toContain('agent_health_observations');
     expect(runTargetsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves failure reporting to attachWorkerObservability (no second log/capture per failed job)', async () => {
+    const { initializeObservationRetention } = await load();
+    const { attachWorkerObservability } = await import('./workerObservability');
+    await initializeObservationRetention();
+    expect(attachWorkerObservability).toHaveBeenCalledWith(expect.anything(), 'observationRetention');
+    expect(workerOnMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
   it('schedules hourly on its registry slot, carrying only the batch shape', async () => {

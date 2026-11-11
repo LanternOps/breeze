@@ -58,7 +58,6 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import { getBullMQConnection } from '../services/redis';
-import { captureException } from '../services/sentry';
 import { parsePositiveIntEnv, resolveRetentionDays, retentionEnforceFromEnv } from './retentionBatch';
 import {
   runRetentionTargets,
@@ -213,18 +212,12 @@ export function createObservationRetentionWorker(): Worker<ObservationRetentionJ
 export async function initializeObservationRetention(): Promise<void> {
   try {
     retentionWorker = createObservationRetentionWorker();
+    // attachWorkerObservability owns the 'error' and 'failed' listeners (log +
+    // one Sentry capture each). No local listeners: they would report every
+    // failure twice. A failed target is also captured once by
+    // runRetentionTargets, tagged with its table; the job-level capture of
+    // ObservationRetentionTargetsFailedError is the per-run summary.
     attachWorkerObservability(retentionWorker, 'observationRetention');
-
-    retentionWorker.on('error', (error) => {
-      console.error(`${LOG_PREFIX} Worker error:`, error);
-      captureException(error);
-    });
-    retentionWorker.on('failed', (job, error) => {
-      console.error(`${LOG_PREFIX} Job ${job?.id} failed:`, error);
-      // runRetentionTargets already captured each failed target, tagged with
-      // its table; capturing the summary again would double-report it.
-      if (!(error instanceof ObservationRetentionTargetsFailedError)) captureException(error);
-    });
 
     // Hourly registry slot — NOT `every: 1h` (epoch-anchored). The payload is
     // empty: each target uses its own env-resolved batch shape.

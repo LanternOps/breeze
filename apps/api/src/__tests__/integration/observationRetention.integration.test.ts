@@ -285,5 +285,26 @@ describe('observation retention (#11737, real Postgres)', () => {
         .from(deviceVulnerabilities).where(eq(deviceVulnerabilities.deviceId, otherDeviceId));
       expect(finding!.resolvedObservationId).toBe(ids.vulnResolution);
     });
+
+    it('a state row with NULL pointers shields only the row it does point at', async () => {
+      // A device whose every report was rejected: latest set, accepted and visible NULL.
+      const pointed = await softwareObservation(deviceId, daysAgo(200));
+      const unpointed = await softwareObservation(deviceId, daysAgo(210));
+      await getTestDb().insert(deviceSoftwareInventoryState).values({
+        deviceId,
+        orgId,
+        latestObservationId: pointed,
+        latestAcceptedObservationId: null,
+        visibleObservationId: null,
+        hasAcceptedV2: false,
+        visibleItemCount: 0,
+      });
+
+      const run = enforced(result(await runObservationRetention({ batchSize: 2, maxBatches: 10 }), 'software_inventory_observations'));
+      const left = await survivingSoftware([pointed, unpointed]);
+      expect(left.has(pointed), 'the latest pointer should survive').toBe(true);
+      expect(left.has(unpointed), 'an unpointed row on a NULL-pointer device should be deleted').toBe(false);
+      expect(run.affected).toBe(1);
+    });
   });
 });
