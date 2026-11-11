@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { AGREEMENT_DEFAULTS_SETTINGS_KEYS, ERROR_CODES, partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
+import { AGREEMENT_DEFAULTS_SETTINGS_KEYS, ERROR_CODES, changesOrgBillingContact, partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
 import { updatePartnerBillingSettings, updateOrgBillingSettings } from '../../services/invoiceService';
 import { BillingProfileServiceError } from '../../services/billingProfileService';
 import { getOrgCurrencyImpact } from '../../services/orgCurrencyService';
@@ -27,6 +27,13 @@ const scopes = requireScope('partner', 'system');
 const profileWritePerm = requirePermission(PERMISSIONS.BILLING_PROFILES_WRITE.resource, PERMISSIONS.BILLING_PROFILES_WRITE.action);
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
 const agreementsSendPerm = requirePermission(PERMISSIONS.AGREEMENTS_SEND.resource, PERMISSIONS.AGREEMENTS_SEND.action);
+// The billing contact receives the org's invoices, quotes and autopay notices,
+// so changing it (including clearing it) is billing administration, not
+// invoice editing. Tax, terms, address and currency fields stay on writePerm;
+// billingProfileId also needs profileWritePerm. The AI tool that writes the
+// same settings (manage_billing_settings:update_org) applies the same
+// predicate in aiGuardrails.ts.
+const billingManagePerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
 const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
   if (!canManagePartnerWidePolicies(c.get('auth'))) {
     return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
@@ -76,6 +83,10 @@ invoiceSettingsRoutes.patch('/orgs/:orgId/billing-settings', authMiddleware, sco
   zValidator('json', orgBillingSettingsSchema),
   async (c, next) => {
     if (c.req.valid('json').billingProfileId !== undefined) return profileWritePerm(c, next);
+    await next();
+  },
+  async (c, next) => {
+    if (changesOrgBillingContact(c.req.valid('json'))) return billingManagePerm(c, next);
     await next();
   },
   async (c) => {
