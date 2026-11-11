@@ -71,6 +71,7 @@ export function buildTenantSdkTools(
   descriptors: TenantToolDescriptor[],
   getAuth: () => AuthContext,
   getOrgId: () => string,
+  getResultCharBudget?: () => number | undefined,
 ): SdkTool[] {
   return descriptors.map((d) =>
     tool(
@@ -86,7 +87,7 @@ export function buildTenantSdkTools(
           content: [
             {
               type: 'text' as const,
-              text: compactToolResultForChat(d.qualifiedName, text),
+              text: compactToolResultForChat(d.qualifiedName, text, getResultCharBudget?.()),
             },
           ],
           ...(isError ? { isError: true } : {}),
