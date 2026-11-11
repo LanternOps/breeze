@@ -5,8 +5,9 @@ const {
   readTrust, setTrustState, getSettledCardCharge, getSignupRiskHold,
   hasFraudulentRefundMatch, closeOpenCheckouts, createAuditLog, getBillingClient,
   partnerTrustMode, sendOpsAlert, captureException,
-  select, execute, runOutside, withSystem, sendEvidenceCard,
+  select, execute, runOutside, withSystem, sendEvidenceCard, recordPromotionBlockers,
 } = vi.hoisted(() => ({
+  recordPromotionBlockers: vi.fn(),
   partnerTrustMode: vi.fn(() => 'enforce'),
   sendOpsAlert: vi.fn(),
   captureException: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock('./auditService', () => ({ createAuditLogAsync: createAuditLog }));
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
 vi.mock('./opsAlerts', () => ({ sendOpsAlert }));
 vi.mock('./sentry', () => ({ captureException }));
+vi.mock('./partnerTrustBlockers', () => ({ recordPromotionBlockers }));
 
 const billingClient = () => ({
   getSettledCardCharge, getSignupRiskHold, hasFraudulentRefundMatch, closeOpenCheckouts,
@@ -61,6 +63,8 @@ const baseFacts = (): PromotionFacts => ({
   emailVerified: true,
   settledCard: { chargeId: 'ch_1', settledAt: hoursAgo(24) },
   signupIpClass: 'residential',
+  signupIpClassSource: 'ipinfo',
+  ipClassifier: 'ipinfo',
   deviceIpClasses: ['business'],
   unresolvedAlerts: 0,
   billingHold: false,
@@ -288,6 +292,44 @@ describe('promotionDecision', () => {
     else expect(decision).toEqual({ promote: false, blockers });
   });
 
+  describe('offline baseline (#11698)', () => {
+    const offline = (overrides: Partial<PromotionFacts>) => ({
+      ...baseFacts(), signupIpClass: 'unknown' as IpClass, ipClassifier: 'offline' as const, ...overrides,
+    });
+
+    it('does not block on "checked, nothing found" while no keyed provider is configured', () => {
+      expect(promotionDecision(offline({ signupIpClassSource: 'offline' }), now)).toEqual({
+        promote: true, reason: 'auto:settled_card_24h',
+      });
+    });
+
+    it.each([
+      ['never classified (no source recorded)', { signupIpClassSource: null }],
+      ['only the Tor list was checked', { signupIpClassSource: 'offline-partial' }],
+      ['a private address (nothing checked)', { signupIpClassSource: 'none' }],
+      ['a keyed provider is configured now', { signupIpClassSource: 'offline', ipClassifier: 'ipinfo' as const }],
+      ['the keyed provider returned unknown', { signupIpClassSource: 'ipinfo', ipClassifier: 'ipinfo' as const }],
+    ])('still blocks as signup_ip_unclassified when %s', (_name, overrides) => {
+      expect(promotionDecision(offline(overrides), now)).toEqual({
+        promote: false, blockers: ['signup_ip_unclassified'],
+      });
+    });
+
+    it.each(['hosting', 'vpn', 'tor'] as const)('keeps a %s signup as a blocker', (ipClass) => {
+      expect(promotionDecision(offline({ signupIpClass: ipClass, signupIpClassSource: 'offline' }), now)).toEqual({
+        promote: false, blockers: ['signup_ip_hosting'],
+      });
+    });
+
+    it('leaves every other blocker in place', () => {
+      expect(promotionDecision(offline({
+        signupIpClassSource: 'offline', settledCard: null, deviceIpClasses: ['tor'], emailVerified: false,
+      }), now)).toEqual({
+        promote: false, blockers: ['card_not_settled', 'device_on_tor', 'email_unverified'],
+      });
+    });
+  });
+
   it('promotes at the exact 24-hour boundary when all facts are clear', () => {
     expect(promotionDecision(baseFacts(), now)).toEqual({
       promote: true, reason: 'auto:settled_card_24h',
@@ -366,6 +408,20 @@ describe('tryAutoPromote', () => {
 
     await expect(tryAutoPromote('p1')).resolves.toBe(false);
     expect(setTrustState).not.toHaveBeenCalled();
+  });
+
+  it('records the blockers it found so the trust queue can show them', async () => {
+    getSettledCardCharge.mockResolvedValue(null);
+
+    await expect(tryAutoPromote('p1')).resolves.toBe(false);
+    expect(recordPromotionBlockers).toHaveBeenCalledWith('p1', ['card_not_settled']);
+  });
+
+  it('still returns its decision when recording the blockers fails', async () => {
+    getSettledCardCharge.mockResolvedValue(null);
+    recordPromotionBlockers.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(tryAutoPromote('p1')).resolves.toBe(false);
   });
 
   it.each(['trusted', 'restricted'] as const)('never promotes from %s', async (trustState) => {
@@ -661,6 +717,33 @@ describe('gatherPromotionFacts billing hold mapping', () => {
     getSignupRiskHold.mockResolvedValue({ status });
 
     await expect(gatherPromotionFacts('p1')).resolves.toMatchObject({ billingHold, billingHoldUnknown });
+  });
+
+  it('reports the signup classification source and the active classifier', async () => {
+    getSignupRiskHold.mockResolvedValue({ status: 'none' });
+    select.mockImplementation((fields: Record<string, unknown>) => {
+      if ('createdAt' in fields) {
+        expect(fields).toHaveProperty('signupIpClassSource');
+        return { from: () => ({ where: () => ({ limit: async () => [{
+          createdAt: hoursAgo(48), emailVerifiedAt: hoursAgo(47), signupIpClass: 'unknown', signupIpClassSource: 'offline',
+        }] }) }) };
+      }
+      if ('ipClass' in fields) return { from: () => ({ innerJoin: () => ({ where: async () => [] }) }) };
+      return { from: () => ({ where: async () => [{ count: 0 }] }) };
+    });
+
+    delete process.env.IP_CLASSIFY_PROVIDER;
+    await expect(gatherPromotionFacts('p1')).resolves.toMatchObject({
+      signupIpClass: 'unknown', signupIpClassSource: 'offline', ipClassifier: 'offline',
+    });
+    process.env.IP_CLASSIFY_PROVIDER = 'ipdata';
+    process.env.IP_CLASSIFY_API_KEY = 'k';
+    try {
+      await expect(gatherPromotionFacts('p1')).resolves.toMatchObject({ ipClassifier: 'ipdata' });
+    } finally {
+      delete process.env.IP_CLASSIFY_PROVIDER;
+      delete process.env.IP_CLASSIFY_API_KEY;
+    }
   });
 
   it('fails closed when the hold status is unknown', async () => {

@@ -3,6 +3,13 @@ import { ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, handleActionError, runAction } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import {
+  TrustClassifierBanner,
+  blockerLabel,
+  signupSourceLabel,
+  type RecordedPromotionBlockers,
+  type TrustQueueClassifier,
+} from './TrustClassifierBanner';
 
 type EvidenceCard = {
   partner: {
@@ -13,7 +20,7 @@ type EvidenceCard = {
     status: string;
     trustState: string;
   };
-  signup: { ip: string | null; ipClass: string; asn: number | null };
+  signup: { ip: string | null; ipClass: string; asn: number | null; source?: string | null };
   emailDomain: { domain: string | null; ageDays: null; hasMx: boolean | null };
   identity: {
     userName: string | null;
@@ -51,14 +58,28 @@ type TrustQueueRow = {
   signupIp: string | null;
   signupIpClass: string;
   signupIpAsn: number | null;
+  signupIpClassSource?: string | null;
   deviceCount: number;
+  promotionBlockers?: RecordedPromotionBlockers | null;
   card?: EvidenceCard;
 };
 
 type QueueResponse = {
   partners: TrustQueueRow[];
   nextCursor: string | null;
+  classifier?: TrustQueueClassifier;
 };
+
+function BlockersCell({ row }: { row: TrustQueueRow }) {
+  if (row.trustState !== 'probation') return <span className="text-muted-foreground">Held by restriction</span>;
+  if (!row.promotionBlockers) return <span className="text-muted-foreground">Not evaluated yet</span>;
+  if (row.promotionBlockers.blockers.length === 0) return <span className="text-muted-foreground">None</span>;
+  return (
+    <ul className="space-y-0.5">
+      {row.promotionBlockers.blockers.map((blocker) => <li key={blocker}>{blockerLabel(blocker)}</li>)}
+    </ul>
+  );
+}
 
 type LoadState = 'loading' | 'ready' | 'unauthorized' | 'error';
 type TrustAction = 'approve' | 'restrict' | 'suspend';
@@ -142,6 +163,7 @@ export default function TrustQueue() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [actingOn, setActingOn] = useState<string | null>(null);
+  const [classifier, setClassifier] = useState<TrustQueueClassifier | undefined>(undefined);
 
   const loadPage = useCallback(async (cursor?: string) => {
     if (cursor) setLoadingMore(true);
@@ -163,6 +185,7 @@ export default function TrustQueue() {
       const body = await response.json() as QueueResponse;
       setRows((current) => cursor ? [...current, ...body.partners] : body.partners);
       setNextCursor(body.nextCursor);
+      if (!cursor) setClassifier(body.classifier);
       setLoadState('ready');
     } catch {
       setLoadState('error');
@@ -272,6 +295,8 @@ export default function TrustQueue() {
         <p className="mt-1 text-sm text-muted-foreground">Review partner evidence and take an operator action.</p>
       </div>
 
+      <TrustClassifierBanner classifier={classifier} />
+
       {rows.length === 0 ? (
         <div className="rounded-lg border bg-card p-12 text-center" data-testid="trust-queue-empty">
           <ShieldCheck className="mx-auto h-12 w-12 text-muted-foreground/40" />
@@ -280,7 +305,7 @@ export default function TrustQueue() {
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[1240px] border-collapse text-left text-sm">
             <thead className="bg-muted/40 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="w-10 px-3 py-3"><span className="sr-only">Evidence</span></th>
@@ -290,6 +315,7 @@ export default function TrustQueue() {
                 <th className="px-3 py-3">Reason</th>
                 <th className="px-3 py-3">Changed</th>
                 <th className="px-3 py-3">Signup IP</th>
+                <th className="px-3 py-3">Promotion blockers</th>
                 <th className="px-3 py-3">Devices</th>
                 <th className="px-3 py-3">Review requested</th>
                 <th className="px-3 py-3 text-right">Actions</th>
@@ -323,7 +349,12 @@ export default function TrustQueue() {
                       <td className="px-3 py-3 align-top">{row.trustState}</td>
                       <td className="max-w-56 px-3 py-3 align-top text-muted-foreground">{row.trustReason ?? 'Not available'}</td>
                       <td className="px-3 py-3 align-top text-muted-foreground">{formatDate(row.trustChangedAt)}</td>
-                      <td className="px-3 py-3 align-top"><span>{row.signupIpClass}</span><div className="text-xs text-muted-foreground">ASN {displayValue(row.signupIpAsn)}</div></td>
+                      <td className="px-3 py-3 align-top">
+                        <span>{row.signupIpClass}</span>
+                        <div className="text-xs text-muted-foreground">ASN {displayValue(row.signupIpAsn)}</div>
+                        <div className="text-xs text-muted-foreground" data-testid={`trust-queue-ip-source-${row.id}`}>{signupSourceLabel(row.signupIpClass, row.signupIpClassSource)}</div>
+                      </td>
+                      <td className="max-w-56 px-3 py-3 align-top text-xs" data-testid={`trust-queue-blockers-${row.id}`}><BlockersCell row={row} /></td>
                       <td className="px-3 py-3 align-top">{row.deviceCount}</td>
                       <td className="px-3 py-3 align-top text-muted-foreground">{formatDate(row.trustReviewRequestedAt)}</td>
                       <td className="px-3 py-3 align-top">
@@ -336,7 +367,7 @@ export default function TrustQueue() {
                     </tr>
                     {isExpanded && (
                       <tr className="border-t bg-muted/20">
-                        <td colSpan={10} className="px-6 py-5">
+                        <td colSpan={11} className="px-6 py-5">
                           {row.card ? <EvidenceCardDetails card={row.card} /> : <p className="text-sm text-muted-foreground">Evidence is not available.</p>}
                         </td>
                       </tr>

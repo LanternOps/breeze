@@ -615,6 +615,57 @@ export function ipClassifyApiKey(source: NodeJS.ProcessEnv = process.env): strin
   return (source.IP_CLASSIFY_API_KEY ?? '').trim();
 }
 
+/**
+ * The classifier in effect: a keyed provider, or the offline baseline
+ * (Tor exit list + hosting ASNs, #11698) when none is configured.
+ */
+export function activeIpClassifier(source: NodeJS.ProcessEnv = process.env): 'offline' | 'ipinfo' | 'ipdata' {
+  const provider = ipClassifyProvider(source);
+  return provider === 'none' ? 'offline' : provider;
+}
+
+export const IP_CLASSIFY_TOR_LIST_DEFAULT_URL = 'https://check.torproject.org/torbulkexitlist';
+export const IP_CLASSIFY_HOSTING_ASN_DEFAULT_URL =
+  'https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv';
+export const IP_CLASSIFY_ASN_DB_DEFAULT_URL = 'https://iptoasn.com/data/ip2asn-combined.tsv.gz';
+
+const warnedIpClassifySourceVars = new Set<string>();
+
+/**
+ * Unset or empty → the default URL; `none`/`off`/`false` → null (download
+ * disabled, the bundled snapshot or nothing is used); any other value must be
+ * an http(s) URL. An invalid value warns once and disables the download
+ * rather than silently using the default the operator tried to replace.
+ */
+function resolveIpClassifySourceUrl(name: string, raw: string | undefined, fallback: string): string | null {
+  const value = (raw ?? '').trim();
+  if (value === '') return fallback;
+  if (['none', 'off', 'false', '0'].includes(value.toLowerCase())) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:' || url.protocol === 'http:') return url.toString();
+  } catch {
+    // fall through to the warning
+  }
+  if (!warnedIpClassifySourceVars.has(name)) {
+    warnedIpClassifySourceVars.add(name);
+    console.warn(`[IPClassify] ${name} is not an http(s) URL; that offline source will not be downloaded`);
+  }
+  return null;
+}
+
+export function ipClassifyTorListUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_TOR_LIST_URL', source.IP_CLASSIFY_TOR_LIST_URL, IP_CLASSIFY_TOR_LIST_DEFAULT_URL);
+}
+
+export function ipClassifyHostingAsnUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_HOSTING_ASN_URL', source.IP_CLASSIFY_HOSTING_ASN_URL, IP_CLASSIFY_HOSTING_ASN_DEFAULT_URL);
+}
+
+export function ipClassifyAsnDbUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_ASN_DB_URL', source.IP_CLASSIFY_ASN_DB_URL, IP_CLASSIFY_ASN_DB_DEFAULT_URL);
+}
+
 // Signup-abuse detection (services/abuseSignals) is a HOSTED-operator concern:
 // it exists to police untrusted public signups on a multi-tenant service. A
 // self-hosted install is normally one IT team managing its own machines, where

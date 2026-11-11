@@ -761,6 +761,11 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     vars: [
       { name: 'IP_CLASSIFY_PROVIDER', secret: false, required: true },
       { name: 'IP_CLASSIFY_API_KEY' },
+      // Offline baseline sources (#11698); unset uses the public defaults.
+      // Left secret: a private mirror URL can carry credentials.
+      { name: 'IP_CLASSIFY_TOR_LIST_URL' },
+      { name: 'IP_CLASSIFY_HOSTING_ASN_URL' },
+      { name: 'IP_CLASSIFY_ASN_DB_URL' },
     ],
   }),
   defineEntry({

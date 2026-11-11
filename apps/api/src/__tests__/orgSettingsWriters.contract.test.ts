@@ -30,6 +30,7 @@ type Classification = { sites: number } & (
 const WRITERS: Record<string, Classification> = {
   'scripts/seed-topology-demo.ts': { sites: 2, kind: 'invalidates', via: 'invalidateAgentOrgSettingsCaches' },
   'src/jobs/partnerTrustJobs.ts': { sites: 2, kind: 'no-agent-settings', reason: 'partners signup-IP classification columns only' },
+  'src/jobs/ipClassifyBackfill.ts': { sites: 1, kind: 'no-agent-settings', reason: 'partners signup-IP classification columns only (one-off backfill, #11698)' },
   'src/modules/mcpInvites/tools/configureDefaults.ts': { sites: 1, kind: 'no-agent-settings', reason: 'partners.settings.riskProfile only (read-modify-write)' },
   'src/routes/admin/abuse.ts': { sites: 2, kind: 'no-agent-settings', reason: 'partners.status only' },
   'src/routes/admin/autopayRollout.ts': { sites: 1, kind: 'no-agent-settings', reason: 'partners.autopayEnabled only' },

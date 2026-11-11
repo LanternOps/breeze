@@ -4,10 +4,13 @@ const { redis } = vi.hoisted(() => ({
   redis: { get: vi.fn(), set: vi.fn() },
 }));
 
+const { offlineClassify } = vi.hoisted(() => ({ offlineClassify: vi.fn() }));
+
 vi.mock('./redis', () => ({
   getRedis: vi.fn(() => redis),
   getBullMQConnection: vi.fn(() => ({})),
 }));
+vi.mock('./ipClassifyOffline', () => ({ offlineClassify }));
 
 import { classifyIp, ipCachePrefix } from './ipClassify';
 
@@ -27,30 +30,35 @@ describe('classifyIp', () => {
     vi.restoreAllMocks();
   });
 
-  it('maps private/loopback and public addresses alike to unknown with no provider, and never fetches', async () => {
+  it('delegates to the offline baseline when no provider is configured, never the keyed path', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
+    offlineClassify.mockResolvedValue({ ipClass: 'unknown', asn: 64501, provider: 'offline' });
 
-    // Private/loopback carries no real signal about the origin network — it's
-    // what you see behind NAT, a reverse proxy, or in local dev — so it must
-    // not be asserted as 'residential'.
-    await expect(classifyIp('127.0.0.1')).resolves.toEqual({
-      ipClass: 'unknown', asn: null, provider: 'none',
+    await expect(classifyIp('203.0.113.10')).resolves.toEqual({
+      ipClass: 'unknown', asn: 64501, provider: 'offline',
     });
-    await expect(classifyIp('10.0.0.5')).resolves.toEqual({
-      ipClass: 'unknown', asn: null, provider: 'none',
+    expect(offlineClassify).toHaveBeenCalledWith('203.0.113.10', { waitMs: expect.any(Number) });
+    // The keyed provider's per-prefix cache and HTTP lookup are not involved.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(redis.get).not.toHaveBeenCalled();
+  });
+
+  it('never reports residential from the offline path, even if the baseline misbehaves', async () => {
+    offlineClassify.mockResolvedValue({ ipClass: 'residential', asn: 64501, provider: 'offline' });
+
+    await expect(classifyIp('203.0.113.10')).resolves.toEqual({
+      ipClass: 'unknown', asn: 64501, provider: 'offline-partial',
     });
-    await expect(classifyIp('192.168.1.1')).resolves.toEqual({
-      ipClass: 'unknown', asn: null, provider: 'none',
-    });
-    await expect(classifyIp('::1')).resolves.toEqual({
-      ipClass: 'unknown', asn: null, provider: 'none',
-    });
+  });
+
+  it('returns unknown with no source when the offline baseline throws', async () => {
+    offlineClassify.mockRejectedValue(new Error('boom'));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
     await expect(classifyIp('203.0.113.10')).resolves.toEqual({
       ipClass: 'unknown', asn: null, provider: 'none',
     });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(redis.get).not.toHaveBeenCalled();
   });
 
   it('warns once and uses the offline fallback when a provider has no key', async () => {
@@ -59,10 +67,13 @@ describe('classifyIp', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
+    offlineClassify.mockResolvedValue({ ipClass: 'unknown', asn: null, provider: 'offline-partial' });
+
     await classifyIp('203.0.113.10');
     await classifyIp('203.0.113.11');
     expect(warn).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(offlineClassify).toHaveBeenCalledTimes(2);
   });
 
   it('maps ipinfo privacy, business, residential, and ASN responses', async () => {

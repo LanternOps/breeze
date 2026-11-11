@@ -6,8 +6,10 @@ import { partnerTrustMode } from '../config/partnerTrustMode';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, partners } from '../db/schema';
 import { classifyIp, type IpClassifyTarget } from '../services/ipClassify';
+import { classifierFor, isOfflineBaselineClear } from '../services/ipClassifyOfflineData';
 import { partnerForDevice } from '../services/partnerTrust.repo';
 import { restrictOnHardDeny, tryAutoPromote } from '../services/partnerTrustPromotion';
+import { IP_CLASSIFY_BACKFILL_JOB, runIpClassifyBackfill, scheduleIpClassifyBackfill } from './ipClassifyBackfill';
 import { jobSchedule } from './scheduleRegistry';
 
 export const IP_CLASSIFY_JOB = 'ip-classify';
@@ -26,6 +28,7 @@ type ProbationPartner = {
   signupIp: string | null;
   signupIpClass: string;
   signupIpClassifiedAt: Date | null;
+  signupIpClassSource: string | null;
 };
 
 /**
@@ -37,10 +40,16 @@ type ProbationPartner = {
  * IP_BACKFILL_RETRY_MS. A failed lookup yields `unknown` again (preserved, not
  * upgraded); partners with no recorded signup IP stay blocked for manual
  * review.
+ *
+ * With no keyed provider the offline baseline (#11698) classifies instead.
+ * Its "checked, nothing found" (`unknown` + source `offline`) is final while
+ * the baseline is the active classifier, so it is not re-checked; a partial
+ * (Tor-only) result or a row classified before the source was recorded is.
  */
 async function backfillSignupIpClass(partner: ProbationPartner): Promise<void> {
-  if (ipClassifyProvider() === 'none') return;
   if (!partner.signupIp || partner.signupIpClass !== 'unknown') return;
+  const classifier = classifierFor(ipClassifyProvider());
+  if (isOfflineBaselineClear(partner.signupIpClass, partner.signupIpClassSource, classifier)) return;
   const lastAttempt = partner.signupIpClassifiedAt?.getTime();
   if (lastAttempt !== undefined && Date.now() - lastAttempt < IP_BACKFILL_RETRY_MS) return;
 
@@ -51,6 +60,7 @@ async function backfillSignupIpClass(partner: ProbationPartner): Promise<void> {
     // Stamped even when the result is still `unknown`: this column is what
     // bounds the retry cadence above.
     signupIpClassifiedAt: new Date(),
+    signupIpClassSource: classification.provider,
   }).where(eq(partners.id, partner.id)), 'partnerTrustJobs.backfillSignupIpClass'));
 }
 
@@ -65,6 +75,7 @@ export async function runPartnerTrustPromote(): Promise<{ processed: number; pro
         signupIp: partners.signupIp,
         signupIpClass: partners.signupIpClass,
         signupIpClassifiedAt: partners.signupIpClassifiedAt,
+        signupIpClassSource: partners.signupIpClassSource,
       })
       .from(partners)
       .where(cursor
@@ -107,6 +118,10 @@ export async function processPartnerTrustJob(
     if (partnerTrustMode() === 'off') return { skipped: true };
     return runPartnerTrustPromote();
   }
+  if (job.name === IP_CLASSIFY_BACKFILL_JOB) {
+    if (partnerTrustMode() === 'off') return { skipped: true };
+    return runIpClassifyBackfill();
+  }
   if (job.name !== IP_CLASSIFY_JOB) return undefined;
   if (partnerTrustMode() === 'off') return { skipped: true };
 
@@ -120,6 +135,7 @@ export async function processPartnerTrustJob(
         signupIpClass: classification.ipClass,
         signupIpAsn: classification.asn,
         signupIpClassifiedAt: classifiedAt,
+        signupIpClassSource: classification.provider,
       }).where(eq(partners.id, target.partnerId));
       return;
     }
@@ -157,4 +173,11 @@ export async function schedulePartnerTrustJobs(queue: Queue): Promise<void> {
     removeOnComplete: { count: 10 },
     removeOnFail: { count: 25 },
   });
+  try {
+    await scheduleIpClassifyBackfill(queue);
+  } catch (error) {
+    // The backfill is a one-off catch-up; failing to enqueue it must not stop
+    // the worker from booting. The next boot tries again.
+    console.warn('[partnerTrustJobs] could not enqueue the IP-classification backfill', error);
+  }
 }
