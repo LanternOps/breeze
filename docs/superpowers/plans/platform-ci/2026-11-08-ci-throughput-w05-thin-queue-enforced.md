@@ -336,6 +336,8 @@ Bar: all of the above. A miss or a failed N3 stops G3; a short consumer wait get
 
 Preconditions: W05a, W05b merged; P1, P2, S1 and N3 posted on #10749; W06 shepherd knows the new reasons (`thin_skip_unjustified`, `attempt1_selection_missing`, `queue-thin` fallbacks) or at least does not misfile them as test failures.
 
+*Shepherd (G3 prerequisites, 2026-11-10).* Class `thin_fault` (limit 0, held on the first removal, never parked in a breaker, paged through the tick's errors), signature `thin_skip_unjustified` or, when the gate's own `ci-gate-selection:` line says so, `attempt1_selection_missing`. A `queue-thin:` fallback runs everything, so its failures stay ordinary. Shadow mode is unchanged: a page writes nothing to GitHub. See `scripts/ci-shepherd/README.md`.
+
 1. **Todd:** `gh variable set CI_THIN_QUEUE --body enforce -R LanternOps/breeze`; confirm with `gh variable get CI_THIN_QUEUE -R LanternOps/breeze`.
 2. **Orchestrator:** watch the next 3 entries: gate `mode=thin` or a named fallback; CI `queue-thin:` with the same list; the listed jobs skipped; `CI Success` and `CI Gate` both green; the ci-success log line names the skipped jobs.
 

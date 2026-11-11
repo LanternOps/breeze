@@ -51,7 +51,9 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
 
   // A failed_checks removal of `pr` tested by a merge_group run whose failed
   // job is `job` (default: Type Check failing in its typecheck step = real).
-  w.removeFailed = (n, { at, job = { name: 'Type Check', step: 'Run typecheck', annotations: [] }, runId = id() } = {}) => {
+  // `job: null` is a green CI run (the queue removed it for the CI Gate), and
+  // `gateLog` adds a CI Gate run on the same queue sha whose job log is that text.
+  w.removeFailed = (n, { at, job = { name: 'Type Check', step: 'Run typecheck', annotations: [] }, runId = id(), gateLog = null } = {}) => {
     const pr = w.prs.get(n);
     const evId = `RFMQE_${id()}`;
     const group = `${String(runId).padStart(8, 'f')}${'b'.repeat(32)}`;
@@ -67,26 +69,35 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       head_repository: { full_name: repo },
       event: 'merge_group',
       status: 'completed',
-      conclusion: 'failure',
+      conclusion: job ? 'failure' : 'success',
       path: '.github/workflows/ci.yml',
       created_at: created,
       updated_at: at,
       pull_requests: [],
       jobs: [
-        {
-          id: jobIdN,
-          name: job.name,
-          run_attempt: 1,
-          conclusion: 'failure',
-          started_at: created,
-          completed_at: at,
-          steps: [{ name: job.step, conclusion: 'failure' }],
-          annotations: job.annotations ?? [],
-          log: job.log ?? null,
-        },
-        { id: id(), name: 'CI Success', run_attempt: 1, conclusion: 'failure', started_at: at, completed_at: at, steps: [], annotations: [], log: null },
+        ...(job
+          ? [{
+              id: jobIdN,
+              name: job.name,
+              run_attempt: 1,
+              conclusion: 'failure',
+              started_at: created,
+              completed_at: at,
+              steps: [{ name: job.step, conclusion: 'failure' }],
+              annotations: job.annotations ?? [],
+              log: job.log ?? null,
+            }]
+          : []),
+        { id: id(), name: 'CI Success', run_attempt: 1, conclusion: job ? 'failure' : 'success', started_at: at, completed_at: at, steps: [], annotations: [], log: null },
       ],
     });
+    if (gateLog !== null) {
+      w.runs.push({
+        id: id(), run_attempt: 1, head_sha: group, event: 'merge_group', status: 'completed', conclusion: 'failure',
+        path: '.github/workflows/ci-gate.yml', created_at: created, updated_at: at, pull_requests: [],
+        jobs: [{ id: id(), name: 'CI Gate', run_attempt: 1, conclusion: 'failure', started_at: created, completed_at: at, steps: [], annotations: [], log: gateLog }],
+      });
+    }
     return { id: evId, at, runId };
   };
 
@@ -195,7 +206,10 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       }
       return json(200, { total_count: runs.length, workflow_runs: runs.map(runJson) });
     }
-    if (method === 'GET' && p === 'R/actions/workflows/ci-gate.yml/runs') return notFound();
+    if (method === 'GET' && p === 'R/actions/workflows/ci-gate.yml/runs') {
+      const runs = w.runs.filter((r) => r.path === '.github/workflows/ci-gate.yml' && r.head_sha === q.get('head_sha'));
+      return runs.length ? json(200, { total_count: runs.length, workflow_runs: runs.map(runJson) }) : notFound();
+    }
     if (method === 'GET' && (m = /^R\/actions\/runs\/(\d+)$/.exec(p))) {
       const r = w.runs.find((x) => x.id === Number(m[1]));
       return r ? json(200, runJson(r)) : notFound();

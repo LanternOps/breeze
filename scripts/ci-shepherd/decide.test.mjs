@@ -4,7 +4,7 @@ import { test } from 'node:test';
 
 import { breakerDecisions, emptyBreakerState, parkInBreaker, updateBreakers } from './breakers.mjs';
 import { classifyRun } from './classify.mjs';
-import { LABELS, LIMITS, MAX_REMOVALS, decide, removalsOfHead, restoreDecision, staleReasons, summarizeVerdict } from './decide.mjs';
+import { HOLD_CLASSES, LABELS, LIMITS, MAX_REMOVALS, decide, pageFor, removalsOfHead, restoreDecision, staleReasons, summarizeVerdict } from './decide.mjs';
 import { History } from './evidence.mjs';
 import { requiredJobIds } from './facts.mjs';
 import { REPO_ROOT } from './shepherd.mjs';
@@ -51,8 +51,32 @@ function fixtureVerdict(name, removalAt) {
 }
 
 test('limits are the plan values', () => {
-  assert.deepEqual(LIMITS, { infra: 3, known_flake: 3, suspected_flake: 2, timeout: 1, unknown: 1, real: 0, gate_fault: 0 });
+  assert.deepEqual(LIMITS, { infra: 3, known_flake: 3, suspected_flake: 2, timeout: 1, unknown: 1, real: 0, gate_fault: 0, thin_fault: 0 });
   assert.equal(MAX_REMOVALS, 3);
+  assert.deepEqual([...HOLD_CLASSES].sort(), ['gate_fault', 'real', 'thin_fault']);
+});
+
+// W05 (#10749): a thin-queue selection fault is never re-queued. It holds on the
+// first removal, whatever the auto-merge state, the queue or an open breaker, and
+// it pages: the operator decides whether the thin queue stays on.
+test('thin_fault holds at once, before auto-merge or a breaker can re-add it, and pages', () => {
+  const r = removal('R1', '2026-11-08T06:03:00Z');
+  const thinVerdict = verdict('thin_fault', { signature: 'thin_skip_unjustified', testIds: ['shared-1'], failedBoth: ['shared-1'] });
+  const breakers = [{ kind: 'main_broken', status: 'confirmed', key: 'shared-1' }];
+  for (const s of [snap({ events: [removedEv(r)] }), snap({ events: [removedEv(r)], queue: { state: 'QUEUED', position: 1 } }), snap({ events: [removedEv(r)], autoMerge: false })]) {
+    const d = decide({ removal: r, snapshot: s, verdict: thinVerdict, breakers, now: Date.parse(r.at) + MIN });
+    assert.deepEqual([d.kind, d.holdReason, d.limit], ['hold', 'thin_fault', 0]);
+    assert.ok(!ops(d).includes('enqueue'));
+    assert.match(pageFor(d), /^PAGE thin_skip_unjustified: PR 11312 /);
+    assert.match(pageFor(d), /gh variable set CI_THIN_QUEUE --body off/);
+  }
+  const lost = decide({ removal: r, snapshot: snap({ events: [removedEv(r)] }), verdict: verdict('thin_fault', { signature: 'attempt1_selection_missing' }), now: Date.parse(r.at) + MIN });
+  assert.equal(lost.holdReason, 'thin_fault');
+  assert.match(pageFor(lost), /^PAGE attempt1_selection_missing: PR 11312 /);
+  assert.doesNotMatch(pageFor(lost), /--body off/, 'a lost attempt-1 list is not a consumer bug');
+  // Nothing else pages, and a stale removal does not either.
+  assert.equal(pageFor(decide({ removal: r, snapshot: snap({ events: [removedEv(r)] }), verdict: verdict('real'), now: Date.parse(r.at) + MIN })), null);
+  assert.equal(pageFor(decide({ removal: r, snapshot: snap({ events: [removedEv(r)], state: 'CLOSED' }), verdict: thinVerdict, now: Date.parse(r.at) + MIN })), null);
 });
 
 test('#11312 sequence: three re-adds are recorded, the fourth removal of the head is held (Review Focus 5)', () => {
