@@ -37,7 +37,7 @@ tracking_issue: LanternOps/breeze#4342
 |---|---|---|
 | 1 | Purge = **stub**: content goes, the session row's accounting and flag metadata stay | W4 |
 | 2 | Flagged sessions are **held** while flagged | W4 |
-| 3 | Stub + scrubbed tool rows are hard-deleted at the org's **audit-retention** window (default 365) | W4 |
+| 3 | Stub + scrubbed tool rows are hard-deleted at the org's **audit-retention** window; an org with no audit policy row keeps them (decision B, W4 Phase 3) | W4 |
 | 4 | New `ai_data_policies.transcript_retention_days`, partner ceiling / org tighten-only, code default **365** | W4 |
 | 5 | Operational tables: **operator env only** | W1–W3, W5 |
 | 6 | Windows **as listed** in §3.2 | all |
@@ -520,7 +520,7 @@ W1.T6 checklist for 1 worker, 2 metric names and 4 variables (`ALERT_RETENTION_D
 
 1. **Stub technician sessions.** `type NOT IN CLIENT_SESSION_TYPES` (`services/clientAiHosts.ts:20`), window = effective `transcriptRetentionDays` (`mergeAiDataPolicies`). NULL = skip the org.
 2. **Stub client sessions.** `type IN CLIENT_SESSION_TYPES`, window = `client_ai_org_policies.retention_days`. NULL = skip. No partner fallback.
-3. **Hard-delete stubs.** `transcript_purged_at IS NOT NULL`, `last_activity_at < now − audit window`, `flagged_at IS NULL`, and NOT EXISTS `ai_screenshots` for the session. Audit window = `audit_retention_policies.retention_days`, else `DEFAULT_RETENTION_DAYS` (365) from `services/auditRetentionPolicyService.ts:11`. The delete cascades `ai_tool_executions`, `ai_messages`, `wisp_thread_sessions`, and (after the W4 FK change) `ai_action_plans`. SET NULL children are listed in the spec's §3.3 and verified: `ai_agent_runs`, `ai_budget_reservations`, `ai_run_artifacts`, `script_proposals`, `script_executions.ai_session_id`, `flows`, `flow_runs`, `ai_memory_blocks`, and `continued_from_session_id`.
+3. **Hard-delete stubs.** `transcript_purged_at IS NOT NULL`, `last_activity_at < now − audit window`, `flagged_at IS NULL`, and NOT EXISTS `ai_screenshots` for the session. Audit window = `audit_retention_policies.retention_days`. **No `audit_retention_policies` row → skip Phase 3 for that org; report the skipped count** (decision B, 2026-11-11, pending operator confirmation; the alternative A was a 365-day fallback). The audit prune walks policy rows only, so such an org keeps its `audit_logs` forever, and `get_audit_retention`'s 365 for a missing row is display-only (`configured: false`). The delete cascades `ai_tool_executions`, `ai_messages`, `wisp_thread_sessions`, and (after the W4 FK change) `ai_action_plans`. SET NULL children are listed in the spec's §3.3 and verified: `ai_agent_runs`, `ai_budget_reservations`, `ai_run_artifacts`, `script_proposals`, `script_executions.ai_session_id`, `flows`, `flow_runs`, `ai_memory_blocks`, and `continued_from_session_id`.
 
 **Stub eligibility (phases 1–2; all hold):**
 - `org_id = $org`, `transcript_purged_at IS NULL`, `flagged_at IS NULL` (OD 2).
@@ -564,7 +564,7 @@ W1.T6 checklist for 1 worker, 2 metric names and 4 variables (`ALERT_RETENTION_D
 - Technician: `apps/web/src/components/ai/AiChatMessages.tsx` shows the same banner when the loaded session (`stores/aiStore.ts` `loadSession`) has `transcriptPurgedAt`. `services/aiAgent.ts` `listSessions` adds `transcriptPurgedAt` to its projection. `AiConversationList.tsx` and the admin list in `settings/AiUsagePage.tsx` show a "Removed by retention" label in place of a null title.
 - Mobile: out of scope. The tool card already handles the tombstone (`toolIndicatorLogic.ts:118`).
 
-**Topology audit filter (correction 9).** Change `topologyAuditSessionCondition` (`routes/ai.ts:123-140`). An `ai_session` audit row stays visible only if `resource_id IS NULL` or `EXISTS` a **visible** session: `topology_site_id IS NULL`, or (for `kind: 'some'`) the session's site is in `visibility.siteIds`. A missing session therefore hides the row.
+**Topology audit filter (correction 9).** Change `topologyAuditSessionCondition` (`routes/ai.ts:123-140`). An `ai_session` audit row stays visible only if `resource_id IS NULL` or `EXISTS` a **visible** session: `topology_site_id IS NULL`, or (for `kind: 'sites'`) the session's site is in `visibility.siteIds`. A missing session therefore hides the row.
 
 **Copy (both AI cards).** Each field names its scope ("Technician AI conversations" vs "Client AI conversations") and links to the other. The technician card adds: "Audit log entries about a technician session, including tool inputs, follow the audit retention window, not this one" (§3.3 "What transcript retention does not reach"). Every new key goes in all 8 locales.
 
@@ -624,7 +624,7 @@ Tests: `routes/partnerAiDataPolicy.test.ts`, `routes/ai/dataPolicy.test.ts`, `ro
 - [ ] **Step 5: Commit** — `feat(ai): transcript retention settings and previews (#4342 W4)`.
 
 ### Task W4.T3: `aiTranscriptRetention.ts`
-**Files:** Create `apps/api/src/jobs/aiTranscriptRetention.ts` + `.test.ts`; Create `apps/api/src/__tests__/integration/aiTranscriptRetention.integration.test.ts`; Modify `apps/api/src/services/auditRetentionPolicyService.ts` (export `DEFAULT_RETENTION_DAYS`, today a module `const` at `:11`).
+**Files:** Create `apps/api/src/jobs/aiTranscriptRetention.ts` + `.test.ts`; Create `apps/api/src/__tests__/integration/aiTranscriptRetention.integration.test.ts`; (`auditRetentionPolicyService.ts` is unchanged: under decision B the job never uses its display-only default.)
 **Interfaces — Produces:**
 ```ts
 export async function loadTranscriptWindowsByOrg(): Promise<Map<string, { technicianDays: number | null; clientDays: number | null; auditDays: number }>>; // ONE system read of orgs, ai_data_policies, client_ai_org_policies, audit_retention_policies
@@ -652,7 +652,7 @@ A per-org failure is logged and counted, and does not stop the others. One bound
 
 ### Task W4.T4: Topology audit filter fails closed
 **Files:** Modify `apps/api/src/routes/ai.ts:123-140`; Test: the existing test that covers the topology audit filter (grep `topologyAuditSessionCondition`), plus a case in `src/__tests__/integration/` if the existing coverage is integration.
-- [ ] **Step 1: Write the failing test.** For a `kind: 'none'` viewer, an `ai_session` audit row whose session does not exist is **not** returned. A row for a non-topology session is returned. A row for a topology session is not. Repeat for a `kind: 'some'` viewer with the site in and out of `siteIds`.
+- [ ] **Step 1: Write the failing test.** For a `kind: 'none'` viewer, an `ai_session` audit row whose session does not exist is **not** returned. A row for a non-topology session is returned. A row for a topology session is not. Repeat for a `kind: 'sites'` viewer with the site in and out of `siteIds`.
 - [ ] **Step 2: Fail** (the missing-session case is returned today). **Step 3: Implement** the `EXISTS (visible session)` form. **Step 4: Pass. Step 5: Commit** — `fix(ai): topology audit filter fails closed on a missing session (#4342 W4)`.
 
 ### Task W4.T5: Settings cards + previews (web)
