@@ -23,3 +23,18 @@ func startDetachedProcess(name string, args ...string) error {
 	_ = cmd.Process.Release()
 	return nil
 }
+
+// startWatchedDetachedProcess is startDetachedProcess that keeps the handle
+// and waits on it, so the agent learns if the child exits while the agent is
+// still running (#11154). Waiting does not tie the child's lifetime to ours.
+func startWatchedDetachedProcess(name string, args ...string) (<-chan int, error) {
+	cmd := procspawn.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	}
+	procspawn.Prepare(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return watchExit(cmd), nil
+}
