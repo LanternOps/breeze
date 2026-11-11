@@ -373,10 +373,52 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
         }
         return response({ data: [] });
       });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       expect(await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }))).toBe(true);
       expect(reads).toBe(2);
       expect(createBodies()).toHaveLength(1);
       expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-new', wisp: expect.objectContaining({ grantId: 'grant-1' }) });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not resume'), expect.objectContaining({ sessionId: 'sess-live' }));
+      warn.mockRestore();
+    });
+
+    it('a resumable session that then fails to load falls back to a fresh session, logs it, and leaves no load error behind', async () => {
+      let reads = 0;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+        if (url === '/ai/sessions/sess-live' && !init?.method) {
+          reads += 1;
+          return reads === 1 ? response({ session: liveSession(), messages: [] }) : response({ error: 'boom' }, 500);
+        }
+        return response({ data: [] });
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }))).toBe(true);
+      expect(reads).toBe(2);
+      expect(createBodies()).toHaveLength(1);
+      expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-new', error: null, isLoading: false });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not resume'), expect.objectContaining({ sessionId: 'sess-live', error: 'Failed to load session' }));
+      warn.mockRestore();
+    });
+
+    it('a chat picked while the fallback create is in flight wins: the enter reports superseded', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ai/sessions' && init?.method === 'POST') {
+          await gate;
+          return response({ id: 'sess-new', orgId: 'org-a' });
+        }
+        if (url === '/ai/sessions/sess-picked') {
+          return response({ session: { id: 'sess-picked', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });
+        }
+        return response({ data: [] });
+      });
+      const entering = useAiStore.getState().enterWispMode(wisp({ lastSessionId: null }));
+      await useAiStore.getState().switchSession('sess-picked');
+      release();
+      expect(await entering).toBe(false);
+      expect(useAiStore.getState().sessionId).toBe('sess-picked');
     });
 
     it('a thread with no last session creates one without reading anything first', async () => {
@@ -402,6 +444,8 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
         return response({ data: [] });
       });
       const entering = useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-live' }));
+      // Loading from the first tick, so the pane's auto-enter guard (isLoading) holds during the check.
+      expect(useAiStore.getState()).toMatchObject({ isLoading: true, wisp: expect.objectContaining({ grantId: 'grant-1' }) });
       await useAiStore.getState().switchSession('sess-picked');
       release();
       expect(await entering).toBe(false);

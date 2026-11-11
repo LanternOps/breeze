@@ -1803,7 +1803,11 @@ export const useAiStore = create<AiState>()(
         if (!owns()) return false;
         const after = get();
         if (after.sessionId === resumeId && after.wisp?.grantId === w.grantId) return true;
-        // The read raced a close or a grant change: start a fresh session.
+        // The load failed, or the read raced a close or a grant change: start
+        // a fresh session. Say so — the create clears the load's error.
+        console.warn('[AiStore] could not resume the Wisp thread\'s live session; starting a new one', {
+          sessionId: resumeId, boundSessionId: after.sessionId, error: after.error,
+        });
         set({ wisp: w, ...CLEARED_SESSION });
       }
     }
