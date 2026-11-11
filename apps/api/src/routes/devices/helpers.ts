@@ -3,7 +3,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
-import type { AuthContext } from '../../middleware/auth';
+import { siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import { canAccessSite, type UserPermissions } from '../../services/permissions';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 
@@ -88,10 +88,10 @@ async function replacementTargetVisible(
   auth: ReplacementLinkAuth,
 ): Promise<boolean> {
   if (!(await ensureOrgAccess(target.orgId, auth))) return false;
-  const siteVisible = auth.canAccessSite
-    ? auth.canAccessSite(target.siteId)
-    : !auth.allowedSiteIds || (target.siteId !== null && auth.allowedSiteIds.includes(target.siteId));
-  if (!siteVisible) return false;
+  // Without the closure, build it from the allowlist with the same rule the
+  // auth middleware uses, so a malformed (null) allowlist denies (#6790).
+  const canAccessSite = auth.canAccessSite ?? siteAccessCheck(auth.allowedSiteIds);
+  if (!canAccessSite(target.siteId)) return false;
   return !auth.allowedDeviceIds || auth.allowedDeviceIds.includes(target.id);
 }
 

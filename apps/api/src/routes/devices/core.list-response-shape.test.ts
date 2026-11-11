@@ -55,6 +55,10 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  // The reinstall-link redaction builds the site closure from the allowlist
+  // when the auth context has none; this auth has no allowlist (unrestricted).
+  siteAccessCheck: (allowed?: string[]) => (siteId?: string | null) =>
+    allowed === undefined || (!!siteId && Array.isArray(allowed) && allowed.includes(siteId)),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     c.set('permissions', {
       permissions: [{ resource, action }],
