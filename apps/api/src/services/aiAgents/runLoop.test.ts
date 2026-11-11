@@ -959,12 +959,19 @@ describe('executeAgentRun', () => {
     });
     // The server advertises under the same exposure (compact descriptions; no session to read it from).
     expect(createBreezeMcpServer.mock.calls[0]?.[5]).toMatchObject({ toolExposure: { profile: 'minimal', promptMode: 'constrained' } });
+    // And the ledger records it.
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, toolExposure: { profile: 'minimal', fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/) },
+    }));
   });
 
   it('#11395: the identity tool profile passes no toolExposure to the server (registration unchanged)', async () => {
     seedRows();
     await executeAgentRun(RUN_ID);
     expect(createBreezeMcpServer.mock.calls[0]?.[5] ?? {}).not.toHaveProperty('toolExposure');
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, toolExposure: { profile: 'full', fingerprint: 'full' },
+    }));
   });
 
   it('a non-catalog run takes its child env from prepareSdkChild for the resolved connection', async () => {

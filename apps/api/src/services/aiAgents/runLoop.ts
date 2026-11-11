@@ -2784,6 +2784,8 @@ async function driveSdkLoop(
   });
   const exposedNames = toolProfile.exposedNames;
   const registeredOnlyTools = toolProfile.onlyTools;
+  // #11395: ledger provenance for every hop's settlement.
+  const runToolExposure = { profile: toolProfile.exposure.profile, fingerprint: toolProfile.exposure.fingerprint };
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
@@ -3182,6 +3184,7 @@ async function driveSdkLoop(
           messageCount: hopTurns,
           toolExecutionCount: 0,
           prompt: hopPromptProvenance,
+          toolExposure: runToolExposure,
         });
         priorHopsCostCents += settledHop.costCents;
         // Review S1: deferred but NOT persisted — keep the reservation held.
@@ -3283,6 +3286,7 @@ async function driveSdkLoop(
           messageCount: Math.max(1, turnCount - hopTurnsAtStart),
           toolExecutionCount: outcome.toolExecutionCount,
           prompt: promptProvenance,
+          toolExposure: runToolExposure,
         });
         // The run row carries the billed number (which also prices any model
         // the CLI switched to on its own at its platform rate), plus what the

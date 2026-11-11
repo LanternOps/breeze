@@ -2390,6 +2390,10 @@ export class StreamingSessionManager {
         // W11: the live query's prompt, not the claimed binding's profile (a
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
+        // #11395: the tool exposure this live query was created with.
+        toolExposure: session.toolExposure
+          ? { profile: session.toolExposure.profile, fingerprint: session.toolExposure.fingerprint }
+          : null,
         toolExecutionCount,
         // #10400: work round-trips only — a ToolSearch-only round-trip loads
         // tool definitions and is not charged to the session's turn budget.
