@@ -140,7 +140,7 @@ const WISP_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = (() => {
   const registry = new Map<string, AiTool>();
   registerWispConcernTools(registry);
   registerWispCheckInTools(registry);
-  return Object.fromEntries([...registry].map(([name, tool]) => [name, tool.definition.description]));
+  return Object.fromEntries([...registry].map(([name, tool]) => [name, tool.definition.description ?? '']));
 })();
 
 const STANDING_BLOCK_RE = new RegExp(`<${STANDING_STATE_TAG}\\b[\\s\\S]*?</${STANDING_STATE_TAG}>`, 'g');

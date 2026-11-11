@@ -179,7 +179,7 @@ describe('wisp concern tools — registry', () => {
   });
 
   it('create_watch sends a single awaited event to schedule_check_in (#11685)', () => {
-    const d = tools.get('create_watch')!.definition.description;
+    const d = tools.get('create_watch')!.definition.description ?? '';
     // A device coming online, a script finishing or a run settling is one event, not a condition to poll.
     expect(d).toMatch(/not for waiting on one event \(a device coming online, a script finishing, a run settling\): use schedule_check_in/i);
     expect(d.length).toBeLessThanOrEqual(300);
