@@ -72,8 +72,13 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: "device.permanent_delete", icon: Trash2 },
   { prefix: "device.restore", icon: RotateCcw },
   { prefix: "device.reliability", icon: ShieldCheck }, // baseline set / cleared (#5876)
-  // #8318: device.reinstall_suspected and device.reinstall.* (requested,
-  // staged, cancelled, expired, reattached) on the target record.
+  // #8318: device.reinstall_suspected and device.reinstall.* on the target
+  // record. The feed's server-side actor filter (actor_type <> 'agent',
+  // services/deviceEventFeed.ts) drops the rows the agent's own calls write
+  // (device.reinstall.staged, and the cancelled/expired rows its phase-1 or
+  // confirm call writes), so what shows here is `requested` and `reattached`
+  // (both written as the requesting user) plus system rows
+  // (reinstall_suspected, the expiry sweep).
   { prefix: "device.reinstall", icon: RefreshCcw },
   // Automated agent-dispatched commands (scheduled patches, automations). Listed
   // here ONLY so ruleFor() can pick an icon — they are deliberately excluded
