@@ -23,11 +23,16 @@
  * `ticketContext` and is rendered in the card body only.
  */
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, type SQL } from 'drizzle-orm';
 import type { AiApprovalTicketContext } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tickets } from '../../db/schema';
+import type { AuthContext } from '../../middleware/auth';
+import { deviceInSiteScope } from '../../routes/tickets/siteScope';
 import { captureException } from '../sentry';
+
+/** The slice of the call's auth the read is cut to: the same reach `findTicketWithAccess` (aiToolsTicketing.ts) applies. */
+export type ApprovalTicketReach = Pick<AuthContext, 'orgCondition' | 'allowedSiteIds' | 'allowedDeviceIds'>;
 
 /** Shape-only UUID guard, as in approvalDeviceName.ts: `tickets.id` is a uuid, so junk would raise 22P02. */
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -42,24 +47,38 @@ export function argumentTicketId(toolName: string, input: Record<string, unknown
 /**
  * The ticket's number, subject and requester, or `null` when it cannot be
  * resolved. Opens its own system-scoped context outside any ambient one, as
- * approvalDeviceName.ts does; system scope is safe only because of the
- * `orgId` pin.
+ * approvalDeviceName.ts does. System scope is safe only because the read is
+ * cut back down twice: to the intent's `orgId`, and to the CALLER's reach —
+ * the same predicate the tool's own `findTicketWithAccess` applies (not
+ * deleted, in the caller's org reach, its device in the caller's site/device
+ * scope). A ticket the caller could not read through the tool shows nothing
+ * here either.
  */
-export async function resolveApprovalTicketContext(ticketId: string, orgId: string): Promise<AiApprovalTicketContext | null> {
+export async function resolveApprovalTicketContext(
+  ticketId: string,
+  orgId: string,
+  reach: ApprovalTicketReach,
+): Promise<AiApprovalTicketContext | null> {
   try {
     const row = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
+        const conditions: SQL[] = [eq(tickets.id, ticketId), eq(tickets.orgId, orgId), isNull(tickets.deletedAt)];
+        const reachCondition = reach.orgCondition(tickets.orgId);
+        if (reachCondition) conditions.push(reachCondition);
         const [ticket] = await db
           .select({
             ticketNumber: tickets.ticketNumber,
             subject: tickets.subject,
             submitterName: tickets.submitterName,
             submitterEmail: tickets.submitterEmail,
+            deviceId: tickets.deviceId,
           })
           .from(tickets)
-          .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
+          .where(and(...conditions))
           .limit(1);
-        return ticket ?? null;
+        if (!ticket) return null;
+        if (ticket.deviceId && !(await deviceInSiteScope(reach, ticket.deviceId))) return null;
+        return ticket;
       }, 'actionIntents.approvalCardTicket'),
     );
     if (!row) return null;

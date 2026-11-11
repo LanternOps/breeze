@@ -2338,7 +2338,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       // as is). The ticket's subject and requester ride as `ticketContext` for
       // the card body, never in a headline. Both reads are non-fatal.
       const cardTicketId = argumentTicketId(toolName, input as Record<string, unknown>);
-      const ticketContext = cardTicketId ? await resolveApprovalTicketContext(cardTicketId, intentOrgId) : null;
+      const ticketContext = cardTicketId
+        ? await resolveApprovalTicketContext(cardTicketId, intentOrgId, callReach(session, wispCall.current))
+        : null;
       const cardDescription = nameApprovalCardTargets(description, {
         deviceId: deviceId ?? null,
         deviceName: deviceContext?.displayName ?? deviceContext?.hostname ?? null,

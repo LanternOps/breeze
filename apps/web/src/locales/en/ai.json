@@ -23,10 +23,13 @@
     "ticketComment": {
       "publicTo": "Customer-visible reply to {{recipient}}",
       "publicNoRecipient": "Customer-visible reply (emails the requester)",
+      "publicNoEmail": "Customer-visible reply (no requester email on file, so no email is sent)",
       "internal": "Internal note (not visible to the customer)"
     },
     "memory": {
       "heading": "Wisp will remember",
+      "subjectKey": "Key: {{key}} (replaces any earlier memory with this key)",
+      "moreInParameters": "More fields are only under Show parameters.",
       "scope": {
         "user": "Only you",
         "org": "This customer",

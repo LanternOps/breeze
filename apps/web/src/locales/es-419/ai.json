@@ -23,10 +23,13 @@
     "ticketComment": {
       "publicTo": "Respuesta visible para el cliente a {{recipient}}",
       "publicNoRecipient": "Respuesta visible para el cliente (se envía por correo al solicitante)",
+      "publicNoEmail": "Respuesta visible para el cliente (no hay correo del solicitante registrado, así que no se envía correo)",
       "internal": "Nota interna (no visible para el cliente)"
     },
     "memory": {
       "heading": "Wisp recordará",
+      "subjectKey": "Clave: {{key}} (reemplaza cualquier recuerdo anterior con esta clave)",
+      "moreInParameters": "Hay más campos solo en Mostrar parámetros.",
       "scope": {
         "user": "Solo tú",
         "org": "Este cliente",

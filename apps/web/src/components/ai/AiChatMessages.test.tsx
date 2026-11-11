@@ -277,6 +277,27 @@ describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
     expect(onIntentDecided).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards ticketContext to the approval card (#11674)', () => {
+    approvalDialog.props.length = 0;
+    const ticketContext = { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow' };
+
+    render(
+      <AiChatMessages
+        {...baseProps}
+        messages={[{ id: '1', role: 'user', content: 'reply to Dana' }] as never}
+        pendingApproval={{
+          executionId: 'e1',
+          toolName: 'manage_tickets',
+          input: { action: 'comment', isPublic: true, content: 'Hi' },
+          description: 'Post PUBLIC comment on ticket T-2026-0001',
+          ticketContext,
+        }}
+      />,
+    );
+
+    expect(approvalDialog.props.at(-1)!.ticketContext).toEqual(ticketContext);
+  });
+
   it('remounts the approval card for each new execution so decide state cannot leak', () => {
     // pendingApproval is REPLACED in place by every approval_required event.
     // Without key={executionId} React reconciles the same instance and the

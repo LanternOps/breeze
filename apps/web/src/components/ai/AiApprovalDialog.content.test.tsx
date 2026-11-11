@@ -58,8 +58,17 @@ describe('AiApprovalDialog — a ticket comment shows its message (#11674)', () 
     expect(recipient).toHaveTextContent(/customer-visible/i);
   });
 
-  it('says a public reply emails the requester even when the ticket has no named requester', () => {
-    render(publicReplyCard({ ticketContext: { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow' } }));
+  it('says no email is sent when the ticket has no requester email, even with a name', () => {
+    // The notify worker emails tickets.submitter_email only; a name alone reaches nobody.
+    render(publicReplyCard({ ticketContext: { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow', requesterName: 'Dana' } }));
+
+    const recipient = screen.getByTestId('approval-ticket-comment-recipient');
+    expect(recipient).toHaveTextContent(/no requester email/i);
+    expect(recipient).not.toHaveTextContent('Dana');
+  });
+
+  it('falls back to the headline\'s wording when the ticket could not be read', () => {
+    render(publicReplyCard({ ticketContext: undefined }));
 
     expect(screen.getByTestId('approval-ticket-comment-recipient')).toHaveTextContent(/emails the requester/i);
   });
@@ -105,6 +114,46 @@ describe('AiApprovalDialog — a memory write shows what will be stored (#11674)
       .toBe('Never reboot NW-RECEPTION-PC during business hours.');
     expect(preview).toHaveTextContent(/standing instruction/i);
     expect(preview).toHaveTextContent(/only you/i);
+    // The key decides which earlier memory this one replaces.
+    expect(preview).toHaveTextContent('no-reboot-reception');
+  });
+
+  it('shows the fields that shape a standing instruction next to its text', () => {
+    render(rememberCard({
+      ownerKind: 'user',
+      blockType: 'standing_instruction',
+      subjectKey: 'no-reboot-reception',
+      content: {
+        instructionId: '0b0b0b0b-1111-4222-8333-444455556666',
+        text: 'Never reboot NW-RECEPTION-PC.',
+        effect: 'deny',
+        verb: 'reboot',
+        condition: 'during business hours',
+        until: null,
+        targetLabels: ['NW-RECEPTION-PC'],
+      },
+    }));
+
+    expect(screen.getByTestId('approval-memory-text').textContent).toBe('Never reboot NW-RECEPTION-PC.');
+    const fields = screen.getByTestId('approval-memory-fields').textContent ?? '';
+    expect(fields).toContain('condition: during business hours');
+    expect(fields).toContain('effect: deny');
+    expect(fields).toContain('targetLabels: NW-RECEPTION-PC');
+    // Internal provenance ids are not what the approver reads for.
+    expect(fields).not.toContain('instructionId');
+    expect(screen.queryByTestId('approval-memory-more')).toBeNull();
+  });
+
+  it('says when some of the content is only under the parameters', () => {
+    render(rememberCard({
+      ownerKind: 'org',
+      orgId: '11111111-2222-4333-8444-555566667777',
+      blockType: 'work_summary',
+      subjectKey: 'work:2026-11-10:xray',
+      content: { text: 'Cleared the x-ray workstation temp files.', evidence: [{ kind: 'ticket', id: 't-1' }] },
+    }));
+
+    expect(screen.getByTestId('approval-memory-more')).toHaveTextContent(/show parameters/i);
   });
 
   it('shows a customer-scoped memory as belonging to the customer', () => {
@@ -127,7 +176,8 @@ describe('AiApprovalDialog — a memory write shows what will be stored (#11674)
       content: { tone: 'short and friendly', signOff: 'The Helpdesk' },
     }));
 
-    const text = screen.getByTestId('approval-memory-text').textContent ?? '';
+    expect(screen.queryByTestId('approval-memory-text')).toBeNull();
+    const text = screen.getByTestId('approval-memory-fields').textContent ?? '';
     expect(text).toContain('tone: short and friendly');
     expect(text).toContain('signOff: The Helpdesk');
     expect(text).not.toContain('{');

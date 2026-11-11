@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const dbState = {
   whereArgs: [] as unknown[],
-  rows: [] as Array<{ ticketNumber: string; subject: string; submitterName: string | null; submitterEmail: string | null }>,
+  rows: [] as Array<{ ticketNumber: string; subject: string; submitterName: string | null; submitterEmail: string | null; deviceId?: string | null }>,
   failWith: null as Error | null,
   systemContextLabels: [] as Array<string | undefined>,
   outsideContextCalls: 0,
@@ -49,6 +49,11 @@ vi.mock('../../db', () => ({
 const captureException = vi.fn();
 vi.mock('../sentry', () => ({ captureException: (e: unknown) => captureException(e) }));
 
+const deviceInSiteScope = vi.fn(async (_auth: unknown, _deviceId: string) => true);
+vi.mock('../../routes/tickets/siteScope', () => ({
+  deviceInSiteScope: (auth: unknown, deviceId: string) => deviceInSiteScope(auth, deviceId),
+}));
+
 import { and, eq } from 'drizzle-orm';
 import { argumentTicketId, nameApprovalCardTargets, resolveApprovalTicketContext } from './approvalCardContext';
 import { tickets } from '../../db/schema';
@@ -57,6 +62,20 @@ const TICKET_ID = '2aad0601-1111-4222-8333-444455556666';
 const DEVICE_ID = '8f14580d-1111-4222-8333-444455556666';
 const ORG_ID = '11111111-2222-4333-8444-555566667777';
 const OTHER_ORG_ID = '99999999-2222-4333-8444-555566667777';
+const REACH_ORG_ID = '22222222-2222-4333-8444-555566667777';
+
+/** A caller with no org restriction of its own (org-scope sessions often return undefined). */
+const openReach = { orgCondition: () => undefined, allowedSiteIds: undefined, allowedDeviceIds: undefined } as never;
+
+/** Every column name referenced anywhere inside a drizzle SQL condition. */
+function columnNames(node: unknown): string[] {
+  if (node === null || typeof node !== 'object') return [];
+  const obj = node as Record<string, unknown>;
+  if ('table' in obj && typeof obj.name === 'string' && 'columnType' in obj) return [obj.name];
+  const chunks = obj.queryChunks;
+  if (Array.isArray(chunks)) return chunks.flatMap(columnNames);
+  return [];
+}
 
 function boundParams(node: unknown): unknown[] {
   if (node === null || typeof node !== 'object') return [];
@@ -74,6 +93,8 @@ beforeEach(() => {
   dbState.systemContextLabels = [];
   dbState.outsideContextCalls = 0;
   captureException.mockClear();
+  deviceInSiteScope.mockClear();
+  deviceInSiteScope.mockResolvedValue(true);
 });
 
 describe('boundParams (control for the org-pin assertion)', () => {
@@ -88,7 +109,7 @@ describe('resolveApprovalTicketContext', () => {
   it('pins the read to BOTH the ticket id and the org, under a fresh system context', async () => {
     dbState.rows = [{ ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow', submitterName: 'Dana', submitterEmail: 'dana@example.test' }];
 
-    await resolveApprovalTicketContext(TICKET_ID, ORG_ID);
+    await resolveApprovalTicketContext(TICKET_ID, ORG_ID, openReach);
 
     expect(dbState.whereArgs).toHaveLength(1);
     const params = boundParams(dbState.whereArgs[0]);
@@ -102,7 +123,7 @@ describe('resolveApprovalTicketContext', () => {
   it('returns the number, subject and the requester the reply emails', async () => {
     dbState.rows = [{ ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow', submitterName: 'Dana', submitterEmail: 'dana@example.test' }];
 
-    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID)).resolves.toEqual({
+    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID, openReach)).resolves.toEqual({
       ticketNumber: 'T-2026-0001',
       subject: 'X-ray workstation is really slow',
       requesterName: 'Dana',
@@ -113,20 +134,40 @@ describe('resolveApprovalTicketContext', () => {
   it('omits requester fields the ticket does not carry', async () => {
     dbState.rows = [{ ticketNumber: 'T-2026-0002', subject: 'Printer', submitterName: null, submitterEmail: null }];
 
-    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID)).resolves.toEqual({
+    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID, openReach)).resolves.toEqual({
       ticketNumber: 'T-2026-0002',
       subject: 'Printer',
     });
   });
 
   it('resolves to nothing when the org pin matches no row', async () => {
-    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID)).resolves.toBeNull();
+    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID, openReach)).resolves.toBeNull();
+  });
+
+  it('applies the caller\'s own reach: their org condition and the not-deleted filter', async () => {
+    const reach = { orgCondition: () => eq(tickets.orgId, REACH_ORG_ID), allowedSiteIds: undefined, allowedDeviceIds: undefined } as never;
+
+    await resolveApprovalTicketContext(TICKET_ID, ORG_ID, reach);
+
+    const condition = dbState.whereArgs[0];
+    expect(boundParams(condition)).toContain(REACH_ORG_ID);
+    expect(columnNames(condition)).toContain('deleted_at');
+  });
+
+  it('shows nothing for a ticket whose device is outside the caller\'s site scope', async () => {
+    // findTicketWithAccess (aiToolsTicketing.ts) hides it from the tool too.
+    dbState.rows = [{ ticketNumber: 'T-2026-0001', subject: 'S', submitterName: null, submitterEmail: 'a@example.test', deviceId: 'dev-1' }];
+    deviceInSiteScope.mockResolvedValue(false);
+    const reach = { orgCondition: () => undefined, allowedSiteIds: ['site-a'], allowedDeviceIds: undefined } as never;
+
+    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID, reach)).resolves.toBeNull();
+    expect(deviceInSiteScope).toHaveBeenCalledWith(reach, 'dev-1');
   });
 
   it('reports a failed read to Sentry and degrades to null instead of throwing', async () => {
     dbState.failWith = new Error('connection terminated');
 
-    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID)).resolves.toBeNull();
+    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID, openReach)).resolves.toBeNull();
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 });

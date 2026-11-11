@@ -16,37 +16,50 @@ import type { AiApprovalTicketContext } from "@breeze/shared";
  */
 
 const MEMORY_SCOPES = new Set(["user", "org", "partner"]);
-/** Internal ids a standing-instruction block carries; not what the approver is reading for. */
-const MEMORY_ID_KEYS = new Set(["instructionId", "sourceMessageId", "captureId", "deviceId"]);
-
-function formatRecipient(ctx: AiApprovalTicketContext | undefined): string | null {
-  if (!ctx) return null;
-  const name = ctx.requesterName?.trim();
-  const email = ctx.requesterEmail?.trim();
-  if (name && email) return `${name} <${email}>`;
-  return name || email || null;
-}
+/** Provenance ids a standing-instruction block carries; not what the approver is reading for. */
+const MEMORY_PROVENANCE_KEYS = new Set(["instructionId", "sourceMessageId", "captureId"]);
 
 /**
- * The text a memory block will hold. `content.text` is the canonical field
- * (standing instructions, `wispStandingInstruction.ts`); any other block shape
- * falls back to its scalar fields as `key: value` lines. Nested values stay in
- * the raw parameters below the card.
+ * Who a public reply emails. The notify worker sends a customer reply to
+ * `tickets.submitter_email` only (ticketNotifyWorker.ts), so a requester name
+ * without an email reaches nobody and is not offered as a recipient.
  */
-export function memoryText(content: unknown): string | null {
-  if (!content || typeof content !== "object" || Array.isArray(content)) return null;
+function formatRecipient(ctx: AiApprovalTicketContext): string | null {
+  const email = ctx.requesterEmail?.trim();
+  if (!email) return null;
+  const name = ctx.requesterName?.trim();
+  return name ? `${name} <${email}>` : email;
+}
+
+export interface MemoryPreview {
+  /** `content.text`, the canonical field (standing instructions, `wispStandingInstruction.ts`). */
+  text: string | null;
+  /** Every other scalar field, as `key: value` lines — for a standing instruction these shape the rule. */
+  fields: string[];
+  /** Something (a nested value) is not shown here and is only under the raw parameters. */
+  omitted: boolean;
+}
+
+/** What a memory block will hold, split for the card. Provenance ids are left out. */
+export function memoryPreview(content: unknown): MemoryPreview {
+  if (!content || typeof content !== "object" || Array.isArray(content)) {
+    return { text: null, fields: [], omitted: content !== undefined && content !== null };
+  }
   const record = content as Record<string, unknown>;
-  if (typeof record.text === "string" && record.text.trim()) return record.text;
-  const lines: string[] = [];
+  const text = typeof record.text === "string" && record.text.trim() ? record.text : null;
+  const fields: string[] = [];
+  let omitted = false;
   for (const [key, value] of Object.entries(record)) {
-    if (MEMORY_ID_KEYS.has(key) || value === null || value === undefined) continue;
+    if ((key === "text" && text !== null) || MEMORY_PROVENANCE_KEYS.has(key) || value === null || value === undefined) continue;
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      lines.push(`${key}: ${String(value)}`);
-    } else if (Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" || typeof v === "number")) {
-      lines.push(`${key}: ${value.join(", ")}`);
+      fields.push(`${key}: ${String(value)}`);
+    } else if (Array.isArray(value) && value.every((v) => typeof v === "string" || typeof v === "number")) {
+      if (value.length > 0) fields.push(`${key}: ${value.join(", ")}`);
+    } else {
+      omitted = true;
     }
   }
-  return lines.length > 0 ? lines.join("\n") : null;
+  return { text, fields, omitted };
 }
 
 function TicketContextRow({ ctx }: { ctx: AiApprovalTicketContext }) {
@@ -73,7 +86,7 @@ function TicketCommentPreview({
   ticketContext?: AiApprovalTicketContext;
 }) {
   const { t } = useTranslation("ai");
-  const recipient = formatRecipient(ticketContext);
+  const recipient = ticketContext ? formatRecipient(ticketContext) : null;
   return (
     <div className="mt-2 rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs">
       <div
@@ -89,7 +102,10 @@ function TicketCommentPreview({
           {isPublic
             ? recipient
               ? t("aiApprovalDialog.ticketComment.publicTo", { recipient })
-              : t("aiApprovalDialog.ticketComment.publicNoRecipient")
+              : ticketContext
+                ? t("aiApprovalDialog.ticketComment.publicNoEmail")
+                // The ticket could not be read: say what the headline says.
+                : t("aiApprovalDialog.ticketComment.publicNoRecipient")
             : t("aiApprovalDialog.ticketComment.internal")}
         </span>
       </div>
@@ -105,10 +121,11 @@ function TicketCommentPreview({
 
 function MemoryWritePreview({ input }: { input: Record<string, unknown> }) {
   const { t } = useTranslation("ai");
-  const text = memoryText(input.content);
+  const { text, fields, omitted } = memoryPreview(input.content);
   const ownerKind = typeof input.ownerKind === "string" && MEMORY_SCOPES.has(input.ownerKind) ? input.ownerKind : null;
   const blockType = typeof input.blockType === "string" ? input.blockType : null;
-  if (!text && !ownerKind && !blockType) return null;
+  const subjectKey = typeof input.subjectKey === "string" && input.subjectKey.trim() ? input.subjectKey : null;
+  if (!text && fields.length === 0 && !ownerKind && !blockType && !subjectKey) return null;
   return (
     <div data-testid="approval-memory-preview" className="mt-2 rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs">
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-medium text-gray-700 dark:text-gray-300">
@@ -135,6 +152,24 @@ function MemoryWritePreview({ input }: { input: Record<string, unknown> }) {
           className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100"
         >
           {text}
+        </div>
+      )}
+      {fields.length > 0 && (
+        <div
+          data-testid="approval-memory-fields"
+          className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700 dark:text-gray-300"
+        >
+          {fields.join("\n")}
+        </div>
+      )}
+      {subjectKey && (
+        <div data-testid="approval-memory-key" className="mt-1.5 break-words text-[11px] text-gray-500 dark:text-gray-400">
+          {t("aiApprovalDialog.memory.subjectKey", { key: subjectKey })}
+        </div>
+      )}
+      {omitted && (
+        <div data-testid="approval-memory-more" className="mt-1 text-[11px] italic text-gray-500 dark:text-gray-400">
+          {t("aiApprovalDialog.memory.moreInParameters")}
         </div>
       )}
     </div>

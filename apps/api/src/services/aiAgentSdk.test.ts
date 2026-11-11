@@ -1188,6 +1188,41 @@ describe('createSessionPreToolUse', () => {
     });
   });
 
+  // #11674: the per-step (non-intent) Tier-2 card gets the same naming and
+  // ticket context as the intent-backed one.
+  describe('per-step Tier 2 approval card names the ticket (#11674)', () => {
+    afterEach(() => {
+      mockResolveRowTarget.mockReset();
+    });
+
+    it('publishes the ticket number and ticketContext, and files no intent', async () => {
+      const ticketId = '2aad0601-1111-4222-8333-444455556666';
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: true,
+        description: 'Post internal note on ticket #2aad0601...',
+      } as any);
+      const ticketContext = { ticketNumber: 'T-2026-0002', subject: 'Printer offline' };
+      mockResolveApprovalTicketContext.mockResolvedValue(ticketContext);
+      mockResolveRowTarget.mockResolvedValue({ orgId: 'org-1', partnerId: null });
+      mockInsertReturning({ id: 'exec-t2' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      await createSessionPreToolUse(session)('manage_tickets', {
+        action: 'comment', ticketId, isPublic: false, content: 'Checked the spooler.',
+      });
+
+      const published = publishedApprovalRequired(session);
+      expect(published.description).toBe('Post internal note on ticket T-2026-0002');
+      expect(published.ticketContext).toEqual(ticketContext);
+      expect(published.intentBacked).toBeUndefined();
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    });
+  });
+
   describe('#3130: read-only Tier 2 auto-executes under per_step', () => {
     const readOnlyCheck = {
       allowed: true,
@@ -1803,21 +1838,31 @@ describe('createSessionPreToolUse', () => {
       } as any);
       const ticketContext = { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow', requesterName: 'Dana', requesterEmail: 'dana@example.test' };
       mockResolveApprovalTicketContext.mockResolvedValue(ticketContext);
-      // A ticket write names its row by id, so the row picks the intent org (#11222).
-      mockResolveRowTarget.mockResolvedValueOnce({ orgId: 'org-1', partnerId: null });
+      // A ticket write names its row by id, so the row picks the intent org
+      // (#11222) — here an org in reach that is NOT the session org, so the
+      // assertion below can tell the intent org from `session.orgId`.
+      mockResolveRowTarget.mockResolvedValueOnce({ orgId: 'org-ticket', partnerId: null });
       mockInsertReturning({ id: 'exec-t' });
       mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-t', approvalRequestIds: ['appr-t'] }));
       mockWaitForIntentDecision.mockResolvedValue('rejected');
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       } as any);
-      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+      const reach = makeAuth({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: ['org-1', 'org-ticket'],
+        canAccessOrg: (orgId: string) => ['org-1', 'org-ticket'].includes(orgId),
+      });
+      const session = makeActiveSession({ approvalMode: 'auto_approve', auth: reach, toolAuth: reach });
 
       await createSessionPreToolUse(session)('manage_tickets', {
         action: 'comment', ticketId, isPublic: true, content: 'Hi Dana,\nsee you at 2pm.',
       });
 
-      expect(mockResolveApprovalTicketContext).toHaveBeenCalledWith(ticketId, 'org-1');
+      expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-ticket' });
+      // Pinned to the intent's org and cut to the call's own reach.
+      expect(mockResolveApprovalTicketContext).toHaveBeenCalledWith(ticketId, 'org-ticket', reach);
       const published = publishedApprovalRequired(session);
       expect(published.description).toBe('Post PUBLIC comment on ticket T-2026-0001 (customer-visible; emails the requester)');
       expect(published.ticketContext).toEqual(ticketContext);

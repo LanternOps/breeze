@@ -23,10 +23,13 @@
     "ticketComment": {
       "publicTo": "{{recipient}} için müşterinin görebileceği yanıt",
       "publicNoRecipient": "Müşterinin görebileceği yanıt (talep sahibine e-postayla gönderilir)",
+      "publicNoEmail": "Müşterinin görebileceği yanıt (kayıtlı talep sahibi e-postası yok, bu yüzden e-posta gönderilmez)",
       "internal": "Dahili not (müşteri göremez)"
     },
     "memory": {
       "heading": "Wisp hatırlayacak",
+      "subjectKey": "Anahtar: {{key}} (bu anahtara sahip önceki anıların yerini alır)",
+      "moreInParameters": "Diğer alanlar yalnızca Parametreleri göster altında.",
       "scope": {
         "user": "Yalnızca siz",
         "org": "Bu müşteri",
