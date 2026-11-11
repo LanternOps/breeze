@@ -7,6 +7,7 @@
 //   node run.cjs --only a,b          just these ids
 //   node run.cjs --no-reset          skip sh/reset.sh between scenarios
 //   node run.cjs --list              validate and list the scenarios, run nothing
+//   node run.cjs --scenarios <dir>   read scenarios from another directory (a doctored copy)
 //
 // env WISP_EVAL_TURN_CAP (default 100): refuse to start a scenario once the stack has
 //   seen this many model turns (user messages + agent runs) in total.
@@ -24,7 +25,7 @@ const flag = (f) => args.includes(f);
 const opt = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
 
 function loadScenarios() {
-  const dir = path.join(HERE, 'scenarios');
+  const dir = opt('--scenarios') ? path.resolve(opt('--scenarios')) : path.join(HERE, 'scenarios');
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
   const list = files.map((f) => ({ file: f, ...JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) }));
   const errs = list.flatMap(validateScenario);

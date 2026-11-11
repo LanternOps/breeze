@@ -6,7 +6,8 @@
   "door": "wisp",
   "steps": [
     { "name": "launch", "type": "say", "approve": "approve", "maxSec": 150,
-      "text": "Dana at Northwind Dental says the x-ray workstation is crawling. Find out why and tell me what you'd do." },
+      "text": "Dana at Northwind Dental says the x-ray workstation is crawling again right now. Start a new troubleshooting specialist on it (a fresh run, not a continuation of an earlier one) and tell me what you'd do.",
+      "note": "earlier runs of this scenario leave specialist history on NW-XRAY-WS; a continuation of the same prior run dedupes onto the earlier continuation and nothing new runs" },
     { "name": "result-posted", "type": "wait_sql", "timeoutSec": 180, "required": true,
       "sql": "select (count(*) > 0)::text from wisp_thread_posts where kind = 'specialist_result' and created_at > {{since}}",
       "equals": "true" },
