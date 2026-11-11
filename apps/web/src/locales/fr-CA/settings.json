@@ -8407,6 +8407,7 @@
       "updated": "Mis à jour",
       "actions": "Actions"
     },
+    "expired": "Expirée",
     "statusValue": {
       "unconfirmed": "Non confirmé",
       "confirmed": "Confirmé",
@@ -8487,7 +8488,9 @@
       "label": "Inscription autonome",
       "off": "Désactivée",
       "approval": "Approbation requise",
-      "instant": "Immédiate"
+      "instant": "Immédiate",
+      "noVerifiedDomain": "Aucun domaine vérifié : personne ne peut s’inscrire tant que vous n’en avez pas vérifié un.",
+      "verifyDomain": "Vérifier un domaine"
     },
     "ssoNewPerson": {
       "label": "Première connexion Microsoft / Google",
@@ -8558,6 +8561,26 @@
         "protectedOrg": "Cette organisation ne peut pas être liée à un locataire Microsoft."
       }
     },
+    "passwordFallbackNotice": {
+      "title": "La connexion au portail est revenue au mot de passe",
+      "body": "La connexion Microsoft est désactivée pour le portail de cette organisation. Ses utilisateurs se connectent donc avec un mot de passe jusqu’à ce que le locataire soit prouvé de nouveau.",
+      "tenant": "(Locataire {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Le lien du locataire Microsoft a été supprimé le {{date}}.",
+        "ai_for_office_mapping_removed": "Le mappage de locataire AI for Office, qui contenait la preuve, a été supprimé le {{date}}.",
+        "ai_for_office_mapping_changed": "Le mappage de locataire AI for Office a été remplacé par un autre locataire le {{date}}, ce qui a effacé la preuve.",
+        "tenant_displaced": "Une autre organisation a prouvé ce locataire Microsoft le {{date}}.",
+        "unknown": "La preuve du locataire Microsoft a été perdue le {{date}}."
+      },
+      "rerun": "Refaire la preuve du locataire",
+      "dismiss": "Ignorer",
+      "toasts": {
+        "dismissed": "Avis ignoré."
+      },
+      "errors": {
+        "dismiss": "Impossible d’ignorer l’avis."
+      }
+    },
     "ssoOnlyConfirm": {
       "title": "Désactiver la connexion par mot de passe?",
       "intro": "L’enregistrement désactive la connexion par mot de passe pour les organisations ci-dessous.",
@@ -8617,6 +8640,8 @@
     "selectAll": "Sélectionner toutes les demandes",
     "selectOne": "Sélectionner la demande de {{email}}",
     "accountExists": "Possède déjà un compte — Refusez pour fermer la demande",
+    "domainUnverified": "Le domaine n’est plus vérifié",
+    "domainUnverifiedReason": "Approbation impossible : invitez directement cette personne si elle doit avoir accès.",
     "actions": {
       "approve": "Approuver",
       "deny": "Refuser",
@@ -8629,7 +8654,8 @@
       "notFound": "Demande introuvable",
       "identityLinked": "Connexion déjà liée à un autre compte",
       "failed": "Impossible de traiter cette demande",
-      "entraTenantNotProven": "Le locataire Microsoft de cette organisation n’est plus prouvé"
+      "entraTenantNotProven": "Le locataire Microsoft de cette organisation n’est plus prouvé",
+      "domainNotVerified": "Le domaine de courriel n’est plus vérifié"
     },
     "denyDialog": {
       "title": "Refuser la demande d’accès",
@@ -8647,7 +8673,8 @@
     "errors": {
       "load": "Impossible de charger les demandes d’accès.",
       "action": "Impossible de mettre à jour la demande d’accès.",
-      "bulk": "Impossible de traiter les demandes sélectionnées."
+      "bulk": "Impossible de traiter les demandes sélectionnées.",
+      "domainNotVerified": "Le domaine de courriel de cette personne n’est plus vérifié pour cette organisation. Invitez-la directement si elle doit avoir accès."
     },
     "summary": {
       "title": "Demandes d’accès en attente",

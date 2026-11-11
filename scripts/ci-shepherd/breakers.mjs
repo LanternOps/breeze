@@ -19,13 +19,16 @@
 //   confirmedAt? }. A cleared breaker leaves the state; it is returned once in
 //   `cleared` with `why`, and its `restore` list is what the tick re-queues.
 
+import { HOLD_CLASSES } from './decide.mjs';
+
 export const OUTAGE_PRS = 3;
 export const OUTAGE_WINDOW_MS = 60 * 60_000;
 export const OUTAGE_HOLD_MS = 20 * 60_000;
 export const MAIN_BROKEN_PRS = 3;
 export const MAIN_BROKEN_WINDOW_MS = 6 * 3600_000;
 export const SUSPECTED_STALE_MS = 12 * 3600_000;
-const NOT_A_FLAKE_SIGNAL = new Set(['real', 'gate_fault']);
+// A held class is a cause, not a flake: it never feeds main_broken.
+const NOT_A_FLAKE_SIGNAL = HOLD_CLASSES;
 // Test ids are free text: no mention, no issue reference in what is posted.
 const neutralKey = (k) => String(k).replace(/@/g, '').replace(/#(?=\d)/g, 'no. ');
 

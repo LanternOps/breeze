@@ -8407,6 +8407,7 @@
       "updated": "Güncellendi",
       "actions": "İşlemler"
     },
+    "expired": "Süresi doldu",
     "statusValue": {
       "unconfirmed": "Onaylanmadı",
       "confirmed": "Onaylandı",
@@ -8487,7 +8488,9 @@
       "label": "Kendi kendine kayıt",
       "off": "Kapalı",
       "approval": "Onay gerekli",
-      "instant": "Anında"
+      "instant": "Anında",
+      "noVerifiedDomain": "Doğrulanmış alan adı yok: Siz bir alan adı doğrulayana kadar kimse kaydolamaz.",
+      "verifyDomain": "Alan adı doğrulayın"
     },
     "ssoNewPerson": {
       "label": "İlk Microsoft / Google ile oturum açma",
@@ -8558,6 +8561,26 @@
         "protectedOrg": "Bu kuruluş bir Microsoft kiracısına bağlanamaz."
       }
     },
+    "passwordFallbackNotice": {
+      "title": "Portal oturum açma şifreye geri döndü",
+      "body": "Bu kuruluşun portalında Microsoft ile oturum açma kapalı. Kiracı yeniden kanıtlanana kadar kullanıcılar şifreyle oturum açar.",
+      "tenant": "(Kiracı {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Microsoft kiracı bağlantısı {{date}} tarihinde kaldırıldı.",
+        "ai_for_office_mapping_removed": "Kanıtı tutan AI for Office kiracı eşlemesi {{date}} tarihinde kaldırıldı.",
+        "ai_for_office_mapping_changed": "AI for Office kiracı eşlemesi {{date}} tarihinde başka bir kiracıyla değiştirildi ve kanıt silindi.",
+        "tenant_displaced": "Başka bir kuruluş bu Microsoft kiracısını {{date}} tarihinde kanıtladı.",
+        "unknown": "Microsoft kiracı kanıtı {{date}} tarihinde kayboldu."
+      },
+      "rerun": "Kiracı kanıtını yeniden çalıştır",
+      "dismiss": "Kapat",
+      "toasts": {
+        "dismissed": "Bildirim kapatıldı."
+      },
+      "errors": {
+        "dismiss": "Bildirim kapatılamadı."
+      }
+    },
     "ssoOnlyConfirm": {
       "title": "Şifreyle oturum açma kapatılsın mı?",
       "intro": "Kaydetmek, aşağıdaki kuruluşlar için şifreyle oturum açmayı kapatır.",
@@ -8617,6 +8640,8 @@
     "selectAll": "Tüm talepleri seç",
     "selectOne": "{{email}} kişisinin talebini seç",
     "accountExists": "Zaten bir hesabı var — Kapatmak için reddedin",
+    "domainUnverified": "Alan adı artık doğrulanmış değil",
+    "domainUnverifiedReason": "Onaylanamaz: Bu kişinin erişimi olması gerekiyorsa onu doğrudan davet edin.",
     "actions": {
       "approve": "Onayla",
       "deny": "Reddet",
@@ -8629,7 +8654,8 @@
       "notFound": "Talep bulunamadı",
       "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
       "failed": "Bu talebe karar verilemedi",
-      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil"
+      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil",
+      "domainNotVerified": "E-posta alan adı artık doğrulanmış değil"
     },
     "denyDialog": {
       "title": "Erişim talebini reddet",
@@ -8647,7 +8673,8 @@
     "errors": {
       "load": "Erişim talepleri yüklenemedi.",
       "action": "Erişim talebi güncellenemedi.",
-      "bulk": "Seçilen taleplere karar verilemedi."
+      "bulk": "Seçilen taleplere karar verilemedi.",
+      "domainNotVerified": "Bu kişinin e-posta alan adı artık bu kuruluş için doğrulanmış değil. Erişimi olması gerekiyorsa onu doğrudan davet edin."
     },
     "summary": {
       "title": "Bekleyen erişim talepleri",

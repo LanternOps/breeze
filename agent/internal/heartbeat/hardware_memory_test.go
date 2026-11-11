@@ -151,3 +151,20 @@ func TestSendHardwareInventoryHardwareErrorSendsNothing(t *testing.T) {
 		t.Fatal("memory collected despite hardware failure")
 	}
 }
+
+// The SMBIOS system UUID rides on the hardware report at the top level, like
+// every other HardwareInfo field (#8318 reinstall hints).
+func TestSendHardwareInventoryIncludesSystemUUID(t *testing.T) {
+	server, received := captureHardwarePUT(t)
+	h := newMemoryHWTestHeartbeat(server.URL)
+	h.hardwareCollectFn = func() (*collectors.HardwareInfo, error) {
+		return &collectors.HardwareInfo{CPUModel: "Test CPU", SystemUUID: "4c4c4544-0042-3510-8051-b4c04f4d3132"}, nil
+	}
+	h.memoryCollectFn = func() (*collectors.MemoryInfo, error) { return nil, errors.New("skip") }
+
+	h.sendHardwareInventory()
+	got := awaitHardware(t, received)
+	if string(got["systemUuid"]) != `"4c4c4544-0042-3510-8051-b4c04f4d3132"` {
+		t.Fatalf("systemUuid not flattened into the hardware body: %v", got)
+	}
+}

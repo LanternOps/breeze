@@ -464,6 +464,7 @@ type rebindHarness struct {
 	fake     *rebindFake
 	cfgPath  string
 	h        *Heartbeat
+	procs    []*Heartbeat // every process restart() built, r.h last
 	clock    atomic.Int64 // the fake clock, unix nanoseconds (read by flow goroutines)
 	restarts atomic.Int32
 	logs     *syncBuffer
@@ -525,6 +526,17 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 	origWrite, origApply, origFile, origRead := rebindWriteStaged, rebindApplyIdentity, rebindConfigFile, rebindReadStaged
 	origPush, origPoll, origIdentityNow := rebindPushWatchdogToken, identityRestartPollInterval, identitySyncNow
 	t.Cleanup(func() {
+		// A trigger drives the flow on its own goroutine, which reads these
+		// seams; put them back only once every one has finished.
+		if !r.waitForFlowGoroutines() {
+			t.Errorf("a goroutine the rebind flow started was still running 10s after the test")
+			// It may still reach the restart: never hand it the real one
+			// (updater.RestartSelf), which restarts the service or execs.
+			origRestart = func() error { return errors.New("restart refused: a rebind goroutine outlived its test") }
+		}
+		// After the wait, so what the flow's goroutines logged once the test
+		// body returned is checked too.
+		r.assertNoSecretsLogged()
 		rebindNow, restartForIdentityFn, newRebindHTTPClient = origNow, origRestart, origClient
 		rebindWriteStaged, rebindApplyIdentity, rebindConfigFile, rebindReadStaged = origWrite, origApply, origFile, origRead
 		rebindPushWatchdogToken, identityRestartPollInterval, identitySyncNow = origPush, origPoll, origIdentityNow
@@ -572,7 +584,6 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 		return nil
 	}
 	r.fake.onCall = r.event
-	t.Cleanup(r.assertNoSecretsLogged)
 
 	r.restart()
 	return r
@@ -599,6 +610,26 @@ func (r *rebindHarness) restart() {
 		secureToken:  secmem.NewSecureString(token),
 		client:       &http.Client{Timeout: 5 * time.Second, Transport: certTagTransport{tag: clientCertTag(cfg.MtlsCertPEM)}},
 		agentVersion: "1.2.3",
+	}
+	r.procs = append(r.procs, r.h)
+}
+
+// waitForFlowGoroutines waits until no goroutine the flow started, in any
+// process this harness built, is still running; false after 10s.
+func (r *rebindHarness) waitForFlowGoroutines() bool {
+	procs := append([]*Heartbeat(nil), r.procs...)
+	done := make(chan struct{})
+	go func() {
+		for _, h := range procs {
+			h.rebind.running.Wait()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(10 * time.Second):
+		return false
 	}
 }
 

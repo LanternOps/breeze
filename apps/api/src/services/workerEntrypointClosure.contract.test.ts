@@ -164,6 +164,8 @@ const EXPECTED_NAMES = [
   'monitorEpisodeRetention',
   // EDR provider framework W02 (#8164).
   'edrDetectionRetentionWorker',
+  // #4342 W3 — closed-alert retention (global, system-scope sweep).
+  'alertRetention',
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
@@ -178,6 +180,10 @@ const EXPECTED_NAMES = [
   'imageCurrencyWorker',
   // Trust Center W1 (#8768).
   'trustPageSnapshotWorker',
+  // Portal registration W6 (#11383).
+  'portalSelfRegistrationWorker',
+  // High-volume table retention W1 (#4342, #11588) — report-only.
+  'deviceCommandRetention', 'filesystemSnapshotRetention', 'networkMonitorResultRetention', 'deviceSessionRetention',
 ];
 
 // ---------------------------------------------------------------------------

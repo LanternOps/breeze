@@ -1996,6 +1996,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W3 — daily closed-alert retention (report-only until
+    // ALERT_RETENTION_ENFORCE=true), then orphaned correlation groups.
+    name: 'alertRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/alertRetention');
+      return { init: m.initializeAlertRetention, shutdown: m.shutdownAlertRetention };
+    },
+  },
+  {
     // #4248 W03 (AI Scorecard #5757) — 15-minute sweep over unsettled
     // report_run_deliveries: re-attempts pending narrative emails the
     // finalizer never reached, marks stale claims `unknown` (never resends).
@@ -2107,6 +2117,67 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/imageCurrencyWorker');
       return { init: m.initializeImageCurrencyWorker, shutdown: m.shutdownImageCurrencyWorker };
+    },
+  },
+  // Portal registration W6 (#11383): customer-portal self-registration
+  // submits (one event-driven job each; no schedule). `global`: its import
+  // closure (routes/portal helpers, capabilityTokens, email, redis) no longer
+  // reaches socket-local dispatch since the cross-process socket teardown
+  // (#11526), and it touches no agent socket or process-local state.
+  {
+    name: 'portalSelfRegistrationWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('./portalSelfRegistration/worker');
+      return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (deviceCommandRetention).
+    name: 'deviceCommandRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceCommandRetention');
+      return {
+        init: m.initializeDeviceCommandRetention,
+        shutdown: m.shutdownDeviceCommandRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (filesystemSnapshotRetention).
+    name: 'filesystemSnapshotRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/filesystemSnapshotRetention');
+      return {
+        init: m.initializeFilesystemSnapshotRetention,
+        shutdown: m.shutdownFilesystemSnapshotRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (networkMonitorResultRetention).
+    name: 'networkMonitorResultRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/networkMonitorResultRetention');
+      return {
+        init: m.initializeNetworkMonitorResultRetention,
+        shutdown: m.shutdownNetworkMonitorResultRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (deviceSessionRetention).
+    name: 'deviceSessionRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceSessionRetention');
+      return {
+        init: m.initializeDeviceSessionRetention,
+        shutdown: m.shutdownDeviceSessionRetention,
+      };
     },
   },
 ];

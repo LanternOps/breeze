@@ -148,7 +148,7 @@
     "headingSingle": "Eliminare {{name}}?",
     "itemCount": "Numero di elementi",
     "moveToTrash": "Sposta nel cestino",
-    "recycleBinNotice": "Avviso sul cestino",
+    "recycleBinNotice": "Spostando nel cestino gli elementi restano recuperabili. L'eliminazione definitiva non può essere annullata.",
     "totalSize": "Totale: {{size}}",
     "itemCount_one": "{{count}} elemento",
     "itemCount_other": "{{count}} elementi"
@@ -464,10 +464,10 @@
       "devices": "Dispositivi",
       "fileManager": "Gestione file"
     },
-    "deviceNotFoundDescription": "Descrizione dispositivo non trovato",
-    "deviceNotFoundTitle": "Titolo dispositivo non trovato",
+    "deviceNotFoundDescription": "Il dispositivo cercato non esiste o non hai accesso.",
+    "deviceNotFoundTitle": "Dispositivo non trovato",
     "deviceOfflineDescription": "Il dispositivo è attualmente {{status}}. L'accesso remoto ai file è disponibile solo quando il dispositivo è online.",
-    "deviceOfflineTitle": "Titolo dispositivo offline",
+    "deviceOfflineTitle": "Il dispositivo è offline",
     "errorTitle": "Titolo errore",
     "errors": {
       "deviceNotFound": "Dispositivo non trovato",
@@ -507,8 +507,8 @@
     "welcome": "Benvenuto"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Descrizione dispositivo non trovato",
-    "deviceNotFoundTitle": "Titolo dispositivo non trovato",
+    "deviceNotFoundDescription": "Il dispositivo cercato non esiste o non hai accesso.",
+    "deviceNotFoundTitle": "Dispositivo non trovato",
     "errorTitle": "Titolo errore",
     "errors": {
       "deviceNotFound": "Dispositivo non trovato",
@@ -635,8 +635,8 @@
     },
     "actionBlocked": "Azione bloccata",
     "adjustHint": "Prova a modificare la ricerca o i filtri.",
-    "agentRestartConfirm": "Conferma il riavvio dell'agente",
-    "agentStopBlocked": "Arresto dell'agente bloccato",
+    "agentRestartConfirm": "Il riavvio dell'agente Breeze disconnetterà brevemente questo dispositivo da Breeze. Continuare?",
+    "agentStopBlocked": "L'agente Breeze non può essere arrestato da qui: così si interromperebbe la gestione remota del dispositivo.",
     "allStatus": "Tutti gli stati",
     "cannotStopAgent": "Impossibile arrestare l'agente",
     "changeStartupType": "Modifica tipo di avvio",

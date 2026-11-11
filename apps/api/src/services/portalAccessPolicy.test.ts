@@ -9,6 +9,11 @@ const dbState = vi.hoisted(() => ({
   chains: [] as string[][],
 }));
 
+const selfReg = vi.hoisted(() => ({ available: false }));
+vi.mock('../config/portalSelfRegistration', () => ({
+  isPortalSelfRegistrationAvailable: () => selfReg.available,
+}));
+
 vi.mock('../db', () => {
   const nextChain = () => {
     const result = dbState.selectResults.shift() ?? [];
@@ -57,6 +62,7 @@ const TENANT_B = 'b2b2b2b2-c3c3-4d4d-9e5e-f6f6f6f6f6f6';
 const PROVEN_AT = new Date('2027-01-23T10:00:00.000Z');
 
 beforeEach(() => {
+  selfReg.available = false;
   dbState.inContext = false;
   dbState.selectResults = [];
   dbState.systemContextCalls = 0;
@@ -255,6 +261,25 @@ describe('capabilities', () => {
     expect(getPortalSignInCapabilities().google).toBe(false);
     __testOnly.setCapabilities(null);
     expect(getPortalSignInCapabilities()).toEqual(NO_CAPS);
+  });
+
+  it('selfRegistration capability is isPortalSelfRegistrationAvailable()', () => {
+    // W06b Task 10: the kill switch AND an email service, read at call time.
+    selfReg.available = true;
+    expect(getPortalSignInCapabilities()).toEqual({ entra: false, google: false, selfRegistration: true });
+    selfReg.available = false;
+    expect(getPortalSignInCapabilities().selfRegistration).toBe(false);
+  });
+
+  it('effective selfRegistrationMode is off while the capability is off, whatever the rows say', () => {
+    const org = { ...blank, selfRegistrationMode: 'instant' as const };
+    const partner = { ...blank, selfRegistrationMode: 'approval' as const };
+    selfReg.available = false;
+    expect(pickEffectivePortalAccessPolicy(org, partner, getPortalSignInCapabilities(), PROVEN).effective.selfRegistrationMode.value).toBe('off');
+    expect(pickEffectivePortalAccessPolicy(blank, partner, getPortalSignInCapabilities(), PROVEN).effective.selfRegistrationMode.value).toBe('off');
+    selfReg.available = true;
+    expect(pickEffectivePortalAccessPolicy(org, partner, getPortalSignInCapabilities(), PROVEN).effective.selfRegistrationMode.value).toBe('instant');
+    expect(pickEffectivePortalAccessPolicy(blank, partner, getPortalSignInCapabilities(), PROVEN).effective.selfRegistrationMode.value).toBe('approval');
   });
 
   it('__testOnly.setCapabilities throws outside NODE_ENV=test', () => {
