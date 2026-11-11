@@ -171,10 +171,13 @@ function buildToolCallStates(
 
 function ToolCallIndicator({ toolName, state }: { toolName?: string; state: ToolCallState }) {
   const name = toolName?.replace(/_/g, ' ');
+  // The label carries the outcome; the status glyph below is aria-hidden.
   const label =
     state === 'running'
       ? name ? `Using ${name}...` : 'Checking your system...'
-      : name ? `Used ${name}` : 'Checked your system';
+      : state === 'failed'
+        ? name ? `Couldn't use ${name}` : "Couldn't check your system"
+        : name ? `Used ${name}` : 'Checked your system';
   return (
     <div
       className="helper-tool-indicator text-ws-secondary"

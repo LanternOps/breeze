@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 
 // jsdom doesn't implement scrollIntoView; ChatView's messages-end effect calls
 // it unconditionally on every render.
@@ -307,13 +307,13 @@ describe('markdown image and link rendering', () => {
 
 describe('tool-call indicator status (#11727)', () => {
   function toolUse(id: string, toolName = 'list_processes') {
-    return { id: `tool-${id}`, role: 'tool_use', content: '', toolName, toolUseId: id, createdAt: new Date() };
+    return { id: `tool-${id}`, role: 'tool_use' as const, content: '', toolName, toolUseId: id, createdAt: new Date() };
   }
   function toolResult(id: string, isError = false) {
-    return { id: `result-${id}`, role: 'tool_result', content: '{}', toolUseId: id, toolOutput: {}, isError, createdAt: new Date() };
+    return { id: `result-${id}`, role: 'tool_result' as const, content: '{}', toolUseId: id, toolOutput: {}, isError, createdAt: new Date() };
   }
   function user(id: string) {
-    return { id, role: 'user', content: 'hi', createdAt: new Date() };
+    return { id, role: 'user' as const, content: 'hi', createdAt: new Date() };
   }
   function indicators() {
     return screen.getAllByTestId('tool-call-indicator');
@@ -351,6 +351,25 @@ describe('tool-call indicator status (#11727)', () => {
     );
     const { container } = renderChatView();
     expect(indicators()[0]).toHaveAttribute('data-state', 'failed');
+    expect(spinners(container)).toHaveLength(0);
+    // The failure must be in the text, not only the aria-hidden glyph.
+    expect(screen.getByText("Couldn't use list processes")).toBeInTheDocument();
+    expect(screen.queryByText('Used list processes')).not.toBeInTheDocument();
+  });
+
+  it('settles a live indicator when its result is appended, and on turn end', () => {
+    useChatStore.setState(baseChatState({ isStreaming: true, messages: [user('u1'), toolUse('t1'), toolUse('t2')] }));
+    const { container } = renderChatView();
+    expect(spinners(container)).toHaveLength(2);
+
+    act(() => {
+      useChatStore.setState({ messages: [user('u1'), toolUse('t1'), toolUse('t2'), toolResult('t1')] });
+    });
+    expect(indicators().map((el) => el.getAttribute('data-state'))).toEqual(['done', 'running']);
+
+    act(() => {
+      useChatStore.setState({ isStreaming: false });
+    });
     expect(spinners(container)).toHaveLength(0);
   });
 
