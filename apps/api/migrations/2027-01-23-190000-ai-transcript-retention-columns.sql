@@ -12,11 +12,14 @@
 --    row get 365. The backfill runs only when the column is first added, so a
 --    partner's later choice of NULL is never overwritten on re-apply.
 -- 2. ai_sessions.transcript_purged_at: set when the retention job turns a
---    session into a stub (content removed, accounting and flag metadata kept).
+--    session into a stub (content removed, including flag_reason; accounting
+--    metadata and flagged_at/flagged_by kept).
 -- 3. ai_action_plans.session_id and ai_screenshots.session_id: NO ACTION ->
---    ON DELETE CASCADE, so a stub can be hard-deleted. Every existing session
---    deleter (device deletion, site topology cleanup, org erasure) already
---    removes these children first, so their behaviour is unchanged.
+--    ON DELETE CASCADE, so a stub can be hard-deleted. Site topology cleanup
+--    and org erasure already remove both children first, and device deletion
+--    removes the plans first; device deletion deletes ai_sessions before
+--    ai_screenshots, so a device whose sessions have screenshots, which
+--    failed with 23503 before, now deletes them with the session.
 --
 -- Writes rows (the partner backfill), so system scope is elected first.
 -- Idempotent: the column adds are guarded, the CHECK is added only if

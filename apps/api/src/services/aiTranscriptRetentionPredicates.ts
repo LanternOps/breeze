@@ -26,7 +26,8 @@
  *   - no message inside `LIVE_SESSION_QUIET_MS` (the session may still be in
  *     an API process's memory).
  *
- * STUB DELETE (phase 3): a stub, unflagged, whose `last_activity_at` is older
+ * STUB DELETE (phase 3): a stub made on an earlier run (`STUB_MIN_AGE_MS`),
+ * unflagged, whose `last_activity_at` is older
  * than the org's audit-retention window, with no `ai_screenshots` row left
  * (the stub batch expires them so `helperScreenshotRetention` removes file and
  * row first; a cascaded row would orphan its file). Orgs with no
@@ -104,10 +105,22 @@ export function stubPredicateFor(kind: TranscriptSessionKind, orgId: string, cut
   return stubPredicate(kind, orgId, cutoffIso, now);
 }
 
+/**
+ * A stub is hard-deleted only by a LATER run than the one that created it
+ * (nightly runs are 24 h apart; 12 h tolerates a long run and clock skew
+ * between the API and Postgres). Without it, an org whose audit window is no
+ * longer than its transcript window would have every session stubbed AND
+ * deleted on the first enforcing run, while that night's report — which can
+ * only count stubs that already exist — said 0 deletions.
+ */
+export const STUB_MIN_AGE_MS = 12 * 60 * 60 * 1000;
+
 /** Phase 3: hard-delete stubs past the org's audit-retention window. */
-export function stubDeletePredicate(orgId: string, auditCutoffIso: string): SQL {
+export function stubDeletePredicate(orgId: string, auditCutoffIso: string, now: Date): SQL {
+  const stubbedBeforeIso = new Date(now.getTime() - STUB_MIN_AGE_MS).toISOString();
   return sql`ai_sessions.org_id = ${orgId}::uuid
     AND ai_sessions.transcript_purged_at IS NOT NULL
+    AND ai_sessions.transcript_purged_at < ${stubbedBeforeIso}::timestamptz
     AND ai_sessions.flagged_at IS NULL
     AND ai_sessions.last_activity_at < ${utcWallTime(auditCutoffIso)}
     AND NOT EXISTS (

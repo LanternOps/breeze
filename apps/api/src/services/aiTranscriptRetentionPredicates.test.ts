@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   LIVE_SESSION_MAX_DEFER_MS,
   LIVE_SESSION_QUIET_MS,
+  STUB_MIN_AGE_MS,
   clientStubPredicate,
   stubDeletePredicate,
   technicianStubPredicate,
@@ -44,7 +45,10 @@ describe('stub predicates', () => {
     expect(s).toContain('ai_sessions.flagged_at IS NULL');
     expect(s).toMatch(/ai_sessions\.status IN \('closed', 'expired'\) OR \(ai_sessions\.status = 'active' AND ai_sessions\.last_activity_at </);
     expect(s).toMatch(/NOT EXISTS \( SELECT 1 FROM ai_messages live WHERE live\.session_id = ai_sessions\.id AND live\.created_at >= /);
-    expect(s).toContain("AT TIME ZONE 'UTC'");
+    // All three cutoffs (window, abandoned-active, quiet window) are UTC wall time.
+    expect(s.match(/::timestamptz AT TIME ZONE 'UTC'/g)).toHaveLength(3);
+    expect(s).toMatch(/ai_sessions\.last_activity_at < \(\$\d+::timestamptz AT TIME ZONE 'UTC'\) AND \(/);
+    expect(s).toMatch(/live\.created_at >= \(\$\d+::timestamptz AT TIME ZONE 'UTC'\)/);
     // Never a bare ::timestamp cast on a tz-less column (Review Focus 5).
     expect(s).not.toMatch(/::timestamp(?!tz)/);
     expect(q.params).toContain(ORG);
@@ -59,19 +63,23 @@ describe('stub predicates', () => {
 
   it('is deterministic: the same inputs render the same SQL and params (report = enforce)', () => {
     expect(render(technicianStubPredicate(ORG, CUTOFF, NOW))).toEqual(render(technicianStubPredicate(ORG, CUTOFF, NOW)));
-    expect(render(stubDeletePredicate(ORG, CUTOFF))).toEqual(render(stubDeletePredicate(ORG, CUTOFF)));
+    expect(render(stubDeletePredicate(ORG, CUTOFF, NOW))).toEqual(render(stubDeletePredicate(ORG, CUTOFF, NOW)));
   });
 });
 
 describe('stubDeletePredicate', () => {
   it('selects only unflagged stubs past the audit cutoff with no screenshots left', () => {
-    const q = render(stubDeletePredicate(ORG, CUTOFF));
+    const q = render(stubDeletePredicate(ORG, CUTOFF, NOW));
     const s = norm(q.sql);
     expect(s).toContain('ai_sessions.org_id = $');
     expect(s).toContain('ai_sessions.transcript_purged_at IS NOT NULL');
     expect(s).toContain('ai_sessions.flagged_at IS NULL');
     expect(s).toMatch(/ai_sessions\.last_activity_at < \(\$\d+::timestamptz AT TIME ZONE 'UTC'\)/);
     expect(s).toMatch(/NOT EXISTS \( SELECT 1 FROM ai_screenshots sc WHERE sc\.session_id = ai_sessions\.id \)/);
-    expect(q.params).toEqual([ORG, CUTOFF]);
+    // Only a stub made on an EARLIER run: never one this run just created, so the
+    // report's existing-stub count is exactly what enforce deletes.
+    expect(s).toMatch(/ai_sessions\.transcript_purged_at < \$\d+::timestamptz/);
+    expect(q.params).toEqual([ORG, new Date(NOW.getTime() - STUB_MIN_AGE_MS).toISOString(), CUTOFF]);
+    expect(STUB_MIN_AGE_MS).toBeGreaterThanOrEqual(6 * 60 * 60 * 1000);
   });
 });

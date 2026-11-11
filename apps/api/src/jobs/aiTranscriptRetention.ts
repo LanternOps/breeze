@@ -10,7 +10,7 @@
  *     tighten-only, code default 365; `mergeAiDataPolicies`). NULL = skip.
  *  2. STUB client (AI for Office) sessions past
  *     `client_ai_org_policies.retention_days`. NULL or no row = skip; no
- *     partner fallback (the policy is copy-on-create).
+ *     partner fallback (the client policy is org-only).
  *  3. HARD-DELETE stubs whose `last_activity_at` is past the org's
  *     `audit_retention_policies.retention_days`. An org with NO audit policy
  *     row is SKIPPED (decision B, pending operator confirmation): the audit
@@ -21,8 +21,9 @@
  *     Skipped orgs are counted (`orgsWithoutAuditPolicy`).
  *
  * A stub keeps the session's accounting and review metadata (type, principal,
- * model, timestamps, turn/token/cost totals, flag state, `options`) and its
- * `ai_tool_executions` rows with input/output tombstoned (OD 1). Its content
+ * model, timestamps, turn/token/cost totals, `flagged_at`/`flagged_by`,
+ * `options`) and its `ai_tool_executions` rows with input/output tombstoned and
+ * `error_message` cleared (OD 1). Its content
  * goes: `ai_messages`, `ai_action_plans`, the content columns on the row
  * (`title`, `system_prompt`, `context_snapshot`, `workbook_name`,
  * `flag_reason`), the SDK session id (the transcript file is deleted after
@@ -34,10 +35,10 @@
  *
  * REPORT MODE counts each phase per org with the same predicate builder the
  * enforce batch uses, through `countEligibleRows` (bounded at
- * batchSize × maxBatches per org and phase). Phase 3's count is the stubs that
- * exist now; before the first enforcing run there are none, and that run also
- * hard-deletes sessions it has just stubbed whose `last_activity_at` is past
- * the audit window and that had no screenshots.
+ * batchSize × maxBatches per org and phase). Phase 3 counts and deletes only
+ * stubs made on an earlier run (`STUB_MIN_AGE_MS`), so the report's stub-delete
+ * count is what enforce deletes: the first enforcing run only stubs, and its
+ * stubs are deleted (when past the audit window) from the next run on.
  *
  * Each batch is one fresh system transaction (retentionBatch.ts); never wrap
  * this job in a DB context. Per-org failures are logged and counted and do
@@ -203,8 +204,8 @@ export async function stubSessionsBatch(
 }
 
 /** One stub hard-delete batch, one transaction. Cascades tool executions, messages, plans, screenshots, wisp links. */
-export async function deleteStubsBatch(orgId: string, auditCutoffIso: string, batchSize: number): Promise<number> {
-  const where = stubDeletePredicate(orgId, auditCutoffIso);
+export async function deleteStubsBatch(orgId: string, auditCutoffIso: string, now: Date, batchSize: number): Promise<number> {
+  const where = stubDeletePredicate(orgId, auditCutoffIso, now);
   const result = await inFreshSystemContext('aiTranscriptRetention.stubDelete', () => db.execute(sql`
     DELETE FROM ai_sessions
     WHERE id IN (
@@ -220,7 +221,10 @@ export async function deleteStubsBatch(orgId: string, auditCutoffIso: string, ba
 export interface TranscriptRetentionSummary {
   mode: 'report' | 'enforce';
   orgsScanned: number;
+  /** Orgs where at least one phase threw (see `phasesFailed`). */
   orgsFailed: number;
+  /** Phases that threw; each phase of an org runs even when another failed. */
+  phasesFailed: number;
   /** Orgs with an unusable window value (not a positive integer); that phase was skipped. */
   orgsInvalidWindow: number;
   /** Orgs with no `audit_retention_policies` row: phase 3 skipped (decision B). */
@@ -264,7 +268,7 @@ export async function runAiTranscriptRetention(
   const deleteTranscript = opts.deleteTranscript ?? deleteSdkTranscript;
   const summary: TranscriptRetentionSummary = {
     mode: opts.enforce ? 'enforce' : 'report',
-    orgsScanned: 0, orgsFailed: 0, orgsInvalidWindow: 0, orgsWithoutAuditPolicy: 0,
+    orgsScanned: 0, orgsFailed: 0, phasesFailed: 0, orgsInvalidWindow: 0, orgsWithoutAuditPolicy: 0,
     eligible: { technician: 0, client: 0, stubDelete: 0, capped: false },
     stubbed: { technician: 0, client: 0 },
     stubsDeleted: 0,
@@ -286,13 +290,18 @@ export async function runAiTranscriptRetention(
     }
   };
 
-  /** Batches until a short batch or maxBatches; returns { total, hasMore }. */
-  const drain = async (run: () => Promise<number>) => {
+  /**
+   * Batches until a short batch or maxBatches. `onCommitted` books each
+   * batch as soon as it returns (it has committed), so rows changed before a
+   * later batch throws are still counted.
+   */
+  const drain = async (run: () => Promise<number>, onCommitted: (n: number) => void) => {
     let total = 0;
     let batches = 0;
     let last = 0;
     while (batches < maxBatches) {
       last = await run();
+      onCommitted(last);
       total += last;
       batches += 1;
       if (last < batchSize) break;
@@ -300,18 +309,30 @@ export async function runAiTranscriptRetention(
     return { deleted: total, batches, hasMore: batches >= maxBatches && last >= batchSize };
   };
 
+  /** Runs one phase; a throw is logged with the phase and does not stop the org's other phases. */
+  const phase = async (orgId: string, name: string, failed: { any: boolean }, fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (err) {
+      console.error(`${LOG} Phase ${name} failed for org ${orgId}; its other phases still run:`, err);
+      summary.phasesFailed += 1;
+      failed.any = true;
+    }
+  };
+
   const windows = await ops.loadWindows();
   for (const [orgId, w] of windows) {
     summary.orgsScanned += 1;
     const orgCounts = { technician: 0, client: 0, stubDelete: 0 };
-    try {
-      for (const kind of ['technician', 'client'] as const) {
+    const failed = { any: false };
+    for (const kind of ['technician', 'client'] as const) {
+      await phase(orgId, `${kind}_stub`, failed, async () => {
         const days = kind === 'technician' ? w.technicianDays : w.clientDays;
-        if (days === null) continue;
+        if (days === null) return;
         if (!usableDays(days)) {
           console.error(`${LOG} Org ${orgId} has an unusable ${kind} transcript window of ${String(days)} days; skipping that phase`);
           summary.orgsInvalidWindow += 1;
-          continue;
+          return;
         }
         const cutoffIso = transcriptCutoffIso(days, now);
         if (!opts.enforce) {
@@ -324,21 +345,22 @@ export async function runAiTranscriptRetention(
           orgCounts[kind] = r.eligible;
           summary.eligible[kind] += r.eligible;
           if (r.capped) summary.eligible.capped = true;
-          continue;
+          return;
         }
         const result = await drain(async () => {
           const { stubbed, clearedSdkSessionIds } = await ops.stubBatch(kind, orgId, cutoffIso, now, batchSize);
           // After the batch committed: the ids are gone from the DB.
           if (clearedSdkSessionIds.length > 0) await deleteCleared(clearedSdkSessionIds);
           return stubbed;
-        });
-        summary.stubbed[kind] += result.deleted;
+        }, (n) => { summary.stubbed[kind] += n; });
         if (result.hasMore) {
           summary.incomplete = true;
           warnOnRetentionBacklog(LOG, `ai_sessions.${kind}_stub`, result, `org=${orgId}`);
         }
-      }
+      });
+    }
 
+    await phase(orgId, 'stub_delete', failed, async () => {
       if (w.auditDays === null) {
         // Decision B: no audit policy row → audit_logs are kept forever → so is the stub.
         summary.orgsWithoutAuditPolicy += 1;
@@ -350,7 +372,7 @@ export async function runAiTranscriptRetention(
         if (!opts.enforce) {
           const r = await ops.countEligible({
             table: 'ai_sessions',
-            where: stubDeletePredicate(orgId, auditCutoffIso),
+            where: stubDeletePredicate(orgId, auditCutoffIso, now),
             cap,
             label: 'aiTranscriptRetention.count.stubDelete',
           });
@@ -358,18 +380,18 @@ export async function runAiTranscriptRetention(
           summary.eligible.stubDelete += r.eligible;
           if (r.capped) summary.eligible.capped = true;
         } else {
-          const result = await drain(() => ops.deleteStubs(orgId, auditCutoffIso, batchSize));
-          summary.stubsDeleted += result.deleted;
+          const result = await drain(
+            () => ops.deleteStubs(orgId, auditCutoffIso, now, batchSize),
+            (n) => { summary.stubsDeleted += n; },
+          );
           if (result.hasMore) {
             summary.incomplete = true;
             warnOnRetentionBacklog(LOG, 'ai_sessions.stub_delete', result, `org=${orgId}`);
           }
         }
       }
-    } catch (err) {
-      console.error(`${LOG} Failed for org ${orgId}:`, err);
-      summary.orgsFailed += 1;
-    }
+    });
+    if (failed.any) summary.orgsFailed += 1;
     if (!opts.enforce && (orgCounts.technician || orgCounts.client || orgCounts.stubDelete)) {
       // stdout only: org ids never go to Sentry tags.
       console.log(
@@ -383,7 +405,7 @@ export async function runAiTranscriptRetention(
     summary.incomplete = true;
     try {
       captureMessage(
-        `${LOG} Run incomplete (${summary.mode}): orgsFailed=${summary.orgsFailed} ` +
+        `${LOG} Run incomplete (${summary.mode}): orgsFailed=${summary.orgsFailed} phasesFailed=${summary.phasesFailed} ` +
         `orgsInvalidWindow=${summary.orgsInvalidWindow} transcriptDeletesFailed=${summary.transcripts.failed}`,
         { eventCode: 'ai_transcript_retention_incomplete' },
       );
@@ -404,10 +426,15 @@ export async function runAiTranscriptRetention(
       `(technician=${technician}, client=${client}) and ${stubDelete}${plus} existing stubs eligible to delete ` +
       `${scope}; set ${ENFORCE_VAR}=true to act`,
     );
-    recordRetentionRun('ai_transcript_retention', {
-      rowsEligible: technician + client + stubDelete,
-      ...(summary.incomplete ? { incomplete: true } : {}),
-    });
+    // A report with a failed phase or org would publish an understated count
+    // as current evidence (and the recorder drops `incomplete` whenever
+    // `rowsEligible` is set). Same rule as runRetentionTargets for a failed
+    // target: record only that the run is incomplete.
+    const countsMissing = summary.orgsFailed > 0 || summary.orgsInvalidWindow > 0;
+    recordRetentionRun(
+      'ai_transcript_retention',
+      countsMissing ? { incomplete: true } : { rowsEligible: technician + client + stubDelete },
+    );
   } else {
     const { stubbed, transcripts } = summary;
     console.log(

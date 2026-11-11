@@ -41,8 +41,10 @@ const daysAgo = (d: number) => ago(d * DAY_MS);
 const TOMBSTONE = { _retention: 'scrubbed', at: NOW.toISOString() };
 
 const deleter = vi.fn(async () => 'not_found' as const);
-const run = (enforce: boolean) =>
-  runAiTranscriptRetention({ batchSize: 50, maxBatches: 10, enforce, now: NOW, deleteTranscript: deleter });
+const run = (enforce: boolean, now: Date = NOW) =>
+  runAiTranscriptRetention({ batchSize: 50, maxBatches: 10, enforce, now, deleteTranscript: deleter });
+/** The next nightly run: stubs made by an earlier run become deletable (STUB_MIN_AGE_MS). */
+const NEXT_NIGHT = new Date(NOW.getTime() + DAY_MS);
 
 async function newOrg(auditDays: number | null) {
   const partner = await createPartner();
@@ -191,7 +193,7 @@ describe('aiTranscriptRetention (real Postgres, breeze_app pool)', () => {
     expect(usage).toHaveLength(1);
   });
 
-  it('deletes a stub past the audit window once no screenshot is left; keeps one whose screenshot remains', async () => {
+  it('deletes a stub past the audit window on a later run, once no screenshot is left', async () => {
     const { orgId } = await newOrg(500);
     const site = await createSite({ orgId });
     const device = await createDevice({ orgId, siteId: site.id });
@@ -203,25 +205,46 @@ describe('aiTranscriptRetention (real Postgres, breeze_app pool)', () => {
     });
     const between = await insertSession(orgId, { lastActivity: daysAgo(450) });
 
-    // First run: all three are stubbed; the two past 500 d with no screenshot go.
+    // First run: all three are stubbed; none is deleted by the run that stubbed it.
     const first = await run(true);
     expect(first.stubbed.technician).toBe(3);
-    expect(first.stubsDeleted).toBe(1);
-    expect(await sessionRow(plain)).toBeUndefined();
-    expect(await count('ai_tool_executions', plain)).toBe(0);
-
-    const kept = await sessionRow(withShot);
-    expect(kept!.transcriptPurgedAt).toBeInstanceOf(Date);
+    expect(first.stubsDeleted).toBe(0);
+    expect((await sessionRow(plain))!.transcriptPurgedAt).toBeInstanceOf(Date);
     const [shot] = await getTestDb().select().from(aiScreenshots).where(eq(aiScreenshots.sessionId, withShot));
     expect(shot!.expiresAt.getTime()).toBeLessThanOrEqual(NOW.getTime() + 1000);
-    expect((await sessionRow(between))!.transcriptPurgedAt).toBeInstanceOf(Date);
 
-    // helperScreenshotRetention removes file then row; the next run deletes the stub.
-    await getTestDb().delete(aiScreenshots).where(eq(aiScreenshots.sessionId, withShot));
-    const second = await run(true);
+    // Next night: the stub past 500 d with no screenshot goes, with its tool rows.
+    const second = await run(true, NEXT_NIGHT);
     expect(second.stubsDeleted).toBe(1);
+    expect(await sessionRow(plain)).toBeUndefined();
+    expect(await count('ai_tool_executions', plain)).toBe(0);
+    expect(await sessionRow(withShot)).toBeDefined();
+    expect(await sessionRow(between)).toBeDefined();
+
+    // helperScreenshotRetention removes file then row; the following run deletes that stub.
+    await getTestDb().delete(aiScreenshots).where(eq(aiScreenshots.sessionId, withShot));
+    const third = await run(true, new Date(NEXT_NIGHT.getTime() + DAY_MS));
+    expect(third.stubsDeleted).toBe(1);
     expect(await sessionRow(withShot)).toBeUndefined();
     expect(await sessionRow(between)).toBeDefined();
+  });
+
+  it('audit window equal to the transcript window: the report matches what each enforcing run does', async () => {
+    const { orgId } = await newOrg(365);
+    const id = await insertSession(orgId, { lastActivity: daysAgo(400) });
+
+    const report1 = await run(false);
+    expect(report1.eligible).toMatchObject({ technician: 1, stubDelete: 0 });
+    const enforce1 = await run(true);
+    expect(enforce1.stubbed.technician).toBe(1);
+    expect(enforce1.stubsDeleted).toBe(report1.eligible.stubDelete);
+    expect(await sessionRow(id)).toBeDefined();
+
+    const report2 = await run(false, NEXT_NIGHT);
+    expect(report2.eligible).toMatchObject({ technician: 0, stubDelete: 1 });
+    const enforce2 = await run(true, NEXT_NIGHT);
+    expect(enforce2.stubsDeleted).toBe(report2.eligible.stubDelete);
+    expect(await sessionRow(id)).toBeUndefined();
   });
 
   it('decision B: an org with no audit policy row has zero stub-delete eligible rows, is counted, and keeps its stubs', async () => {
@@ -242,6 +265,28 @@ describe('aiTranscriptRetention (real Postgres, breeze_app pool)', () => {
     const again = await run(false);
     expect(again.eligible.stubDelete).toBe(0);
     expect(await sessionRow(id)).toBeDefined();
+  });
+
+  it('a flagged stub past the audit window is held; an unflagged one is deleted', async () => {
+    const { orgId } = await newOrg(500);
+    const flagged = await insertSession(orgId, { lastActivity: daysAgo(600) });
+    const plain = await insertSession(orgId, { lastActivity: daysAgo(600) });
+    await getTestDb().update(aiSessions).set({ transcriptPurgedAt: daysAgo(200) }).where(eq(aiSessions.orgId, orgId));
+    await getTestDb().update(aiSessions).set({ flaggedAt: daysAgo(1) }).where(eq(aiSessions.id, flagged));
+
+    const s = await run(true);
+    expect(s.stubsDeleted).toBe(1);
+    expect(await sessionRow(plain)).toBeUndefined();
+    expect(await sessionRow(flagged)).toBeDefined();
+  });
+
+  it('an active session just past its window waits out the 24 h allowance', async () => {
+    const { orgId } = await newOrg(1000);
+    const justPast = await insertSession(orgId, { status: 'active', lastActivity: ago(365 * DAY_MS + 12 * HOUR_MS) });
+    const pastAllowance = await insertSession(orgId, { status: 'active', lastActivity: ago(366 * DAY_MS + HOUR_MS) });
+    await run(true);
+    expect(await sessionRow(justPast)).toMatchObject({ status: 'active', transcriptPurgedAt: null });
+    expect(await sessionRow(pastAllowance)).toMatchObject({ status: 'expired', title: null });
   });
 
   it('a second enforce run is a no-op', async () => {

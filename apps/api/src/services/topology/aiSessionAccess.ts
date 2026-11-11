@@ -9,6 +9,9 @@
  * the SQL WHERE clause — before ORDER BY / LIMIT / OFFSET — so no page, total
  * or title of an inaccessible session ever leaks by post-limit filtering.
  * Unpinned sessions are unaffected (their existing owner/org rules apply).
+ * Audit rows are the exception: `topologyAuditSessionCondition` withholds an
+ * `ai_session` audit row whose session no longer exists, pinned or not, from
+ * every reader whose visibility is not `kind: 'all'`.
  */
 import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 
@@ -64,7 +67,7 @@ export function topologySessionCondition(visibility: TopologySessionVisibility):
  * it is not an `ai_session` row, names no session, or EXISTS a session this
  * caller may see (`topologySessionCondition`). A session that no longer exists
  * (transcript retention hard-deletes stubs) cannot be shown to be visible, so
- * its rows are withheld; the earlier `NOT EXISTS (hidden session)` showed them.
+ * its rows are withheld (any deleter: retention, device deletion, site cleanup).
  * An unrestricted reader (`kind: 'all'`) gets no condition at all.
  */
 export function topologyAuditSessionCondition(visibility: TopologySessionVisibility): SQL | undefined {

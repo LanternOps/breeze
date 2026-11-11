@@ -72,7 +72,7 @@ export const aiSessions = pgTable('ai_sessions', {
   flaggedBy: uuid('flagged_by').references(() => users.id),
   flagReason: text('flag_reason'),
   // #4342 W4: set when transcript retention turned this session into a stub
-  // (content gone; accounting and flag metadata kept). The viewers show
+  // (content gone, flag_reason too; accounting and flagged_at/by kept). The viewers show
   // "removed by retention" instead of an empty conversation.
   transcriptPurgedAt: timestamp('transcript_purged_at', { withTimezone: true }),
   delegantM365ConnectionId: uuid('delegant_m365_connection_id'),
