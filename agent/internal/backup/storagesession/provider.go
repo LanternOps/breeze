@@ -81,7 +81,9 @@ var agentIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 // ErrSessionUnavailable wraps every failure that ends the whole session
 // (rejected, revoked, expired, past its deadline, closed). Once set, every
 // later Download fails with it without contacting the server.
-var ErrSessionUnavailable = errors.New("storage session: session is no longer usable")
+// It is providers.ErrStorageSessionUnavailable, so the backup run can end on
+// it without importing this package.
+var ErrSessionUnavailable = providers.ErrStorageSessionUnavailable
 
 // Credentials authenticate the helper to the control plane as the agent.
 type Credentials struct {
@@ -655,20 +657,6 @@ func isRetryableStatus(code int) bool {
 
 // --- storage fetch ---
 
-type storageStatusError struct {
-	status     int
-	retryAfter time.Duration
-}
-
-func (e *storageStatusError) Error() string {
-	return fmt.Sprintf("storage session: storage answered status %d", e.status)
-}
-
-// Is makes a storage 404 a confirmed-absent object.
-func (e *storageStatusError) Is(target error) bool {
-	return e.status == http.StatusNotFound && target == providers.ErrObjectNotFound
-}
-
 type storageTransportError struct {
 	stage string
 	cause error
@@ -813,7 +801,7 @@ func (p *Provider) fetchOnce(ctx context.Context, obj *resolvedObject, localPath
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		statusErr := &storageStatusError{status: resp.StatusCode, retryAfter: httputil.ParseRetryAfter(resp.Header, time.Now())}
+		statusErr := newStorageStatusError(resp)
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		return statusErr
 	}

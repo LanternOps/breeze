@@ -170,3 +170,26 @@ type SessionWindow interface {
 type StoredObjectDigester interface {
 	StoredObjectDigest(ctx context.Context, remotePath string) (UploadDigest, error)
 }
+
+// ErrDestinationRefused reports that the backup destination's object store
+// refused request after request, for different objects, with nothing
+// succeeding in between: the run cannot store anything, so it ends rather
+// than skipping file after file. The error wrapping it names the store's
+// last answer, e.g. "storage answered status 403 (AccessDenied)".
+var ErrDestinationRefused = errors.New("backup destination refused every request")
+
+// ErrStorageSessionUnavailable reports that a brokered storage session ended
+// (rejected, revoked, expired, past its deadline, closed): no later request
+// through it can succeed. storagesession.ErrSessionUnavailable is this value.
+var ErrStorageSessionUnavailable = errors.New("storage session: session is no longer usable")
+
+// StoreErrorCode returns the error code the object store answered a refused
+// request with (an S3 <Code> such as AccessDenied or NoSuchBucket), or "" when
+// err carries none.
+func StoreErrorCode(err error) string {
+	var coded interface{ StoreErrorCode() string }
+	if errors.As(err, &coded) {
+		return coded.StoreErrorCode()
+	}
+	return ""
+}

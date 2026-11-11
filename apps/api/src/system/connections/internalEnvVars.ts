@@ -61,6 +61,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   AI_TOOL_INDEX: 'AI chat system-prompt tool index (lazy/full)',
   // ALERT_*
+  ALERT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  ALERT_RETENTION_DAYS: 'data retention window',
+  ALERT_RETENTION_ENFORCE: 'retention enforce switch (report-only when unset)',
+  ALERT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
   ALERT_WORKER_CONCURRENCY: 'worker concurrency knob (default DB_POOL_MAX/4; DB_POOL_MAX/2 when BREEZE_ROLE=worker)',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',
@@ -537,6 +541,11 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   SCREENSHOT_STORAGE_DIR: 'filesystem path',
   // SCRIPT_*
   SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES: 'timing knob',
+  SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS: 'data retention window',
+  SCRIPT_EXECUTION_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  SCRIPT_EXECUTION_RETENTION_DAYS: 'data retention window',
+  SCRIPT_EXECUTION_RETENTION_ENFORCE: 'retention enforcement switch',
+  SCRIPT_EXECUTION_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // SECURITY_*
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
