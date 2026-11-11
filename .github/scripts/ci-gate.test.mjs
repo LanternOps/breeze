@@ -3071,50 +3071,71 @@ test('N3 tamper: the CLI applies and reverts both files in a checkout', () => {
 });
 
 // The automated N3: the real select and verify, in real repositories, on an
-// entry whose base is main and whose head carries the tamper. CI_THIN_QUEUE is
-// `shadow`, as for the live leg.
-function n3Entry() {
-  const r = gateRemote({ ...realPolicyFiles(), [CI_YML]: untamperedCi }, { [CI_YML]: tamperedCi });
-  // The jobs the entry's CI would run: each as its condition says under the base
-  // flags (a ci.yml change runs everything the classifier can), except N3_JOB,
-  // which the tampered `thin_skip` skips.
-  const local = repo({ ...realPolicyFiles(), [CI_YML]: untamperedCi }, { [CI_YML]: tamperedCi });
+// entry whose base is main and whose head is `headCi`. CI_THIN_QUEUE is
+// `shadow` by default, as for the live leg.
+//
+// The job list is derived from the head itself, not written by hand: each job
+// runs as its condition says under the base flags (a ci.yml change runs
+// everything the classifier can), and a thinnable job is skipped when the head's
+// own `changes` output lists it, which is what its own-id thin clause does. The
+// untampered head reads the consumer step, which a full selection leaves empty.
+const ownThinSkip = ci => {
+  const literal = ci.match(/^ {6}thin_skip: '(,[a-z0-9,-]+,)'$/m)?.[1];
+  return literal ? literal.split(',').filter(Boolean) : [];
+};
+function n3Entry(headCi, { thinQueue = 'shadow' } = {}) {
+  const r = gateRemote({ ...realPolicyFiles(), [CI_YML]: untamperedCi }, { [CI_YML]: headCi });
+  const local = repo({ ...realPolicyFiles(), [CI_YML]: untamperedCi }, { [CI_YML]: headCi });
   const { flags } = gate.baseFlags(local.io, local.base, local.head);
+  const skips = ownThinSkip(headCi);
+  const jobsOf = gate.workflowJobsOf(headCi);
   const runs = id => {
-    const condition = gate.workflowJobsOf(tamperedCi)[id].condition;
+    const condition = jobsOf[id].condition;
+    if (skips.includes(id) && condition.includes(`!contains(needs.changes.outputs.thin_skip, ',${id},')`)) return false;
     try { return !condition || evaluateIf(condition, flags); } catch { return true; }
   };
-  const jobsWith = conclusion => gate.extractAggregator(tamperedCi).needs.flatMap(id => {
-    const { template, expected } = gate.jobInstances(tamperedCi, id);
-    if (id === n3.N3_JOB) return conclusion === 'success' ? expected.map(name => ({ name, conclusion, status: 'completed' })) : [{ name: template, conclusion, status: 'completed' }];
+  const jobs = gate.extractAggregator(headCi).needs.flatMap(id => {
+    const { template, expected } = gate.jobInstances(headCi, id);
     return runs(id) ? expected.map(name => ({ name, conclusion: 'success', status: 'completed' })) : [{ name: template, conclusion: 'skipped', status: 'completed' }];
   });
-  const env = remoteEnv(r, { GITHUB_RUN_ATTEMPT: '1', THIN_QUEUE: 'shadow' });
-  return { r, flags, jobsWith, env };
+  fakeActions(r.io, r.headSha, jobs);
+  const env = remoteEnv(r, { GITHUB_RUN_ATTEMPT: '1', THIN_QUEUE: thinQueue });
+  return { r, flags, skips, jobs, env };
 }
+const skippedIn = jobs => jobs.filter(job => job.conclusion === 'skipped').map(job => job.name);
 
 test('N3 automated: the tampered entry skips test-shared, its own CI Success is green, and the gate is red', () => {
-  const { r, flags, jobsWith, env } = n3Entry();
+  const { r, flags, skips, jobs, env } = n3Entry(tamperedCi);
   assert.equal(flags.code, 'true');
-  const skipped = jobsWith('skipped');
-  // Its own CI Success (the head's ci-success with the head's hard-coded list) is green.
+  assert.deepEqual(skips, [n3.N3_JOB], 'the skip comes from the tampered output line');
+  assert.ok(skippedIn(jobs).includes(gate.jobInstances(tamperedCi, n3.N3_JOB).template));
+  // Its own CI Success (the head's ci-success, given the head's own list) is green.
   const own = gate.judge(r.io, { aggregator: gate.extractAggregator(tamperedCi), headCi: tamperedCi, event: 'merge_group', flags,
-    mobile: 'true', thinSkip: [n3.N3_JOB] }, skipped);
+    mobile: 'true', thinSkip: skips }, jobs);
   assert.equal(own.verdict, 'pass', own.reason);
   // The gate publishes a list that skips nothing. Here the fake Actions API has no
   // PR, so the W4 selection falls back (`no_head_sha`); the live leg changes a
-  // policy path and falls back too. Under shadow even a real list is judged as
-  // full ('verify: through the real judge, a skip under a shadow selection is red').
-  fakeActions(r.io, r.headSha, skipped);
+  // policy path and falls back too.
   assert.equal(gate.select(r.io, env), 0, r.lines.join('\n'));
   const published = JSON.parse(r.io.read(thin.SELECTION_FILE));
   assert.deepEqual([published.mode, published.thin_skip, published.thin_queue], ['full', [], 'shadow']);
-  assert.match(published.reason, /^\w+$/);
   assert.notEqual(published.reason, 'error', r.lines.join('\n'));
   // Red, named as a selection fault, and verify exits non-zero, which ejects the entry.
   assert.equal(gate.verify(r.io, env), 1, r.lines.join('\n'));
   assert.equal(lineOf(r).length, 1);
   assert.match(lineOf(r)[0], new RegExp(`^ci-gate: verdict=fail reason=thin_skip_unjustified:${n3.N3_JOB} event=merge_group .* thin=0$`));
+});
+
+test('N3 automated, enforce: a real thin list that does not name test-shared still leaves the tampered entry red', () => {
+  const { r, env } = n3Entry(tamperedCi, { thinQueue: 'enforce' });
+  // A selection that would let the entry skip test-web, and only test-web.
+  assert.equal(gate.select(r.io, env, { queueSelection: () => ({ ...SHADOW_THIN, would_skip: ['test-web'] }) }), 0, r.lines.join('\n'));
+  const published = JSON.parse(r.io.read(thin.SELECTION_FILE));
+  const audited = thin.inAuditSample(r.headSha);
+  assert.deepEqual([published.mode, published.reason, published.thin_skip],
+    audited ? ['full', 'audit_sample', []] : ['thin', '', ['test-web']], `head ${r.headSha}`);
+  assert.equal(gate.verify(r.io, env), 1, r.lines.join('\n'));
+  assert.match(lineOf(r)[0], new RegExp(`^ci-gate: verdict=fail reason=thin_skip_unjustified:${n3.N3_JOB} .* thin=${audited ? 0 : 1}$`));
 });
 
 test('N3 docs: the runbook applies this tamper, keeps the shepherd away, and says what a merge means', () => {
@@ -3127,16 +3148,18 @@ test('N3 docs: the runbook applies this tamper, keeps the shepherd away, and say
   }
 });
 
-test('N3 automated, controls: the same entry with test-shared run passes; a forged thin list cannot excuse it', () => {
-  const ran = n3Entry();
-  fakeActions(ran.r.io, ran.r.headSha, ran.jobsWith('success'));
-  assert.equal(gate.select(ran.r.io, ran.env), 0);
-  assert.equal(gate.verify(ran.r.io, ran.env), 0, ran.r.lines.join('\n'));
-  assert.match(lineOf(ran.r)[0], /^ci-gate: verdict=pass reason=required_jobs_passed /);
+test('N3 automated, controls: without the tamper the same ci.yml change passes; a forged thin list cannot excuse the skip', () => {
+  // Control: the same kind of entry (a ci.yml change) without the tamper skips
+  // nothing of its own accord and passes, so the red above is the tamper's.
+  const control = n3Entry(`${untamperedCi}# N3 control\n`);
+  assert.deepEqual(control.skips, []);
+  assert.ok(!skippedIn(control.jobs).includes(gate.jobInstances(untamperedCi, n3.N3_JOB).template));
+  assert.equal(gate.select(control.r.io, control.env), 0);
+  assert.equal(gate.verify(control.r.io, control.env), 0, control.r.lines.join('\n'));
+  assert.match(lineOf(control.r)[0], /^ci-gate: verdict=pass reason=required_jobs_passed /);
   // A selection file this gate run did not write (another attempt) is unusable,
   // so a list naming test-shared in it changes nothing.
-  const forged = n3Entry();
-  fakeActions(forged.r.io, forged.r.headSha, forged.jobsWith('skipped'));
+  const forged = n3Entry(tamperedCi);
   forged.r.io.write(thin.SELECTION_FILE, JSON.stringify({ schema: 1, repository: REPO, head_sha: forged.r.headSha, base_sha: forged.r.baseSha,
     head_ref: QUEUE_REF, policy_digest: null, gate_run: 500, gate_attempt: 9, source_attempt: 1, mode: 'thin', reason: '',
     thin_skip: [n3.N3_JOB], would_skip: [n3.N3_JOB], thin_queue: 'enforce' }));

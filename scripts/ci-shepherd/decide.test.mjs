@@ -336,4 +336,14 @@ test('two PRs, or three PRs spread over more than the window, open nothing', () 
   // Real failures never feed main_broken, whatever failed both attempts.
   for (const pr of [1, 2, 3]) state = updateBreakers(state, { verdicts: [verdict('real', { pr, at: iso(t0), failedBoth: ['t'] })] }, t0).state;
   assert.equal(state.breakers.length, 0);
+  // Neither do thin-queue faults (W05): every HOLD_CLASSES class is a cause, not a flake.
+  for (const cls of HOLD_CLASSES) {
+    let s = emptyBreakerState();
+    for (const pr of [1, 2, 3]) s = updateBreakers(s, { verdicts: [verdict(cls, { pr, at: iso(t0), failedBoth: ['t'] })] }, t0).state;
+    assert.deepEqual([s.breakers.length, s.observations.length], [0, 0], cls);
+  }
+  // Control: the same three verdicts as an unknown do open it.
+  let open = emptyBreakerState();
+  for (const pr of [1, 2, 3]) open = updateBreakers(open, { verdicts: [verdict('unknown', { pr, at: iso(t0), failedBoth: ['t'] })] }, t0).state;
+  assert.equal(open.breakers.filter((b) => b.kind === 'main_broken').length, 1);
 });

@@ -1074,26 +1074,52 @@ test('the nightly schedule: one cron, its own concurrency group, never a thin ru
 });
 
 // Derived, so a future dispatch-only branch fails here instead of silently
-// skipping on the nightly: every `== 'workflow_dispatch'` comparison also accepts
-// `schedule`, except the two named below.
+// skipping on the nightly. Every non-comment line that names `workflow_dispatch`
+// in any form (an expression, either quote style, `==` or `!=`, or a shell test
+// on EVENT_NAME / GITHUB_EVENT_NAME) must also name `schedule`, except the
+// trigger key and the two lines named below. A multi-line condition that puts
+// `schedule` on another line is flagged too: write it on one line.
+const MOBILE_OUTPUT_LINE = "mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' || steps.lockfile.outputs.changed == 'true' }}";
+const DISPATCH_EXEMPT = new Map([
+  // The gate replay reads queue history; it says nothing about main's health.
+  ["if: github.event_name == 'workflow_dispatch'", 'ci-gate-replay'],
+  // Pinned byte-for-byte by the CI Gate (ci-gate.mjs MOBILE_OUTPUT); the
+  // schedule forces native through the job's steps (mobile-native-ci.test.mjs).
+  [MOBILE_OUTPUT_LINE, 'mobile-native-changes'],
+]);
+const jobIn = (text, name) => text.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'))?.[1] ?? '';
+function dispatchOnlyBranches(text) {
+  const lines = text.split('\n').map((line) => line.trim())
+    .filter((line) => !line.startsWith('#') && line !== 'workflow_dispatch:' && /workflow_dispatch/u.test(line));
+  return lines.filter((line) => {
+    const owner = DISPATCH_EXEMPT.get(line);
+    if (owner) return lines.filter((l) => l === line).length !== 1 || !jobIn(text, owner).split('\n').some((l) => l.trim() === line);
+    return !/\bschedule\b/u.test(line);
+  });
+}
+
 test('every workflow_dispatch branch in ci.yml also covers the nightly schedule', () => {
-  const mobileOutput = "mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' || steps.lockfile.outputs.changed == 'true' }}";
-  const exempt = new Map([
-    // The gate replay reads queue history; it says nothing about main's health.
-    ["if: github.event_name == 'workflow_dispatch'", 'ci-gate-replay'],
-    // Pinned byte-for-byte by the CI Gate (ci-gate.mjs MOBILE_OUTPUT); the
-    // schedule forces native through the job's steps (mobile-native-ci.test.mjs).
-    [mobileOutput, 'mobile-native-changes'],
-  ]);
-  const lines = workflow.split('\n').map((line) => line.trim())
-    .filter((line) => !line.startsWith('#') && line.includes("github.event_name == 'workflow_dispatch'"));
-  assert.ok(lines.length >= 3, 'scan is stale');
-  for (const line of lines) {
-    if (exempt.has(line)) {
-      assert.equal(lines.filter((l) => l === line).length, 1, line);
-      assert.ok(job(exempt.get(line)).split('\n').some((l) => l.trim() === line), `${line} belongs to ${exempt.get(line)}`);
-      continue;
-    }
-    assert.ok(line.includes("github.event_name == 'schedule'"), `dispatch-only branch, the nightly would miss it: ${line}`);
+  assert.deepEqual(dispatchOnlyBranches(workflow), []);
+  // The scan sees each exemption and the main-red-alert branch, so it is not passing on nothing.
+  const seen = workflow.split('\n').filter((line) => !line.trim().startsWith('#') && line.includes('workflow_dispatch')).length;
+  assert.ok(seen >= 4, `scan is stale (${seen} lines)`);
+});
+
+test('the dispatch scan flags every dispatch-only form it promises to', () => {
+  const inject = (line) => workflow.replace('\njobs:\n', `\njobs:\n  injected:\n    runs-on: ubuntu-latest\n    ${line}\n`);
+  for (const line of [
+    "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
+    'if: github.event_name == "workflow_dispatch"',
+    "if: github.event_name != 'workflow_dispatch'",
+    "if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}",
+    'run: \'[[ "${EVENT_NAME}" == "workflow_dispatch" ]] && echo full\'',
+    "if: (github.event_name == 'workflow_dispatch' ||",
+  ]) {
+    assert.deepEqual(dispatchOnlyBranches(inject(line)), [line], line);
   }
+  // A covered branch passes; an exempt line outside its owner job does not.
+  assert.deepEqual(dispatchOnlyBranches(inject("if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'")), []);
+  // A second copy of an exempt line (here, in another job) flags both copies.
+  assert.deepEqual(dispatchOnlyBranches(inject("if: github.event_name == 'workflow_dispatch'")),
+    ["if: github.event_name == 'workflow_dispatch'", "if: github.event_name == 'workflow_dispatch'"]);
 });

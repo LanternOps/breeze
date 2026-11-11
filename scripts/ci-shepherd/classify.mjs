@@ -129,7 +129,9 @@ export function classifyJob(job, ctx) {
 function thinFault(gate, gaps) {
   const lost = gate.selection?.reason === 'attempt1_selection_missing';
   const evidence = [`CI Gate reason ${gate.reason}`];
-  if (gate.selection) evidence.push(`selection mode=${gate.selection.mode} reason=${gate.selection.reason}`);
+  // No selection line (a gate older than W05a, or a log that did not parse): the
+  // shape is unconfirmed, and the page errs toward the kill switch.
+  evidence.push(gate.selection ? `selection mode=${gate.selection.mode} reason=${gate.selection.reason}` : 'ci-gate-selection line missing or unparsed; shape unconfirmed');
   evidence.push(lost
     ? 'a gate re-run found no attempt 1 selection and judged in full; CI had skipped under attempt 1\'s list'
     : 'CI skipped a job the gate\'s selection did not list; unless the PR\'s own ci.yml explains it, turn the thin queue off');

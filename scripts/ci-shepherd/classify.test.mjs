@@ -186,6 +186,7 @@ test('gate reason thin_skip_unjustified → thin_fault/thin_skip_unjustified, ou
   // A gate too old to log a selection line still names the fault.
   fx.facts.gate = { verdict: 'fail', reason: 'thin_skip_unjustified:test-shared', run: 9, selection: null };
   assert.deepEqual([classify(fx).class, classify(fx).signature], ['thin_fault', 'thin_skip_unjustified']);
+  assert.match(classify(fx).evidence.join('\n'), /selection line missing or unparsed; shape unconfirmed/);
   // A real failure beside it (a job the gate does not require) does not hide it.
   const real = clone(fixture('synthetic-typecheck-dns'));
   real.facts.jobs[0].failedStep = 'Run typecheck';
