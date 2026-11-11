@@ -5,7 +5,9 @@
  * Offline and deterministic. What is real and what stands in:
  *
  *  - Real: the session manager's turn loop (the Wisp turn record, the reply
- *    text buffer, the turn-end hooks and `done`); the standing-state block
+ *    text buffer, the turn-end hooks and `done`); the system prompt, which is
+ *    the Wisp behaviour block every Wisp seed carries; the registry
+ *    descriptions of the Wisp concern and check-in tools; the standing-state block
  *    (`standingStateForTurn`: facts → render → the per-session send gate),
  *    put ahead of the user's text the way `POST /ai/sessions/:id/messages`
  *    does (the route's content sanitising and fired check-in block are not
@@ -26,8 +28,9 @@
  *    tiers, approval cards and the ceiling gate are not replayed; their own
  *    suites pin them. The SDK stream carries the reply text and `result`.
  *
- * The scripted model reads what a real model would see: the turn content
- * (with any standing-state block) and this turn's tool results. A step can be
+ * The scripted model reads what a real model would see: the system prompt,
+ * the Wisp tool descriptions, the turn content (with any standing-state
+ * block) and this turn's tool results. A step can be
  * a function of that view, so a fixture says "answer from the standing state
  * when it is there, otherwise go and look" and a regression in what Wisp is
  * told shows up as extra tool calls, not as a silent pass.
@@ -38,18 +41,26 @@ import type { AuthContext } from '../../middleware/auth';
 import { buildOrgAccessClosures } from '../../middleware/auth';
 import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
 import { StreamingSessionManager, type ActiveSession } from '../../services/streamingSessionManager';
+import type { AiTool } from '../../services/aiTools';
+import { registerWispCheckInTools } from '../../services/wisp/checkInTools';
+import { registerWispConcernTools } from '../../services/wisp/concernTools';
 import { normaliseDispatchResult } from '../../services/wisp/dispatchEvidence';
 import type { GrantCeiling } from '../../services/wisp/grantAuthority';
 import { readInstructionCapture } from '../../services/wisp/instructionCaptureStatus';
 import { STANDING_STATE_TAG, type StandingStateFacts } from '../../services/wisp/standingLoop';
 import { checkStandingInstructionsForCall } from '../../services/wisp/standingInstructionGate';
 import { clearStandingStateCache, markStandingStateSent, standingStateForTurn } from '../../services/wisp/standingStateTurn';
+import { WISP_BEHAVIOUR_BLOCK } from '../../services/wisp/threads';
 import { recordWispToolOutcome } from '../../services/wisp/turnRecord';
 import type { ReplayInventory, ReplayScore, ReplayToolCall, ReplayTrace, ReplayTurnTrace } from './score';
 import { replayWorld, resetReplayWorld } from './world';
 
 /** What the scripted model can see when it decides its next step. */
 export type ModelView = {
+  /** The system prompt the session handed the SDK. */
+  systemPrompt: string;
+  /** The registry descriptions of the Wisp concern and check-in tools, by bare name. */
+  toolDescriptions: Readonly<Record<string, string>>;
   /** This turn's content as the model receives it (standing-state block first, the user's text last). */
   turnContent: string;
   /** The newest `<wisp_standing_state>` block in the conversation so far, or null. */
@@ -123,6 +134,14 @@ const THREAD_ID = 'b2b2b2b2-1111-4222-8333-444455556666';
 const TURN_TIMEOUT_MS = 10_000;
 const CAPTURE_TIMEOUT_MS = 10_000;
 const MAX_SCRIPT_STEPS = 50;
+
+/** The descriptions the model is shown for the Wisp follow-up tools: the real registrations, not a copy. */
+const WISP_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = (() => {
+  const registry = new Map<string, AiTool>();
+  registerWispConcernTools(registry);
+  registerWispCheckInTools(registry);
+  return Object.fromEntries([...registry].map(([name, tool]) => [name, tool.definition.description]));
+})();
 
 const STANDING_BLOCK_RE = new RegExp(`<${STANDING_STATE_TAG}\\b[\\s\\S]*?</${STANDING_STATE_TAG}>`, 'g');
 
@@ -229,9 +248,12 @@ async function* runScript(
   active: ActiveTurn,
   turnContent: string,
   seen: string[],
+  systemPrompt: string,
 ): AsyncGenerator<unknown> {
   const queue: ScriptedModelStep[] = [...active.turn.modelScript];
   const view = (): ModelView => ({
+    systemPrompt,
+    toolDescriptions: WISP_TOOL_DESCRIPTIONS,
     turnContent,
     standingState: newestStandingState(seen),
     toolResults: active.calls.map((c) => ({ tool: c.tool, output: c.output, isError: c.isError })),
@@ -308,13 +330,15 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
   let active: ActiveTurn | null = null;
   let session: ActiveSession | null = null;
 
-  replayWorld.sdkQuery = ({ prompt }) => ({
+  replayWorld.sdkQuery = ({ prompt, options }) => ({
     async *[Symbol.asyncIterator]() {
+      const sent = (options as { systemPrompt?: unknown } | undefined)?.systemPrompt;
+      if (typeof sent !== 'string') throw new Error('replay: the session sent no system prompt');
       for await (const input of prompt) {
         const content = userContentText(input);
         seen.push(content);
         if (!active || !session) throw new Error('replay: a turn arrived with no scripted turn in flight');
-        yield* runScript(fixture, session, active, content, seen);
+        yield* runScript(fixture, session, active, content, seen, sent);
         yield SDK_RESULT;
       }
     },
@@ -326,7 +350,7 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
   const turns: ReplayTurnTrace[] = [];
   try {
     const dbSession = { orgId: [...fixture.ceiling.orgIds][0]!, sdkSessionId: null, maxTurns: 50, turnCount: 0, systemPrompt: null };
-    session = await manager.getOrCreate(SESSION_ID, dbSession, auth, undefined, 'PROMPT', undefined, makeResolvedModel('platform'));
+    session = await manager.getOrCreate(SESSION_ID, dbSession, auth, undefined, WISP_BEHAVIOUR_BLOCK, undefined, makeResolvedModel('platform'));
     if (!session.wispGrant) throw new Error('replay: the session did not resolve its Wisp grant');
     const live = session;
 
