@@ -75,7 +75,7 @@ func crashingAssist(t *testing.T, mgr *Manager, alive *bool, code uint32) (*[]*f
 
 // stopWatchersAndWait cancels every session watcher and waits for each to
 // return. Unlike Shutdown it never abandons one after a timeout, so once it
-// returns no watcher goroutine can read a package seam.
+// returns no watcher mgr tracks can read a package seam.
 func stopWatchersAndWait(mgr *Manager) {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -125,7 +125,9 @@ func linesContaining(buf *bytes.Buffer, s string) []string {
 // seam restore runs before a t.Cleanup(mgr.Shutdown) registered earlier; a
 // watcher still ticking then reads listHelperInstancesFunc while the restore
 // writes it (a -race failure in TestApplyRelaunchesAfterTheWatcherWaited).
-func TestCrashingAssistStopsTheWatcherBeforeRestoringSeams(t *testing.T) {
+// This pins that the watcher is stopped once the cleanup has run; that the
+// stop comes before the restore is kept by both living in one closure.
+func TestCrashingAssistLeavesNoWatcherRunning(t *testing.T) {
 	fastWatcher(t)
 	mgr, _ := newNotInstalledManager(t)
 	t.Cleanup(mgr.Shutdown)
