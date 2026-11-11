@@ -3,9 +3,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { fetchMock, toastMock, orgState } = vi.hoisted(() => ({
+const { fetchMock, toastMock, orgState, capability } = vi.hoisted(() => ({
   fetchMock: vi.fn(),
   toastMock: vi.fn(),
+  capability: { canReattach: true },
   orgState: {
     organizations: [{ id: 'org-a', name: 'Acme', status: 'active' }],
     fetchOrganizations: vi.fn(async () => undefined),
@@ -16,7 +17,8 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: fetchMock }));
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: typeof orgState) => unknown) => selector(orgState),
 }));
-vi.mock('@/lib/fetchAllSites', () => ({ fetchAllSites: vi.fn(async () => []) }));
+vi.mock('@/lib/fetchAllSites', () => ({ fetchAllSites: vi.fn(async () => [{ id: 'site-1', name: 'HQ' }]) }));
+vi.mock('../../lib/reattachCapability', () => ({ useCanReattachDevice: () => capability.canReattach }));
 vi.mock('../../lib/mfaStepUp', () => ({
   mintStepUpGrant: vi.fn(),
   StepUpMintError: class StepUpMintError extends Error {},
@@ -75,7 +77,10 @@ function renderDialog(props: { offerReattach?: boolean; devices?: ParkedDeviceSu
   return { onCompleted, onClose };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  capability.canReattach = true;
+});
 
 describe('AssignParkedDeviceDialog reattach (#8318)', () => {
   it('offers Reattach to X beside Assign as new, with the side-by-side comparison', async () => {
@@ -105,14 +110,52 @@ describe('AssignParkedDeviceDialog reattach (#8318)', () => {
     expect(screen.queryByTestId('assign-parked-mode')).toBeNull();
   });
 
-  it('shows an open reattach as pending and offers no new one', async () => {
+  it('with a pending reattach, assigning as new needs an explicit confirmation that it cancels it', async () => {
+    const user = userEvent.setup();
     route(parkedView({
       openIntent: { intentId: 'intent-1', state: 'requested', targetDeviceId: TARGET_ID, expiresAt: requestedIntent.expiresAt },
     }));
     renderDialog();
     await screen.findByTestId('assign-parked-reattach-pending');
     expect(screen.queryByTestId('assign-parked-mode')).toBeNull();
-    expect(screen.getByTestId('assign-parked-target-org')).toBeTruthy();
+    await user.selectOptions(screen.getByTestId('assign-parked-target-org'), 'org-a');
+    await waitFor(() => expect(screen.getByTestId('assign-parked-target-site')).toBeTruthy());
+    await user.selectOptions(screen.getByTestId('assign-parked-target-site'), 'site-1');
+    await user.click(screen.getByTestId('assign-parked-possession'));
+    const submit = screen.getByTestId('assign-parked-submit') as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    expect(screen.getByTestId('assign-parked-reattach-pending').textContent).toMatch(/cancels its pending reattach/);
+    await user.click(screen.getByTestId('assign-parked-cancel-reattach'));
+    expect(submit.disabled).toBe(false);
+  });
+
+  it('locks the mode choice while the reattach form is submitting', async () => {
+    const user = userEvent.setup();
+    let resolvePost: (r: Response) => void = () => undefined;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === `/devices/${SOURCE_ID}/reinstall-candidates`) return json(200, parkedView());
+      if (init?.method === 'POST') return new Promise<Response>((resolve) => { resolvePost = resolve; });
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    renderDialog();
+    await user.click(await screen.findByTestId(`assign-parked-mode-reattach-${TARGET_ID}`));
+    await user.click(screen.getByTestId('reattach-possession'));
+    await user.type(screen.getByTestId('reattach-confirm-name'), 'LAPTOP-OLD');
+    await user.click(screen.getByTestId('reattach-submit'));
+    const assignRadio = screen.getByTestId('assign-parked-mode-assign') as HTMLInputElement;
+    await waitFor(() => expect(assignRadio.disabled).toBe(true));
+    await user.click(assignRadio);
+    expect(screen.getByTestId('reattach-form')).toBeTruthy();
+    resolvePost(json(409, { error: 'unknown', code: 'liveness_unknown' }));
+    await waitFor(() => expect(assignRadio.disabled).toBe(false));
+  });
+
+  it('offers no reattach choice to a user without devices:write + devices:delete', async () => {
+    capability.canReattach = false;
+    route(parkedView());
+    renderDialog();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/devices/${SOURCE_ID}/reinstall-candidates`));
+    expect(screen.queryByTestId('assign-parked-mode')).toBeNull();
   });
 
   it('without candidates (or a refused read) it is the plain assign dialog', async () => {

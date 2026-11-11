@@ -20,6 +20,7 @@ import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import ReattachDeviceForm from './ReattachDeviceForm';
 import { useReinstallCandidates } from './useReinstallCandidates';
+import { useCanReattachDevice } from '../../lib/reattachCapability';
 
 /** The device-reported identity the dialog shows (all unverified). */
 export interface ParkedDeviceSummary {
@@ -110,6 +111,11 @@ export default function AssignParkedDeviceDialog({
   const [mode, setMode] = useState<string>('assign');
   // Once a reattach is requested the choice is made: the form shows it pending.
   const [reattachRequested, setReattachRequested] = useState(false);
+  // The reattach form is submitting or waiting for the second factor.
+  const [reattachBusy, setReattachBusy] = useState(false);
+  // Assigning a device with a pending reattach cancels that reattach: say so.
+  const [cancelReattachConfirmed, setCancelReattachConfirmed] = useState(false);
+  const canReattach = useCanReattachDevice();
   const reattach = useReinstallCandidates(open && offerReattach && !bulk && single ? single.id : null);
 
   useEffect(() => {
@@ -129,6 +135,8 @@ export default function AssignParkedDeviceDialog({
     setHeldGrant(null);
     setMode('assign');
     setReattachRequested(false);
+    setReattachBusy(false);
+    setCancelReattachConfirmed(false);
   }, [open]);
 
   useEffect(() => {
@@ -276,15 +284,17 @@ export default function AssignParkedDeviceDialog({
     : t('assignParkedDialog.titleSingle', { hostname: single?.hostname ?? '' });
   const destinationChosen = targetOrgId !== '' && targetSiteId !== '';
   const collisionGate = collision && !acceptCollision;
-  const canSubmit = destinationChosen && possessionConfirmed && !submitting && !collisionGate
+  const reattachPendingGate = !bulk && reattach.view?.openIntent != null && !cancelReattachConfirmed;
+  const canSubmit = destinationChosen && possessionConfirmed && !submitting && !collisionGate && !reattachPendingGate
     && (phase === 'form' || tier === 'passkey' || code.length === 6);
   const hostnameFor = (id: string) => devices.find((d) => d.id === id)?.hostname ?? id;
 
   const reattachView = reattach.view;
   const reattachPending = reattachView?.openIntent ?? null;
-  const reattachCandidates = reattachView && !reattachPending ? reattachView.candidates : [];
+  // Offered only to users the route admits (partner scope, devices:write + devices:delete).
+  const reattachCandidates = canReattach && reattachView && !reattachPending ? reattachView.candidates : [];
   const reattachCandidate = mode === 'assign' ? null : reattachCandidates.find((c) => c.deviceId === mode) ?? null;
-  const modeLocked = submitting || phase !== 'form';
+  const modeLocked = submitting || phase !== 'form' || reattachBusy;
   const heading = reattachCandidate ? t('reattachDialog.title', { target: reattachCandidate.hostname }) : title;
 
   return (
@@ -341,9 +351,22 @@ export default function AssignParkedDeviceDialog({
       )}
 
       {reattachPending && (
-        <p className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm" data-testid="assign-parked-reattach-pending">
-          {t('assignParkedDialog.reattachPending', { expiresAt: formatDateTime(reattachPending.expiresAt) })}
-        </p>
+        <div className="mt-4 space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm" data-testid="assign-parked-reattach-pending">
+          <p>{t('assignParkedDialog.reattachPending', { expiresAt: formatDateTime(reattachPending.expiresAt) })}</p>
+          {phase !== 'done' && (
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                data-testid="assign-parked-cancel-reattach"
+                checked={cancelReattachConfirmed}
+                onChange={(e) => setCancelReattachConfirmed(e.target.checked)}
+                disabled={submitting}
+                className="mt-0.5"
+              />
+              <span>{t('assignParkedDialog.cancelReattachConfirm')}</span>
+            </label>
+          )}
+        </div>
       )}
 
       {reattachView && reattachCandidate ? (
@@ -354,7 +377,10 @@ export default function AssignParkedDeviceDialog({
           mfaMethod={mfaMethod}
           onClose={onClose}
           onRequested={() => { setReattachRequested(true); onCompleted(); }}
-          onTargetChanged={() => { setMode('assign'); void reattach.reload(); }}
+          // Any 409: re-read, and the form follows the current rows (a
+          // re-enrolled target arrives with a new version and restarts it).
+          onConflict={() => { void reattach.reload(); }}
+          onBusyChange={setReattachBusy}
         />
       ) : (
       <>
