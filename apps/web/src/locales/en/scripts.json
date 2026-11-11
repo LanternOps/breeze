@@ -184,7 +184,7 @@
       "value": "Value",
       "selectScript": "Select a script...",
       "selectChannel": "Select a channel...",
-      "alertMessage": "Alert Message",
+      "alertMessage": "Alert message...",
       "selectSoftware": "Select software..."
     },
     "sections": {

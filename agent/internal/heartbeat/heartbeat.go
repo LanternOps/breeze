@@ -2362,7 +2362,7 @@ func (h *Heartbeat) Start() {
 
 	// #8318 — resume a reattach a previous process left mid-flight (§6.6);
 	// its state was primed above.
-	go h.resumeRebind()
+	h.rebind.running.Go(h.resumeRebind)
 
 	// #11065 — after a firmware update's reboot, report BitLocker and the BIOS
 	// version once. A no-op when nothing is pending.

@@ -1,3 +1,4 @@
+import { isReadOnlySqlError } from './readOnlyDatabase';
 import {
   formatUnsafeDbRoleOptOutBanner,
   formatUnsafeRequestDatabaseRoleMessage,
@@ -123,10 +124,18 @@ export async function initializeDatabaseForStartup(
     try {
       await recordRunningVersion();
     } catch (err) {
-      logger.warn(
-        `[upgrade-preflight] Could not record the running version; the next upgrade's preflight ` +
-          `will report more broadly: ${describeError(err)}`,
-      );
+      if (isReadOnlySqlError(err)) {
+        // #11731: expected while the database is read-only; boot continues.
+        logger.warn(
+          `[upgrade-preflight] Version ${env.APP_VERSION ?? '(unset)'} not recorded: the database is ` +
+            'read-only (SQLSTATE 25006). It is recorded on the first boot with a writable database.',
+        );
+      } else {
+        logger.warn(
+          `[upgrade-preflight] Could not record the running version; the next upgrade's preflight ` +
+            `will report more broadly: ${describeError(err)}`,
+        );
+      }
     }
   }
 

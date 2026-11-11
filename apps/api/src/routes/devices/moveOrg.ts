@@ -18,7 +18,7 @@ import { hasPermission, PERMISSIONS } from '../../services/permissions';
 import {
   getDeviceWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
-  projectPublicDevice,
+  projectPublicDeviceForCaller,
 } from './helpers';
 import { moveOrgSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -457,7 +457,7 @@ moveOrgRoutes.post(
 
     return c.json({
       success: true,
-      device: updated ? projectPublicDevice(updated) : null,
+      device: updated ? await projectPublicDeviceForCaller(updated, auth) : null,
     });
   },
 );

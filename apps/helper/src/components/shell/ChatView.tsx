@@ -6,6 +6,7 @@ import ChatFileCard, {
   openWorkspaceFile,
   type WorkspaceFileSummary,
 } from '../workspace/ChatFileCard';
+import { productName, useT, useUiContext } from '../../i18n/uiContext';
 import { SafeMarkdownImage, SafeMarkdownLink } from '../../lib/safeMarkdown';
 
 // Extracted from App.tsx's default return (messages map, composer,
@@ -133,13 +134,63 @@ function withCitations(
   return out;
 }
 
-function ToolCallIndicator({ toolName }: { toolName?: string }) {
-  const label = toolName
-    ? `Using ${toolName.replace(/_/g, ' ')}...`
-    : 'Checking your system...';
+type ToolCallState = 'running' | 'done' | 'failed';
+
+/**
+ * Resolves each tool_use message's indicator state (#11727). A tool is
+ * `running` only while the turn is streaming, it belongs to the current turn
+ * (after the last user message), and no tool_result with its toolUseId has
+ * arrived. Persisted rows carry no toolUseId, so a reloaded session can't be
+ * matched by id — it is never streaming, so every indicator settles anyway.
+ */
+function buildToolCallStates(
+  messages: { id: string; role: string; toolUseId?: string; isError?: boolean }[],
+  isStreaming: boolean,
+): Map<string, ToolCallState> {
+  const results = new Map<string, boolean>();
+  let lastUserIndex = -1;
+  messages.forEach((msg, i) => {
+    if (msg.role === 'user') lastUserIndex = i;
+    if (msg.role === 'tool_result' && msg.toolUseId) {
+      results.set(msg.toolUseId, msg.isError === true);
+    }
+  });
+
+  const states = new Map<string, ToolCallState>();
+  messages.forEach((msg, i) => {
+    if (msg.role !== 'tool_use') return;
+    const isError = msg.toolUseId ? results.get(msg.toolUseId) : undefined;
+    if (isError !== undefined) {
+      states.set(msg.id, isError ? 'failed' : 'done');
+    } else {
+      states.set(msg.id, isStreaming && i > lastUserIndex ? 'running' : 'done');
+    }
+  });
+  return states;
+}
+
+function ToolCallIndicator({ toolName, state }: { toolName?: string; state: ToolCallState }) {
+  const name = toolName?.replace(/_/g, ' ');
+  // The label carries the outcome; the status glyph below is aria-hidden.
+  const label =
+    state === 'running'
+      ? name ? `Using ${name}...` : 'Checking your system...'
+      : state === 'failed'
+        ? name ? `Couldn't use ${name}` : "Couldn't check your system"
+        : name ? `Used ${name}` : 'Checked your system';
   return (
-    <div className="helper-tool-indicator text-ws-secondary">
-      <span className="helper-spinner" />
+    <div
+      className="helper-tool-indicator text-ws-secondary"
+      data-testid="tool-call-indicator"
+      data-state={state}
+    >
+      {state === 'running' ? (
+        <span className="helper-spinner" />
+      ) : (
+        <span className={`helper-tool-status helper-tool-status-${state}`} aria-hidden="true">
+          {state === 'failed' ? '!' : '✓'}
+        </span>
+      )}
       <span>{label}</span>
     </div>
   );
@@ -166,8 +217,14 @@ export default function ChatView({
   setDraft: (value: string) => void;
 }) {
   const { messages, isStreaming, username, sendMessage } = useChatStore();
+  const t = useT();
+  const uiContext = useUiContext();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileResolutionMap = useMemo(() => buildFileResolutionMap(messages), [messages]);
+  const toolCallStates = useMemo(
+    () => buildToolCallStates(messages, isStreaming),
+    [messages, isStreaming],
+  );
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -193,14 +250,24 @@ export default function ChatView({
       <div className="helper-messages" data-testid="chat-view">
         {messages.length === 0 && (
           <div className="helper-empty text-ws-secondary">
-            <p>Hi{username ? `, ${username}` : ''}! I'm Breeze Helper.</p>
-            <p>Ask me anything about your computer.</p>
+            <p>
+              {username
+                ? t('chat.greetingNamed', { user: username, name: productName(uiContext) })
+                : t('chat.greeting', { name: productName(uiContext) })}
+            </p>
+            <p>{t('chat.greetingHint')}</p>
           </div>
         )}
 
         {messages.map((msg) => {
           if (msg.role === 'tool_use') {
-            return <ToolCallIndicator key={msg.id} toolName={msg.toolName} />;
+            return (
+              <ToolCallIndicator
+                key={msg.id}
+                toolName={msg.toolName}
+                state={toolCallStates.get(msg.id) ?? 'done'}
+              />
+            );
           }
 
           if (msg.role === 'tool_result') {
@@ -258,7 +325,7 @@ export default function ChatView({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask me anything..."
+          placeholder={t('chat.placeholder')}
           disabled={isStreaming}
           rows={1}
           className="helper-input bg-ws-canvas text-ws-ink"

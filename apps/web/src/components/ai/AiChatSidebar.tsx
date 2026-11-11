@@ -288,6 +288,8 @@ export default function AiChatSidebar() {
     // grant as it is NOW. Re-read, never the lookup from when the panel
     // opened — a grant revoked, paused or expired since then must start a
     // plain chat (and offer Meet Wisp), not a session the server refuses.
+    // A Wisp thread is one conversation (#11672): when it still has a live
+    // session, this continues it rather than forking a second one.
     if (!wisp && wispEligible) {
       const result = await lookUpActiveGrant(selectedOrgId);
       setGrantLookup(result);
@@ -526,6 +528,16 @@ export default function AiChatSidebar() {
                 <span className="text-xs text-red-400">{error}</span>
                 {errorCode === "credits_exhausted" && (
                   <BuyCreditsLink className="ml-2 shrink-0 text-xs font-medium text-red-300 underline underline-offset-2 hover:text-red-200" />
+                )}
+                {errorCode === "session_closed" && !wisp && (
+                  <button
+                    type="button"
+                    data-testid="ai-session-closed-new-session"
+                    onClick={() => void createSession()}
+                    className="ml-2 shrink-0 text-xs font-medium text-red-300 underline underline-offset-2 hover:text-red-200"
+                  >
+                    {t("sessionClosed.startNew")}
+                  </button>
                 )}
                 <button
                   onClick={clearError}

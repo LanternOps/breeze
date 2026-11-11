@@ -186,6 +186,7 @@ const FAILURE_CODE_CATEGORY: ReadonlyMap<string, FirstLookFailureCategory> = new
   ['max_turns_exceeded', 'model_unavailable'],
   ['model_unavailable', 'model_unavailable'],
   ['model_refused', 'model_unavailable'],
+  ['tool_profile_underpowered', 'model_unavailable'],
   ['org_budget_exceeded', 'budget'],
   ['budget_exceeded', 'budget'],
 ]);

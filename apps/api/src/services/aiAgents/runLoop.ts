@@ -67,7 +67,9 @@ import { createActionIntent } from '../actionIntents/intentService';
 import { captureException } from '../sentry';
 import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
 import { buildTaskOperationKey } from '../aiOperator/operationKey';
-import { TOOL_TIERS, createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
+import { TOOL_TIERS, chatToolDomain, createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
+import { DEFAULT_TOOL_PROFILE_FACTS } from '../aiModels/toolProfileFacts';
+import { applyRunToolProfile } from './runToolProfile';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
 import { reportMissingSdkToolUseId } from '../aiToolUseCorrelation';
 import { checkBudgetDetailed, type AiBillingSource } from '../aiCostTracker';
@@ -2768,7 +2770,20 @@ async function driveSdkLoop(
       flowSdkTools = [];
     }
   }
-  const exposedNames = [...registryExposedNames, ...flowDescriptors.map((d) => `mcp__breeze__${d.name}`)];
+  // #11393: the model's tool profile narrows the run profile's exposure
+  // (never authority). The identity exposure returns both lists unchanged; a
+  // profile missing a tool this run needs blocks here, before any provider call.
+  const toolProfile = applyRunToolProfile({
+    run,
+    facts: agentModel.toolProfileFacts ?? DEFAULT_TOOL_PROFILE_FACTS,
+    exposedNames: [...registryExposedNames, ...flowDescriptors.map((d) => `mcp__breeze__${d.name}`)],
+    onlyTools,
+    flowToolNames: flowDescriptors.map((d) => d.name),
+    offeringId: agentModel.offering.id,
+    domainOf: (name) => chatToolDomain(name),
+  });
+  const exposedNames = toolProfile.exposedNames;
+  const registeredOnlyTools = toolProfile.onlyTools;
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
@@ -2785,9 +2800,9 @@ async function driveSdkLoop(
         // an assessment run is given.
         { design: designRefs, patch: patchRefs, research: researchRefs, assessment: { orgId: run.orgId } },
       ),
-      ...flowSdkTools,
+      ...flowSdkTools.filter((t) => toolProfile.exposure.names === null || toolProfile.keepsFlowTool(t.name)),
     ],
-    onlyTools ? { onlyTools } : undefined);
+    registeredOnlyTools ? { onlyTools: registeredOnlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
   // S8: the ONE surface with a genuinely stable request identity — the agent

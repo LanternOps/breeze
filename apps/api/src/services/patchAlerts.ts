@@ -208,7 +208,7 @@ export type EmitPatchJobFailureAlertInput = {
   /** Omit to have the emitter read `devices.hostname` itself. */
   hostname?: string | null;
   failedCount: number;
-  errorExcerpt: string | null;
+  errorMessage: string | null;
 };
 
 async function loadHostname(deviceId: string, orgId: string): Promise<string | null> {
@@ -232,7 +232,7 @@ async function loadHostname(deviceId: string, orgId: string): Promise<string | n
 export async function emitPatchJobFailureAlert(
   input: EmitPatchJobFailureAlertInput,
 ): Promise<string | null> {
-  const { orgId, deviceId, patchJobId, failedCount, errorExcerpt } = input;
+  const { orgId, deviceId, patchJobId, failedCount, errorMessage } = input;
   try {
     const maintenance = await checkDeviceMaintenanceWindow(deviceId);
     if (maintenance.active && maintenance.suppressAlerts) {
@@ -249,9 +249,15 @@ export async function emitPatchJobFailureAlert(
 
       const ruleId = await ensurePatchJobFailureRule(orgId);
 
-      const message =
+      const fullMessage =
         `${failedCount} patch(es) failed to install on ${label}.`
-        + (errorExcerpt ? ` ${errorExcerpt}` : '');
+        + (errorMessage ? ` ${errorMessage}` : '');
+      // Bound alert fan-out to notifications and the event bus. Full installer
+      // output remains in patch_job_results, including for truncated alerts.
+      const messageCodePoints = Array.from(fullMessage);
+      const message = messageCodePoints.length > 4000
+        ? messageCodePoints.slice(0, 3999).join('') + '…'
+        : fullMessage;
 
       return createAlert({
         ruleId,

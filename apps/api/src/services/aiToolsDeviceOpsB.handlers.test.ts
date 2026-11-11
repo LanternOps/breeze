@@ -346,6 +346,9 @@ describe('review fixes (#10352)', () => {
     expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/not connected right now/);
     h.endSession.mockResolvedValue({ ended: true, disconnect: 'close-failed', commandDelivered: true });
     expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/did not close cleanly/);
+    // #4142: a close handed to another instance with no confirming answer is not reported as clean.
+    h.endSession.mockResolvedValue({ ended: true, disconnect: 'unconfirmed', commandDelivered: true });
+    expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/was not confirmed/);
     h.select.mockImplementation(() => chain([{ session: { id: SESSION, orgId: ORG, status: 'pending', deviceId: null, createdAt: new Date() } }]));
     h.endSession.mockResolvedValue({ ended: true, disconnect: null, commandDelivered: false });
     expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/No client had joined/);

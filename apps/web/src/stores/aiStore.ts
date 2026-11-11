@@ -11,7 +11,7 @@ import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type Att
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
-import { WISP_GRANT_UNUSABLE, wispSessionOrgId } from '@/lib/wispSession';
+import { WISP_GRANT_UNUSABLE, isResumableWispSession, wispSessionOrgId } from '@/lib/wispSession';
 import { showToast } from '@/components/shared/Toast';
 import { activeThreadFor, type WispTalkTarget } from '@/lib/wispTalk';
 import { WispTalkError } from '@/lib/wispTalkError';
@@ -75,6 +75,12 @@ export type WispState = {
   unattendedReads?: boolean;
   /** #10390: a closed session's summary is also written by the model, charged to the daily budget. */
   summaryRefine?: boolean;
+  /**
+   * #11672: the thread's last session as of the thread read. A hint for
+   * `enterWispMode`, which resumes it only after checking it is still live
+   * under this grant; `undefined`/null = start a session.
+   */
+  lastSessionId?: string | null;
 } | null;
 
 export type WispTalkFocusRequest = {
@@ -181,8 +187,13 @@ interface AiState {
    * server pins the session to its site and refuses a device or M365 binding.
    */
   createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext; model?: AiModelChoice; wispGrantId?: string; orgId?: string }) => Promise<void>;
-  /** Turn Wisp mode on for a granted thread and open a fresh session under the grant. */
-  enterWispMode: (w: NonNullable<WispState>) => Promise<void>;
+  /**
+   * Turn Wisp mode on for a granted thread: continue the thread's live session
+   * (`w.lastSessionId`, when still active under the grant), else open a fresh
+   * one (#11672). Resolves false when a newer create/load/switch took the
+   * store over meanwhile (the caller must not act on the store as its own).
+   */
+  enterWispMode: (w: NonNullable<WispState>) => Promise<boolean>;
   /** Change the thread's customer focus (PATCH /wisp/thread/:id/focus); the next turn runs in a new session anchored to it. */
   setWispFocus: (orgId: string | null, orgName: string | null, opts?: { throwOnError: boolean }) => Promise<'focused' | 'superseded' | 'failed'>;
   /** Merge server-confirmed grant fields (refresh / settings) into the Wisp state. */
@@ -411,6 +422,11 @@ let activeStreamToken = 0;
 let sessionOwnerToken = 0;
 const claimSessionOwnership = (): (() => boolean) => {
   const token = ++sessionOwnerToken;
+  return () => sessionOwnerToken === token;
+};
+/** The token a create/load/switch just claimed (called right after starting it): true while nothing newer has. */
+const ownershipAsOfNow = (): (() => boolean) => {
+  const token = sessionOwnerToken;
   return () => sessionOwnerToken === token;
 };
 
@@ -1155,7 +1171,7 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
-        if (refusal === 'expired' && get().wisp && !resendingAfterRoll) {
+        if ((refusal === 'expired' || refusal === 'closed') && get().wisp && !resendingAfterRoll) {
           // #11430: the server retired this session (idle, 24 h cap, or a
           // restart left the row behind) before the turn ran. One thread per
           // grant, so the user never chose this session: open the next one and
@@ -1165,7 +1181,7 @@ export const useAiStore = create<AiState>()(
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           if (!ownsStream()) return;
           if (await rollWispSession(get, model, { closeOld: false })) {
-            console.info(`[AiStore] Wisp session ${currentSessionId} had expired; continuing the thread on a fresh session`);
+            console.info(`[AiStore] Wisp session ${currentSessionId} was ${refusal === 'closed' ? 'closed elsewhere' : 'expired'}; continuing the thread on a fresh session`);
             resendingAfterRoll = true;
             try {
               await get().sendMessage(trimmedContent);
@@ -1178,6 +1194,22 @@ export const useAiStore = create<AiState>()(
           set(get().error
             ? { composerDraft: trimmedContent }
             : { composerDraft: trimmedContent, error: extractApiError(data, 'Failed to send message'), errorCode: code });
+          return;
+        }
+
+        if (refusal === 'closed') {
+          // #11609: the conversation was closed elsewhere (another tab or the
+          // API) before this turn ran, so nothing was stored. Never lose the
+          // text: it goes back to the composer, and the banner says what
+          // happened in plain words and offers a new session (errorCode drives it).
+          if (!ownsStream()) return;
+          set((s) => ({
+            messages: s.messages.filter((m) => m.id !== userMsgId),
+            composerDraft: trimmedContent,
+            error: i18n.t('ai:sessionClosed.message'),
+            errorCode: code,
+            isStreaming: false,
+          }));
           return;
         }
 
@@ -1713,10 +1745,8 @@ export const useAiStore = create<AiState>()(
       if (!get().error && (get().wisp?.grantId !== grant.grantId
         || get().wisp?.threadId !== grant.threadId || get().wisp?.focusOrgId !== target.orgId)) return 'superseded';
     } else if (get().wisp?.grantId !== grant.grantId || !get().sessionId) {
-      const entering = get().enterWispMode(grant);
-      const owner = sessionOwnerToken;
-      await entering;
-      if (sessionOwnerToken !== owner) return 'superseded';
+      // #11672: resumes the thread's live session when there is one.
+      if (!(await get().enterWispMode(grant))) return 'superseded';
     }
     if (sequence !== wispTalkSequence) return 'superseded';
     const current = get().wisp;
@@ -1752,10 +1782,39 @@ export const useAiStore = create<AiState>()(
   },
 
   enterWispMode: async (w) => {
-    // A Wisp conversation starts fresh on the grant's thread; the plain chat
-    // that was open stays in history (not closed — it is not the thread's).
-    set({ wisp: w, ...CLEARED_SESSION });
-    await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
+    // The plain chat that was open stays in history (not closed — it is not
+    // the thread's). Claimed synchronously, so a pick or create started after
+    // this call supersedes it even while the resume check is in flight.
+    let owns = claimSessionOwnership();
+    set({ wisp: w, ...CLEARED_SESSION, isLoading: true, error: null, errorCode: null, errorStatus: null });
+    // #11672: a Wisp thread is one conversation. Opening the pane on another
+    // page (or "Talk to Wisp" there) continues the thread's live session; a
+    // second session beside it would hold none of the conversation on screen,
+    // and /wisp would then resume that one. Page context still rides each
+    // turn, so the page the pane sits on is not baked into the session.
+    const resumeId = w.lastSessionId;
+    if (resumeId) {
+      const resumable = await isResumableWispSession(resumeId, w.grantId);
+      if (!owns()) return false;
+      if (resumable) {
+        const switching = get().switchSession(resumeId);
+        owns = ownershipAsOfNow(); // switchSession claimed synchronously.
+        await switching;
+        if (!owns()) return false;
+        const after = get();
+        if (after.sessionId === resumeId && after.wisp?.grantId === w.grantId) return true;
+        // The load failed, or the read raced a close or a grant change: start
+        // a fresh session. Say so — the create clears the load's error.
+        console.warn('[AiStore] could not resume the Wisp thread\'s live session; starting a new one', {
+          sessionId: resumeId, boundSessionId: after.sessionId, error: after.error,
+        });
+        set({ wisp: w, ...CLEARED_SESSION });
+      }
+    }
+    const creating = get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
+    owns = ownershipAsOfNow(); // createSession claimed synchronously.
+    await creating;
+    return owns();
   },
 
   setWispFocus: async (orgId, orgName, opts) => {

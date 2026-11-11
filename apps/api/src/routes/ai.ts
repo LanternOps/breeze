@@ -100,6 +100,7 @@ import { resolveSessionTurn } from '../services/aiModels/sessionModel';
 import { loadContinuationSummary, withContinuationContext } from '../services/aiModels/continuation';
 // A leaf module (db + sanitizer): it does not load the Wisp graph.
 import { loadFiredCheckIns, markCheckInsConsumed, renderCheckInBlock, type FiredCheckIn } from '../services/wisp/checkInTurn';
+import type { SpecialistResultsTurn } from '../services/wisp/specialistResultsTurn';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
@@ -114,6 +115,8 @@ const loadTopologyTurn = () => import('./aiTopologyTurn');
 const loadSessionContinuation = () => import('./aiSessionContinue');
 // #10426: the Wisp standing-state block, only for a Wisp session (it loads the Wisp graph).
 const loadStandingStateTurn = () => import('../services/wisp/standingStateTurn');
+// #11671: settled specialist hand-offs of a Wisp session, read from the run rows.
+const loadSpecialistResultsTurn = () => import('../services/wisp/specialistResultsTurn');
 /** Topology sessions get a fixed title: no model or evidence text ever names a session. */
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import {
@@ -844,6 +847,8 @@ aiRoutes.post(
       if (preflight.status === 503) return c.json({ error: err }, 503);
       // The credit / plan gate (and spend caps): 402, with a code the client can act on.
       if (preflight.status === 402) return c.json(preflight.billingCode ? { error: err, code: preflight.billingCode } : { error: err }, 402);
+      // #11609: closed elsewhere (typed, not a message match). Nothing ran, so the client keeps the text and can continue in a new session.
+      if (preflight.sessionRefusal === 'session_closed') return c.json({ error: err, code: 'session_closed' }, 410);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
@@ -958,6 +963,29 @@ aiRoutes.post(
           orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
         });
         captureException(err, c, { wisp_standing_state_phase: 'read' });
+      }
+    }
+
+    // #11671: specialist hand-offs this session made that have settled since
+    // it was last given them. Read from the run rows, not the live session's
+    // queue: the session is rotated away just below, before every turn, so a
+    // result queued on it between turns never reached the model. Rendered in
+    // the analysis-results block (outermost); recorded as given only once the
+    // turn is dispatched. A failure never blocks the turn.
+    let specialistResults: SpecialistResultsTurn | null = null;
+    let markSpecialistResultsDelivered: ((sessionId: string, keys: readonly string[]) => Promise<void>) | null = null;
+    if (wispGrantId && wispGrantRevisionId) {
+      try {
+        const specialistResultsTurn = await loadSpecialistResultsTurn();
+        markSpecialistResultsDelivered = specialistResultsTurn.markSpecialistResultsDelivered;
+        specialistResults = await timePreStreamPhase('wispSpecialistResults', () => specialistResultsTurn.specialistResultsForTurn({
+          grantId: wispGrantId, revisionId: wispGrantRevisionId, sessionId,
+        }));
+      } catch (err) {
+        console.warn('[AI] failed to read settled Wisp specialist results; sending the turn without them', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_specialist_results_phase: 'read' });
       }
     }
 
@@ -1192,8 +1220,9 @@ aiRoutes.post(
       // report back to a session this way). Its summary is prepended HERE
       // rather than pushed when it arrived — pushing then would start a turn
       // with no SSE subscriber, so the assistant's reply would never reach the
-      // browser.
-      const pendingRunResults = drainPendingRunResults(activeSession);
+      // browser. #11671: a Wisp session's settled specialist hand-offs (read
+      // above, from the run rows) share the same block.
+      const pendingRunResults = drainPendingRunResults(activeSession, specialistResults?.results ?? []);
       // W05 (#7603): a continuation's FIRST turn carries the summary (read
       // above) as delimited, sanitised, untrusted background — never the
       // system prompt. The persisted user row above keeps the plain text, so
@@ -1264,6 +1293,17 @@ aiRoutes.post(
       } catch (err) {
         // The turn is already dispatched: never fail its response over this.
         console.warn('[AI] failed to record the Wisp standing state as sent; it is sent again next turn', {
+          orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    // #11671: the model has these specialist results now; each is given once.
+    // A failure only gives them again next turn: logged, never thrown.
+    if (specialistResults && markSpecialistResultsDelivered) {
+      try {
+        await markSpecialistResultsDelivered(sessionId, specialistResults.keys);
+      } catch (err) {
+        console.warn('[AI] failed to record the Wisp specialist results as delivered; they are given again next turn', {
           orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
         });
       }

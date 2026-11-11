@@ -7212,6 +7212,7 @@
     },
     "verify": {
       "methodLegend": "Metodo di verifica",
+      "panelTitle": "Verifica {{domain}}",
       "methodLocked": "Per cambiare metodo, rimuovi prima la verifica attuale.",
       "openPortalTab": "Dimostra il tenant in Portale clienti › Accesso e registrazione.",
       "dnsStartHint": "Ottieni un record TXT da far pubblicare all’amministratore DNS del cliente.",
@@ -8406,6 +8407,7 @@
       "updated": "Aggiornato",
       "actions": "Azioni"
     },
+    "expired": "Scaduta",
     "statusValue": {
       "unconfirmed": "Non confermato",
       "confirmed": "Confermato",
@@ -8486,7 +8488,9 @@
       "label": "Autoregistrazione",
       "off": "Disattivata",
       "approval": "Richiede approvazione",
-      "instant": "Immediata"
+      "instant": "Immediata",
+      "noVerifiedDomain": "Nessun dominio verificato: nessuno può registrarsi finché non ne verifichi uno.",
+      "verifyDomain": "Verifica un dominio"
     },
     "ssoNewPerson": {
       "label": "Primo accesso con Microsoft / Google",
@@ -8557,6 +8561,26 @@
         "protectedOrg": "Questa organizzazione non può essere collegata a un tenant Microsoft."
       }
     },
+    "passwordFallbackNotice": {
+      "title": "L’accesso al portale è tornato alla password",
+      "body": "L’accesso con Microsoft è disattivato per il portale di questa organizzazione, quindi gli utenti accedono con una password finché il tenant non viene dimostrato di nuovo.",
+      "tenant": "(Tenant interessato: {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "Il collegamento al tenant Microsoft è stato rimosso il {{date}}.",
+        "ai_for_office_mapping_removed": "La mappatura del tenant di AI for Office, che conteneva la dimostrazione, è stata rimossa il {{date}}.",
+        "ai_for_office_mapping_changed": "La mappatura del tenant di AI for Office è stata cambiata con un altro tenant il {{date}}, annullando la dimostrazione.",
+        "tenant_displaced": "Un’altra organizzazione ha dimostrato questo tenant Microsoft il {{date}}.",
+        "unknown": "La dimostrazione del tenant Microsoft è andata persa il {{date}}."
+      },
+      "rerun": "Ripeti la dimostrazione del tenant",
+      "dismiss": "Ignora",
+      "toasts": {
+        "dismissed": "Avviso ignorato."
+      },
+      "errors": {
+        "dismiss": "Impossibile ignorare l’avviso."
+      }
+    },
     "ssoOnlyConfirm": {
       "title": "Disattivare l’accesso con password?",
       "intro": "Il salvataggio disattiva l’accesso con password per le organizzazioni seguenti.",
@@ -8616,6 +8640,8 @@
     "selectAll": "Seleziona tutte le richieste",
     "selectOne": "Seleziona la richiesta di {{email}}",
     "accountExists": "Ha già un account — Rifiuta per chiudere la richiesta",
+    "domainUnverified": "Dominio non più verificato",
+    "domainUnverifiedReason": "Impossibile approvare: invita direttamente questa persona se deve avere accesso.",
     "actions": {
       "approve": "Approva",
       "deny": "Rifiuta",
@@ -8628,7 +8654,8 @@
       "notFound": "Richiesta non trovata",
       "identityLinked": "Accesso già collegato a un altro account",
       "failed": "Impossibile decidere su questa richiesta",
-      "entraTenantNotProven": "Il tenant Microsoft di questa organizzazione non è più dimostrato"
+      "entraTenantNotProven": "Il tenant Microsoft di questa organizzazione non è più dimostrato",
+      "domainNotVerified": "Dominio email non più verificato"
     },
     "denyDialog": {
       "title": "Rifiuta richiesta di accesso",
@@ -8646,7 +8673,8 @@
     "errors": {
       "load": "Impossibile caricare le richieste di accesso.",
       "action": "Impossibile aggiornare la richiesta di accesso.",
-      "bulk": "Impossibile decidere sulle richieste selezionate."
+      "bulk": "Impossibile decidere sulle richieste selezionate.",
+      "domainNotVerified": "Il dominio email di questa persona non è più verificato per questa organizzazione. Invitala direttamente se deve avere accesso."
     },
     "summary": {
       "title": "Richieste di accesso in sospeso",

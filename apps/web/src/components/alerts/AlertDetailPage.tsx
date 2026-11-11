@@ -472,7 +472,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       {/* Alert Message */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h3 className="text-sm font-semibold text-muted-foreground mb-2">{t('alertDetailPage.message')}</h3>
-        <p className="text-sm">{alert.message}</p>
+        <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-sm">{alert.message}</p>
       </div>
 
       <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} orgId={alert.orgId} />

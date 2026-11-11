@@ -21,6 +21,12 @@ const setupTagline = tServer(Astro.locals.locale, 'titles.setup');
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={metaDescription} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      Must be the first popstate listener on window, ahead of the client router
+      below (see public/same-page-history.js). Every ClientRouter layout loads
+      it: the router is installed by the first page a session loads.
+    -->
+    <script is:inline src="/same-page-history.js"></script>
     <title>{pageTitle} | Breeze RMM</title>
     <ClientRouter />
   </head>

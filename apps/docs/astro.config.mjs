@@ -59,6 +59,7 @@ export default defineConfig({
               label: 'Remote Management',
               items: [
                 { slug: 'features/remote-access' },
+                { slug: 'features/end-user-experience' },
                 { slug: 'features/scripts' },
                 { slug: 'scripts/stopping-a-running-script' },
                 { slug: 'features/automations' },
@@ -233,6 +234,7 @@ export default defineConfig({
                 { slug: 'features/portal' },
                 { slug: 'features/portal-microsoft-sign-in' },
                 { slug: 'features/portal-domain-verification' },
+                { slug: 'features/portal-self-registration' },
                 { slug: 'features/setup-wizard' },
                 { slug: 'features/mobile' },
               ],

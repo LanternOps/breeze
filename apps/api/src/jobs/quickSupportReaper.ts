@@ -56,9 +56,16 @@ interface ReaperJobData {
  * A throw from any one session is logged and swallowed: a reaper that dies on
  * a single corrupt row stops protecting every other tenant, which is strictly
  * worse than the bad row itself.
+ *
+ * Passes (c) and (d) only SELECT their sessions inside the system transaction;
+ * the ends run after it (#4142). Each end sends `support_end` and evicts the
+ * socket through the relay, which may wait on Redis, and the reaper must not
+ * hold a pooled connection idle-in-transaction across up to MAX_PER_PASS of
+ * those waits. A session both passes picked is ended once: the second end
+ * finds it terminal and does nothing.
  */
 export async function reapOnce(): Promise<void> {
-  await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const toEnd = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const now = new Date();
 
     // (a) EXPIRED CODES — the technician generated a code that nobody ever
@@ -101,14 +108,6 @@ export async function reapOnce(): Promise<void> {
       ))
       .limit(MAX_PER_PASS);
 
-    for (const session of overdue) {
-      try {
-        await endSupportSession(session.id, 'expired');
-      } catch (err) {
-        console.error(`[QuickSupportReaper] Hard-cap end failed for session ${session.id}:`, err);
-      }
-    }
-
     // (d) END-USER STOP — v1 has no explicit stop API, so "the user closed the
     // client" is inferred from the agent going offline and staying offline.
     // Safety net for: an end user who quits the client (or unplugs) while the
@@ -125,14 +124,6 @@ export async function reapOnce(): Promise<void> {
         lt(devices.lastSeenAt, new Date(now.getTime() - END_USER_STOP_MS)),
       ))
       .limit(MAX_PER_PASS);
-
-    for (const session of abandoned) {
-      try {
-        await endSupportSession(session.id, 'end_user');
-      } catch (err) {
-        console.error(`[QuickSupportReaper] End-user stop failed for session ${session.id}:`, err);
-      }
-    }
 
     // (e) PURGE — destroy the ephemeral device row once the session has been
     // over long enough to have been reviewed. Safety net for: ephemeral devices
@@ -197,7 +188,31 @@ export async function reapOnce(): Promise<void> {
         console.error(`[QuickSupportReaper] Purge failed for session ${session.id}:`, err);
       }
     }
+
+    return { overdue, abandoned };
   }));
+
+  // (c) and (d), outside any DB context: see the function comment.
+  for (const session of toEnd.overdue) {
+    await endReaped(session.id, 'expired', 'Hard-cap end');
+  }
+  for (const session of toEnd.abandoned) {
+    await endReaped(session.id, 'end_user', 'End-user stop');
+  }
+}
+
+async function endReaped(sessionId: string, reason: 'expired' | 'end_user', label: string): Promise<void> {
+  try {
+    const result = await endSupportSession(sessionId, reason);
+    // Credentials are revoked either way, and the socket's own credential
+    // re-check closes it within its TTL; this line is the evidence that the
+    // forced close did not happen at once.
+    if (result.disconnect === 'close-failed' || result.disconnect === 'unconfirmed') {
+      console.warn(`[QuickSupportReaper] ${label} for session ${sessionId}: socket close not confirmed:`, result.disconnect);
+    }
+  } catch (err) {
+    console.error(`[QuickSupportReaper] ${label} failed for session ${sessionId}:`, err);
+  }
 }
 
 export function getQuickSupportReaperQueue(): Queue {
