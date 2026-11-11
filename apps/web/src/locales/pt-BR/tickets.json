@@ -143,7 +143,15 @@
       "sentWithoutAttachmentReply_one": "Resposta publicada, mas não foi possível adicionar o anexo. Tente novamente ou remova-o.",
       "sentWithoutAttachmentNote_one": "Nota publicada, mas não foi possível adicionar o anexo. Tente novamente ou remova-o.",
       "sentWithoutAttachmentReply_other": "Resposta publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os.",
-      "sentWithoutAttachmentNote_other": "Nota publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os."
+      "sentWithoutAttachmentNote_other": "Nota publicada, mas não foi possível adicionar {{count}} anexos. Tente novamente ou remova-os.",
+      "rejectedTicketDeleted": "{{name}} não foi anexado: este ticket foi excluído.",
+      "rejectedTicketMerged": "{{name}} não foi anexado: este ticket foi mesclado com outro ticket.",
+      "rejectedNotFound": "{{name}} não foi anexado: o ticket não foi encontrado.",
+      "rejectedMalformed": "{{name}} não foi anexado: o upload estava malformado. Tente anexá-lo novamente.",
+      "openMergedTicket": "Abrir o ticket mesclado",
+      "notKept_one": "1 anexo não foi mantido neste rascunho ({{names}}). Anexe-o novamente ou dispense o aviso para enviar sem ele.",
+      "notKept_other": "{{count}} anexos não foram mantidos neste rascunho ({{names}}). Anexe-os novamente ou dispense o aviso para enviar sem eles.",
+      "notKeptDismiss": "Dispensar"
     },
     "modeLabel": "Visibilidade do comentário",
     "recipient": {
