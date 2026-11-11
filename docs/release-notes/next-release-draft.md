@@ -22,6 +22,7 @@ Lab checks owed before the next tag:
 - [ ] **Built-in H.264 encoder fallback** (#11639, open). If a fix lands, re-check picture quality after a burst on a static screen.
 - [ ] **Windows self-uninstall** (#11349, still open) — on hold for its lab leg.
 - [ ] **Viewer clipboard** (#11325, still open) — on hold for its lab leg.
+- [ ] **macOS Local Network prompt** (#11311). On a Mac enrolled to a LAN-hosted server, confirm macOS shows "Allow breeze-agent to find devices on local networks?" and that Breeze Assist connecting triggers it. On a Mac enrolled to an internet-hosted server, confirm no prompt appears.
 
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
