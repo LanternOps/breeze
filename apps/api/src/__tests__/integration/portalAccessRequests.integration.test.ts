@@ -85,7 +85,7 @@ vi.mock('../../services/email', async (importOriginal) => {
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db, withDbAccessContext, withDbTransaction, type DbAccessContext } from '../../db';
 import {
-  auditLogs, clientAiTenantMappings, contacts, portalAccessPolicies, portalAccessRequests, portalUserIdentities, portalUsers,
+  auditLogs, clientAiTenantMappings, contacts, customerEmailDomains, portalAccessPolicies, portalAccessRequests, portalUserIdentities, portalUsers,
 } from '../../db/schema';
 import { recordEntraTenantProof } from '../../services/portalEntraTenantProof';
 import { pgErrorCode } from '../../utils/pgErrors';
@@ -569,7 +569,7 @@ describe('service', () => {
     const requestId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email, name: 'Selfie' }));
 
     const result = await withDbAccessContext(ctx, () =>
-      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id }));
+      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id, selfDomainVerified: true }));
     expect(result).toMatchObject({ outcome: 'invite_pending', email, name: 'Selfie', source: 'self' });
 
     const [login] = await loginsFor(org.id, email);
@@ -607,7 +607,7 @@ describe('service', () => {
     }).returning());
 
     const err = await rejectionOf(withDbAccessContext(ctx, () =>
-      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id })));
+      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id, selfDomainVerified: true })));
     expect(err).toBeInstanceOf(PortalAccessRequestError);
     expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS', httpStatus: 409 });
     expect((await readRequest(requestId)).status).toBe('pending');
@@ -778,7 +778,7 @@ describe('service', () => {
     const held = holdLock(sql`SELECT pg_advisory_xact_lock(hashtext(${INBOUND_CONTACT_LOCK_NAMESPACE}), hashtext(${`${org.id}:${email}`}))`);
     await held.ready;
     const approving = settle(withDbAccessContext(ctx, () =>
-      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id })));
+      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id, selfDomainVerified: true })));
     const inviting = settle(withDbAccessContext(ctx, async () => {
       const [inviteable] = await loadOrgContactsForPortalInvite(db, org.id, [contact!.id]);
       return withDbTransaction(() => bindContactLoginForInvite(db, {
@@ -876,7 +876,7 @@ describe('service', () => {
     });
 
     const err = await rejectionOf(withDbAccessContext(ctx, () =>
-      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id })));
+      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id, selfDomainVerified: true })));
     expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_NOT_PENDING', httpStatus: 409 });
     expect(await loginsFor(org.id, email)).toEqual([]);
     expect((await readRequest(requestId)).status).toBe('pending'); // approve never writes 'expired'
@@ -969,6 +969,23 @@ async function routeFixture() {
     post: (path: string, body?: unknown) => request('POST', path, body),
     base: `/organizations/${org.id}/portal-access-requests`,
   };
+}
+
+/**
+ * W6 D11: the route approves a `self` request only while the address's domain
+ * is verified for the org (W5 read API, read outside the request transaction).
+ * Seeds a unique domain verified for `org` the way W5 records one: dns_txt
+ * evidence and a pass within the stale window. Org cleanup cascades the row.
+ */
+async function verifiedSelfDomain(org: { id: string; partnerId: string }): Promise<string> {
+  const domain = `self-${randomUUID().slice(0, 8)}.example.test`;
+  const at = new Date(Date.now() - 60_000);
+  await getTestDb().insert(customerEmailDomains).values({
+    partnerId: org.partnerId, orgId: org.id, domain, isActive: true, verificationToken: `tok-${randomUUID()}`,
+    verifiedAt: at, verifiedMethod: 'dns_txt', verifiedEvidence: { via: 'dns_txt', recordName: `_breeze-verify.${domain}` },
+    lastCheckedAt: at, lastPassedAt: at, lastCheckStatus: 'pass',
+  });
+  return domain;
 }
 
 describe('routes (real router)', () => {
@@ -1083,7 +1100,7 @@ describe('routes (real router)', () => {
   it('a failed DB statement on the decision-email path leaves the decision committed: 200, emailSent false', async () => {
     const { org, post, base } = await routeFixture();
     const entraEmail = `mailfail-entra-${randomUUID()}@example.test`;
-    const selfEmail = `mailfail-self-${randomUUID()}@example.test`;
+    const selfEmail = `mailfail-self-${randomUUID()}@${await verifiedSelfDomain(org)}`;
     const denyEmail = `mailfail-deny-${randomUUID()}@example.test`;
     const entraId = requestIdOf(await createPortalAccessRequest({
       source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: await provenTid(org.id), oid: randomUUID(),
@@ -1190,8 +1207,9 @@ describe('routes (real router)', () => {
   it('decide runs every id through the real router and commits the approvals around a refused id', async () => {
     const { org, get, post, base } = await routeFixture();
     const entraEmail = `d-entra-${randomUUID()}@example.test`;
-    const takenEmail = `d-taken-${randomUUID()}@example.test`;
-    const selfEmail = `d-self-${randomUUID()}@example.test`;
+    const selfDomain = await verifiedSelfDomain(org);
+    const takenEmail = `d-taken-${randomUUID()}@${selfDomain}`;
+    const selfEmail = `d-self-${randomUUID()}@${selfDomain}`;
     const entraId = requestIdOf(await createPortalAccessRequest({
       source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: await provenTid(org.id), oid: randomUUID(),
     }));
@@ -1230,7 +1248,7 @@ describe('routes (real router)', () => {
 
   it('a plain-email invite racing a self-request approval through the real routes yields exactly one account', async () => {
     const { org, post, base } = await routeFixture();
-    const email = `race-route-${randomUUID()}@example.test`;
+    const email = `race-route-${randomUUID()}@${await verifiedSelfDomain(org)}`;
     const requestId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email, name: null }));
 
     // Park both requests on the per-address advisory lock, approve first.

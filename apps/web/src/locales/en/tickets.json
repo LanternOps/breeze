@@ -143,7 +143,15 @@
       "sentWithoutAttachmentReply_one": "Reply posted, but the attachment could not be added. Retry or remove it.",
       "sentWithoutAttachmentNote_one": "Note posted, but the attachment could not be added. Retry or remove it.",
       "sentWithoutAttachmentReply_other": "Reply posted, but {{count}} attachments could not be added. Retry or remove them.",
-      "sentWithoutAttachmentNote_other": "Note posted, but {{count}} attachments could not be added. Retry or remove them."
+      "sentWithoutAttachmentNote_other": "Note posted, but {{count}} attachments could not be added. Retry or remove them.",
+      "rejectedTicketDeleted": "{{name}} was not attached: this ticket was deleted.",
+      "rejectedTicketMerged": "{{name}} was not attached: this ticket was merged into another ticket.",
+      "rejectedNotFound": "{{name}} was not attached: the ticket could not be found.",
+      "rejectedMalformed": "{{name}} was not attached: the upload was malformed. Try attaching it again.",
+      "openMergedTicket": "Open merged ticket",
+      "notKept_one": "1 attachment was not kept with this draft ({{names}}). Attach it again, or dismiss to send without it.",
+      "notKept_other": "{{count}} attachments were not kept with this draft ({{names}}). Attach them again, or dismiss to send without them.",
+      "notKeptDismiss": "Dismiss"
     },
     "modeLabel": "Comment visibility",
     "recipient": {

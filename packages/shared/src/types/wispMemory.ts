@@ -40,6 +40,8 @@ export type MemoryBlockDto = {
   content: Record<string, unknown>;
   confidence: MemoryConfidence;
   status: MemoryBlockStatus;
+  /** A standing instruction whose `until` has passed: still listed, no longer in Wisp's prompt or enforced. */
+  expired: boolean;
   authoredByGrantId: string | null;
   supersededById: string | null;
   sourceSessionId: string | null;

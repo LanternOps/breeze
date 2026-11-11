@@ -11,7 +11,8 @@ import {
   type TicketComposerMode,
 } from '@/lib/ticketComposerDrafts';
 import { ActionError } from '../../lib/runAction';
-import { permanentAttachmentRejection } from './ticketAttachmentErrors';
+import { mergedIntoTicketId, permanentAttachmentRejection } from './ticketAttachmentErrors';
+import { navigateTo } from '@/lib/navigation';
 import CannedResponsePicker from './CannedResponsePicker';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 
@@ -74,13 +75,24 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
   const [mode, setMode] = useState<ComposerMode>(() => (draftKey ? getTicketComposerDraft(draftKey)?.mode : undefined) ?? 'reply');
   const [content, setContent] = useState(() => (draftKey ? getTicketComposerDraft(draftKey)?.content ?? '' : ''));
   const [sending, setSending] = useState(false);
-  // Mirror the text and its mode into the per-ticket memory; an emptied box forgets it.
+  const [chips, setChips] = useState<AttachmentChip[]>([]);
+  // #11710: attachment files cannot outlive the composer, but their names can.
+  // A restored draft that had attachments says so, and Send waits until the
+  // user re-attaches them or dismisses the notice.
+  const [lostNames, setLostNames] = useState<string[]>(() => (draftKey ? getTicketComposerDraft(draftKey)?.attachmentNames ?? [] : []));
+  const chipNames = chips.map((c) => c.file.name);
+  const missingNames = lostNames.filter((n) => !chipNames.includes(n));
+  const attachmentNames = [...new Set([...chipNames, ...missingNames])];
+  const attachmentNamesKey = attachmentNames.join('\u0000');
+  // Mirror the text, its mode and the attachment names into the per-ticket
+  // memory; a box with neither text nor attachments forgets it.
   useEffect(() => {
     if (!draftKey) return;
-    if (content) setTicketComposerDraft(draftKey, { content, mode });
-    else deleteTicketComposerDraft(draftKey);
-  }, [draftKey, content, mode]);
-  const [chips, setChips] = useState<AttachmentChip[]>([]);
+    if (content || attachmentNames.length > 0) {
+      setTicketComposerDraft(draftKey, { content, mode, ...(attachmentNames.length > 0 ? { attachmentNames } : {}) });
+    } else deleteTicketComposerDraft(draftKey);
+    // attachmentNames is covered by attachmentNamesKey
+  }, [draftKey, content, mode, attachmentNamesKey]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modeRefs = useRef<Record<ComposerMode, HTMLButtonElement | null>>({ reply: null, internal: null });
@@ -140,13 +152,23 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
         // drop the chip and say why.
         setChips((cs) => cs.filter((c) => c.key !== chip.key));
         const name = chip.file.name;
-        const message =
-          rejection === 'type'
-            ? t('ticketComposer.attachments.rejectedType', { name })
-            : rejection === 'size'
-              ? t('ticketComposer.attachments.tooLarge', { name })
-              : t('ticketComposer.attachments.rejectedEmpty', { name });
-        showToast({ type: 'error', message });
+        const survivorId = rejection === 'ticketMerged' && err instanceof ActionError ? mergedIntoTicketId(err.body) : null;
+        const messages: Record<typeof rejection, string> = {
+          type: t('ticketComposer.attachments.rejectedType', { name }),
+          size: t('ticketComposer.attachments.tooLarge', { name }),
+          empty: t('ticketComposer.attachments.rejectedEmpty', { name }),
+          ticketDeleted: t('ticketComposer.attachments.rejectedTicketDeleted', { name }),
+          ticketMerged: t('ticketComposer.attachments.rejectedTicketMerged', { name }),
+          notFound: t('ticketComposer.attachments.rejectedNotFound', { name }),
+          malformed: t('ticketComposer.attachments.rejectedMalformed', { name }),
+        };
+        showToast({
+          type: 'error',
+          message: messages[rejection],
+          ...(survivorId
+            ? { action: { label: t('ticketComposer.attachments.openMergedTicket'), onClick: () => void navigateTo(`/tickets/${encodeURIComponent(survivorId)}`) } }
+            : {}),
+        });
         return;
       }
       // Transient: the uploader already toasted through runAction; the chip is
@@ -191,7 +213,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
     // An attachment-only comment is legal (the shared validator allows empty
     // content when attachmentIds is non-empty), so the guard is "nothing at
     // all", not "no text".
-    if ((!content.trim() && readyIds.length === 0) || sending || uploading) return;
+    if ((!content.trim() && readyIds.length === 0) || sending || uploading || missingNames.length > 0) return;
     setSending(true);
     try {
       await onSend(content.trim(), isPublic, readyIds);
@@ -215,6 +237,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
         });
       }
       setContent('');
+      setLostNames([]);
       setChips(failedChips);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch {
@@ -223,7 +246,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
     } finally {
       setSending(false);
     }
-  }, [chips, content, draftKey, isPublic, onSend, readyIds, sending, t, uploading]);
+  }, [chips, content, draftKey, isPublic, missingNames.length, onSend, readyIds, sending, t, uploading]);
 
   return (
     <div
@@ -336,6 +359,25 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
           data-testid="ticket-composer-input"
           className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm max-sm:h-16 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
         />
+        {missingNames.length > 0 && (
+          <div
+            role="alert"
+            className="mt-2 flex items-start gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-ink"
+            data-testid="ticket-composer-lost-attachments"
+          >
+            <p className="min-w-0 flex-1">
+              {t('ticketComposer.attachments.notKept', { count: missingNames.length, names: missingNames.join(', ') })}
+            </p>
+            <button
+              type="button"
+              onClick={() => setLostNames([])}
+              className="shrink-0 font-medium underline"
+              data-testid="ticket-composer-lost-attachments-dismiss"
+            >
+              {t('ticketComposer.attachments.notKeptDismiss')}
+            </button>
+          </div>
+        )}
         {chips.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-2" data-testid="ticket-composer-chips">
             {chips.map((chip) => (
@@ -407,7 +449,7 @@ export default function TicketComposer({ requesterName, requesterEmail, toolbarE
           <button
             type="button"
             onClick={() => void send()}
-            disabled={(!content.trim() && readyIds.length === 0) || sending || uploading || disabled}
+            disabled={(!content.trim() && readyIds.length === 0) || sending || uploading || missingNames.length > 0 || disabled}
             data-testid="ticket-composer-send"
             className={cn(
               'shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50',

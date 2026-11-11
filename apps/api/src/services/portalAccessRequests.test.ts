@@ -77,6 +77,7 @@ import {
   createPortalAccessRequest,
   denyPortalAccessRequest,
   listPortalAccessRequests,
+  readPortalAccessRequestForDecision,
   summarizePendingPortalAccessRequests,
 } from './portalAccessRequests';
 
@@ -193,7 +194,7 @@ describe('createPortalAccessRequest', () => {
 describe('approvePortalAccessRequest', () => {
   it('runs the whole body in one withDbTransaction and reads the request FOR UPDATE', async () => {
     h.results.push([pendingRow()], [], [{ id: 'pu-new', authEpoch: 1 }], []);
-    await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW });
+    await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified: true });
     expect(withDbTransaction).toHaveBeenCalledTimes(1);
     const read = h.calls[0]!;
     expect(read.op).toBe('select');
@@ -227,7 +228,7 @@ describe('approvePortalAccessRequest', () => {
 
   it('ACCOUNT_EXISTS (409) when the org has an account for the address; creates nothing', async () => {
     h.results.push([pendingRow()], [{ id: 'pu-existing' }]);
-    const err = await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW }));
+    const err = await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified: true }));
     expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS', httpStatus: 409 });
     expect(lockPortalInviteAddresses).toHaveBeenCalledWith(expect.anything(), ORG, ['ada@customer.test']);
     expect(inserts()).toHaveLength(0);
@@ -236,7 +237,7 @@ describe('approvePortalAccessRequest', () => {
 
   it('self: invited password account with invitedAt/invitedBy, linked contact, outcome invite_pending', async () => {
     h.results.push([pendingRow()], [], [{ id: 'pu-new', authEpoch: 1 }], []);
-    const result = await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW });
+    const result = await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified: true });
 
     expect(result).toEqual({
       outcome: 'invite_pending', portalUserId: 'pu-new', email: 'ada@customer.test', name: 'Ada', authEpoch: 1, source: 'self',
@@ -255,6 +256,66 @@ describe('approvePortalAccessRequest', () => {
     expect(firstArg(decide, 'set')).toEqual({
       status: 'approved', decidedAt: NOW, decidedByUserId: DECIDER, portalUserId: 'pu-new', updatedAt: NOW,
     });
+  });
+
+  // W6 D11 / RF3: the route pre-checks the domain outside the transaction (the
+  // W5 read API throws inside one) and passes the answer in.
+  it('approve refuses a self request whose domain is no longer verified (409 DOMAIN_NOT_VERIFIED), request stays pending', async () => {
+    h.results.push([pendingRow({ email: 'ada@example.com' })]);
+    const err = await rejection(approvePortalAccessRequest({
+      orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified: false,
+    }));
+    expect(err).toBeInstanceOf(PortalAccessRequestError);
+    expect(err).toMatchObject({
+      code: 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED',
+      httpStatus: 409,
+      message: "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
+    });
+    // Refused after the row lock, before any address lock, contact link or write:
+    // the request is not marked, so it stays pending.
+    expect(withDbTransaction).toHaveBeenCalledTimes(1);
+    expect(h.calls.map((c) => c.op)).toEqual(['select']);
+    expect(lockPortalInviteAddresses).not.toHaveBeenCalled();
+    expect(linkLoginToContact).not.toHaveBeenCalled();
+    expect(inserts()).toHaveLength(0);
+    expect(updates()).toHaveLength(0);
+  });
+
+  it('approve of a self request without selfDomainVerified fails closed', async () => {
+    h.results.push([pendingRow({ email: 'ada@example.com' })]);
+    const err = await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW }));
+    expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED', httpStatus: 409 });
+    expect(lockPortalInviteAddresses).not.toHaveBeenCalled();
+    expect(inserts()).toHaveLength(0);
+    expect(updates()).toHaveLength(0);
+  });
+
+  it('entra, google and addin_user approvals ignore selfDomainVerified', async () => {
+    for (const selfDomainVerified of [false, undefined]) {
+      h.calls.length = 0;
+      h.results.push(
+        [pendingRow({ source: 'entra', email: 'ada@example.com', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID })],
+        [{ tenantId: TID }], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
+      );
+      expect((await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified })).outcome)
+        .toBe('account_created');
+
+      h.results.push(
+        [pendingRow({ source: 'google', email: 'ada@example.com', issuer: 'https://accounts.google.com', subject: 'sub-1' })],
+        [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
+      );
+      expect((await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified })).outcome)
+        .toBe('account_created');
+
+      h.results.push(
+        [pendingRow({ source: 'addin_user', email: 'ada@example.com', portalUserId: 'pu-addin' })],
+        [{ id: 'pu-addin', email: 'ada@example.com', name: 'Ada', status: 'active', browserAccess: 'none', authMethod: 'entra', hasPasswordHash: false, authEpoch: 4, hasExternalIdentity: true }],
+        [{ id: 'pu-addin', authEpoch: 4 }],
+        [],
+      );
+      expect((await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified })).outcome)
+        .toBe('browser_access_granted');
+    }
   });
 
   it('entra: identity-only active account (auth_method entra) with entra_* dual-write and a jit identity', async () => {
@@ -462,6 +523,42 @@ describe('listPortalAccessRequests', () => {
     expect(items[1]).toMatchObject({ decidedBy: { id: DECIDER, name: 'Tech' }, portalUserId: 'pu-1', accountExists: true, decidedAt: NOW.toISOString() });
     expect(items[2]!.decidedBy).toBeNull();
     expect(items[0]!.requestedAt).toBe(NOW.toISOString());
+  });
+
+  it('domainVerified: self rows against the verified-domain set, null for other sources; no set fails closed', async () => {
+    const rows = () => [
+      row({ email: 'ada@example.com' }),
+      row({ email: 'bob@lapsed.example.com' }),
+      row({ email: 'cy@example.com', source: 'entra' }),
+      row({ email: 'di@example.com', source: 'addin_user' }),
+    ];
+    h.results.push(rows());
+    const { items } = await listPortalAccessRequests(ORG, { status: 'pending', now: NOW, verifiedDomains: new Set(['example.com']) });
+    expect(items.map((i) => i.domainVerified)).toEqual([true, false, null, null]);
+
+    h.results.push(rows());
+    const unknown = await listPortalAccessRequests(ORG, { status: 'pending', now: NOW });
+    expect(unknown.items.map((i) => i.domainVerified)).toEqual([false, false, null, null]);
+  });
+});
+
+describe('readPortalAccessRequestForDecision', () => {
+  it('reads source and email by (id, org) in its own savepoint; null when absent or malformed', async () => {
+    h.results.push([{ source: 'self', email: 'ada@example.com' }]);
+    expect(await readPortalAccessRequestForDecision(ORG, REQ)).toEqual({ source: 'self', email: 'ada@example.com' });
+    expect(withDbTransaction).toHaveBeenCalledTimes(1);
+    const read = h.calls[0]!;
+    expect(read.op).toBe('select');
+    expect(read.depth).toBe(1);
+    expect(stepsOf(read, 'from')).toEqual([[portalAccessRequests]]);
+    const where = new PgDialect().sqlToQuery(stepsOf(read, 'where')[0]![0] as SQL);
+    expect(where.params).toEqual([REQ, ORG]);
+
+    h.results.push([]);
+    expect(await readPortalAccessRequestForDecision(ORG, REQ)).toBeNull();
+    h.calls.length = 0;
+    expect(await readPortalAccessRequestForDecision(ORG, 'not-a-uuid')).toBeNull();
+    expect(h.calls).toHaveLength(0);
   });
 });
 
