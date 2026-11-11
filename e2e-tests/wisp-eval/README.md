@@ -35,7 +35,8 @@ pnpm install --frozen-lockfile
 (cd e2e-tests && npm ci)                      # @playwright/test for the harness
 (cd e2e-tests && npx playwright install chromium)   # once per machine
 
-# 1. Worktree .env for a live-key stack. Never prints a value; never commit it.
+# 1. Worktree .env for a live-key stack: the model key from the source, fresh secrets
+#    for the stack, outside-service credentials blank. Never prints a value; never commit it.
 bash e2e-tests/wisp-eval/sh/make-env.sh /path/to/populated/.env 48378 172.31.78.0/24
 
 # 2. Stack. IS_HOSTED must be exported: .env.stack pins it to false.
@@ -246,11 +247,29 @@ rm -rf e2e-tests/wisp-eval/.state  # TOTP secret, passkeys, cookies, reports
   The directory is mode 0700 and gitignored.
 - The TOTP secret and passkeys belong to a throwaway local stack. Never reuse them.
 - `common.sh` refuses any `baseUrl` that is not `http://localhost:*`.
-  `make-env.sh` blanks a fixed list (mail, Stripe, billing, signing, OpenAI, NVD)
-  and every other key whose name looks like a credential, unless it is on the
-  script's KEEP list of the local stack's own secrets. It prints the names it
-  blanked, never a value. `node --test "e2e-tests/wisp-eval/*.test.cjs"` covers it.
-  `.env.stack` blanks mail again.
+- `make-env.sh` takes exactly one secret from the source: `ANTHROPIC_API_KEY`.
+  - **Generated** for this stack with `openssl rand`, never copied: `JWT_SECRET`,
+    `APP_ENCRYPTION_KEY`, `MFA_ENCRYPTION_KEY`, both peppers,
+    `AGENT_ENROLLMENT_SECRET`, `PARTNER_API_CURSOR_SIGNING_KEY`, the Postgres,
+    Redis and app-role passwords, `TURN_SECRET`, `SESSION_SECRET` and
+    `METRICS_SCRAPE_TOKEN`. Re-running it over a `.env` it wrote reuses the values
+    it generated there, so a stack whose volumes were kept still works.
+  - **Blanked** because the stack boots without them: the JWT keyring and
+    `JWT_ACTIVE_KID`, the OAuth cookie secret and JWKs (`MCP_OAUTH_ENABLED=false`),
+    `AUDIT_ANCHOR_SIGNING_KEY`, and the bootstrap and e2e admin passwords. The seed
+    then uses the dev admin password, which is the one `.breeze-stack.json` gives
+    `setup.sh`.
+  - **Blanked** as outside-service credentials: a fixed list (mail, Stripe,
+    billing, OpenAI, NVD), every `MSI_SIGNING_*` key, every other key whose name
+    looks like a credential, and every value that is a URL with a password in it.
+  - **Copied**: everything else, that is settings, image refs and the public
+    release-manifest keys. The Wisp flags, port, subnet and caddy IP are set.
+  - It prints key names, never a value. Its working files live in a private temp
+    directory (mode 700, removed on exit); the result is staged beside `.env` as
+    a gitignored `.tmp-wisp-eval-env.*` and renamed into place.
+    `node --test "e2e-tests/wisp-eval/*.test.cjs"` covers it.
+- `.env.stack` (written by `wt-stack`) is read after `.env` and wins: it pins its
+  own dev Postgres password, peppers and TURN secret, and blanks mail again.
 
 ## Not in scope (yet)
 
