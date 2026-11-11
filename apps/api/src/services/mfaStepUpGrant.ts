@@ -8,11 +8,14 @@ import { getRedis } from './redis';
  *
  * Minted by FOUR sources: (1) `POST /auth/mfa/step-up`, after the caller
  * proves an existing factor (TOTP/SMS/passkey); (2)
- * `POST /authenticator/register-grant`, the password-proof fallback for
- * accounts with no stronger factor; (3) `mintLoginRegisterGrant`
+ * `POST /authenticator/register-grant`, the fallback for accounts with no
+ * stronger factor, on a password proof or (#9007) on a single-use exchange of
+ * an SSO re-auth grant from (4); (3) `mintLoginRegisterGrant`
  * (`routes/auth/helpers.ts`), a best-effort login-time mint for mobile
  * clients only; (4) the SSO re-auth callback (`GET /sso/callback`, reauth
- * mode), the passwordless equivalent of (2) — see #4018.
+ * mode), the passwordless equivalent of the password proof — see #4018. Its
+ * `enroll_first_factor` / `sso_reauth_manage_factor` grant is spent either on
+ * factor enrollment/management or on that one exchange at (2), never both.
  *
  * Grants from (1) are presented back to a factor-addition endpoint
  * (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`) or

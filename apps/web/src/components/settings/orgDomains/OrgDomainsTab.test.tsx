@@ -89,6 +89,32 @@ describe('OrgDomainsTab', () => {
     expect(await screen.findByTestId('org-domains-row-d1')).toBeInTheDocument();
   });
 
+  it('renders the verification panel outside the horizontally scrolling table, titled with the domain (#11597)', async () => {
+    baseRoutes([domainView()]);
+    render(<OrgDomainsTab orgId={ORG} />);
+    const verify = await screen.findByTestId('org-domains-verify-d1');
+    fireEvent.click(verify);
+    const panelWrap = await screen.findByTestId('org-domains-panel-row-d1');
+    // A phone-width table scrolls sideways; a panel inside it is cut off at the left edge.
+    expect(panelWrap.closest('table')).toBeNull();
+    expect(panelWrap.closest('.overflow-x-auto')).toBeNull();
+    expect(panelWrap.contains(screen.getByTestId('domain-verification-panel'))).toBe(true);
+    expect(panelWrap.getAttribute('id')).toBe(verify.getAttribute('aria-controls'));
+    expect(screen.getByRole('region', { name: /contoso\.com/ })).toBe(panelWrap);
+  });
+
+  it('swaps the panel between rows and toggles it closed', async () => {
+    baseRoutes([domainView(), domainView({ id: 'd2', domain: 'fabrikam.com' })]);
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-verify-d1'));
+    expect(await screen.findByRole('region', { name: /contoso\.com/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('org-domains-verify-d2'));
+    expect(await screen.findByRole('region', { name: /fabrikam\.com/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('org-domains-panel-row-d1')).toBeNull();
+    fireEvent.click(screen.getByTestId('org-domains-verify-d2'));
+    expect(screen.queryByTestId('org-domains-panel-row-d2')).toBeNull();
+  });
+
   it('Microsoft is disabled with a link to #portal when the org has no proven tenant', async () => {
     baseRoutes([domainView()]);
     render(<OrgDomainsTab orgId={ORG} />);
@@ -262,5 +288,44 @@ describe('OrgDomainsTab', () => {
     await waitFor(() => expect(callsTo(fetchWithAuthMock, 'GET', GOOGLE)).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.getByTestId('domain-method-google_directory')).toBeEnabled();
+  });
+});
+
+describe('OrgDomainsTab password-fallback notice (#11582)', () => {
+  const NOTICE = { since: '2026-11-08T10:00:00.000Z', tenantId: TENANT, cause: 'ai_for_office_mapping_changed' };
+  const entraFallback = () => json({ data: {
+    tenantId: TENANT, state: 'unproven', provenAt: null, provenVia: null, connectionTenantId: null, consentUrl: null, passwordFallback: NOTICE,
+  } });
+
+  beforeEach(() => {
+    fetchWithAuthMock.mockReset();
+    showToastMock.mockReset();
+  });
+
+  it('shows the notice from the one Entra status read, with a link to re-run the proof on #portal', async () => {
+    baseRoutes([domainView()], { [`GET ${ENTRA}`]: entraFallback });
+    render(<OrgDomainsTab orgId={ORG} />);
+    expect(await screen.findByTestId('org-domains-password-fallback')).toHaveTextContent(/changed to another tenant/i);
+    expect(screen.getByTestId('org-domains-password-fallback-rerun')).toHaveAttribute('href', '#portal');
+    expect(callsTo(fetchWithAuthMock, 'GET', ENTRA)).toHaveLength(1);
+  });
+
+  it('no notice when the status carries none', async () => {
+    baseRoutes([domainView()]);
+    render(<OrgDomainsTab orgId={ORG} />);
+    await screen.findByTestId('org-domains-row-d1');
+    await waitFor(() => expect(callsTo(fetchWithAuthMock, 'GET', ENTRA)).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('org-domains-password-fallback')).toBeNull();
+  });
+
+  it('dismiss removes the notice', async () => {
+    baseRoutes([domainView()], {
+      [`GET ${ENTRA}`]: entraFallback,
+      [`POST ${ENTRA}/password-fallback/dismiss`]: () => json({ data: { dismissed: true } }),
+    });
+    render(<OrgDomainsTab orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('org-domains-password-fallback-dismiss'));
+    await waitFor(() => expect(screen.queryByTestId('org-domains-password-fallback')).toBeNull());
   });
 });

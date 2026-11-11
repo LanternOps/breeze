@@ -33,6 +33,7 @@ export function makePolicyView(opts: {
   capabilities?: Partial<PortalSignInCapabilities>;
   passwordModeFallback?: boolean;
   entraTenantProven?: boolean | null;
+  verifiedDomainCount?: number | null;
   canEdit?: boolean;
 } = {}): PortalAccessPolicyView {
   const kind = opts.kind ?? 'org';
@@ -56,6 +57,8 @@ export function makePolicyView(opts: {
     passwordModeFallback: opts.passwordModeFallback ?? false,
     capabilities: { entra: false, google: false, selfRegistration: false, ...opts.capabilities },
     entraTenantProven: opts.entraTenantProven !== undefined ? opts.entraTenantProven : (kind === 'partner' ? null : false),
+    // W6 (#11383): the API's view carries it; the card's warning lands in W06b.
+    verifiedDomainCount: opts.verifiedDomainCount !== undefined ? opts.verifiedDomainCount : (kind === 'partner' ? null : 0),
     canEdit: opts.canEdit ?? true,
   };
 }

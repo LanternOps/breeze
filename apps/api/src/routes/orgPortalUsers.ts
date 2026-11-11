@@ -42,6 +42,7 @@ import { isSsoOnlyStranded, resolveInviteSignInMethods } from '../services/porta
 import { normalizeContactEmail } from '../services/contacts/crud';
 import {
   bindContactLoginForInvite,
+  dropPortalRoleForRemovedLogin,
   loadOrgContactsForPortalInvite,
   lockPortalInviteAddresses,
   ContactGoneError,
@@ -79,7 +80,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
 }
 
 async function getOrgScopedPortalUser(orgId: string, userId: string) {
-  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, hasExternalIdentity: portalUserHasIdentitySql() })
+  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, contactId: portalUsers.contactId, hasExternalIdentity: portalUserHasIdentitySql() })
     .from(portalUsers).where(and(eq(portalUsers.id, userId), eq(portalUsers.orgId, orgId))).limit(1);
   return row ?? null;
 }
@@ -854,7 +855,14 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     if (await hasPortalUserReferences(target.id)) {
       return c.json({ error: 'This user has ticket or asset history. Disable them instead of deleting.' }, 409);
     }
-    await db.delete(portalUsers).where(eq(portalUsers.id, target.id));
+    // The contact's `portal` role follows the login: removed in the same
+    // transaction as the delete (#11599).
+    await withDbTransaction(async () => {
+      await db.delete(portalUsers).where(eq(portalUsers.id, target.id));
+      if (target.contactId) {
+        await dropPortalRoleForRemovedLogin(db, { orgId: org.id, contactId: target.contactId, actor: { userId: (c.get('auth') as AuthContext).user.id } });
+      }
+    });
     writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.delete', resourceType: 'portal_user', resourceId: target.id, details: { email: target.email } });
     return c.json({ data: { id: target.id, deleted: true } });
   });

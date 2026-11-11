@@ -16,10 +16,11 @@
  * The worker runs whatever FLOWS_ENABLED says: with the flag off a queued
  * run must still end (`flows_disabled`) rather than sit in `queued` forever,
  * and nothing enqueues runs while the flag is off, so the idle cost is one
- * blocking connection per socket-owner process.
+ * blocking connection per process that runs it.
  *
- * Placement: socket-owner — a step dispatches device commands (run_script),
- * like automationWorker and aiAgentRunner.
+ * Placement: global (#4142 W2). A step dispatches device commands
+ * (run_script) through the relay facade, like automationWorker and
+ * aiAgentRunner, so it reaches agents on any API instance.
  */
 import { DelayedError, type Job, Worker } from 'bullmq';
 import { FLOW_RUN_LIMITS } from '@breeze/shared';

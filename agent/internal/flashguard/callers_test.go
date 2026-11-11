@@ -80,7 +80,7 @@ var powerSites = map[site]admission{
 	{"internal/heartbeat/heartbeat.go", "doUpgradeAttempt", "UpdateToWithOptions"}:              {"internal/heartbeat/heartbeat.go", "doUpgradeAttempt"},
 	{"internal/heartbeat/handlers_devupdate.go", "handleDevUpdateAgent", "UpdateFromURL"}:       {"internal/heartbeat/handlers_devupdate.go", "handleDevUpdateAgent"},
 	{"internal/heartbeat/handlers_rollback_backend.go", "Restart", "RestartAfterRollback"}:      {"internal/heartbeat/handlers_rollback_backend.go", "Swap"},
-	{"internal/heartbeat/identity_sync.go", packageLevel, "RestartSelf"}:                        {"internal/heartbeat/identity_sync.go", "restartForIdentity"},
+	{"internal/heartbeat/identity_sync.go", packageLevel, "RestartSelf"}:                        {"internal/heartbeat/identity_sync.go", "restartWhenIdle"},
 	{"internal/remote/tools/services.go", "RestartService", "RestartAgentService"}:              {"internal/remote/tools/agent_restart.go", "RestartAgentService"},
 	{"internal/remote/tools/agent_restart.go", "RunDelayedRestartHelper", "runAgentRestartNow"}: {"internal/remote/tools/agent_restart.go", "RestartAgentService"},
 	{"cmd/breeze-watchdog/main.go", "doUpdateAgent", "UpdateTo"}:                                {"cmd/breeze-watchdog/main.go", "doUpdateAgent"},

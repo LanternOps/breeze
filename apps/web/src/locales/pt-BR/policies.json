@@ -692,6 +692,8 @@
         "override": "Substituir",
         "revertToParent": "Reverter para o pai",
         "saving": "Salvando...",
+        "notSaved": "Não salvo: {{reason}}",
+        "saveBlocked": "Não salvo. Corrija o problema destacado e tente novamente.",
         "revertConfirmTitle": "Reverter para a política pai?",
         "revertConfirmMessage": "Isso exclui a substituição de {{feature}} nesta política. As configurações são perdidas e as configurações da política pai passam a valer para todos os dispositivos que usam esta política. Não é possível desfazer.",
         "removeConfirmTitle": "Remover esta configuração?",
@@ -725,7 +727,24 @@
         "endpointMessaging": "Mensagens para dispositivos",
         "endpointMessagingHelp": "Permite que técnicos enviem mensagens para a pessoa que usa o dispositivo.",
         "allowUserReply": "Permitir respostas do usuário",
-        "allowUserReplyHelp": "Permite que a pessoa no dispositivo responda em um chat iniciado por um técnico. Desativado, os chats são unidirecionais."
+        "allowUserReplyHelp": "Permite que a pessoa no dispositivo responda em um chat iniciado por um técnico. Desativado, os chats são unidirecionais.",
+        "brandingTitle": "Marca do Helper",
+        "brandingHelp": "Textos e cores exibidos no Helper. Deixe um campo em branco para herdar. Logotipos, links e estilos personalizados não são compatíveis.",
+        "brandingDisplayName": "Nome de exibição",
+        "brandingCompanyName": "Nome da empresa",
+        "brandingWelcomeTitle": "Título de boas-vindas",
+        "brandingWelcomeMessage": "Mensagem de boas-vindas",
+        "brandingSupportLabel": "Rótulo de suporte",
+        "brandingPortalLabel": "Rótulo do portal",
+        "brandingPrimaryColor": "Cor primária",
+        "brandingAccentColor": "Cor de destaque",
+        "brandingInheritedFromParent": "Herdado da política pai: {{value}}",
+        "brandingBlankUsesDefault": "Em branco usa o padrão do Breeze.",
+        "brandingCharCount": "{{used}} / {{max}}",
+        "brandingErrorTooLong": "Use no máximo {{max}} caracteres.",
+        "brandingErrorControl": "Remova caracteres de controle ou de formatação invisíveis.",
+        "brandingErrorColor": "Use uma cor no formato #RRGGBB, por exemplo #1A3C8F.",
+        "brandingErrorContrast": "Esta cor é difícil de ler no fundo do Helper. Escolha uma cor mais escura ou mais clara."
       },
       "inlineEntityPicker": {
         "search": "Pesquisar...",
@@ -2048,7 +2067,9 @@
       "builtinVersionsReadOnly": "Gerenciado pelo Breeze. As versões dos pacotes integrados não podem ser adicionadas nem alteradas aqui.",
       "installScriptsReadOnlyOnEdit": "Os scripts de instalação de uma versão existente não podem ser alterados e fixam o sistema operacional de destino. Para alterá-los, adicione uma nova versão: ela começa com esses scripts.",
       "partnerWideRequiresFullAccess": "Pacotes de todo o parceiro só podem ser alterados por um administrador de parceiro com acesso total.",
-      "builtinArgsDefault": "Deixe em branco para usar os argumentos padrão do pacote, incluindo a chave por organização."
+      "builtinArgsDefault": "Deixe em branco para usar os argumentos padrão do pacote, incluindo a chave por organização.",
+      "versionRequired": "A versão é obrigatória",
+      "downloadUrlInvalid": "Informe uma URL http(s) válida, por exemplo https://example.com/package.msi"
     },
     "variableInput": {
       "insertADeployTimeVariable": "Inserir uma variável de tempo de implantação",

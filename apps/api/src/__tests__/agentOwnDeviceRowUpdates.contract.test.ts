@@ -345,7 +345,10 @@ function judge(sites: Site[]): Verdict {
 
 // ─── Self-checks: the analyzer bites ───────────────────────────────────────
 
-describe('agent own-device-row contract — self-checks (fixtures)', () => {
+// Each self-check builds a TypeScript program with a type checker over the
+// fixtures. That is CPU-bound and took longer than the default 5 s on a loaded
+// CI runner (Test API shard 6, twice on 2026-11-10), so the block has its own limit.
+describe('agent own-device-row contract — self-checks (fixtures)', { timeout: 30_000 }, () => {
   // The fixtures live under src/__tests__/, which the real scan skips on
   // purpose, so they are listed here directly rather than through listTsFiles.
   const fixtureDir = resolve(FIXTURE_ROOT, 'routes/agents');

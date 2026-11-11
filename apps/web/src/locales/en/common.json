@@ -909,12 +909,13 @@
       "queue": {
         "next": "Next ticket",
         "previous": "Previous ticket",
-        "open": "Open the ticket's full page",
+        "open": "Open the ticket (after a resolve: the offered next one)",
         "toggleBulk": "Add to or remove from the bulk selection",
         "assignMe": "Assign to me",
         "reply": "Write a reply",
         "internal": "Write an internal note",
-        "resolve": "Resolve with a note"
+        "resolve": "Resolve with a note",
+        "back": "Back to the queue"
       }
     }
   },
@@ -1460,6 +1461,10 @@
           "deviceOnline": {
             "description": "Triggered when a device connects.",
             "label": "Device Online"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Triggered when a newly enrolled device looks like a reinstall of an existing, silent device record.",
+            "label": "Possible Device Reinstall"
           },
           "deviceReinstalled": {
             "description": "Triggered when a reinstalled machine is reattached to its existing device record.",
@@ -2043,7 +2048,7 @@
         "paused": "Paused",
         "everyInterval": "every {{interval}}",
         "lastPolled": "Last polled {{time}}",
-        "configureMonitoring": "Configure Monitoring",
+        "configureMonitoring": "Configure monitoring",
         "pauseSnmpPolling": "Pause SNMP polling",
         "resumeSnmpPolling": "Resume SNMP polling",
         "disableSnmpMonitoring": "Disable SNMP monitoring",
@@ -2067,7 +2072,7 @@
         },
         "ip": "IP",
         "snmp": "SNMP",
-        "networkChecks": "Network Checks",
+        "networkChecks": "Network checks",
         "emptyAssets": "No assets found.",
         "lastSeen": "Last seen {{time}}",
         "activeRatio": "{{active}}/{{total}} active",

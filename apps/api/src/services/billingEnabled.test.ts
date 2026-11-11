@@ -4,6 +4,9 @@ const selectMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: { select: (...args: unknown[]) => selectMock(...args) },
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
 }));
 
 vi.mock('../db/schema/orgs', () => ({
@@ -16,6 +19,8 @@ import {
   BILLING_DISABLED_MESSAGE,
   assertBillingEnabledForOrg,
   assertBillingEnabledForPartner,
+  billingEnabledOrgPredicate,
+  isBillingDisabledError,
   isBillingEnabledForOrg,
   isBillingEnabledForPartner,
 } from './billingEnabled';
@@ -90,5 +95,26 @@ describe('assertBillingEnabled*', () => {
     mockRows([{ billingEnabled: true }]);
     await expect(assertBillingEnabledForOrg(ID, make)).resolves.toBeUndefined();
     await expect(assertBillingEnabledForPartner(ID, make)).resolves.toBeUndefined();
+  });
+});
+
+describe('isBillingDisabledError', () => {
+  it('matches the BILLING_DISABLED code from any error family', () => {
+    expect(isBillingDisabledError(make('Not found', 404, BILLING_DISABLED_CODE))).toBe(true);
+    expect(isBillingDisabledError(make('Not found', 404, 'NOT_FOUND'))).toBe(false);
+    expect(isBillingDisabledError(new Error('x'))).toBe(false);
+    expect(isBillingDisabledError(null)).toBe(false);
+    expect(isBillingDisabledError('BILLING_DISABLED')).toBe(false);
+  });
+});
+
+describe('billingEnabledOrgPredicate', () => {
+  it('is a fail-open NOT EXISTS joined through organizations.partner_id', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const { sql: dsql } = await import('drizzle-orm');
+    const text = new PgDialect().sqlToQuery(billingEnabledOrgPredicate(dsql.raw('c.org_id') as never)).sql;
+    expect(text).toMatch(/NOT EXISTS/);
+    expect(text).toMatch(/billing_gate_partner\.billing_enabled = false/);
+    expect(text).toMatch(/billing_gate_partner\.id = billing_gate_org\.partner_id/);
   });
 });

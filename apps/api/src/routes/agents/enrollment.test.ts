@@ -7,6 +7,12 @@ const { admitPartnerDeviceCapacityMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../services/topology/identityDirty', () => ({ markTopologyIdentityDirty: vi.fn() }));
+// The enroll route fires the partner-wide reinstall search after commit (#8318).
+// It has its own suite; here the mocked db would make it report to Sentry and
+// trip the captureException assertions.
+vi.mock('../../services/reinstallCandidates', () => ({
+  detectReinstallCandidates: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../../services/partnerDeviceCapacity', () => ({
   admitPartnerDeviceCapacity: admitPartnerDeviceCapacityMock,
   PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},

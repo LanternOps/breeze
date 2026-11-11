@@ -186,6 +186,24 @@ describe('wisp memory routes', () => {
     });
   });
 
+  it('#11630: the list still returns a lapsed standing instruction, marked expired; live and non-instruction rows are not', async () => {
+    const standing = (id: string, until: string | null) => block({
+      id,
+      blockType: 'standing_instruction',
+      content: { text: 'no reboot', until },
+    });
+    h.svc.listBlocksForUser.mockResolvedValue([
+      standing('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', '2020-01-01T00:00:00Z'),
+      standing('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2', '2999-01-01T00:00:00Z'),
+      standing('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3', null),
+      block({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4', content: { until: '2020-01-01T00:00:00Z' } }),
+    ]);
+    const res = await app.request('/wisp/memory?scope=mine');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { blocks: Array<{ id: string; expired: boolean }> };
+    expect(body.blocks.map((b) => b.expired)).toEqual([true, false, false, false]);
+  });
+
   it('every route is 404 { error: not_found } while wispEnabled() is false', async () => {
     h.wispEnabled.mockReturnValue(false);
     const reqs: Array<[string, RequestInit?]> = [
@@ -227,6 +245,7 @@ describe('wisp memory routes', () => {
         content: { text: 'after 6pm' },
         confidence: 'medium',
         status: 'unconfirmed',
+        expired: false,
         authoredByGrantId: GRANT_ID,
         supersededById: null,
         sourceSessionId: null,

@@ -36,6 +36,12 @@ const metaDescription = tServer(Astro.locals.locale, 'layout.metaDescription');
       listener is installed before the first swap can fire. See issue #1589.
     -->
     <script is:inline src="/monaco-theme-persist.js"></script>
+    <!--
+      Must be the first popstate listener on window, ahead of the client router
+      below (see public/same-page-history.js). Every ClientRouter layout loads
+      it: the router is installed by the first page a session loads.
+    -->
+    <script is:inline src="/same-page-history.js"></script>
     <title>{pageTitle} | Breeze RMM</title>
     <ClientRouter />
   </head>

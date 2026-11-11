@@ -78,6 +78,7 @@ import {
 } from './checkIns';
 import { loadTriggerSubject, triggerSubjectScope, type TriggerSubject } from './checkInTriggers';
 import { assessableOrgIds } from './assessableOrgs';
+import { runCheckInBlocker, runCheckInBlockerMessage } from './checkInRunReadiness';
 import { isResolveFailure, resolveEntityRef } from './entityRefs';
 import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 
@@ -260,6 +261,9 @@ const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ce
     // The assessment's digest reads are org-wide (enqueueAssessment refuses a
     // site-restricted org at fire time); refuse it now rather than then.
     if (!assessableOrgIds(ceiling).has(orgId)) return RUN_ORG_NOT_ASSESSABLE;
+    // #11610: the run is a Triage run; promise it only when one could start.
+    const blocker = await runCheckInBlocker(orgId);
+    if (blocker) return JSON.stringify({ error: 'run_agent_unavailable', reason: blocker, message: runCheckInBlockerMessage(blocker) });
   }
 
   const row = await createCheckIn(ceiling, {

@@ -153,6 +153,20 @@ function asFileType(raw: string): "" | SoftwareFileType {
     ? (raw as SoftwareFileType)
     : "";
 }
+/** Blank is allowed (an uploaded file can be the source). Otherwise require an
+ *  http(s) URL; `{{token}}` deploy-time variables are swapped for a placeholder
+ *  first so they don't trip the parser. */
+function isValidDownloadUrl(raw: string): boolean {
+  const value = raw.trim();
+  if (!value) return true;
+  try {
+    const url = new URL(value.replace(/\{\{[^}]*\}\}/g, "x"));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 const EMPTY_FORM = {
   version: "",
   architecture: "x64" as Architecture,
@@ -235,6 +249,12 @@ export default function SoftwareVersionManager({
   // the progress bar already re-renders on every acknowledged chunk.
   const uploadAbortRef = useRef<AbortController | null>(null);
   const [formState, setFormState] = useState(EMPTY_FORM);
+  const [fieldErrors, setFieldErrors] = useState<{
+    version?: string;
+    downloadUrl?: string;
+  }>({});
+  const versionInputRef = useRef<HTMLInputElement>(null);
+  const downloadUrlWrapRef = useRef<HTMLDivElement>(null);
   const fetchVersions = useCallback(async () => {
     try {
       setLoading(true);
@@ -465,6 +485,7 @@ export default function SoftwareVersionManager({
       : formState.silentInstallArgs;
   const resetForm = () => {
     setFormState(EMPTY_FORM);
+    setFieldErrors({});
     setEditingVersionId("");
     if (fileInputRef.current) fileInputRef.current.value = "";
     setIsFormOpen(false);
@@ -516,6 +537,7 @@ export default function SoftwareVersionManager({
       ),
     );
     if (fileInputRef.current) fileInputRef.current.value = "";
+    setFieldErrors({});
     setIsFormOpen(true);
   };
   const openEditForm = (entry: VersionEntry) => {
@@ -544,6 +566,7 @@ export default function SoftwareVersionManager({
       ),
     );
     if (fileInputRef.current) fileInputRef.current.value = "";
+    setFieldErrors({});
     setIsFormOpen(true);
   };
 
@@ -592,7 +615,27 @@ export default function SoftwareVersionManager({
     controller !== null && controller.signal.aborted;
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!formState.version.trim()) return;
+    // Required-field / format feedback (#11606): never a silent no-op.
+    const nextErrors: { version?: string; downloadUrl?: string } = {};
+    if (!formState.version.trim()) {
+      nextErrors.version = i18n.t(
+        "policies:software.softwareVersionManager.versionRequired",
+      );
+    }
+    if (!isValidDownloadUrl(formState.downloadUrl)) {
+      nextErrors.downloadUrl = i18n.t(
+        "policies:software.softwareVersionManager.downloadUrlInvalid",
+      );
+    }
+    setFieldErrors(nextErrors);
+    if (nextErrors.version) {
+      versionInputRef.current?.focus();
+      return;
+    }
+    if (nextErrors.downloadUrl) {
+      downloadUrlWrapRef.current?.querySelector("input")?.focus();
+      return;
+    }
     if (!catalogId) return;
     if (!successExitCodesResult.ok) return;
     if (installSpecIssues.length > 0) return;
@@ -913,19 +956,28 @@ export default function SoftwareVersionManager({
                 {i18n.t("policies:software.softwareVersionManager.version")}
               </label>
               <input
+                ref={versionInputRef}
                 type="text"
                 value={formState.version}
-                onChange={(event) =>
+                aria-invalid={fieldErrors.version ? true : undefined}
+                aria-describedby={fieldErrors.version ? "version-error" : undefined}
+                onChange={(event) => {
+                  setFieldErrors((prev) => ({ ...prev, version: undefined }));
                   setFormState((prev) => ({
                     ...prev,
                     version: event.target.value,
-                  }))
-                }
+                  }));
+                }}
                 placeholder={i18n.t(
                   "policies:software.softwareVersionManager.eG100",
                 )}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                className={`mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${fieldErrors.version ? "border-destructive/60" : ""}`}
               />
+              {fieldErrors.version && (
+                <p id="version-error" role="alert" className="mt-1 text-xs text-destructive">
+                  {fieldErrors.version}
+                </p>
+              )}
             </div>
             <div>
               <label className="text-xs font-semibold uppercase text-muted-foreground">
@@ -960,10 +1012,15 @@ export default function SoftwareVersionManager({
             <label className="text-xs font-semibold uppercase text-muted-foreground">
               {i18n.t("policies:software.softwareVersionManager.downloadURL")}
             </label>
-            <div className="mt-2">
+            <div className="mt-2" ref={downloadUrlWrapRef}>
               <VariableInput
                 value={formState.downloadUrl}
-                onChange={handleDownloadUrlChange}
+                invalid={Boolean(fieldErrors.downloadUrl)}
+                aria-describedby={fieldErrors.downloadUrl ? "download-url-error" : undefined}
+                onChange={(value) => {
+                  setFieldErrors((prev) => ({ ...prev, downloadUrl: undefined }));
+                  handleDownloadUrlChange(value);
+                }}
                 placeholder={i18n.t(
                   "policies:software.softwareVersionManager.httpsExampleComPackageV100",
                 )}
@@ -971,6 +1028,11 @@ export default function SoftwareVersionManager({
                 tenantVariables={tenantVariables}
               />
             </div>
+            {fieldErrors.downloadUrl && (
+              <p id="download-url-error" role="alert" className="mt-1 text-xs text-destructive">
+                {fieldErrors.downloadUrl}
+              </p>
+            )}
             <p className="mt-1 text-xs text-muted-foreground">
               {i18n.t(
                 "policies:software.softwareVersionManager.provideADirectDownloadURLOrUpload",

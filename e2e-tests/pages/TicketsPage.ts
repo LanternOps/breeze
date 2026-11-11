@@ -12,6 +12,11 @@ export class TicketsPage {
   tab = (id: string) => this.page.getByTestId(`tickets-tab-${id}`);
   row = (id: string) => this.page.getByTestId(`ticket-row-${id}`);
   workbench = () => this.page.getByTestId('ticket-workbench');
+  // Focus view: the ticket replaces the board in place; this returns to it.
+  focusBack = () => this.page.getByTestId('ticket-focus-back');
+  // The focus header's More menu (move, merge, delete). Its items exist only
+  // while it is open, and it renders nothing when no action applies.
+  moreMenu = () => this.page.getByTestId('ticket-workbench-more');
   workbenchNumber = () => this.page.getByTestId('ticket-workbench-number');
   statusSelect = () => this.page.getByTestId('ticket-workbench-status');
   resolveNote = () => this.page.getByTestId('ticket-workbench-resolve-note');
@@ -23,7 +28,7 @@ export class TicketsPage {
   subjectEdit = () => this.page.getByTestId('ticket-workbench-subject-edit');
   feed = () => this.page.getByTestId('ticket-feed');
 
-  // Merge (#8972)
+  // Merge (#8972). "Merge into…" is a More menu item: use openMerge().
   mergeOpen = () => this.page.getByTestId('ticket-merge-open');
   mergePicker = () => this.page.getByTestId('ticket-merge-picker');
   mergeOption = (id: string) => this.page.getByTestId(`ticket-merge-option-${id}`);
@@ -42,6 +47,18 @@ export class TicketsPage {
   async goto() {
     await this.page.goto(this.url);
     await this.heading().waitFor();
+  }
+
+  /** From a ticket in focus back to the triage board (its heading and Create button are hidden in focus). */
+  async backToBoard(): Promise<void> {
+    await this.focusBack().click();
+    await this.heading().waitFor();
+  }
+
+  /** Open the More menu, then its "Merge into…" item. */
+  async openMerge(): Promise<void> {
+    await this.moreMenu().click();
+    await this.mergeOpen().click();
   }
 
   /**

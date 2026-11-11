@@ -1,11 +1,18 @@
-import { useState, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useState, useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { TICKET_ATTACHMENT_LIMITS, type TicketTemplateVars } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { showToast } from '../shared/Toast';
+import {
+  deleteTicketComposerDraft,
+  getTicketComposerDraft,
+  setTicketComposerDraft,
+  type TicketComposerMode,
+} from '@/lib/ticketComposerDrafts';
 import { ActionError } from '../../lib/runAction';
-import { permanentAttachmentRejection } from './ticketAttachmentErrors';
+import { mergedIntoTicketId, permanentAttachmentRejection } from './ticketAttachmentErrors';
+import { navigateTo } from '@/lib/navigation';
 import CannedResponsePicker from './CannedResponsePicker';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
 
@@ -22,8 +29,28 @@ interface AttachmentChip {
   id?: string;
 }
 
+// Unsent text per ticket lives in lib/ticketComposerDrafts, which auth.ts's
+// logout() clears on every sign-out path.
+type ComposerMode = TicketComposerMode;
+
 interface Props {
   requesterName: string | null;
+  /** Reply address on file. A public reply emails it (ticketNotifyWorker); with
+   *  none, the reply is only saved to the ticket. Omit to hide the line. */
+  requesterEmail?: string | null;
+  /** Extra toolbar controls beside canned responses (the ticket's Ask AI). */
+  toolbarExtra?: ReactNode;
+  /** Keys the unsent-draft memory (the ticket id). Omit to keep no memory. */
+  draftKey?: string;
+  /** Hidden but mounted: the resolve/pending form takes the composer's place
+   *  without losing what was typed. */
+  hidden?: boolean;
+  /** Log time beside Attach: the host opens the time entry. Omit to hide it. */
+  onLogTime?: () => void;
+  logTimeOpen?: boolean;
+  /** Caps what is written (toolbar, box, footer) to the host's reading
+   *  measure; the rule and the internal wash still run full width. */
+  contentClassName?: string;
   /** Must surface its own failures (runAction). Rejection here only preserves the draft. */
   onSend: (content: string, isPublic: boolean, attachmentIds: string[]) => Promise<void>;
   /**
@@ -37,18 +64,47 @@ interface Props {
   templates?: CannedResponse[];
   /** Merge-variable values resolved from the current ticket, applied on insert. */
   templateVars?: TicketTemplateVars;
+  /** The host asks for the composer (r / n): set this mode and focus the box.
+   *  Acted on once per token. */
+  focusRequest?: { mode: ComposerMode; token: number } | null;
 }
 
-export default function TicketComposer({ requesterName, onSend, onUploadAttachment, disabled, templates, templateVars }: Props) {
+export default function TicketComposer({ requesterName, requesterEmail, toolbarExtra, draftKey, hidden, onLogTime, logTimeOpen = false, contentClassName, onSend, onUploadAttachment, disabled, templates, templateVars, focusRequest }: Props) {
   const { t } = useTranslation('tickets');
-  const [mode, setMode] = useState<'reply' | 'internal'>('reply'); // public reply default (UI brief)
-  const [content, setContent] = useState('');
+  // Public reply is the default (UI brief); a restored draft keeps its own mode.
+  const [mode, setMode] = useState<ComposerMode>(() => (draftKey ? getTicketComposerDraft(draftKey)?.mode : undefined) ?? 'reply');
+  const [content, setContent] = useState(() => (draftKey ? getTicketComposerDraft(draftKey)?.content ?? '' : ''));
   const [sending, setSending] = useState(false);
   const [chips, setChips] = useState<AttachmentChip[]>([]);
+  // #11710: attachment files cannot outlive the composer, but their names can.
+  // A restored draft that had attachments says so, and Send waits until the
+  // user re-attaches them or dismisses the notice.
+  const [lostNames, setLostNames] = useState<string[]>(() => (draftKey ? getTicketComposerDraft(draftKey)?.attachmentNames ?? [] : []));
+  const chipNames = chips.map((c) => c.file.name);
+  const missingNames = lostNames.filter((n) => !chipNames.includes(n));
+  const attachmentNames = [...new Set([...chipNames, ...missingNames])];
+  const attachmentNamesKey = attachmentNames.join('\u0000');
+  // Mirror the text, its mode and the attachment names into the per-ticket
+  // memory; a box with neither text nor attachments forgets it.
+  useEffect(() => {
+    if (!draftKey) return;
+    if (content || attachmentNames.length > 0) {
+      setTicketComposerDraft(draftKey, { content, mode, ...(attachmentNames.length > 0 ? { attachmentNames } : {}) });
+    } else deleteTicketComposerDraft(draftKey);
+    // attachmentNames is covered by attachmentNamesKey
+  }, [draftKey, content, mode, attachmentNamesKey]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const modeRefs = useRef<Record<'reply' | 'internal', HTMLButtonElement | null>>({ reply: null, internal: null });
+  const modeRefs = useRef<Record<ComposerMode, HTMLButtonElement | null>>({ reply: null, internal: null });
   const isPublic = mode === 'reply';
+
+  const handledFocusToken = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focusRequest || focusRequest.token === handledFocusToken.current) return;
+    handledFocusToken.current = focusRequest.token;
+    setMode(focusRequest.mode);
+    textareaRef.current?.focus();
+  }, [focusRequest]);
 
   // Radio-group keys: every arrow moves to the other mode and checks it
   // (two options, so it always wraps). The queue's window-level ArrowUp/Down
@@ -96,13 +152,23 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
         // drop the chip and say why.
         setChips((cs) => cs.filter((c) => c.key !== chip.key));
         const name = chip.file.name;
-        const message =
-          rejection === 'type'
-            ? t('ticketComposer.attachments.rejectedType', { name })
-            : rejection === 'size'
-              ? t('ticketComposer.attachments.tooLarge', { name })
-              : t('ticketComposer.attachments.rejectedEmpty', { name });
-        showToast({ type: 'error', message });
+        const survivorId = rejection === 'ticketMerged' && err instanceof ActionError ? mergedIntoTicketId(err.body) : null;
+        const messages: Record<typeof rejection, string> = {
+          type: t('ticketComposer.attachments.rejectedType', { name }),
+          size: t('ticketComposer.attachments.tooLarge', { name }),
+          empty: t('ticketComposer.attachments.rejectedEmpty', { name }),
+          ticketDeleted: t('ticketComposer.attachments.rejectedTicketDeleted', { name }),
+          ticketMerged: t('ticketComposer.attachments.rejectedTicketMerged', { name }),
+          notFound: t('ticketComposer.attachments.rejectedNotFound', { name }),
+          malformed: t('ticketComposer.attachments.rejectedMalformed', { name }),
+        };
+        showToast({
+          type: 'error',
+          message: messages[rejection],
+          ...(survivorId
+            ? { action: { label: t('ticketComposer.attachments.openMergedTicket'), onClick: () => void navigateTo(`/tickets/${encodeURIComponent(survivorId)}`) } }
+            : {}),
+        });
         return;
       }
       // Transient: the uploader already toasted through runAction; the chip is
@@ -147,11 +213,16 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
     // An attachment-only comment is legal (the shared validator allows empty
     // content when attachmentIds is non-empty), so the guard is "nothing at
     // all", not "no text".
-    if ((!content.trim() && readyIds.length === 0) || sending || uploading) return;
+    if ((!content.trim() && readyIds.length === 0) || sending || uploading || missingNames.length > 0) return;
     setSending(true);
     try {
       await onSend(content.trim(), isPublic, readyIds);
-      // A chip still sitting in 'error' (e.g. a rejected file type) never made
+      // Forget the sent text here, not through the mirror effect: if the
+      // composer unmounted while the POST was in flight (j/k, the next-ticket
+      // offer), that effect never runs again and the reply would come back as
+      // an unsent draft. Only the text that was sent is forgotten.
+      if (draftKey && getTicketComposerDraft(draftKey)?.content === content) deleteTicketComposerDraft(draftKey);
+      // A chip still sitting in 'error' (a transient failure: network, 429, 5xx) never made
       // it into attachmentIds, so the comment above just posted WITHOUT it.
       // Keep that chip — clearing it here would silently discard the user's
       // file selection and leave the earlier upload-error toast as the only
@@ -166,6 +237,7 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
         });
       }
       setContent('');
+      setLostNames([]);
       setChips(failedChips);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch {
@@ -174,10 +246,11 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
     } finally {
       setSending(false);
     }
-  }, [chips, content, isPublic, onSend, readyIds, sending, t, uploading]);
+  }, [chips, content, draftKey, isPublic, missingNames.length, onSend, readyIds, sending, t, uploading]);
 
   return (
     <div
+      hidden={hidden}
       className={cn(
         'border-t',
         // Unmistakable internal wash. On it, grey --muted-foreground drops to
@@ -187,7 +260,8 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
       )}
       data-testid="ticket-composer"
     >
-      <div className="flex items-center gap-1 px-3 pt-2">
+      <div className={contentClassName} data-testid="ticket-composer-content">
+      <div className="flex flex-wrap items-center gap-1 px-4 pt-2" data-testid="ticket-composer-toolbar">
         {/* The two modes set the visibility of the one message being written —
             a radio group, not tabs (there is no second panel). Attach stays
             outside: it is an action, not a mode. */}
@@ -219,11 +293,6 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
             {t('ticketComposer.internalNote')}
           </button>
         </div>
-        {!isPublic && (
-          <span className="ml-2 text-xs font-medium text-warning-ink" data-testid="ticket-composer-internal-banner">
-            {t('ticketComposer.internalBanner')}
-          </span>
-        )}
         {onUploadAttachment && (
           <>
             <input
@@ -246,16 +315,30 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
             </button>
           </>
         )}
-        <div className="ml-auto">
+        {onLogTime && (
+          // Billing one click from the reply at every width (the Time & billing
+          // section sits behind the Details tab below 1024px).
+          <button
+            type="button"
+            onClick={onLogTime}
+            aria-expanded={logTimeOpen}
+            className={cn('rounded-md px-2 py-1 text-xs hover:text-foreground', logTimeOpen ? 'bg-muted text-foreground' : 'text-muted-foreground')}
+            data-testid="ticket-composer-log-time"
+          >
+            {t('ticketTimeBilling.logTime')}
+          </button>
+        )}
+        <div className="ml-auto flex items-center gap-1">
           <CannedResponsePicker
             templates={templates ?? []}
             vars={templateVars ?? {}}
             onInsert={insertText}
             disabled={disabled || sending}
           />
+          {toolbarExtra}
         </div>
       </div>
-      <div className="p-3">
+      <div className="px-4 py-3">
         <textarea
           ref={textareaRef}
           value={content}
@@ -274,8 +357,27 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
           rows={3}
           disabled={disabled || sending}
           data-testid="ticket-composer-input"
-          className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
+          className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm max-sm:h-16 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
         />
+        {missingNames.length > 0 && (
+          <div
+            role="alert"
+            className="mt-2 flex items-start gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-ink"
+            data-testid="ticket-composer-lost-attachments"
+          >
+            <p className="min-w-0 flex-1">
+              {t('ticketComposer.attachments.notKept', { count: missingNames.length, names: missingNames.join(', ') })}
+            </p>
+            <button
+              type="button"
+              onClick={() => setLostNames([])}
+              className="shrink-0 font-medium underline"
+              data-testid="ticket-composer-lost-attachments-dismiss"
+            >
+              {t('ticketComposer.attachments.notKeptDismiss')}
+            </button>
+          </div>
+        )}
         {chips.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-2" data-testid="ticket-composer-chips">
             {chips.map((chip) => (
@@ -319,20 +421,45 @@ export default function TicketComposer({ requesterName, onSend, onUploadAttachme
             ))}
           </div>
         )}
-        <div className="mt-2 flex justify-end">
+        <div className="mt-2 flex items-center justify-end gap-3">
+          {!isPublic && (
+            // Who sees it, where the public reply names its recipient. Kept out
+            // of the toolbar so the toolbar holds one row.
+            <p className="mr-auto min-w-0 text-xs font-medium text-warning-ink" data-testid="ticket-composer-internal-banner">
+              {t('ticketComposer.internalBanner')}
+            </p>
+          )}
+          {isPublic && requesterEmail !== undefined && (
+            // Says where a public reply goes before it goes there. Without an
+            // address the notify worker sends nothing (ticketNotifyWorker
+            // collectRequesterEmail returns [] with no submitterEmail).
+            <p
+              className="mr-auto min-w-0 truncate text-xs text-muted-foreground"
+              data-testid="ticket-composer-recipient"
+              data-recipient={requesterEmail ? 'email' : 'none'}
+              title={requesterEmail ? undefined : t('ticketComposer.recipient.none')}
+            >
+              {requesterEmail
+                ? t('ticketComposer.recipient.emails', {
+                    recipient: requesterName && requesterName !== requesterEmail ? `${requesterName} <${requesterEmail}>` : requesterEmail,
+                  })
+                : t('ticketComposer.recipient.none')}
+            </p>
+          )}
           <button
             type="button"
             onClick={() => void send()}
-            disabled={(!content.trim() && readyIds.length === 0) || sending || uploading || disabled}
+            disabled={(!content.trim() && readyIds.length === 0) || sending || uploading || missingNames.length > 0 || disabled}
             data-testid="ticket-composer-send"
             className={cn(
-              'rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50',
+              'shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50',
               isPublic ? 'bg-primary hover:bg-primary/90' : 'bg-warning hover:bg-warning/90 text-warning-foreground'
             )}
           >
             {sending ? t('ticketComposer.sending') : isPublic ? t('ticketComposer.sendReply') : t('ticketComposer.addInternalNote')}
           </button>
         </div>
+      </div>
       </div>
     </div>
   );

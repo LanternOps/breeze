@@ -30,6 +30,14 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
   All monitoring ports bind to `127.0.0.1` by default. Access Grafana and Prometheus via SSH tunnel or VPN -- they should not be exposed to the public internet.
 </Aside>
 
+### Image versions
+
+From v0.128.0 every image in `docker-compose.monitoring.yml` is pinned by digest, and each can be overridden with its own variable: `PROMETHEUS_IMAGE_REF`, `GRAFANA_IMAGE_REF`, `ALERTMANAGER_IMAGE_REF`, `LOKI_IMAGE_REF`, `PROMTAIL_IMAGE_REF`, `REDIS_EXPORTER_IMAGE_REF` and `POSTGRES_EXPORTER_IMAGE_REF`. Leave them empty to use the pinned defaults.
+
+<Aside type="caution" title="v0.128.0 moves the overlay up one to three major versions">
+  The v0.128.0 monitoring file moves Prometheus from 2 to 3, Grafana from 10 to 13, and Loki and Promtail from 2.9 to 3.6, and updates Alertmanager and both exporters. `docker compose pull` does not change your monitoring file, so this applies only when you take the new one. Before you do, read the upstream upgrade notes for Prometheus, Grafana and Loki and back up their volumes. To stay on the images you run now, set the `*_IMAGE_REF` variables to them.
+</Aside>
+
 ## Accessing Grafana
 
 ```bash

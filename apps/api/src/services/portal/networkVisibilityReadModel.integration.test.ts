@@ -19,7 +19,7 @@ import {
   createSite,
 } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
-import { networkAssets, networkOverview, networkSites } from './networkVisibilityReadModel';
+import { networkAssets, networkOverview, networkSiteHealth, networkSites } from './networkVisibilityReadModel';
 import { assetPhysicalPlacements } from '../../db/schema';
 import { createDevice } from '../../__tests__/integration/db-utils';
 import { placementKey, readPlacement, readPlacements, resolvePlacementAuthority, resolvePlacementAuthorities } from '../assetPlacement';
@@ -1024,5 +1024,256 @@ describe('networkAssets physical placement (CPEV-W1)', () => {
       const authorities = await resolvePlacementAuthorities([forged]);
       expect(authorities.get(placementKey('discovered', assetB.id))).toEqual({ authority: forged, linked: false });
     });
+  });
+});
+
+const RECENT = new Date('2026-09-17T11:59:00.000Z');
+
+function assetValues(orgId: string, siteId: string, n: number, overrides: Record<string, unknown> = {}) {
+  return {
+    orgId,
+    siteId,
+    ipAddress: `10.${n}.0.${n}`,
+    hostname: `secret-host-${n}`,
+    assetType: 'switch' as const,
+    source: 'manual' as const,
+    isOnline: true,
+    statusObservedAt: RECENT,
+    statusSource: 'scan' as const,
+    lastSeenAt: RECENT,
+    ...overrides,
+  };
+}
+
+describe('networkSiteHealth (CPEV-W2, real Postgres)', () => {
+  it('aggregates per site, matches the filtered asset list, attributes monitors and alerts, and never crosses orgs', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteA1 = await createSite({ orgId: orgA.id, name: 'A One' });
+    const siteA2 = await createSite({ orgId: orgA.id, name: 'A Two' });
+    const siteB = await createSite({ orgId: orgB.id, name: 'B Only' });
+    const deviceA = await createDevice({ orgId: orgA.id, siteId: siteA1.id });
+    const deviceB = await createDevice({ orgId: orgB.id, siteId: siteB.id });
+
+    const [a1Online, a1Stale, a1Dismissed, a2Online] = await testDb
+      .insert(discoveredAssets)
+      .values([
+        assetValues(orgA.id, siteA1.id, 1),
+        assetValues(orgA.id, siteA1.id, 2, {
+          isOnline: false,
+          statusObservedAt: new Date('2026-09-15T10:00:00.000Z'),
+          lastSeenAt: new Date('2026-09-15T10:00:00.000Z'),
+        }),
+        assetValues(orgA.id, siteA1.id, 3, { approvalStatus: 'dismissed' }),
+        assetValues(orgA.id, siteA2.id, 4),
+      ])
+      .returning();
+    const [bAsset] = await testDb.insert(discoveredAssets).values(assetValues(orgB.id, siteB.id, 5)).returning();
+
+    const [siteMonitor, assetMonitor, noScopeMonitor, dismissedMonitor, bMonitor] = await testDb
+      .insert(networkMonitors)
+      .values([
+        { orgId: orgA.id, siteId: siteA2.id, name: 'secret-site-monitor', monitorType: 'icmp_ping', target: 'secret.example.test', isActive: true },
+        { orgId: orgA.id, assetId: a1Online!.id, name: 'asset-monitor', monitorType: 'icmp_ping', target: '10.1.0.1', isActive: true },
+        { orgId: orgA.id, name: 'no-scope-monitor', monitorType: 'icmp_ping', target: 'x.example.test', isActive: true },
+        { orgId: orgA.id, assetId: a1Dismissed!.id, name: 'dismissed-monitor', monitorType: 'icmp_ping', target: '10.1.0.3', isActive: true },
+        { orgId: orgB.id, siteId: siteB.id, name: 'b-monitor', monitorType: 'icmp_ping', target: 'b.example.test', isActive: true },
+      ])
+      .returning();
+
+    await testDb.insert(networkMonitorResults).values(
+      [siteMonitor, assetMonitor, noScopeMonitor, dismissedMonitor].map((m) => ({
+        monitorId: m!.id,
+        orgId: orgA.id,
+        status: 'offline' as const,
+        timestamp: RECENT,
+      })).concat([{ monitorId: bMonitor!.id, orgId: orgB.id, status: 'offline' as const, timestamp: RECENT }]),
+    );
+
+    const alertFor = (orgId: string, deviceId: string, monitorId: string, severity: 'low' | 'critical') => ({
+      deviceId,
+      orgId,
+      severity,
+      status: 'active' as const,
+      title: 'secret alert title',
+      context: { source: 'network_monitor', monitorId, secret: 'secret-context' },
+    });
+    await testDb.insert(alerts).values([
+      alertFor(orgA.id, deviceA.id, siteMonitor!.id, 'low'),
+      alertFor(orgA.id, deviceA.id, assetMonitor!.id, 'critical'),
+      alertFor(orgA.id, deviceA.id, dismissedMonitor!.id, 'critical'),
+      alertFor(orgB.id, deviceB.id, bMonitor!.id, 'critical'),
+    ]);
+
+    const ctxA = orgContext(orgA.id, partner.id);
+    const withAlerts = await withDbAccessContext(ctxA, () => networkSiteHealth(orgA.id, true, NOW));
+    const withoutAlerts = await withDbAccessContext(ctxA, () => networkSiteHealth(orgA.id, false, NOW));
+
+    expect(withAlerts.dataStatus).toBe('ok');
+    expect(withAlerts.data).toEqual([
+      {
+        siteId: siteA1.id, siteName: 'A One', totalAssets: 2, onlineAssets: 1, offlineAssets: 0, unverifiedAssets: 1,
+        snmpDevicesPolling: 0, monitorsDown: 1, activeAlertCount: 1, highestAlertSeverity: 'critical',
+      },
+      {
+        siteId: siteA2.id, siteName: 'A Two', totalAssets: 1, onlineAssets: 1, offlineAssets: 0, unverifiedAssets: 0,
+        snmpDevicesPolling: 0, monitorsDown: 1, activeAlertCount: 1, highestAlertSeverity: 'low',
+      },
+    ]);
+
+    for (const row of withoutAlerts.data) {
+      expect(Object.keys(row)).not.toContain('activeAlertCount');
+      expect(Object.keys(row)).not.toContain('highestAlertSeverity');
+    }
+
+    const serialized = JSON.stringify([withAlerts, withoutAlerts]);
+    for (const sensitive of ['secret-host', 'secret.example.test', 'secret-site-monitor', 'secret-context', 'secret alert title', '10.1.0.1', a1Stale!.id, a2Online!.id, bAsset!.id]) {
+      expect(serialized).not.toContain(sensitive);
+    }
+
+    for (const row of withAlerts.data) {
+      for (const [status, key] of [
+        ['online', 'onlineAssets'],
+        ['offline', 'offlineAssets'],
+        ['unverified', 'unverifiedAssets'],
+      ] as const) {
+        const list = await withDbAccessContext(ctxA, () =>
+          networkAssets(orgA.id, { siteId: row.siteId, status, limit: 500 }, NOW));
+        expect(list.pagination.total).toBe(row[key]);
+      }
+      const all = await withDbAccessContext(ctxA, () => networkAssets(orgA.id, { siteId: row.siteId, limit: 500 }, NOW));
+      expect(all.pagination.total).toBe(row.totalAssets);
+    }
+
+    const healthB = await withDbAccessContext(orgContext(orgB.id, partner.id), () => networkSiteHealth(orgB.id, true, NOW));
+    expect(healthB.data).toEqual([
+      expect.objectContaining({ siteId: siteB.id, totalAssets: 1, monitorsDown: 1, activeAlertCount: 1 }),
+    ]);
+
+    const crossRead = await withDbAccessContext(orgContext(orgA.id, partner.id), () => networkSiteHealth(orgB.id, true, NOW));
+    expect(crossRead).toEqual({ dataStatus: 'no_data', data: [] });
+    const crossReadReverse = await withDbAccessContext(orgContext(orgB.id, partner.id), () => networkSiteHealth(orgA.id, true, NOW));
+    expect(crossReadReverse).toEqual({ dataStatus: 'no_data', data: [] });
+  });
+
+  it('does not leak org A monitors, results or alerts into org B (app-layer org filters, system context bypasses RLS)', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteA = await createSite({ orgId: orgA.id, name: 'Iso A' });
+    const siteB = await createSite({ orgId: orgB.id, name: 'Iso B' });
+    const deviceA = await createDevice({ orgId: orgA.id, siteId: siteA.id });
+    const deviceB = await createDevice({ orgId: orgB.id, siteId: siteB.id });
+
+    // Org B has visible assets so networkSiteHealth does NOT early-return no_data.
+    const [aAsset] = await testDb.insert(discoveredAssets).values(assetValues(orgA.id, siteA.id, 11)).returning();
+    await testDb.insert(discoveredAssets).values(assetValues(orgB.id, siteB.id, 12));
+
+    const [monitorA, monitorB] = await testDb
+      .insert(networkMonitors)
+      .values([
+        { orgId: orgA.id, assetId: aAsset!.id, name: 'iso-a', monitorType: 'icmp_ping', target: '10.11.0.1', isActive: true },
+        { orgId: orgB.id, siteId: siteB.id, name: 'iso-b', monitorType: 'icmp_ping', target: 'iso-b.example.test', isActive: true },
+      ])
+      .returning();
+
+    await testDb.insert(networkMonitorResults).values([
+      { monitorId: monitorA!.id, orgId: orgA.id, status: 'offline' as const, timestamp: RECENT },
+      // B's own monitor is healthy.
+      { monitorId: monitorB!.id, orgId: orgB.id, status: 'online' as const, timestamp: RECENT },
+      // Forged: an org-A-stamped offline result pointing at B's monitor. Only the
+      // network_monitor_results.org_id filter keeps it out of B's counters.
+      { monitorId: monitorB!.id, orgId: orgA.id, status: 'offline' as const, timestamp: new Date('2026-09-17T11:59:30.000Z') },
+    ]);
+
+    await testDb.insert(alerts).values([
+      { deviceId: deviceA.id, orgId: orgA.id, severity: 'critical' as const, status: 'active' as const, title: 'a', context: { source: 'network_monitor', monitorId: monitorA!.id } },
+      // Forged: org-A alert referencing B's monitor. Only the alerts.org_id filter excludes it for B.
+      { deviceId: deviceA.id, orgId: orgA.id, severity: 'critical' as const, status: 'active' as const, title: 'forged', context: { source: 'network_monitor', monitorId: monitorB!.id } },
+      { deviceId: deviceB.id, orgId: orgB.id, severity: 'low' as const, status: 'active' as const, title: 'b', context: { source: 'network_monitor', monitorId: monitorB!.id } },
+    ]);
+
+    const expectedB = [
+      expect.objectContaining({ siteId: siteB.id, totalAssets: 1, monitorsDown: 0, activeAlertCount: 1, highestAlertSeverity: 'low' }),
+    ];
+    // RLS context, and system context (no RLS) so only the query filters stand between A and B.
+    const viaRls = await withDbAccessContext(orgContext(orgB.id, partner.id), () => networkSiteHealth(orgB.id, true, NOW));
+    const viaSystem = await withSystemDbAccessContext(() => networkSiteHealth(orgB.id, true, NOW));
+    expect(viaRls.data).toEqual(expectedB);
+    expect(viaSystem.data).toEqual(expectedB);
+
+    const overviewB = await withSystemDbAccessContext(() => networkOverview(orgB.id, NOW));
+    expect(overviewB.monitorsDown).toBe(0);
+
+    const healthA = await withSystemDbAccessContext(() => networkSiteHealth(orgA.id, true, NOW));
+    expect(healthA.data).toEqual([
+      expect.objectContaining({ siteId: siteA.id, monitorsDown: 1, activeAlertCount: 1, highestAlertSeverity: 'critical' }),
+    ]);
+  });
+
+  it('excludes resolved alerts, non-network_monitor alerts, and inactive monitors from alert counters', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id, name: 'Filters' });
+    const device = await createDevice({ orgId: org.id, siteId: site.id });
+    await testDb.insert(discoveredAssets).values(assetValues(org.id, site.id, 21));
+
+    const [active, inactive] = await testDb
+      .insert(networkMonitors)
+      .values([
+        { orgId: org.id, siteId: site.id, name: 'f-active', monitorType: 'icmp_ping', target: 'f1.example.test', isActive: true },
+        { orgId: org.id, siteId: site.id, name: 'f-inactive', monitorType: 'icmp_ping', target: 'f2.example.test', isActive: false },
+      ])
+      .returning();
+
+    const alertRow = (monitorId: string, severity: 'low' | 'critical', status: 'active' | 'resolved', source = 'network_monitor') => ({
+      deviceId: device.id, orgId: org.id, severity, status, title: 't', context: { source, monitorId },
+    });
+    await testDb.insert(alerts).values([
+      alertRow(active!.id, 'low', 'active'), // the only one that counts
+      alertRow(active!.id, 'critical', 'resolved'),
+      alertRow(active!.id, 'critical', 'active', 'other_source'),
+      alertRow(inactive!.id, 'critical', 'active'),
+    ]);
+
+    const result = await withDbAccessContext(orgContext(org.id, partner.id), () => networkSiteHealth(org.id, true, NOW));
+    expect(result.data).toEqual([
+      expect.objectContaining({ siteId: site.id, activeAlertCount: 1, highestAlertSeverity: 'low' }),
+    ]);
+  });
+
+  it('counts a partner-wide monitor (org_id NULL) in the overview via its org-scoped result, but never in any site', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id, name: 'PW' });
+    await testDb.insert(discoveredAssets).values(assetValues(org.id, site.id, 31));
+
+    const [partnerWide] = await testDb
+      .insert(networkMonitors)
+      .values({ partnerId: partner.id, orgId: null, name: 'pw', monitorType: 'icmp_ping', target: 'pw.example.test', isActive: true })
+      .returning();
+    await testDb.insert(networkMonitorResults).values({
+      monitorId: partnerWide!.id, orgId: org.id, status: 'offline' as const, timestamp: RECENT,
+    });
+
+    const ctx = orgContext(org.id, partner.id);
+    const overview = await withDbAccessContext(ctx, () => networkOverview(org.id, NOW));
+    expect(overview.monitorsDown).toBe(1);
+
+    const health = await withDbAccessContext(ctx, () => networkSiteHealth(org.id, true, NOW));
+    expect(health.data.reduce((sum, row) => sum + row.monitorsDown, 0)).toBe(0);
+    expect(health.data.reduce((sum, row) => sum + (row.activeAlertCount ?? 0), 0)).toBe(0);
+  });
+
+  it('returns no_data for an organization with no assets', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const result = await withDbAccessContext(orgContext(org.id, partner.id), () => networkSiteHealth(org.id, true, NOW));
+    expect(result).toEqual({ dataStatus: 'no_data', data: [] });
   });
 });

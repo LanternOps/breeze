@@ -5,7 +5,8 @@ vi.mock('../billingEnabled', () => {
   const assertOn = async (_id: unknown, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
     if (!billingSwitch.enabled) throw make('Not found', 404, 'BILLING_DISABLED');
   };
-  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn };
+  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn,
+    isBillingEnabledForPartner: async () => billingSwitch.enabled };
 });
 beforeEach(() => { billingSwitch.enabled = true; });
 const h = vi.hoisted(() => ({
@@ -469,6 +470,18 @@ it('reincludes an invoice excluded before issuance using its existing issuance s
     }),
   ]);
   expect(h.notice).toHaveBeenCalledExactlyOnceWith(f.tx, issued!.id);
+});
+
+it('plans an invoice as not_needed/charging_disabled while billing is off, without a notice', async () => {
+  const f = fixture();
+  f.inv.status = 'draft';
+  f.data.set(invoiceAutopaySchedules, []);
+  billingSwitch.enabled = false;
+  f.inv.status = 'sent';
+  expect(await planAutopayForInvoice(f.tx, invoice.id)).toMatchObject({
+    state: 'not_needed', eligible: false, ineligibleReason: 'charging_disabled',
+  });
+  expect(h.notice).not.toHaveBeenCalled();
 });
 
 it.each([

@@ -37,6 +37,15 @@ import {
 } from "./unifiTypes";
 
 /**
+ * The UniFi panel is partner-wide ("applies to every organization you
+ * manage"), so its site / organization / agent pickers must not be narrowed to
+ * the org switcher's org (#11604). `orgIdOverride: null` stops `fetchWithAuth`
+ * injecting the ambient `?orgId=`; the API still scopes the result to the orgs
+ * the caller can access, so this only stops the web narrowing further.
+ */
+const PARTNER_WIDE_READ = { orgIdOverride: null } as const;
+
+/**
  * Loads EVERY site (#6412 — `limit=500` still clamped to the server's 100-row
  * ceiling) and wraps the result in a Response-shaped object so it drops
  * straight into the existing `Promise.all([...fetchWithAuth(...)])` 401 /
@@ -44,7 +53,7 @@ import {
  */
 async function fetchAllSitesAsResponse(): Promise<Pick<Response, "status" | "ok" | "json">> {
   try {
-    const sites = await fetchAllSites<BreezeSiteOption>("/orgs/sites");
+    const sites = await fetchAllSites<BreezeSiteOption>("/orgs/sites", PARTNER_WIDE_READ);
     return { status: 200, ok: true, json: async () => ({ data: sites }) };
   } catch (err) {
     const status = err instanceof ListFetchError ? err.status : 500;
@@ -60,7 +69,7 @@ async function fetchAllSitesAsResponse(): Promise<Pick<Response, "status" | "ok"
  */
 async function fetchAllOrganizationsAsResponse(): Promise<Pick<Response, "status" | "ok" | "json">> {
   try {
-    const orgs = await fetchAllOrganizationsFrom<OrgOption>("/orgs/organizations");
+    const orgs = await fetchAllOrganizationsFrom<OrgOption>("/orgs/organizations", PARTNER_WIDE_READ);
     return { status: 200, ok: true, json: async () => ({ data: orgs }) };
   } catch (err) {
     const status = err instanceof ListFetchError ? err.status : 500;

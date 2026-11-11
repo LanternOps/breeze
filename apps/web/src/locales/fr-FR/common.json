@@ -909,12 +909,13 @@
       "queue": {
         "next": "Ticket suivant",
         "previous": "Ticket précédent",
-        "open": "Ouvrir le ticket en pleine page",
+        "open": "Ouvrir le ticket (après une résolution : le suivant proposé)",
         "toggleBulk": "Ajouter à la sélection groupée ou l’en retirer",
         "assignMe": "M’assigner",
         "reply": "Rédiger une réponse",
         "internal": "Rédiger une note interne",
-        "resolve": "Résoudre avec une note"
+        "resolve": "Résoudre avec une note",
+        "back": "Retour à la file"
       }
     }
   },
@@ -1460,6 +1461,10 @@
           "deviceOnline": {
             "description": "Déclenché lorsqu’un appareil se connecte.",
             "label": "Appareil en ligne"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Déclenché lorsqu’un appareil nouvellement inscrit semble être une réinstallation d’une fiche d’appareil existante et inactive.",
+            "label": "Réinstallation possible d’un appareil"
           },
           "deviceReinstalled": {
             "description": "Déclenché lorsqu’une machine réinstallée est rattachée à sa fiche d’appareil existante.",
