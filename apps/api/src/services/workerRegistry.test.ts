@@ -149,6 +149,8 @@ const EXPECTED_WORKER_NAMES = [
   'imageCurrencyWorker',
   // Portal registration W6 (#11383).
   'portalSelfRegistrationWorker',
+  // Observation retention (#11737) — report-only.
+  'observationRetention',
 ];
 
 describe('workerRegistry: losslessness', () => {

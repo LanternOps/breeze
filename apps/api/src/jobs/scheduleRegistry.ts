@@ -313,6 +313,12 @@ export const JOB_SCHEDULES = {
   // domains; each row is only re-checked once ~23 h old, so the tick bounds how
   // late a daily re-check runs. :39 is free in every hour.
   'portal-domain-recheck': '39 * * * *',
+  // #11737 — hourly observation retention (agent health + software inventory
+  // observation history), report-only until each target's _RETENTION_ENFORCE.
+  // Hourly because both tables take rows continuously (every heartbeat, every
+  // 15-minute inventory); :41 is free in every hour and outside the ≡0 (mod 5)
+  // ticks.
+  'observation-retention': '41 * * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;
