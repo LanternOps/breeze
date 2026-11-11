@@ -304,3 +304,79 @@ describe('markdown image and link rendering', () => {
     expect(screen.getByRole('link', { name: 'click me' })).toHaveAttribute('href', '#');
   });
 });
+
+describe('tool-call indicator status (#11727)', () => {
+  function toolUse(id: string, toolName = 'list_processes') {
+    return { id: `tool-${id}`, role: 'tool_use', content: '', toolName, toolUseId: id, createdAt: new Date() };
+  }
+  function toolResult(id: string, isError = false) {
+    return { id: `result-${id}`, role: 'tool_result', content: '{}', toolUseId: id, toolOutput: {}, isError, createdAt: new Date() };
+  }
+  function user(id: string) {
+    return { id, role: 'user', content: 'hi', createdAt: new Date() };
+  }
+  function indicators() {
+    return screen.getAllByTestId('tool-call-indicator');
+  }
+  function spinners(container: HTMLElement) {
+    return container.querySelectorAll('.helper-spinner');
+  }
+
+  it('spins while the tool is still running in the current streaming turn', () => {
+    useChatStore.setState(baseChatState({ isStreaming: true, messages: [user('u1'), toolUse('t1')] }));
+    const { container } = renderChatView();
+    expect(indicators()[0]).toHaveAttribute('data-state', 'running');
+    expect(spinners(container)).toHaveLength(1);
+    expect(screen.getByText('Using list processes...')).toBeInTheDocument();
+  });
+
+  it('stops spinning once the matching tool_result arrives, even mid-turn', () => {
+    useChatStore.setState(
+      baseChatState({
+        isStreaming: true,
+        messages: [user('u1'), toolUse('t1'), toolResult('t1'), toolUse('t2', 'get_disk_usage')],
+      }),
+    );
+    const { container } = renderChatView();
+    const [first, second] = indicators();
+    expect(first).toHaveAttribute('data-state', 'done');
+    expect(second).toHaveAttribute('data-state', 'running');
+    expect(spinners(container)).toHaveLength(1);
+    expect(screen.getByText('Used list processes')).toBeInTheDocument();
+  });
+
+  it('marks a tool whose result is an error as failed, not running', () => {
+    useChatStore.setState(
+      baseChatState({ isStreaming: true, messages: [user('u1'), toolUse('t1'), toolResult('t1', true)] }),
+    );
+    const { container } = renderChatView();
+    expect(indicators()[0]).toHaveAttribute('data-state', 'failed');
+    expect(spinners(container)).toHaveLength(0);
+  });
+
+  it('no indicator spins once the turn has finished, even without matched results (reloaded session)', () => {
+    // Persisted rows carry no toolUseId, so nothing can be matched by id.
+    const reloaded = [
+      user('u1'),
+      { id: 'm1', role: 'tool_use', content: '', toolName: 'list_processes', createdAt: new Date() },
+      { id: 'm2', role: 'tool_result', content: '{}', toolOutput: {}, createdAt: new Date() },
+      { id: 'm3', role: 'tool_use', content: '', toolName: 'get_disk_usage', createdAt: new Date() },
+      { id: 'm4', role: 'tool_result', content: '{}', toolOutput: {}, createdAt: new Date() },
+      { id: 'm5', role: 'assistant', content: 'All good.', createdAt: new Date() },
+    ];
+    useChatStore.setState(baseChatState({ isStreaming: false, messages: reloaded }));
+    const { container } = renderChatView();
+    expect(indicators()).toHaveLength(2);
+    for (const el of indicators()) expect(el).toHaveAttribute('data-state', 'done');
+    expect(spinners(container)).toHaveLength(0);
+  });
+
+  it('an unmatched tool from an earlier turn does not spin while a new turn streams', () => {
+    useChatStore.setState(
+      baseChatState({ isStreaming: true, messages: [user('u1'), toolUse('t1'), user('u2')] }),
+    );
+    const { container } = renderChatView();
+    expect(indicators()[0]).toHaveAttribute('data-state', 'done');
+    expect(spinners(container)).toHaveLength(0);
+  });
+});
