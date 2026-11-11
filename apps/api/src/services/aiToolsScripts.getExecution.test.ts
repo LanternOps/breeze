@@ -218,3 +218,13 @@ describe('get_script_execution', () => {
     expect(result.execution.deviceHostname).toBeNull();
   });
 });
+
+describe('get_script_execution reports output removed by retention (#4342 W2)', () => {
+  it('projects outputPurgedAt, so a scrubbed run never reads as "no output"', async () => {
+    mockExecutionRows([{ ...executionRow, stdout: '', stderr: '', outputPurgedAt: '2026-01-01T00:00:00.000Z' }]);
+    const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, makeAuth()));
+    const projection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(projection.outputPurgedAt).toBe(scriptExecutions.outputPurgedAt);
+    expect(result.execution.outputPurgedAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+});

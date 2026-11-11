@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { ReadinessEvaluator } from '../services/readiness';
+import type { ReadinessEvaluator, ReadinessFailureReason } from '../services/readiness';
 import {
   summarizeConsumerReadiness,
   type PublicConsumerReadinessSummary,
@@ -8,17 +8,23 @@ import {
 export type PublicReadinessResponse =
   | {
       ready: boolean;
+      /** Present only on a 503: the single most fundamental cause. */
+      reason?: ReadinessFailureReason;
       db: boolean;
+      dbReadOnly: boolean;
       redis: boolean;
       workers: boolean;
+      binarySyncPending: boolean;
       checkedAt: string;
       consumerSummary: PublicConsumerReadinessSummary;
     }
   | {
       ready: false;
       db: null;
+      dbReadOnly: null;
       redis: null;
       workers: null;
+      binarySyncPending: null;
       checkedAt: string;
       consumerSummary: null;
       error: 'readiness evaluation failed';
@@ -58,8 +64,10 @@ export function createReadinessHandler({ evaluator, onEvaluationError }: Readine
       const response: PublicReadinessResponse = {
           ready: false,
           db: null,
+          dbReadOnly: null,
           redis: null,
           workers: null,
+          binarySyncPending: null,
           checkedAt: new Date().toISOString(),
           consumerSummary: null,
           error: 'readiness evaluation failed'
@@ -69,9 +77,12 @@ export function createReadinessHandler({ evaluator, onEvaluationError }: Readine
 
     const response: PublicReadinessResponse = {
       ready: snapshot.ready,
+      ...(!snapshot.ready && snapshot.reason ? { reason: snapshot.reason } : {}),
       db: snapshot.db,
+      dbReadOnly: snapshot.dbReadOnly,
       redis: snapshot.redis,
       workers: snapshot.workers,
+      binarySyncPending: snapshot.binarySyncPending,
       checkedAt: snapshot.checkedAt,
       consumerSummary: summarizeConsumerReadiness(snapshot.consumers),
     };

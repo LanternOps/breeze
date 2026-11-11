@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(boş)",
       "noOutput": "Çıkış yok",
+      "purged": "Çıktı saklama süresi sonrasında kaldırıldı ({{date}})",
       "title": "Çıkış",
       "stdout": "Standart Çıkış (stdout)",
       "stderr": "Standart Hata (stderr)"

@@ -52,6 +52,11 @@ export type RecallQuery = {
   subjectKeyPrefix?: string;
   blockTypes?: MemoryBlockType[];
   orgId?: string | null;
+  /**
+   * Only blocks written in this chat thread (#11614: the turn-end capture's
+   * "already saved" list). Server-side only: the `recall` tool never sets it.
+   */
+  sourceSessionId?: string;
   limit?: number;
 };
 export type RememberInput = Omit<
@@ -177,6 +182,7 @@ export async function recallForGrant(ceiling: GrantCeiling, q: RecallQuery): Pro
   ];
   if (q.blockTypes !== undefined) conditions.push(inArray(aiMemoryBlocks.blockType, q.blockTypes));
   if (q.subjectKeyPrefix) conditions.push(like(aiMemoryBlocks.subjectKey, `${escapeLikePrefix(q.subjectKeyPrefix)}%`));
+  if (q.sourceSessionId !== undefined) conditions.push(eq(aiMemoryBlocks.sourceSessionId, q.sourceSessionId));
 
   const rows = await inBrokerContext(() => db
     .select()

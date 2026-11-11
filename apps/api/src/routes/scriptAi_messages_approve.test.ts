@@ -125,7 +125,8 @@ import {
   getScriptBuilderSession,
 } from '../services/scriptBuilderService';
 import { runPreFlightChecks, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
-import { reserveAiBudget } from '../services/aiBudgetReservations';
+import { releaseUnusedAiBudgetReservation, reserveAiBudget } from '../services/aiBudgetReservations';
+import { ToolProfileUnderpoweredError } from '../services/aiModels/sessionToolExposure';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
@@ -464,6 +465,35 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(streamingSessionManager.tryTransitionToProcessing).toHaveBeenCalledWith(
         expect.anything(), expect.any(String), expect.objectContaining({ turnBinding: turnBindingFrom(model) }),
       );
+    });
+
+    it('a tool profile that drops a builder floor tool is a 409 tool_profile_underpowered and releases the reservation (#11394)', async () => {
+      const model = makeResolvedModel('anthropic_byok', { surface: 'script_builder' });
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: true,
+        session: {
+          id: SESSION_ID, type: 'script_builder', orgId: ORG_ID, sdkSessionId: null,
+          model: 'claude-sonnet-5-5', maxTurns: 50, turnCount: 0, systemPrompt: 'System prompt',
+        },
+        sanitizedContent: 'Hello', systemPrompt: 'System prompt', maxBudgetUsd: 1, model,
+      } as any);
+      vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValue(
+        new ToolProfileUnderpoweredError('script_builder', ['execute_script_on_device']),
+      );
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: "This model's tool profile does not include what the script builder needs. Assign a larger model to this surface, or widen the profile.",
+        code: 'tool_profile_underpowered',
+      });
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalled();
+      expect(streamingSessionManager.tryTransitionToProcessing).not.toHaveBeenCalled();
     });
 
     it('an ineligible stored model is a recoverable 409 with its code and takes no reservation', async () => {

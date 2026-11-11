@@ -331,6 +331,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('monitorEpisodeRetention'),
   // #8164 W02 — one Worker, unconditional, attached under its registry name.
   consumers('edrDetectionRetentionWorker'),
+  // #4342 W3. Plain Redis-required consumer, no feature flag.
+  consumers('alertRetention'),
   // #4248 W03 — one Worker, unconditional, attached under its registry name.
   consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),
@@ -379,6 +381,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('flowRunner'),
   consumers('flowRunReconciler'),
   consumers('flowRunRetention'),
+  // #4342 W2. Plain Redis-required consumer, no feature flag.
+  consumers('scriptExecutionRetention'),
   // Task A9 — the schedule trigger tick (FLOWS_ENABLED gates the tick body).
   consumers('flowScheduleTick'),
   // Partner sending domains W03. initializeSendingDomainsWorker returns before
@@ -393,6 +397,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // (the kill switch gates the public route, not the consumer), attached under
   // its registry name.
   consumers('portalSelfRegistrationWorker'),
+  // #4342 W1. Plain Redis-required consumers, no feature flag.
+  consumers('deviceCommandRetention'),
+  consumers('filesystemSnapshotRetention'),
+  consumers('networkMonitorResultRetention'),
+  consumers('deviceSessionRetention'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {

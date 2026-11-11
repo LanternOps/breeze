@@ -35,12 +35,6 @@ function mergePolled(prev: Wisp | null, next: Wisp): Wisp {
   return next;
 }
 
-/** The thread DTO's last stamped session; `wispStateFromThread` does not carry it. */
-function lastSessionIdFrom(body: unknown): string | null {
-  const value = (body as { data?: { thread?: { lastSessionId?: unknown } } } | null)?.data?.thread?.lastSessionId;
-  return typeof value === 'string' ? value : null;
-}
-
 /** No links on this page: the column gets `links={null}` (no "Link an item"), the rail hides the section. */
 const ignoreLinks = () => {};
 
@@ -99,7 +93,7 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
       if (!next) throw new Error('wisp thread read: malformed payload');
       const prev = viewRef.current.kind === 'ready' ? viewRef.current.wisp : null;
       failedPolls.current = 0;
-      setView({ kind: 'ready', wisp: mergePolled(prev, next), lastSessionId: lastSessionIdFrom(body), current, stale: false });
+      setView({ kind: 'ready', wisp: mergePolled(prev, next), lastSessionId: next.lastSessionId ?? null, current, stale: false });
     } catch (err) {
       console.error('[WispThreadPage] loading the thread failed', err);
       if (token !== loadToken.current) return;

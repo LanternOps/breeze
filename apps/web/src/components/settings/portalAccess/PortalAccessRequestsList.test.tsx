@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -23,7 +23,7 @@ function req(id: string, over: Partial<PortalAccessRequestListItem> = {}): Porta
     id, email: `${id}@acme.test`, name: `Name ${id}`, source: 'self', status: 'pending',
     requestedAt: '2026-11-01T00:00:00.000Z', lastRequestedAt: '2026-11-02T00:00:00.000Z',
     expiresAt: '2026-12-01T00:00:00.000Z', decidedAt: null, decidedBy: null, portalUserId: null,
-    accountExists: false, ...over,
+    accountExists: false, domainVerified: true, ...over,
   };
 }
 
@@ -212,6 +212,56 @@ describe('PortalAccessRequestsList', () => {
     expect(await screen.findByTestId('portal-access-requests-refresh-error')).toHaveTextContent(
       "Couldn't refresh the access requests, so this list may be out of date.");
     expect(screen.getByTestId('portal-access-request-row-r2')).toBeInTheDocument();
+  });
+
+  describe('W6: a self request whose domain is no longer verified', () => {
+    it('a self request with domainVerified false shows the badge and a disabled Approve', async () => {
+      mockApi([[req('r1', { domainVerified: false }), req('r2')]]);
+      render(<PortalAccessRequestsList orgId={ORG} />);
+      const approve = await screen.findByTestId('portal-access-request-approve-r1');
+      expect(approve).toBeDisabled();
+      expect(approve).toHaveAttribute('title', 'Approve is unavailable: invite this person directly if they should have access.');
+      const row = screen.getByTestId('portal-access-request-row-r1');
+      expect(within(row).getByTestId('access-request-domain-unverified')).toHaveTextContent('Domain no longer verified');
+      // Deny stays available, and other rows are unaffected.
+      expect(screen.getByTestId('portal-access-request-deny-r1')).not.toBeDisabled();
+      expect(screen.getByTestId('portal-access-request-approve-r2')).not.toBeDisabled();
+      expect(within(screen.getByTestId('portal-access-request-row-r2')).queryByTestId('access-request-domain-unverified')).toBeNull();
+    });
+
+    it('a non-self row (domainVerified null) never shows the badge', async () => {
+      mockApi([[req('r1', { source: 'entra', domainVerified: null })]]);
+      render(<PortalAccessRequestsList orgId={ORG} />);
+      expect(await screen.findByTestId('portal-access-request-approve-r1')).not.toBeDisabled();
+      expect(screen.queryByTestId('access-request-domain-unverified')).toBeNull();
+    });
+
+    it('an approve that races a domain loss (409) shows the reason and refreshes the row', async () => {
+      const onChanged = vi.fn();
+      mockApi([[req('r1')], [req('r1', { domainVerified: false })]], () => res({
+        error: 'server-side wording that the UI must not show verbatim',
+        code: 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED',
+      }, 409));
+      render(<PortalAccessRequestsList orgId={ORG} onChanged={onChanged} />);
+      fireEvent.click(await screen.findByTestId('portal-access-request-approve-r1'));
+      await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error',
+        message: "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
+      })));
+      expect(await screen.findByTestId('access-request-domain-unverified')).toBeInTheDocument();
+      expect(screen.getByTestId('portal-access-request-approve-r1')).toBeDisabled();
+      expect(onChanged).not.toHaveBeenCalled();
+    });
+
+    it('bulk results label domain_not_verified', async () => {
+      mockApi([[req('r1')], [req('r1', { domainVerified: false })]], () => res({ data: [
+        { requestId: 'r1', result: 'domain_not_verified' },
+      ] }));
+      render(<PortalAccessRequestsList orgId={ORG} />);
+      fireEvent.click(await screen.findByLabelText('Select all requests'));
+      fireEvent.click(screen.getByTestId('portal-access-requests-bulk-approve'));
+      expect(await screen.findByTestId('portal-access-request-error-r1')).toHaveTextContent('Email domain no longer verified');
+    });
   });
 
   it('says when only the first page of requests is shown', async () => {

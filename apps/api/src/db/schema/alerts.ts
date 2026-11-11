@@ -206,11 +206,16 @@ export const alerts = pgTable('alerts', {
   openRuleDeviceSubjectUidx: uniqueIndex('alerts_open_rule_device_subject_uidx')
     .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
     .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`),
-  // #10538 W1 (2027-01-16-210000, built CONCURRENTLY): newest closed alert per
+  // #10538 W1 (2027-01-19-110300, built CONCURRENTLY): newest closed alert per
   // rule/device/subject — the sweep reads its frozen evidence cursor.
   ruleDeviceSubjectClosedIdx: index('alerts_rule_device_subject_closed_idx')
     .on(table.ruleId, table.deviceId, sql`(COALESCE(${table.subjectKey}, ''))`, sql`(COALESCE(${table.resolvedAt}, ${table.dismissedAt})) DESC`)
     .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('resolved', 'dismissed')`),
+  // #4342 W3 (2027-01-23-102100, built CONCURRENTLY): closed alerts by close
+  // time, for the closed-alert retention scan (jobs/alertRetention.ts).
+  closedAgeIdx: index('alerts_closed_age_idx')
+    .on(sql`(COALESCE(${table.resolvedAt}, ${table.dismissedAt}))`)
+    .where(sql`${table.status} IN ('resolved', 'dismissed')`),
   acknowledgedByPrincipalIdx: index('idx_alerts_acknowledged_by_principal')
     .on(table.acknowledgedByPrincipalId)
     .where(sql`acknowledged_by_principal_id IS NOT NULL`),

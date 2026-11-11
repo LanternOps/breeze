@@ -33,6 +33,10 @@ const RESULT_LABEL_KEYS: Record<string, string> = {
   PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS: 'portalAccessRequests.results.accountExists',
   PORTAL_ACCESS_REQUEST_IDENTITY_LINKED: 'portalAccessRequests.results.identityLinked',
   PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN: 'portalAccessRequests.results.entraTenantNotProven',
+  // W6 D11: a single approve's 409 gets the full reason as its toast; the bulk
+  // route reports the same refusal per id as `domain_not_verified`.
+  PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED: 'portalAccessRequests.errors.domainNotVerified',
+  domain_not_verified: 'portalAccessRequests.results.domainNotVerified',
 };
 const RESULT_FAILED_KEY = 'portalAccessRequests.results.failed';
 
@@ -255,58 +259,77 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
             </tr>
           </thead>
           <tbody>
-            {requests.map((r) => (
-              <tr key={r.id} data-testid={`portal-access-request-row-${r.id}`} className="border-b last:border-0 align-top">
-                <td className="py-2">
-                  <input
-                    type="checkbox"
-                    aria-label={t('portalAccessRequests.selectOne', { email: r.email })}
-                    checked={selected.has(r.id)}
-                    onChange={() => toggle(r.id)}
-                  />
-                </td>
-                <td className="py-2">
-                  <div>{r.email}</div>
-                  {r.name && <div className="text-xs text-muted-foreground">{r.name}</div>}
-                  {r.accountExists && (
-                    <div className="text-xs text-amber-600">{t('portalAccessRequests.accountExists')}</div>
-                  )}
-                  {rowErrors[r.id] && (
-                    <span
-                      role="status"
-                      data-testid={`portal-access-request-error-${r.id}`}
-                      className="mt-1 inline-flex rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
-                    >
-                      {t(/* i18n-dynamic */ rowErrors[r.id])}
-                    </span>
-                  )}
-                </td>
-                <td className="py-2">{t(/* i18n-dynamic */ SOURCE_LABEL_KEYS[r.source])}</td>
-                <td className="py-2">{new Date(r.lastRequestedAt).toLocaleDateString()}</td>
-                <td className="py-2">
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      data-testid={`portal-access-request-approve-${r.id}`}
-                      disabled={busy || r.accountExists}
-                      onClick={() => void decideOne(r, 'approve')}
-                      className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50 disabled:opacity-50"
-                    >
-                      {t('portalAccessRequests.actions.approve')}
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`portal-access-request-deny-${r.id}`}
-                      disabled={busy}
-                      onClick={() => setDenyTarget({ kind: 'one', request: r })}
-                      className="rounded-md border px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-500/10 disabled:opacity-50"
-                    >
-                      {t('portalAccessRequests.actions.deny')}
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {requests.map((r) => {
+              // W6 D11: approve would be refused, so it is off with the reason shown.
+              const domainUnverified = r.source === 'self' && r.domainVerified === false;
+              return (
+                <tr key={r.id} data-testid={`portal-access-request-row-${r.id}`} className="border-b last:border-0 align-top">
+                  <td className="py-2">
+                    <input
+                      type="checkbox"
+                      aria-label={t('portalAccessRequests.selectOne', { email: r.email })}
+                      checked={selected.has(r.id)}
+                      onChange={() => toggle(r.id)}
+                    />
+                  </td>
+                  <td className="py-2">
+                    <div>{r.email}</div>
+                    {r.name && <div className="text-xs text-muted-foreground">{r.name}</div>}
+                    {r.accountExists && (
+                      <div className="text-xs text-amber-600">{t('portalAccessRequests.accountExists')}</div>
+                    )}
+                    {domainUnverified && (
+                      <div className="mt-1">
+                        <span
+                          data-testid="access-request-domain-unverified"
+                          className="inline-flex rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+                        >
+                          {t('portalAccessRequests.domainUnverified')}
+                        </span>
+                        <div id={`portal-access-request-domain-reason-${r.id}`} className="mt-1 text-xs text-muted-foreground">
+                          {t('portalAccessRequests.domainUnverifiedReason')}
+                        </div>
+                      </div>
+                    )}
+                    {rowErrors[r.id] && (
+                      <span
+                        role="status"
+                        data-testid={`portal-access-request-error-${r.id}`}
+                        className="mt-1 inline-flex rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
+                      >
+                        {t(/* i18n-dynamic */ rowErrors[r.id])}
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-2">{t(/* i18n-dynamic */ SOURCE_LABEL_KEYS[r.source])}</td>
+                  <td className="py-2">{new Date(r.lastRequestedAt).toLocaleDateString()}</td>
+                  <td className="py-2">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        data-testid={`portal-access-request-approve-${r.id}`}
+                        disabled={busy || r.accountExists || domainUnverified}
+                        title={domainUnverified ? t('portalAccessRequests.domainUnverifiedReason') : undefined}
+                        aria-describedby={domainUnverified ? `portal-access-request-domain-reason-${r.id}` : undefined}
+                        onClick={() => void decideOne(r, 'approve')}
+                        className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50 disabled:opacity-50"
+                      >
+                        {t('portalAccessRequests.actions.approve')}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`portal-access-request-deny-${r.id}`}
+                        disabled={busy}
+                        onClick={() => setDenyTarget({ kind: 'one', request: r })}
+                        className="rounded-md border px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-500/10 disabled:opacity-50"
+                      >
+                        {t('portalAccessRequests.actions.deny')}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
