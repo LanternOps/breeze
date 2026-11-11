@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { fetchMock, toastMock } = vi.hoisted(() => ({ fetchMock: vi.fn(), toastMock: vi.fn() }));
+const { fetchMock, toastMock, capability } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+  toastMock: vi.fn(),
+  capability: { canReattach: true },
+}));
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: fetchMock }));
 vi.mock('../shared/Toast', () => ({ showToast: toastMock }));
@@ -11,6 +15,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../../services/deviceActions', () => ({
   fetchRemovalConfig: vi.fn(async () => ({ uninstallDrainWindowHours: 72 })),
 }));
+vi.mock('../../lib/reattachCapability', () => ({ useCanReattachDevice: () => capability.canReattach }));
 vi.mock('../../lib/mfaStepUp', () => ({
   mintStepUpGrant: vi.fn(),
   StepUpMintError: class StepUpMintError extends Error {},
@@ -60,7 +65,12 @@ function renderBanner(sourceOrgId = 'org-a') {
   );
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  capability.canReattach = true;
+});
+
+const candidateReads = () => fetchMock.mock.calls.filter(([url]) => url === `/devices/${SOURCE_ID}/reinstall-candidates`).length;
 
 describe('PossibleReplacementBanner reattach (#8318)', () => {
   it('offers Reattach for a same-org candidate and requests it through the dialog', async () => {
@@ -121,17 +131,86 @@ describe('PossibleReplacementBanner reattach (#8318)', () => {
     expect(screen.queryByTestId('possible-replacement-review-pending')).toBeNull();
   });
 
-  it('a target that changed closes the dialog and re-reads the candidates', async () => {
+  it('a target that changed re-reads, and the form restarts on the new version', async () => {
     const user = userEvent.setup();
-    routeFetch({ views: [candidatesView()], reattach: json(409, { error: 'changed', code: 'target_changed' }) });
+    routeFetch({
+      views: [candidatesView(), candidatesView({ candidates: [reattachCandidate({ targetVersion: 'w'.repeat(43) })] })],
+      reattach: json(409, { error: 'changed', code: 'target_changed' }),
+    });
     renderBanner();
     await user.click(await screen.findByTestId('possible-replacement-reattach'));
     await user.click(screen.getByTestId('reattach-possession'));
     await user.type(screen.getByTestId('reattach-confirm-name'), 'LAPTOP-OLD');
     await user.click(screen.getByTestId('reattach-submit'));
-    await waitFor(() => expect(screen.queryByTestId('reattach-dialog')).toBeNull());
-    const reads = fetchMock.mock.calls.filter(([url]) => url === `/devices/${SOURCE_ID}/reinstall-candidates`);
-    expect(reads.length).toBe(2);
+    await waitFor(() => expect(candidateReads()).toBe(2));
+    // Still open, started over for the current install.
+    await waitFor(() => expect((screen.getByTestId('reattach-confirm-name') as HTMLInputElement).value).toBe(''));
     expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('a removed target recovers without a reload: the re-read brings the restore checkbox', async () => {
+    const user = userEvent.setup();
+    routeFetch({
+      views: [
+        candidatesView(),
+        candidatesView({ candidates: [reattachCandidate({ status: 'decommissioned', requiresRestore: true })] }),
+      ],
+      reattach: json(409, { error: 'removed', code: 'target_decommissioned' }),
+    });
+    renderBanner();
+    await user.click(await screen.findByTestId('possible-replacement-reattach'));
+    expect(screen.queryByTestId('reattach-restore')).toBeNull();
+    await user.click(screen.getByTestId('reattach-possession'));
+    await user.type(screen.getByTestId('reattach-confirm-name'), 'LAPTOP-OLD');
+    await user.click(screen.getByTestId('reattach-submit'));
+    await waitFor(() => expect(screen.getByTestId('reattach-restore')).toBeTruthy());
+    expect(candidateReads()).toBe(2);
+    expect((screen.getByTestId('reattach-submit') as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByTestId('reattach-restore'));
+    expect((screen.getByTestId('reattach-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('closing the dialog re-reads the candidates', async () => {
+    const user = userEvent.setup();
+    routeFetch({ views: [candidatesView()] });
+    renderBanner();
+    await user.click(await screen.findByTestId('possible-replacement-reattach'));
+    await user.click(screen.getByTestId('reattach-cancel'));
+    await waitFor(() => expect(candidateReads()).toBe(2));
+  });
+
+  it('a pending reattach onto another record is worded neutrally and still hides Reattach', async () => {
+    routeFetch({
+      views: [candidatesView({
+        openIntent: {
+          intentId: 'intent-1', state: 'requested',
+          targetDeviceId: '99999999-9999-4999-8999-999999999999', expiresAt: requestedIntent.expiresAt,
+        },
+      })],
+    });
+    renderBanner();
+    const note = await screen.findByTestId('possible-replacement-reattach-pending');
+    expect(note.textContent).toMatch(/^A reattach of this device is pending\./);
+    expect(note.textContent).not.toMatch(/old record/);
+    expect(screen.queryByTestId('possible-replacement-reattach')).toBeNull();
+  });
+
+  it('a pending reattach onto the flagged record names the old record', async () => {
+    routeFetch({
+      views: [candidatesView({
+        openIntent: { intentId: 'intent-1', state: 'requested', targetDeviceId: TARGET_ID, expiresAt: requestedIntent.expiresAt },
+      })],
+    });
+    renderBanner();
+    expect((await screen.findByTestId('possible-replacement-reattach-pending')).textContent).toMatch(/old record/);
+  });
+
+  it('offers no Reattach to a user without devices:write + devices:delete in partner scope', async () => {
+    capability.canReattach = false;
+    routeFetch({ views: [candidatesView()] });
+    renderBanner();
+    await screen.findByTestId('possible-replacement-decommission');
+    await waitFor(() => expect(candidateReads()).toBe(1));
+    expect(screen.queryByTestId('possible-replacement-reattach')).toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import RemoveDeviceDialog from './RemoveDeviceDialog';
 import ReattachDeviceDialog from './ReattachDeviceDialog';
 import { useReinstallCandidates } from './useReinstallCandidates';
 import type { ReattachCandidate, ReinstallCandidatesView } from '../../lib/deviceReattach';
+import { useCanReattachDevice } from '../../lib/reattachCapability';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -75,6 +76,8 @@ export default function PossibleReplacementBanner({
   // #8318: the reattach read runs only where the banner shows and the caller
   // named the source. A refused or failed read just leaves the action out.
   const reattach = useReinstallCandidates(oldDeviceId && sourceDeviceId ? sourceDeviceId : null);
+  // Partner scope + devices:write + devices:delete, as the route requires.
+  const canReattach = useCanReattachDevice();
   // The rows the dialog was opened with, held so the re-read after the
   // request (which brings the open intent) never swaps or unmounts it.
   const [reattachTarget, setReattachTarget] = useState<{
@@ -146,6 +149,13 @@ export default function PossibleReplacementBanner({
     : null;
   const reattachPending = reattachView?.openIntent ?? null;
   const reviewPending = reattachView !== null && reattachCandidate === null && reattachView.reviewPending;
+  // The dialog follows the re-read rows (a removed target now needs the
+  // restore, an OS change the acknowledgement, a re-enrolled target a new
+  // version) and falls back to what it opened with if the row left the list.
+  const dialogCandidate = reattachTarget
+    ? reattachView?.candidates.find((c) => c.deviceId === reattachTarget.candidate.deviceId) ?? reattachTarget.candidate
+    : null;
+  const dialogSource = reattachTarget ? reattachView?.source ?? reattachTarget.source : null;
 
   const handleDecommission = async (choice: { uninstallAgent: boolean }) => {
     setBusy(true);
@@ -219,7 +229,7 @@ export default function PossibleReplacementBanner({
               {t('possibleReplacementBanner.decommissionOldDevice')}
             </button>
           )}
-          {reattachView && reattachCandidate && !reattachPending && (
+          {canReattach && reattachView && reattachCandidate && !reattachPending && (
             <button
               type="button"
               data-testid="possible-replacement-reattach"
@@ -248,7 +258,9 @@ export default function PossibleReplacementBanner({
         </div>
         {reattachPending && (
           <p data-testid="possible-replacement-reattach-pending" className="mt-2 text-sm text-muted-foreground">
-            {t('possibleReplacementBanner.reattachPending', { expiresAt: formatDateTime(reattachPending.expiresAt) })}
+            {reattachPending.targetDeviceId === oldDeviceId
+              ? t('possibleReplacementBanner.reattachPending', { expiresAt: formatDateTime(reattachPending.expiresAt) })
+              : t('possibleReplacementBanner.reattachPendingOther', { expiresAt: formatDateTime(reattachPending.expiresAt) })}
           </p>
         )}
         {reviewPending && (
@@ -257,16 +269,19 @@ export default function PossibleReplacementBanner({
           </p>
         )}
       </div>
-      {reattachTarget && (
+      {dialogSource && dialogCandidate && (
         <ReattachDeviceDialog
           open
-          source={reattachTarget.source}
-          candidate={reattachTarget.candidate}
-          onClose={() => setReattachTarget(null)}
+          source={dialogSource}
+          candidate={dialogCandidate}
+          // Closing re-reads too: whatever happened in the dialog, the banner
+          // shows the current state.
+          onClose={() => { setReattachTarget(null); void reattach.reload(); }}
           onRequested={() => { void reattach.reload(); }}
-          // The record changed since it was shown (already toasted): close and
-          // re-read, so the next attempt binds the current install.
-          onTargetChanged={() => { setReattachTarget(null); void reattach.reload(); }}
+          // Any 409 (already toasted): re-read, and the dialog follows the
+          // rows. A re-enrolled target arrives with a new version, which
+          // restarts the form so the next attempt binds the current install.
+          onConflict={() => { void reattach.reload(); }}
         />
       )}
       {confirmOpen && (
