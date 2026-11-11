@@ -212,6 +212,33 @@ describe('AuditLogViewer', () => {
       expect(script.className).not.toContain('slate');
     });
 
+    it('labels the resource type and the UniFi action with the shared catalogs (#11605)', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('unifi.controller.register', { resourceType: 'unifi_collector' })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      const badge = await screen.findByTestId('audit-action-badge');
+      expect(badge.textContent).toBe('Registered UniFi controller');
+      expect(screen.getByText('UniFi controller')).toBeTruthy();
+      expect(screen.queryByText('unifi_collector')).toBeNull();
+    });
+
+    it('humanizes an unknown resource type instead of printing the raw token', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('thing.do', { resourceType: 'brand_new_type' })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      await screen.findByTestId('audit-action-badge');
+      expect(screen.getByText('Brand new type')).toBeTruthy();
+      expect(screen.queryByText('brand_new_type')).toBeNull();
+    });
+
     it('does not claim "N fields updated" when there is no before-state', async () => {
       fetchMock.mockResolvedValue(
         jsonResponse({
