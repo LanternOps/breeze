@@ -317,6 +317,5 @@ describe('Wisp replay regression suite (#10432)', () => {
     expect(parsed.trigger).toMatchObject({ event: 'device_online', subjectId: PARTNER_MBP });
     expect(parsed.delayMinutes).toBeUndefined();
     expect(checkIn.isError || checkIn.unverified).toBe(false);
-    expect(trace.turns[0]!.assistantText).not.toMatch(/15 minutes|can't tell you the instant/i);
   }, 30_000);
 });

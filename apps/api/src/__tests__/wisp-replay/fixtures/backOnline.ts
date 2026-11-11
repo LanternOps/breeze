@@ -17,11 +17,16 @@ import { CHECK_IN_ID, INVENTORY, ORG_JUNIPER, replayCeiling, standingFacts } fro
 export const PARTNER_MBP = 'dddddddd-0001-4ddd-8ddd-dddddddddddd';
 const WATCH_ID = 'cccccccc-0004-4ccc-8ccc-cccccccccccc';
 
-/** The rule as Wisp is told it: in the create_watch description and in the system prompt. */
+/**
+ * The rule as Wisp is told it, in both places: the create_watch description
+ * sends one event to schedule_check_in, and a system-prompt line names both
+ * tools for it. Keyed on the concept, not the wording; concernTools.test.ts
+ * and threads.test.ts pin the exact text.
+ */
 function toldOneEventIsACheckIn(v: ModelView): boolean {
   const watch = v.toolDescriptions.create_watch ?? '';
   const rule = v.systemPrompt.split('\n').find((line) => /one event/i.test(line)) ?? '';
-  return /one event[^.]*device coming online[^.]*schedule_check_in/i.test(watch)
+  return /one event/i.test(watch) && watch.includes('schedule_check_in')
     && rule.includes('`schedule_check_in`') && rule.includes('`create_watch`');
 }
 
