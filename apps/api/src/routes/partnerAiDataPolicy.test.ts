@@ -360,6 +360,12 @@ describe('GET /transcript-retention-preview', () => {
     expect(countCalls).toHaveLength(0);
   });
 
+  it('403s a partner caller without ai_agents:read (the preview counts AI sessions)', async () => {
+    currentPerms = makePerms([]);
+    expect((await previewReq('?days=90')).status).toBe(403);
+    expect(countCalls).toHaveLength(0);
+  });
+
   it('400s without a partner context', async () => {
     currentAuth = partnerAuth({ scope: 'system', partnerId: null });
     expect((await previewReq('?days=90')).status).toBe(400);

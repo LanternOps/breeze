@@ -92,6 +92,9 @@ partnerAiDataPolicyRoutes.get('/', async (c) => {
  */
 partnerAiDataPolicyRoutes.get(
   '/transcript-retention-preview',
+  // Unlike the policy GET (open to the partner scope), the preview counts AI
+  // sessions, so it needs the same read permission as the org preview.
+  requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PERMISSIONS.AI_AGENTS_READ.action),
   zValidator('query', z.object({ days: transcriptPreviewDaysSchema })),
   async (c) => {
     const auth = c.get('auth');
