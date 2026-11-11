@@ -4,6 +4,8 @@ import {
   standingInstructionClauseHash,
   standingInstructionSubjectKey,
   isEnforceableDeny,
+  isStandingInstructionLapsed,
+  isMemoryBlockLapsed,
 } from './standingInstructions';
 
 const DEV = '22222222-2222-4222-8222-222222222222';
@@ -64,5 +66,34 @@ describe('isEnforceableDeny', () => {
     expect(isEnforceableDeny({ ...base, verb: null }, now)).toBe(false);
     expect(isEnforceableDeny({ ...base, deviceId: null }, now)).toBe(false);
     expect(isEnforceableDeny({ ...base, until: 'garbage' }, now)).toBe(false);
+  });
+});
+
+describe('isMemoryBlockLapsed (#11630)', () => {
+  const sb = (content: Record<string, unknown>, blockType = 'standing_instruction') => ({ blockType, content });
+  it('lapses only a standing instruction whose string until has passed', () => {
+    expect(isMemoryBlockLapsed(sb({ until: '2026-11-01T00:00:00Z' }), now)).toBe(true);
+    expect(isMemoryBlockLapsed(sb({ until: '2026-11-20T00:00:00Z' }), now)).toBe(false);
+    expect(isMemoryBlockLapsed(sb({ until: '2026-11-01T00:00:00Z' }, 'fact'), now)).toBe(false);
+  });
+  it('fails visible: missing, non-string or unparseable until is never lapsed', () => {
+    expect(isMemoryBlockLapsed(sb({}), now)).toBe(false);
+    expect(isMemoryBlockLapsed(sb({ until: null }), now)).toBe(false);
+    expect(isMemoryBlockLapsed(sb({ until: 12345 }), now)).toBe(false);
+    expect(isMemoryBlockLapsed(sb({ until: 'next friday' }), now)).toBe(false);
+  });
+});
+
+describe('isStandingInstructionLapsed (#11630)', () => {
+  it('null until never lapses', () => {
+    expect(isStandingInstructionLapsed({ until: null }, now)).toBe(false);
+  });
+  it('a future until is live; a past or exactly-now until is lapsed', () => {
+    expect(isStandingInstructionLapsed({ until: '2026-11-07T00:00:00Z' }, now)).toBe(true);
+    expect(isStandingInstructionLapsed({ until: '2026-11-08T12:00:00Z' }, now)).toBe(true);
+    expect(isStandingInstructionLapsed({ until: '2026-11-08T12:00:01Z' }, now)).toBe(false);
+  });
+  it('an unparseable until counts as lapsed, as the gate always did', () => {
+    expect(isStandingInstructionLapsed({ until: 'someday' }, now)).toBe(true);
   });
 });
