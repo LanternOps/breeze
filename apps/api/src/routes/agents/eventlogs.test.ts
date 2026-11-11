@@ -80,8 +80,11 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
-const recordAgentIngestSubmission = vi.hoisted(() => vi.fn());
-vi.mock('../metrics', () => ({ recordAgentIngestSubmission }));
+const { recordAgentIngestSubmission, recordEventLogNoiseDropped } = vi.hoisted(() => ({
+  recordAgentIngestSubmission: vi.fn(),
+  recordEventLogNoiseDropped: vi.fn(),
+}));
+vi.mock('../metrics', () => ({ recordAgentIngestSubmission, recordEventLogNoiseDropped }));
 
 vi.mock('./helpers', () => {
   const sanitizeTimestamp = (value: unknown): Date | null => {
@@ -641,6 +644,102 @@ describe('agent event log routes', () => {
     const body = await res.json();
     expect(body.count).toBe(0); // nothing actually inserted
     expect(mocks.enqueueLogForwarding).not.toHaveBeenCalled();
+  });
+
+  // #11735 — since v0.126.0 the Windows agent collects every Security "Audit
+  // Failure" record; a handful of operational IDs (code integrity, WFP blocks,
+  // crypto ops) make up most of device_event_logs growth. The ingest route
+  // drops them before insert so already-deployed agents stop filling the table.
+  describe('Windows Security noise filter (#11735)', () => {
+    const securityEvent = (id: number, recordId: number, overrides: Record<string, unknown> = {}) => makeEvent({
+      level: 'warning',
+      category: 'security',
+      source: 'Microsoft-Windows-Security-Auditing',
+      eventId: `${id}:${recordId}`,
+      message: `event ${id}`,
+      details: { recordId, logName: 'Security', eventId: id, auditFailure: true },
+      ...overrides,
+    });
+    const submit = (events: unknown[]) => app.request(`/agents/${AGENT_ID}/eventlogs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events }),
+    });
+
+    it('drops the noise IDs, keeps 4625/4719, and counts the drops per event id', async () => {
+      mockDeviceLookup();
+      const values = mockInsertSuccess();
+
+      const res = await submit([
+        securityEvent(5038, 1),
+        securityEvent(4625, 2),
+        securityEvent(5157, 3),
+        securityEvent(5152, 4),
+        securityEvent(4719, 5),
+        securityEvent(4957, 6),
+        securityEvent(5061, 7),
+        securityEvent(5038, 8),
+      ]);
+
+      expect(res.status).toBe(200);
+      expect(values).toHaveBeenCalledExactlyOnceWith([
+        expect.objectContaining({ eventId: '4625:2' }),
+        expect.objectContaining({ eventId: '4719:5' }),
+      ]);
+      expect(await res.json()).toMatchObject({ success: true, count: 2, filtered: 0, noiseDropped: 6 });
+      // Noise must not spend the device's hourly row budget.
+      expect(mocks.rateLimiter).toHaveBeenCalledWith(expect.anything(), `eventlog:rate:device:${DEVICE_ID}`, 1000, 3600, 2);
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledWith(5038, 2);
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledWith(5157, 1);
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledWith(5152, 1);
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledWith(4957, 1);
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledWith(5061, 1);
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledTimes(5);
+      // Only the kept events reach the org's SIEM.
+      expect(mocks.enqueueLogForwarding).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        events: [
+          expect.objectContaining({ message: 'event 4625' }),
+          expect.objectContaining({ message: 'event 4719' }),
+        ],
+      }));
+    });
+
+    it('acknowledges an all-noise batch with 200 and no insert, so the agent advances its bookmark', async () => {
+      mockDeviceLookup();
+      const values = mockInsertSuccess();
+
+      const res = await submit([securityEvent(5038, 1), securityEvent(5157, 2)]);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, count: 0, noiseDropped: 2 });
+      expect(values).not.toHaveBeenCalled();
+      expect(mocks.rateLimiter).not.toHaveBeenCalled();
+      expect(mocks.checkAndConsumeIngestQuota).not.toHaveBeenCalled();
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledWith(5038, 1);
+      expect(recordEventLogNoiseDropped).toHaveBeenCalledWith(5157, 1);
+    });
+
+    it('leaves the same numeric IDs alone outside the Windows Security log', async () => {
+      mockDeviceLookup();
+      const values = mockInsertSuccess();
+
+      const res = await submit([
+        securityEvent(5038, 1, { category: 'application', source: 'Some App', details: { logName: 'Application', eventId: 5038 } }),
+        securityEvent(5157, 2, { category: 'system', source: 'Service Control Manager', details: { logName: 'System', eventId: 5157 } }),
+        securityEvent(5152, 3, { details: { logName: 'ForwardedEvents', eventId: 5152 } }),
+        makeEvent({ category: 'security', source: 'sshd', eventId: 'sshd:5038:0123456789abcdef' }),
+      ]);
+
+      expect(res.status).toBe(200);
+      expect(values).toHaveBeenCalledExactlyOnceWith([
+        expect.objectContaining({ eventId: '5038:1' }),
+        expect.objectContaining({ eventId: '5157:2' }),
+        expect.objectContaining({ eventId: '5152:3' }),
+        expect.objectContaining({ eventId: 'sshd:5038:0123456789abcdef' }),
+      ]);
+      expect(await res.json()).toMatchObject({ success: true, count: 4, noiseDropped: 0 });
+      expect(recordEventLogNoiseDropped).not.toHaveBeenCalled();
+    });
   });
 });
 

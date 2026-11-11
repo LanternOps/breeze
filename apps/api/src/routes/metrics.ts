@@ -272,6 +272,16 @@ const agentIngestSubmissionsTotal = new Counter({
   registers: [register]
 });
 
+// #11735 — Windows Security audit records dropped at event-log ingest as known
+// noise (routes/agents/eventLogNoiseFilter.ts). `event_id` is bounded by that
+// list, so its cardinality is fixed.
+const agentEventLogNoiseDroppedTotal = new Counter({
+  name: 'breeze_agent_eventlog_noise_dropped_total',
+  help: 'Windows Security event-log records dropped at ingest as known noise, by Windows event id',
+  labelNames: ['event_id'] as const,
+  registers: [register]
+});
+
 const scriptsExecutedTotal = new Counter({
   name: 'breeze_scripts_executed_total',
   help: 'Total scripts executed',
@@ -875,6 +885,10 @@ export function recordAgentFilterSignatureReport(): void {
 
 export function recordAgentIngestSubmission(kind: AgentIngestKind, outcome: AgentIngestOutcome): void {
   agentIngestSubmissionsTotal.labels(kind, outcome).inc();
+}
+
+export function recordEventLogNoiseDropped(eventId: number, count: number): void {
+  agentEventLogNoiseDroppedTotal.labels(String(eventId)).inc(count);
 }
 
 export function updateBusinessMetrics(metrics: {
