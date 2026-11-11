@@ -301,6 +301,14 @@ export default function WispMemoryPage() {
                       >
                         {t(/* i18n-dynamic */ `wispMemory.statusValue.${block.status}`)}
                       </span>
+                      {block.expired && (
+                        <span
+                          data-testid={`wisp-memory-expired-${block.id}`}
+                          className="ml-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                        >
+                          {t('wispMemory.expired')}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 align-top text-sm text-muted-foreground">
                       {t(/* i18n-dynamic */ `wispMemory.confidenceValue.${block.confidence}`)}

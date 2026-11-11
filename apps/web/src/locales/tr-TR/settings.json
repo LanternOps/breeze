@@ -8407,6 +8407,7 @@
       "updated": "Güncellendi",
       "actions": "İşlemler"
     },
+    "expired": "Süresi doldu",
     "statusValue": {
       "unconfirmed": "Onaylanmadı",
       "confirmed": "Onaylandı",

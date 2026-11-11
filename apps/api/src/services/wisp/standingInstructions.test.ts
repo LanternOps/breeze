@@ -4,6 +4,7 @@ import {
   standingInstructionClauseHash,
   standingInstructionSubjectKey,
   isEnforceableDeny,
+  isStandingInstructionLapsed,
 } from './standingInstructions';
 
 const DEV = '22222222-2222-4222-8222-222222222222';
@@ -64,5 +65,19 @@ describe('isEnforceableDeny', () => {
     expect(isEnforceableDeny({ ...base, verb: null }, now)).toBe(false);
     expect(isEnforceableDeny({ ...base, deviceId: null }, now)).toBe(false);
     expect(isEnforceableDeny({ ...base, until: 'garbage' }, now)).toBe(false);
+  });
+});
+
+describe('isStandingInstructionLapsed (#11630)', () => {
+  it('null until never lapses', () => {
+    expect(isStandingInstructionLapsed({ until: null }, now)).toBe(false);
+  });
+  it('a future until is live; a past or exactly-now until is lapsed', () => {
+    expect(isStandingInstructionLapsed({ until: '2026-11-07T00:00:00Z' }, now)).toBe(true);
+    expect(isStandingInstructionLapsed({ until: '2026-11-08T12:00:00Z' }, now)).toBe(true);
+    expect(isStandingInstructionLapsed({ until: '2026-11-08T12:00:01Z' }, now)).toBe(false);
+  });
+  it('an unparseable until counts as lapsed, as the gate always did', () => {
+    expect(isStandingInstructionLapsed({ until: 'someday' }, now)).toBe(true);
   });
 });
