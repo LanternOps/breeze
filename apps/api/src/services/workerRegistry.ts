@@ -2110,14 +2110,13 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   // Portal registration W6 (#11383): customer-portal self-registration
-  // submits (one event-driven job each; no schedule). `socket-owner`
-  // (mechanical): it issues the link token through
-  // routes/portal/capabilityTokens.ts and resolves the custom portal host
-  // through routes/portal/branding.ts, whose shared ./helpers import reaches
-  // socket-local dispatch via routes/auth/helpers.ts → services/index.ts.
+  // submits (one event-driven job each; no schedule). `global`: its import
+  // closure (routes/portal helpers, capabilityTokens, email, redis) no longer
+  // reaches socket-local dispatch since the cross-process socket teardown
+  // (#11526), and it touches no agent socket or process-local state.
   {
     name: 'portalSelfRegistrationWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('./portalSelfRegistration/worker');
       return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
