@@ -293,7 +293,7 @@ function formatAgentCommandAction(
 }
 
 // Acronyms the prettifier must not render as ordinary words ("Ai session close").
-const PRETTIFY_ACRONYMS: Readonly<Record<string, string>> = { ai: 'AI', mcp: 'MCP' };
+const PRETTIFY_ACRONYMS: Readonly<Record<string, string>> = { ai: 'AI', mcp: 'MCP', unifi: 'UniFi' };
 
 // Generic prettifier for codes that aren't in the map.
 // Examples:
