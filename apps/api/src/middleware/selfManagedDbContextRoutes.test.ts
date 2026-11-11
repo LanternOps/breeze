@@ -18,6 +18,7 @@ describe('isSelfManagedDbContextRoute', () => {
     ['PATCH', '/api/v1/ticket-imports/sources/abc-123'],
     ['POST', '/api/v1/ticket-imports/sources/abc-123/preflight'],
     ['POST', '/api/v1/ticket-imports/sources/abc-123/runs'],
+    ['POST', '/api/v1/ticket-imports/sources/abc-123/created-contacts/remove'],
     ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute/'],
     ['post', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
     ['POST', '/api/v1/invoices/abc-123/pay-link'],
@@ -277,6 +278,7 @@ describe('isSelfManagedDbContextRoute', () => {
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
     ['GET', '/api/v1/ticket-imports/sources', 'the list keeps the ambient tx'],
+    ['GET', '/api/v1/ticket-imports/sources/abc-123/created-contacts', 'the created-contacts listing keeps the ambient tx'],
     ['PUT', '/api/v1/ticket-imports/sources/abc-123/mappings', 'mappings call no source and keep the ambient tx'],
     ['POST', '/api/v1/ticket-imports/sources/abc-123/revoke', 'revoke calls no source'],
     ['DELETE', '/api/v1/ticket-imports/sources/abc-123', 'delete calls no source'],

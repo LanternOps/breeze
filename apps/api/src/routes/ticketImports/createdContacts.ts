@@ -1,12 +1,12 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { writeContactAudit } from '../../services/contacts/audit';
 import { PERMISSIONS } from '../../services/permissions';
 import { listCreatedContacts, removeCreatedContacts } from '../../services/ticketImport/createdContacts';
-import { activeRunOf, getSource, lockSource, runActive } from '../../services/ticketImport/sourceStore';
+import { getSource } from '../../services/ticketImport/sourceStore';
 import { callerPartner, idParamSchema, importErrorResponse } from './shared';
 
 /**
@@ -16,9 +16,12 @@ import { callerPartner, idParamSchema, importErrorResponse } from './shared';
  * admin may, with MFA, and never while a run of the source is queued or
  * running (409 TICKET_IMPORT_RUN_ACTIVE).
  *
- * Both run in the ambient request transaction: they call no source. Removal
- * writes the live `contact.delete` audit row per contact, as the contact
- * delete route does, and one partner-level summary row.
+ * The listing runs in the ambient request transaction. Removal is in
+ * SELF_MANAGED_DB_CONTEXT_ROUTES: it opens one short transaction to choose
+ * the batch, one per contact and one to count (removeCreatedContacts), so no
+ * lock is held across the batch. It writes the live `contact.delete` audit
+ * row per contact removed, as the contact delete route does, and one
+ * partner-level summary row.
  */
 export const ticketImportCreatedContactRoutes = new Hono();
 
@@ -46,10 +49,11 @@ ticketImportCreatedContactRoutes.get(
     const caller = callerPartner(c);
     if ('response' in caller) return caller.response;
     const { id } = c.req.valid('param');
-    if (!(await getSource(caller.partnerId, id))) {
+    const source = await getSource(caller.partnerId, id);
+    if (!source) {
       return c.json({ error: 'Ticket import source not found', code: 'TICKET_IMPORT_SOURCE_NOT_FOUND' }, 404);
     }
-    const page = await listCreatedContacts(id, c.req.valid('query'));
+    const page = await listCreatedContacts({ sourceId: id, principalId: source.principalId }, c.req.valid('query'));
     return c.json({ data: page.contacts, next: page.next });
   },
 );
@@ -64,13 +68,15 @@ ticketImportCreatedContactRoutes.post(
     const { auth, partnerId } = caller;
     const { id } = c.req.valid('param');
     try {
-      // The source lock serializes with a run's start (startRun locks it too),
-      // so no run creates or links a contact while the set is removed.
-      await lockSource(partnerId, id);
-      const active = await activeRunOf(id);
-      if (active) throw runActive(active);
-      // A human removes customer data: the destination provenance of a technician.
-      const result = await removeCreatedContacts(id, { userId: auth.user?.id ?? null, destinationSource: 'technician' });
+      // The source lock serializes with a run's start (startRun locks it too):
+      // 409 while a run is active, and a run started mid-batch stops the call.
+      const result = await removeCreatedContacts({
+        partnerId,
+        sourceId: id,
+        // A human removes customer data: the destination provenance of a technician.
+        actor: { userId: auth.user?.id ?? null, destinationSource: 'technician' },
+        transaction: (fn) => withAuthDbAccessContext(auth, fn),
+      });
       for (const contact of result.removed) {
         writeContactAudit(c as never, {
           orgId: contact.orgId,
@@ -85,10 +91,16 @@ ticketImportCreatedContactRoutes.post(
         action: 'ticket_import.created_contacts_removed',
         resourceType: 'ticket_import_source',
         resourceId: id,
-        details: { partnerId, removed: result.removed.length, skipped: result.skipped, skippedBy: result.skippedBy, remaining: result.remaining },
+        details: {
+          partnerId, removed: result.removed.length, skipped: result.skipped, skippedBy: result.skippedBy,
+          remaining: result.remaining, stoppedBy: result.stoppedBy,
+        },
       });
       return c.json({
-        data: { removed: result.removed.length, skipped: result.skipped, skippedBy: result.skippedBy, remaining: result.remaining },
+        data: {
+          removed: result.removed.length, skipped: result.skipped, skippedBy: result.skippedBy,
+          remaining: result.remaining, stoppedBy: result.stoppedBy,
+        },
       });
     } catch (error) {
       return importErrorResponse(c, error);

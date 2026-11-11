@@ -436,6 +436,10 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'PATCH', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/preflight\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/runs\/?$/ },
+  // Removing a source's created contacts (#8313 W4b, spec §5.13): one short
+  // transaction per contact, each under its own locks, so a batch of 500
+  // holds no lock (source, org, contacts) across the whole batch.
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/created-contacts\/remove\/?$/ },
   // PSA company import (#3246), both halves.
   //
   // PREVIEW walks the PSA's own pagination — up to PSA_COMPANY_LIST_CAP/100
