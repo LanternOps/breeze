@@ -130,6 +130,7 @@ beforeAll(async () => {
     BREEZE_VERSION: VERSION,
     APP_ENCRYPTION_KEY: process.env.APP_ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex'),
   });
+  if (!('APP_VERSION' in savedEnv)) savedEnv.APP_VERSION = process.env.APP_VERSION;
   delete process.env.APP_VERSION;
 
   vi.spyOn(console, 'log').mockImplementation(() => {});

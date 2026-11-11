@@ -1090,6 +1090,19 @@ const DEFERRED_SYNC_RETRY_MS = 60_000;
 let binarySyncDeferred = false;
 let deferredRetryTimer: NodeJS.Timeout | null = null;
 let deferredRetryInFlight: Promise<void> | null = null;
+/**
+ * Set only while a retry runs syncBinaries(). The per-component catches below
+ * (user-helper, helper, watchdog, backup, the current-version safety net)
+ * swallow errors on a normal boot; during a retry a read-only failure must
+ * reach the retry so the registration stays deferred instead of reading as
+ * done. The probe and the writes can use different pooled sessions, and one
+ * opened while the database was read-only keeps that default.
+ */
+let propagateReadOnlyFailures = false;
+
+function rethrowReadOnlyDuringRetry(err: unknown): void {
+  if (propagateReadOnlyFailures && isReadOnlySqlError(err)) throw err;
+}
 
 /** True while a registration is waiting for the database to accept writes. */
 export function isBinarySyncDeferred(): boolean {
@@ -1149,14 +1162,19 @@ export async function retryDeferredBinarySync(): Promise<void> {
     try {
       if (await databaseIsReadOnly()) return;
       binarySyncDeferred = false;
-      await syncBinaries();
+      propagateReadOnlyFailures = true;
+      try {
+        await syncBinaries();
+      } finally {
+        propagateReadOnlyFailures = false;
+      }
       if (!binarySyncDeferred) {
         stopDeferredBinarySyncRetry();
         console.log("[binarySync] Deferred binary registration completed; the database accepts writes again");
       }
     } catch (err) {
-      if (isReadOnlySqlError(err) || isReadOnlySqlError((err as { cause?: unknown } | null)?.cause)) {
-        // Flipped back to read-only between the check and the writes.
+      if (isReadOnlySqlError(err)) {
+        // A write still hit a read-only session; keep waiting, quietly.
         binarySyncDeferred = true;
         return;
       }
@@ -1507,6 +1525,7 @@ export async function syncBinaries(): Promise<void> {
           );
         }
       } catch (err) {
+        rethrowReadOnlyDuringRetry(err);
         console.error(
           `[binarySync] Failed to register local user-helper binaries — interactive-session helper auto-update unavailable: ${err instanceof Error ? err.message : err}`,
         );
@@ -1561,6 +1580,7 @@ export async function syncBinaries(): Promise<void> {
           );
         }
       } catch (err) {
+        rethrowReadOnlyDuringRetry(err);
         console.error(
           `[binarySync] Failed to register local helper installers — Breeze Assist install/upgrade unavailable: ${err instanceof Error ? err.message : err}`,
         );
@@ -1631,6 +1651,7 @@ export async function syncBinaries(): Promise<void> {
           `[binarySync] Registered ${watchdogBinaries.length} watchdog binaries (version: ${version})`,
         );
       } catch (err) {
+        rethrowReadOnlyDuringRetry(err);
         console.error(
           `[binarySync] Failed to register local watchdog binaries — watchdog auto-update unavailable: ${err instanceof Error ? err.message : err}`,
         );
@@ -1701,6 +1722,7 @@ export async function syncBinaries(): Promise<void> {
           );
         }
       } catch (err) {
+        rethrowReadOnlyDuringRetry(err);
         console.error(
           `[binarySync] Failed to register local backup binaries — breeze-backup auto-update unavailable: ${err instanceof Error ? err.message : err}`,
         );
@@ -2171,6 +2193,7 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
       `[binarySync] Auto-synced ${result.synced.length} binaries for v${currentVersion}`,
     );
   } catch (err) {
+    rethrowReadOnlyDuringRetry(err);
     // ensureCurrentVersionRegistered is the safety net for the agent_versions
     // table — if it fails, agents trying to download the currently-running
     // version 404. This catch also swallows everything thrown by

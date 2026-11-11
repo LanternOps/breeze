@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isReadOnlyProbeResult } from './readOnlyDatabase';
+import { isReadOnlyProbeResult, isReadOnlySqlError } from './readOnlyDatabase';
 import { readOnlyStartupError } from './autoMigrate';
 
 describe('isReadOnlyProbeResult (#11731)', () => {
@@ -31,5 +31,19 @@ describe('readOnlyStartupError (#11731)', () => {
     expect(error.message).toContain('apply 2 pending migration(s) (a.sql, b.sql)');
     expect(error.message).toContain('default_transaction_read_only');
     expect(error.message).toMatch(/Make the database writable/);
+  });
+});
+
+describe('isReadOnlySqlError (#11731)', () => {
+  it('matches SQLSTATE 25006 directly and through a drizzle-style cause', () => {
+    const pg = Object.assign(new Error('cannot execute UPDATE in a read-only transaction'), { code: '25006' });
+    expect(isReadOnlySqlError(pg)).toBe(true);
+    expect(isReadOnlySqlError(Object.assign(new Error('Failed query: update ...'), { cause: pg }))).toBe(true);
+  });
+
+  it('does not match other errors', () => {
+    expect(isReadOnlySqlError(Object.assign(new Error('x'), { code: '40001' }))).toBe(false);
+    expect(isReadOnlySqlError(new Error('plain'))).toBe(false);
+    expect(isReadOnlySqlError(null)).toBe(false);
   });
 });

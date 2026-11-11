@@ -44,7 +44,15 @@ export function isReadOnlyProbeResult(result: unknown): boolean {
   return ro === 'on';
 }
 
-/** True for Postgres's "cannot execute <command> in a read-only transaction". */
+/**
+ * True for Postgres's "cannot execute <command> in a read-only transaction",
+ * also when wrapped (drizzle puts the driver error on `cause`).
+ */
 export function isReadOnlySqlError(error: unknown): boolean {
-  return (error as { code?: unknown } | null | undefined)?.code === '25006';
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && current && typeof current === 'object'; depth++) {
+    if ((current as { code?: unknown }).code === '25006') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
