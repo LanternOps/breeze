@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ProfilePage from './ProfilePage';
 import { fetchWithAuth } from '../../stores/auth';
 import { SSO_REAUTH_INTENT_KEY, stashSsoReauthIntent } from '@/lib/ssoReauthIntent';
-import { SSO_REAUTH_GRANT_KEY } from '@/lib/ssoReauthGrant';
+import { SSO_REAUTH_GRANT_KEY, stashSsoReauthGrant } from '@/lib/ssoReauthGrant';
 
 /**
  * #9007 — an SSO-only account (no password, no passkey, no TOTP) could not
@@ -177,6 +177,60 @@ describe('ProfilePage — approver-device SSO re-auth round-trip (#9007)', () =>
     expect(JSON.parse(String((exchange[0][1] as RequestInit).body))).toEqual({ ssoReauthGrantId: GRANT });
     expect(startRegistrationMock).not.toHaveBeenCalled();
     // Spent or dead either way: every card goes back to offering the IdP.
+    expect(await screen.findByTestId('approver-stepup-sso-start')).toBeTruthy();
+    expect(screen.getByTestId('passkey-sso-reauth')).toBeTruthy();
+    expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
+  });
+
+  // #8862 stash: a reload (or an island re-hydrating) after the return leg has
+  // no fragment. The approver_device intent must come back with the grant, or
+  // the restore would fall to the TOTP road and mint a secret nobody asked for.
+  it('restores an approver_device grant on a remount and lands on the register form again', async () => {
+    stashSsoReauthGrant(GRANT, 'approver_device', PASSWORDLESS_NO_FACTOR_USER.id);
+    mockApi();
+    render(<ProfilePage initialUser={PASSWORDLESS_NO_FACTOR_USER} />);
+
+    expect(await screen.findByTestId('approver-stepup-sso-verified')).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('approver-device-register')));
+    expect(callsTo('/auth/mfa/setup')).toHaveLength(0);
+  });
+
+  it('stashes the returned grant with its approver_device intent', async () => {
+    returnFromIdp();
+    mockApi();
+    render(<ProfilePage initialUser={PASSWORDLESS_NO_FACTOR_USER} />);
+
+    await screen.findByTestId('approver-stepup-sso-verified');
+    expect(JSON.parse(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY) ?? '{}')).toMatchObject({
+      grantId: GRANT,
+      intent: 'approver_device',
+    });
+  });
+
+  // Review Focus 2: the exchange consumed the grant, then the user dismissed
+  // Touch ID / Hello. The grant is gone server-side, so no card may keep
+  // advertising it.
+  it('drops the grant page-wide when the ceremony is cancelled after the exchange', async () => {
+    returnFromIdp();
+    startRegistrationMock.mockRejectedValueOnce(
+      Object.assign(new Error('The operation either timed out or was not allowed.'), { name: 'NotAllowedError' }),
+    );
+    mockApi((u) => {
+      if (u === '/authenticator/register-grant') return makeJsonResponse({ registerGrantId: 'rg-1' });
+      if (u === '/authenticator/devices/webauthn/options') return makeJsonResponse({ options: { challenge: 'c' } });
+      return undefined;
+    });
+    render(<ProfilePage initialUser={PASSWORDLESS_NO_FACTOR_USER} />);
+
+    const register = await screen.findByTestId('approver-device-register');
+    await waitFor(() => expect(register).not.toBeDisabled());
+    fireEvent.click(register);
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Registration was cancelled.' }),
+    );
+    expect(startRegistrationMock).toHaveBeenCalledTimes(1);
+    expect(callsTo('/authenticator/devices/webauthn/verify')).toHaveLength(0);
     expect(await screen.findByTestId('approver-stepup-sso-start')).toBeTruthy();
     expect(screen.getByTestId('passkey-sso-reauth')).toBeTruthy();
     expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();

@@ -187,13 +187,13 @@ export default function ApproverDevicesSection({
     if (status === 401) return t('approverDevicesSection.sessionExpiredReloadAndTryAgain');
     if (status === 429) return t('approverDevicesSection.tooManyAttemptsTryAgainInAFewMinutes');
     if (status === 403) {
-      // POST /authenticator/register-grant (and the step-up mint) 403 for two
-      // distinct reasons: the register/step-up grant expired mid-ceremony
-      // (>300s in the WebAuthn prompt), or the account gained a stronger
-      // factor (passkey/TOTP) in another tab since the page loaded — signaled
-      // by the exact error string "stronger_factor_required" below, where the
-      // password field shown here is stale. Point the user at reloading
-      // rather than letting them retry the same password forever.
+      // A 403 comes from two places. The mint (register-grant, or the step-up
+      // mint) answers "stronger_factor_required" when the account gained a
+      // passkey/TOTP in another tab since the page loaded, so the proof field
+      // shown here is stale: point the user at reloading rather than letting
+      // them retry the same proof forever. The options/verify routes answer
+      // 403 when the register grant expired mid-ceremony (>300s in the
+      // WebAuthn prompt).
       if (err instanceof Error && err.message === 'stronger_factor_required') {
         return t('approverDevicesSection.useYourPasskeyOrAuthenticatorCodeInstead');
       }
@@ -209,10 +209,16 @@ export default function ApproverDevicesSection({
     const trimmed = label.trim() || 'This device';
     setIsRegistering(true);
     try {
-      // register-grant consumes the SSO grant whatever happens after it (a
-      // cancelled Touch ID prompt included), so stop every card advertising it
-      // now. A grant the server refuses is equally dead.
-      if (reauth.method === 'sso') onSsoReauthGrantSpent?.();
+      // #9007: the SSO grant is single-use and ProfilePage shares it with the
+      // MFA cards. Drop it page-wide exactly when it is gone: once the
+      // exchange has minted a register grant (consumed, whatever happens in
+      // the ceremony after, a dismissed Touch ID prompt included), or when the
+      // exchange refuses it (any 400: dead, spent, foreign, or the account now
+      // has a password). Everything else (a 401 bearer, the 403 stronger-factor
+      // gate, a 503 or a network drop) fails before the server reads the
+      // grant, so it stays usable for a retry instead of costing another IdP
+      // round-trip. Dropping twice is harmless.
+      const isSso = reauth.method === 'sso';
       await runAction({
         // registerApproverDevice runs the full WebAuthn registration ceremony
         // (options → Touch ID/Hello → verify) and resolves void on success. A
@@ -225,18 +231,23 @@ export default function ApproverDevicesSection({
         // toast, per runAction's documented contract in runAction.test.ts).
         request: async () => {
           try {
-            await registerApproverDevice(trimmed, reauth);
+            if (isSso) {
+              await registerApproverDevice(trimmed, reauth, { onRegisterGrantMinted: () => onSsoReauthGrantSpent?.() });
+            } else {
+              await registerApproverDevice(trimmed, reauth);
+            }
             return OK_RESPONSE;
           } catch (err) {
+            if (isSso && (err as { status?: number })?.status === 400) onSsoReauthGrantSpent?.();
             const status = (err as { status?: number })?.status ?? 500;
             return { ok: false, status, json: async () => ({ error: mapRegisterError(err) }) } as Response;
           }
         },
         errorFallback: t('approverDevicesSection.failedToRegisterThisDevice'),
         successMessage: t('approverDevicesSection.thisDeviceCanNowApproveRequests'),
-        // A 401 here is a dead bearer that the mint deliberately did not
-        // refresh-and-replay (skipUnauthorizedRetry), so no auth redirect is
-        // coming: toast "session expired, reload" instead of swallowing it.
+        // A 401 that reaches here is a bearer fetchWithAuth could not refresh.
+        // Toast "session expired, reload" rather than relying on the redirect
+        // alone, so the failure is never silent.
         treatUnauthorizedAsError: true,
       });
       setLabel('');
@@ -244,8 +255,8 @@ export default function ApproverDevicesSection({
       await load();
     } catch (err) {
       if (err instanceof ActionError) {
-        // 403 = grant expired mid-ceremony (>300s in the WebAuthn prompt):
-        // keep the label, clear the proof, and ask the user to verify again.
+        // 403 = stale proof tier or a grant that expired mid-ceremony (see
+        // mapRegisterError): keep the label, clear the proof.
         if (err.status === 403) setReauthValue('');
         return; // already toasted by runAction
       }

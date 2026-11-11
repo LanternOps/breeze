@@ -112,14 +112,16 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
     const body = reauth.method === 'password'
       ? { currentPassword: reauth.password }
       : { ssoReauthGrantId: reauth.ssoReauthGrantId };
+    // #9007: no `skipUnauthorizedRetry` any more (the #4470 move
+    // `apiEnableTotpMfa` made). It dates from #2707, when this route answered
+    // a wrong password with 401 and a replay would just resubmit it. A 401 is
+    // now only the auth middleware refusing the bearer, before the body is
+    // read, so refreshing and replaying is safe on both roads, and it keeps a
+    // still-valid single-use SSO grant from costing a fresh IdP round-trip.
     const data = await jsonOrThrow(
       await fetchWithAuth('/authenticator/register-grant', {
         method: 'POST',
         body: JSON.stringify(body),
-        // No refresh-and-replay on a 401: the section maps a 401 to "session
-        // expired, reload", and never re-sends a proof on its own. (Kept from
-        // #2707, when this route still answered a wrong password with 401.)
-        skipUnauthorizedRetry: true,
       }),
       'Verification failed.'
     );
@@ -135,8 +137,9 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
   try {
     return await mintStepUpGrant({ operation: 'register_approver_device', reauth });
   } catch (err) {
-    // The store's callers branch on RegisterStepError (and read `.status` to
-    // map 401/403/429), so keep that contract across the delegation.
+    // The store's callers branch on RegisterStepError (and read `.status` /
+    // `.code` to map 400/401/403/429), so keep that contract across the
+    // delegation.
     throw new RegisterStepError(
       err instanceof Error ? err.message : 'Verification failed.',
       err instanceof StepUpMintError ? err.status : undefined,
@@ -145,13 +148,28 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
   }
 }
 
+export interface RegisterApproverDeviceHooks {
+  /**
+   * #9007: the re-auth proof has been spent and a register grant minted. For
+   * the SSO road this is the moment the single-use SSO grant is consumed
+   * server-side, so the caller stops advertising it. It fires before the
+   * WebAuthn ceremony, so a dismissed Touch ID / Hello prompt still counts.
+   */
+  onRegisterGrantMinted?: () => void;
+}
+
 /**
  * Register the current browser/platform authenticator as an approver device.
  * re-auth mint → options (validates the grant) → Windows Hello / Touch ID
  * registration ceremony → verify (consumes the grant).
  */
-export async function registerApproverDevice(label: string, reauth: RegisterReauth): Promise<void> {
+export async function registerApproverDevice(
+  label: string,
+  reauth: RegisterReauth,
+  hooks: RegisterApproverDeviceHooks = {},
+): Promise<void> {
   const registerGrantId = await mintRegisterGrant(reauth);
+  hooks.onRegisterGrantMinted?.();
 
   const optionsData = await jsonOrThrow(
     await fetchWithAuth('/authenticator/devices/webauthn/options', {

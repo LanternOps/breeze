@@ -23,6 +23,14 @@ describe('ssoReauthGrant (#8862)', () => {
     expect(readSsoReauthGrant(USER, T0 + 1_000)).toEqual({ grantId: GRANT, intent: 'passkey' });
   });
 
+  // #9007: the approver section's intent must survive the stash's own
+  // validation, or a remount would route it to the TOTP road.
+  it('carries the approver_device intent across a remount', () => {
+    stashSsoReauthGrant(GRANT, 'approver_device', USER, T0);
+
+    expect(readSsoReauthGrant(USER, T0 + 1_000)).toEqual({ grantId: GRANT, intent: 'approver_device' });
+  });
+
   // A remount is not a spend: register/options validates without consuming,
   // and the page may mount again before the user presses anything.
   it('does not consume on read', () => {

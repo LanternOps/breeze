@@ -403,10 +403,13 @@ describe('ApproverDevicesSection', () => {
       expect(start.compareDocumentPosition(labelInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it('with a grant in hand: registers with the grant and reports it spent BEFORE the ceremony settles', async () => {
+    it('with a grant in hand: registers with the grant and drops it once the exchange mints, before the ceremony settles', async () => {
       let resolveRegister: () => void = () => {};
       registerApproverDeviceMock.mockImplementationOnce(
-        () => new Promise<void>((resolve) => { resolveRegister = resolve; }),
+        (_label: string, _reauth: unknown, hooks?: { onRegisterGrantMinted?: () => void }) => {
+          hooks?.onRegisterGrantMinted?.();
+          return new Promise<void>((resolve) => { resolveRegister = resolve; });
+        },
       );
       const onSsoReauthGrantSpent = vi.fn();
       render(
@@ -429,15 +432,75 @@ describe('ApproverDevicesSection', () => {
       fireEvent.click(register);
 
       await waitFor(() =>
-        expect(registerApproverDeviceMock).toHaveBeenCalledWith('Desk', { method: 'sso', ssoReauthGrantId: 'sso-g' }),
+        expect(registerApproverDeviceMock).toHaveBeenCalledWith(
+          'Desk',
+          { method: 'sso', ssoReauthGrantId: 'sso-g' },
+          expect.objectContaining({ onRegisterGrantMinted: expect.any(Function) }),
+        ),
       );
-      // Still pending: the grant is already reported spent.
+      // Still pending (Touch ID up): the consumed grant is already dropped.
       expect(onSsoReauthGrantSpent).toHaveBeenCalledTimes(1);
-      expect(onSsoReauthGrantSpent.mock.invocationCallOrder[0]).toBeLessThan(
-        registerApproverDeviceMock.mock.invocationCallOrder[0],
-      );
       resolveRegister();
       await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
+    });
+
+    // The server reads (and consumes) the grant only after the auth
+    // middleware, the stronger-factor gate and the epochs check. A failure
+    // there leaves the grant valid, so the page must not throw it away and
+    // send the user back through the IdP.
+    it.each([
+      ['401 dead bearer', { status: 401 }, 'Invalid or expired token'],
+      ['403 stronger factor', { status: 403 }, 'stronger_factor_required'],
+      ['503 epochs unavailable', { status: 503 }, 'Service temporarily unavailable'],
+      ['network failure (no status)', {}, 'Failed to fetch'],
+    ])('keeps the grant when the exchange fails before consuming it: %s', async (_name, shape, message) => {
+      registerApproverDeviceMock.mockRejectedValueOnce(Object.assign(new Error(message), shape));
+      const onSsoReauthGrantSpent = vi.fn();
+      render(
+        <ApproverDevicesSection
+          passkeyCount={0}
+          mfaMethod={null}
+          hasPassword={false}
+          ssoReauthGrantId="sso-g"
+          onStartSsoReauth={vi.fn()}
+          onSsoReauthGrantSpent={onSsoReauthGrantSpent}
+        />,
+      );
+      await screen.findByTestId('approver-device-dev-1');
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+      expect(onSsoReauthGrantSpent).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['enrollment_grant_expired', { status: 400, code: 'enrollment_grant_expired' }],
+      ['enrollment_proof_required', { status: 400 }],
+      ['invalid_credentials', { status: 400, code: 'invalid_credentials' }],
+    ])('drops the grant when the exchange refuses it (400 %s)', async (name, shape) => {
+      registerApproverDeviceMock.mockRejectedValueOnce(Object.assign(new Error(name), shape));
+      const onSsoReauthGrantSpent = vi.fn();
+      render(
+        <ApproverDevicesSection
+          passkeyCount={0}
+          mfaMethod={null}
+          hasPassword={false}
+          ssoReauthGrantId="sso-g"
+          onStartSsoReauth={vi.fn()}
+          onSsoReauthGrantSpent={onSsoReauthGrantSpent}
+        />,
+      );
+      await screen.findByTestId('approver-device-dev-1');
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() => expect(onSsoReauthGrantSpent).toHaveBeenCalledTimes(1));
+    });
+
+    it('announces the verified state to assistive tech', async () => {
+      render(
+        <ApproverDevicesSection passkeyCount={0} mfaMethod={null} hasPassword={false} ssoReauthGrantId="sso-g" onStartSsoReauth={vi.fn()} />,
+      );
+      expect(await screen.findByTestId('approver-stepup-sso-verified')).toHaveAttribute('role', 'status');
     });
 
     it('a stronger factor outranks the IdP: passkey tier, no SSO button', async () => {

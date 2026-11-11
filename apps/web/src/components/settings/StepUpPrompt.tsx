@@ -86,7 +86,9 @@ export default function StepUpPrompt({ tier, reauthValue, onChange, disabled, ss
   if (tier === 'sso') {
     if (sso?.verified) {
       return (
-        <p className="text-xs text-muted-foreground" data-testid="approver-stepup-sso-verified">
+        // role="status": this appears on the return from the IdP while focus
+        // lands on Register, so announce that verification succeeded.
+        <p role="status" className="text-xs text-muted-foreground" data-testid="approver-stepup-sso-verified">
           {t('stepUpPrompt.ssoVerified')}
         </p>
       );
