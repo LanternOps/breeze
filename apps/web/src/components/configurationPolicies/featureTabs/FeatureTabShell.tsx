@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Loader2, Trash2, RotateCcw, PenLine } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -25,7 +25,8 @@ type FeatureTabShellProps = {
   /** data-testid for the Save button, for tabs whose tests or E2E need to target it. */
   saveTestId?: string;
   error?: string;
-  onSave: () => void;
+  /** May be async; the shell reveals any validation error once it settles. */
+  onSave: () => void | Promise<unknown>;
   onRemove?: () => void;
   /** True when this tab is showing inherited settings from a parent policy */
   isInherited?: boolean;
@@ -60,6 +61,96 @@ export default function FeatureTabShell({
   const [pendingAction, setPendingAction] = useState<"revert" | "remove" | null>(
     null,
   );
+  // #11554: a Save that is blocked by validation used to be a silent no-op when
+  // the error sat far above the footer. After every Save click settles we look
+  // for the first inline field error (else the banner), scroll it into view and
+  // move focus there, and echo the reason next to the Save button.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const bannerRef = useRef<HTMLDivElement>(null);
+  const [revealTick, setRevealTick] = useState(0);
+  const [blockedHint, setBlockedHint] = useState<string | null>(null);
+
+  const [thrownMessage, setThrownMessage] = useState<string | null>(null);
+  const awaitingSettle = useRef(false);
+
+  const handleSaveClick = async () => {
+    awaitingSettle.current = true;
+    setBlockedHint(null);
+    setThrownMessage(null);
+    try {
+      const result = onSave();
+      if (result && typeof (result as Promise<unknown>).then === "function") {
+        await result;
+      } else {
+        // Tabs that wrap their async persist in `() => void persist()` give us
+        // nothing to await: let a synchronous validation failure render, and
+        // reveal again below when `saving` settles.
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    } catch (err) {
+      // A throwing tab save must not be a mute click either.
+      console.error("[FeatureTabShell] save failed", err);
+      setThrownMessage(err instanceof Error ? err.message : "");
+    } finally {
+      setRevealTick((t) => t + 1);
+    }
+  };
+
+  // Void-returning tabs: reveal once the in-flight save settles.
+  useEffect(() => {
+    if (saving) {
+      setBlockedHint(null);
+    } else if (awaitingSettle.current) {
+      setRevealTick((t) => t + 1);
+    }
+  }, [saving]);
+
+  // Drop the hint once whatever it described is gone (field fixed, banner cleared).
+  useEffect(() => {
+    if (blockedHint === null) return;
+    const stillInvalid =
+      !!bodyRef.current?.querySelector("[data-field-error]") || !!bannerRef.current;
+    if (!stillInvalid) setBlockedHint(null);
+  });
+
+  useEffect(() => {
+    if (revealTick === 0) return;
+    if (!saving) awaitingSettle.current = false;
+    const fieldError = bodyRef.current?.querySelector<HTMLElement>("[data-field-error]");
+    const banner = bannerRef.current;
+    const target = fieldError ?? banner;
+    if (!target) {
+      setBlockedHint(null);
+      return;
+    }
+    setBlockedHint(
+      fieldError?.textContent?.trim() || banner?.textContent?.trim() || "",
+    );
+    let focusTarget: HTMLElement = target;
+    if (fieldError && bodyRef.current) {
+      // The control the message belongs to: the last focusable element that
+      // precedes the message in document order.
+      const focusables = Array.from(
+        bodyRef.current.querySelectorAll<HTMLElement>(
+          "input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])",
+        ),
+      ).filter(
+        (el) =>
+          !!(fieldError.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING),
+      );
+      // Prefer a text-entry control (a path input beats its "Add" button).
+      const fields = focusables.filter((el) => el.tagName !== "BUTTON");
+      focusTarget =
+        fields[fields.length - 1] ?? focusables[focusables.length - 1] ?? fieldError;
+    }
+    if (!focusTarget.hasAttribute("tabindex") && !/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(focusTarget.tagName)) {
+      focusTarget.setAttribute("tabindex", "-1");
+    }
+    focusTarget.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    focusTarget.focus({ preventScroll: true });
+    // Only re-run per Save click, not on every error text change.
+  }, [revealTick]);
+
   const savedInactive = !isInherited && isConfigured && !!configuredButInactive;
   const badgeText = isInherited
     ? "Configured (inherited)"
@@ -98,13 +189,20 @@ export default function FeatureTabShell({
 
         {/* Error banner */}
         {error && (
-          <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div
+            ref={bannerRef}
+            data-testid="feature-tab-error"
+            role="alert"
+            tabIndex={-1}
+            className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
             {error}
           </div>
         )}
 
         {/* Inline settings form */}
         <div
+          ref={bodyRef}
           className={`mt-6 ${isInherited ? "opacity-60 pointer-events-none" : ""}`}
         >
           {children}
@@ -152,10 +250,27 @@ export default function FeatureTabShell({
             )}
           </div>
           {!isInherited && (
+            <div className="flex items-center gap-3">
+            {(blockedHint ?? thrownMessage) !== null && !saving && (
+              <p
+                data-testid="save-blocked-hint"
+                role="status"
+                className="max-w-md text-right text-sm text-destructive"
+              >
+                {(blockedHint ?? thrownMessage)
+                  ? i18n.t(
+                      "policies:configurationPolicies.featureTabs.featureTabShell.notSaved",
+                      { reason: blockedHint ?? thrownMessage },
+                    )
+                  : i18n.t(
+                      "policies:configurationPolicies.featureTabs.featureTabShell.saveBlocked",
+                    )}
+              </p>
+            )}
             <button
               type="button"
               data-testid={saveTestId}
-              onClick={onSave}
+              onClick={() => void handleSaveClick()}
               disabled={saving || saveDisabled}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
@@ -166,6 +281,7 @@ export default function FeatureTabShell({
                   )
                 : i18n.t("common:actions.save")}
             </button>
+            </div>
           )}
         </div>
       </div>

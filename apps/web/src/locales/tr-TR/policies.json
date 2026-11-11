@@ -692,6 +692,8 @@
         "override": "Geçersiz kıl",
         "revertToParent": "Ebeveyne Geri Dön",
         "saving": "Kaydediliyor...",
+        "notSaved": "Kaydedilmedi: {{reason}}",
+        "saveBlocked": "Kaydedilmedi. Vurgulanan sorunu düzeltip tekrar deneyin.",
         "revertConfirmTitle": "Üst ilkeye geri dönülsün mü?",
         "revertConfirmMessage": "Bu işlem bu ilkedeki {{feature}} geçersiz kılmasını siler. Ayarları kaybolur ve bu ilkeyi kullanan tüm cihazlarda üst ilkenin ayarları geçerli olur. Bu işlem geri alınamaz.",
         "removeConfirmTitle": "Bu yapılandırma kaldırılsın mı?",
