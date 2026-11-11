@@ -68,6 +68,7 @@ export async function resolveApprovalTicketContext(
         const [ticket] = await db
           .select({
             ticketNumber: tickets.ticketNumber,
+            internalNumber: tickets.internalNumber,
             subject: tickets.subject,
             submitterName: tickets.submitterName,
             submitterEmail: tickets.submitterEmail,
@@ -83,7 +84,9 @@ export async function resolveApprovalTicketContext(
     );
     if (!row) return null;
     return {
-      ticketNumber: row.ticketNumber,
+      // The number technicians see in the queue (T-2026-0001). `ticket_number`
+      // is the portal reference; it is the fallback for a ticket with no internal number.
+      ticketNumber: row.internalNumber ?? row.ticketNumber,
       subject: row.subject,
       ...(row.submitterName ? { requesterName: row.submitterName } : {}),
       ...(row.submitterEmail ? { requesterEmail: row.submitterEmail } : {}),

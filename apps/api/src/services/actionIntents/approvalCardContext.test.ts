@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const dbState = {
   whereArgs: [] as unknown[],
-  rows: [] as Array<{ ticketNumber: string; subject: string; submitterName: string | null; submitterEmail: string | null; deviceId?: string | null }>,
+  rows: [] as Array<{ ticketNumber: string; internalNumber?: string | null; subject: string; submitterName: string | null; submitterEmail: string | null; deviceId?: string | null }>,
   failWith: null as Error | null,
   systemContextLabels: [] as Array<string | undefined>,
   outsideContextCalls: 0,
@@ -137,6 +137,26 @@ describe('resolveApprovalTicketContext', () => {
     await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID, openReach)).resolves.toEqual({
       ticketNumber: 'T-2026-0002',
       subject: 'Printer',
+    });
+  });
+
+  // tickets.ticket_number is the portal reference (e.g. TTAVKZRCGR). Technicians
+  // see internal_number (T-2026-0001) in the queue, so that is what the card names.
+  it('names the ticket by the number technicians see, not the portal reference', async () => {
+    dbState.rows = [{ ticketNumber: 'TTAVKZRCGR', internalNumber: 'T-2026-0001', subject: 'S', submitterName: null, submitterEmail: null }];
+
+    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID, openReach)).resolves.toEqual({
+      ticketNumber: 'T-2026-0001',
+      subject: 'S',
+    });
+  });
+
+  it('falls back to the portal reference for a ticket with no internal number', async () => {
+    dbState.rows = [{ ticketNumber: 'TTAVKZRCGR', internalNumber: null, subject: 'S', submitterName: null, submitterEmail: null }];
+
+    await expect(resolveApprovalTicketContext(TICKET_ID, ORG_ID, openReach)).resolves.toEqual({
+      ticketNumber: 'TTAVKZRCGR',
+      subject: 'S',
     });
   });
 
