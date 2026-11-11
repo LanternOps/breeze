@@ -468,6 +468,75 @@ describe('backup dashboard routes', () => {
       expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
     });
 
+    it('counts only devices the site-restricted user can access', async () => {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      selectMock
+        .mockReturnValueOnce(chainMock([
+          { id: 'd1', siteId: SITE_A },
+          { id: 'd2', siteId: SITE_A },
+          { id: 'x1', siteId: SITE_B },
+          { id: 'x2', siteId: SITE_B },
+          { id: 'x3', siteId: SITE_B },
+        ]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([
+          row({ deviceId: 'd1' }),
+          row({ deviceId: 'd2', status: 'completed', errorLog: null }),
+          row({ deviceId: 'x1' }),
+          row({ deviceId: 'x2' }),
+          row({ deviceId: 'x3' }),
+        ]));
+      const { data } = await (await app.request('/backup/dashboard')).json();
+      // One allowed failing device: the three failures on the other site must not tip it over.
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('keeps the destination item first under the item cap, ordered by failing devices', async () => {
+      const many = Array.from({ length: 25 }, (_, n) => row({ deviceId: `m${n}`, completedAt: new Date(Date.now() - 1000 * n), createdAt: new Date(Date.now() - 1000 * n) }));
+      const data = await dashboardWith([
+        ...many,
+        row({ deviceId: 's1', configId: OTHER_CONFIG_ID, configName: 'Other' }),
+        row({ deviceId: 's2', configId: OTHER_CONFIG_ID, configName: 'Other' }),
+      ]);
+      expect(data.attentionItems).toHaveLength(20);
+      expect(data.attentionItems[0]).toMatchObject({ configId: CONFIG_ID, failingDevices: 25 });
+      expect(data.attentionItems[1]).toMatchObject({ configId: OTHER_CONFIG_ID, failingDevices: 2 });
+    });
+
+    it('includes a failure just inside 48 h and falls back to createdAt without completedAt', async () => {
+      const inside = new Date(Date.now() - 47 * 60 * 60 * 1000);
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', completedAt: inside, createdAt: inside }),
+        row({ deviceId: 'd2', completedAt: null, createdAt: inside }),
+      ]);
+      expect(data.attentionItems.find((i: any) => i.kind === 'destination_failing')).toMatchObject({ failingDevices: 2 });
+    });
+
+    it('does not blame the destination for Breeze API refusals or ended sessions', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', errorLog: 'storage session: mint refused with status 403' }),
+        row({ deviceId: 'd2', errorLog: 'storage session: renew refused with status 404' }),
+        row({ deviceId: 'd3', errorLog: 'storage session: renew rejected with status 410' }),
+      ]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('states no cause when the failing devices do not agree on a majority', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2', errorLog: 'storage session: storage answered status 404' }),
+        row({ deviceId: 'd3', errorLog: 'storage session: multipart:create failed with status 502 after 4 attempts' }),
+      ]);
+      const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
+      expect(item).toMatchObject({ failingDevices: 3, failureCause: null });
+    });
+
     it('does not claim a cause for a store 5xx beyond the operation failing', async () => {
       const data = await dashboardWith([
         row({ deviceId: 'd1', errorLog: 'storage session: multipart:create failed with status 502 after 4 attempts' }),

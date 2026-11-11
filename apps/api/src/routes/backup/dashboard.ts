@@ -82,6 +82,17 @@ type DestinationAttentionItem = AttentionItem & {
 const DESTINATION_FAILING_MIN_DEVICES = 2;
 const DESTINATION_FAILING_WINDOW_MS = 48 * 60 * 60 * 1000;
 
+// Only a failure the text ties to the destination itself counts toward the
+// destination item. A storage failure with no cause (a Breeze API refusal, an
+// unrecognised store status) or an ended upload session is not evidence that
+// the customer's destination is broken, and the item's hint would say it is.
+const DESTINATION_FAULT_CAUSES: ReadonlySet<BackupFailureCause> = new Set<BackupFailureCause>([
+  'storage_access_denied',
+  'storage_not_found',
+  'storage_clock_skew',
+  'storage_operation_failed',
+]);
+
 type LatestJobForDestination = {
   deviceId: string;
   status: string;
@@ -104,7 +115,9 @@ function resolveDestinationAttentionItems(
     const at = job.completedAt ?? job.createdAt;
     if (job.status === 'failed' && now - at.getTime() <= DESTINATION_FAILING_WINDOW_MS) {
       const detail = classifyBackupFailureDetail({ status: job.status, errorLog: job.errorLog });
-      if (detail.category === 'storage') group.failing.push({ cause: detail.cause, at });
+      if (detail.category === 'storage' && detail.cause && DESTINATION_FAULT_CAUSES.has(detail.cause)) {
+        group.failing.push({ cause: detail.cause, at });
+      }
     }
     byDestination.set(job.configId, group);
   }
@@ -112,10 +125,12 @@ function resolveDestinationAttentionItems(
   const items: Array<DestinationAttentionItem & { lastFailureAt: string }> = [];
   for (const [configId, group] of byDestination) {
     if (group.failing.length < DESTINATION_FAILING_MIN_DEVICES) continue;
-    // The cause most failing devices agree on; no cause when none had one.
+    // The cause only when a strict majority of the failing devices agree;
+    // otherwise null, so the item never states a cause most devices did not show.
     const tally = new Map<BackupFailureCause, number>();
     for (const { cause } of group.failing) if (cause) tally.set(cause, (tally.get(cause) ?? 0) + 1);
-    const cause = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    const [topCause, topCount] = [...tally.entries()].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+    const cause = topCount * 2 > group.failing.length ? topCause : null;
     const lastFailureAt = new Date(Math.max(...group.failing.map((f) => f.at.getTime()))).toISOString();
     items.push({
       id: `backup-destination-${configId}`,
