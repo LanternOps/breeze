@@ -9,9 +9,11 @@ import { showToast } from '../../shared/Toast';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import {
   isPortalEntraTenantView,
+  passwordFallbackOf,
   type PortalEntraProofLink,
   type PortalEntraTenantView,
 } from './types';
+import { PasswordFallbackNotice } from './PasswordFallbackNotice';
 
 export interface EntraTenantPanelProps {
   orgId: string;
@@ -105,6 +107,7 @@ export function EntraTenantPanel({ orgId, onChanged }: EntraTenantPanelProps) {
   const [busy, setBusy] = useState<'prove' | 'link' | 'remove' | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const seq = useRef(0);
+  const hintRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     const mine = (seq.current += 1);
@@ -239,6 +242,7 @@ export function EntraTenantPanel({ orgId, onChanged }: EntraTenantPanelProps) {
 
   const { tenant } = state;
   const proven = tenant.state === 'proven';
+  const passwordFallback = passwordFallbackOf(tenant);
   const statusText = proven
     ? t('portalAccessPolicy.entraTenant.status.proven', {
       tenantId: tenant.tenantId ?? '',
@@ -251,6 +255,16 @@ export function EntraTenantPanel({ orgId, onChanged }: EntraTenantPanelProps) {
 
   return shell(
     <>
+      {passwordFallback && (
+        <PasswordFallbackNotice
+          orgId={orgId}
+          notice={passwordFallback}
+          testIdPrefix={ID}
+          // The proof controls are right below: bring the tenant field into view rather than navigate.
+          rerun={{ onClick: () => { hintRef.current?.focus(); hintRef.current?.scrollIntoView?.({ block: 'center' }); } }}
+          onDismissed={() => setState({ status: 'ready', tenant: { ...tenant, passwordFallback: null } })}
+        />
+      )}
       <p data-testid={`${ID}-status`} data-state={tenant.state} className={proven ? 'text-foreground' : 'text-muted-foreground'}>
         {statusText}
       </p>
@@ -293,6 +307,7 @@ export function EntraTenantPanel({ orgId, onChanged }: EntraTenantPanelProps) {
             <div className="flex gap-2">
               <input
                 id={`${ID}-hint`}
+                ref={hintRef}
                 data-testid={`${ID}-hint`}
                 value={hint}
                 onChange={(e) => setHint(e.target.value)}

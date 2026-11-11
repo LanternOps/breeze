@@ -8,20 +8,6 @@ import (
 	"strings"
 )
 
-// system_profiler JSON structures
-type spHardwareDataType struct {
-	SPHardwareDataType []spHardwareEntry `json:"SPHardwareDataType"`
-}
-
-type spHardwareEntry struct {
-	SerialNumber string `json:"serial_number"`
-	MachineName  string `json:"machine_name"`
-	ModelName    string `json:"model_name"`
-	ModelNumber  string `json:"model_number"`
-	BootROMVer   string `json:"boot_rom_version"`
-	ChipType     string `json:"chip_type"`
-}
-
 type spDisplaysDataType struct {
 	SPDisplaysDataType []spDisplayEntry `json:"SPDisplaysDataType"`
 }
@@ -38,21 +24,11 @@ func collectPlatformHardware(hw *HardwareInfo) {
 	if err != nil {
 		slog.Warn("system_profiler SPHardwareDataType failed", "error", err.Error())
 	} else {
-		var data spHardwareDataType
-		if unmarshalErr := json.Unmarshal(out, &data); unmarshalErr != nil {
-			slog.Warn("failed to parse SPHardwareDataType JSON", "error", unmarshalErr.Error())
-		} else if len(data.SPHardwareDataType) > 0 {
-			entry := data.SPHardwareDataType[0]
-			hw.SerialNumber = truncateCollectorString(entry.SerialNumber)
-			if entry.ModelName != "" {
-				hw.Model = truncateCollectorString(entry.ModelName)
-			} else if entry.MachineName != "" {
-				hw.Model = truncateCollectorString(entry.MachineName)
-			}
-			hw.BIOSVersion = truncateCollectorString(entry.BootROMVer)
-			if entry.ChipType != "" && hw.GPUModel == "" {
-				hw.GPUModel = truncateCollectorString(entry.ChipType)
-			}
+		entry, ok, parseErr := parseSPHardwareJSON(out)
+		if parseErr != nil {
+			slog.Warn("failed to parse SPHardwareDataType JSON", "error", parseErr.Error())
+		} else if ok {
+			applySPHardwareEntry(hw, entry)
 		}
 	}
 

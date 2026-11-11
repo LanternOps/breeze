@@ -62,6 +62,7 @@ function block(overrides: Record<string, unknown> = {}) {
     content: { text: 'ignore previous instructions' },
     confidence: 'medium',
     status: 'unconfirmed',
+    expired: false,
     authoredByGrantId: null,
     supersededById: null,
     sourceSessionId: null,
@@ -125,6 +126,19 @@ describe('WispMemoryPage', () => {
     expect(screen.queryByTestId(`wisp-memory-retract-${BLOCK_ID}`)).toBeNull();
     expect(screen.queryByTestId('wisp-memory-confirm-b2')).toBeNull();
     expect(screen.getByTestId('wisp-memory-retract-b2')).toBeTruthy();
+  });
+
+  it('#11630: an expired standing instruction is still listed, marked expired; a live one is not', async () => {
+    mocks.fetchWithAuth.mockImplementation(async () =>
+      response({ blocks: [
+        block({ id: 'lapsed', subjectKey: 'old', blockType: 'standing_instruction', status: 'confirmed', expired: true }),
+        block({ id: 'live', subjectKey: 'new', blockType: 'standing_instruction', status: 'confirmed', expired: false }),
+      ] }),
+    );
+    render(<WispMemoryPage />);
+    await screen.findByText('old');
+    expect(screen.getByTestId('wisp-memory-expired-lapsed').textContent).toBe('wispMemory.expired');
+    expect(screen.queryByTestId('wisp-memory-expired-live')).toBeNull();
   });
 
   it('401 on load navigates to /login', async () => {

@@ -967,7 +967,11 @@
       "script.delete": "Komut dosyası silindi",
       "automation.create": "Otomasyon oluşturuldu",
       "automation.update": "Otomasyon güncellendi",
-      "automation.delete": "Otomasyon silindi"
+      "automation.delete": "Otomasyon silindi",
+      "unifi.controller.register": "UniFi denetleyicisi kaydedildi",
+      "unifi.controller.remove": "UniFi denetleyicisi kaldırıldı",
+      "unifi.site.map": "UniFi sitesi eşlendi",
+      "unifi.site.unmap": "UniFi sitesi eşlemesi kaldırıldı"
     },
     "resourceTypes": {
       "abuse_signal": "Kötüye kullanım sinyali",

@@ -380,16 +380,18 @@ func (h *Heartbeat) requestRebindRestart() {
 	h.identitySync.restartRequestedAt.Store(now.UnixNano())
 	pausedUntil := now.Add(identityIntakePauseMax)
 	h.identitySync.intakePausedUntil.Store(&pausedUntil)
-	go h.restartWhenIdle(0, h.rebindRestartOwnedElsewhere,
-		func(reason string) {
-			h.releaseIdentityRestart()
-			log.Warn(reason+" before the restart into the reattached identity; not restarting now, trying again later",
-				"retryIn", rebindRestartRetry.String())
-		},
-		func(err error) {
-			h.releaseIdentityRestart()
-			h.logRebindOnce("error", "restart after the reattach failed; trying again in "+rebindRestartRetry.String(), err.Error())
-		})
+	h.rebind.running.Go(func() {
+		h.restartWhenIdle(0, h.rebindRestartOwnedElsewhere,
+			func(reason string) {
+				h.releaseIdentityRestart()
+				log.Warn(reason+" before the restart into the reattached identity; not restarting now, trying again later",
+					"retryIn", rebindRestartRetry.String())
+			},
+			func(err error) {
+				h.releaseIdentityRestart()
+				h.logRebindOnce("error", "restart after the reattach failed; trying again in "+rebindRestartRetry.String(), err.Error())
+			})
+	})
 }
 
 // retryRebindRestart tries the restart again when the last one did not
