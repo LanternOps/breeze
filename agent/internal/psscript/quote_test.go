@@ -185,7 +185,9 @@ func TestNoASCIIOnlySingleQuoteEscaping(t *testing.T) {
 		t.Fatal(err)
 	}
 	tsql := filepath.Join(root, "internal", "backup", "mssql")
-	pattern := regexp.MustCompile(`(ReplaceAll|Replace)\([^()]*,\s*"'",\s*"''"|NewReplacer\(\s*"'",\s*"''"`)
+	// The apostrophe and its doubled form, as interpreted or raw string literals.
+	const one, two = "(\"'\"|`'`)", "(\"''\"|`''`)"
+	pattern := regexp.MustCompile(`(ReplaceAll|Replace)\([^()]*,\s*` + one + `,\s*` + two + `|NewReplacer\(\s*` + one + `,\s*` + two)
 	var offenders []string
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
