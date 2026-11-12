@@ -43,14 +43,18 @@ type ScanScope struct {
 	idsOnce     sync.Once
 	ids         protectedIdentitySet
 
-	mountsMu sync.Mutex
-	mounts   map[uint64]string // device -> top folder of that volume
+	tableOnce sync.Once
+	table     []string // mount points, read once per scan
+	tableOK   bool
+
+	topsMu sync.Mutex
+	tops   map[string]string // fallback: folder -> top of its volume
 }
 
 // NewScanScope captures the agent configuration folder's spellings; the
 // protected file identities are collected on first need.
 func NewScanScope() *ScanScope {
-	return &ScanScope{configForms: agentConfigDirForms(), mounts: map[uint64]string{}}
+	return &ScanScope{configForms: agentConfigDirForms(), tops: map[string]string{}}
 }
 
 func (s *ScanScope) protectedIDs() protectedIdentitySet {
@@ -62,25 +66,35 @@ func (s *ScanScope) protectedIDs() protectedIdentitySet {
 // stand in for a mounted volume).
 var scanDeviceOf = deviceOfInfo
 
+// maxFallbackTops bounds the fallback cache of folder tops.
+const maxFallbackTops = 100000
+
 // volumeTop returns the top folder of the mounted volume that holds the
-// canonical path p (whose Lstat info is info): the highest ancestor on the
-// same device. The answer is kept per device. It is "" where devices are not
-// compared (Windows, which anchors by drive letter).
+// canonical path p (whose Lstat info is info). It is the nearest mount point
+// at or above p, from the mount table read once per scan; every mount point
+// counts, bind mounts included. If the table cannot be read, it falls back to
+// the highest ancestor on the same device, remembered per folder. It is ""
+// where neither is available (Windows, which anchors by drive letter).
 func (s *ScanScope) volumeTop(p string, info fs.FileInfo) string {
+	s.tableOnce.Do(func() { s.table, s.tableOK = loadMountTable() })
+	if s.tableOK {
+		return longestMountPoint(s.table, p)
+	}
 	dev, ok := scanDeviceOf(p, info)
 	if !ok {
 		return ""
 	}
-	s.mountsMu.Lock()
-	top, known := s.mounts[dev]
-	s.mountsMu.Unlock()
+	dir := p
+	if !info.IsDir() {
+		dir = filepath.Dir(p)
+	}
+	s.topsMu.Lock()
+	top, known := s.tops[dir]
+	s.topsMu.Unlock()
 	if known {
 		return top
 	}
-	cur := p
-	if !info.IsDir() {
-		cur = filepath.Dir(p)
-	}
+	cur := dir
 	for {
 		parent := filepath.Dir(cur)
 		if parent == cur {
@@ -96,9 +110,11 @@ func (s *ScanScope) volumeTop(p string, info fs.FileInfo) string {
 		}
 		cur = parent
 	}
-	s.mountsMu.Lock()
-	s.mounts[dev] = cur
-	s.mountsMu.Unlock()
+	s.topsMu.Lock()
+	if len(s.tops) < maxFallbackTops {
+		s.tops[dir] = cur
+	}
+	s.topsMu.Unlock()
 	return cur
 }
 

@@ -147,13 +147,17 @@ func TestScanTreatsAgentDataFolderAsProtected(t *testing.T) {
 }
 
 // fakeVolume makes every path at or below root report device dev, as if a
-// separate volume were mounted there.
+// separate volume were mounted there, and hides the mount table.
 func fakeVolume(t *testing.T, root string, dev uint64) {
 	t.Helper()
 	canonical := root
 	if resolved, ok := resolveForContainment(root); ok {
 		canonical = resolved
 	}
+	// Without a mount table the scan compares devices instead.
+	origTable := loadMountTable
+	loadMountTable = func() ([]string, bool) { return nil, false }
+	t.Cleanup(func() { loadMountTable = origTable })
 	orig := scanDeviceOf
 	scanDeviceOf = func(path string, info fs.FileInfo) (uint64, bool) {
 		if path == canonical || strings.HasPrefix(path, canonical+string(filepath.Separator)) {
