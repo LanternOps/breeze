@@ -39,10 +39,6 @@ export interface EffectiveContextWindow {
 /** A known window and where it came from (never `unknown`); the gateway's own shape. */
 export type KnownContextWindow = KnownWindow;
 
-export const UNKNOWN_CONTEXT_WINDOW: Readonly<EffectiveContextWindow> = Object.freeze({
-  value: null, source: 'unknown', observedFresh: false,
-});
-
 export function isPlausibleContextWindow(n: number | null | undefined): n is number {
   return typeof n === 'number' && Number.isSafeInteger(n) && n >= MIN_PLAUSIBLE_WINDOW && n <= MAX_PLAUSIBLE_TOKENS;
 }

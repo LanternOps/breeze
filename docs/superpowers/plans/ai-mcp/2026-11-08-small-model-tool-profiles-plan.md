@@ -114,7 +114,15 @@ Codex exec read-only xhigh 2026-11-08: **AGREE WITH CHANGES — folded in.**
 | chat `full` (informational) | measured, `toBeGreaterThan(0)` | same |
 | `AI_SYSTEM_PROMPT_COMPACT` | ≤ 2,048 B | `aiAgentSystemPrompt.compact.test.ts` |
 
-Worked `auto` example the thresholds must reproduce (spec §3.3): window 8,192 → `minimal`; 32,768 → `standard`; 131,072 → `full`; 4,096 → `too_small`.
+Worked `auto` example the thresholds must reproduce, **corrected in W02 (#11396) to the measured W03 pins**: chat window 8,192 → `minimal`; 32,768 → `standard`; **131,072 → `standard`**; 4,096 → `too_small`. The spec §3.3 example (131,072 → `full`) was inferred from #9770's 68k figure; W03 measured chat `full` on a gateway at ~128k tokens (tool search is off there, so every schema is inline), so `full` needs a window of at least 171,067. Operator decision (2026-11-11): accept the measured numbers, do not move thresholds to force `full`. Smallest window per profile from the measured pins (`toolExposure.test.ts` pins this table):
+
+| Surface | `minimal` from | `standard` from | `full` from |
+|---|---|---|---|
+| chat | 7,647 | 16,728 | 171,067 |
+| helper | 7,147 | 10,291 | 16,920 |
+| script builder | 7,777 | 9,929 | 14,730 |
+| AI agents | 7,353 | 15,983 | 105,428 |
+| Office | `full` at any window (prefixes unmeasured) | | |
 
 ## Execution split
 
