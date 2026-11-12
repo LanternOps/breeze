@@ -60,7 +60,7 @@ import {
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db, withDbTransaction } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
-import { eq, and, desc, gte, lte, count, avg, isNotNull, isNull, ne, notExists, notInArray, or, sql as drizzleSql, type SQL } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql, type SQL } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -122,29 +122,10 @@ const loadSpecialistResultsTurn = () => import('../services/wisp/specialistResul
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import {
   resolveTopologySessionVisibility,
+  topologyAuditSessionCondition,
   topologySessionCondition,
-  type TopologySessionVisibility,
 } from '../services/topology/aiSessionAccess';
 
-/**
- * M4-D2 for audit rows: an `ai_session` audit row (tool calls, authority
- * changes, injection flags) names its session and carries the tool input, so a
- * row about a topology session pinned to a site the caller cannot read is
- * withheld exactly like the session itself. Applied in SQL before LIMIT.
- */
-function topologyAuditSessionCondition(visibility: TopologySessionVisibility): SQL | undefined {
-  if (visibility.kind === 'all') return undefined;
-  const hidden = visibility.kind === 'none'
-    ? isNotNull(aiSessions.topologySiteId)
-    : and(isNotNull(aiSessions.topologySiteId), notInArray(aiSessions.topologySiteId, visibility.siteIds));
-  return or(
-    ne(auditLogs.resourceType, 'ai_session'),
-    isNull(auditLogs.resourceId),
-    notExists(
-      db.select({ one: drizzleSql`1` }).from(aiSessions).where(and(eq(aiSessions.id, auditLogs.resourceId), hidden)),
-    ),
-  );
-}
 import { createTicketFromChatSchema, type AiContinuationRequired, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';

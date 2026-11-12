@@ -2,9 +2,9 @@
   "id": "back-online-uses-event-check-in",
   "title": "\"Tell me the moment it's back online\" schedules a device-online check-in, not a 15-minute watch",
   "issue": 11685,
-  "expect": "known-red",
+  "expect": "pass",
   "door": "wisp",
-  "note": "a rate, not a constant: 5 of 11 runs on 2026-11-10/11 chose create_watch and told the technician Wisp cannot notify in real time. One UNEXPECTED PASS proves nothing here; run it several times before flipping",
+  "note": "a rate, not a constant: before #11699, 5 of 11 runs chose create_watch and told the technician Wisp cannot notify in real time; with the fix, 10 of 10 runs passed on 2026-11-11. Re-run a single failure before filing it",
   "steps": [
     {
       "name": "ask",

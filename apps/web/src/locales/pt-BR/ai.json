@@ -20,6 +20,30 @@
     "urgentWarning": "Menos de 30 segundos restantes. Esta solicitação será rejeitada automaticamente.",
     "progressLabel": "Tempo restante antes da negação automática",
     "showParameters": "Mostrar parâmetros",
+    "ticketComment": {
+      "publicTo": "Resposta visível ao cliente para {{recipient}}",
+      "publicNoRecipient": "Resposta visível ao cliente (enviada por e-mail ao solicitante)",
+      "publicNoEmail": "Resposta visível ao cliente (não há e-mail do solicitante cadastrado, então nenhum e-mail é enviado)",
+      "internal": "Nota interna (não visível ao cliente)"
+    },
+    "memory": {
+      "heading": "O Wisp vai lembrar",
+      "subjectKey": "Chave: {{key}} (substitui qualquer memória anterior com esta chave)",
+      "moreInParameters": "Há mais campos apenas em Mostrar parâmetros.",
+      "scope": {
+        "user": "Somente você",
+        "org": "Este cliente",
+        "partner": "Todo o seu MSP"
+      },
+      "types": {
+        "preference": "Preferência",
+        "standing_instruction": "Instrução permanente",
+        "fact": "Fato",
+        "decision": "Decisão",
+        "concern_outcome": "Resultado da preocupação",
+        "work_summary": "Resumo do trabalho"
+      }
+    },
     "approve": "Aprovar",
     "reject": "Negar",
     "approveVerify": "Verificar e aprovar",

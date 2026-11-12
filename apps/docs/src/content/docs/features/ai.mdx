@@ -464,6 +464,20 @@ Tool outputs — the text a tool returned to the model — are kept for **30 day
   The setting ships together with the retention job, so a partner that has never saved an AI data policy gets the 30-day default at the first nightly run, which expires older outputs in existing chats. To keep history, set **Keep AI tool outputs for (days)** to **Keep forever** before that run. Self-hosters can also move the run time — see [Environment Variables](/deploy/environment/).
 </Aside>
 
+### Conversation retention (preview)
+
+Technician AI conversations get their own window, separate from tool outputs: **365 days** by default after the conversation's last activity. It lives in the same AI data policy and follows the same rules: a partner can set a number of days or keep forever, and an organization can shorten the partner's window but not lengthen it. Client AI conversations (AI for Office) follow the client AI policy's **Retention** instead; see [AI for Office](/features/ai-for-office/).
+
+When a conversation passes its window, a nightly job removes its content (messages, action plans, the title, the system prompt and context, each tool call's input and output, which become a removal marker, and its error text) and keeps a stub: who, when, which model, turn, token and cost totals, flag state, and the list of tool calls with their status and approver. Screenshots taken in the conversation expire and are deleted by their own cleanup. A conversation that is **flagged** for review is held while it is flagged. A conversation left **active** by a process that stopped is treated as ended once it is a day past its window and has been quiet for three hours.
+
+The stub is deleted once it is older than the organization's audit-log retention window, at the earliest by the nightly run after the one that made it. An organization with no audit retention policy keeps its stubs, as it keeps its audit log.
+
+Audit-log entries about a technician conversation, including tool inputs, follow the audit retention window, not this one.
+
+<Aside type="note" title="Report-only in this release">
+  The job only counts what it would remove (the `REPORT-ONLY` log line and the `breeze_retention_rows_eligible{job_name="ai_transcript_retention"}` metric) and changes nothing until `AI_TRANSCRIPT_RETENTION_ENFORCE=true` is set. A later release turns it on by default. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs).
+</Aside>
+
 ### Device-originated text is untrusted
 
 Device file contents, command output and registry values reach the model as fenced, untrusted text. Instructions found inside them are treated as data the model is reading, not as directions to the assistant.

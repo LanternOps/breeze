@@ -203,6 +203,14 @@ Both Compose files gain the same lines under the `api` environment. Every new ma
 |---|---|
 | New `api` mappings `ALERT_RETENTION_DAYS`, `ALERT_RETENTION_BATCH_SIZE`, `ALERT_RETENTION_MAX_BATCHES` and `ALERT_RETENTION_ENFORCE` (`${VAR:-}`). | Nothing for the defaults (365 days, 1000 rows, 100 batches). The job is report-only until you set `ALERT_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
 
+### Unreleased — report-only AI transcript retention
+
+Both Compose files gain 3 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default. The release also runs a migration that sets the new technician transcript window to 365 days on every existing partner AI data policy row (a partner with no row already gets 365 by default).
+
+| Change | Required action |
+|---|---|
+| New `api` mappings for the report-only AI transcript retention job: `AI_TRANSCRIPT_RETENTION_BATCH_SIZE`, `AI_TRANSCRIPT_RETENTION_MAX_BATCHES` and `AI_TRANSCRIPT_RETENTION_ENFORCE`. | Nothing. The job only counts conversations past their window and changes nothing until you set `AI_TRANSCRIPT_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+
 ### Unreleased — report-only retention settings mapped
 
 Both Compose files gain 16 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.

@@ -25,9 +25,11 @@
 import { z } from 'zod';
 import type { AuthContext } from '../../middleware/auth';
 import type { AiTool } from '../aiTools';
+import { redactAiToolOutputText } from '../aiToolOutput';
 import { memoryBlockIdShape, recallShape, rememberInputSchema, rememberShape } from '../aiToolSchemas';
 import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import {
+  MEMORY_SUBJECT_KEY_MAX_LENGTH,
   MemoryValidationError,
   recallForGrant,
   rememberForGrant,
@@ -42,6 +44,30 @@ const blockIdInputSchema = z.object(memoryBlockIdShape);
 type WispGrantRef = NonNullable<AuthContext['wispGrant']>;
 
 const GRANT_REQUIRED = JSON.stringify({ error: 'wisp_grant_required' });
+const REDACTED_FIELDS_LISTED = 5;
+const REDACTED_FIELD_MAX_CHARS = 60;
+
+/**
+ * The subject key as the broker gets it. The key is free text from the model;
+ * it is stored, matched on and rendered back into prompts, so it gets the
+ * string pass content values get. Done here, before the broker takes the
+ * per-key lock, so the lock, the supersede match and the row all use one key.
+ * The pass can lengthen a key ("pw=x" becomes "pw=[REDACTED]"), so the result
+ * is cut back to the column's limit.
+ */
+function scrubSubjectKey(subjectKey: string): string {
+  const scrubbed = redactAiToolOutputText(subjectKey);
+  return scrubbed === subjectKey ? subjectKey : [...scrubbed].slice(0, MEMORY_SUBJECT_KEY_MAX_LENGTH).join('');
+}
+
+/** The removed fields, for the model: field paths are model-written, so only a safe character set, cut short. */
+function redactedFieldsNote(fields: readonly string[]): string {
+  const names = fields.slice(0, REDACTED_FIELDS_LISTED)
+    .map((f) => f.replace(/[^A-Za-z0-9_.[\]-]/g, '').slice(0, REDACTED_FIELD_MAX_CHARS) || 'field');
+  const more = fields.length - names.length;
+  const listed = more > 0 ? `${names.join(', ')} and ${more} more` : names.join(', ');
+  return `Removed before saving because they looked like credentials: ${listed}. Ask the user to keep credentials in the vault, not in memory.`;
+}
 
 function inputSchemaFor(shape: z.ZodRawShape): AiTool['definition']['input_schema'] {
   const { $schema: _dropped, ...schema } = z.toJSONSchema(z.object(shape), { io: 'input' }) as Record<string, unknown>;
@@ -112,16 +138,23 @@ async function rememberHandler(input: Record<string, unknown>, auth: AuthContext
   const data = parsed.data;
   try {
     const ceiling = await ceilingFor(grant);
+    const subjectKey = scrubSubjectKey(data.subjectKey);
     const saved = await rememberForGrant(ceiling, {
       owner: ownerFor(data, ceiling),
       blockType: data.blockType,
-      subjectKey: data.subjectKey,
+      subjectKey,
       content: data.content,
       confidence: data.confidence ?? 'medium',
       // The tool, not the broker, is where the calling session is known (w00 A23).
       sourceSessionId: grant.sessionId ?? null,
     });
-    return `Remembered as unconfirmed (ID: ${saved.id}). The owner can confirm or retract it on the Wisp memory page.`;
+    // dispatchEvidence.ts matches this prefix; keep it first.
+    const result = `Remembered as unconfirmed (ID: ${saved.id}). The owner can confirm or retract it on the Wisp memory page.`;
+    const removed = [
+      ...(subjectKey === data.subjectKey ? [] : ['subjectKey']),
+      ...(saved.contentRedacted ? saved.redactedFields : []),
+    ];
+    return removed.length > 0 ? `${result} ${redactedFieldsNote(removed)}` : result;
   } catch (err) {
     return mapBrokerError(err);
   }
@@ -169,7 +202,7 @@ export function registerWispMemoryTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'save a preference, instruction, customer fact, decision or session work summary to Wisp memory',
     definition: {
       name: 'remember',
-      description: 'Save a Wisp memory block; it stays unconfirmed until its owner confirms or retracts it. user = the technician\'s own preferences only; customer facts belong to that org. After work on one customer, write one org-owned work_summary citing the Breeze records touched.',
+      description: 'Save a Wisp memory block; it stays unconfirmed until its owner confirms or retracts it. user = the technician\'s own preferences only; customer facts belong to that org. After work on one customer, write one org-owned work_summary citing the Breeze records touched. Credentials are never stored.',
       input_schema: inputSchemaFor(rememberShape),
     },
     handler: rememberHandler,

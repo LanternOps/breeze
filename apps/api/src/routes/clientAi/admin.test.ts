@@ -394,3 +394,45 @@ describe('client-ai admin — policy', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('client-ai admin — transcript retention preview (#4342 W4)', () => {
+  const dialect = new PgDialect();
+  const previewUrl = (orgId: string, qs: string) =>
+    `/client-ai/admin/orgs/${orgId}/policy/transcript-retention-preview${qs}`;
+
+  it.each([
+    ['days=0', '?days=0'],
+    ['days=abc', '?days=abc'],
+    ['missing days', ''],
+    ['days above 3650', '?days=3651'],
+    ['fractional days', '?days=1.5'],
+  ])('400s %s and counts nothing', async (_n, qs) => {
+    const res = await buildApp().request(previewUrl(ORG_ID, qs), { headers: AUTHED });
+    expect(res.status).toBe(400);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it("counts the org's client sessions at window N, with enforced:false", async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ n: 4 }]);
+    const res = await buildApp().request(previewUrl(ORG_ID, '?days=30'), { headers: AUTHED });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: 4, capped: false, enforced: false });
+    expect(dbExecuteMock).toHaveBeenCalledTimes(1);
+    const q = dialect.sqlToQuery(dbExecuteMock.mock.calls[0]![0]);
+    // The CLIENT predicate (type IN the client types), not the technician one.
+    expect(q.sql).toContain('ai_sessions.type IN (');
+    expect(q.sql).not.toContain('NOT IN');
+    expect(q.params).toContain(ORG_ID);
+  });
+
+  it('404s an org outside the caller scope and counts nothing (no existence oracle)', async () => {
+    const res = await buildApp().request(previewUrl(OTHER_ORG_ID, '?days=30'), { headers: AUTHED });
+    expect(res.status).toBe(404);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects unauthenticated requests', async () => {
+    const res = await buildApp().request(previewUrl(ORG_ID, '?days=30'));
+    expect(res.status).toBe(401);
+  });
+});

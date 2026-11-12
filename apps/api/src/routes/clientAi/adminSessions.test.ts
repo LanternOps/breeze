@@ -69,7 +69,9 @@ const SESSION_ROW = {
   flagReason: null,
   createdAt: new Date('2026-06-10T09:00:00Z'),
   lastActivityAt: new Date('2026-06-10T09:20:00Z'),
+  transcriptPurgedAt: null as Date | null,
 };
+const PURGED_AT = new Date('2027-06-11T08:15:00Z');
 
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
@@ -128,7 +130,20 @@ describe('GET /client-ai/admin/sessions', () => {
       totalCostCents: 12.5,
     });
     expect(body.data[0].startedAt).toBeDefined();
+    expect(body.data[0].transcriptPurgedAt).toBeNull();
     expect(body.pagination).toMatchObject({ total: 1, limit: 50, offset: 0 });
+  });
+
+  it('projects transcriptPurgedAt (#4342 W4) and returns it as an ISO string for a stub', async () => {
+    let call = 0;
+    dbSelectMock.mockImplementation(() => {
+      call++;
+      return call === 1 ? chain([{ ...SESSION_ROW, transcriptPurgedAt: PURGED_AT }]) : chain([{ n: 1 }]);
+    });
+    const res = await buildApp().request('/client-ai/admin/sessions', { headers: AUTHED });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].transcriptPurgedAt).toBe('2027-06-11T08:15:00.000Z');
+    expect(dbSelectMock.mock.calls[0]![0]).toHaveProperty('transcriptPurgedAt');
   });
 
   it('scopes the unfiltered list to the caller at the app layer (defense-in-depth)', async () => {
@@ -209,6 +224,9 @@ describe('GET /client-ai/admin/sessions/:id', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.session.id).toBe(SESSION_ID);
+    expect(body.session.transcriptPurgedAt).toBeNull();
+    // The session read projects the retention stub marker (#4342 W4).
+    expect(dbSelectMock.mock.calls[0]![0]).toHaveProperty('transcriptPurgedAt');
     expect(body.messages[0].redactionCounts).toEqual({ creditCard: 2, ssn: 1 });
     expect(body.toolExecutions[0].toolName).toBe('write_range');
     expect(body.toolExecutions[0].toolInput.providerConfig.secretKey).toBe('[REDACTED]');

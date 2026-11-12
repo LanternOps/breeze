@@ -570,6 +570,7 @@ export default function AiChatMessages({
           description={pendingApproval.description}
           input={pendingApproval.input}
           deviceContext={pendingApproval.deviceContext}
+          ticketContext={pendingApproval.ticketContext}
           onApprove={() => onApprove(pendingApproval.executionId)}
           onReject={() => onReject(pendingApproval.executionId)}
           intentBacked={pendingApproval.intentBacked}

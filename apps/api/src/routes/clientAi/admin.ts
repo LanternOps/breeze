@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
+import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, withDbTransaction } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
@@ -11,6 +12,13 @@ import { PERMISSIONS } from '../../services/permissions';
 import { CLIENT_AI_ENTRA_CLIENT_ID } from '../../config/env';
 import { resolveScopedOrgId } from '../c2c/helpers';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
+import {
+  AI_TRANSCRIPT_RETENTION_ENFORCE,
+  clientStubPredicate,
+  countTranscriptPreview,
+  transcriptCutoffIso,
+} from '../../services/aiTranscriptRetentionPredicates';
+import { transcriptPreviewDaysSchema } from '../../services/aiDataPolicy';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { lockPortalEntraOrgMappings } from '../../services/portalEntraTenantProof';
 import { auditPortalPasswordFallback } from '../../services/portalPasswordFallback';
@@ -227,6 +235,30 @@ clientAiAdminRoutes.get('/orgs/:orgId/policy', requireOrgsRead, async (c) => {
   const policy = await getOrgPolicy(orgId);
   return c.json({ policy });
 });
+
+/**
+ * Preview of the client-AI transcript window (#4342 W4): how many of the
+ * org's client (AI for Office) sessions are past window N today, counted with
+ * the retention job's own predicate. Same auth and org resolution as the
+ * policy GET above (ORGS_READ; inaccessible org → 404). Request path only:
+ * the count runs under the caller's RLS, never a system escape.
+ */
+clientAiAdminRoutes.get(
+  '/orgs/:orgId/policy/transcript-retention-preview',
+  requireOrgsRead,
+  zValidator('query', z.object({ days: transcriptPreviewDaysSchema })),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
+    if (!orgId) return c.json({ error: 'Organization not found' }, 404);
+    const { days } = c.req.valid('query');
+    const now = new Date();
+    const { eligible, capped } = await countTranscriptPreview(
+      clientStubPredicate(orgId, transcriptCutoffIso(days, now), now),
+    );
+    return c.json({ eligible, capped, enforced: AI_TRANSCRIPT_RETENTION_ENFORCE });
+  }
+);
 
 clientAiAdminRoutes.put(
   '/orgs/:orgId/policy',
