@@ -3,10 +3,9 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from '../../services/guardedS3Client';
+import { probeApiLocalBackupDestination } from '../../services/apiLocalBackupStorage';
 import { assertSafeUrl, SsrfBlockedError } from '../../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { db, withDbTransaction } from '../../db';
@@ -74,16 +73,8 @@ function buildCapabilityState(
   };
 }
 
-async function probeLocalConfig(details: Record<string, unknown>): Promise<void> {
-  const rootPath = typeof details.path === 'string' ? details.path : '';
-  if (!rootPath.trim()) {
-    throw new Error('Local backup path is not configured');
-  }
-
-  await mkdir(rootPath, { recursive: true });
-  const probePath = join(rootPath, `.breeze-probe-${randomUUID()}`);
-  await writeFile(probePath, 'breeze-backup-probe');
-  await rm(probePath, { force: true });
+async function probeLocalConfig(details: Record<string, unknown>, orgId: string, configId: string): Promise<void> {
+  await probeApiLocalBackupDestination(typeof details.path === 'string' ? details.path : '', orgId, configId);
 }
 
 async function probeS3Config(rawDetails: Record<string, unknown>): Promise<void> {
@@ -680,7 +671,7 @@ configsRoutes.post(
 
   try {
     if (row.provider === 'local') {
-      await probeLocalConfig(details);
+      await probeLocalConfig(details, orgId, row.id);
       capability = await checkBackupProviderCapabilities({
         provider: row.provider,
         providerConfig: details,

@@ -1,10 +1,10 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
 import { pipeline } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
+import { resolveApiLocalBackupPath } from './apiLocalBackupStorage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { and, eq, ne } from 'drizzle-orm';
@@ -137,15 +137,6 @@ export async function authorizeExternalReference(
 
 function isDownloadEligibleStatus(status: string, authenticatedAt: Date | null): boolean {
   return status === 'authenticated' || (status === 'active' && authenticatedAt !== null);
-}
-
-function ensureContainedLocalPath(rootPath: string, relativePath: string): string {
-  const base = resolvePath(rootPath);
-  const resolved = resolvePath(base, relativePath);
-  if (resolved !== base && !resolved.startsWith(`${base}/`)) {
-    throw new Error('path traversal detected');
-  }
-  return resolved;
 }
 
 function buildS3Client(config: {
@@ -455,9 +446,11 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       return { unavailable: true, reason: 'Snapshot storage is misconfigured.' } as const;
     }
 
-    const filePath = ensureContainedLocalPath(
+    const filePath = await resolveApiLocalBackupPath(
       rootPath,
-      origin ? keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId) : normalizedRemotePath
+      origin ? keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId) : normalizedRemotePath,
+      tokenRow.orgId,
+      resolved.config?.orgId === tokenRow.orgId ? resolved.localConfigId : undefined
     );
     const fileInfo = await stat(filePath);
     const fileName = normalizedRemotePath.split('/').pop() || 'recovery-object';

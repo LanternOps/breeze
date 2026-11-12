@@ -1849,7 +1849,9 @@ describe('sweepUnreferencedBackupObjects', () => {
     it('local: a bare FILE under snapshots/ is reclaimed like before and never stalls later groups (no ENOTDIR re-list)', async () => {
       const actualStorage = await vi.importActual<typeof import('../services/backupSnapshotStorage')>('../services/backupSnapshotStorage');
       iterateBackupObjectsMock.mockImplementation(actualStorage.iterateBackupObjectsUnderPrefix);
-      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-bare-'));
+      const operatorRoot = await mkdtemp(join(tmpdir(), 'breeze-gc-bare-'));
+      const realDir = join(operatorRoot, 'org-local', 'cfg-bare');
+      vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
       await mkdir(join(realDir, 'snapshots', 'zpart', 'files'), { recursive: true });
       const bareFile = join(realDir, 'snapshots', 'README');
       const partFile = join(realDir, 'snapshots', 'zpart', 'files', 'a.dat');
@@ -1859,7 +1861,7 @@ describe('sweepUnreferencedBackupObjects', () => {
       await utimes(bareFile, old, old);
       await utimes(partFile, old, old);
 
-      pushRunLevel([{ id: 'cfg-bare', provider: 'local', providerConfig: { path: realDir } }]);
+      pushRunLevel([{ id: 'cfg-bare', orgId: 'org-local', provider: 'local', providerConfig: { path: realDir } }]);
       pushIdentity();
       deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
 
@@ -1869,6 +1871,7 @@ describe('sweepUnreferencedBackupObjects', () => {
         result = await sweepUnreferencedBackupObjects();
       } finally {
         error.mockRestore();
+        vi.unstubAllEnvs();
       }
 
       const deletedKeys = deleteBackupObjectKeysMock.mock.calls.flatMap((c) => (c[0] as { keys: string[] }).keys).sort();

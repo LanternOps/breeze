@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The holding-org refusal reads the org; the db mocks below do not model it.
@@ -177,6 +180,7 @@ describe('backup config routes', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     __setLookupForTests(null);
     delete process.env.IS_HOSTED;
   });
@@ -653,13 +657,17 @@ describe('backup config routes', () => {
   });
 
   it('returns explicit unsupported object lock state for local configs', async () => {
+    const localRoot = await mkdtemp(join(tmpdir(), 'breeze-config-local-'));
+    vi.stubEnv('BACKUP_LOCAL_ROOT', localRoot);
+    const destination = join(localRoot, ORG_ID, CONFIG_ID);
+    await mkdir(destination, { recursive: true });
     selectMock.mockReturnValueOnce(chainMock([makeConfig({
       provider: 'local',
-      providerConfig: { path: '/tmp/backups' },
+      providerConfig: { path: destination },
     })]));
     updateMock.mockReturnValueOnce(chainMock([makeConfig({
       provider: 'local',
-      providerConfig: { path: '/tmp/backups' },
+      providerConfig: { path: destination },
       providerCapabilities: {
         objectLock: {
           supported: false,
@@ -680,12 +688,66 @@ describe('backup config routes', () => {
       headers: { Authorization: 'Bearer token' },
     });
 
+    await rm(localRoot, { recursive: true, force: true });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.providerCapabilities.objectLock).toMatchObject({
       supported: false,
       error: 'Object lock is only supported for S3 providers',
     });
+  });
+
+  it('tests a local destination against its operator directory and leaves the configured path untouched', async () => {
+    const localRoot = await mkdtemp(join(tmpdir(), 'breeze-config-local-'));
+    const elsewhere = await mkdtemp(join(tmpdir(), 'breeze-config-elsewhere-'));
+    try {
+      vi.stubEnv('BACKUP_LOCAL_ROOT', localRoot);
+      const operatorDirectory = join(localRoot, ORG_ID, CONFIG_ID);
+      await mkdir(operatorDirectory, { recursive: true });
+      const configuredPath = join(elsewhere, 'not-yet-created');
+      selectMock.mockReturnValueOnce(chainMock([makeConfig({ provider: 'local', providerConfig: { path: configuredPath } })]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig({ provider: 'local', providerConfig: { path: configuredPath } })]));
+      checkBackupProviderCapabilitiesMock.mockResolvedValueOnce({
+        objectLock: { supported: false, error: 'Object lock is only supported for S3 providers' },
+      });
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).status).toBe('success');
+      expect(await readdir(elsewhere)).toEqual([]);
+      expect(await readdir(operatorDirectory)).toEqual([]);
+    } finally {
+      await rm(localRoot, { recursive: true, force: true });
+      await rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a local destination as failed when no operator storage root is configured', async () => {
+    const elsewhere = await mkdtemp(join(tmpdir(), 'breeze-config-elsewhere-'));
+    try {
+      vi.stubEnv('BACKUP_LOCAL_ROOT', '');
+      const configuredPath = join(elsewhere, 'not-yet-created');
+      selectMock.mockReturnValueOnce(chainMock([makeConfig({ provider: 'local', providerConfig: { path: configuredPath } })]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig({ provider: 'local', providerConfig: { path: configuredPath } })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.status).toBe('failed');
+      expect(body.error).toContain('BACKUP_LOCAL_ROOT');
+      expect(body.error).not.toContain(elsewhere);
+      expect(await readdir(elsewhere)).toEqual([]);
+    } finally {
+      await rm(elsewhere, { recursive: true, force: true });
+    }
   });
 
   it('returns an explicit unsupported capability result when object lock cannot be verified', async () => {

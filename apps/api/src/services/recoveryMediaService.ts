@@ -10,6 +10,7 @@ import {
   type S3ClientConfig,
 } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
+import { resolveApiLocalBackupPath } from './apiLocalBackupStorage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
@@ -51,6 +52,8 @@ const execFileAsync = promisify(execFile);
 export type RecoveryMediaStorageConfig =
   | {
       provider: 'local';
+      orgId: string;
+      configId: string;
       rootPath: string;
       storageKey: string;
       downloadFilename: string;
@@ -428,8 +431,13 @@ export async function resolveRecoveryArtifactStorage(
     if (!rootPath) {
       throw new Error('Local backup provider path is missing');
     }
+    if (!resolved.localConfigId || resolved.config?.orgId !== resolved.snapshot.orgId) {
+      throw new Error('Local storage configuration lineage is unavailable');
+    }
     return {
       provider: 'local',
+      orgId: resolved.snapshot.orgId,
+      configId: resolved.localConfigId,
       rootPath,
       storageKey: buildStorageKey(namespace, artifactId, fileName),
       downloadFilename: fileName,
@@ -480,7 +488,7 @@ export async function uploadRecoveryArtifactFile(
   contentType = 'application/octet-stream'
 ): Promise<void> {
   if (storage.provider === 'local') {
-    const destinationPath = resolve(storage.rootPath, storage.storageKey);
+    const destinationPath = await resolveApiLocalBackupPath(storage.rootPath, storage.storageKey, storage.orgId, storage.configId);
     await mkdir(dirname(destinationPath), { recursive: true });
     await copyFile(filePath, destinationPath);
     return;
@@ -501,7 +509,7 @@ export async function uploadRecoveryArtifactFile(
 
 export async function downloadRecoveryArtifactFile(storage: RecoveryMediaStorageConfig, destinationPath: string) {
   if (storage.provider === 'local') {
-    const sourcePath = resolve(storage.rootPath, storage.storageKey);
+    const sourcePath = await resolveApiLocalBackupPath(storage.rootPath, storage.storageKey, storage.orgId, storage.configId);
     await mkdir(dirname(destinationPath), { recursive: true });
     await copyFile(sourcePath, destinationPath);
     return;
@@ -1060,7 +1068,7 @@ export async function getRecoveryMediaDownloadTarget(orgId: string, artifactId: 
     };
   }
 
-  const filePath = resolve(storage.rootPath, storage.storageKey);
+  const filePath = await resolveApiLocalBackupPath(storage.rootPath, storage.storageKey, storage.orgId, storage.configId);
   const fileInfo = await stat(filePath);
   return {
     artifact,
@@ -1101,7 +1109,7 @@ export async function getRecoveryMediaSignatureDownloadTarget(orgId: string, art
     return { artifact, unavailable: false, type: 'redirect' as const, url };
   }
 
-  const filePath = resolve(storage.rootPath, storage.storageKey);
+  const filePath = await resolveApiLocalBackupPath(storage.rootPath, storage.storageKey, storage.orgId, storage.configId);
   const fileInfo = await stat(filePath);
   return {
     artifact,

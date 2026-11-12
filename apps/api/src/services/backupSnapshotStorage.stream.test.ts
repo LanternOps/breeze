@@ -86,32 +86,39 @@ describe('openBackupObjectStream (#11026)', () => {
   });
 
   describe('local', () => {
+    // API-side local storage resolves under the operator root as
+    // <BACKUP_LOCAL_ROOT>/<orgId>/<configId>; the stored path is not authority.
+    let operatorRoot: string;
     let root: string;
+    const lineage = { orgId: 'org-1', configId: 'destination' };
     beforeEach(async () => {
-      root = await mkdtemp(join(tmpdir(), 'breeze-stream-local-'));
+      operatorRoot = await mkdtemp(join(tmpdir(), 'breeze-stream-local-'));
+      vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
+      root = join(operatorRoot, lineage.orgId, lineage.configId);
       await mkdir(join(root, 'snapshots', 's'), { recursive: true });
       await writeFile(join(root, 'snapshots', 's', 'manifest.json'), '0123456789');
     });
     afterEach(async () => {
-      await rm(root, { recursive: true, force: true });
+      vi.unstubAllEnvs();
+      await rm(operatorRoot, { recursive: true, force: true });
     });
 
     it('streams the file', async () => {
-      const stream = await openBackupObjectStream({ provider: 'local', providerConfig: { path: root }, key: 'snapshots/s/manifest.json', maxBytes: 10 });
+      const stream = await openBackupObjectStream({ provider: 'local', ...lineage, providerConfig: { path: root }, key: 'snapshots/s/manifest.json', maxBytes: 10 });
       expect((await read(stream)).toString()).toBe('0123456789');
     });
 
     it('a file over the cap rejects from its stat, before reading', async () => {
-      await expect(openBackupObjectStream({ provider: 'local', providerConfig: { path: root }, key: 'snapshots/s/manifest.json', maxBytes: 9 })).rejects.toBeInstanceOf(BackupObjectTooLargeError);
+      await expect(openBackupObjectStream({ provider: 'local', ...lineage, providerConfig: { path: root }, key: 'snapshots/s/manifest.json', maxBytes: 9 })).rejects.toBeInstanceOf(BackupObjectTooLargeError);
     });
 
     it('a missing file rejects so the caller can classify it', async () => {
-      const failure = await openBackupObjectStream({ provider: 'local', providerConfig: { path: root }, key: 'snapshots/s/nope.json', maxBytes: 9 }).catch((err: unknown) => err);
+      const failure = await openBackupObjectStream({ provider: 'local', ...lineage, providerConfig: { path: root }, key: 'snapshots/s/nope.json', maxBytes: 9 }).catch((err: unknown) => err);
       expect(isBackupObjectNotFound(failure)).toBe(true);
     });
 
     it('a key escaping the root is refused', async () => {
-      await expect(openBackupObjectStream({ provider: 'local', providerConfig: { path: root }, key: '../../etc/passwd', maxBytes: 9 })).rejects.toThrow();
+      await expect(openBackupObjectStream({ provider: 'local', ...lineage, providerConfig: { path: root }, key: '../../etc/passwd', maxBytes: 9 })).rejects.toThrow();
     });
   });
 

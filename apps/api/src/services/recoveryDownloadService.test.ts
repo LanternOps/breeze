@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:fs/promises', () => ({
   stat: vi.fn(async () => ({ size: 2 })),
+  lstat: vi.fn(async () => ({ isDirectory: () => true, isSymbolicLink: () => false })),
+  realpath: vi.fn(async (path: string) => path),
 }));
 
 vi.mock('node:fs', async () => {
@@ -94,12 +96,14 @@ import { getAuthenticatedRecoveryDownloadTarget } from './recoveryDownloadServic
 import { normalizeStorageIdentity } from './backupStorageIdentity';
 
 // The identity normalizeStorageIdentity() derives for providerConfig
-// { path: '/var/backups' } — i.e. the pinned identity a snapshot written to
+// { path: '/var/org-1/backups' } — i.e. the pinned identity a snapshot written to
 // that local root carries.
-const LOCAL_IDENTITY = 'local::/var/backups';
+const LOCAL_IDENTITY = 'local::/var/org-1/backups';
 
 describe('getAuthenticatedRecoveryDownloadTarget', () => {
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
+    vi.stubEnv('BACKUP_LOCAL_ROOT', '/var');
     vi.clearAllMocks();
     lineageRows.length = 0;
     lineageRows.push([{ orgId: 'org-1', deviceId: 'device-1', keyLayout: 'legacy_flat' }]);
@@ -162,9 +166,9 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
         snapshotId: 'snap-ext-001',
         metadata: {},
       },
-      providerType: 'local',
+      providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
       providerConfig: {
-        path: '/var/backups',
+        path: '/var/org-1/backups',
       },
     });
 
@@ -182,6 +186,59 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     );
 
     expect(result.unavailable).toBe(false);
+  });
+
+  describe('API-host local storage location', () => {
+    const tokenForOrg1 = {
+      id: 'token-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      snapshotId: 'snapshot-db-1',
+      status: 'authenticated',
+      authenticatedAt: new Date('2099-04-01T00:00:00.000Z'),
+      expiresAt: new Date('2099-04-02T00:00:00.000Z'),
+    } as any;
+
+    function mockLocalDestination(configOrgId: string) {
+      resolveSnapshotProviderConfigMock.mockResolvedValue({
+        snapshot: { snapshotId: 'snap-ext-001', metadata: {} },
+        providerType: 'local',
+        localConfigId: 'cfg-1',
+        config: { id: 'cfg-1', orgId: configOrgId },
+        providerConfig: { path: '/stored/endpoint/path' },
+      });
+    }
+
+    it('reads from the operator directory of the token organization and destination, not the stored path', async () => {
+      vi.stubEnv('BACKUP_LOCAL_ROOT', '/srv/breeze-local');
+      mockLocalDestination('org-1');
+
+      const result = await getAuthenticatedRecoveryDownloadTarget(tokenForOrg1, 'snapshots/snap-ext-001/manifest.json');
+
+      expect(result.unavailable).toBe(false);
+      expect(statMock).toHaveBeenCalledWith('/srv/breeze-local/org-1/cfg-1/snapshots/snap-ext-001/manifest.json');
+      expect(statMock).not.toHaveBeenCalledWith(expect.stringContaining('/stored/endpoint/path'));
+    });
+
+    it('does not read when the destination row belongs to another organization', async () => {
+      vi.stubEnv('BACKUP_LOCAL_ROOT', '/srv/breeze-local');
+      mockLocalDestination('org-2');
+
+      await expect(
+        getAuthenticatedRecoveryDownloadTarget(tokenForOrg1, 'snapshots/snap-ext-001/manifest.json'),
+      ).rejects.toThrow('BACKUP_LOCAL_ROOT');
+      expect(statMock).not.toHaveBeenCalled();
+    });
+
+    it('does not read when no operator storage root is configured', async () => {
+      vi.stubEnv('BACKUP_LOCAL_ROOT', '');
+      mockLocalDestination('org-1');
+
+      await expect(
+        getAuthenticatedRecoveryDownloadTarget(tokenForOrg1, 'snapshots/snap-ext-001/manifest.json'),
+      ).rejects.toThrow('BACKUP_LOCAL_ROOT');
+      expect(statMock).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects used tokens even if they still have authenticatedAt set', async () => {
@@ -210,9 +267,9 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
         snapshotId: 'snap-ext-001',
         metadata: {},
       },
-      providerType: 'local',
+      providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
       providerConfig: {
-        path: '/var/backups',
+        path: '/var/org-1/backups',
       },
     });
 
@@ -248,8 +305,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
   it('rejects a remotePath with a leading slash instead of silently normalizing it into scope', async () => {
     resolveSnapshotProviderConfigMock.mockResolvedValue({
       snapshot: { snapshotId: 'snap-ext-001', metadata: {} },
-      providerType: 'local',
-      providerConfig: { path: '/var/backups' },
+      providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+      providerConfig: { path: '/var/org-1/backups' },
     });
 
     // A leading slash must NOT be stripped before classification — the
@@ -429,8 +486,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
           metadata: {},
           storageIdentity,
         },
-        providerType: 'local',
-        providerConfig: { path: '/var/backups' },
+        providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+        providerConfig: { path: '/var/org-1/backups' },
       });
     }
 
@@ -531,10 +588,10 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       });
 
       it.each([
-        ['the bare agent layout', 'snapshots/older', '/var/backups/snapshots/older/files/a.gz'],
-        ['a root under a base prefix', 'archive-2025/snapshots/older', '/var/backups/archive-2025/snapshots/older/files/a.gz'],
-        ['a value that does not name the origin\'s root', 'archive-2025', '/var/backups/snapshots/older/files/a.gz'],
-        ['no recorded prefix', null, '/var/backups/snapshots/older/files/a.gz'],
+        ['the bare agent layout', 'snapshots/older', '/var/org-1/backups/snapshots/older/files/a.gz'],
+        ['a root under a base prefix', 'archive-2025/snapshots/older', '/var/org-1/backups/archive-2025/snapshots/older/files/a.gz'],
+        ['a value that does not name the origin\'s root', 'archive-2025', '/var/org-1/backups/snapshots/older/files/a.gz'],
+        ['no recorded prefix', null, '/var/org-1/backups/snapshots/older/files/a.gz'],
       ])('local: reads the external key once under %s', async (_label, originStoragePrefix, expected) => {
         mockCurrentSnapshotLocal(LOCAL_IDENTITY);
         lineageRows.push([{ fileIndexStatus: 'complete' }]);
@@ -712,8 +769,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('refuses an own-prefix LOCAL download when the live root no longer matches the pinned identity, before touching the filesystem', async () => {
       resolveSnapshotProviderConfigMock.mockResolvedValue({
         snapshot: { snapshotId: 'current', metadata: {}, storageIdentity: 'local::/srv/old-backups' },
-        providerType: 'local',
-        providerConfig: { path: '/var/backups' },
+        providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+        providerConfig: { path: '/var/org-1/backups' },
       });
 
       const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/current/manifest.json');
@@ -740,8 +797,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('refuses when the provider TYPE changed (pinned s3, live local)', async () => {
       resolveSnapshotProviderConfigMock.mockResolvedValue({
         snapshot: { snapshotId: 'current', metadata: {}, storageIdentity: 's3::minio.example.com::old-bucket' },
-        providerType: 'local',
-        providerConfig: { path: '/var/backups' },
+        providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+        providerConfig: { path: '/var/org-1/backups' },
       });
 
       const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/current/manifest.json');
@@ -773,8 +830,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('allows an own-prefix LOCAL download whose live root matches the pinned identity', async () => {
       resolveSnapshotProviderConfigMock.mockResolvedValue({
         snapshot: { snapshotId: 'current', metadata: {}, storageIdentity: LOCAL_IDENTITY },
-        providerType: 'local',
-        providerConfig: { path: '/var/backups' },
+        providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+        providerConfig: { path: '/var/org-1/backups' },
       });
 
       const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/current/manifest.json');
@@ -785,8 +842,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('still allows a legacy snapshot with NO pinned identity (nothing to compare against)', async () => {
       resolveSnapshotProviderConfigMock.mockResolvedValue({
         snapshot: { snapshotId: 'current', metadata: {}, storageIdentity: null },
-        providerType: 'local',
-        providerConfig: { path: '/var/backups' },
+        providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+        providerConfig: { path: '/var/org-1/backups' },
       });
 
       const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/current/manifest.json');
@@ -797,8 +854,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('treats an EMPTY-string pinned identity as drift (fail closed), not as a legacy snapshot', async () => {
       resolveSnapshotProviderConfigMock.mockResolvedValue({
         snapshot: { snapshotId: 'current', metadata: {}, storageIdentity: '' },
-        providerType: 'local',
-        providerConfig: { path: '/var/backups' },
+        providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+        providerConfig: { path: '/var/org-1/backups' },
       });
 
       const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/current/manifest.json');
@@ -810,8 +867,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('refuses an otherwise-authorized EXTERNAL key when the live config drifted from the pinned identity', async () => {
       resolveSnapshotProviderConfigMock.mockResolvedValue({
         snapshot: { snapshotId: 'current', metadata: {}, storageIdentity: 'local::/srv/old-backups' },
-        providerType: 'local',
-        providerConfig: { path: '/var/backups' },
+        providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+        providerConfig: { path: '/var/org-1/backups' },
       });
       // Origin verified against the PINNED identity — this is the case the
       // origin check alone cannot catch, since it never looks at the live config.
@@ -850,8 +907,8 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     beforeEach(() => {
       resolveSnapshotProviderConfigMock.mockResolvedValue({
         snapshot: { snapshotId: 'snap-ext-001', metadata: {} },
-        providerType: 'local',
-        providerConfig: { path: '/var/backups' },
+        providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+        providerConfig: { path: '/var/org-1/backups' },
       });
     });
 
@@ -943,7 +1000,9 @@ describe('snapshot key root (#7081)', () => {
     return command.input.Key;
   };
 
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
+    vi.stubEnv('BACKUP_LOCAL_ROOT', '/var');
     vi.clearAllMocks();
     loadOriginKeyRootsMock.mockReset();
     lineageRows.length = 0;
@@ -1018,9 +1077,9 @@ describe('snapshot key root (#7081)', () => {
 
   it('refuses a prefixed snapshot on a non-S3 destination', async () => {
     resolveSnapshotProviderConfigMock.mockResolvedValue({
-      snapshot: { snapshotId: 'snap-own', storageIdentity: 'local::/var/backups', metadata: {} },
-      providerType: 'local',
-      providerConfig: { path: '/var/backups' },
+      snapshot: { snapshotId: 'snap-own', storageIdentity: 'local::/var/org-1/backups', metadata: {} },
+      providerType: 'local', localConfigId: 'backups', config: { id: 'backups', orgId: 'org-1' },
+      providerConfig: { path: '/var/org-1/backups' },
     });
     const result = await getAuthenticatedRecoveryDownloadTarget(tokenRow as any, 'snapshots/snap-own/files/x');
     expect(result).toMatchObject({ unavailable: true });

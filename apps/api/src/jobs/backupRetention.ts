@@ -1790,7 +1790,7 @@ async function listStorageIdentityGroups(
 type GcUnitStorage = RootedStorage & { key: string; skipSetKey: string; label: string };
 
 function gcUnitStorage(
-  identity: { key: string; provider: string; providerConfig: unknown },
+  identity: { key: string; provider: string; providerConfig: unknown; orgId: string; configIds: string[] },
   root: SnapshotKeyRoot,
 ): GcUnitStorage {
   const legacy = root.layout === 'legacy_flat';
@@ -1798,6 +1798,8 @@ function gcUnitStorage(
     key: identity.key,
     provider: identity.provider,
     providerConfig: identity.providerConfig,
+    orgId: identity.orgId,
+    configId: identity.configIds[0],
     root,
     skipSetKey: legacy ? identity.key : `${identity.key}::${keyRootId(root)}`,
     label: legacy ? identity.key : `${identity.key} root ${keyRootId(root)}`,

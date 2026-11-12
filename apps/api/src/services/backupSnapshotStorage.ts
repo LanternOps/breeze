@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { opendir, readFile, rm, stat } from 'node:fs/promises';
-import { join as joinLocalPath, posix as pathPosix, resolve as resolvePath } from 'node:path';
+import { join as joinLocalPath, posix as pathPosix } from 'node:path';
 import { pipeline, Transform, type Readable } from 'node:stream';
 import {
   DeleteObjectsCommand,
@@ -14,10 +14,13 @@ import { deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { buildS3Client, type S3ClientOverrides } from './recoveryMediaService';
 import { asRecord, getStringValue } from './recoveryBootstrap';
 import { physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
+import { resolveApiLocalBackupPath } from './apiLocalBackupStorage';
 
 type SnapshotStorageInput = {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
   snapshotId: string;
   /** The snapshot row's recorded key root (#7081); see snapshotStoragePrefixFor. */
   keyLayout: unknown;
@@ -127,15 +130,6 @@ function normalizeCapabilityError(error: unknown, fallback: string): string {
   }
 
   return message || fallback;
-}
-
-function ensureContainedLocalPath(rootPath: string, relativePath: string): string {
-  const base = resolvePath(rootPath);
-  const resolved = resolvePath(base, relativePath);
-  if (resolved !== base && !resolved.startsWith(`${base}/`)) {
-    throw new Error('path traversal detected');
-  }
-  return resolved;
 }
 
 function normalizeStoragePrefix(
@@ -298,6 +292,8 @@ const LOCAL_LISTING_PAGE_SIZE = 1000;
 async function* iterateLocalObjectsWithLastModified(
   providerConfig: Record<string, unknown>,
   prefix: string,
+  orgId?: string,
+  configId?: string,
 ): AsyncGenerator<BackupObjectListing[]> {
   const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
   if (!rootPath) {
@@ -305,7 +301,7 @@ async function* iterateLocalObjectsWithLastModified(
   }
 
   const normalizedPrefix = pathPosix.normalize(prefix).replace(/^\/+/, '');
-  const targetPath = ensureContainedLocalPath(rootPath, normalizedPrefix);
+  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedPrefix, orgId, configId);
 
   // #6843: entries are pulled one at a time from fs.opendir's async-iterable
   // Dir handle, not from fs.readdir({ withFileTypes: true }) — readdir
@@ -356,6 +352,8 @@ async function* iterateLocalObjectsWithLastModified(
 export async function* iterateBackupObjectsUnderPrefix(input: {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
   prefix: string;
 }): AsyncGenerator<BackupObjectListing[]> {
   const provider = input.provider ?? null;
@@ -365,7 +363,7 @@ export async function* iterateBackupObjectsUnderPrefix(input: {
     return;
   }
   if (provider === 'local') {
-    yield* iterateLocalObjectsWithLastModified(providerConfig, input.prefix);
+    yield* iterateLocalObjectsWithLastModified(providerConfig, input.prefix, input.orgId, input.configId);
     return;
   }
   throw new Error(`Provider ${provider ?? 'unknown'} does not support object listing for GC`);
@@ -379,6 +377,8 @@ export async function* iterateBackupObjectsUnderPrefix(input: {
 export async function listBackupObjectsUnderPrefix(input: {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
   prefix: string;
 }): Promise<BackupObjectListing[]> {
   const results: BackupObjectListing[] = [];
@@ -412,13 +412,13 @@ async function fetchS3ObjectText(providerConfig: Record<string, unknown>, key: s
   return text;
 }
 
-async function fetchLocalObjectText(providerConfig: Record<string, unknown>, key: string, maxBytes?: number): Promise<string> {
+async function fetchLocalObjectText(providerConfig: Record<string, unknown>, key: string, maxBytes?: number, orgId?: string, configId?: string): Promise<string> {
   const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
   if (!rootPath) {
     throw new Error('Local backup storage is misconfigured');
   }
   const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
-  const targetPath = ensureContainedLocalPath(rootPath, normalizedKey);
+  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedKey, orgId, configId);
   if (maxBytes !== undefined) {
     const stats = await stat(targetPath);
     if (stats.size > maxBytes) {
@@ -458,13 +458,13 @@ async function fetchS3ObjectBytes(providerConfig: Record<string, unknown>, key: 
   return bytes;
 }
 
-async function fetchLocalObjectBytes(providerConfig: Record<string, unknown>, key: string, maxBytes?: number): Promise<Uint8Array> {
+async function fetchLocalObjectBytes(providerConfig: Record<string, unknown>, key: string, maxBytes?: number, orgId?: string, configId?: string): Promise<Uint8Array> {
   const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
   if (!rootPath) {
     throw new Error('Local backup storage is misconfigured');
   }
   const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
-  const targetPath = ensureContainedLocalPath(rootPath, normalizedKey);
+  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedKey, orgId, configId);
   if (maxBytes !== undefined) {
     const stats = await stat(targetPath);
     if (stats.size > maxBytes) {
@@ -492,13 +492,15 @@ async function fetchLocalObjectBytes(providerConfig: Record<string, unknown>, ke
 export async function fetchBackupObjectBytes(input: {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
   key: string;
   maxBytes?: number;
 }): Promise<Uint8Array> {
   const provider = input.provider ?? null;
   const providerConfig = asRecord(input.providerConfig);
   if (provider === 's3') return fetchS3ObjectBytes(providerConfig, input.key, input.maxBytes);
-  if (provider === 'local') return fetchLocalObjectBytes(providerConfig, input.key, input.maxBytes);
+  if (provider === 'local') return fetchLocalObjectBytes(providerConfig, input.key, input.maxBytes, input.orgId, input.configId);
   throw new Error(`Provider ${provider ?? 'unknown'} does not support object fetch for GC`);
 }
 
@@ -552,13 +554,13 @@ async function openS3ObjectStream(providerConfig: Record<string, unknown>, key: 
   return boundedObjectStream(body, key, maxBytes, declared);
 }
 
-async function openLocalObjectStream(providerConfig: Record<string, unknown>, key: string, maxBytes: number): Promise<Readable> {
+async function openLocalObjectStream(providerConfig: Record<string, unknown>, key: string, maxBytes: number, orgId?: string, configId?: string): Promise<Readable> {
   const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
   if (!rootPath) {
     throw new Error('Local backup storage is misconfigured');
   }
   const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
-  const targetPath = ensureContainedLocalPath(rootPath, normalizedKey);
+  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedKey, orgId, configId);
   const stats = await stat(targetPath);
   if (stats.size > maxBytes) {
     throw new BackupObjectTooLargeError(key, stats.size, maxBytes);
@@ -576,13 +578,15 @@ async function openLocalObjectStream(providerConfig: Record<string, unknown>, ke
 export async function openBackupObjectStream(input: {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
   key: string;
   maxBytes: number;
 }): Promise<NodeJS.ReadableStream> {
   const provider = input.provider ?? null;
   const providerConfig = asRecord(input.providerConfig);
   if (provider === 's3') return openS3ObjectStream(providerConfig, input.key, input.maxBytes);
-  if (provider === 'local') return openLocalObjectStream(providerConfig, input.key, input.maxBytes);
+  if (provider === 'local') return openLocalObjectStream(providerConfig, input.key, input.maxBytes, input.orgId, input.configId);
   throw new Error(`Provider ${provider ?? 'unknown'} does not support object fetch for GC`);
 }
 
@@ -601,13 +605,15 @@ export async function openBackupObjectStream(input: {
 export async function fetchBackupObjectText(input: {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
   key: string;
   maxBytes?: number;
 }): Promise<string> {
   const provider = input.provider ?? null;
   const providerConfig = asRecord(input.providerConfig);
   if (provider === 's3') return fetchS3ObjectText(providerConfig, input.key, input.maxBytes);
-  if (provider === 'local') return fetchLocalObjectText(providerConfig, input.key, input.maxBytes);
+  if (provider === 'local') return fetchLocalObjectText(providerConfig, input.key, input.maxBytes, input.orgId, input.configId);
   throw new Error(`Provider ${provider ?? 'unknown'} does not support object fetch for GC`);
 }
 
@@ -690,6 +696,8 @@ async function deleteS3ObjectKeys(
 async function deleteLocalObjectKeys(
   providerConfig: Record<string, unknown>,
   keys: string[],
+  orgId?: string,
+  configId?: string,
 ): Promise<BackupObjectDeleteResult> {
   const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
   if (!rootPath) {
@@ -702,7 +710,7 @@ async function deleteLocalObjectKeys(
   for (const key of keys) {
     try {
       const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
-      const targetPath = ensureContainedLocalPath(rootPath, normalizedKey);
+      const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedKey, orgId, configId);
       await rm(targetPath, { force: true });
       deletedKeys.push(key);
     } catch (error) {
@@ -723,13 +731,15 @@ async function deleteLocalObjectKeys(
 export async function deleteBackupObjectKeys(input: {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
   keys: string[];
 }): Promise<BackupObjectDeleteResult> {
   if (input.keys.length === 0) return { deletedKeys: [], failedKeys: [] };
   const provider = input.provider ?? null;
   const providerConfig = asRecord(input.providerConfig);
   if (provider === 's3') return deleteS3ObjectKeys(providerConfig, input.keys);
-  if (provider === 'local') return deleteLocalObjectKeys(providerConfig, input.keys);
+  if (provider === 'local') return deleteLocalObjectKeys(providerConfig, input.keys, input.orgId, input.configId);
   throw new Error(`Provider ${provider ?? 'unknown'} does not support object deletion for GC`);
 }
 
@@ -797,6 +807,8 @@ async function deleteS3Prefix(
 async function deleteLocalPrefix(
   providerConfig: Record<string, unknown>,
   storagePrefix: string,
+  orgId?: string,
+  configId?: string,
 ): Promise<void> {
   const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
   if (!rootPath) {
@@ -804,7 +816,7 @@ async function deleteLocalPrefix(
   }
 
   const normalizedRelative = pathPosix.normalize(storagePrefix).replace(/^\/+/, '');
-  const targetPath = ensureContainedLocalPath(rootPath, normalizedRelative);
+  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedRelative, orgId, configId);
   try {
     const fileInfo = await stat(targetPath);
     await rm(targetPath, { recursive: fileInfo.isDirectory(), force: true });
@@ -881,7 +893,7 @@ export async function deleteBackupSnapshotArtifacts(input: SnapshotStorageInput)
     return;
   }
 
-  await deleteLocalPrefix(providerConfig, storagePrefix);
+  await deleteLocalPrefix(providerConfig, storagePrefix, input.orgId, input.configId);
 }
 
 export async function applyBackupSnapshotImmutability(
@@ -901,6 +913,8 @@ export async function applyBackupSnapshotImmutability(
 export async function checkBackupProviderCapabilities(input: {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
 }): Promise<ProviderCapabilityStatus> {
   const provider = input.provider ?? null;
   if (provider !== 's3') {
