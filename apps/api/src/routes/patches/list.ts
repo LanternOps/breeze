@@ -265,9 +265,7 @@ listRoutes.get(
       patchList.map((patch) => patch.id),
       {
         orgId: query.orgId,
-        allowedSiteIds: auth.scope === 'organization'
-          ? (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds
-          : undefined,
+        allowedSiteIds: auth.scope === 'organization' ? auth.allowedSiteIds : undefined,
       }
     );
 

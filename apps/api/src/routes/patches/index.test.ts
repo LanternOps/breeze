@@ -239,6 +239,7 @@ vi.mock('../../middleware/auth', () => ({
       partnerId: mockAuthState.partnerId,
       partnerOrgAccess: mockAuthState.partnerOrgAccess,
       accessibleOrgIds: mockAuthState.accessibleOrgIds,
+      allowedSiteIds: mockAuthState.allowedSiteIds,
       canAccessOrg,
       orgCondition: () => ({ op: 'orgCondition' })
     });
@@ -253,7 +254,6 @@ vi.mock('../../middleware/auth', () => ({
     if (!allowed) {
       return c.json({ error: 'Insufficient permissions' }, 403);
     }
-    c.set('permissions', { allowedSiteIds: mockAuthState.allowedSiteIds });
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),

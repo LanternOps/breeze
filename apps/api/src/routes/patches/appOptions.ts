@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { db } from '../../db';
 import { devices, devicePatches, organizations, patches, thirdPartyPackageCatalog } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
 import { normalizeSiteAllowlist } from '../../services/siteAllowlist';
 import { APP_RULE_SOURCES, canonicalAppRuleKey, linuxPackageName } from '@breeze/shared';
 
@@ -66,7 +66,7 @@ appOptionsRoutes.get(
     // packages observed on devices currently in one of their sites (none when
     // the allowlist is empty). Partner and system scope carry no site limit.
     const allowedSites = auth.scope === 'organization'
-      ? normalizeSiteAllowlist((c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds)
+      ? normalizeSiteAllowlist(auth.allowedSiteIds)
       : undefined;
     const observedSiteCondition = allowedSites === undefined
       ? sql`true`

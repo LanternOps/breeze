@@ -78,7 +78,6 @@ vi.mock('../../middleware/auth', () => ({
     if (`${resource}:${action}` !== grantedPermission) {
       return c.json({ error: 'Forbidden' }, 403);
     }
-    c.set('permissions', { allowedSiteIds: currentAuth.allowedSiteIds });
     return next();
   }),
 }));
