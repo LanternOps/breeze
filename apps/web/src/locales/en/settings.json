@@ -615,7 +615,7 @@
         "profileHint": {
           "auto": "Breeze picks the largest profile that fits the model's known context window. While the window is unknown, every tool stays available.",
           "full": "Every tool each feature offers today.",
-          "standard": "About 40 everyday helpdesk tools and a shorter prompt.",
+          "standard": "Everyday helpdesk tools and a shorter prompt (about 40 tools in chat, fewer in the helper, script builder and Office).",
           "minimal": "About a dozen read-only tools and a short prompt, for small local models.",
           "custom": "Only the tool areas and tools you list, on every feature that uses this model."
         },
@@ -627,7 +627,7 @@
         "droppedTools": "These tools no longer exist and are ignored: {{tools}}.",
         "underpowered": "This change would take away tools a feature using this model needs:",
         "underpoweredSurface": "{{surface}}: {{tools}}",
-        "capacityUnknown": "Capacity unknown: nothing is constrained. Auto keeps every tool until the endpoint lists or reports a context window.",
+        "capacityUnknown": "Capacity unknown: nothing is constrained. Auto keeps every tool until the endpoint lists or reports a context window, or you set one below.",
         "windowNotLearned": "Breeze learns context windows only on your own OpenAI-compatible endpoints, so Auto keeps every tool on this model.",
         "windowKnown": "Context window: {{tokens}} tokens ({{source}}).",
         "windowSource": {
@@ -659,12 +659,14 @@
           "absentVerified": "Verified (basic). Re-verify to check a real tool round trip on {{surface}}.",
           "officeNotChecked": "Not checked: Verify does not run an Office round trip."
         },
-        "verifyCost": "Verify sends real requests to your endpoint, billed by your provider: a basic check, then one tool round trip (up to 4 model turns) for each feature this model is assigned to. On chat with the Full profile, one request can be about 128,000 tokens.",
+        "verifyCost": "Verify sends real requests to your endpoint, billed by your provider: a basic check, then one tool round trip for each feature this model is assigned to. A round trip can take up to 4 model turns, each resending the whole prompt: on chat with the Full profile one request is about 128,000 tokens, so one chat check can approach 500,000.",
         "invalidCustom": "Choose at least one tool area or tool for a custom profile.",
         "invalidWindow": "Enter a whole number of tokens from {{min}} to {{max}}, or leave it blank.",
         "ageMinutes": "{{n}} min ago",
         "ageHours": "{{n}} h ago",
-        "ageDays": "{{n}} d ago"
+        "ageDays": "{{n}} d ago",
+        "missingRequiredTroubleshooting": "Device troubleshooting runs refuse this model: they would lack {{tools}}. Other agent runs are not affected.",
+        "underpoweredTooSmall": "{{surface}}: no tool profile fits this context window"
       }
     },
     "defaults": {

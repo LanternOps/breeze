@@ -615,7 +615,7 @@
         "profileHint": {
           "auto": "Breeze choisit le plus grand profil qui tient dans la fenêtre de contexte connue du modèle. Tant que la fenêtre est inconnue, tous les outils restent disponibles.",
           "full": "Tous les outils que chaque fonctionnalité offre aujourd’hui.",
-          "standard": "Environ 40 outils courants de soutien technique et un prompt plus court.",
+          "standard": "Outils de soutien courants et une invite plus courte (environ 40 outils dans le clavardage, moins dans le Helper, le générateur de scripts et Office).",
           "minimal": "Une douzaine d’outils en lecture seule et un prompt court, pour les petits modèles locaux.",
           "custom": "Seulement les domaines d’outils et les outils que vous indiquez, sur chaque fonctionnalité qui utilise ce modèle."
         },
@@ -627,7 +627,7 @@
         "droppedTools": "Ces outils n’existent plus et sont ignorés : {{tools}}.",
         "underpowered": "Cette modification retirerait des outils dont a besoin une fonctionnalité qui utilise ce modèle :",
         "underpoweredSurface": "{{surface}}: {{tools}}",
-        "capacityUnknown": "Capacité inconnue : rien n’est restreint. Auto conserve tous les outils tant que le point de terminaison n’indique pas de fenêtre de contexte.",
+        "capacityUnknown": "Capacité inconnue : rien n’est limité. Auto conserve tous les outils jusqu’à ce que le point de terminaison indique ou signale une fenêtre de contexte, ou que vous en définissiez une ci-dessous.",
         "windowNotLearned": "Breeze ne détecte les fenêtres de contexte que sur vos propres points de terminaison compatibles OpenAI; Auto conserve donc tous les outils sur ce modèle.",
         "windowKnown": "Fenêtre de contexte : {{tokens}} jetons ({{source}}).",
         "windowSource": {
@@ -659,12 +659,14 @@
           "absentVerified": "Vérifié (de base). Revérifiez pour contrôler un véritable aller-retour d’outil sur {{surface}}.",
           "officeNotChecked": "Non contrôlé : la vérification ne lance pas d’aller-retour Office."
         },
-        "verifyCost": "La vérification envoie de vraies requêtes à votre point de terminaison, facturées par votre fournisseur : un contrôle de base, puis un aller-retour d’outil (jusqu’à 4 tours de modèle) pour chaque fonctionnalité à laquelle ce modèle est affecté. Sur le clavardage avec le profil Complet, une requête peut atteindre environ 128 000 jetons.",
+        "verifyCost": "La vérification envoie de vraies requêtes à votre point de terminaison, facturées par votre fournisseur : un contrôle de base, puis un aller-retour d’outil pour chaque fonctionnalité à laquelle ce modèle est affecté. Un aller-retour peut compter jusqu’à 4 tours de modèle, chacun renvoyant l’invite complète : avec le profil Complet, une requête de clavardage compte environ 128 000 jetons, donc une vérification du clavardage peut approcher 500 000.",
         "invalidCustom": "Choisissez au moins un domaine d’outils ou un outil pour un profil personnalisé.",
         "invalidWindow": "Saisissez un nombre entier de jetons compris entre {{min}} et {{max}}, ou laissez le champ vide.",
         "ageMinutes": "il y a {{n}} min",
         "ageHours": "il y a {{n}} h",
-        "ageDays": "il y a {{n}} j"
+        "ageDays": "il y a {{n}} j",
+        "missingRequiredTroubleshooting": "Les exécutions de dépannage d’appareils refusent ce modèle : il leur manquerait {{tools}}. Les autres exécutions d’agents ne sont pas touchées.",
+        "underpoweredTooSmall": "{{surface}} : aucun profil d’outils ne tient dans cette fenêtre de contexte"
       }
     },
     "defaults": {

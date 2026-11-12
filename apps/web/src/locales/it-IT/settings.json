@@ -615,7 +615,7 @@
         "profileHint": {
           "auto": "Breeze sceglie il profilo più ampio che rientra nella finestra di contesto nota del modello. Finché la finestra è sconosciuta, tutti gli strumenti restano disponibili.",
           "full": "Tutti gli strumenti che ogni funzione offre oggi.",
-          "standard": "Circa 40 strumenti di helpdesk di uso quotidiano e un prompt più breve.",
+          "standard": "Strumenti di assistenza quotidiani e un prompt più breve (circa 40 strumenti nella chat, meno nell’helper, nel generatore di script e in Office).",
           "minimal": "Circa una dozzina di strumenti di sola lettura e un prompt breve, per i piccoli modelli locali.",
           "custom": "Solo le aree di strumenti e gli strumenti che indichi, su ogni funzione che usa questo modello."
         },
@@ -627,7 +627,7 @@
         "droppedTools": "Questi strumenti non esistono più e vengono ignorati: {{tools}}.",
         "underpowered": "Questa modifica toglierebbe strumenti di cui ha bisogno una funzione che usa questo modello:",
         "underpoweredSurface": "{{surface}}: {{tools}}",
-        "capacityUnknown": "Capacità sconosciuta: nulla è limitato. Auto mantiene tutti gli strumenti finché l'endpoint non elenca o segnala una finestra di contesto.",
+        "capacityUnknown": "Capacità sconosciuta: nulla è limitato. Auto mantiene tutti gli strumenti finché l’endpoint non elenca o segnala una finestra di contesto, o finché non ne imposti una qui sotto.",
         "windowNotLearned": "Breeze rileva le finestre di contesto solo sui tuoi endpoint compatibili con OpenAI, quindi Auto mantiene tutti gli strumenti su questo modello.",
         "windowKnown": "Finestra di contesto: {{tokens}} token ({{source}}).",
         "windowSource": {
@@ -659,12 +659,14 @@
           "absentVerified": "Verificato (base). Riverifica per controllare un vero ciclo completo degli strumenti su {{surface}}.",
           "officeNotChecked": "Non controllato: la verifica non esegue un ciclo completo di Office."
         },
-        "verifyCost": "La verifica invia richieste reali al tuo endpoint, fatturate dal tuo provider: un controllo di base, poi un ciclo completo degli strumenti (fino a 4 turni del modello) per ogni funzione a cui è assegnato questo modello. Nella chat con il profilo Completo, una richiesta può essere di circa 128.000 token.",
+        "verifyCost": "La verifica invia richieste reali al tuo endpoint, fatturate dal tuo provider: un controllo di base, poi un round trip di strumenti per ogni funzione a cui è assegnato questo modello. Un round trip può richiedere fino a 4 turni del modello, ognuno dei quali reinvia l’intero prompt: nella chat con il profilo Completo una richiesta è di circa 128.000 token, quindi un controllo della chat può avvicinarsi a 500.000.",
         "invalidCustom": "Scegli almeno un'area di strumenti o uno strumento per un profilo personalizzato.",
         "invalidWindow": "Inserisci un numero intero di token da {{min}} a {{max}}, oppure lascia vuoto.",
         "ageMinutes": "{{n}} min fa",
         "ageHours": "{{n}} h fa",
-        "ageDays": "{{n}} g fa"
+        "ageDays": "{{n}} g fa",
+        "missingRequiredTroubleshooting": "Le esecuzioni di risoluzione dei problemi dei dispositivi rifiutano questo modello: mancherebbero loro {{tools}}. Le altre esecuzioni degli agenti non sono interessate.",
+        "underpoweredTooSmall": "{{surface}}: nessun profilo di strumenti rientra in questa finestra di contesto"
       }
     },
     "defaults": {

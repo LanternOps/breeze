@@ -615,7 +615,7 @@
         "profileHint": {
           "auto": "Breeze, modelin bilinen bağlam penceresine sığan en büyük profili seçer. Pencere bilinmediği sürece tüm araçlar kullanılabilir kalır.",
           "full": "Her özelliğin bugün sunduğu tüm araçlar.",
-          "standard": "Yaklaşık 40 günlük yardım masası aracı ve daha kısa bir prompt.",
+          "standard": "Günlük yardım masası araçları ve daha kısa bir istem (sohbette yaklaşık 40 araç; Helper’da, betik oluşturucuda ve Office'te daha az).",
           "minimal": "Yaklaşık bir düzine salt okunur araç ve kısa bir prompt, küçük yerel modeller için.",
           "custom": "Bu modeli kullanan her özellikte yalnızca listelediğiniz araç alanları ve araçlar."
         },
@@ -627,7 +627,7 @@
         "droppedTools": "Bu araçlar artık yok ve yok sayılıyor: {{tools}}.",
         "underpowered": "Bu değişiklik, bu modeli kullanan bir özelliğin ihtiyaç duyduğu araçları kaldırır:",
         "underpoweredSurface": "{{surface}}: {{tools}}",
-        "capacityUnknown": "Kapasite bilinmiyor: hiçbir şey kısıtlanmıyor. Otomatik, uç nokta bir bağlam penceresi listeleyene veya bildirene kadar tüm araçları korur.",
+        "capacityUnknown": "Kapasite bilinmiyor: hiçbir şey kısıtlanmaz. Otomatik, uç nokta bir bağlam penceresi listeleyene veya bildirene ya da aşağıda siz bir değer belirleyene kadar tüm araçları korur.",
         "windowNotLearned": "Breeze bağlam pencerelerini yalnızca kendi OpenAI uyumlu uç noktalarınızda öğrenir; bu yüzden Otomatik bu modelde tüm araçları korur.",
         "windowKnown": "Bağlam penceresi: {{tokens}} token ({{source}}).",
         "windowSource": {
@@ -659,12 +659,14 @@
           "absentVerified": "Doğrulandı (temel). {{surface}} üzerinde gerçek bir araç gidiş-dönüş testini denetlemek için yeniden doğrulayın.",
           "officeNotChecked": "Denetlenmedi: Doğrulama bir Office gidiş-dönüş testi çalıştırmaz."
         },
-        "verifyCost": "Doğrulama, uç noktanıza sağlayıcınız tarafından faturalandırılan gerçek istekler gönderir: temel bir denetim, ardından bu modelin atandığı her özellik için bir araç gidiş-dönüş testi (en fazla 4 model turu). Tam profille sohbette tek bir istek yaklaşık 128.000 token olabilir.",
+        "verifyCost": "Doğrulama, uç noktanıza sağlayıcınız tarafından faturalandırılan gerçek istekler gönderir: temel bir kontrol, ardından bu modelin atandığı her özellik için bir araç gidiş-dönüşü. Bir gidiş-dönüş, her biri istemin tamamını yeniden gönderen en fazla 4 model turu sürebilir: Tam profilli sohbette bir istek yaklaşık 128.000 token olduğundan tek bir sohbet kontrolü 500.000'e yaklaşabilir.",
         "invalidCustom": "Özel bir profil için en az bir araç alanı veya araç seçin.",
         "invalidWindow": "{{min}} ile {{max}} arasında tam sayı olarak token girin veya boş bırakın.",
         "ageMinutes": "{{n}} dk önce",
         "ageHours": "{{n}} sa önce",
-        "ageDays": "{{n}} g önce"
+        "ageDays": "{{n}} g önce",
+        "missingRequiredTroubleshooting": "Cihaz sorun giderme çalıştırmaları bu modeli reddeder: {{tools}} eksik kalır. Diğer ajan çalıştırmaları etkilenmez.",
+        "underpoweredTooSmall": "{{surface}}: bu bağlam penceresine hiçbir araç profili sığmaz"
       }
     },
     "defaults": {

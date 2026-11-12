@@ -27,6 +27,9 @@ describe('breezeToolProfileCatalog (#11398)', () => {
 
   it('gives registry tools their domain and script-builder-only names none', () => {
     expect(catalog.domainOf('query_devices')).toBeDefined();
+    // The troubleshooting floor is satisfiable by the scripts area (the docs and drawer rely on it).
+    expect(catalog.domainOf('execute_command')).toBe('scripts');
+    expect(catalog.domainOf('run_script')).toBe('scripts');
     expect(catalog.domainOf('apply_script_code')).toBeUndefined();
   });
 
@@ -45,7 +48,7 @@ describe('breezeToolProfileCatalog (#11398)', () => {
       }
       return null;
     })();
-    expect(e?.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'] }] });
+    expect(e?.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'], tooSmall: false }] });
   });
 
   it('with the real registries: standard keeps every floor, incl. the troubleshooting run', () => {

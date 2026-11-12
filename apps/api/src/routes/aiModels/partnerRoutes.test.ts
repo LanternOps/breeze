@@ -530,6 +530,10 @@ describe('/ai/models partner routes — behaviour', () => {
       details: { offeringId: A, fields: ['toolProfile', 'contextWindowOverride'], toolSettings: { from, to } },
     }));
   });
+  it('a patch without tool fields never loads the tool catalog (#11398)', async () => {
+    await call('PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' });
+    expect(vi.mocked(updateOfferingDetails).mock.calls[0]![0]).not.toHaveProperty('toolCatalog');
+  });
   it('a tool profile refusal is a 422 with the per-surface gaps, and nothing is audited (#11398)', async () => {
     const surfaces = [{ surface: 'script_builder', missing: ['execute_script_on_device'] }];
     vi.mocked(updateOfferingDetails).mockRejectedValue(
@@ -583,6 +587,13 @@ describe('/ai/models partner routes — script reviewer offering gate', () => {
     vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'chat', level: 'partner', orgId: null }]);
     permissionsState.approvalsDecide = false;
     expect((await patch({ allowedOptions: { effort: ['low'] } })).status).toBe(200);
+    expect(updateOfferingDetails).toHaveBeenCalled();
+  });
+  it('reviewer default + tool profile / window patch without approvals:decide → 200 (#11398: exposure, not reviewer behaviour)', async () => {
+    // The reviewer runs no tools; the window only caps request size. Neither widens what the reviewer may do.
+    vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'script_reviewer', level: 'partner', orgId: null }]);
+    permissionsState.approvalsDecide = false;
+    expect((await patch({ toolProfile: 'standard', toolAllowlist: null, contextWindowOverride: 32768 })).status).toBe(200);
     expect(updateOfferingDetails).toHaveBeenCalled();
   });
   it('reviewer default rename / price patch without approvals:decide → 200', async () => {

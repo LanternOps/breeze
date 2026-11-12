@@ -50,7 +50,7 @@ vi.mock('./registryWriteLock', () => ({
 vi.mock('../../config/env', () => ({ isHosted: () => h.hosted }));
 vi.mock('./toolSettingsWrite', async (orig) => ({
   ...(await orig<typeof import('./toolSettingsWrite')>()),
-  loadServedToolSurfaces: (...a: unknown[]) => h.loadServedToolSurfaces(...a),
+  loadServedToolSurfaces: (...a: unknown[]) => { h.calls.push('served'); return h.loadServedToolSurfaces(...a); },
 }));
 vi.mock('../../db', () => {
   const chain = (rows: () => unknown[]) => {
@@ -637,7 +637,8 @@ describe('updateOfferingDetails: tool profile and context window (#11398)', () =
     const result = await updateOfferingDetails({
       partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'standard', contextWindowOverride: 32768 },
     });
-    expect(h.calls).toEqual([`lock:${P}`, 'update']);
+    // The served surfaces are read inside the lock, before the write.
+    expect(h.calls).toEqual([`lock:${P}`, 'served', 'update']);
     expect(h.lastSet).toMatchObject({ toolProfile: 'standard', contextWindowOverride: 32768 });
     expect(h.loadServedToolSurfaces).toHaveBeenCalledWith(P, OFF);
     expect(result.toolSettingsChange).toEqual({
@@ -658,7 +659,7 @@ describe('updateOfferingDetails: tool profile and context window (#11398)', () =
       partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'minimal' },
     }).catch((e) => e);
     expect([err.status, err.code]).toEqual([422, 'tool_profile_underpowered']);
-    expect(err.details.surfaces).toEqual([{ surface: 'script_builder', missing: ['execute_script_on_device'] }]);
+    expect(err.details.surfaces).toEqual([{ surface: 'script_builder', missing: ['execute_script_on_device'], tooSmall: false }]);
     expect(h.dbUpdateReturning).not.toHaveBeenCalled();
   });
 
@@ -686,6 +687,16 @@ describe('updateOfferingDetails: tool profile and context window (#11398)', () =
       partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, contextWindowOverride: 32768 },
     }).catch((e) => e);
     expect(err.details).toEqual({ field: 'contextWindowOverride', reason: 'gateway_only' });
+  });
+
+  it('an env-managed (MCP_LLM_*) gateway model takes tool settings: access policy, not its price or name', async () => {
+    h.dbSelectRows = [[{ kind: 'openai_compatible', configVersion: 2 }]];
+    await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'standard', contextWindowOverride: 16384 },
+    });
+    expect(h.lastSet).toMatchObject({ toolProfile: 'standard', contextWindowOverride: 16384 });
+    // Only the gateway lookup ran: the env-managed check (prices / name only) was never consulted.
+    expect(h.dbSelectRows).toEqual([]);
   });
 
   it('a profile on a platform model is accepted (names narrow on every transport)', async () => {

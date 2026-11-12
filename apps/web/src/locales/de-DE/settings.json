@@ -615,7 +615,7 @@
         "profileHint": {
           "auto": "Breeze wählt das größte Profil, das in das bekannte Kontextfenster des Modells passt. Solange das Fenster unbekannt ist, bleiben alle Tools verfügbar.",
           "full": "Alle Tools, die jede Funktion heute anbietet.",
-          "standard": "Etwa 40 alltägliche Helpdesk-Tools und ein kürzerer Prompt.",
+          "standard": "Alltägliche Helpdesk-Tools und ein kürzerer Prompt (etwa 40 Tools im Chat, weniger im Helper, im Skript-Generator und in Office).",
           "minimal": "Etwa ein Dutzend Nur-Lese-Tools und ein kurzer Prompt, für kleine lokale Modelle.",
           "custom": "Nur die Tool-Bereiche und Tools, die Sie angeben, für jede Funktion, die dieses Modell verwendet."
         },
@@ -627,7 +627,7 @@
         "droppedTools": "Diese Tools existieren nicht mehr und werden ignoriert: {{tools}}.",
         "underpowered": "Diese Änderung würde Tools entfernen, die eine Funktion mit diesem Modell benötigt:",
         "underpoweredSurface": "{{surface}}: {{tools}}",
-        "capacityUnknown": "Kapazität unbekannt: Nichts wird eingeschränkt. Auto behält alle Tools, bis der Endpunkt ein Kontextfenster auflistet oder meldet.",
+        "capacityUnknown": "Kapazität unbekannt: Nichts wird eingeschränkt. „Auto“ behält alle Tools, bis der Endpunkt ein Kontextfenster auflistet oder meldet oder Sie unten eines festlegen.",
         "windowNotLearned": "Breeze ermittelt Kontextfenster nur auf Ihren eigenen OpenAI-kompatiblen Endpunkten, daher behält Auto bei diesem Modell alle Tools.",
         "windowKnown": "Kontextfenster: {{tokens}} Tokens ({{source}}).",
         "windowSource": {
@@ -659,12 +659,14 @@
           "absentVerified": "Geprüft (einfach). Prüfen Sie erneut, um einen echten Tool-Round-Trip für {{surface}} zu testen.",
           "officeNotChecked": "Nicht geprüft: Die Prüfung führt keinen Office-Round-Trip aus."
         },
-        "verifyCost": "Die Prüfung sendet echte Anfragen an Ihren Endpunkt, die Ihr Anbieter abrechnet: eine einfache Prüfung, dann ein Tool-Round-Trip (bis zu 4 Modellrunden) für jede Funktion, der dieses Modell zugewiesen ist. Im Chat mit dem Profil „Vollständig“ kann eine Anfrage etwa 128.000 Tokens umfassen.",
+        "verifyCost": "Die Prüfung sendet echte Anfragen an Ihren Endpunkt, die Ihr Anbieter abrechnet: eine einfache Prüfung, dann ein Tool-Round-Trip für jede Funktion, der dieses Modell zugewiesen ist. Ein Round-Trip kann bis zu 4 Modellrunden umfassen, die jeweils den gesamten Prompt erneut senden: Im Chat mit dem Profil „Vollständig“ umfasst eine Anfrage etwa 128.000 Tokens, eine Chat-Prüfung kann also fast 500.000 erreichen.",
         "invalidCustom": "Wählen Sie für ein benutzerdefiniertes Profil mindestens einen Tool-Bereich oder ein Tool aus.",
         "invalidWindow": "Geben Sie eine ganze Zahl von Tokens von {{min}} bis {{max}} ein oder lassen Sie das Feld leer.",
         "ageMinutes": "vor {{n}} Min.",
         "ageHours": "vor {{n}} Std.",
-        "ageDays": "vor {{n}} T."
+        "ageDays": "vor {{n}} T.",
+        "missingRequiredTroubleshooting": "Geräte-Fehlerbehebungsläufe lehnen dieses Modell ab: Ihnen würden {{tools}} fehlen. Andere Agentenläufe sind nicht betroffen.",
+        "underpoweredTooSmall": "{{surface}}: Kein Tool-Profil passt in dieses Kontextfenster"
       }
     },
     "defaults": {

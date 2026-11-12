@@ -74,7 +74,8 @@ aiModelOfferingRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParam
     }
     // #11398: a tool profile / window override is validated against the tool
     // registries (the catalog) and every surface this model serves.
-    const offering = await updateOfferingDetails({ partnerId, offeringId, patch, toolCatalog: await loadToolProfileCatalog() });
+    const toolPatch = patch.toolProfile !== undefined || patch.toolAllowlist !== undefined || patch.contextWindowOverride !== undefined;
+    const offering = await updateOfferingDetails({ partnerId, offeringId, patch, ...(toolPatch ? { toolCatalog: await loadToolProfileCatalog() } : {}) });
     const { expectedUpdatedAt: _ignored, ...changed } = patch;
     auditOffering(c, partnerId, 'updated', {
       offeringId: offering.id,

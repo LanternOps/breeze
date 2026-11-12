@@ -137,8 +137,8 @@ describe('validateToolSettingsPatch: surface floors (a profile never drops a too
     const e = refusal(() => run(stored(), patch({ toolProfile: 'minimal' }), serving('script_builder')));
     expect(e.status).toBe(422);
     expect(e.code).toBe('tool_profile_underpowered');
-    expect(e.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'] }] });
-    expect(e.message).toContain('script builder');
+    expect(e.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'], tooSmall: false }] });
+    expect(e.message).toContain('Script builder');
   });
 
   it('control: the same minimal profile on a model that does not serve the script builder is accepted', () => {
@@ -151,7 +151,7 @@ describe('validateToolSettingsPatch: surface floors (a profile never drops a too
 
   it('custom without the script builder tools → 422 listing both; with them → accepted', () => {
     const e = refusal(() => run(stored(), patch({ toolProfile: 'custom', toolAllowlist: { domains: ['devices'], tools: [] } }), serving('script_builder')));
-    expect(e.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device', 'apply_script_code'] }] });
+    expect(e.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device', 'apply_script_code'], tooSmall: false }] });
     expect(() => run(stored(), patch({
       toolProfile: 'custom', toolAllowlist: { domains: ['devices'], tools: ['execute_script_on_device', 'apply_script_code'] },
     }), serving('script_builder'))).not.toThrow();
@@ -164,7 +164,7 @@ describe('validateToolSettingsPatch: surface floors (a profile never drops a too
 
   it('ai_agents with troubleshooting runs: minimal drops execute_command and run_script → 422', () => {
     const e = refusal(() => run(stored(), patch({ toolProfile: 'minimal' }), { surfaces: new Set<ProfiledSurface>(['ai_agents']), troubleshootingRuns: true }));
-    expect(e.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'ai_agents', missing: ['execute_command', 'run_script'] }] });
+    expect(e.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'ai_agents', missing: ['execute_command', 'run_script'], tooSmall: false }] });
   });
 
   it('ai_agents without troubleshooting runs: outcome tools always survive, so minimal is accepted', () => {
@@ -180,13 +180,53 @@ describe('validateToolSettingsPatch: surface floors (a profile never drops a too
     // 8,192 tokens: script builder auto → minimal (W02 threshold table).
     const e = refusal(() => run(stored(), patch({ contextWindowOverride: 8192 }), serving('script_builder')));
     expect(e.code).toBe('tool_profile_underpowered');
-    expect(e.details).toMatchObject({ field: 'contextWindowOverride', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'] }] });
+    expect(e.details).toMatchObject({ field: 'contextWindowOverride', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'], tooSmall: false }] });
   });
 
   it('a gap that already exists is not blamed on this write: clearing an override is never refused by the floor', () => {
     // Stored state: auto + a discovered 8,192 window → the script builder is already underpowered.
     const s = stored({ contextWindowDiscovered: 8192, contextWindowOverride: 9000 });
     expect(run(s, patch({ contextWindowOverride: null }), serving('script_builder'))).toEqual({ contextWindowOverride: null });
+  });
+
+  it('a stored override still counts when only the profile is patched (merged window)', () => {
+    // standard + override 8,192 → patch auto: auto at 8,192 is minimal on the script builder.
+    const e = refusal(() => run(stored({ toolProfile: 'standard', contextWindowOverride: 8192 }), patch({ toolProfile: 'auto' }), serving('script_builder')));
+    expect(e.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'], tooSmall: false }] });
+  });
+
+  it('an old gap on one tool does not excuse a new gap on another', () => {
+    // Stored custom keeps execute_command only: run_script is already missing.
+    const s = stored({ toolProfile: 'custom', toolAllowlist: { domains: [], tools: ['execute_command'] } });
+    const e = refusal(() => run(s, patch({ toolAllowlist: { domains: [], tools: ['search_logs'] } }),
+      { surfaces: new Set<ProfiledSurface>(['ai_agents']), troubleshootingRuns: true }));
+    expect(e.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'ai_agents', missing: ['execute_command'], tooSmall: false }] });
+  });
+
+  it('an override that leaves a served surface too small for any profile → 422 (window named, field contextWindowOverride)', () => {
+    // 4,096 tokens: no chat profile fits, chat sessions would refuse.
+    const e = refusal(() => run(stored(), patch({ contextWindowOverride: 4096 }), serving('chat')));
+    expect(e.code).toBe('tool_profile_underpowered');
+    expect(e.details).toEqual({ field: 'contextWindowOverride', surfaces: [{ surface: 'chat', missing: [], tooSmall: true }] });
+    expect(e.message).toContain('4,096');
+    expect(e.message).toMatch(/Raise or clear the override/);
+  });
+
+  it('control: the same too-small override on a model that serves nothing is accepted', () => {
+    expect(run(stored(), patch({ contextWindowOverride: 4096 }), serving())).toEqual({ contextWindowOverride: 4096 });
+  });
+
+  it('a surface already too small does not block clearing or raising the override', () => {
+    const s = stored({ contextWindowOverride: 4096 });
+    expect(run(s, patch({ contextWindowOverride: null }), serving('chat'))).toEqual({ contextWindowOverride: null });
+    expect(run(s, patch({ contextWindowOverride: 5000 }), serving('chat'))).toEqual({ contextWindowOverride: 5000 });
+  });
+
+  it('a profile + override patch that fails names toolProfile; the profile message suggests a larger profile', () => {
+    const e = refusal(() => run(stored(), patch({ toolProfile: 'minimal', contextWindowOverride: 32768 }), serving('script_builder')));
+    expect(e.details).toMatchObject({ field: 'toolProfile' });
+    expect(e.message).toMatch(/Choose a larger profile/);
+    expect(e.message).toContain('Script builder: execute_script_on_device');
   });
 
   it('reports every served surface that loses a floor, in surface order', () => {

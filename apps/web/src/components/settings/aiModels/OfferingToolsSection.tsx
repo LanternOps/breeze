@@ -76,7 +76,7 @@ export function buildToolsPatch(o: AiOfferingDto, d: ToolsDraft): ToolsPatchResu
 }
 
 /** A refusal's per-surface gaps (`tool_profile_underpowered` details). */
-export type ToolGaps = Array<{ surface: string; missing: string[] }>;
+export type ToolGaps = Array<{ surface: string; missing: string[]; tooSmall?: boolean }>;
 
 // Literal key maps: the i18n keyUsage test cannot check template keys.
 const PROFILE_KEYS: Record<AiToolProfile, string> = {
@@ -228,7 +228,13 @@ export default function OfferingToolsSection({ offering, draft, onChange, disabl
         <div data-testid="ai-offering-tools-error" role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           <p>{t('aiModels.offering.tools.underpowered')}</p>
           <ul className="mt-1 list-disc pl-4">
-            {gaps.map((g) => <li key={g.surface}>{t('aiModels.offering.tools.underpoweredSurface', { surface: surfaceLabel(g.surface), tools: g.missing.join(', ') })}</li>)}
+            {gaps.map((g) => (
+              <li key={g.surface}>
+                {g.missing.length > 0 && t('aiModels.offering.tools.underpoweredSurface', { surface: surfaceLabel(g.surface), tools: g.missing.join(', ') })}
+                {g.missing.length > 0 && g.tooSmall && ' · '}
+                {g.tooSmall && t('aiModels.offering.tools.underpoweredTooSmall', { surface: surfaceLabel(g.surface) })}
+              </li>
+            ))}
           </ul>
         </div>
       )}
@@ -267,7 +273,12 @@ export default function OfferingToolsSection({ offering, draft, onChange, disabl
                   {' · '}
                   <span className="text-muted-foreground">{t(/* i18n-dynamic */ REASON_KEYS[s.reason])}</span>
                   {s.missingRequired.length > 0 && (
-                    <span className="block text-destructive">{t('aiModels.offering.tools.missingRequired', { tools: s.missingRequired.join(', ') })}</span>
+                    <span className="block text-destructive">
+                      {s.surface === 'ai_agents'
+                        // Only device-troubleshooting runs need these; other agent runs keep their outcome tools.
+                        ? t('aiModels.offering.tools.missingRequiredTroubleshooting', { tools: s.missingRequired.join(', ') })
+                        : t('aiModels.offering.tools.missingRequired', { tools: s.missingRequired.join(', ') })}
+                    </span>
                   )}
                   {s.resolved === 'too_small' && <span className="block text-destructive">{t('aiModels.offering.tools.tooSmallHint')}</span>}
                 </div>

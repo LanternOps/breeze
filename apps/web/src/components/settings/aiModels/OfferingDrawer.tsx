@@ -456,7 +456,7 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
 
         {offering.id !== null && (
           <OfferingToolsSection offering={offering} draft={tools} disabled={saving} gaps={toolGaps}
-            onChange={(patch) => setTools((d) => ({ ...d, ...patch }))} />
+            onChange={(patch) => { setToolGaps(null); setTools((d) => ({ ...d, ...patch })); }} />
         )}
 
         {canVerify && offering.verification !== null && (

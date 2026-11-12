@@ -165,12 +165,35 @@ describe('OfferingDrawer — Tools and context (#11398)', () => {
     const cost = screen.getByTestId('ai-offering-verify-cost').textContent!;
     expect(cost).toMatch(/billed by your provider/);
     expect(cost).toMatch(/128,000/);
+    expect(cost).toMatch(/500,000/);
   });
 
   it('rule-3 copy: set by the partner; organizations cannot override it', () => {
     open(gateway());
     expect(screen.getByTestId('ai-offering-tools-section').textContent)
       .toMatch(/Set by the partner on the model\. Organizations choose models; they cannot override this\./);
+  });
+
+  it('a too-small refusal names the feature; editing the draft clears the inline refusal', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({
+      error: 'This change would leave a feature using this model unable to run.', code: 'tool_profile_underpowered',
+      details: { field: 'contextWindowOverride', surfaces: [{ surface: 'chat', missing: [], tooSmall: true }] },
+    }, 422));
+    open(gateway());
+    fireEvent.change(screen.getByTestId('ai-offering-context-window'), { target: { value: '4096' } });
+    fireEvent.click(screen.getByTestId('ai-offering-save'));
+    await waitFor(() => expect(screen.getByTestId('ai-offering-tools-error').textContent).toMatch(/Chat: no tool profile fits this context window/));
+    fireEvent.change(screen.getByTestId('ai-offering-context-window'), { target: { value: '40960' } });
+    expect(screen.queryByTestId('ai-offering-tools-error')).toBeNull();
+  });
+
+  it('AI agents: a missing troubleshooting floor is worded as troubleshooting runs only', () => {
+    open(gateway({ toolProfile: toolProfileFor({ profile: 'minimal', windowOverrideSupported: true }, {
+      ai_agents: { resolved: 'minimal', reason: 'explicit', missingRequired: ['execute_command', 'run_script'] },
+    }) }));
+    const row = screen.getByTestId('ai-offering-tool-surface-ai_agents').textContent!;
+    expect(row).toMatch(/Device troubleshooting runs refuse this model/);
+    expect(row).toMatch(/Other agent runs are not affected/);
   });
 
   it('a tool_profile_underpowered refusal lists each feature and its missing tools inline', async () => {

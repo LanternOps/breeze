@@ -53,7 +53,7 @@ async function seedPartnerDefault(partnerId: string, surface: string, offeringId
 }
 
 describe.skipIf(!RUN)('tool settings write (#11398)', () => {
-  it('loadServedToolSurfaces finds partner defaults, org permitted lists, failover lists and agent pins; never another partner', async () => {
+  it('loadServedToolSurfaces finds partner defaults, org permitted lists, failover lists and agent pins; another partner\'s model is served only by its own rows', async () => {
     const p = (await createPartner()).id;
     const other = (await createPartner()).id;
     const org = (await createOrganization({ partnerId: p })).id;
@@ -86,13 +86,37 @@ describe.skipIf(!RUN)('tool settings write (#11398)', () => {
     expect([...otherServed.surfaces]).toEqual(['office_chat']);
   });
 
-  it('an ai_agents analysis-role default makes troubleshooting runs reach the model; a triage role does not', async () => {
+  it('an ai_agents analysis- or default-role row makes troubleshooting runs reach the model; a triage role does not', async () => {
     const p = (await createPartner()).id;
     const { offeringId } = await seedGatewayOffering(p);
     await seedPartnerDefault(p, 'ai_agents', offeringId, 'triage');
     expect((await inSystem(() => loadServedToolSurfaces(p, offeringId))).troubleshootingRuns).toBe(false);
     await seedPartnerDefault(p, 'ai_agents', offeringId, 'analysis');
     expect((await inSystem(() => loadServedToolSurfaces(p, offeringId))).troubleshootingRuns).toBe(true);
+
+    const q = (await createPartner()).id;
+    const { offeringId: qOffering } = await seedGatewayOffering(q);
+    await seedPartnerDefault(q, 'ai_agents', qOffering, 'default');
+    expect((await inSystem(() => loadServedToolSurfaces(q, qOffering))).troubleshootingRuns).toBe(true);
+  });
+
+  it('agent pins: a non-troubleshoot agent serves ai_agents without the troubleshooting floor; a disabled pin counts for nothing', async () => {
+    const p = (await createPartner()).id;
+    const { offeringId } = await seedGatewayOffering(p);
+    const user = await createUser({ partnerId: p });
+    await fixtureSql`
+      INSERT INTO ai_agents (partner_id, kind, name, created_by, offering_id, offering_partner_id, disabled_at)
+      VALUES (${p}, 'troubleshoot', 'Retired', ${user.id}, ${offeringId}, ${p}, now())`;
+    const disabledOnly = await inSystem(() => loadServedToolSurfaces(p, offeringId));
+    expect([...disabledOnly.surfaces]).toEqual([]);
+    expect(disabledOnly.troubleshootingRuns).toBe(false);
+
+    await fixtureSql`
+      INSERT INTO ai_agents (partner_id, kind, name, created_by, offering_id, offering_partner_id)
+      VALUES (${p}, 'triage', 'Live triage', ${user.id}, ${offeringId}, ${p})`;
+    const triage = await inSystem(() => loadServedToolSurfaces(p, offeringId));
+    expect([...triage.surfaces]).toEqual(['ai_agents']);
+    expect(triage.troubleshootingRuns).toBe(false);
   });
 
   it('minimal on the script builder default is refused and the row is unchanged; standard lands', async () => {
@@ -106,7 +130,7 @@ describe.skipIf(!RUN)('tool settings write (#11398)', () => {
       partnerId: p, offeringId, toolCatalog, patch: { expectedUpdatedAt: before, toolProfile: 'minimal' },
     })));
     expect([err.status, err.code]).toEqual([422, 'tool_profile_underpowered']);
-    expect(err.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'] }] });
+    expect(err.details).toEqual({ field: 'toolProfile', surfaces: [{ surface: 'script_builder', missing: ['execute_script_on_device'], tooSmall: false }] });
     expect(await toolColumns(offeringId)).toMatchObject({ tool_profile: 'auto', tool_allowlist: null });
     expect(await version(offeringId)).toBe(before);
 

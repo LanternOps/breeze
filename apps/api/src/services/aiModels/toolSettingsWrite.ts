@@ -12,13 +12,16 @@
  *     nothing else reads it (`resolveEffectiveContextWindow` is gateway-only).
  *  4. Surface floors: the write must not make a surface this model serves
  *     lose a tool it requires (`SURFACE_REQUIRED_TOOLS`, the troubleshooting
- *     run's `execute_command`/`run_script`). Judged on the profile each
+ *     run's `execute_command`/`run_script`), nor leave it with a window too
+ *     small for any profile (`auto`'s `too_small`). Judged on the profile each
  *     served surface RESOLVES to after the write (an override can move `auto`
  *     down), and only gaps this write introduces count: a gap that already
  *     exists (a discovered window made it) never blocks an unrelated edit.
  *     The runtime check (`finalizeSessionToolExposure`, `applyRunToolProfile`)
  *     still refuses at session start for every other route into a gap (a
- *     later assignment, a newly discovered window).
+ *     later assignment, a newly discovered window, a user picking the model
+ *     under an "all models permitted" assignment — see
+ *     `loadServedToolSurfaces`).
  *
  * Exposure only: nothing here touches RBAC, approvals, guardrails or
  * `guardrailPolicy.toolAllowlist`.
@@ -76,9 +79,9 @@ export type ToolSettingsColumns = Partial<{
 }>;
 
 const SURFACE_LABELS: Readonly<Record<ProfiledSurface, string>> = {
-  chat: 'chat',
-  helper: 'helper',
-  script_builder: 'script builder',
+  chat: 'Chat',
+  helper: 'Helper',
+  script_builder: 'Script builder',
   ai_agents: 'AI agents',
   office_chat: 'Office add-in',
 };
@@ -96,8 +99,8 @@ function normalizedAllowlist(a: AiToolAllowlist): AiToolAllowlist {
 /**
  * The required tools a surface would lack under these facts; [] when the
  * profile is the identity (`full`) or the surface keeps them all. A
- * `too_small` surface is judged on `minimal` (what `auto` falls back to), but
- * it refuses on the window anyway.
+ * `too_small` surface is judged on `minimal` (what `auto` falls back to);
+ * whether it is too small is a separate check (`isTooSmall`).
  */
 export function missingRequiredTools(
   facts: ToolProfileFacts,
@@ -119,10 +122,31 @@ export function missingRequiredTools(
   return coverage.ok ? [] : coverage.missing;
 }
 
-function underpoweredMessage(gaps: ReadonlyArray<{ surface: ProfiledSurface; missing: string[] }>): string {
-  const parts = gaps.map((g) => `the ${SURFACE_LABELS[g.surface]} needs ${g.missing.join(', ')}`);
-  return `This tool profile drops tools a feature using this model requires: ${parts.join('; ')}. `
-    + 'Choose a larger profile, add those tools to the custom list, or assign another model to that feature first.';
+/** `auto` finds no profile that fits the window on this surface, so its sessions refuse up front. */
+function isTooSmall(facts: ToolProfileFacts, surface: ProfiledSurface): boolean {
+  return effectiveToolProfile(facts, surface).tooSmall;
+}
+
+export interface ToolSettingsGap {
+  surface: ProfiledSurface;
+  /** Required tools the surface would newly lack. */
+  missing: string[];
+  /** The window is newly too small for any profile on this surface. */
+  tooSmall: boolean;
+}
+
+function underpoweredMessage(gaps: readonly ToolSettingsGap[], field: 'toolProfile' | 'contextWindowOverride', window: number | null): string {
+  const parts = gaps.map((g) => {
+    const what = [
+      ...(g.missing.length > 0 ? [g.missing.join(', ')] : []),
+      ...(g.tooSmall && window !== null ? [`no tool profile fits a ${window.toLocaleString('en-US')}-token window`] : []),
+    ];
+    return `${SURFACE_LABELS[g.surface]}: ${what.join('; ')}`;
+  });
+  const fix = field === 'contextWindowOverride'
+    ? 'Raise or clear the override, or assign another model to that feature first.'
+    : 'Choose a larger profile, add those tools to the custom list, or assign another model to that feature first.';
+  return `This change would leave a feature using this model unable to run (${parts.join(' · ')}). ${fix}`;
 }
 
 export function validateToolSettingsPatch(input: {
@@ -180,17 +204,18 @@ export function validateToolSettingsPatch(input: {
     effectiveWindow: windowOf({ ...stored, contextWindowOverride: override }),
     transport,
   };
-  const gaps: Array<{ surface: ProfiledSurface; missing: string[] }> = [];
+  const gaps: ToolSettingsGap[] = [];
   for (const surface of AI_TOOL_PROFILED_SURFACES) {
     if (!served.surfaces.has(surface)) continue;
     const opts = { troubleshootingRuns: served.troubleshootingRuns };
     const had = new Set(missingRequiredTools(before, surface, catalog, opts));
     const missing = missingRequiredTools(after, surface, catalog, opts).filter((name) => !had.has(name));
-    if (missing.length > 0) gaps.push({ surface, missing });
+    const tooSmall = isTooSmall(after, surface) && !isTooSmall(before, surface);
+    if (missing.length > 0 || tooSmall) gaps.push({ surface, missing, tooSmall });
   }
   if (gaps.length > 0) {
     const field = patch.toolProfile !== undefined || patch.toolAllowlist !== undefined ? 'toolProfile' : 'contextWindowOverride';
-    throw new RegistryWriteError(underpoweredMessage(gaps), 'tool_profile_underpowered', 422, { field, surfaces: gaps });
+    throw new RegistryWriteError(underpoweredMessage(gaps, field, after.effectiveWindow), 'tool_profile_underpowered', 422, { field, surfaces: gaps });
   }
 
   if (patch.toolProfile !== undefined) out.toolProfile = patch.toolProfile;
@@ -238,8 +263,18 @@ const TROUBLESHOOTING_ROLES = new Set(['default', 'analysis']);
 
 /**
  * The profiled surfaces this model serves now: any assignment row (partner or
- * org) naming it as default, permitted or failover, plus agents pinned to it.
- * Runs in the ambient (system, registry-locked) transaction of the write.
+ * org) naming it as default, permitted or failover, plus live agents pinned
+ * to it. Runs in the ambient (system, registry-locked) transaction of the
+ * write; every statement is pinned to the partner (system scope bypasses RLS).
+ *
+ * Deliberately NOT counted: a surface where users may pick ANY model (no
+ * permitted list, user choice on: the default when a partner configures
+ * nothing). Counting it would make every enabled model "serve" the script
+ * builder, so `minimal` could never be saved on a default setup. A user who
+ * picks such a model gets the up-front `tool_profile_underpowered` /
+ * `context_window_too_small` refusal at session start, and the drawer shows
+ * the gap on that surface permanently. Sessions already pinned to the model
+ * are likewise left to that runtime refusal.
  */
 export async function loadServedToolSurfaces(partnerId: string, offeringId: string): Promise<ServedToolSurfaces> {
   // Sequential: both run on the write's one transaction connection.
