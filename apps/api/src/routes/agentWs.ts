@@ -3784,7 +3784,10 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
         // Handle command_result for terminal/desktop commands (non-UUID IDs).
         // H5: validate the message shape with Zod BEFORE any field access. On
         // parse failure we drop + log without touching the DB or downstream.
+        // An id over the limit is not read here: it falls through to the
+        // schema below, which refuses it like any other malformed frame.
         if (message?.type === 'command_result' && typeof message.commandId === 'string' &&
+            message.commandId.length <= MAX_AGENT_COMMAND_ID_LENGTH &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
           // Exact delivery-epoch proof: a stop/start result carries authority
           // to tear down a live session, so a superseded socket may not submit

@@ -497,6 +497,7 @@ import {
 import { getRedis, isRedisAvailable } from '../services/redis';
 import { orphanedResultExpectationKey } from '../services/orphanedResultExpectations';
 import { MAX_AGENT_COMMAND_ID_LENGTH } from './agents/schemas';
+import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from '../db/schema/backupConstants';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
@@ -7836,6 +7837,22 @@ describe('orphaned result expectations are shared across replicas (#4135)', () =
     }
   });
 
+  it('accepts a command id as long as a vault auto-sync result for the longest snapshot id', async () => {
+    expect(MAX_AGENT_COMMAND_ID_LENGTH).toBeGreaterThanOrEqual('vault-auto-sync-'.length + BACKUP_SNAPSHOT_ID_MAX_LENGTH);
+    const { handlers, ws } = await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await handlers.onMessage({
+        data: JSON.stringify(failedPoll(`vault-auto-sync-${'s'.repeat(BACKUP_SNAPSHOT_ID_MAX_LENGTH)}`)),
+      } as any, ws as any);
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('INVALID_MESSAGE'));
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('refuses a command_result whose command id is longer than the agent command-id limit, without a Redis read', async () => {
     const redis = sharedRedis();
     const { handlers, ws } = await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
@@ -8543,6 +8560,29 @@ describe('WebSocket desktop fallback start results', () => {
   beforeEach(() => {
     vi.mocked(settleDesktopStreamStart).mockClear();
     vi.mocked(closeDesktopRelayForStop).mockClear();
+  });
+
+  it('refuses a desk- result whose command id is over the agent command-id limit before reading it', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'command_result',
+          commandId: `${COMMAND}${'x'.repeat(MAX_AGENT_COMMAND_ID_LENGTH)}`,
+          status: 'completed',
+          result: { unexpected: true },
+        }),
+      } as any, ws as any);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(settleDesktopStreamStart).not.toHaveBeenCalled();
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('INVALID_MESSAGE'));
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('accepts the screen-size result shape, activates the exact connecting start and settles the relay as accepted', async () => {
