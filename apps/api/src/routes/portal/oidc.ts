@@ -374,6 +374,9 @@ async function finishSignIn(
 
   switch (outcome.kind) {
     case 'session': {
+      // This callback resolves only Microsoft identities; a Google session is
+      // never minted here (W7 Task 7 adds the Google callback). Fail closed.
+      if (outcome.method === 'google') return refuse(c, 'internal_error', { purpose, orgId: outcome.orgId });
       // An invite activation has already committed (account active, identity
       // linked): record it whether or not the session store takes the session.
       if (outcome.via === 'invite') {
