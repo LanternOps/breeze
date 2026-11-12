@@ -164,7 +164,7 @@ Some features read a local destination from the API server: the connectivity tes
 - Breeze takes both IDs from its own records, not from the destination settings. Each destination can only reach its own directory.
 - Symbolic links are refused at every level below `BACKUP_LOCAL_ROOT`, including the per-destination directory itself, and so is anything that is not a regular file or directory. Use a bind mount to expose existing storage there, and mount it with `nodev,nosuid`.
 - Mount the same storage at the same path in every `api` and `worker` container.
-- Two configurations of one organization may share storage: mount it at each configuration's directory. The storage sweep handles each directory on its own. It only reclaims a snapshot that belongs to that configuration or that no Breeze record names; a snapshot another configuration recorded, retired or reserved is left for that configuration's own sweep.
+- Two configurations of one organization may share storage: mount it at each configuration's directory. The storage sweep handles each directory on its own. It only reclaims a snapshot that belongs to that configuration or that no Breeze record names; a snapshot another configuration recorded, retired or reserved is left for that configuration's own sweep. A snapshot that one configuration retired but another still records as live is kept, and its retirement stays open, until no configuration records it as live.
 - Keep each organization's storage separate at the storage level (its own share, volume or dataset). Never mount one organization's storage in another organization's directory. Breeze reads whatever file is in a destination's directory as that organization's data, including a hard link to a file stored elsewhere on the same filesystem.
 - Linux API servers (the shipped containers) are supported. macOS works for development only. On Windows the API refuses server-side local access.
 
@@ -185,12 +185,17 @@ Earlier versions read local destinations on the API server from the **Local Path
 1. List the local configurations whose API-side features you use (configuration ID, organization ID and current path).
 2. For each one, create `<BACKUP_LOCAL_ROOT>/<organization ID>/<configuration ID>/` and bind-mount the existing storage there, in every `api` and `worker` container. The data stays where it is.
 3. Set `BACKUP_LOCAL_ROOT` and restart the `api` and `worker` containers.
-4. Run the connectivity test for each configuration. Then check a file-level browse, a recovery download and the next storage sweep in the `worker` log: each local destination is reported as `Identity local::<path> config <configuration ID>`, followed by the number of objects deleted, or by `skipped — no API-side local storage directory for this destination` while its directory is missing.
+4. Run the connectivity test for each configuration. Then check a file-level browse, a recovery download and the next storage sweep in the `worker` log. Each local destination is reported as `Identity local::<path> config <configuration ID>`, followed by one of:
+   - the number of objects deleted (a debug line when it is zero);
+   - `skipped — no API-side local storage directory for this destination` while its directory has not been created, or `skipped — API-side local storage is not configured` while `BACKUP_LOCAL_ROOT` is unset. Nothing is read or deleted;
+   - `listing failed` (an error, also sent to error tracking) when the directory exists but cannot be used, for example because it is a symbolic link. Fix the directory; nothing is deleted until then.
 </Steps>
 
 Leave the **Local Path** setting unchanged; agents still use it. Do not delete objects or edit storage settings to make a test pass.
 
 A snapshot whose storage configuration was deleted, or that was recorded without a configuration, has no destination directory. It stays unavailable for API-side local reads until its configuration link is restored.
+
+When a configuration moves to another organization, its directory moves to `<BACKUP_LOCAL_ROOT>/<new organization ID>/<configuration ID>/`. Snapshots and retirements recorded under the earlier organization stay in that directory and the storage sweep never reclaims them. Once they are no longer needed, an operator can remove those snapshot folders (`snapshots/<snapshot ID>/`) by hand.
 
 To turn API-side local access off again, unset `BACKUP_LOCAL_ROOT`. The stored data is not touched.
 
