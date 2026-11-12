@@ -51,7 +51,7 @@ import { requestPendingEmailChange } from '../../services/pendingEmail';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { createPendingRegistration } from '../../services/pendingRegistration';
 import { handleAuthEmailJob } from '../../jobs/authEmailWorker';
-import { recordAccountFailure } from '../../services/rate-limit';
+import { reserveAccountAttempt } from '../../services/rate-limit';
 import { bootstrapAuthBinding, createPartner, createUser } from './db-utils';
 import { getTestDb, getTestRedis } from './setup';
 
@@ -684,8 +684,8 @@ describe('SR2-23 login lockout — real Postgres', () => {
     const redis = getTestRedis();
     let locked = false;
     for (let i = 0; i < 6 && !locked; i++) {
-      const r = await recordAccountFailure(redis, email);
-      locked = r.locked;
+      const r = await reserveAccountAttempt(redis, email);
+      locked = r.reachesLimit;
     }
     expect(locked).toBe(true);
 

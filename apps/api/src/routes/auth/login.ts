@@ -21,9 +21,9 @@ import {
   isFamilyRevoked,
   touchFamilyLastUsed,
   isTokenIssuedBeforePasswordChange,
-  recordAccountFailure,
+  reserveAccountAttempt,
+  releaseAccountAttempt,
   clearAccountFailures,
-  isAccountLocked,
   getAccountLockoutWindowSeconds,
   getUserEpochs,
   getRefreshFamily,
@@ -152,23 +152,22 @@ function refreshIssuanceAdmissionError(c: Context, error: unknown): Response | n
   return authIssuanceAdmissionError(c, error);
 }
 
-// Task 10 helper: bump the per-account failure counter, and if THIS
-// attempt is the one that crossed the lockout threshold, fire a security
-// notification email + audit event exactly once. Pulled into a helper so
-// the login handler stays readable; called fire-and-forget so the user
-// still gets their 401 promptly.
-// Exported for the #4067 SSO link-confirm ceremony, which is a password
-// oracle of the same class as /login and must share the same lockout
-// escalation (audit + notify email + reset envelope), not just the counter.
-export async function recordAccountFailureAndMaybeNotify(
+// Task 10 helper: the account has just been locked (a wrong password on the
+// attempt that reached the limit, see reserveAccountAttempt's reachesLimit):
+// fire the security notification email + audit event. Exactly one attempt
+// reaches the limit each time the counter climbs to it, so this fires once per
+// lock. Called fire-and-forget so
+// the user still gets their 401 promptly.
+// Exported for the #4067 SSO link-confirm ceremony and the signup-link
+// password confirmation, which are password oracles of the same class as
+// /login and share the same lockout escalation (audit + notify email + reset
+// envelope), not just the counter.
+export async function notifyAccountLocked(
   c: Context,
   user: { id: string; email: string; name?: string | null },
-  normalizedEmail: string
+  consecutiveFailures: number
 ): Promise<void> {
   try {
-    const result = await recordAccountFailure(getRedis(), normalizedEmail);
-    if (!result.newlyLocked) return;
-
     // Audit the lockout itself (separate from the normal `user.login.failed`
     // audit row that the caller already emits). Lets ops correlate the
     // lockout event with the surrounding failure pattern.
@@ -180,7 +179,7 @@ export async function recordAccountFailureAndMaybeNotify(
       result: 'denied',
       details: {
         method: 'password',
-        consecutiveFailures: result.count,
+        consecutiveFailures,
         action: 'auth.login.account_locked',
         lockoutWindowSeconds: getAccountLockoutWindowSeconds()
       }
@@ -229,7 +228,7 @@ export async function recordAccountFailureAndMaybeNotify(
       console.warn('[auth] Email service not configured; account-locked email was not sent');
     }
   } catch (err) {
-    console.error('[auth] recordAccountFailureAndMaybeNotify failed:', err);
+    console.error('[auth] notifyAccountLocked failed:', err);
   }
 }
 
@@ -335,33 +334,35 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     return c.json(genericAuthError(), 401);
   }
 
-  // Task 10: per-account lockout check. Runs AFTER the user lookup so
-  // a locked vs unlocked email isn't observable via timing — the timing
-  // already says "this email exists" since we run a real argon2 verify
-  // below on the user-found branch, so an additional Redis GET here
-  // doesn't leak any new information. Important: DENYING the login even
-  // when the password is correct is the whole point — a locked account
-  // means "we don't trust this session right now", not "your password
-  // is wrong". The response shape is the generic 401 (SR2-23), but the
-  // denial stands. The lockout window expires automatically; the user can
-  // also unblock themselves by completing a password reset.
+  // Task 10: per-account lockout. Runs AFTER the user lookup so a locked vs
+  // unlocked email isn't observable via timing — the timing already says
+  // "this email exists" since we run a real argon2 verify below on the
+  // user-found branch. DENYING the login even when the password is correct is
+  // the whole point — a locked account means "we don't trust this session
+  // right now", not "your password is wrong". The response shape is the
+  // generic 401 (SR2-23), but the denial stands. The lockout window expires
+  // automatically; the user can also unblock themselves by completing a
+  // password reset.
   //
-  // SR2-23: this is a FLAG, not an early return. The old code short-circuited
-  // here, which meant a locked account skipped the argon2 verify below and
-  // answered measurably sooner than a live account whenever argon2 outruns the
-  // wall-clock floor — moving the enumeration oracle from the body into the
-  // latency. Both denial paths now do identical work: one Redis GET, one argon2
-  // verify, one floored 401.
-  const accountLocked = e2eMode
-    ? false
-    : await isAccountLocked(getRedis(), normalizedEmail);
+  // The attempt is RESERVED before the password is checked (one atomic Redis
+  // step), so concurrent guesses each take their own slot and at most
+  // LOGIN_ACCOUNT_LOCKOUT_MAX password results are honoured per window. A
+  // reservation past the limit is the locked case. Redis down or failing
+  // denies (fail-closed), as the lockout check always has; the route already
+  // answers 503 when there is no Redis client at all.
+  //
+  // SR2-23: the reservation is a FLAG, not an early return: the argon2 verify
+  // below runs on every branch so a locked account is not measurably faster.
+  const reservation = e2eMode
+    ? { allowed: true, count: 0, reachesLimit: false }
+    : await reserveAccountAttempt(getRedis(), normalizedEmail);
 
   // Verify password. Runs unconditionally — see the SR2-23 note above; the
   // result is discarded on the locked branch (a locked account is denied
   // regardless of whether the password was right).
   const validPassword = await verifyPassword(user.passwordHash, password);
 
-  if (accountLocked) {
+  if (!reservation.allowed) {
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
@@ -372,33 +373,29 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     });
     // SR2-23: the public response is the SAME generic 401 an unknown email or
     // a wrong password gets — same status, same body, same headers, floored on
-    // the same clock. The previous `429 { error: 'Account temporarily locked…',
-    // retryAfter }` was a pure account-existence oracle: unknown emails never
-    // lock (we deliberately do not bump their failure counter — see the miss
-    // branch above), so seeing that body proved the address had an account
-    // without ever guessing the password.
+    // the same clock. Unknown emails never lock (we deliberately do not count
+    // their attempts — see the miss branch above), so a distinct body would
+    // prove the address had an account without guessing the password.
     //
     // The owner is still told — out of band, in the lockout email that
-    // recordAccountFailureAndMaybeNotify already sends to the address itself,
-    // which is the only channel that proves ownership. Ops still get the audit
-    // row + the anomaly metric. Only the attacker loses a signal.
+    // notifyAccountLocked sends to the address itself, which is the only
+    // channel that proves ownership. Ops still get the audit row + the
+    // anomaly metric. Only the attacker loses a signal.
     //
-    // We deliberately do NOT bump the failure counter here: an already-locked
-    // account re-bumping on every attempt would let an attacker hold a victim
-    // locked out indefinitely, turning the control into a DoS amplifier.
+    // Attempts made while locked are counted but never move the window's
+    // expiry (set on the first attempt only), so trying again cannot hold a
+    // victim locked out. No second notice is sent.
     await floorPromise;
     return c.json(genericAuthError(), 401);
   }
 
   if (!validPassword) {
-    // Task 10: bump the per-account failure counter. If THIS attempt is
-    // the one that crosses the threshold, fire the lockout-notice email
-    // exactly once (newlyLocked flag). The audit log records the
-    // `account_locked` event so ops can correlate lockouts with the
-    // surrounding failed-login pattern. Fire-and-forget — never blocks
-    // the response (we still want the generic 401 to come back fast).
-    if (!e2eMode) {
-      void recordAccountFailureAndMaybeNotify(c, user, normalizedEmail);
+    // Task 10: the attempt is already counted. If it was the one that reached
+    // the limit, the account is now locked: fire the lockout-notice email and
+    // audit row (once per window). Fire-and-forget — never blocks the
+    // response (we still want the generic 401 to come back fast).
+    if (!e2eMode && reservation.reachesLimit) {
+      void notifyAccountLocked(c, user, reservation.count);
     }
     void auditUserLoginFailure(c, {
       userId: user.id,
@@ -409,6 +406,14 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     });
     await floorPromise;
     return c.json(genericAuthError(), 401);
+  }
+
+  // The password was right: give the reserved attempt back so the counter
+  // keeps measuring failed passwords only (a later denial below for account,
+  // tenant or network state must not count toward the lock). A completed
+  // sign-in still clears the counter further down.
+  if (!e2eMode) {
+    void releaseAccountAttempt(getRedis(), normalizedEmail);
   }
 
   // Check account status. Avoid response-content differentiation here: a

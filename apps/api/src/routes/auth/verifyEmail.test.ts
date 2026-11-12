@@ -68,12 +68,12 @@ vi.mock('../../services', () => ({
   mintRefreshTokenFamily: vi.fn(async () => 'family-id'),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
   getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
-  isAccountLocked: vi.fn(async () => false),
+  reserveAccountAttempt: vi.fn(async () => ({ allowed: true, count: 1, reachesLimit: false })),
   clearAccountFailures: vi.fn(async () => undefined),
 }));
 
 vi.mock('./login', () => ({
-  recordAccountFailureAndMaybeNotify: vi.fn(async () => undefined),
+  notifyAccountLocked: vi.fn(async () => undefined),
 }));
 
 // Real attempt logic is opted into per test (see the signup password attempts
@@ -274,8 +274,8 @@ vi.mock('./helpers', async () => {
 
 import { verifyEmailRoutes } from './verifyEmail';
 import { db } from '../../db';
-import { rateLimiter, getRedis, isAccountLocked } from '../../services';
-import { recordAccountFailureAndMaybeNotify } from './login';
+import { rateLimiter, getRedis, reserveAccountAttempt } from '../../services';
+import { notifyAccountLocked } from './login';
 import { checkSignupPassword, SIGNUP_PASSWORD_MAX_ATTEMPTS } from '../../services/signupPasswordConfirmation';
 import {
   consumeVerificationToken,
@@ -629,7 +629,7 @@ describe('POST /verify-email — signup password attempts', () => {
       }),
     } as any);
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(false);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
     const actual = await vi.importActual<typeof import('../../services/signupPasswordConfirmation')>(
       '../../services/signupPasswordConfirmation',
     );
@@ -696,11 +696,8 @@ describe('POST /verify-email — signup password attempts', () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
-    expect(recordAccountFailureAndMaybeNotify).toHaveBeenCalledWith(
-      expect.anything(),
-      { id: 'u-9', email: 'owner@corp.com', name: 'Owner' },
-      'owner@corp.com',
-    );
+    expect(reserveAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'owner@corp.com');
+    expect(notifyAccountLocked).not.toHaveBeenCalled();
     expect(consumeVerificationToken).not.toHaveBeenCalled();
     expect(writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
@@ -708,9 +705,22 @@ describe('POST /verify-email — signup password attempts', () => {
     );
   });
 
+  it('sends the lockout notice when a wrong password locks the existing account', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 5, reachesLimit: true });
+
+    await postJson('/verify-email', { token: 'existing', password: 'wrong-password' });
+
+    expect(notifyAccountLocked).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'u-9', email: 'owner@corp.com', name: 'Owner' },
+      5,
+    );
+  });
+
   it('refuses a locked-out account even with the right password', async () => {
     vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
 
     const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
 

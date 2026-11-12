@@ -8,8 +8,9 @@ import { verifyPassword } from './password';
  * signup. Each link allows a small number of wrong passwords; after that the
  * caller retires the link and a new signup or resend is needed. When the link
  * belongs to an existing account, every wrong password also counts toward the
- * same per-account lockout the login route uses (`account` hooks), and a
- * locked account is refused without checking the password.
+ * same per-account lockout the login route uses (`account` hooks): the
+ * attempt is reserved on the account before the check, and a locked account
+ * is refused (after the same check, as on /auth/login).
  *
  * Runs before any database transaction or row lock: the argon2 verify is the
  * slow part, and the caller re-checks under its lock only that the stored hash
@@ -36,9 +37,13 @@ export type SignupPasswordFailure =
 
 export type SignupPasswordOutcome = { ok: true } | { ok: false; reason: SignupPasswordFailure };
 
+/** Hooks onto the per-account sign-in lockout shared with /auth/login. */
 export interface SignupPasswordAccount {
-  isLocked(): Promise<boolean>;
-  recordFailure(): Promise<void>;
+  /** Reserve one attempt on the account (rate-limit.ts reserveAccountAttempt). */
+  reserve(): Promise<{ allowed: boolean; count: number; reachesLimit: boolean }>;
+  /** The wrong password just locked the account: send the lockout notice. */
+  notifyLocked(count: number): Promise<void>;
+  /** The password was right: reset the account's failure count. */
   clearFailures(): Promise<void>;
 }
 
@@ -68,10 +73,6 @@ export async function checkSignupPassword(input: {
   password: string | undefined;
   account?: SignupPasswordAccount;
 }): Promise<SignupPasswordOutcome> {
-  if (input.account && await input.account.isLocked()) {
-    return { ok: false, reason: 'account_locked' };
-  }
-
   // The first click on the page never carries a password; it only learns
   // that one is needed. It does not use up an attempt.
   if (!input.password) {
@@ -90,13 +91,24 @@ export async function checkSignupPassword(input: {
     return { ok: false, reason: 'attempts_exhausted' };
   }
 
-  if (await verifyPassword(input.passwordHash, input.password)) {
+  // The account attempt is reserved before the check as well, and the check
+  // runs even when the account is locked, as on /auth/login.
+  const accountAttempt = input.account ? await input.account.reserve() : null;
+  const valid = await verifyPassword(input.passwordHash, input.password);
+
+  if (accountAttempt && !accountAttempt.allowed) {
+    return { ok: false, reason: 'account_locked' };
+  }
+
+  if (valid) {
     await input.redis.del(key).catch(() => undefined);
     await input.account?.clearFailures();
     return { ok: true };
   }
 
-  await input.account?.recordFailure();
+  if (accountAttempt?.reachesLimit) {
+    await input.account?.notifyLocked(accountAttempt.count);
+  }
   return attempt >= SIGNUP_PASSWORD_MAX_ATTEMPTS
     ? { ok: false, reason: 'attempts_exhausted' }
     : { ok: false, reason: 'password_mismatch' };

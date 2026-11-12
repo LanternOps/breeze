@@ -12,7 +12,7 @@ import type { PartnerStatus, PartnerTrustState } from '../../db/schema/orgs';
 import {
   rateLimiter,
   getRedis,
-  isAccountLocked,
+  reserveAccountAttempt,
   clearAccountFailures,
 } from '../../services';
 import { getEmailService } from '../../services/email';
@@ -27,7 +27,7 @@ import {
   checkSignupPassword,
   type SignupPasswordFailure,
 } from '../../services/signupPasswordConfirmation';
-import { recordAccountFailureAndMaybeNotify } from './login';
+import { notifyAccountLocked } from './login';
 import {
   consumePendingRegistration,
   peekPendingRegistration,
@@ -245,11 +245,11 @@ verifyEmailRoutes.post(
         passwordHash: signupAccount.passwordHash,
         password,
         account: {
-          isLocked: () => isAccountLocked(redis, signupAccount.email),
-          recordFailure: () => recordAccountFailureAndMaybeNotify(
+          reserve: () => reserveAccountAttempt(redis, signupAccount.email),
+          notifyLocked: (count) => notifyAccountLocked(
             c,
             { id: signupAccount.userId, email: signupAccount.email, name: signupAccount.name },
-            signupAccount.email,
+            count,
           ),
           clearFailures: () => clearAccountFailures(redis, signupAccount.email),
         },

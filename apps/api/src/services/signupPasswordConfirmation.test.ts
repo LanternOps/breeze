@@ -49,10 +49,12 @@ function fakeRedis(initial: Record<string, string> = {}) {
   };
 }
 
-function fakeAccount(locked = false) {
+function fakeAccount(reservation: { allowed: boolean; count: number; reachesLimit: boolean } = { allowed: true, count: 1, reachesLimit: false }) {
+  const calls: string[] = [];
   return {
-    isLocked: vi.fn(async () => locked),
-    recordFailure: vi.fn(async () => undefined),
+    calls,
+    reserve: vi.fn(async () => { calls.push('reserve'); return reservation; }),
+    notifyLocked: vi.fn(async () => undefined),
     clearFailures: vi.fn(async () => undefined),
   };
 }
@@ -98,7 +100,7 @@ describe('checkSignupPassword', () => {
 
     expect(outcome).toEqual({ ok: false, reason: 'password_required' });
     expect(redis.incr).not.toHaveBeenCalled();
-    expect(account.recordFailure).not.toHaveBeenCalled();
+    expect(account.reserve).not.toHaveBeenCalled();
   });
 
   it('counts a wrong password against the link and the account', async () => {
@@ -110,7 +112,27 @@ describe('checkSignupPassword', () => {
     expect(outcome).toEqual({ ok: false, reason: 'password_mismatch' });
     expect(redis.store.get(signupPasswordAttemptKey('t1'))).toBe('1');
     expect(redis.expiries.get(signupPasswordAttemptKey('t1'))).toBeGreaterThan(0);
-    expect(account.recordFailure).toHaveBeenCalledOnce();
+    expect(account.reserve).toHaveBeenCalledOnce();
+    expect(account.notifyLocked).not.toHaveBeenCalled();
+  });
+
+  it('reserves the account attempt before checking the password', async () => {
+    const redis = fakeRedis();
+    const account = fakeAccount();
+    vi.mocked(verifyPassword).mockImplementationOnce(async () => { account.calls.push('verify'); return false; });
+
+    await checkSignupPassword({ redis: redis as any, tokenHash: 't1', passwordHash, password: 'wrong', account });
+
+    expect(account.calls).toEqual(['reserve', 'verify']);
+  });
+
+  it('sends the lockout notice when a wrong password reaches the account limit', async () => {
+    const redis = fakeRedis();
+    const account = fakeAccount({ allowed: true, count: 5, reachesLimit: true });
+
+    await checkSignupPassword({ redis: redis as any, tokenHash: 't1', passwordHash, password: 'wrong', account });
+
+    expect(account.notifyLocked).toHaveBeenCalledWith(5);
   });
 
   it(`retires the link on the ${SIGNUP_PASSWORD_MAX_ATTEMPTS}th wrong password`, async () => {
@@ -130,15 +152,16 @@ describe('checkSignupPassword', () => {
     expect(redis.incr).not.toHaveBeenCalled();
   });
 
-  it('refuses without checking the password while the account is locked out', async () => {
+  it('refuses a locked-out account even with the right password, after the same password check', async () => {
     const redis = fakeRedis();
-    const account = fakeAccount(true);
+    const account = fakeAccount({ allowed: false, count: 6, reachesLimit: false });
 
     const outcome = await checkSignupPassword({ redis: redis as any, tokenHash: 't1', passwordHash, password: 'Signup-password-1', account });
 
     expect(outcome).toEqual({ ok: false, reason: 'account_locked' });
-    expect(redis.incr).not.toHaveBeenCalled();
+    expect(verifyPassword).toHaveBeenCalledOnce();
     expect(account.clearFailures).not.toHaveBeenCalled();
+    expect(account.notifyLocked).not.toHaveBeenCalled();
   });
 
   it('accepts the right password and clears the link and account counters', async () => {

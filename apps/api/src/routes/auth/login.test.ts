@@ -23,10 +23,9 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../services/authLifecycle', () => ({
   revokeRefreshFamilyById: vi.fn(async () => undefined),
-  // SR2-08: the account-locked reset link (recordAccountFailureAndMaybeNotify)
-  // advances password_reset_epoch the same way /forgot-password does. No
-  // current test drives the `newlyLocked` branch, but this keeps the mock
-  // shape consistent with what login.ts now imports.
+  // SR2-08: the account-locked reset link (notifyAccountLocked) advances
+  // password_reset_epoch the same way /forgot-password does. This keeps the
+  // mock shape consistent with what login.ts imports.
   advanceUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 2 })),
 }));
 
@@ -111,9 +110,9 @@ vi.mock('../../services', () => {
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
   mintRefreshTokenFamily,
   bindRefreshJtiToFamily,
-  recordAccountFailure: vi.fn(async () => ({ count: 1, newlyLocked: false })),
+  reserveAccountAttempt: vi.fn(async () => ({ allowed: true, count: 1, reachesLimit: false })),
+  releaseAccountAttempt: vi.fn(async () => undefined),
   clearAccountFailures: vi.fn(async () => undefined),
-  isAccountLocked: vi.fn(async () => false),
   getAccountLockoutWindowSeconds: vi.fn(() => 900),
   getUserEpochs,
   getRefreshFamily: vi.fn(async () => ({ revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 86_400_000) })),
@@ -354,8 +353,8 @@ import {
   revokeAllUserTokens,
   bindRefreshJtiToFamily,
   isTokenIssuedBeforePasswordChange,
-  isAccountLocked,
-  recordAccountFailure,
+  reserveAccountAttempt,
+  releaseAccountAttempt,
   clearAccountFailures,
   getUserEpochs,
   getRefreshFamily,
@@ -2091,8 +2090,8 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     originalE2eMode = process.env.E2E_MODE;
     delete process.env.E2E_MODE;
     vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
-    vi.mocked(isAccountLocked).mockResolvedValue(false);
-    vi.mocked(recordAccountFailure).mockResolvedValue({ count: 1, locked: false, newlyLocked: false });
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
+    vi.mocked(releaseAccountAttempt).mockResolvedValue(undefined);
     vi.mocked(clearAccountFailures).mockResolvedValue(undefined);
     vi.mocked(verifyPassword).mockResolvedValue(true);
     vi.mocked(db.update).mockReturnValue(updateChain() as any);
@@ -2130,7 +2129,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
 
     // Branch B: the email exists AND the account is locked.
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
     const locked = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
     const lockedBody = await locked.json();
     const lockedHeaders = Object.fromEntries(locked.headers.entries());
@@ -2160,7 +2159,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     // argon2 exceeds the wall-clock floor — the enumeration oracle simply moves
     // from the response body into the response latency.
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
 
@@ -2170,7 +2169,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
 
   it('still BLOCKS the login: a locked account mints nothing even with the CORRECT password', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
     vi.mocked(verifyPassword).mockResolvedValue(true); // the right password
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
@@ -2183,21 +2182,72 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('does not bump the per-account failure counter while already locked (no self-extending lock)', async () => {
+  it('does not send another lockout notice or give the attempt back while already locked', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
     vi.mocked(verifyPassword).mockResolvedValue(false); // wrong password, already locked
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'nope' });
 
     expect(res.status).toBe(401);
     await new Promise((resolve) => setImmediate(resolve));
-    expect(recordAccountFailure).not.toHaveBeenCalled();
+    expect(auditUserLoginFailure).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ action: 'auth.login.account_locked' }) }),
+    );
+    expect(releaseAccountAttempt).not.toHaveBeenCalled();
+  });
+
+  it('reserves the attempt on the account before checking the password', async () => {
+    const order: string[] = [];
+    vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
+    vi.mocked(reserveAccountAttempt).mockImplementation(async () => {
+      order.push('reserve');
+      return { allowed: true, count: 1, reachesLimit: false };
+    });
+    vi.mocked(verifyPassword).mockImplementation(async () => {
+      order.push('verify');
+      return false;
+    });
+
+    const res = await postLogin({ email: 'Admin@MSP.com', password: 'nope' });
+
+    expect(res.status).toBe(401);
+    expect(order).toEqual(['reserve', 'verify']);
+    expect(reserveAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'admin@msp.com');
+  });
+
+  it('sends the lockout notice when a wrong password is the attempt that reaches the limit', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 5, reachesLimit: true });
+    vi.mocked(verifyPassword).mockResolvedValue(false);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'nope' });
+
+    expect(res.status).toBe(401);
+    await vi.waitFor(() => {
+      expect(auditUserLoginFailure).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          reason: 'account_locked',
+          details: expect.objectContaining({ action: 'auth.login.account_locked', consecutiveFailures: 5 }),
+        }),
+      );
+    });
+  });
+
+  it('gives the reserved attempt back after a correct password', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
+    vi.mocked(verifyPassword).mockResolvedValue(true);
+
+    await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(releaseAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'admin@msp.com');
   });
 
   it('still audits the lockout server-side (the signal moves out of band, it does not disappear)', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
 
     await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
 
@@ -2211,7 +2261,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
 
   it('does not deny an UNLOCKED account — the gate still lets a real login through', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(false);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
     vi.mocked(verifyPassword).mockResolvedValue(true);
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
