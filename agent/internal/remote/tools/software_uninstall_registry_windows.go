@@ -118,6 +118,11 @@ func startRegistryUninstallerOS(plan registryUninstallPlan) (uninstallerProcess,
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("uninstaller " + exePath + " is not a regular file")
 	}
+	if plan.Kind == registryUninstallKindQuiet {
+		if err := checkResolvedUninstallerPath(exePath); err != nil {
+			return nil, err
+		}
+	}
 
 	cmd := procspawn.Prepare(&exec.Cmd{
 		Path: exePath,
@@ -130,6 +135,26 @@ func startRegistryUninstallerOS(plan registryUninstallPlan) (uninstallerProcess,
 		return nil, err
 	}
 	return cmdProcess{cmd}, nil
+}
+
+// checkResolvedUninstallerPath applies the uninstaller location checks to the
+// path Windows resolves exePath to. A short (8.3) name, a junction or a link
+// can name the same file differently from the registered string; the checks
+// then decide on the file's real location.
+func checkResolvedUninstallerPath(exePath string) error {
+	f, err := os.Open(exePath)
+	if err != nil {
+		return fmt.Errorf("uninstaller %q: %w", exePath, err)
+	}
+	defer f.Close()
+	resolved, err := finalPathOfFile(f)
+	if err != nil {
+		return fmt.Errorf("resolve uninstaller %q: %w", exePath, err)
+	}
+	if err := validateUninstallerPath(collapsePathSeparators(resolved)); err != nil {
+		return fmt.Errorf("uninstaller %q resolves to %q: %w", exePath, resolved, err)
+	}
+	return nil
 }
 
 type cmdProcess struct{ cmd *exec.Cmd }
