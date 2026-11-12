@@ -6,7 +6,8 @@
  * table, never a per-flow Redis repeatable to keep in sync.
  *
  * Per flow (its LIVE publication's cron + timezone):
- *  1. `latestCronOccurrence` within 24 h — missed fires are not back-filled;
+ *  1. the latest cron occurrence within 24 h (`CronOccurrenceCache`: only the
+ *     minutes since the previous tick are evaluated) — missed fires are not back-filled;
  *     only the latest occurrence ever fires;
  *  2. skip when that key equals `schedule_last_occurrence_key` (already
  *     fired; also how a DST fall-back hour fires once — the key is the LOCAL
@@ -69,15 +70,16 @@
  *    off that occurrence. A child refused `flow_conversion_reverted` anyway
  *    (claim not visible) is an error, retried next tick, unstamped.
  */
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { flowsEnabled } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { flowAutomationConversions } from '../db/schema/flowConversions';
 import { flowVersions } from '../db/schema/flowRuns';
 import { flows } from '../db/schema/flows';
 import { organizations } from '../db/schema/orgs';
-import { SWEEP_OCCURRENCE_LOOKBACK_MINUTES, latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
+import { CronOccurrenceCache, SWEEP_OCCURRENCE_LOOKBACK_MINUTES } from '../services/aiAgents/sweepOccurrence';
 import { isFlowAdmissionRefusal, occurrenceKey, type FlowConversionState } from '@breeze/shared';
 import { claimOccurrence, legacyPrefers, newestParentScheduleClaim } from '../services/flows/conversion/claims';
 import { recordFlowScheduleAdmissionRefused } from '../services/flows/flowTriggerMetrics';
@@ -94,6 +96,19 @@ const QUEUE_NAME = 'flow-schedule-tick';
 const JOB_NAME = 'flow-schedule-tick';
 const REPEAT_JOB_ID = 'flow-schedule-tick';
 const EVERY_MS = 60_000;
+
+/** Enabled schedule flows read per query; the tick pages through them by id. */
+const FLOW_PAGE_SIZE = 500;
+
+/**
+ * Flows evaluated between yields to the event loop. The tick runs in the
+ * process that also serves HTTP and agent sockets, and a flow with nothing to
+ * fire awaits nothing, so without a yield a long list runs as one block.
+ */
+const FLOWS_PER_YIELD = 25;
+
+/** Each schedule's latest occurrence, kept between ticks (see CronOccurrenceCache). */
+const occurrences = new CronOccurrenceCache();
 
 export interface FlowScheduleTickResult {
   /** Runs created this tick. */
@@ -163,7 +178,8 @@ function report(err: unknown, site: string, flow: { id: string; orgId: string | 
 /** Unevaluable schedules already captured by this process (flow + cron + tz): logged every tick, captured once. */
 const reportedUnevaluable = new Set<string>();
 
-function loadScheduleFlows(): Promise<ScheduleFlowRow[]> {
+/** One page of enabled schedule flows, by id, after `afterId`. */
+function loadScheduleFlows(afterId: string | null): Promise<ScheduleFlowRow[]> {
   return system(
     async () => db
       .select({
@@ -184,7 +200,13 @@ function loadScheduleFlows(): Promise<ScheduleFlowRow[]> {
       .from(flows)
       .innerJoin(flowVersions, and(eq(flowVersions.flowId, flows.id), eq(flowVersions.publicationSeq, flows.enabledPublicationSeq)))
       .leftJoin(flowAutomationConversions, eq(flowAutomationConversions.flowId, flows.id))
-      .where(and(eq(flows.status, 'enabled'), sql`${flowVersions.definition}->'trigger'->>'type' = 'schedule'`)),
+      .where(and(
+        eq(flows.status, 'enabled'),
+        sql`${flowVersions.definition}->'trigger'->>'type' = 'schedule'`,
+        afterId ? gt(flows.id, afterId) : undefined,
+      ))
+      .orderBy(asc(flows.id))
+      .limit(FLOW_PAGE_SIZE),
     'flowScheduleTick.flows',
   );
 }
@@ -368,64 +390,77 @@ export async function processFlowScheduleTick(now: Date = new Date()): Promise<F
   const result: FlowScheduleTickResult = { fired: 0, skipped: 0 };
   if (!flowsEnabled()) return result;
 
-  for (const flow of await loadScheduleFlows()) {
-    const conversion = conversionOf(flow);
-    if (conversion && conversion.state !== 'switched') {
-      // #5221 B5: a reverted generation's flow attempts nothing new — it only
-      // finishes an occurrence it parent-claimed before the revert.
-      try {
-        result.fired += await finishRevertedOccurrence(flow, conversion, now, result);
-      } catch (err) {
-        console.error(`${LOG} reverted converted flow ${flow.id}: finishing its admitted occurrence failed; retried next tick`, err);
-        report(err, 'schedule_tick.fire_flow', flow);
-      }
-      continue;
+  occurrences.beginPass();
+  let evaluated = 0;
+  for (let afterId: string | null = null, page: ScheduleFlowRow[] = []; ; afterId = page[page.length - 1]!.id) {
+    page = await loadScheduleFlows(afterId);
+    for (const flow of page) {
+      if (++evaluated % FLOWS_PER_YIELD === 0) await nextTurn();
+      await evaluateFlow(flow, now, result);
     }
-    const schedule = scheduleOf(flow.trigger);
-    let occurrence: { at: Date; key: string } | null = null;
-    let unevaluable: unknown = schedule ? null : new Error('malformed schedule trigger');
-    if (schedule) {
-      try {
-        occurrence = latestCronOccurrence(schedule.cron, schedule.timezone, now);
-      } catch (err) {
-        unevaluable = err;
-      }
-    }
-    if (unevaluable) {
-      // Never fires until the flow is fixed: loud every tick, captured once.
-      console.error(
-        `${LOG} flow ${flow.id} (org=${flow.orgId ?? 'partner-wide'}, partner=${flow.partnerId ?? '-'}): schedule could not be evaluated; it does not fire`,
-        unevaluable,
-      );
-      const memo = `${flow.id}|${schedule?.cron ?? ''}|${schedule?.timezone ?? ''}`;
-      if (!reportedUnevaluable.has(memo)) {
-        reportedUnevaluable.add(memo);
-        report(unevaluable, 'schedule_tick.cron_unevaluable', flow);
-      }
-    }
-    // #5221 B5: a converted flow keys the UTC minute.
-    if (occurrence && conversion) occurrence = { at: occurrence.at, key: utcOccurrenceKey(occurrence.at) };
-    if (
-      !occurrence
-      || occurrence.key === flow.scheduleLastOccurrenceKey
-      || (flow.enabledAt && occurrence.at.getTime() < new Date(flow.enabledAt).getTime())
-      // #5221 B5: an occurrence legacy prefers (before switch_at) is legacy's
-      // alone — not claimed, not run, not stamped.
-      || (conversion && legacyPrefers(conversion, occurrence.at, false))
-    ) {
-      result.skipped += 1;
-      continue;
-    }
-    try {
-      result.fired += await fireFlow(flow, occurrence, conversion);
-    } catch (err) {
-      // One flow's org enumeration or stamp failing never starves the others.
-      console.error(`${LOG} flow ${flow.id} occurrence ${occurrence.key} failed; retried next tick`, err);
-      report(err, 'schedule_tick.fire_flow', flow);
-    }
+    if (page.length < FLOW_PAGE_SIZE) break;
   }
+  occurrences.endPass();
   if (result.fired > 0) console.log(`${LOG} tick`, result);
   return result;
+}
+
+/** One flow of the tick: evaluate its schedule and fire what is due. Never throws for a per-flow fault. */
+async function evaluateFlow(flow: ScheduleFlowRow, now: Date, result: FlowScheduleTickResult): Promise<void> {
+  const conversion = conversionOf(flow);
+  if (conversion && conversion.state !== 'switched') {
+    // #5221 B5: a reverted generation's flow attempts nothing new — it only
+    // finishes an occurrence it parent-claimed before the revert.
+    try {
+      result.fired += await finishRevertedOccurrence(flow, conversion, now, result);
+    } catch (err) {
+      console.error(`${LOG} reverted converted flow ${flow.id}: finishing its admitted occurrence failed; retried next tick`, err);
+      report(err, 'schedule_tick.fire_flow', flow);
+    }
+    return;
+  }
+  const schedule = scheduleOf(flow.trigger);
+  let occurrence: { at: Date; key: string } | null = null;
+  let unevaluable: unknown = schedule ? null : new Error('malformed schedule trigger');
+  if (schedule) {
+    try {
+      occurrence = occurrences.latest(schedule.cron, schedule.timezone, now);
+    } catch (err) {
+      unevaluable = err;
+    }
+  }
+  if (unevaluable) {
+    // Never fires until the flow is fixed: loud every tick, captured once.
+    console.error(
+      `${LOG} flow ${flow.id} (org=${flow.orgId ?? 'partner-wide'}, partner=${flow.partnerId ?? '-'}): schedule could not be evaluated; it does not fire`,
+      unevaluable,
+    );
+    const memo = `${flow.id}|${schedule?.cron ?? ''}|${schedule?.timezone ?? ''}`;
+    if (!reportedUnevaluable.has(memo)) {
+      reportedUnevaluable.add(memo);
+      report(unevaluable, 'schedule_tick.cron_unevaluable', flow);
+    }
+  }
+  // #5221 B5: a converted flow keys the UTC minute.
+  if (occurrence && conversion) occurrence = { at: occurrence.at, key: utcOccurrenceKey(occurrence.at) };
+  if (
+    !occurrence
+    || occurrence.key === flow.scheduleLastOccurrenceKey
+    || (flow.enabledAt && occurrence.at.getTime() < new Date(flow.enabledAt).getTime())
+    // #5221 B5: an occurrence legacy prefers (before switch_at) is legacy's
+    // alone — not claimed, not run, not stamped.
+    || (conversion && legacyPrefers(conversion, occurrence.at, false))
+  ) {
+    result.skipped += 1;
+    return;
+  }
+  try {
+    result.fired += await fireFlow(flow, occurrence, conversion);
+  } catch (err) {
+    // One flow's org enumeration or stamp failing never starves the others.
+    console.error(`${LOG} flow ${flow.id} occurrence ${occurrence.key} failed; retried next tick`, err);
+    report(err, 'schedule_tick.fire_flow', flow);
+  }
 }
 
 // ── BullMQ wiring ───────────────────────────────────────────────────────────
@@ -463,4 +498,12 @@ export async function shutdownFlowScheduleTick(): Promise<void> {
   if (queue) { await queue.close(); queue = null; }
 }
 
-export const __testOnly = { QUEUE_NAME, JOB_NAME, REPEAT_JOB_ID, EVERY_MS };
+export const __testOnly = {
+  QUEUE_NAME,
+  JOB_NAME,
+  REPEAT_JOB_ID,
+  EVERY_MS,
+  FLOW_PAGE_SIZE,
+  /** Forget every remembered occurrence (tests start from a cold process). */
+  resetOccurrenceCache: () => { occurrences.beginPass(); occurrences.endPass(); },
+};

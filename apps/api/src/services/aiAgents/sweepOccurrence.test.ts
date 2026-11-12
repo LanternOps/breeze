@@ -7,8 +7,22 @@
  * once-a-day schedule exactly once even when the local wall clock repeats or
  * skips an hour.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const { cronDueCalls } = vi.hoisted(() => ({ cronDueCalls: { n: 0 } }));
+vi.mock('../cronDue', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../cronDue')>();
+  return {
+    ...real,
+    isCronDue: (...args: Parameters<typeof real.isCronDue>) => {
+      cronDueCalls.n += 1;
+      return real.isCronDue(...args);
+    },
+  };
+});
+
 import {
+  CronOccurrenceCache,
   SWEEP_OCCURRENCE_LOOKBACK_MINUTES,
   latestCronOccurrence,
   occurrenceKey,
@@ -74,5 +88,95 @@ describe('occurrenceKey', () => {
 
   it('zero-pads every component', () => {
     expect(occurrenceKey(new Date('2026-01-02T03:04:00Z'), 'UTC')).toBe('2026-01-02T03:04@UTC');
+  });
+});
+
+describe('CronOccurrenceCache', () => {
+  const MINUTE = 60_000;
+
+  it('answers exactly what latestCronOccurrence answers, for ticks moving forward, back and far', () => {
+    const schedules: Array<[string, string]> = [
+      ['30 2 * * *', 'Europe/Berlin'],
+      ['0 6 * * 1', 'UTC'],
+      ['*/7 * * * *', 'America/New_York'],
+      ['0 0 29 2 *', 'UTC'],
+      ['15 3 * * 0', 'Australia/Lord_Howe'],
+    ];
+    const cache = new CronOccurrenceCache();
+    let seed = 0x5eed;
+    const next = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed;
+    };
+    // Around the 2026-10-25 Berlin fall-back hour.
+    let at = Date.parse('2026-10-24T20:00:00Z');
+    for (let i = 0; i < 150; i += 1) {
+      const step = next() % 10;
+      if (step < 6) at += (1 + (next() % 5)) * MINUTE; // a normal tick or a few late
+      else if (step < 8) at += (next() % 200) * 1_000; // within the same minute or two
+      else if (step < 9) at -= (next() % 120) * MINUTE; // the clock steps back
+      else at += (next() % 3000) * MINUTE; // a long outage, past the lookback
+      const now = new Date(at);
+      cache.beginPass();
+      for (const [cron, zone] of schedules) {
+        const want = latestCronOccurrence(cron, zone, now);
+        const got = cache.latest(cron, zone, now);
+        expect({ at: now.toISOString(), cron, got: got && { at: got.at.toISOString(), key: got.key } })
+          .toEqual({ at: now.toISOString(), cron, got: want && { at: want.at.toISOString(), key: want.key } });
+      }
+      cache.endPass();
+    }
+  }, 60_000);
+
+  it('lets a remembered occurrence age out of the window', () => {
+    const cache = new CronOccurrenceCache();
+    // 2026-10-26 is a Monday. Hourly ticks for two days: the 06:00 Monday
+    // occurrence is the answer until a tick is more than 24 h past it.
+    for (let at = Date.parse('2026-10-26T05:30:00Z'); at <= Date.parse('2026-10-28T08:30:00Z'); at += 60 * MINUTE) {
+      const now = new Date(at);
+      cache.beginPass();
+      const got = cache.latest('0 6 * * 1', 'UTC', now);
+      cache.endPass();
+      expect([now.toISOString(), got?.key ?? null]).toEqual([now.toISOString(), latestCronOccurrence('0 6 * * 1', 'UTC', now)?.key ?? null]);
+    }
+  });
+
+  it('evaluates only the minutes since the previous answer', () => {
+    const cache = new CronOccurrenceCache();
+    const start = Date.parse('2026-10-25T10:00:20Z');
+    cronDueCalls.n = 0;
+    cache.beginPass();
+    expect(cache.latest('0 0 29 2 *', 'UTC', new Date(start))).toBeNull();
+    cache.endPass();
+    expect(cronDueCalls.n).toBe(SWEEP_OCCURRENCE_LOOKBACK_MINUTES + 1);
+
+    cronDueCalls.n = 0;
+    cache.beginPass();
+    expect(cache.latest('0 0 29 2 *', 'UTC', new Date(start + MINUTE))).toBeNull();
+    expect(cache.latest('0 0 29 2 *', 'UTC', new Date(start + MINUTE))).toBeNull();
+    cache.endPass();
+    expect(cronDueCalls.n).toBe(1);
+  });
+
+  it('forgets schedules a pass did not ask about', () => {
+    const cache = new CronOccurrenceCache();
+    const now = new Date('2026-10-25T10:00:20Z');
+    cache.beginPass();
+    cache.latest('0 * * * *', 'UTC', now);
+    cache.latest('5 * * * *', 'UTC', now);
+    cache.endPass();
+    expect(cache.size).toBe(2);
+    cache.beginPass();
+    cache.latest('0 * * * *', 'UTC', now);
+    cache.endPass();
+    expect(cache.size).toBe(1);
+  });
+
+  it('does not remember a schedule that cannot be evaluated', () => {
+    const cache = new CronOccurrenceCache();
+    cache.beginPass();
+    expect(() => cache.latest('0 * * * *', 'Not/AZone', new Date('2026-10-25T10:00:20Z'))).toThrow();
+    cache.endPass();
+    expect(cache.size).toBe(0);
   });
 });
