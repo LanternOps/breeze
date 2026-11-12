@@ -22,6 +22,8 @@ export const TICKET_IMPORT_LIMIT_DEFAULTS = {
   maxClockSkewMs: 300_000,
   maxIssuesPerRun: 50_000,
   maxTicketBytes: 256 * MIB,
+  maxTicketArticles: 10_000,
+  maxTicketReadBytes: 256 * MIB,
 } as const;
 
 export type TicketImportLimits = {
@@ -43,6 +45,18 @@ export type TicketImportLimits = {
   maxIssuesPerRun: number;
   /** Converted content of one ticket, in UTF-8 bytes; above it the ticket fails `ticket_too_large`. */
   maxTicketBytes: number;
+  /**
+   * Articles one ticket's load may read from the source; above it the load
+   * stops and the ticket fails `ticket_too_large` (#11296 follow-up).
+   */
+  maxTicketArticles: number;
+  /**
+   * Article bytes one ticket's load may hold (each article's JSON, in UTF-8
+   * bytes; attachment files are not read at load): a running budget, so a
+   * source that answers ever more articles stops at it, and the ticket fails
+   * `ticket_too_large` (#11296 follow-up).
+   */
+  maxTicketReadBytes: number;
 };
 
 export function ticketImportLimits(): TicketImportLimits {
@@ -64,8 +78,26 @@ export function ticketImportLimits(): TicketImportLimits {
     maxClockSkewMs: positiveIntEnv('TICKET_IMPORT_MAX_CLOCK_SKEW_MS', d.maxClockSkewMs, 1, 86_400_000),
     maxIssuesPerRun: positiveIntEnv('TICKET_IMPORT_MAX_ISSUES_PER_RUN', d.maxIssuesPerRun, 1, 1_000_000),
     maxTicketBytes: positiveIntEnv('TICKET_IMPORT_MAX_TICKET_BYTES', d.maxTicketBytes, MIB, 2048 * MIB),
+    maxTicketArticles: positiveIntEnv('TICKET_IMPORT_MAX_TICKET_ARTICLES', d.maxTicketArticles, 1, 1_000_000),
+    maxTicketReadBytes: positiveIntEnv('TICKET_IMPORT_MAX_TICKET_READ_BYTES', d.maxTicketReadBytes, MIB, 2048 * MIB),
   };
 }
+
+/**
+ * The Zammad attachment index (modules/zammad/reading.ts `LOCATIONS`): one
+ * entry per attachment of a recently loaded ticket, kept in the process
+ * across slices (#11730 review, Strix). An entry is a few bytes of JSON at
+ * the source but ~100 bytes once parsed and kept, so the article budget
+ * alone does not bound it. A ticket with more attachments than
+ * `perTicket` is not indexed (its files are found by a fresh read, the
+ * cache-miss path); past `total` across every source the oldest tickets go.
+ * Worst case ~`total` × 100 B ≈ 10 MiB. Not env knobs: a real ticket is far
+ * below either, and a lower value only costs re-reads.
+ */
+export const ZAMMAD_ATTACHMENT_INDEX_LIMITS = {
+  perTicket: 10_000,
+  total: 100_000,
+} as const;
 
 /** The env names, for the boot report (config/validate.ts). */
 export const TICKET_IMPORT_LIMIT_ENV_VARS = [
@@ -78,4 +110,6 @@ export const TICKET_IMPORT_LIMIT_ENV_VARS = [
   'TICKET_IMPORT_MAX_CLOCK_SKEW_MS',
   'TICKET_IMPORT_MAX_ISSUES_PER_RUN',
   'TICKET_IMPORT_MAX_TICKET_BYTES',
+  'TICKET_IMPORT_MAX_TICKET_ARTICLES',
+  'TICKET_IMPORT_MAX_TICKET_READ_BYTES',
 ] as const;
