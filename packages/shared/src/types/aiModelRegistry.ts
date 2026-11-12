@@ -109,6 +109,8 @@ export interface AiOfferingToolSurfaceDto {
   /** The profile the surface applies now; `too_small` = no profile fits the window, so sessions refuse. */
   resolved: 'full' | 'standard' | 'minimal' | 'custom' | 'too_small';
   reason: AiToolProfileReason;
+  /** What `auto` would pick here at the known window (null = window unknown), so an explicit profile too large for the window shows. */
+  autoProfile: 'full' | 'standard' | 'minimal' | 'too_small' | null;
   /**
    * Tools the surface requires that the resolved profile drops; the surface
    * refuses (`tool_profile_underpowered`) while this is non-empty. For

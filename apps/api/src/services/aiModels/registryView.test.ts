@@ -442,7 +442,7 @@ describe('buildPartnerModelsSnapshot', () => {
       const surface = (id: string, name: string) => tp(id).surfaces.find((x) => x.surface === name);
       // auto + an 8,192 discovered window: chat minimal; the script builder minimal lacks execute_script_on_device.
       expect(tp(O1)).toMatchObject({ profile: 'auto', allowlist: null, windowOverrideSupported: true, droppedCustomNames: [] });
-      expect(surface(O1, 'chat')).toEqual({ surface: 'chat', resolved: 'minimal', reason: 'auto_window', missingRequired: [] });
+      expect(surface(O1, 'chat')).toEqual({ surface: 'chat', resolved: 'minimal', reason: 'auto_window', autoProfile: 'minimal', missingRequired: [] });
       expect(surface(O1, 'script_builder')).toMatchObject({ resolved: 'minimal', missingRequired: ['execute_script_on_device'] });
       expect(surface(O1, 'ai_agents')).toMatchObject({ resolved: 'minimal', missingRequired: ['execute_command', 'run_script'] });
       expect(surface(O1, 'office_chat')).toMatchObject({ resolved: 'full', reason: 'auto_unmeasured' });

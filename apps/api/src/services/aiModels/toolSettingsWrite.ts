@@ -213,9 +213,11 @@ export function buildToolProfileDto(
   const facts = toolProfileFactsFrom(stored, opts.gateway ? 'gateway' : 'anthropic', opts.effectiveWindow);
   const surfaces = AI_TOOL_PROFILED_SURFACES.map((surface): AiOfferingToolSurfaceDto => {
     const { profile, tooSmall } = effectiveToolProfile(facts, surface);
+    const auto = facts.effectiveWindow === null ? null : effectiveToolProfile({ ...facts, toolProfile: 'auto', toolAllowlist: null }, surface);
     return {
       surface,
       resolved: tooSmall ? 'too_small' : profile,
+      autoProfile: auto === null ? null : auto.tooSmall ? 'too_small' : (auto.profile as 'full' | 'standard' | 'minimal'),
       reason: reasonFor(facts, surface),
       missingRequired: tooSmall ? [] : missingRequiredTools(facts, surface, opts.catalog, { troubleshootingRuns: opts.troubleshootingRuns }),
     };

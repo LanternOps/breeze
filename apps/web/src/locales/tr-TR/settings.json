@@ -600,7 +600,72 @@
       "removeTitle": "Bu model kaldırılsın mı?",
       "removeMessage": "“{{model}}” bu bağlantıdan silinecek. Geçmiş kullanım ve maliyet kayıtları korunur. Daha sonra yeniden ekleyebilirsiniz.",
       "removed": "Model kaldırıldı",
-      "removeFailed": "Model kaldırılamadı. Yeniden deneyin."
+      "removeFailed": "Model kaldırılamadı. Yeniden deneyin.",
+      "tools": {
+        "title": "Araçlar ve bağlam",
+        "partnerOnly": "Modelde iş ortağı tarafından belirlenir. Kuruluşlar model seçer; bunu geçersiz kılamaz.",
+        "profileLabel": "Araç profili",
+        "profile": {
+          "auto": "Otomatik (bağlam penceresine uyar)",
+          "full": "Tam (tüm araçlar)",
+          "standard": "Standart",
+          "minimal": "Asgari (salt okunur)",
+          "custom": "Özel"
+        },
+        "profileHint": {
+          "auto": "Breeze, modelin bilinen bağlam penceresine sığan en büyük profili seçer. Pencere bilinmediği sürece tüm araçlar kullanılabilir kalır.",
+          "full": "Her özelliğin bugün sunduğu tüm araçlar.",
+          "standard": "Yaklaşık 40 günlük yardım masası aracı ve daha kısa bir prompt.",
+          "minimal": "Yaklaşık bir düzine salt okunur araç ve kısa bir prompt, küçük yerel modeller için.",
+          "custom": "Bu modeli kullanan her özellikte yalnızca listelediğiniz araç alanları ve araçlar."
+        },
+        "appliesWhen": "Bir değişiklik bir özelliğin kullandıklarını değiştirdiğinde, bu modeldeki açık konuşmalar bir sonraki iletide yapay zeka oturumunu yeniden başlatır ve kullanıcıdan iletiyi yeniden göndermesini ister.",
+        "domainsLabel": "Araç alanları",
+        "domainCore": "Çekirdek bağlam araçları",
+        "toolsLabel": "Tekil araçlar",
+        "toolsHint": "Araç adları, virgülle veya yeni satırla ayrılmış. Breeze, kaydederken her adı denetler.",
+        "droppedTools": "Bu araçlar artık yok ve yok sayılıyor: {{tools}}.",
+        "underpowered": "Bu değişiklik, bu modeli kullanan bir özelliğin ihtiyaç duyduğu araçları kaldırır:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Kapasite bilinmiyor: hiçbir şey kısıtlanmıyor. Otomatik, uç nokta bir bağlam penceresi listeleyene veya bildirene kadar tüm araçları korur.",
+        "windowNotLearned": "Breeze bağlam pencerelerini yalnızca kendi OpenAI uyumlu uç noktalarınızda öğrenir; bu yüzden Otomatik bu modelde tüm araçları korur.",
+        "windowKnown": "Bağlam penceresi: {{tokens}} token ({{source}}).",
+        "windowSource": {
+          "override": "burada belirlendi",
+          "discovered": "uç nokta tarafından listelendi"
+        },
+        "windowObserved": "Bağlam penceresi: {{tokens}} token (uç nokta tarafından bildirildi, {{age}}).",
+        "observedStale": "Uç nokta en son {{tokens}} token bildirdi, {{age}}. Bu bildirim bir saatten eski veya uç noktanın önceki bir kurulumuna ait; bu yüzden artık hiçbir şeyi sınırlamıyor.",
+        "overrideLabel": "Bağlam penceresi geçersiz kılma (token)",
+        "overrideHint": "Yalnızca kendi OpenAI uyumlu uç noktanızdaki modeller için. Uç noktanın listelediğini veya bildirdiğini kullanmak için boş bırakın. Yeni konuşmalar değişen değeri kullanır; açık olanlar, kullandıkları profil değişmedikçe mevcut sınırlarını korur.",
+        "surfacesTitle": "Her özelliğin şu anda kullandığı",
+        "reason": {
+          "explicit": "burada seçildi",
+          "auto_window": "otomatik, bağlam penceresine göre",
+          "auto_unknown_window": "otomatik, pencere bilinmiyor",
+          "auto_unmeasured": "otomatik; bu özellik henüz kısıtlanmıyor"
+        },
+        "missingRequired": "Bu modeli reddeder: {{tools}} eksik olurdu.",
+        "tooSmall": "Pencere çok küçük",
+        "tooSmallHint": "Hiçbir profil bu pencereye sığmıyor, bu yüzden bu özellik modeli reddeder.",
+        "fitSuggestion": "{{tokens}} token ile Otomatik burada {{profile}} profilini seçerdi; bu profil sığmayabilir.",
+        "readiness": {
+          "tokens": "{{tokens}} prompt tokenı",
+          "passed": "Araç gidiş-dönüş testi geçti.",
+          "failed": "Araç gidiş-dönüş testi başarısız oldu, bu yüzden bu özellik modeli reddeder. {{summary}}",
+          "inconclusive": "Sonuçsuz: model değil, uç nokta başarısız oldu. Hiçbir şey reddedilmez. {{summary}}",
+          "stale": "Güncel değil: uç nokta veya araç profili o zamandan beri değişti. Yeniden denetlemek için yeniden doğrulayın.",
+          "absent": "Henüz araç gidiş-dönüş testi yok. Doğrulama, bu modelin atandığı her özellik için bir tane çalıştırır.",
+          "absentVerified": "Doğrulandı (temel). {{surface}} üzerinde gerçek bir araç gidiş-dönüş testini denetlemek için yeniden doğrulayın.",
+          "officeNotChecked": "Denetlenmedi: Doğrulama bir Office gidiş-dönüş testi çalıştırmaz."
+        },
+        "verifyCost": "Doğrulama, uç noktanıza sağlayıcınız tarafından faturalandırılan gerçek istekler gönderir: temel bir denetim, ardından bu modelin atandığı her özellik için bir araç gidiş-dönüş testi (en fazla 4 model turu). Tam profille sohbette tek bir istek yaklaşık 128.000 token olabilir.",
+        "invalidCustom": "Özel bir profil için en az bir araç alanı veya araç seçin.",
+        "invalidWindow": "{{min}} ile {{max}} arasında tam sayı olarak token girin veya boş bırakın.",
+        "ageMinutes": "{{n}} dk önce",
+        "ageHours": "{{n}} sa önce",
+        "ageDays": "{{n}} g önce"
+      }
     },
     "defaults": {
       "title": "Özellik başına varsayılanlar",

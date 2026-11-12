@@ -600,7 +600,72 @@
       "removeTitle": "Retirer ce modèle ?",
       "removeMessage": "« {{model}} » sera supprimé de cette connexion. L’historique d’utilisation et de coûts est conservé. Vous pourrez le rajouter plus tard.",
       "removed": "Modèle retiré",
-      "removeFailed": "Impossible de retirer le modèle. Réessayez."
+      "removeFailed": "Impossible de retirer le modèle. Réessayez.",
+      "tools": {
+        "title": "Outils et contexte",
+        "partnerOnly": "Défini par le partenaire sur le modèle. Les organisations choisissent des modèles ; elles ne peuvent pas modifier ce réglage.",
+        "profileLabel": "Profil d’outils",
+        "profile": {
+          "auto": "Auto (adapté à la fenêtre de contexte)",
+          "full": "Complet (tous les outils)",
+          "standard": "Standard",
+          "minimal": "Minimal (lecture seule)",
+          "custom": "Personnalisé"
+        },
+        "profileHint": {
+          "auto": "Breeze choisit le plus grand profil qui tient dans la fenêtre de contexte connue du modèle. Tant que la fenêtre est inconnue, tous les outils restent disponibles.",
+          "full": "Tous les outils que chaque fonctionnalité propose aujourd’hui.",
+          "standard": "Environ 40 outils courants de support et un prompt plus court.",
+          "minimal": "Une douzaine d’outils en lecture seule et un prompt court, pour les petits modèles locaux.",
+          "custom": "Uniquement les domaines d’outils et les outils que vous indiquez, sur chaque fonctionnalité qui utilise ce modèle."
+        },
+        "appliesWhen": "Lorsqu’une modification change ce qu’utilise une fonctionnalité, les conversations ouvertes avec ce modèle relancent leur session d’IA au message suivant et demandent à l’utilisateur de le renvoyer.",
+        "domainsLabel": "Domaines d’outils",
+        "domainCore": "Outils de contexte de base",
+        "toolsLabel": "Outils individuels",
+        "toolsHint": "Noms d’outils, séparés par des virgules ou des sauts de ligne. Breeze vérifie chaque nom à l’enregistrement.",
+        "droppedTools": "Ces outils n’existent plus et sont ignorés : {{tools}}.",
+        "underpowered": "Cette modification retirerait des outils dont a besoin une fonctionnalité utilisant ce modèle :",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Capacité inconnue : rien n’est restreint. Auto conserve tous les outils tant que le point de terminaison n’indique pas de fenêtre de contexte.",
+        "windowNotLearned": "Breeze ne détecte les fenêtres de contexte que sur vos propres points de terminaison compatibles OpenAI ; Auto conserve donc tous les outils sur ce modèle.",
+        "windowKnown": "Fenêtre de contexte : {{tokens}} jetons ({{source}}).",
+        "windowSource": {
+          "override": "définie ici",
+          "discovered": "indiquée par le point de terminaison"
+        },
+        "windowObserved": "Fenêtre de contexte : {{tokens}} jetons (signalée par le point de terminaison {{age}}).",
+        "observedStale": "Le point de terminaison a signalé {{tokens}} jetons pour la dernière fois {{age}}. Ce signalement date de plus d’une heure ou d’une configuration précédente du point de terminaison ; il ne limite donc plus rien.",
+        "overrideLabel": "Remplacement de la fenêtre de contexte (jetons)",
+        "overrideHint": "Pour les modèles de votre propre point de terminaison compatible OpenAI uniquement. Laissez vide pour utiliser ce que le point de terminaison indique ou signale. Les nouvelles conversations utilisent la valeur modifiée ; les conversations ouvertes conservent leur limite actuelle, sauf si le profil qu’elles utilisent change.",
+        "surfacesTitle": "Ce qu’utilise actuellement chaque fonctionnalité",
+        "reason": {
+          "explicit": "choisi ici",
+          "auto_window": "auto, selon la fenêtre de contexte",
+          "auto_unknown_window": "auto, fenêtre inconnue",
+          "auto_unmeasured": "auto ; cette fonctionnalité n’est pas encore restreinte"
+        },
+        "missingRequired": "Refuse ce modèle : il lui manquerait {{tools}}.",
+        "tooSmall": "Fenêtre trop petite",
+        "tooSmallHint": "Aucun profil ne tient dans cette fenêtre ; cette fonctionnalité refuse donc le modèle.",
+        "fitSuggestion": "À {{tokens}} jetons, Auto choisirait {{profile}} ici ; ce profil risque de ne pas convenir.",
+        "readiness": {
+          "tokens": "{{tokens}} jetons de prompt",
+          "passed": "L’aller-retour d’outil a réussi.",
+          "failed": "L’aller-retour d’outil a échoué ; cette fonctionnalité refuse donc le modèle. {{summary}}",
+          "inconclusive": "Non concluant : c’est le point de terminaison qui a échoué, pas le modèle. Rien n’est refusé. {{summary}}",
+          "stale": "Périmé : le point de terminaison ou le profil d’outils a changé depuis. Revérifiez pour contrôler à nouveau.",
+          "absent": "Aucun aller-retour d’outil pour l’instant. La vérification en lance un pour chaque fonctionnalité à laquelle ce modèle est affecté.",
+          "absentVerified": "Vérifié (de base). Revérifiez pour contrôler un véritable aller-retour d’outil sur {{surface}}.",
+          "officeNotChecked": "Non contrôlé : la vérification ne lance pas d’aller-retour Office."
+        },
+        "verifyCost": "La vérification envoie de vraies requêtes à votre point de terminaison, facturées par votre fournisseur : un contrôle de base, puis un aller-retour d’outil (jusqu’à 4 tours de modèle) pour chaque fonctionnalité à laquelle ce modèle est affecté. Sur le chat avec le profil Complet, une requête peut atteindre environ 128 000 jetons.",
+        "invalidCustom": "Choisissez au moins un domaine d’outils ou un outil pour un profil personnalisé.",
+        "invalidWindow": "Saisissez un nombre entier de jetons compris entre {{min}} et {{max}}, ou laissez le champ vide.",
+        "ageMinutes": "il y a {{n}} min",
+        "ageHours": "il y a {{n}} h",
+        "ageDays": "il y a {{n}} j"
+      }
     },
     "defaults": {
       "title": "Valeurs par défaut par fonctionnalité",

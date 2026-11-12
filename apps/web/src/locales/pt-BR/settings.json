@@ -600,7 +600,72 @@
       "removeTitle": "Remover este modelo?",
       "removeMessage": "“{{model}}” será excluído desta conexão. O histórico de uso e custos é mantido. Você pode adicioná-lo novamente depois.",
       "removed": "Modelo removido",
-      "removeFailed": "Não foi possível remover o modelo. Tente novamente."
+      "removeFailed": "Não foi possível remover o modelo. Tente novamente.",
+      "tools": {
+        "title": "Ferramentas e contexto",
+        "partnerOnly": "Definido pelo parceiro no modelo. As organizações escolhem modelos; não podem substituir isso.",
+        "profileLabel": "Perfil de ferramentas",
+        "profile": {
+          "auto": "Auto (ajustado à janela de contexto)",
+          "full": "Completo (todas as ferramentas)",
+          "standard": "Padrão",
+          "minimal": "Mínimo (somente leitura)",
+          "custom": "Personalizado"
+        },
+        "profileHint": {
+          "auto": "O Breeze escolhe o maior perfil que cabe na janela de contexto conhecida do modelo. Enquanto a janela for desconhecida, todas as ferramentas continuam disponíveis.",
+          "full": "Todas as ferramentas que cada recurso oferece hoje.",
+          "standard": "Cerca de 40 ferramentas comuns de suporte e um prompt mais curto.",
+          "minimal": "Cerca de uma dúzia de ferramentas somente leitura e um prompt curto, para modelos locais pequenos.",
+          "custom": "Somente as áreas de ferramentas e as ferramentas que você listar, em todos os recursos que usam este modelo."
+        },
+        "appliesWhen": "Quando uma alteração muda o que um recurso usa, as conversas abertas com este modelo reiniciam a sessão de IA na próxima mensagem e pedem ao usuário que a envie novamente.",
+        "domainsLabel": "Áreas de ferramentas",
+        "domainCore": "Ferramentas de contexto básico",
+        "toolsLabel": "Ferramentas individuais",
+        "toolsHint": "Nomes de ferramentas, separados por vírgulas ou quebras de linha. O Breeze verifica cada nome ao salvar.",
+        "droppedTools": "Estas ferramentas não existem mais e são ignoradas: {{tools}}.",
+        "underpowered": "Esta alteração removeria ferramentas de que um recurso que usa este modelo precisa:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Capacidade desconhecida: nada é restringido. O Auto mantém todas as ferramentas até que o endpoint liste ou informe uma janela de contexto.",
+        "windowNotLearned": "O Breeze só descobre janelas de contexto nos seus próprios endpoints compatíveis com OpenAI, então o Auto mantém todas as ferramentas neste modelo.",
+        "windowKnown": "Janela de contexto: {{tokens}} tokens ({{source}}).",
+        "windowSource": {
+          "override": "definida aqui",
+          "discovered": "listada pelo endpoint"
+        },
+        "windowObserved": "Janela de contexto: {{tokens}} tokens (informada pelo endpoint {{age}}).",
+        "observedStale": "O endpoint informou {{tokens}} tokens pela última vez {{age}}. Esse relatório tem mais de uma hora ou é de uma configuração anterior do endpoint, então não limita mais nada.",
+        "overrideLabel": "Substituição da janela de contexto (tokens)",
+        "overrideHint": "Somente para modelos no seu próprio endpoint compatível com OpenAI. Deixe em branco para usar o que o endpoint lista ou informa. Novas conversas usam o valor alterado; as abertas mantêm o limite atual, a menos que o perfil que usam mude.",
+        "surfacesTitle": "O que cada recurso usa agora",
+        "reason": {
+          "explicit": "escolhido aqui",
+          "auto_window": "auto, pela janela de contexto",
+          "auto_unknown_window": "auto, janela desconhecida",
+          "auto_unmeasured": "auto; este recurso ainda não é restringido"
+        },
+        "missingRequired": "Recusa este modelo: faltariam {{tools}}.",
+        "tooSmall": "Janela pequena demais",
+        "tooSmallHint": "Nenhum perfil cabe nesta janela, então este recurso recusa o modelo.",
+        "fitSuggestion": "Com {{tokens}} tokens, o Auto escolheria {{profile}} aqui; este perfil pode não caber.",
+        "readiness": {
+          "tokens": "{{tokens}} tokens de prompt",
+          "passed": "Ciclo completo de ferramentas aprovado.",
+          "failed": "Ciclo completo de ferramentas falhou, então este recurso recusa o modelo. {{summary}}",
+          "inconclusive": "Inconclusivo: o endpoint falhou, não o modelo. Nada é recusado. {{summary}}",
+          "stale": "Desatualizado: o endpoint ou o perfil de ferramentas mudou desde então. Verifique novamente para checar de novo.",
+          "absent": "Ainda não há ciclo completo de ferramentas. A verificação executa um para cada recurso a que este modelo está atribuído.",
+          "absentVerified": "Verificado (básico). Verifique novamente para checar um ciclo completo de ferramentas real em {{surface}}.",
+          "officeNotChecked": "Não verificado: a verificação não executa um ciclo completo do Office."
+        },
+        "verifyCost": "A verificação envia solicitações reais ao seu endpoint, cobradas pelo seu provedor: uma checagem básica e depois um ciclo completo de ferramentas (até 4 turnos do modelo) para cada recurso a que este modelo está atribuído. No chat com o perfil Completo, uma solicitação pode ter cerca de 128.000 tokens.",
+        "invalidCustom": "Escolha pelo menos uma área de ferramentas ou uma ferramenta para um perfil personalizado.",
+        "invalidWindow": "Informe um número inteiro de tokens de {{min}} a {{max}}, ou deixe em branco.",
+        "ageMinutes": "há {{n}} min",
+        "ageHours": "há {{n}} h",
+        "ageDays": "há {{n}} d"
+      }
     },
     "defaults": {
       "title": "Padrões por recurso",

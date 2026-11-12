@@ -4,6 +4,8 @@ import type { TFunction } from 'i18next';
 import { Loader2, RefreshCw, Save, Trash2 } from 'lucide-react';
 import {
   AI_MODEL_REQUIRED_PERMISSION_CHOICES,
+  CONTEXT_WINDOW_OVERRIDE_MAX,
+  CONTEXT_WINDOW_OVERRIDE_MIN,
   EFFORT_LEVELS,
   MODEL_SPEEDS,
   THINKING_DISPLAYS,
@@ -19,6 +21,7 @@ import { navigateTo } from '@/lib/navigation';
 import { Drawer } from '../../shared/Drawer';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { registryFriendly } from './surfaceLabels';
+import OfferingToolsSection, { buildToolsPatch, toolsDraftFrom, type ToolGaps, type ToolsDraft } from './OfferingToolsSection';
 
 const PREMIUM_PERMISSION = AI_MODEL_REQUIRED_PERMISSION_CHOICES[0];
 
@@ -189,6 +192,9 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
   const [verifying, setVerifying] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const initialTools = useMemo(() => toolsDraftFrom(offering), [offering]);
+  const [tools, setTools] = useState<ToolsDraft>(initialTools);
+  const [toolGaps, setToolGaps] = useState<ToolGaps | null>(null);
   const friendly = registryFriendly(t);
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
@@ -204,7 +210,10 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
   const fallbackCandidates = offerings.filter((x) => x.id !== null && x.id !== offering.id && x.enabled && x.connectionId === offering.connectionId);
 
   const patchOrInvalid = buildPatch(offering, draft, initial);
-  const dirty = patchOrInvalid === 'invalid_prices' || Object.keys(patchOrInvalid).length > 1;
+  // #11398: tool profile / allow-list / window override (only on a stored row).
+  const toolsPatch = offering.id !== null ? buildToolsPatch(offering, tools) : {};
+  const toolsDirty = typeof toolsPatch === 'string' || Object.keys(toolsPatch).length > 0;
+  const dirty = patchOrInvalid === 'invalid_prices' || Object.keys(patchOrInvalid).length > 1 || toolsDirty;
 
   const toggleEffort = (level: Effort, on: boolean) => {
     const efforts = EFFORT_LEVELS.filter((l) => (l === level ? on : draft.efforts.includes(l)));
@@ -276,10 +285,20 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
       showToast({ type: 'error', message: t('aiModels.offering.invalidPrices') });
       return;
     }
+    if (toolsPatch === 'invalid_custom') {
+      showToast({ type: 'error', message: t('aiModels.offering.tools.invalidCustom') });
+      return;
+    }
+    if (toolsPatch === 'invalid_window') {
+      showToast({ type: 'error', message: t('aiModels.offering.tools.invalidWindow', { min: CONTEXT_WINDOW_OVERRIDE_MIN, max: CONTEXT_WINDOW_OVERRIDE_MAX }) });
+      return;
+    }
+    const body = { ...patchOrInvalid, ...toolsPatch };
     setSaving(true);
+    setToolGaps(null);
     try {
       await runAction({
-        request: () => fetchWithAuth(`/ai/models/offerings/${offering.id}`, { method: 'PATCH', body: JSON.stringify(patchOrInvalid) }),
+        request: () => fetchWithAuth(`/ai/models/offerings/${offering.id}`, { method: 'PATCH', body: JSON.stringify(body) }),
         successMessage: t('aiModels.offering.saved'),
         errorFallback: t('aiModels.offering.saveFailed'),
         friendly,
@@ -294,6 +313,11 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
         await onSaved();
         onClose();
         return;
+      }
+      if (err instanceof ActionError && err.code === 'tool_profile_underpowered') {
+        // Already toasted; also list each feature and its missing tools next to the profile.
+        const surfaces = (err.body as { details?: { surfaces?: ToolGaps } } | undefined)?.details?.surfaces;
+        setToolGaps(Array.isArray(surfaces) ? surfaces : null);
       }
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.offering.saveFailed') });
       // other ActionErrors (incl. the 403 approvals:decide) already toasted; the drawer stays open
@@ -429,6 +453,11 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
           </select>
           <p className="text-xs text-muted-foreground">{t('aiModels.offering.refusalHint')}</p>
         </div>
+
+        {offering.id !== null && (
+          <OfferingToolsSection offering={offering} draft={tools} disabled={saving} gaps={toolGaps}
+            onChange={(patch) => setTools((d) => ({ ...d, ...patch }))} />
+        )}
 
         {canVerify && offering.verification !== null && (
           <p data-testid="ai-offering-verify-hint" className="text-xs text-muted-foreground">{t('aiModels.offering.verifyGatewayHint')}</p>

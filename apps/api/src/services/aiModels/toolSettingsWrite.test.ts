@@ -219,6 +219,16 @@ describe('buildToolProfileDto', () => {
     expect(by.ai_agents).toMatchObject({ resolved: 'minimal', missingRequired: ['execute_command', 'run_script'] });
   });
 
+  it('autoProfile: what auto would pick at the known window, so an explicit profile that cannot fit is visible', () => {
+    const dto = buildToolProfileDto(stored({ toolProfile: 'full' }), { effectiveWindow: 32_768, gateway: true, catalog, troubleshootingRuns: false });
+    const by = Object.fromEntries(dto.surfaces.map((s) => [s.surface, s]));
+    expect(by.chat).toMatchObject({ resolved: 'full', reason: 'explicit', autoProfile: 'standard' });
+    expect(by.helper).toMatchObject({ autoProfile: 'full' });
+    expect(by.office_chat).toMatchObject({ autoProfile: 'full' });
+    const unknown = buildToolProfileDto(stored({ toolProfile: 'full' }), { effectiveWindow: null, gateway: true, catalog, troubleshootingRuns: false });
+    expect(unknown.surfaces.every((s) => s.autoProfile === null)).toBe(true);
+  });
+
   it('auto with a 4,096 window: too_small', () => {
     const dto = buildToolProfileDto(stored(), { effectiveWindow: 4096, gateway: true, catalog, troubleshootingRuns: false });
     expect(dto.surfaces.find((s) => s.surface === 'chat')).toMatchObject({ resolved: 'too_small', reason: 'auto_window' });
