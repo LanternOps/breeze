@@ -257,6 +257,9 @@ type Broker struct {
 	rateLimiter *ipc.RateLimiter
 	startTime   time.Time // broker creation time, used for watchdog uptime
 
+	// accounts overrides the platform account lookups (tests only).
+	accounts *accountDirectory
+
 	// broadcastNotifyUndelivered counts broadcast notifications a helper
 	// answered with Delivered=false (#9266). See BroadcastNotification.
 	broadcastNotifyUndelivered atomic.Uint64
@@ -958,14 +961,23 @@ func closeListenerAsync(listener net.Listener) <-chan struct{} {
 	return closed
 }
 
-// SessionForUser returns the first active session for the given username.
+// SessionForUser returns the best session running as the named account: a
+// user-role helper when one is connected, otherwise another helper that
+// takes per-user work. The name is resolved to an account identity and
+// matched against each session's kernel-verified identity (see
+// account_identity.go); a name that resolves to no account selects nothing.
 func (b *Broker) SessionForUser(username string) *Session {
+	identity := b.accountIdentityForName(username)
+	if identity == "" {
+		return nil
+	}
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.Username == username && s.HelperRole == ipc.HelperRoleUser {
+		if s.accountIdentity == identity && s.HelperRole == ipc.HelperRoleUser {
 			if betterSession(s, best) {
 				best = s
 			}
@@ -976,7 +988,7 @@ func (b *Broker) SessionForUser(username string) *Session {
 	}
 
 	for _, s := range b.sessions {
-		if s.Username == username && betterSession(s, best) {
+		if s.accountIdentity == identity && takesPerUserWork(s.HelperRole) && betterSession(s, best) {
 			best = s
 		}
 	}
@@ -2596,8 +2608,11 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Clear the handshake deadline
 	rawConn.SetDeadline(time.Time{})
 
-	// Create session
-	session := NewSession(conn, creds.UID, identityKey, authReq.Username, authReq.DisplayEnv, authReq.SessionID, scopes)
+	// Create session. The account name comes from the verified peer
+	// identity, never from the auth request.
+	accountName := b.peerAccountName(baseIdentityKey)
+	session := NewSession(conn, creds.UID, identityKey, accountName, authReq.DisplayEnv, authReq.SessionID, scopes)
+	session.accountIdentity = baseIdentityKey
 	session.PID = int(creds.PID)
 	session.HelperRole = helperRole
 	session.BinaryKind = authReq.BinaryKind
@@ -2654,7 +2669,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 
 	log.Info("user helper connected",
 		"identity", identityKey,
-		"username", authReq.Username,
+		"username", accountName,
+		"reportedUsername", authReq.Username,
 		"sessionId", authReq.SessionID,
 		"display", authReq.DisplayEnv,
 		"pid", creds.PID,

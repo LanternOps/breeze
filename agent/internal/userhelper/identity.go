@@ -36,10 +36,10 @@ var (
 // has no passwd entry but the stdlib can still identify the process another
 // way. It can still be poisoned, which is exactly why it is not tried first.
 // That residual risk is accepted rather than fixed: reaching the fallback at
-// all requires user.LookupId to fail on this process's own uid, and if a
-// poisoned fallback then yields a stale username the broker rejects the auth
-// outright — a loud failure, not a silent one. The uid itself never comes
-// from the fallback, so the broker's uid-based authorization cannot widen.
+// all requires user.LookupId to fail on this process's own uid, and the name
+// reported here is informational only. The broker names the session from the
+// kernel-verified peer uid (sessionbroker/account_identity.go), and the uid
+// itself never comes from the fallback, so a stale name changes nothing.
 func resolveUnixIdentity() (uint64, string, error) {
 	uid := os.Getuid()
 
