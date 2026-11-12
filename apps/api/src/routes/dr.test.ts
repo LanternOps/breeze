@@ -880,9 +880,9 @@ describe('dr routes', () => {
       });
 
       expect(res.status).toBe(200);
-      // the group existence check plus the plan write path's lock and
-      // execution check; no device lookup
-      expect(selectMock).toHaveBeenCalledTimes(3);
+      // the group existence check plus the plan write path's lock, execution
+      // check and dependent-group check; no device lookup
+      expect(selectMock).toHaveBeenCalledTimes(4);
     });
   });
 
@@ -1034,6 +1034,49 @@ describe('dr routes', () => {
       expect(res.status).toBeLessThan(300);
       expect(lockChain.for).toHaveBeenCalledWith('update');
       expect(planSets.some((values) => values.updatedAt instanceof Date)).toBe(true);
+    });
+  });
+
+  // A group's predecessor must be another group of the same plan, checked by
+  // drPlanWrites under the plan lock; a group others depend on is not deleted.
+  describe('recovery group dependencies', () => {
+    const OTHER_GROUP_ID = '99999999-9999-4999-8999-999999999999';
+    const planRow = { id: PLAN_ID, orgId: ORG_ID, name: 'Primary Site Failover', status: 'active' };
+    const groupRow = { id: GROUP_ID, planId: PLAN_ID, orgId: ORG_ID, name: 'Tier 1 Apps', sequence: 1, devices: [] };
+
+    it.each([
+      ['POST', `/dr/plans/${PLAN_ID}/groups`, { name: 'Tier 2', dependsOnGroupId: OTHER_GROUP_ID }, planRow],
+      ['PATCH', `/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, { dependsOnGroupId: OTHER_GROUP_ID }, groupRow],
+    ] as const)('%s %s refuses a predecessor that is not a group of the same plan', async (method, path, body, first) => {
+      selectMock.mockReturnValueOnce(chainMock([first]));
+      queuePlanWriteReads();
+      selectMock.mockReturnValueOnce(chainMock([])); // predecessor lookup in this plan and org finds nothing
+
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(body),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('invalid_group_dependency');
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to delete a group another group depends on', async () => {
+      selectMock.mockReturnValueOnce(chainMock([groupRow]));
+      queuePlanWriteReads();
+      selectMock.mockReturnValueOnce(chainMock([{ id: OTHER_GROUP_ID }])); // a dependent group
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('dr_plan_group_has_dependents');
+      expect(deleteMock).not.toHaveBeenCalled();
     });
   });
 

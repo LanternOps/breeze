@@ -7,11 +7,11 @@ import './setup';
 
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { drExecutions, drPlanGroups, drPlans } from '../../db/schema';
 import { readDrPlanDefinition } from '../../services/drPlanDefinition';
 import { reconcileDrExecution } from '../../services/drExecutionService';
-import { updateDrPlanGroup } from '../../services/drPlanWrites';
+import { addDrPlanGroup, deleteDrPlanGroup, updateDrPlanGroup } from '../../services/drPlanWrites';
 import { createOrganization, createPartner } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -185,5 +185,72 @@ describe('DR plan writes and execution start serialise on the plan row', () => {
       select id from device_commands where payload ->> 'drExecutionId' = ${execution.id}
     `);
     expect(commands).toHaveLength(0);
+  });
+});
+
+// dr_plan_groups.depends_on_group_id is a plain foreign key: it is not limited
+// to the plan or org, and foreign-key checks ignore row-level security. The
+// write path therefore checks the predecessor itself, under the plan lock.
+describe('recovery group dependencies stay inside their plan', () => {
+  async function seedOrgPlan(orgId?: string) {
+    const testDb = getTestDb();
+    const resolvedOrgId = orgId ?? (await createOrganization({ partnerId: (await createPartner()).id })).id;
+    const [plan] = await testDb.insert(drPlans).values({
+      orgId: resolvedOrgId, name: `DR dependency ${crypto.randomUUID()}`, status: 'active',
+    }).returning({ id: drPlans.id });
+    const [group] = await testDb.insert(drPlanGroups).values({
+      planId: plan!.id, orgId: resolvedOrgId, name: 'Tier 1', sequence: 1, devices: [],
+    }).returning({ id: drPlanGroups.id });
+    return { orgId: resolvedOrgId, planId: plan!.id, groupId: group!.id };
+  }
+
+  function orgContext(orgId: string): DbAccessContext {
+    return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [] };
+  }
+
+  runDb('refuses a predecessor from another plan or another org, and accepts one from the same plan', async () => {
+    const home = await seedOrgPlan();
+    const sibling = await seedOrgPlan(home.orgId);
+    const foreign = await seedOrgPlan();
+
+    for (const predecessor of [sibling.groupId, foreign.groupId]) {
+      const added = await withSystemDbAccessContext(() => addDrPlanGroup({
+        planId: home.planId, orgId: home.orgId, values: { name: 'Tier 2', dependsOnGroupId: predecessor },
+      }));
+      expect(added).toEqual({ status: 'invalid_dependency' });
+      const updated = await withSystemDbAccessContext(() => updateDrPlanGroup({
+        planId: home.planId, orgId: home.orgId, groupId: home.groupId, changes: { dependsOnGroupId: predecessor },
+      }));
+      expect(updated).toEqual({ status: 'invalid_dependency' });
+    }
+    const groups = await getTestDb().select().from(drPlanGroups).where(eq(drPlanGroups.planId, home.planId));
+    expect(groups.map((group) => group.dependsOnGroupId)).toEqual([null]);
+
+    const added = await withSystemDbAccessContext(() => addDrPlanGroup({
+      planId: home.planId, orgId: home.orgId, values: { name: 'Tier 2', dependsOnGroupId: home.groupId },
+    }));
+    expect(added.status).toBe('written');
+  });
+
+  runDb('refuses to delete a group that another group depends on, including one this scope cannot see', async () => {
+    const home = await seedOrgPlan();
+    const [dependent] = await getTestDb().insert(drPlanGroups).values({
+      planId: home.planId, orgId: home.orgId, name: 'Tier 2', sequence: 2, devices: [], dependsOnGroupId: home.groupId,
+    }).returning({ id: drPlanGroups.id });
+    expect(await withDbAccessContext(orgContext(home.orgId), () => deleteDrPlanGroup({
+      planId: home.planId, orgId: home.orgId, groupId: home.groupId,
+    }))).toEqual({ status: 'group_has_dependents' });
+
+    // A pointer stored before this check existed, from a group of another org:
+    // invisible to this org's scope, still enforced by the foreign key.
+    const foreign = await seedOrgPlan();
+    await getTestDb().update(drPlanGroups).set({ dependsOnGroupId: null }).where(eq(drPlanGroups.id, dependent!.id));
+    await getTestDb().update(drPlanGroups).set({ dependsOnGroupId: home.groupId }).where(eq(drPlanGroups.id, foreign.groupId));
+    expect(await withDbAccessContext(orgContext(home.orgId), () => deleteDrPlanGroup({
+      planId: home.planId, orgId: home.orgId, groupId: home.groupId,
+    }))).toEqual({ status: 'group_has_dependents' });
+
+    const [stillThere] = await getTestDb().select({ id: drPlanGroups.id }).from(drPlanGroups).where(eq(drPlanGroups.id, home.groupId));
+    expect(stillThere).toBeDefined();
   });
 });

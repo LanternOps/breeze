@@ -31,7 +31,9 @@ import { drExecutionView } from './drExecutionView';
 import {
   addDrPlanGroup,
   deleteDrPlanGroup,
+  DEPENDS_ON_GROUP_DENIED,
   DR_PLAN_EXECUTION_IN_PROGRESS,
+  GROUP_HAS_DEPENDENTS_MESSAGE,
   updateDrPlan,
   updateDrPlanGroup,
   type DrPlanChanges,
@@ -40,7 +42,6 @@ import {
 } from './drPlanWrites';
 
 const DEVICE_ORG_DENIED = 'One or more devices do not belong to this organization';
-const DEPENDS_ON_GROUP_DENIED = 'dependsOnGroupId must reference another group in the same DR plan';
 
 /**
  * A DR group may only hold devices of its PLAN's org. The central `deviceArgs`
@@ -65,30 +66,6 @@ async function proposedDevicesDenied(
     .where(and(inArray(devices.id, ids), eq(devices.orgId, orgId)));
   if (owned.length !== ids.length) return DEVICE_ORG_DENIED;
   return owned.some((row) => deviceSiteDenied(auth, row.siteId, row.id)) ? 'site_access_denied' : null;
-}
-
-/**
- * `depends_on_group_id` is a bare FK to dr_plan_groups.id (not plan- or
- * org-scoped, and FK checks are not subject to RLS), so a predecessor must be proven to be
- * another group of the SAME plan.
- */
-async function dependsOnGroupDenied(
-  dependsOnGroupId: string,
-  planId: string,
-  orgId: string,
-  selfGroupId?: string,
-): Promise<boolean> {
-  if (dependsOnGroupId === selfGroupId) return true;
-  const [row] = await db
-    .select({ id: drPlanGroups.id })
-    .from(drPlanGroups)
-    .where(and(
-      eq(drPlanGroups.id, dependsOnGroupId),
-      eq(drPlanGroups.planId, planId),
-      eq(drPlanGroups.orgId, orgId),
-    ))
-    .limit(1);
-  return !row;
 }
 
 /**
@@ -250,6 +227,10 @@ function planWriteReply<T>(result: DrPlanWriteResult<T>, key: 'plan' | 'group'):
       return JSON.stringify({ error: GROUP_NOT_FOUND });
     case 'plan_not_found':
       return JSON.stringify({ error: PLAN_NOT_FOUND });
+    case 'invalid_dependency':
+      return JSON.stringify({ error: DEPENDS_ON_GROUP_DENIED });
+    case 'group_has_dependents':
+      return JSON.stringify({ error: GROUP_HAS_DEPENDENTS_MESSAGE });
   }
 }
 
@@ -713,12 +694,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         if (hostDenied) return JSON.stringify({ error: hostDenied });
         const proposedDenied = await proposedDevicesDenied(auth, input.devices, plan.orgId);
         if (proposedDenied) return JSON.stringify({ error: proposedDenied });
-        if (
-          typeof input.dependsOnGroupId === 'string'
-          && await dependsOnGroupDenied(input.dependsOnGroupId, plan.id, plan.orgId)
-        ) {
-          return JSON.stringify({ error: DEPENDS_ON_GROUP_DENIED });
-        }
+        // The predecessor is checked by the write path, under the plan lock.
         return planWriteReply(await addDrPlanGroup({
           planId: plan.id,
           orgId: plan.orgId,
@@ -761,12 +737,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.name === 'string') changes.name = input.name.trim();
         if (input.sequence !== undefined) changes.sequence = Number(input.sequence);
         if (input.dependsOnGroupId !== undefined) {
-          if (
-            typeof input.dependsOnGroupId === 'string'
-            && await dependsOnGroupDenied(input.dependsOnGroupId, planId, existing.orgId, groupId)
-          ) {
-            return JSON.stringify({ error: DEPENDS_ON_GROUP_DENIED });
-          }
+          // The predecessor is checked by the write path, under the plan lock.
           changes.dependsOnGroupId =
             typeof input.dependsOnGroupId === 'string' ? input.dependsOnGroupId : null;
         }

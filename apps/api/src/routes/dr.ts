@@ -27,7 +27,9 @@ import { drExecutionView } from '../services/drExecutionView';
 import {
   addDrPlanGroup,
   deleteDrPlanGroup,
+  DEPENDS_ON_GROUP_DENIED,
   DR_PLAN_EXECUTION_IN_PROGRESS,
+  GROUP_HAS_DEPENDENTS_MESSAGE,
   updateDrPlan,
   updateDrPlanGroup,
   type DrPlanChanges,
@@ -214,6 +216,16 @@ function planWriteRefusal(c: Context, result: Exclude<DrPlanWriteResult<unknown>
       return c.json({ error: 'Group not found' }, 404);
     case 'plan_not_found':
       return c.json({ error: 'Plan not found' }, 404);
+    case 'invalid_dependency':
+      return c.json({
+        error: DEPENDS_ON_GROUP_DENIED,
+        code: 'invalid_group_dependency',
+      }, 400);
+    case 'group_has_dependents':
+      return c.json({
+        error: GROUP_HAS_DEPENDENTS_MESSAGE,
+        code: 'dr_plan_group_has_dependents',
+      }, 409);
   }
 }
 

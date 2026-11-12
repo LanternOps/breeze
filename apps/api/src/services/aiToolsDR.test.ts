@@ -557,13 +557,23 @@ describe('DR plan tools match the route', () => {
   });
 
   it('add_group refuses a dependsOnGroupId that is not a group of the same plan', async () => {
-    mockSelectSequence([[planRow], [{ id: DEVICE_ID }], []]);
+    // plan, proposed devices, then the write path: plan lock, no execution, predecessor lookup finds nothing
+    mockSelectSequence([[planRow], [{ id: DEVICE_ID }], [{ id: PLAN_ID }], [], []]);
     const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
       action: 'add_group', planId: PLAN_ID, name: 'g', devices: [DEVICE_ID], dependsOnGroupId: OTHER_PLAN_GROUP,
     }, makeAuth()));
 
     expect(result.error).toBe('dependsOnGroupId must reference another group in the same DR plan');
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('delete_group refuses a group another group depends on', async () => {
+    mockSelectSequence([[{ id: GROUP_ID, orgId: ORG_ID, devices: [DEVICE_ID] }], [{ id: PLAN_ID }], [], [{ id: OTHER_PLAN_GROUP }]]);
+    const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
+      action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID,
+    }, makeAuth()));
+    expect(result.error).toBe('Another recovery group depends on this group. Change or remove that dependency first.');
+    expect(db.delete).not.toHaveBeenCalled();
   });
 
   // Every plan and group write goes through drPlanWrites: it locks the plan
@@ -592,7 +602,7 @@ describe('DR plan tools match the route', () => {
 
     it.each(WRITES)('%s locks the plan row before it checks for executions', async (_name, input, first) => {
       const chains: any[] = [];
-      const rows = [[...first], locked, [], [{ id: PLAN_ID }]];
+      const rows = [[...first], locked, []];
       vi.mocked(db.select).mockImplementation((() => {
         const chain = createQueryChain(rows[chains.length] ?? []);
         chains.push(chain);
@@ -649,7 +659,7 @@ describe('DR plan tools match the route', () => {
   });
 
   it('update_group refuses a group depending on itself and a device outside the plan org', async () => {
-    mockSelectSequence([[{ id: GROUP_ID, orgId: ORG_ID, devices: [DEVICE_ID] }]]);
+    mockSelectSequence([[{ id: GROUP_ID, orgId: ORG_ID, devices: [DEVICE_ID] }], [{ id: PLAN_ID }], []]);
     const self = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
       action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, dependsOnGroupId: GROUP_ID,
     }, makeAuth()));

@@ -14,6 +14,11 @@
  *   3. moves the plan revision (`dr_plans.updated_at`) in the same
  *      transaction, so an approval pinned before the change no longer matches.
  *
+ * It also keeps group dependencies inside the plan: `depends_on_group_id` is
+ * a plain foreign key (not limited to the plan or org, and not subject to
+ * row-level security), so a predecessor must be another group of the same
+ * plan, and a group that others depend on is not deleted.
+ *
  * Callers: the HTTP routes (routes/dr.ts) and the AI/MCP `manage_dr_plan` tool
  * (aiToolsDR.ts). Authorization of the caller and of the devices it names
  * stays with each caller; this module owns only the consistency of the write.
@@ -23,6 +28,9 @@ import { db, withDbTransaction } from '../db';
 import { drExecutions, drPlanGroups, drPlans } from '../db/schema';
 
 export const DR_PLAN_EXECUTION_IN_PROGRESS = 'dr_plan_execution_in_progress';
+export const DEPENDS_ON_GROUP_DENIED = 'dependsOnGroupId must reference another group in the same DR plan';
+export const GROUP_HAS_DEPENDENTS_MESSAGE =
+  'Another recovery group depends on this group. Change or remove that dependency first.';
 
 /** Execution statuses during which a plan's definition is in use. */
 export const DR_EXECUTION_ACTIVE_STATUSES = ['pending', 'running'] as const;
@@ -49,7 +57,11 @@ export type DrPlanWriteResult<T> =
   | { status: 'written'; row: T }
   | { status: 'plan_not_found' }
   | { status: 'group_not_found' }
-  | { status: 'execution_in_progress' };
+  | { status: 'execution_in_progress' }
+  /** The predecessor is not another group of the same plan. */
+  | { status: 'invalid_dependency' }
+  /** Another group depends on the group being deleted. */
+  | { status: 'group_has_dependents' };
 
 type Refusal = Exclude<DrPlanWriteResult<never>, { status: 'written' }>;
 
@@ -83,6 +95,40 @@ async function lockPlanForWrite(planId: string, orgId: string): Promise<void> {
     ))
     .limit(1);
   if (active) throw new DrPlanWriteRefused({ status: 'execution_in_progress' });
+}
+
+/**
+ * Refuse a predecessor that is not another group of this plan and org. Runs
+ * under the plan lock, so the predecessor cannot be deleted or moved between
+ * this check and the write.
+ */
+async function assertDependencyInPlan(
+  dependsOnGroupId: string | null | undefined,
+  planId: string,
+  orgId: string,
+  selfGroupId?: string,
+): Promise<void> {
+  if (dependsOnGroupId === undefined || dependsOnGroupId === null) return;
+  if (dependsOnGroupId === selfGroupId) throw new DrPlanWriteRefused({ status: 'invalid_dependency' });
+  const [predecessor] = await db
+    .select({ id: drPlanGroups.id })
+    .from(drPlanGroups)
+    .where(and(
+      eq(drPlanGroups.id, dependsOnGroupId),
+      eq(drPlanGroups.planId, planId),
+      eq(drPlanGroups.orgId, orgId),
+    ))
+    .limit(1);
+  if (!predecessor) throw new DrPlanWriteRefused({ status: 'invalid_dependency' });
+}
+
+/** The Postgres error code of a driver error, however it was wrapped. */
+function pgErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const direct = (error as { code?: unknown }).code;
+  if (typeof direct === 'string') return direct;
+  const cause = (error as { cause?: { code?: unknown } }).cause;
+  return typeof cause?.code === 'string' ? cause.code : null;
 }
 
 /** Move the plan revision. A zero-row update (row hidden from this scope) refuses the write. */
@@ -144,6 +190,7 @@ export async function addDrPlanGroup(input: {
   values: DrPlanGroupValues;
 }): Promise<DrPlanWriteResult<DrPlanGroupRow>> {
   return writeUnderPlanLock(input.planId, input.orgId, { status: 'plan_not_found' }, async () => {
+    await assertDependencyInPlan(input.values.dependsOnGroupId, input.planId, input.orgId);
     const [row] = await db
       .insert(drPlanGroups)
       .values({
@@ -168,6 +215,7 @@ export async function updateDrPlanGroup(input: {
   changes: DrPlanGroupChanges;
 }): Promise<DrPlanWriteResult<DrPlanGroupRow>> {
   return writeUnderPlanLock(input.planId, input.orgId, { status: 'group_not_found' }, async () => {
+    await assertDependencyInPlan(input.changes.dependsOnGroupId, input.planId, input.orgId, input.groupId);
     const [row] = await db
       .update(drPlanGroups)
       .set(input.changes)
@@ -186,15 +234,28 @@ export async function deleteDrPlanGroup(input: {
   orgId: string;
   groupId: string;
 }): Promise<DrPlanWriteResult<{ id: string }>> {
-  return writeUnderPlanLock(input.planId, input.orgId, { status: 'group_not_found' }, async () => {
-    const [row] = await db
-      .delete(drPlanGroups)
-      .where(and(
-        eq(drPlanGroups.id, input.groupId),
-        eq(drPlanGroups.planId, input.planId),
-        eq(drPlanGroups.orgId, input.orgId),
-      ))
-      .returning({ id: drPlanGroups.id });
-    return row;
-  });
+  try {
+    return await writeUnderPlanLock(input.planId, input.orgId, { status: 'group_not_found' }, async () => {
+      const [dependent] = await db
+        .select({ id: drPlanGroups.id })
+        .from(drPlanGroups)
+        .where(eq(drPlanGroups.dependsOnGroupId, input.groupId))
+        .limit(1);
+      if (dependent) throw new DrPlanWriteRefused({ status: 'group_has_dependents' });
+      const [row] = await db
+        .delete(drPlanGroups)
+        .where(and(
+          eq(drPlanGroups.id, input.groupId),
+          eq(drPlanGroups.planId, input.planId),
+          eq(drPlanGroups.orgId, input.orgId),
+        ))
+        .returning({ id: drPlanGroups.id });
+      return row;
+    });
+  } catch (error) {
+    // A dependent this scope cannot see (another org's row, stored before the
+    // dependency check existed) is still enforced by the foreign key.
+    if (pgErrorCode(error) === '23503') return { status: 'group_has_dependents' };
+    throw error;
+  }
 }
