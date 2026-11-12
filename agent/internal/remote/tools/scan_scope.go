@@ -208,6 +208,9 @@ func (s *ScanScope) OpenFile(path string, walked fs.FileInfo) (*os.File, error) 
 		_ = f.Close()
 		return nil, e
 	}
+	if requireDiskHandle(f) != nil {
+		return fail(ErrScanSkipped)
+	}
 	info, err := f.Stat()
 	if err != nil {
 		return fail(err)

@@ -41,7 +41,7 @@ func openForInspection(p string) (*os.File, error) {
 		return nil, err
 	}
 	st, err := f.Stat()
-	if err != nil || !inspectableInfo(st) || !os.SameFile(info, st) {
+	if err != nil || !inspectableInfo(st) || !os.SameFile(info, st) || requireDiskHandle(f) != nil {
 		_ = f.Close()
 		return nil, errNotInspectable
 	}

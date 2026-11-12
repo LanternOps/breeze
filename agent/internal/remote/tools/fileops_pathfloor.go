@@ -53,8 +53,10 @@ func isASCIILetter(c byte) bool {
 
 // hasWindowsReservedDeviceName reports whether any component of the
 // forward-slashed path is a name Windows maps to a device whatever folder it
-// is in (CON, NUL, COM1, LPT1, ...), with or without an extension, trailing
-// dots or spaces, or a stream suffix.
+// is in: CON, PRN, AUX, NUL, CONIN$, CONOUT$, and COM or LPT followed by one
+// digit 0-9 or a superscript 1, 2 or 3; with or without an extension,
+// trailing dots or spaces, or a stream suffix. Compared on runes, case
+// folded.
 func hasWindowsReservedDeviceName(norm string) bool {
 	for _, c := range strings.Split(norm, "/") {
 		if i := strings.IndexByte(c, ':'); i >= 0 && !(i == 1 && len(c) == 2) {
@@ -68,8 +70,12 @@ func hasWindowsReservedDeviceName(norm string) bool {
 		case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
 			return true
 		}
-		if len(c) == 4 && (strings.HasPrefix(c, "COM") || strings.HasPrefix(c, "LPT")) && c[3] >= '1' && c[3] <= '9' {
-			return true
+		r := []rune(c)
+		if len(r) == 4 && (string(r[:3]) == "COM" || string(r[:3]) == "LPT") {
+			switch d := r[3]; {
+			case d >= '0' && d <= '9', d == '\u00b9', d == '\u00b2', d == '\u00b3':
+				return true
+			}
 		}
 	}
 	return false

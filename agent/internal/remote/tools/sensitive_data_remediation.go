@@ -101,6 +101,10 @@ func secureDeletePath(path string) error {
 
 	defer file.Close()
 
+	if err := requireDiskHandle(file); err != nil {
+		return err
+	}
+
 	// Overwriting in place would also change the content seen through the
 	// file's other names, if it has any.
 	if err := otherHardLinksError("secure delete", path, file); err != nil {

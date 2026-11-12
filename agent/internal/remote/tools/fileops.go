@@ -561,6 +561,9 @@ func beforeTrashCopy(path string) {
 // junction, symlink, mount point, short name and alias, and it cannot be raced
 // because the caller goes on to use this same handle.
 func checkOpenedForContainment(verb, displayPath string, f *os.File) error {
+	if err := requireDiskHandle(f); err != nil {
+		return err
+	}
 	final, err := containmentFinalPathOfFile(f)
 	if err != nil {
 		if handleCheckMandatory {

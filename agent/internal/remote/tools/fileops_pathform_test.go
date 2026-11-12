@@ -111,7 +111,7 @@ func TestWindowsReservedDeviceNames(t *testing.T) {
 			t.Errorf("%s: not recognised", p)
 		}
 	}
-	for _, p := range []string{"C:/x/COM10", "C:/x/console.txt", "C:/x/nullable", "C:/x/LPT0", "C:/Logs/report.txt"} {
+	for _, p := range []string{"C:/x/COM10", "C:/x/console.txt", "C:/x/nullable", "C:/Logs/report.txt"} {
 		if hasWindowsReservedDeviceName(p) {
 			t.Errorf("%s: wrongly recognised", p)
 		}
