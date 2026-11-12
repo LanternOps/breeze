@@ -16,7 +16,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { googleWorkspaceConnections } from '../db/schema/google';
-import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
+import { authMiddleware, withAuthDbAccessContext, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import { encryptSecret } from '../services/secretCrypto';
@@ -99,7 +99,7 @@ googleRoutes.post(
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) return c.json({ error: 'orgId is required for this scope' }, 400);
     // canAccessOrg is true for system scope: the holding org is never a target.
-    if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
+    if (await withAuthDbAccessContext(auth, () => isHoldingOrg(orgId))) return c.json(PROTECTED_ORG_ERROR, 409);
 
     const payload = c.req.valid('json');
 
@@ -133,7 +133,7 @@ googleRoutes.post(
     if (!encryptedKey) return c.json({ error: 'Failed to encrypt the service-account key' }, 500);
 
     const now = new Date();
-    const [row] = await db
+    const [row] = await withAuthDbAccessContext(auth, () => db
       .insert(googleWorkspaceConnections)
       .values({
         orgId,
@@ -167,7 +167,7 @@ googleRoutes.post(
           updatedAt: now,
         },
       })
-      .returning();
+      .returning());
 
     if (!row) {
       captureException(new Error('google_workspace_connection upsert returned no row'), c);

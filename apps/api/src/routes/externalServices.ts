@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { HTTPException } from 'hono/http-exception';
-import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, withAuthDbAccessContext } from '../middleware/auth';
 import { db } from '../db';
 import { users } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -22,6 +22,11 @@ externalServicesRoutes.use('/support', authMiddleware);
 function externalBaseUrl(): string | null {
   return process.env.BREEZE_BILLING_URL || null;
 }
+
+// Both routes own their DB context (SELF_MANAGED_DB_CONTEXT_ROUTES): the
+// billing service is called with no transaction held, and never waited on for
+// longer than this.
+const BILLING_FORWARD_TIMEOUT_MS = 15_000;
 
 async function forward(path: string, body: unknown) {
   const baseUrl = externalBaseUrl();
@@ -51,6 +56,7 @@ async function forward(path: string, body: unknown) {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(BILLING_FORWARD_TIMEOUT_MS),
     });
     const text = await res.text();
     let json: unknown;
@@ -208,11 +214,11 @@ externalServicesRoutes.post('/support', async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
   }
-  const [user] = await db
+  const [user] = await withAuthDbAccessContext(auth, async () => db
     .select({ email: users.email, name: users.name })
     .from(users)
     .where(eq(users.id, auth.user.id))
-    .limit(1);
+    .limit(1));
   if (!user) {
     throw new HTTPException(404, { message: 'User not found' });
   }
