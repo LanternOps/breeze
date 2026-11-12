@@ -2659,9 +2659,10 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		helperReservation = nil
 	} else {
 		if err := b.registerNonLifecycleSession(identityKey, helperRole, session, backupReservation); err != nil {
-			log.Warn("max connections exceeded at register (admit race)",
+			log.Warn("helper session registration refused after handshake",
 				"identity", identityKey,
 				"sessionId", authReq.SessionID,
+				"error", err.Error(),
 			)
 			conn.Close()
 			return
