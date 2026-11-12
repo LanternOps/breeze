@@ -171,9 +171,14 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
           {email && email !== user?.email && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t('setup.account.currentPasswordHint')}
-            </p>
+            <>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('setup.account.currentPasswordHint')}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('setup.account.pendingEmailHint')}
+              </p>
+            </>
           )}
         </div>
 

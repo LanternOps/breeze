@@ -150,3 +150,30 @@ describe('AccountSetupStep — email change re-authenticates (#2428)', () => {
     expect(authMocks.apiLogin).toHaveBeenCalledWith('old@example.com', 'BrandNewPass1!');
   });
 });
+
+describe('AccountSetupStep — pending email change hint', () => {
+  const hint = 'Your new address takes effect when you open the confirmation link sent to it. Signing out or changing your password before then cancels the email change.';
+
+  beforeEach(() => {
+    authMocks.fetchWithAuth.mockResolvedValue(trustResponse('trusted'));
+  });
+
+  it('says that signing out cancels the change once a new address is entered', async () => {
+    const user = userEvent.setup();
+    render(<AccountSetupStep onNext={vi.fn()} />);
+
+    expect(screen.queryByText(hint)).toBeNull();
+    await user.type(screen.getByLabelText(/email address/i), 'new@example.com');
+
+    expect(screen.getByText(hint)).toBeInTheDocument();
+  });
+
+  it('does not show the hint while the address is unchanged', async () => {
+    const user = userEvent.setup();
+    render(<AccountSetupStep onNext={vi.fn()} />);
+
+    await user.type(screen.getByLabelText(/email address/i), 'old@example.com');
+
+    expect(screen.queryByText(hint)).toBeNull();
+  });
+});
