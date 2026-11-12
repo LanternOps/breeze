@@ -340,7 +340,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // user-found branch. DENYING the login even when the password is correct is
   // the whole point — a locked account means "we don't trust this session
   // right now", not "your password is wrong". The response shape is the
-  // generic 401 (SR2-23), but the denial stands. The lockout window expires
+  // generic 401, but the denial stands. The lockout window expires
   // automatically; the user can also unblock themselves by completing a
   // password reset.
   //
@@ -351,7 +351,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // denies (fail-closed), as the lockout check always has; the route already
   // answers 503 when there is no Redis client at all.
   //
-  // SR2-23: the reservation is a FLAG, not an early return: the argon2 verify
+  // The reservation is a FLAG, not an early return: the argon2 verify
   // below runs on every branch so a locked account is not measurably faster.
   const reservation = e2eMode
     ? { allowed: true, count: 0, reachesLimit: false }
@@ -380,11 +380,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     // The owner is still told — out of band, in the lockout email that
     // notifyAccountLocked sends to the address itself, which is the only
     // channel that proves ownership. Ops still get the audit row + the
-    // anomaly metric. Only the attacker loses a signal.
+    // anomaly metric; only the public response carries no signal.
     //
     // Attempts made while locked are counted but never move the window's
-    // expiry (set on the first attempt only), so trying again cannot hold a
-    // victim locked out. No second notice is sent.
+    // expiry (set on the first attempt only), so trying again cannot keep an
+    // account locked. No second notice is sent.
     await floorPromise;
     return c.json(genericAuthError(), 401);
   }

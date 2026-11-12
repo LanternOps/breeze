@@ -4212,7 +4212,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
 
   const normalizedEmail = user.email.toLowerCase();
 
-  // SR2-23 discipline (mirrors /auth/login): the attempt is reserved on the
+  // Same discipline as /auth/login: the attempt is reserved on the
   // account before the password is checked (concurrent guesses each take
   // their own slot), the reservation never short-circuits the argon2 verify,
   // and a locked account is denied with the same generic 401 even on a correct
