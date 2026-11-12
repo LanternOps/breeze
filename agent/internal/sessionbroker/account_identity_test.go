@@ -277,3 +277,30 @@ func TestWindowsLookupErrorsAreClassified(t *testing.T) {
 		t.Fatalf("ERROR_ACCESS_DENIED classified: %v", err)
 	}
 }
+
+// On Windows the SYSTEM-role helper runs as SYSTEM in each interactive
+// session; it never acts for a named account, so no name selects it,
+// including names that resolve to SYSTEM.
+func TestSessionForUserNeverSelectsTheWindowsSystemHelper(t *testing.T) {
+	now := time.Now()
+	accounts := fakeAccounts(map[string]string{
+		"SYSTEM":              "S-1-5-18",
+		`NT AUTHORITY\SYSTEM`: "S-1-5-18",
+		"LocalSystem":         "S-1-5-18",
+		`CORP\alice`:          "S-1-5-21-10-20-30-1104",
+	}, nil)
+	system := accountSession("system-1", "S-1-5-18", `NT AUTHORITY\SYSTEM`, ipc.HelperRoleSystem, now)
+	system.AllowedScopes = []string{"notify", "tray", "desktop"}
+	b := accountBroker("windows", accounts, system)
+	for _, name := range []string{"SYSTEM", `NT AUTHORITY\SYSTEM`, "LocalSystem", "system"} {
+		if got := b.SessionForUser(name); got != nil {
+			t.Fatalf("SessionForUser(%q) selected the SYSTEM helper %q", name, got.SessionID)
+		}
+	}
+	// A user's helper in the same Windows session is still found.
+	alice := accountSession("alice-1", "S-1-5-21-10-20-30-1104", `CORP\alice`, ipc.HelperRoleUser, now.Add(-time.Hour))
+	b = accountBroker("windows", accounts, system, alice)
+	if got := b.SessionForUser(`CORP\alice`); got != alice {
+		t.Fatalf(`SessionForUser(CORP\alice) = %v, want alice's helper`, got)
+	}
+}

@@ -188,7 +188,18 @@ func accountNameMatches(goos, requested, resolved string) bool {
 
 // takesPerUserWork reports whether a session of this role can be selected
 // by account name. The watchdog and backup helpers are agent-internal and
-// never serve per-user requests.
-func takesPerUserWork(role ipc.HelperRole) bool {
-	return role != ipc.HelperRoleWatchdog && role != backupipc.HelperRoleBackup
+// never serve per-user requests. On Windows the system-role helper runs as
+// SYSTEM inside each interactive session (one per session) and never acts
+// for a named account either; excluding the role, rather than filtering
+// lookup results by SID type, keeps this independent of how Windows
+// classifies an account (SYSTEM is a well-known group, Azure AD and
+// virtual accounts vary).
+func takesPerUserWork(goos string, role ipc.HelperRole) bool {
+	switch role {
+	case ipc.HelperRoleWatchdog, backupipc.HelperRoleBackup:
+		return false
+	case ipc.HelperRoleSystem:
+		return goos != "windows"
+	}
+	return true
 }

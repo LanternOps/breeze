@@ -976,6 +976,7 @@ func (b *Broker) SessionForUser(username string) *Session {
 
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	goos := b.effectiveGOOS()
 
 	var best *Session
 	for _, s := range b.sessions {
@@ -990,7 +991,7 @@ func (b *Broker) SessionForUser(username string) *Session {
 	}
 
 	for _, s := range b.sessions {
-		if s.accountIdentity == identity && takesPerUserWork(s.HelperRole) && betterSession(s, best) {
+		if s.accountIdentity == identity && takesPerUserWork(goos, s.HelperRole) && betterSession(s, best) {
 			best = s
 		}
 	}
