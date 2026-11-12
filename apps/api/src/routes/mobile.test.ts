@@ -3228,6 +3228,34 @@ describe('mobile routes', () => {
       expect(db.select).toHaveBeenCalledTimes(3);
     });
 
+    it('matches only AI conversations the caller created', async () => {
+      let sessionWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSearchChain([]) as any)
+        .mockReturnValueOnce(mockSearchChain([]) as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((where: SQL) => {
+              sessionWhere = where;
+              return {
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([])
+                })
+              };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/mobile/search?q=macbook', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(sessionWhere).toBeDefined();
+      const query = new PgDialect().sqlToQuery(sessionWhere!);
+      const ownerMatch = query.sql.match(/"ai_sessions"\."user_id" = \$(\d+)/);
+      expect(ownerMatch).not.toBeNull();
+      expect(query.params[Number(ownerMatch![1]) - 1]).toBe('user-123');
+    });
+
     it('returns 429 when rate limit is exceeded', async () => {
       rateLimitState.allowed = false;
       const res = await app.request('/mobile/search?q=macbook', { method: 'GET' });

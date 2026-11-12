@@ -1921,8 +1921,11 @@ mobileRoutes.get(
       or(ilike(alerts.title, term), ilike(alerts.message, term))
     );
 
+    // AI conversations are private to the user who started them, as in the
+    // conversation list and the session detail route that opens a result.
     const sessionWhere = and(
       orgCheck.orgIds === null ? sql`true` : inArray(aiSessions.orgId, orgCheck.orgIds),
+      eq(aiSessions.userId, auth.user.id),
       gte(aiSessions.lastActivityAt, thirtyDaysAgo),
       ilike(aiSessions.title, term),
       // Topology M4-D2: a session pinned to an unreadable site never matches.
