@@ -164,7 +164,7 @@ export class CronOccurrenceCache {
     now: Date,
     lookbackMinutes: number = SWEEP_OCCURRENCE_LOOKBACK_MINUTES,
   ): { at: Date; key: string } | null {
-    const cacheKey = `${lookbackMinutes}\u0000${timeZone}\u0000${cron}`;
+    const cacheKey = JSON.stringify([lookbackMinutes, timeZone, cron]);
     const flooredMs = Math.floor(now.getTime() / MINUTE_MS) * MINUTE_MS;
     const windowStartMs = flooredMs - lookbackMinutes * MINUTE_MS;
     const cached = this.entries.get(cacheKey);

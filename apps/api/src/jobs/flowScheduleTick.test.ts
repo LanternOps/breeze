@@ -647,6 +647,19 @@ describe('processFlowScheduleTick — cost per tick', () => {
     expect(mentions(flowReads[1]!.ops.find((o) => o.op === 'where')?.args, lastId)).toBe(true);
   });
 
+  it('forgets schedules the tick did not reach when a page read fails', async () => {
+    const hourly = { type: 'schedule', cron: '0 * * * *', timezone: 'UTC' };
+    selects.push([flow({ trigger: hourly, scheduleLastOccurrenceKey: '2026-10-25T10:00@UTC' })]);
+    await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(__testOnly.occurrenceCacheSize()).toBe(1);
+
+    // A full first page of another schedule, then the next page read fails.
+    selects.push(manyFlows(__testOnly.FLOW_PAGE_SIZE), new Error('page read failed'));
+    await expect(processFlowScheduleTick(new Date('2026-10-25T10:01:20Z'))).rejects.toThrow('page read failed');
+    // The hourly schedule was not asked about in that pass and is dropped.
+    expect(__testOnly.occurrenceCacheSize()).toBe(1);
+  });
+
   it('lets other work run while it walks a long list of flows', async () => {
     selects.push(manyFlows(200));
     let otherWorkRan = false;

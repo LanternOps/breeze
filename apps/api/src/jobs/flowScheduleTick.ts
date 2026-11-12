@@ -391,16 +391,20 @@ export async function processFlowScheduleTick(now: Date = new Date()): Promise<F
   if (!flowsEnabled()) return result;
 
   occurrences.beginPass();
-  let evaluated = 0;
-  for (let afterId: string | null = null, page: ScheduleFlowRow[] = []; ; afterId = page[page.length - 1]!.id) {
-    page = await loadScheduleFlows(afterId);
-    for (const flow of page) {
-      if (++evaluated % FLOWS_PER_YIELD === 0) await nextTurn();
-      await evaluateFlow(flow, now, result);
+  try {
+    let evaluated = 0;
+    for (let afterId: string | null = null, page: ScheduleFlowRow[] = []; ; afterId = page[page.length - 1]!.id) {
+      page = await loadScheduleFlows(afterId);
+      for (const flow of page) {
+        if (++evaluated % FLOWS_PER_YIELD === 0) await nextTurn();
+        await evaluateFlow(flow, now, result);
+      }
+      if (page.length < FLOW_PAGE_SIZE) break;
     }
-    if (page.length < FLOW_PAGE_SIZE) break;
+  } finally {
+    // Also on a failed page read, so schedules no longer asked about are dropped.
+    occurrences.endPass();
   }
-  occurrences.endPass();
   if (result.fired > 0) console.log(`${LOG} tick`, result);
   return result;
 }
@@ -506,4 +510,5 @@ export const __testOnly = {
   FLOW_PAGE_SIZE,
   /** Forget every remembered occurrence (tests start from a cold process). */
   resetOccurrenceCache: () => { occurrences.beginPass(); occurrences.endPass(); },
+  occurrenceCacheSize: () => occurrences.size,
 };

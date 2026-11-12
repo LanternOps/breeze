@@ -179,6 +179,17 @@ describe('CronOccurrenceCache', () => {
     expect(cache.size).toBe(1);
   });
 
+  it('keeps schedules apart whatever characters their cron or zone contain', () => {
+    const cache = new CronOccurrenceCache();
+    const now = new Date('2026-10-25T10:00:20Z');
+    cache.beginPass();
+    // A malformed cron is never due, so its answer (null) is remembered...
+    expect(cache.latest('x\u00000 * * * *', 'UTC', now)).toBeNull();
+    // ...and must not be handed to a different (cron, zone) pair.
+    expect(() => cache.latest('0 * * * *', 'UTC\u0000x', now)).toThrow();
+    cache.endPass();
+  });
+
   it('does not remember a schedule that cannot be evaluated', () => {
     const cache = new CronOccurrenceCache();
     cache.beginPass();
