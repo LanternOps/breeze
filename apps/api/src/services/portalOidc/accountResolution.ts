@@ -53,7 +53,9 @@ import type { PortalOidcPurpose, PortalOidcVerifiedIdentity } from './types';
 
 /**
  * Why a sign-in was refused. Server-side only: the portal shows one generic
- * message for every reason (D15); the reason goes to the audit row and log.
+ * message for every reason (D15), except `request_conflict` on a login, which
+ * lands on `sso=request_pending` (it describes only the person's own address);
+ * the reason goes to the audit row and log.
  * `no_address` (not in the plan's list): the token carried neither a UPN nor a
  * linkable address, so there is no address to create a request or an account
  * under. `request_conflict` (W7 D9): the address already has a pending request

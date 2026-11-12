@@ -32,7 +32,9 @@ type SsoProvider = 'microsoft' | 'google';
 /**
  * The callback's result codes (`?sso=`). A Google flow adds `&p=google`; a
  * missing `p` is Microsoft (its callback never sends one). Unknown codes get
- * the provider's generic failure: the reason for a refusal is never shown.
+ * the provider's generic failure. A refusal's reason is never shown, except
+ * `request_pending` (W7 D9), which only describes the signed-in person's own
+ * address.
  */
 const SSO_COPY: Record<SsoProvider, Record<string, string>> = {
   microsoft: {
@@ -65,7 +67,7 @@ export function LoginForm() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // null = unknown / still loading: render the password form (today's behaviour)
-  // and no Microsoft button. A failed methods fetch stays that way, silently.
+  // and no SSO buttons. A failed methods fetch stays that way, silently.
   const [methods, setMethods] = useState<SignInMethods | null>(null);
   const [msBusy, setMsBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
@@ -125,14 +127,15 @@ export function LoginForm() {
 
   const showPassword = methods?.password !== false;
   const showMicrosoft = methods?.microsoft === true;
-  // Absent unless the deployment has a Google client (W7 ships dark).
+  // Absent unless the deployment has a Google client (`google` is omitted otherwise).
   const showGoogle = methods?.google === true;
   // W6: only a verified custom portal domain whose org has self-registration
   // on answers true; the shared host and a failed fetch show no link.
   const showRequestAccess = methods?.requestAccess === true;
   const ssoBanner =
     ssoCode && ssoCode !== 'signed_in'
-      ? (SSO_COPY[ssoProvider][ssoCode] ?? SSO_GENERIC_COPY[ssoProvider])
+      ? ((Object.hasOwn(SSO_COPY[ssoProvider], ssoCode) ? SSO_COPY[ssoProvider][ssoCode] : undefined) ??
+        SSO_GENERIC_COPY[ssoProvider])
       : null;
 
   const onMicrosoft = async () => {

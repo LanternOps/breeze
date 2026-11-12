@@ -216,6 +216,15 @@ describe('Google (W7)', () => {
     expect(await startMicrosoftSignIn({ purpose: 'login' })).toEqual({ ok: false, error: MICROSOFT_FAILURE_MESSAGE });
   });
 
+  it('a Microsoft invite start answered 400 is an invalid invite too; a login 400 is not', async () => {
+    reply(400, { error: 'Invalid or expired invite' });
+    expect(await startMicrosoftSignIn({ purpose: 'invite', inviteToken: 'tok' })).toEqual({
+      ok: false, error: MICROSOFT_FAILURE_MESSAGE, inviteInvalid: true,
+    });
+    reply(400, {});
+    expect(await startMicrosoftSignIn({ purpose: 'login' })).toEqual({ ok: false, error: MICROSOFT_FAILURE_MESSAGE });
+  });
+
   it('startGoogleLink posts with the CSRF header to the Google link start', async () => {
     document.cookie = 'breeze_portal_csrf_token=csrf456';
     reply(200, { redirectUrl: 'https://accounts.google.com/l' });

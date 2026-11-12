@@ -82,8 +82,12 @@ describe('AcceptInviteForm — Google (W7)', () => {
     window.history.replaceState({}, '', '/accept-invite?token=tok&method=google');
     methods = { status: 200, body: { password: true, microsoft: true } };
     const a = render(<AcceptInviteForm token="tok" />);
-    await screen.findByLabelText(/new password/i);
+    // The Microsoft button appears only once the methods answer has landed, so
+    // the auto-start effect has run by now (the password form renders before it).
+    await screen.findByTestId('portal-accept-invite-microsoft');
+    await new Promise((r) => setTimeout(r, 0));
     expect(replaceLocation).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.url.endsWith('/oidc/google/start'))).toBe(false);
     a.unmount();
 
     window.history.replaceState({}, '', '/accept-invite?token=tok&method=microsoft');

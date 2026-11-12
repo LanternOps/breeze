@@ -75,7 +75,7 @@ function patchPolicy(value: PortalAccessPolicyUnitValue, acknowledge: string | n
     friendly: (code) => {
       if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.METHOD_UNAVAILABLE) return i18n.t('settings:portalAccessPolicy.errors.methodUnavailable');
       if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.SSO_ONLY_NEEDS_SSO) {
-        // W7 ships dark: name only the providers this deployment can run.
+        // Name only the providers this deployment can run (Google needs `capabilities.google`).
         return i18n.t(/* i18n-dynamic */ SSO_COPY_KEYS.needsSsoError[capabilityProviderSet(value.view.capabilities)]);
       }
       return undefined;

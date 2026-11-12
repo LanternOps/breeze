@@ -4,8 +4,10 @@
  * No return URL travels through the API: the portal keeps the validated `next`
  * path in sessionStorage across the provider round trip and applies
  * `safeNextPath` when the callback lands back on `/login?sso=signed_in`.
- * Every failure collapses to one generic message so the UI cannot be used to
- * tell a misconfigured tenant from a rate limit.
+ * Every failure collapses to one generic message per provider so the UI cannot
+ * be used to tell a misconfigured tenant from a rate limit. The one exception: an
+ * invite start answered 400 reports `inviteInvalid`, which the accept-invite page
+ * shows as its normal expired-invite state.
  */
 
 import { buildPortalApiUrl } from './api';

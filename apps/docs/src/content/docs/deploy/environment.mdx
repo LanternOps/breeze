@@ -1359,7 +1359,7 @@ See [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-
 To set up the Google OAuth client:
 
 1. In the Google Cloud console, create a project for the portal (or pick an existing one).
-2. Configure the OAuth consent screen: user type **External**, publishing status **In production**, and only the scopes `openid`, `email` and `profile`. While the app is in testing, only the test users you list can sign in. Google may require brand verification (app name, logo, home page, privacy policy and authorized domains) before a production consent screen shows without warnings.
+2. Configure the OAuth consent screen: an app name your customers will recognize (customers' Google admins find the app by it), user type **External**, publishing status **In production**, and only the scopes `openid`, `email` and `profile`. While the app is in testing, only the test users you list can sign in. Google may require brand verification (app name, logo, home page, privacy policy and authorized domains) before a production consent screen shows without warnings.
 3. Create an OAuth client ID of type **Web application** with exactly one authorized redirect URI: `https://<your-breeze-domain>/api/v1/portal/auth/oidc/google/callback`.
 4. Put the client ID in `PORTAL_GOOGLE_CLIENT_ID` and the client secret in `PORTAL_GOOGLE_CLIENT_SECRET`, then restart the API. The Google row appears on the Sign-in & registration card once both are set.
 

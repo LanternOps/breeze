@@ -211,7 +211,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
   const save = async (acknowledge: string | null = null, sendInvites = false) => {
     if (!view || saving || formInvalid || Object.keys(draft).length === 0) return;
     const visible = new Set(visiblePolicyFields(view.capabilities));
-    // W7 ships dark: the needs-SSO copy names only what this deployment can run.
+    // The needs-SSO copy names only what this deployment can run (Google needs `capabilities.google`).
     const providers = capabilityProviderSet(view.capabilities);
     setSaving(true);
     try {

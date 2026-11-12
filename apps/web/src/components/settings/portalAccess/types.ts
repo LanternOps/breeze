@@ -199,7 +199,7 @@ export interface SsoProviders { microsoft: boolean; google: boolean }
 /**
  * Which provider names a piece of SSO copy uses (W7 #11384). Copy never names
  * Google unless Google is in the set, so a deployment without the Google
- * capability (W7 ships dark) never shows the word.
+ * capability (`capabilities.google`) never shows the word.
  */
 export type SsoProviderSet = 'microsoft' | 'google' | 'both';
 

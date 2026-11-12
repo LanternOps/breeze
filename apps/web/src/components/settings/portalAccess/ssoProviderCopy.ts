@@ -4,7 +4,7 @@ import type { SsoProviderSet } from './types';
  * W7 (#11384): the `sso_only` and sign-in-invite copy per provider set
  * (`effectiveProviderSet` / `capabilityProviderSet` in `./types`). Microsoft
  * keeps the W4 keys unchanged; Google wording appears only when Google is in
- * the set, so a deployment without the Google capability (W7 ships dark) never
+ * the set, so a deployment without the Google capability (`capabilities.google`) never
  * shows it. Keys carry the namespace so plain-`t` callers outside a
  * `useTranslation('settings')` component resolve them too. Callers pass them
  * as `t(/* i18n-dynamic *\/ SSO_COPY_KEYS.<group>[set])`.

@@ -164,7 +164,7 @@ export function PortalAccessPolicyForm({
   ];
 
   const ssoOn = draftHasSsoMethod(view, draft);
-  // W7 ships dark: SSO copy names only the providers this deployment can run.
+  // SSO copy names only the providers this deployment can run (Google needs `capabilities.google`).
   const providers = capabilityProviderSet(capabilities);
   const passwordOptions: InheritChoiceOption<PortalAccessPolicyValues['passwordMode']>[] = [
     { value: 'allowed', label: t('portalAccessPolicy.password.allowed'), testId: `${ID}-password-allowed` },

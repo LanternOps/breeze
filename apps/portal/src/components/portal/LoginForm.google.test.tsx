@@ -144,6 +144,16 @@ describe('LoginForm — Google (W7)', () => {
     }
   });
 
+  it('an inherited property name as the sso code gets the generic copy, not a crash', async () => {
+    for (const url of ['/login?sso=__proto__', '/login?sso=constructor&p=google', '/login?sso=toString']) {
+      window.history.replaceState({}, '', url);
+      const view = render(<LoginForm />);
+      const banner = await screen.findByTestId('portal-login-sso-banner');
+      expect(banner.textContent, url).toMatch(/sign-in isn't set up for this account here\.$/);
+      view.unmount();
+    }
+  });
+
   it('signed_in&p=google navigates to the stored next path and clears it', async () => {
     sessionStorage.setItem('portal-oidc-next', '/invoices/9');
     window.history.replaceState({}, '', '/login?sso=signed_in&p=google');
