@@ -32,7 +32,7 @@ export function entraIssuer(tid: string): string {
 }
 
 /** The `iss` of a Google ID token; the issuer stored for a Google request and identity. */
-export const PORTAL_GOOGLE_ISSUER = 'https://accounts.google.com';
+export { PORTAL_GOOGLE_ISSUER } from './portalOidc/validators';
 
 // ---------------------------------------------------------------------------
 // Readers (identities release B)

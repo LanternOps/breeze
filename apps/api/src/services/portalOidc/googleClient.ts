@@ -30,12 +30,12 @@
  * for the server log only; nothing here logs or throws token, code, secret or
  * token-endpoint body content (W4 D14).
  */
-import { createHash, timingSafeEqual } from 'crypto';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyOptions } from 'jose';
 import { createOrgCustomerDomainSchema } from '@breeze/shared';
 import { PORTAL_GOOGLE_CALLBACK_PATH, type PortalGoogleConfig } from '../../config/portalGoogle';
-import { PORTAL_GOOGLE_ISSUER } from '../portalUserIdentities';
+import { addressClaim, errorDiagnostics, nonceMatches } from './tokenChecks';
 import type { PortalGoogleVerifiedIdentity } from './types';
+import { PORTAL_GOOGLE_ISSUER } from './validators';
 
 export const PORTAL_GOOGLE_SIGN_IN_SCOPE = 'openid email profile';
 export const PORTAL_GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -59,13 +59,6 @@ export class PortalGoogleTokenError extends Error {
   constructor(readonly check: string) {
     super('Google sign-in verification failed');
   }
-}
-
-/** The underlying error's name and code only: never its message, which can carry a URL, token or body. */
-function errorDiagnostics(error: unknown): { errorName: string; errorCode?: string } {
-  const name = error instanceof Error ? error.name : typeof error;
-  const code = (error as { code?: unknown } | null)?.code;
-  return { errorName: name, ...(typeof code === 'string' ? { errorCode: code } : {}) };
 }
 
 function fail(check: string, extra: { status?: number; errorName?: string; errorCode?: string } = {}): never {
@@ -150,7 +143,11 @@ export async function exchangePortalGoogleCode(
   } catch (error) {
     fail('token_endpoint', errorDiagnostics(error));
   }
-  if (!response.ok) fail('token_endpoint', { status: response.status });
+  if (!response.ok) {
+    // Release the connection without reading (or logging) the error body.
+    await response.body?.cancel().catch(() => {});
+    fail('token_endpoint', { status: response.status });
+  }
 
   let parsed: unknown;
   try {
@@ -164,13 +161,6 @@ export async function exchangePortalGoogleCode(
   const idToken = record?.id_token;
   if (typeof idToken !== 'string' || idToken.length === 0) fail('token_endpoint', { status: response.status });
   return { idToken };
-}
-
-function nonceMatches(actual: unknown, expected: string): boolean {
-  if (typeof actual !== 'string' || actual.length === 0 || expected.length === 0) return false;
-  // Fixed-length digests: constant time regardless of either input's length.
-  const digest = (value: string) => createHash('sha256').update(value, 'utf8').digest();
-  return timingSafeEqual(digest(actual), digest(expected));
 }
 
 /** The lowercased `hd`, or null unless it is exactly a valid domain (no trimming, no wildcard). */
@@ -211,11 +201,14 @@ export async function verifyPortalGoogleIdToken(
     fail('jwks_unavailable', errorDiagnostics(error));
   }
 
-  // jose already enforces these (numeric dates, maxTokenAge, the tolerance);
-  // restated so the D1 contract does not rest on a library option alone.
+  // jose already refuses non-numeric dates and an iat beyond the tolerance in
+  // the future (restated here so D1 does not rest on a library option alone).
+  // Its maxTokenAge bound, though, is widened by clockTolerance (to 660 s), so
+  // D1's "no older than 10 min" is enforced here, exactly.
   const nowSeconds = Math.floor((expected.now ?? new Date()).getTime() / 1000);
   if (typeof payload.iat !== 'number' || typeof payload.exp !== 'number') fail('timestamps');
   if (payload.iat > nowSeconds + CLOCK_TOLERANCE_SECONDS) fail('iat');
+  if (nowSeconds - payload.iat > ID_TOKEN_MAX_AGE_SECONDS) fail('iat');
 
   if (typeof payload.aud !== 'string' || payload.aud !== expected.clientId) fail('audience');
   if (payload.azp !== undefined && payload.azp !== expected.clientId) fail('azp');
@@ -224,7 +217,8 @@ export async function verifyPortalGoogleIdToken(
   if (typeof payload.sub !== 'string' || !GOOGLE_SUBJECT.test(payload.sub)) fail('sub');
   // Strict boolean: a string "true" does not verify.
   if (payload.email_verified !== true) fail('email_verified');
-  if (typeof payload.email !== 'string' || !payload.email.includes('@')) fail('email');
+  const emailClaim = addressClaim(payload.email);
+  if (!emailClaim) fail('email');
   const hd = hostedDomain(payload.hd);
   if (!hd) fail('hd');
 
@@ -234,7 +228,7 @@ export async function verifyPortalGoogleIdToken(
     subject: payload.sub,
     entraTenantId: null,
     upn: null,
-    emailClaim: payload.email.toLowerCase(),
+    emailClaim,
     emailDomainOwnerVerified: true,
     name: typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : null,
     googleHostedDomain: hd,

@@ -20,11 +20,10 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { getRedis } from '../redis';
 import { generatePKCEChallenge } from '../sso';
-import { PORTAL_GOOGLE_ISSUER } from '../portalUserIdentities';
 import { PORTAL_REDIS_KEYS, PORTAL_USE_REDIS } from '../../routes/portal/schemas';
 import { PORTAL_OIDC_STATE_CAP, capMapByOldest, luaGetDel, portalOidcStates } from '../../routes/portal/helpers';
 import type { PortalOidcProvider, PortalOidcPurpose, PortalOidcState } from './types';
-import { PORTAL_ENTRA_SIGN_IN_AUTHORITY, isGuid, isProvableEntraTenantId, isSha256Hex } from './validators';
+import { PORTAL_ENTRA_SIGN_IN_AUTHORITY, PORTAL_GOOGLE_ISSUER, isGuid, isProvableEntraTenantId, isSha256Hex } from './validators';
 
 export const PORTAL_OIDC_STATE_TTL_SECONDS = 600;
 export const PORTAL_OIDC_BINDING_COOKIE = 'breeze_portal_oidc';

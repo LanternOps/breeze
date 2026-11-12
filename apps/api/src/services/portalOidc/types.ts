@@ -4,6 +4,7 @@
  * for a provider without tenants, and nothing Google-shaped except
  * `googleHostedDomain`.
  */
+import type { PORTAL_GOOGLE_ISSUER } from './validators';
 
 export type PortalOidcProvider = 'entra' | 'google';
 
@@ -75,7 +76,7 @@ export interface PortalEntraVerifiedIdentity extends PortalOidcVerifiedIdentityB
 export interface PortalGoogleVerifiedIdentity extends PortalOidcVerifiedIdentityBase {
   provider: 'google';
   /** Exactly `PORTAL_GOOGLE_ISSUER`, whichever of Google's two `iss` forms the token carried. */
-  issuer: string;
+  issuer: typeof PORTAL_GOOGLE_ISSUER;
   /** The `sub` claim exactly as issued (case-sensitive, never normalized). */
   subject: string;
   entraTenantId: null;

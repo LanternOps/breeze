@@ -1,4 +1,6 @@
 import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Unit tests run the IN-MEMORY backend (PORTAL_USE_REDIS is false under
@@ -14,6 +16,7 @@ import {
   createPortalOidcState,
 } from './stateStore';
 import type { PortalOidcPurpose } from './types';
+import { PORTAL_GOOGLE_ISSUER } from './validators';
 import { portalOidcStates } from '../../routes/portal/helpers';
 import { PORTAL_USE_REDIS } from '../../routes/portal/schemas';
 
@@ -407,5 +410,13 @@ describe('portal OIDC state store: the google provider (W7)', () => {
 
   it('an unchanged google record still parses (the tamper helper is not what refuses)', async () => {
     expect(await consumeTampered(await mintGoogle(), (s) => s)).toMatchObject({ provider: 'google', authority: GOOGLE_AUTHORITY });
+  });
+
+  it('takes the Google issuer from the dependency-free validators, never a DB-backed module', () => {
+    expect(PORTAL_GOOGLE_ISSUER).toBe(GOOGLE_AUTHORITY);
+    const source = readFileSync(fileURLToPath(new URL('./stateStore.ts', import.meta.url)), 'utf8');
+    const imports = [...source.matchAll(/^import[^;]*?from '([^']+)';/gms)].map((m) => m[1]);
+    expect(imports).toContain('./validators');
+    expect(imports.filter((path) => /portalUserIdentities|\/db(\/|$)/.test(path!))).toEqual([]);
   });
 });

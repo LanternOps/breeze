@@ -35,11 +35,11 @@
  * token-endpoint body content (D14, the `logIdentityCheckFailure` pattern of
  * services/ticketMailbox/microsoftIdentity.ts).
  */
-import { createHash, timingSafeEqual } from 'crypto';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyOptions } from 'jose';
 import { PORTAL_ENTRA_CALLBACK_PATH, type PortalEntraConfig } from '../../config/portalEntra';
 import { buildMicrosoftIdentityAuthorizationUrl } from '../m365ControlPlane/microsoftAuthorization';
 import { entraIssuer } from '../portalUserIdentities';
+import { addressClaim, errorDiagnostics, nonceMatches } from './tokenChecks';
 import type { PortalEntraVerifiedIdentity } from './types';
 
 export const PORTAL_ENTRA_SIGN_IN_SCOPE = 'openid profile email';
@@ -63,13 +63,6 @@ export class PortalEntraTokenError extends Error {
   constructor(readonly check: string) {
     super('Microsoft sign-in verification failed');
   }
-}
-
-/** The underlying error's name and code only: never its message, which can carry a URL, token or body. */
-function errorDiagnostics(error: unknown): { errorName: string; errorCode?: string } {
-  const name = error instanceof Error ? error.name : typeof error;
-  const code = (error as { code?: unknown } | null)?.code;
-  return { errorName: name, ...(typeof code === 'string' ? { errorCode: code } : {}) };
 }
 
 function fail(check: string, extra: { status?: number; errorName?: string; errorCode?: string } = {}): never {
@@ -180,17 +173,6 @@ export async function exchangePortalEntraCode(
   if (typeof idToken !== 'string' || idToken.length === 0) fail('token_endpoint', { status: response.status });
   const accessToken = typeof record?.access_token === 'string' && record.access_token.length > 0 ? record.access_token : null;
   return { idToken, accessToken };
-}
-
-function nonceMatches(actual: unknown, expected: string): boolean {
-  if (typeof actual !== 'string' || actual.length === 0 || expected.length === 0) return false;
-  // Fixed-length digests: constant time regardless of either input's length.
-  const digest = (value: string) => createHash('sha256').update(value, 'utf8').digest();
-  return timingSafeEqual(digest(actual), digest(expected));
-}
-
-function addressClaim(value: unknown): string | null {
-  return typeof value === 'string' && value.includes('@') ? value.toLowerCase() : null;
 }
 
 /**

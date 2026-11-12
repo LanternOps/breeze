@@ -153,6 +153,16 @@ describe('verifyPortalGoogleIdToken', () => {
     expect(identity.issuer).toBe('https://accounts.google.com');
   });
 
+  it('the 10-minute iat bound is exact: 9.5 minutes old is accepted, 10.5 minutes old is refused (injected clock)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const token = await mintToken({}, { issuedAt, expiresAt: issuedAt + 3600 });
+    await expect(verify(token, { now: new Date((issuedAt + 570) * 1000) })).resolves.toMatchObject({ subject: SUB });
+    await expect(verify(token, { now: new Date((issuedAt + 600) * 1000) })).resolves.toMatchObject({ subject: SUB });
+    await expect(verify(token, { now: new Date((issuedAt + 601) * 1000) })).rejects.toMatchObject({ check: 'iat' });
+    await expect(verify(token, { now: new Date((issuedAt + 630) * 1000) })).rejects.toMatchObject({ check: 'iat' });
+  });
+
   it('accepts a token without azp, without name, issued 9 minutes ago or 30 s in the future', async () => {
     const now = Math.floor(Date.now() / 1000);
     const noAzp = await verify(await mintToken({}, { omit: ['azp', 'name'] }));
@@ -181,6 +191,8 @@ describe('verifyPortalGoogleIdToken', () => {
     ['issuer https://evil.example.com', 'issuer', () => mintToken({ iss: 'https://evil.example.com' })],
     ['nonce mismatch', 'nonce', () => mintToken({ nonce: 'some-other-nonce' })],
     ['iat older than 10 minutes', 'id_token_jwt', () => mintToken({}, { issuedAt: now() - 12 * 60 })],
+    // jose widens maxTokenAge by the clock tolerance (to 660 s); D1's bound is 600 s.
+    ['iat 10.5 minutes old (inside jose\'s tolerance, outside D1)', 'iat', () => mintToken({}, { issuedAt: now() - 630 })],
     ['iat more than 60 s in the future', 'id_token_jwt', () => mintToken({}, { issuedAt: now() + 120 })],
     ['iat as a string', 'id_token_jwt', () => mintToken({ iat: String(now()) })],
     ['expired', 'id_token_jwt', () => mintToken({}, { issuedAt: now() - 120, expiresAt: now() - 61 })],
@@ -315,6 +327,16 @@ describe('exchangePortalGoogleCode', () => {
     expect(logged).not.toContain('leaked-body-detail');
     expect(logged).not.toContain('auth-code');
     expect(logged).not.toContain(CFG.clientSecret);
+  });
+
+  it('a non-2xx token response has its unread body cancelled, so the connection is released', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({ pull() { /* never yields: only a cancel ends it */ }, cancel });
+    const fetch = tokenEndpoint(new Response(stream, { status: 502 }));
+    await expect(exchangePortalGoogleCode(CFG, { code: 'c', codeVerifier: 'v' }, { fetch }))
+      .rejects.toMatchObject({ check: 'token_endpoint' });
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it('a token response without id_token throws PortalGoogleTokenError', async () => {
