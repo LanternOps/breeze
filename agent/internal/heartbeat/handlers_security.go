@@ -62,6 +62,15 @@ func handleSecurityScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	if scanType == "custom" && len(paths) == 0 {
 		return tools.NewErrorResult(fmt.Errorf("custom scan requires one or more paths"), time.Since(start).Milliseconds())
 	}
+	// Refuse a custom root the scanner would refuse before preparing rule
+	// sets for it (the scanner applies the same check).
+	if scanType == "custom" {
+		for _, path := range paths {
+			if err := tools.EnforcePathContainment("scan", path); err != nil {
+				return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			}
+		}
+	}
 
 	scanner := *h.securityScanner // shallow copy: per-scan settings never mutate the shared scanner
 	scanner.Exclusions = exclusions

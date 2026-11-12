@@ -14,6 +14,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/yarascan"
 )
 
@@ -168,6 +169,9 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 					mu.Unlock()
 					continue // drain without scanning so the producer unblocks
 				}
+				if !stillScannable(job.path) {
+					continue
+				}
 				matches, err := w.ScanFile(job.path)
 				// W01 counted every file offered to the matcher; the YARA walk
 				// counts only files actually scanned (failures are FilesFailed).
@@ -300,6 +304,22 @@ func fileSHA256(p string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// stillScannable re-checks a queued file just before a worker reads it: the
+// walk saw a regular file outside the protected locations, and the path may
+// have changed since. A path that now names a link or another non-regular
+// file, or now resolves into a protected location, is not read. A path that
+// cannot be inspected is left to ScanFile, which reports the error as before.
+func stillScannable(p string) bool {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return true
+	}
+	if !info.Mode().IsRegular() {
+		return false
+	}
+	return tools.EnforcePathContainment("scan", p) == nil
+}
+
 // produce walks roots and feeds regular files to jobs. The walk rules are
 // W01's detectThreatsCtx verbatim: os.Lstat on roots, symlinks never
 // followed, permission-denied directories skipped, exclusions by
@@ -323,6 +343,12 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 		if root == "" || isExcludedPath(root, options.ExcludePaths) {
 			continue
 		}
+		// Protected locations (agent configuration, credential stores) are
+		// never read by a scan: not as a root, and not below one.
+		if tools.EnforcePathContainment("scan", root) != nil {
+			continue
+		}
+		protected := tools.TreeEntryProtected(root)
 		info, err := os.Lstat(root)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -352,7 +378,7 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 				ec.file(cur, werr)
 				return nil
 			}
-			if isExcludedPath(cur, options.ExcludePaths) {
+			if isExcludedPath(cur, options.ExcludePaths) || protected(cur) {
 				if d.IsDir() {
 					return fs.SkipDir
 				}

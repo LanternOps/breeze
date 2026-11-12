@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/yarascan"
 )
 
@@ -111,6 +112,14 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 	case "custom":
 		if len(paths) == 0 {
 			return ScanOutcome{}, fmt.Errorf("custom scan requires one or more paths")
+		}
+		// Custom roots follow the file browser's rules: absolute local
+		// paths outside the protected locations (agent configuration,
+		// credential stores). The walk applies the same list below each root.
+		for _, path := range paths {
+			if err := tools.EnforcePathContainment("scan", path); err != nil {
+				return ScanOutcome{}, err
+			}
 		}
 		targets = filterExistingPaths(paths)
 	default:
@@ -217,6 +226,11 @@ func (s *SecurityScanner) autoQuarantine(threats []Threat) {
 	for i := range threats {
 		th := &threats[i]
 		if th.RuleSetID != "" && !th.autoQuarantine {
+			continue
+		}
+		if tools.EnforcePathContainment("quarantine", th.Path) != nil {
+			// A protected file is never moved, whatever matched it.
+			done[th.Path], th.QuarantineFailed = "", true
 			continue
 		}
 		if dest, seen := done[th.Path]; seen {

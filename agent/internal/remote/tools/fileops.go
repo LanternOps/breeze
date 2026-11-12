@@ -693,6 +693,13 @@ func treeEntrySensitivity(root string) func(path string) bool {
 	}
 }
 
+// TreeEntryProtected returns the deny-list test for the entries of a walk
+// rooted at root that does not follow links, such as the security scan.
+// root itself is resolved once here; check it with EnforcePathContainment.
+func TreeEntryProtected(root string) func(path string) bool {
+	return treeEntrySensitivity(root)
+}
+
 // enforceWriteContainment blocks an operation that would CREATE or OVERWRITE
 // content at a sensitive path. The deny-list is shared with the read side on
 // purpose: writing to /etc/shadow, /etc/sudoers.d, ~/.ssh/authorized_keys or a
