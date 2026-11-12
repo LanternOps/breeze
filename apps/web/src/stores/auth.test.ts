@@ -2388,6 +2388,48 @@ describe('fetchAndApplyPreferences locale wiring', () => {
   });
 });
 
+describe('apiVerifyEmail signup password', () => {
+  it('sends the signup password with the token', async () => {
+    const doFetch = vi.fn().mockResolvedValue(makeResponse({ verified: true, email: 'a@b.test' }));
+    vi.stubGlobal('fetch', doFetch);
+
+    await apiVerifyEmail('verify-token', 'signup-password');
+
+    expect(JSON.parse(doFetch.mock.calls[0]![1].body)).toEqual({ token: 'verify-token', password: 'signup-password' });
+  });
+
+  it('sends only the token when no password is given', async () => {
+    const doFetch = vi.fn().mockResolvedValue(makeResponse({ verified: true, email: 'a@b.test' }));
+    vi.stubGlobal('fetch', doFetch);
+
+    await apiVerifyEmail('verify-token');
+
+    expect(JSON.parse(doFetch.mock.calls[0]![1].body)).toEqual({ token: 'verify-token' });
+  });
+
+  it('reports that the signup password is needed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse(
+      { error: 'Enter the password you chose when signing up.', status: 'password_required' }, false, 400,
+    )));
+
+    const result = await apiVerifyEmail('verify-token');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Enter the password you chose when signing up.',
+      status: 'password_required',
+    });
+  });
+
+  it('reports an invalid link without a status', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ error: 'Invalid or expired verification link' }, false, 400)));
+
+    const result = await apiVerifyEmail('verify-token', 'signup-password');
+
+    expect(result).toEqual({ success: false, error: 'Invalid or expired verification link' });
+  });
+});
+
 describe('apiRegisterPartner recovery action', () => {
   it.each([
     [{ intent: 'wisp' }, true],

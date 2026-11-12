@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../db', () => {
   // Drizzle's `db.transaction(fn)` calls fn with a `tx` that has the same
@@ -259,6 +261,11 @@ describe('retireVerificationToken', () => {
 
     expect(db.update).toHaveBeenCalledOnce();
     expect(update.set).toHaveBeenCalledWith({ supersededAt: expect.any(Date) });
+    // Only this link (by its hash), and only while it is still unused.
+    const where = (update.set as any).mock.results[0].value.where.mock.calls[0][0];
+    const query = new PgDialect().sqlToQuery(where);
+    expect(query.params).toEqual(['evt.tokenHash', createHash('sha256').update('token').digest('hex'), 'evt.consumedAt', 'evt.supersededAt']);
+    expect(query.sql.match(/is null/g)).toHaveLength(2);
   });
 });
 

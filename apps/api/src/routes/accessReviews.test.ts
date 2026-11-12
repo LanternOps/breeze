@@ -803,6 +803,7 @@ describe('access review routes', () => {
       const { hasOtherMembership = true, passkeyRows = [] } = opts;
       const capturedUpdates: Array<Record<string, unknown>> = [];
       const capturedDeletes: unknown[] = [];
+      const reviewLockModes: string[] = [];
       const txDelete = vi.fn((table: unknown) => {
         capturedDeletes.push(table);
         return {
@@ -817,7 +818,17 @@ describe('access review routes', () => {
       // inventory snapshot reads `users` — route by table identity.
       const txSelect = vi.fn(() => ({
         from: vi.fn((table: unknown) => {
-          if (table === accessReviews) return { where: () => ({ for: vi.fn().mockReturnThis(), limit: async () => [{ id: 'review-1', status: opts.lockedStatus ?? 'in_progress' }] }) };
+          if (table === accessReviews) {
+            return {
+              where: () => {
+                const chain: any = {
+                  for: (mode: string) => { reviewLockModes.push(mode); return chain; },
+                  limit: async () => [{ id: 'review-1', status: opts.lockedStatus ?? 'in_progress' }],
+                };
+                return chain;
+              },
+            };
+          }
           if (table === accessReviewItems) return { where: async () => opts.currentItems ?? currentReviewItems };
           return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(
             table === users
@@ -841,7 +852,7 @@ describe('access review routes', () => {
       vi.mocked(db.transaction).mockImplementation(async (fn) => {
         return fn({ delete: txDelete, update: txUpdate, select: txSelect } as any);
       });
-      return { txDelete, txUpdate, txSelect, capturedUpdates, capturedDeletes };
+      return { txDelete, txUpdate, txSelect, capturedUpdates, capturedDeletes, reviewLockModes };
     }
 
     function seedReviewSelects(
@@ -906,7 +917,7 @@ describe('access review routes', () => {
 
     it('should complete a review, advance each revoked user\'s epoch + revoke their refresh families in-tx, and run post-commit cleanup', async () => {
       seedReviewSelects([{ userId: 'user-1' }, { userId: 'user-2' }]);
-      const { capturedUpdates } = mockCompleteTx();
+      const { capturedUpdates, reviewLockModes } = mockCompleteTx();
 
       const res = await app.request('/access-reviews/review-1/complete', {
         method: 'POST',
@@ -914,6 +925,9 @@ describe('access review routes', () => {
       });
 
       expect(res.status).toBe(200);
+      // The review row is locked inside the apply transaction before its
+      // decisions are re-read, so a decision recorded meanwhile is serialized.
+      expect(reviewLockModes).toEqual(['update']);
       const body = await res.json();
       expect(body.status).toBe('completed');
       expect(body.revokedCount).toBe(2);
