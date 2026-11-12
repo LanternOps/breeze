@@ -197,6 +197,23 @@ describe('argumentTicketId', () => {
     expect(argumentTicketId('manage_tickets', { action: 'comment', ticketId: TICKET_ID })).toBe(TICKET_ID);
   });
 
+  // edit_comment/delete_comment act on `expectedTicketId`; their handler never
+  // reads `ticketId`. A call carrying both must name the ticket it changes.
+  it.each(['edit_comment', 'delete_comment'])('names the ticket a %s call acts on, not a stray ticketId', (action) => {
+    const OPERATIVE = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+    expect(argumentTicketId('manage_tickets', { action, ticketId: TICKET_ID, expectedTicketId: OPERATIVE })).toBe(OPERATIVE);
+    expect(argumentTicketId('manage_tickets', { action, expectedTicketId: OPERATIVE })).toBe(OPERATIVE);
+    // No operative ticket: nothing is named, rather than the argument the handler ignores.
+    expect(argumentTicketId('manage_tickets', { action, ticketId: TICKET_ID })).toBeNull();
+  });
+
+  it('keeps ticketId for the actions that act on it, even when expectedTicketId is also sent', () => {
+    const STRAY = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+    for (const action of ['comment', 'update_status', 'update_fields', 'merge', 'move_org']) {
+      expect(argumentTicketId('manage_tickets', { action, ticketId: TICKET_ID, expectedTicketId: STRAY })).toBe(TICKET_ID);
+    }
+  });
+
   it('ignores other tools and malformed ids, so a junk argument never reaches a uuid column', () => {
     expect(argumentTicketId('execute_command', { ticketId: TICKET_ID })).toBeNull();
     for (const bad of ['', '2aad0601', `${TICKET_ID} OR 1=1`, 42]) {

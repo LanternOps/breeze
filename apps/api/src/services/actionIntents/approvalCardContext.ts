@@ -37,10 +37,19 @@ export type ApprovalTicketReach = Pick<AuthContext, 'orgCondition' | 'allowedSit
 /** Shape-only UUID guard, as in approvalDeviceName.ts: `tickets.id` is a uuid, so junk would raise 22P02. */
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The ticket THIS call acts on: `manage_tickets`' own `ticketId`, the argument every `ticket #<id>...` stub is built from. */
+/** `manage_tickets` actions whose handler acts on `expectedTicketId` and never reads `ticketId` (aiToolsTicketing.ts). */
+const COMMENT_REWRITE_ACTIONS = new Set<unknown>(['edit_comment', 'delete_comment']);
+
+/**
+ * The ticket THIS call acts on. For most `manage_tickets` actions that is
+ * `ticketId`, the argument every `ticket #<id>...` stub is built from. A
+ * comment edit or delete acts on `expectedTicketId` instead, so that is the one
+ * named: a `ticketId` sent alongside it is ignored by the handler and must not
+ * put a different ticket on the card (same mapping as intentRowTarget.ts).
+ */
 export function argumentTicketId(toolName: string, input: Record<string, unknown>): string | null {
   if (toolName !== 'manage_tickets') return null;
-  const raw = input.ticketId;
+  const raw = COMMENT_REWRITE_ACTIONS.has(input.action) ? input.expectedTicketId : input.ticketId;
   return typeof raw === 'string' && UUID_SHAPE.test(raw) ? raw : null;
 }
 
