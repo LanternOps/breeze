@@ -123,7 +123,14 @@
     "retentionKeepDays": "Conserver pendant (jours)",
     "retentionKeepForever": "Conserver indéfiniment",
     "retentionBreezeDefault": "Valeur par défaut de Breeze : {{days}} jours",
-    "partnerRetentionHelp": "Choisissez la durée de conservation des sorties des outils d'IA, ou conservez-les indéfiniment. Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit."
+    "partnerRetentionHelp": "Choisissez la durée de conservation des sorties des outils d'IA, ou conservez-les indéfiniment. Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit.",
+    "transcriptLabel": "Conserver les conversations de l’IA des techniciens pendant (jours)",
+    "transcriptHelp": "Les conversations plus anciennes perdent leurs messages, titres et détails d’outils lors de l’exécution nocturne ; l’enregistrement de session conserve le coût, le modèle et les signalements. Les conversations signalées sont conservées. Vide = hériter.",
+    "transcriptAuditNote": "Les entrées du journal d’audit concernant une session de technicien, y compris les entrées d’outils, suivent la durée de conservation de l’audit, pas celle-ci.",
+    "transcriptClientNote": "Les conversations de l’IA client (AI for Office) ont leur propre durée.",
+    "transcriptClientLink": "Paramètres de conservation de l’IA client",
+    "transcriptAboveCeiling": "Votre partenaire conserve les conversations de l’IA des techniciens au plus {{days}} jours.",
+    "partnerTranscriptHelp": "Choisissez combien de temps les conversations de l’IA des techniciens sont conservées, ou conservez-les indéfiniment. Les organisations peuvent seulement raccourcir cette durée. Les conversations plus anciennes perdent leurs messages, titres et détails d’outils lors de l’exécution nocturne."
   },
   "partnerServicePrincipals": {
     "title": "Principaux de service",
@@ -1880,7 +1887,8 @@
     },
     "issues": {
       "range": "Entrez un nombre entier de jours entre 1 et 3650."
-    }
+    },
+    "aiStubsHelp": "Les conversations d’IA vidées par la conservation des transcriptions gardent un enregistrement de session réduit (coût, modèle, signalements) jusqu’à la fin de cette durée. Une organisation sans politique de conservation d’audit enregistrée garde ces enregistrements."
   },
   "orgBrandingEditor": {
     "title": "Image de marque",

@@ -2,13 +2,14 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { ShieldCheck } from 'lucide-react';
 import {
-  RETENTION_FIELD_ID, defaultDays, retentionDaysValid, useAiDataPolicyDraft,
-  type AiDataPolicyValue, type Level,
+  RETENTION_FIELD_ID, TRANSCRIPT_FIELD_ID, defaultDays, defaultTranscriptDays, retentionDaysValid, transcriptDaysValid,
+  useAiDataPolicyDraft, type AiDataPolicyValue, type Level,
 } from './partnerSettings/units/aiDataPolicyUnit';
+import TranscriptRetentionPreview, { previewDays } from '../ai/TranscriptRetentionPreview';
 
 /**
- * Partner-wide AI data policy defaults (device file reads + tool output
- * retention). A form card: edits are drafts the partner settings header Save
+ * Partner-wide AI data policy defaults (device file reads, tool output
+ * retention, technician AI transcript retention — #4342 W4). A form card: edits are drafts the partner settings header Save
  * sends (aiDataPolicyUnit.ts). Blank = Breeze default. Organizations may
  * tighten these on their own AI tab (OrgAiDataPolicyCard) but never loosen
  * them. Read-only when the caller cannot manage partner-wide policies.
@@ -38,6 +39,10 @@ export default function PartnerAiDataPolicyCard() {
   const keepForever = value.retentionMode === 'forever';
   const daysInvalid = !retentionDaysValid(value);
   const errorId = `${RETENTION_FIELD_ID}-error`;
+  const transcriptForever = value.transcriptMode === 'forever';
+  const transcriptInvalid = !transcriptDaysValid(value);
+  const transcriptErrorId = `${TRANSCRIPT_FIELD_ID}-error`;
+  const transcriptPreview = transcriptForever ? null : previewDays(value.transcriptDaysText);
 
   return (
     <div className="mb-6" data-testid="partner-ai-data-policy-card">
@@ -102,6 +107,51 @@ export default function PartnerAiDataPolicyCard() {
           </p>
         )}
         <p className="mt-1 text-xs text-muted-foreground">{t('aiDataPolicy.partnerRetentionHelp')}</p>
+      </fieldset>
+
+      {/* Technician AI transcripts (#4342 W4): same NULL-means-forever rule as above. */}
+      <fieldset className="mt-6" disabled={locked}>
+        <legend className="text-sm font-medium">{t('aiDataPolicy.transcriptLabel')}</legend>
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input type="radio" name="partner-ai-data-policy-transcript-mode" checked={!transcriptForever} disabled={locked}
+            data-testid="partner-ai-data-policy-transcript-days-mode"
+            onChange={() => set({ transcriptMode: 'days', transcriptDaysText: value.transcriptDaysText.trim() || String(defaultTranscriptDays(value)) })} />
+          <span>{t('aiDataPolicy.retentionKeepDays')}</span>
+          <input type="number" min={1} max={3650} step={1} disabled={locked || transcriptForever}
+            id={TRANSCRIPT_FIELD_ID}
+            data-testid="partner-ai-data-policy-transcript-retention"
+            value={value.transcriptDaysText}
+            aria-invalid={transcriptInvalid || undefined}
+            aria-describedby={transcriptInvalid ? transcriptErrorId : undefined}
+            onChange={(e) => set({ transcriptDaysText: e.target.value })}
+            className={`w-24 rounded-md border bg-background px-2 py-1 text-sm ${transcriptInvalid ? 'border-destructive' : ''}`} />
+        </label>
+        {transcriptInvalid && (
+          <p id={transcriptErrorId} data-testid={transcriptErrorId} className="mt-1 text-xs text-destructive">{t('partnerSettingsPage.validation.retentionDays')}</p>
+        )}
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input type="radio" name="partner-ai-data-policy-transcript-mode" checked={transcriptForever} disabled={locked}
+            data-testid="partner-ai-data-policy-transcript-forever"
+            onChange={() => set({ transcriptMode: 'forever', transcriptDaysText: '' })} />
+          <span>{t('aiDataPolicy.retentionKeepForever')}</span>
+        </label>
+        {!value.hasRow && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="partner-ai-data-policy-transcript-default">
+            {t('aiDataPolicy.retentionBreezeDefault', { days: defaultTranscriptDays(value) })}
+          </p>
+        )}
+        <TranscriptRetentionPreview
+          url={transcriptPreview === null ? null : `/partner/ai/data-policy/transcript-retention-preview?days=${transcriptPreview}`}
+          scope="partner"
+          testId="partner-ai-data-policy-transcript-preview" />
+        <p className="mt-1 text-xs text-muted-foreground">{t('aiDataPolicy.partnerTranscriptHelp')}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{t('aiDataPolicy.transcriptAuditNote')}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t('aiDataPolicy.transcriptClientNote')}{' '}
+          <a href="/ai-for-office" className="font-medium text-primary hover:underline" data-testid="partner-ai-data-policy-transcript-client-link">
+            {t('aiDataPolicy.transcriptClientLink')}
+          </a>
+        </p>
       </fieldset>
     </div>
   );

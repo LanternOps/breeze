@@ -123,7 +123,14 @@
     "retentionKeepDays": "Conservar durante (días)",
     "retentionKeepForever": "Conservar siempre",
     "retentionBreezeDefault": "Predeterminado de Breeze: {{days}} días",
-    "partnerRetentionHelp": "Elija cuánto tiempo se conservan las salidas de las herramientas de IA, o conservarlas siempre. Las salidas más antiguas se reemplazan por un marcador en la ejecución nocturna."
+    "partnerRetentionHelp": "Elija cuánto tiempo se conservan las salidas de las herramientas de IA, o conservarlas siempre. Las salidas más antiguas se reemplazan por un marcador en la ejecución nocturna.",
+    "transcriptLabel": "Conservar conversaciones de IA de técnicos durante (días)",
+    "transcriptHelp": "Las conversaciones más antiguas pierden sus mensajes, títulos y detalles de herramientas en la ejecución nocturna; el registro de la sesión conserva su costo, modelo y marcas. Las conversaciones marcadas se conservan. En blanco hereda.",
+    "transcriptAuditNote": "Las entradas del registro de auditoría sobre una sesión de técnico, incluidas las entradas de herramientas, siguen el período de retención de auditoría, no este.",
+    "transcriptClientNote": "Las conversaciones de IA de cliente (AI for Office) tienen su propio período.",
+    "transcriptClientLink": "Configuración de retención de IA de cliente",
+    "transcriptAboveCeiling": "Su partner conserva las conversaciones de IA de técnicos durante un máximo de {{days}} días.",
+    "partnerTranscriptHelp": "Elija cuánto tiempo se conservan las conversaciones de IA de técnicos, o consérvelas para siempre. Las organizaciones solo pueden acortarlo. Las conversaciones más antiguas pierden sus mensajes, títulos y detalles de herramientas en la ejecución nocturna."
   },
   "partnerServicePrincipals": {
     "title": "Principales de servicio",
@@ -1880,7 +1887,8 @@
     },
     "issues": {
       "range": "Ingrese un número entero de días entre 1 y 3650."
-    }
+    },
+    "aiStubsHelp": "Las conversaciones de IA vaciadas por la retención de transcripciones conservan un registro de sesión reducido (costo, modelo, marcas) hasta que pase este período. Una organización sin una política de retención de auditoría guardada conserva esos registros."
   },
   "orgBrandingEditor": {
     "title": "Marca",

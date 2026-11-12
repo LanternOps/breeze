@@ -163,4 +163,12 @@ describe('OrgAuditRetentionSettings', () => {
     resolvePut(makeJsonResponse({ data: { orgId: ORG_ID, configured: true, retentionDays: 90, lastCleanupAt: null } }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
   });
+
+  it('explains that AI sessions emptied by transcript retention follow this window (decision B)', async () => {
+    mockApi({ orgId: ORG_ID, configured: false, retentionDays: 365, lastCleanupAt: null });
+    render(<OrgAuditRetentionSettings orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    const help = await screen.findByTestId('org-audit-retention-ai-stubs-help');
+    expect(help).toHaveTextContent(/AI conversations removed by transcript retention/);
+    expect(help).toHaveTextContent(/no saved audit retention policy keeps/i);
+  });
 });

@@ -63,6 +63,8 @@ interface SessionRow {
   flaggedBy: string | null;
   flagReason: string | null;
   createdAt: string;
+  /** Set when transcript retention emptied the session (#4342 W4). */
+  transcriptPurgedAt?: string | null;
 }
 
 /** Where the partner-wide copies of these fields are edited. */
@@ -373,7 +375,9 @@ export default function AiUsagePage() {
             <tbody>
               {sessions.map((s) => (
                 <tr key={s.id} className={`border-b last:border-0 hover:bg-muted/20 ${s.flaggedAt ? 'border-l-2 border-l-amber-500' : ''}`}>
-                  <td className="px-4 py-2.5 truncate max-w-[200px]">{s.title || t('aiUsagePage.untitled')}</td>
+                  <td className="px-4 py-2.5 truncate max-w-[200px]" data-testid={`ai-usage-session-title-${s.id}`}>
+                    {s.title || (s.transcriptPurgedAt ? t('ai:transcriptRetention.removedLabel') : t('aiUsagePage.untitled'))}
+                  </td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">{s.model.split('-').slice(0, 2).join(' ')}</td>
                   <td className="px-4 py-2.5 text-right">{s.turnCount}</td>
                   <td className="px-4 py-2.5 text-right">{formatCost(s.totalCostCents)}</td>

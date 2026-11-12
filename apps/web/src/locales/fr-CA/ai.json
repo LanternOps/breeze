@@ -337,8 +337,10 @@
     "noLimit": "Aucune limite",
     "messagesPerMinute": "Messages/min par utilisateur",
     "messagesPerHour": "Messages/heure par organisation",
-    "retentionDays": "Conservation des relevés de notes (jours)",
+    "retentionDays": "Conservation des transcriptions de l’IA client (jours)",
     "keepForever": "Garde pour toujours",
+    "retentionScope": "S’applique aux conversations de l’IA client (AI for Office). Vide = conservation illimitée. Les conversations de l’IA des techniciens ont leur propre durée.",
+    "retentionTechnicianLink": "Paramètres de conservation de l’IA des techniciens",
     "brandingDescription": "Illustré dans le pied de page : « Gouverné par votre fournisseur informatique » — le crochet en marque blanche (spec §11).",
     "displayName": "Nom d’affichage",
     "mspNamePlaceholder": "Votre nom MSP",
@@ -1083,5 +1085,24 @@
     "feedbackGivenUseful": "Vous avez jugé ceci utile",
     "feedbackGivenNotUseful": "Vous avez jugé ceci pas utile",
     "feedbackSaved": "Merci. Wisp s'en souviendra."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transcription supprimée par la conservation le {{date}}",
+    "removedLabel": "Supprimée par la conservation",
+    "removedHelp": "Les messages, le titre et les détails des outils ont été supprimés selon la durée de conservation des transcriptions. Le coût, le modèle et les signalements sont conservés.",
+    "preview": {
+      "counting": "Comptage des conversations plus anciennes que cette durée…",
+      "unavailable": "Impossible de compter les conversations plus anciennes que cette durée.",
+      "noneEnforced": "Aucune conversation n’est plus ancienne que cette durée.",
+      "nonePending": "Aucune conversation n’est plus ancienne que cette durée. L’application de la conservation est désactivée : rien n’est encore supprimé.",
+      "orgPending_one": "{{display}} conversation est plus ancienne que cette durée. Rien n’est encore supprimé : l’application de la conservation est désactivée, et elle sera supprimée une fois l’application activée.",
+      "orgPending_other": "{{display}} conversations sont plus anciennes que cette durée. Rien n’est encore supprimé : l’application de la conservation est désactivée, et elles seront supprimées une fois l’application activée.",
+      "orgEnforced_one": "{{display}} conversation est plus ancienne que cette durée et sera supprimée lors de la prochaine exécution nocturne.",
+      "orgEnforced_other": "{{display}} conversations sont plus anciennes que cette durée et seront supprimées lors de la prochaine exécution nocturne.",
+      "partnerPending_one": "Jusqu’à {{display}} conversation dans vos organisations est plus ancienne que cette durée. Rien n’est encore supprimé : l’application de la conservation est désactivée, et elle sera supprimée une fois l’application activée.",
+      "partnerPending_other": "Jusqu’à {{display}} conversations dans vos organisations sont plus anciennes que cette durée. Rien n’est encore supprimé : l’application de la conservation est désactivée, et elles seront supprimées une fois l’application activée.",
+      "partnerEnforced_one": "Jusqu’à {{display}} conversation dans vos organisations est plus ancienne que cette durée et sera supprimée lors de la prochaine exécution nocturne.",
+      "partnerEnforced_other": "Jusqu’à {{display}} conversations dans vos organisations sont plus anciennes que cette durée et seront supprimées lors de la prochaine exécution nocturne."
+    }
   }
 }

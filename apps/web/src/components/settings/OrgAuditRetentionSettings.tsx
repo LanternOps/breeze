@@ -147,6 +147,11 @@ export default function OrgAuditRetentionSettings({ orgId, onDirty, onSave }: Or
           )}
         </div>
 
+        {/* #4342 W4: emptied AI session records are deleted at this window (decision B: none saved = kept). */}
+        <p className="mt-3 max-w-prose text-xs text-muted-foreground" data-testid="org-audit-retention-ai-stubs-help">
+          {t('orgAuditRetentionSettings.aiStubsHelp')}
+        </p>
+
         {policy.lastCleanupAt && (
           <p className="mt-3 text-xs text-muted-foreground">
             {t('orgAuditRetentionSettings.lastCleanup', { date: formatDateTime(policy.lastCleanupAt) })}

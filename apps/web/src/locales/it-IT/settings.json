@@ -123,7 +123,14 @@
     "retentionKeepDays": "Conserva per (giorni)",
     "retentionKeepForever": "Conserva per sempre",
     "retentionBreezeDefault": "Predefinito di Breeze: {{days}} giorni",
-    "partnerRetentionHelp": "Scegli per quanto tempo conservare gli output degli strumenti IA, o conservali per sempre. Gli output più vecchi vengono sostituiti da un segnaposto durante l'esecuzione notturna."
+    "partnerRetentionHelp": "Scegli per quanto tempo conservare gli output degli strumenti IA, o conservali per sempre. Gli output più vecchi vengono sostituiti da un segnaposto durante l'esecuzione notturna.",
+    "transcriptLabel": "Conserva le conversazioni IA dei tecnici per (giorni)",
+    "transcriptHelp": "Le conversazioni più vecchie perdono messaggi, titoli e dettagli degli strumenti nell'esecuzione notturna; il record della sessione mantiene costo, modello e segnalazioni. Le conversazioni segnalate vengono conservate. Vuoto eredita.",
+    "transcriptAuditNote": "Le voci del log di audit su una sessione di un tecnico, inclusi gli input degli strumenti, seguono il periodo di conservazione dell'audit, non questo.",
+    "transcriptClientNote": "Le conversazioni IA client (AI for Office) hanno un proprio periodo.",
+    "transcriptClientLink": "Impostazioni di conservazione IA client",
+    "transcriptAboveCeiling": "Il tuo partner conserva le conversazioni IA dei tecnici per al massimo {{days}} giorni.",
+    "partnerTranscriptHelp": "Scegli per quanto tempo conservare le conversazioni IA dei tecnici, oppure conservale per sempre. Le organizzazioni possono solo ridurlo. Le conversazioni più vecchie perdono messaggi, titoli e dettagli degli strumenti nell'esecuzione notturna."
   },
   "partnerServicePrincipals": {
     "title": "Entità servizio",
@@ -1880,7 +1887,8 @@
     },
     "issues": {
       "range": "Inserisci un numero intero di giorni compreso tra 1 e 3650."
-    }
+    },
+    "aiStubsHelp": "Le conversazioni IA svuotate dalla conservazione delle trascrizioni mantengono un record di sessione ridotto (costo, modello, segnalazioni) finché non trascorre questo periodo. Un'organizzazione senza una policy di conservazione dell'audit salvata mantiene questi record."
   },
   "orgBrandingEditor": {
     "title": "Branding",

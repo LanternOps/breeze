@@ -337,8 +337,10 @@
     "noLimit": "Nessun limite",
     "messagesPerMinute": "Messaggi/min per utente",
     "messagesPerHour": "Messaggi/ora per organizzazione",
-    "retentionDays": "Conservazione trascrizioni (giorni)",
+    "retentionDays": "Conservazione trascrizioni IA client (giorni)",
     "keepForever": "Conserva per sempre",
+    "retentionScope": "Si applica alle conversazioni IA client (AI for Office). Vuoto le conserva per sempre. Le conversazioni IA dei tecnici hanno un proprio periodo.",
+    "retentionTechnicianLink": "Impostazioni di conservazione IA dei tecnici",
     "brandingDescription": "Mostrato nel piè di pagina del componente aggiuntivo: \"Gestito dal tuo fornitore IT\" — punto di personalizzazione white-label (specifica §11).",
     "displayName": "Nome visualizzato",
     "mspNamePlaceholder": "Nome del tuo MSP",
@@ -1083,5 +1085,24 @@
     "feedbackGivenUseful": "Hai segnato questo come utile",
     "feedbackGivenNotUseful": "Hai segnato questo come non utile",
     "feedbackSaved": "Grazie. Wisp se lo ricorderà."
+  },
+  "transcriptRetention": {
+    "removedOn": "Trascrizione rimossa dalla conservazione il {{date}}",
+    "removedLabel": "Rimossa dalla conservazione",
+    "removedHelp": "Messaggi, titolo e dettagli degli strumenti sono stati rimossi in base al periodo di conservazione delle trascrizioni. Costo, modello e segnalazioni restano.",
+    "preview": {
+      "counting": "Conteggio delle conversazioni più vecchie di questo periodo…",
+      "unavailable": "Impossibile contare le conversazioni più vecchie di questo periodo.",
+      "noneEnforced": "Nessuna conversazione è più vecchia di questo periodo.",
+      "nonePending": "Nessuna conversazione è più vecchia di questo periodo. L'applicazione della conservazione è disattivata, quindi non viene ancora eliminato nulla.",
+      "orgPending_one": "{{display}} conversazione è più vecchia di questo periodo. Non viene ancora eliminato nulla: l'applicazione della conservazione è disattivata e verrà rimossa quando sarà attivata.",
+      "orgPending_other": "{{display}} conversazioni sono più vecchie di questo periodo. Non viene ancora eliminato nulla: l'applicazione della conservazione è disattivata e verranno rimosse quando sarà attivata.",
+      "orgEnforced_one": "{{display}} conversazione è più vecchia di questo periodo e verrà rimossa nella prossima esecuzione notturna.",
+      "orgEnforced_other": "{{display}} conversazioni sono più vecchie di questo periodo e verranno rimosse nella prossima esecuzione notturna.",
+      "partnerPending_one": "Fino a {{display}} conversazione nelle tue organizzazioni è più vecchia di questo periodo. Non viene ancora eliminato nulla: l'applicazione della conservazione è disattivata e verrà rimossa quando sarà attivata.",
+      "partnerPending_other": "Fino a {{display}} conversazioni nelle tue organizzazioni sono più vecchie di questo periodo. Non viene ancora eliminato nulla: l'applicazione della conservazione è disattivata e verranno rimosse quando sarà attivata.",
+      "partnerEnforced_one": "Fino a {{display}} conversazione nelle tue organizzazioni è più vecchia di questo periodo e verrà rimossa nella prossima esecuzione notturna.",
+      "partnerEnforced_other": "Fino a {{display}} conversazioni nelle tue organizzazioni sono più vecchie di questo periodo e verranno rimosse nella prossima esecuzione notturna."
+    }
   }
 }

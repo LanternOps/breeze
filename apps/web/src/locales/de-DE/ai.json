@@ -337,8 +337,10 @@
     "noLimit": "Kein Limit",
     "messagesPerMinute": "Nachrichten/Minute je Benutzer",
     "messagesPerHour": "Nachrichten/Stunde je Organisation",
-    "retentionDays": "Aufbewahrung von Transkripten (Tage)",
+    "retentionDays": "Aufbewahrung von Client-KI-Transkripten (Tage)",
     "keepForever": "Unbegrenzt aufbewahren",
+    "retentionScope": "Gilt für Client-KI-Unterhaltungen (AI for Office). Leer bewahrt sie unbegrenzt auf. Techniker-KI-Unterhaltungen haben einen eigenen Zeitraum.",
+    "retentionTechnicianLink": "Aufbewahrungseinstellungen für Techniker-KI",
     "brandingDescription": "Wird in der Fußzeile des Add-Ins angezeigt: „Verwaltet von Ihrem IT-Dienstleister“ – die White-Label-Option (Spezifikation §11).",
     "displayName": "Anzeigename",
     "mspNamePlaceholder": "Name Ihres MSP",
@@ -1083,5 +1085,24 @@
     "feedbackGivenUseful": "Sie haben dies als nützlich markiert",
     "feedbackGivenNotUseful": "Sie haben dies als nicht nützlich markiert",
     "feedbackSaved": "Danke. Wisp merkt sich das."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transkript am {{date}} durch Aufbewahrungsrichtlinie entfernt",
+    "removedLabel": "Durch Aufbewahrung entfernt",
+    "removedHelp": "Nachrichten, Titel und Tool-Details wurden gemäß dem Aufbewahrungszeitraum für Transkripte entfernt. Kosten, Modell und Markierungen bleiben erhalten.",
+    "preview": {
+      "counting": "Unterhaltungen, die älter als dieser Zeitraum sind, werden gezählt…",
+      "unavailable": "Die Unterhaltungen, die älter als dieser Zeitraum sind, konnten nicht gezählt werden.",
+      "noneEnforced": "Keine Unterhaltung ist älter als dieser Zeitraum.",
+      "nonePending": "Keine Unterhaltung ist älter als dieser Zeitraum. Die Durchsetzung der Aufbewahrung ist aus, daher wird noch nichts gelöscht.",
+      "orgPending_one": "{{display}} Unterhaltung ist älter als dieser Zeitraum. Noch wird nichts gelöscht: Die Durchsetzung der Aufbewahrung ist aus; sie wird entfernt, sobald die Durchsetzung aktiviert ist.",
+      "orgPending_other": "{{display}} Unterhaltungen sind älter als dieser Zeitraum. Noch wird nichts gelöscht: Die Durchsetzung der Aufbewahrung ist aus; sie werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "orgEnforced_one": "{{display}} Unterhaltung ist älter als dieser Zeitraum und wird beim nächsten nächtlichen Lauf entfernt.",
+      "orgEnforced_other": "{{display}} Unterhaltungen sind älter als dieser Zeitraum und werden beim nächsten nächtlichen Lauf entfernt.",
+      "partnerPending_one": "Bis zu {{display}} Unterhaltung in Ihren Organisationen ist älter als dieser Zeitraum. Noch wird nichts gelöscht: Die Durchsetzung der Aufbewahrung ist aus; sie wird entfernt, sobald die Durchsetzung aktiviert ist.",
+      "partnerPending_other": "Bis zu {{display}} Unterhaltungen in Ihren Organisationen sind älter als dieser Zeitraum. Noch wird nichts gelöscht: Die Durchsetzung der Aufbewahrung ist aus; sie werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "partnerEnforced_one": "Bis zu {{display}} Unterhaltung in Ihren Organisationen ist älter als dieser Zeitraum und wird beim nächsten nächtlichen Lauf entfernt.",
+      "partnerEnforced_other": "Bis zu {{display}} Unterhaltungen in Ihren Organisationen sind älter als dieser Zeitraum und werden beim nächsten nächtlichen Lauf entfernt."
+    }
   }
 }
