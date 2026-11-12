@@ -1,4 +1,3 @@
-import { Platform } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Sharing from 'expo-sharing';
@@ -103,20 +102,15 @@ export async function pickFromCamera(): Promise<PickOutcome> {
  */
 export async function pickFromLibrary(remainingSlots: number): Promise<PickOutcome> {
   return runPicker(async () => {
-    // iOS 14+'s `launchImageLibraryAsync` runs as `PHPickerViewController`, a
-    // separate, sandboxed process the app never touches directly — it needs
-    // no Photo Library permission at all. Requesting one anyway triggers the
-    // "would like full access to your Photo Library (N photos)" prompt for a
-    // picker that was never going to be denied, and a decline sends the
-    // technician into a permission error for a permission that was never
-    // required (#5103). Android's picker still gates behind
-    // READ_MEDIA_IMAGES/READ_EXTERNAL_STORAGE on older API levels, so it
-    // keeps the request.
-    if (Platform.OS !== 'ios') {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) return { ok: false, reason: 'permission-denied' };
-    }
-
+    // No media-library permission on either platform. iOS 14+ runs this as
+    // `PHPickerViewController`, a sandboxed process the app never touches;
+    // requesting access anyway raised a "full access to your Photo Library"
+    // prompt whose decline blocked a picker that needed nothing (#5103).
+    // Android runs the system Photo Picker (`PickVisualMedia`, backported to
+    // API 19+ via Play services), which expo-image-picker launches without a
+    // permission check. The Play build also blocks READ_EXTERNAL_STORAGE
+    // (app.json `blockedPermissions`), so a request would come back denied on
+    // API 24-32 and the picker would never open.
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       quality: 0.8,
