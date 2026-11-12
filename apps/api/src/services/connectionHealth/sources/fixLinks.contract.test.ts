@@ -14,6 +14,7 @@ const WEB_SRC = path.resolve(__dirname, '../../../../../web/src');
 const HASH_OWNERS: Record<string, string[]> = {
   '/integrations': ['components/integrations/IntegrationsPage.tsx', 'lib/accountingProviders.ts'],
   '/settings/ticketing': ['components/settings/TicketingSettingsTabs.tsx'],
+  '/backup': ['components/backup/BackupDashboard.tsx'],
 };
 
 function pageExists(routePath: string): boolean {

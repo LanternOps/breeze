@@ -183,6 +183,7 @@ import { m365ToolSearchHints, m365ToolTiers, registerM365Tools } from './aiTools
 import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
 import { authorizeTopologyAiToolCall, isTopologyAiToolName, topologyAiAliasScope, type TopologyToolBinding } from './topology/aiToolGate';
 import { applyHelperDeviceScope } from './helperToolFilter';
+import { COMPACT_TOOL_DESCRIPTIONS } from './aiToolCompactDescriptions';
 // ============================================
 // Shared Types
 // ============================================
@@ -694,6 +695,34 @@ export function getToolSearchHint(toolName: string): string | undefined {
   return aiTools.get(toolName)?.searchHint
     ?? m365ToolSearchHints[toolName]
     ?? googleToolSearchHints[toolName];
+}
+
+/** #11395: the curated compact description a constrained tool profile advertises, if the tool has one. */
+export function getToolCompactDescription(toolName: string): string | undefined {
+  return Object.hasOwn(COMPACT_TOOL_DESCRIPTIONS, toolName) ? COMPACT_TOOL_DESCRIPTIONS[toolName] : undefined;
+}
+
+const COMPACT_DESCRIPTION_MAX = 200;
+
+/**
+ * #11395: what a constrained profile advertises for a registry tool: its
+ * curated compact description, else `shortenToolDescription` of the full one
+ * (a `custom` pick has no curated entry).
+ */
+export function compactDescriptionFor(toolName: string, fullDescription: string): string {
+  return getToolCompactDescription(toolName) ?? shortenToolDescription(fullDescription);
+}
+
+/**
+ * #11395: a description that already fits in 200 chars is kept whole (so no
+ * approval or consent note is cut from it); a longer one becomes its first
+ * sentence, capped at 200. Used directly by servers whose tools are not the
+ * registry's (the script builder), which must never borrow a chat entry.
+ */
+export function shortenToolDescription(fullDescription: string): string {
+  if (fullDescription.length <= COMPACT_DESCRIPTION_MAX) return fullDescription;
+  const first = fullDescription.match(/^.*?[.!?](?=\s|$)/s)?.[0] ?? fullDescription;
+  return first.length <= COMPACT_DESCRIPTION_MAX ? first : `${first.slice(0, COMPACT_DESCRIPTION_MAX - 1).trimEnd()}…`;
 }
 
 export function getToolAlwaysLoad(toolName: string): boolean {

@@ -10,7 +10,9 @@ import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
-import { executeTool } from './aiTools';
+import { executeTool, shortenToolDescription } from './aiTools';
+import type { ActiveSession } from './streamingSessionManager';
+import type { ToolExposure } from './aiModels/toolExposure';
 import { withDbAccessContext, runOutsideDbContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
 import { scriptParameterDefinitionsSchema, WORKLOAD_RUNTIMES, WORKLOAD_STATES } from '@breeze/shared';
@@ -452,9 +454,36 @@ export function createScriptBuilderMcpServer(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
+  /**
+   * #11395: the live session, whose tool exposure decides what this server
+   * ADVERTISES. `allowedTools` only gates permission; without this a
+   * constrained profile would still send every script-builder schema. A
+   * constrained exposure registers only `exposure.names` with compact
+   * descriptions; none, or the identity exposure, changes nothing.
+   */
+  getActiveSession?: () => ActiveSession | undefined,
 ) {
   return createSdkMcpServer({
     name: SCRIPT_BUILDER_MCP_SERVER_NAME,
-    tools: buildScriptBuilderTools(getAuth, onPreToolUse, onPostToolUse),
+    tools: scriptBuilderServerTools(getAuth, onPreToolUse, onPostToolUse, getActiveSession),
   });
+}
+
+/** #11395: the exact tool list `createScriptBuilderMcpServer` registers (offline prefix measurement reads it). */
+export function scriptBuilderServerTools(
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+  getActiveSession?: () => Pick<ActiveSession, 'toolExposure'> | undefined,
+) {
+  let exposure: Pick<ToolExposure, 'names' | 'promptMode'> | undefined;
+  try { exposure = getActiveSession?.()?.toolExposure; } catch { exposure = undefined; }
+  const tools = buildScriptBuilderTools(getAuth, onPreToolUse, onPostToolUse);
+  const exposed = exposure?.names ? new Set(exposure.names) : null;
+  const compact = exposure?.promptMode === 'constrained';
+  return exposed === null
+    ? tools
+    : tools
+      .filter((t) => exposed.has(t.name))
+      .map((t) => (compact ? { ...t, description: shortenToolDescription(t.description) } : t));
 }

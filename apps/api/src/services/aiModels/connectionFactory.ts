@@ -268,7 +268,7 @@ export function isGatewayResolvedConnection(c: ResolvedConnection): c is Gateway
  */
 export async function openGatewayGrant(
   resolved: ResolvedModel,
-  input: { aiSessionId: string | null; ttlMs?: number } & (
+  input: { aiSessionId: string | null; ttlMs?: number; compactSchemas?: boolean } & (
     // A dispatch grant is always an org's (its egress audit row is org-keyed).
     | { purpose: 'dispatch'; orgId: string }
     | { purpose: Exclude<GatewayGrantPurpose, 'dispatch'>; orgId: string | null }
@@ -287,6 +287,8 @@ export async function openGatewayGrant(
     wireModels,
     aiSessionId: input.aiSessionId,
     ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
+    // #11395: only a constrained tool profile sets it; absent keeps the grant (and its translation) as before.
+    ...(input.compactSchemas ? { compactSchemas: true } : {}),
   };
   return gateway.grant(input.purpose === 'dispatch'
     ? { ...base, purpose: 'dispatch', orgId: input.orgId }
@@ -597,7 +599,11 @@ export interface SdkChildDispatch {
  */
 export async function prepareSdkChild(
   resolved: ResolvedModel,
-  input: { key: string; orgId: string; aiSessionId: string | null; source?: NodeJS.ProcessEnv },
+  input: {
+    key: string; orgId: string; aiSessionId: string | null; source?: NodeJS.ProcessEnv;
+    /** #11395: the session's tool exposure asks for compacted advertised schemas (gateway connections only). */
+    compactSchemas?: boolean;
+  },
 ): Promise<SdkChildDispatch> {
   const conn = resolved.connection;
   if (isGatewayResolvedConnection(conn)) {
@@ -629,6 +635,7 @@ export async function prepareSdkChild(
       isolatedCwd = await createIsolatedSdkCwd();
       grant = await openGatewayGrant(resolved, {
         orgId: input.orgId, aiSessionId: input.aiSessionId, purpose: 'dispatch', ttlMs: GRANT_SESSION_TTL_MS,
+        ...(input.compactSchemas ? { compactSchemas: true } : {}),
       });
       const adapterEnv = getGatewayAdapter(conn.kind).sdkChildEnv({
         gatewayBaseUrl: grant.baseUrl, config: conn.config, wireModel: resolved.wireModel,
