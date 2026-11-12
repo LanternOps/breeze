@@ -46,26 +46,40 @@ func windowsScriptCommand(shellCmd string, shellArgs []string, scriptPath string
 // argument quoting writes inner quotes as \", which cmd.exe does not read,
 // and the path needs quotes when it contains spaces or & ^ ( ). The path
 // itself is not written into the line: cmd.exe expands %NAME% anywhere in
-// it, quoted or not, so it is read from ScriptPathEnv instead. With /V:ON
-// (delayed expansion) it is read as !NAME!, which is expanded once and not
-// re-scanned, so a ! in the path is kept. /S makes cmd.exe strip exactly the
-// outer pair of quotes.
+// it, quoted or not, so it is read from ScriptPathEnv instead.
+//
+//   - /D skips the AutoRun commands from the registry, so nothing runs
+//     before the script but the line below.
+//   - With /V:ON (delayed expansion, used for rendered parameters) the path
+//     is read as !NAME!, which is expanded once and not re-scanned.
+//   - Otherwise it is read as %NAME%. If delayed expansion is on by registry
+//     default, cmd.exe would then also process any ! in the expanded path,
+//     so a path containing ! is run with /V:OFF. Other paths leave the
+//     host's default alone.
+//   - /S makes cmd.exe strip exactly the outer pair of quotes.
 func cmdScriptCommand(shellCmd string, shellArgs []string, scriptPath string) ScriptCommand {
 	flags := shellArgs
 	if n := len(flags); n > 0 && strings.EqualFold(flags[n-1], "/C") {
 		flags = flags[:n-1]
 	}
-	ref := "%" + ScriptPathEnv + "%"
+	delayed := false
 	for _, f := range flags {
 		if strings.EqualFold(f, "/V:ON") {
-			ref = "!" + ScriptPathEnv + "!"
+			delayed = true
 		}
+	}
+	ref := "%" + ScriptPathEnv + "%"
+	if delayed {
+		ref = "!" + ScriptPathEnv + "!"
 	}
 	name := shellCmd
 	if strings.ContainsAny(name, " \t") {
 		name = `"` + name + `"`
 	}
-	parts := append([]string{name}, flags...)
+	parts := append([]string{name, "/D"}, flags...)
+	if !delayed && strings.Contains(scriptPath, "!") {
+		parts = append(parts, "/V:OFF")
+	}
 	parts = append(parts, "/S", "/C", `"chcp 65001 >nul & "`+ref+`""`)
 	return ScriptCommand{
 		Name:    shellCmd,

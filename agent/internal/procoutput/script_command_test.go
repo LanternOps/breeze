@@ -26,7 +26,7 @@ func TestWindowsScriptCommandCmdReadsPathFromEnvironment(t *testing.T) {
 	got := windowsScriptCommand("cmd.exe", []string{"/C"}, path)
 	want := ScriptCommand{
 		Name:    "cmd.exe",
-		CmdLine: `cmd.exe /S /C "chcp 65001 >nul & "%BREEZE_SCRIPT_FILE%""`,
+		CmdLine: `cmd.exe /D /S /C "chcp 65001 >nul & "%BREEZE_SCRIPT_FILE%""`,
 		Env:     []string{"BREEZE_SCRIPT_FILE=" + path},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -41,7 +41,23 @@ func TestWindowsScriptCommandCmdDelayedExpansion(t *testing.T) {
 	got := windowsScriptCommand("cmd.exe", []string{"/V:ON", "/C"}, path)
 	want := ScriptCommand{
 		Name:    "cmd.exe",
-		CmdLine: `cmd.exe /V:ON /S /C "chcp 65001 >nul & "!BREEZE_SCRIPT_FILE!""`,
+		CmdLine: `cmd.exe /D /V:ON /S /C "chcp 65001 >nul & "!BREEZE_SCRIPT_FILE!""`,
+		Env:     []string{"BREEZE_SCRIPT_FILE=" + path},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v\nwant %#v", got, want)
+	}
+}
+
+// Without rendered parameters, the host's delayed-expansion default is left
+// alone, except that a path containing ! is read with delayed expansion off
+// so the ! is kept.
+func TestWindowsScriptCommandCmdPathWithExclamation(t *testing.T) {
+	path := `C:\Users\Hi!\AppData\Local\Temp\breeze-scripts-1\breeze_2.bat`
+	got := windowsScriptCommand("cmd.exe", []string{"/C"}, path)
+	want := ScriptCommand{
+		Name:    "cmd.exe",
+		CmdLine: `cmd.exe /D /V:OFF /S /C "chcp 65001 >nul & "%BREEZE_SCRIPT_FILE%""`,
 		Env:     []string{"BREEZE_SCRIPT_FILE=" + path},
 	}
 	if !reflect.DeepEqual(got, want) {
