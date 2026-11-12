@@ -779,6 +779,8 @@ describe('helper routes permission derivation', () => {
     expect(call[6]).toBe(model);
     expect(call[1]).not.toHaveProperty('model');
     expect(call[9]).toEqual(expect.objectContaining({ ledgerUserId: null }));
+    // #11395: the built-in per-level factory registers the Breeze registry, so a tool profile narrows it.
+    expect(call[9]).toEqual(expect.objectContaining({ registersBreezeServer: true }));
     expect(reserveAiBudgetMock).toHaveBeenCalledWith(expect.objectContaining({
       billingSource: 'partner_key', binding: turnBindingFrom(model),
     }));

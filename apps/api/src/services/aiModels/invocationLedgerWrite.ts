@@ -59,6 +59,10 @@ export interface NewInvocation {
   promptVariant?: string | null;
   /** W11: when the turn was first settled. A string after the pending-settlement JSON round trip. */
   occurredAt?: Date | string | null;
+  /** #11395: the resolved tool profile the call ran under; null = no tool exposure (or before W03). */
+  toolProfile?: string | null;
+  /** #11395: that exposure's fingerprint ('full' for the identity exposure). */
+  toolExposureFingerprint?: string | null;
 }
 
 export async function recordInvocation(row: NewInvocation): Promise<string> {
@@ -112,6 +116,8 @@ export async function recordInvocation(row: NewInvocation): Promise<string> {
     promptProfile: row.promptProfile ?? null,
     promptVariant: row.promptVariant ?? null,
     occurredAt: row.occurredAt ? new Date(row.occurredAt) : null,
+    toolProfile: row.toolProfile ?? null,
+    toolExposureFingerprint: row.toolExposureFingerprint ?? null,
   }).returning({ id: aiInvocations.id });
   return inserted!.id;
 }

@@ -231,7 +231,7 @@ describe('run-mode columns and the cap', () => {
     const fx = await seed();
     const { row } = await firedRunning(fx);
     expect((await listCheckIns(fx.grantId, { limit: 10 })).map((r) => r.id)).toContain(row.id);
-    expect(await cancelCheckIn(fx.grantId, row.id)).toMatchObject({ status: 'cancelled' });
+    expect(await cancelCheckIn(fx.grantId, row.id, 'user')).toMatchObject({ status: 'cancelled' });
   });
 });
 
@@ -402,7 +402,7 @@ describe('firing a run check-in', () => {
     await makeDue(row.id, new Date());
     await withSystemDbAccessContext(() => db.update(wispGrants).set({ status: 'revoked', revokedAt: new Date() }).where(eq(wispGrants.id, fx.grantId)));
     expect(await fireCheckIn(row.id, new Date())).toBe('cancelled');
-    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive' });
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive', cancelledBy: 'breeze' });
     expect(h.enqueueAssessment).not.toHaveBeenCalled();
     expect(await postsFor(fx.thread.id)).toHaveLength(0);
   });
@@ -530,7 +530,7 @@ describe('posting the settled run', () => {
   runDb('a check-in the user cancelled while its run ran never posts', async () => {
     const fx = await seed();
     const { row, runId } = await firedRunning(fx);
-    await cancelCheckIn(fx.grantId, row.id);
+    await cancelCheckIn(fx.grantId, row.id, 'user');
     await setRun(runId, { status: 'completed', summary: 'Done.', finishedAt: new Date() });
     expect(await postCheckInRunResult(runId)).toBe('already');
     expect(await postsFor(fx.thread.id)).toHaveLength(0);
@@ -542,7 +542,7 @@ describe('posting the settled run', () => {
     await setRun(runId, { status: 'completed', summary: 'Done.', finishedAt: new Date() });
     await withSystemDbAccessContext(() => db.update(wispGrants).set({ status: 'revoked', revokedAt: new Date() }).where(eq(wispGrants.id, fx.grantId)));
     expect(await postCheckInRunResult(runId)).toBe('cancelled');
-    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive' });
+    expect(await rowOf(row.id)).toMatchObject({ status: 'cancelled', cancelReason: 'grant_inactive', cancelledBy: 'breeze' });
     expect(await postsFor(fx.thread.id)).toHaveLength(0);
   });
 

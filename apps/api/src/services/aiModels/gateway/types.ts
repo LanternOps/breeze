@@ -33,6 +33,12 @@ interface GatewayGrantInputBase {
   aiSessionId: string | null;
   /** Default GRANT_DEFAULT_TTL_MS; clamped to GRANT_SESSION_TTL_MS. */
   ttlMs?: number;
+  /**
+   * #11395: a constrained tool profile's exposure asks for compacted
+   * advertised schemas (gateway/openai/schemaCompaction.ts). Absent = false:
+   * the `full` exposure is translated byte-for-byte as before.
+   */
+  compactSchemas?: boolean;
 }
 
 /**
@@ -57,6 +63,8 @@ export interface GatewayGrantRecord {
   purpose: GatewayGrantPurpose;
   expiresAt: number;
   inFlight: Set<AbortController>;
+  /** Strip size/format keywords from the advertised upstream tool parameters (#11395). */
+  compactSchemas: boolean;
 }
 
 export interface GatewayIncomingRequest {

@@ -108,8 +108,12 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
   const parsed = parseJson(body) as { model?: unknown };
   const model = assertBoundModel(grant, parsed.model);
   if (grant.config.kind !== 'openai_compatible') throw new Error('openai adapter on a non-openai grant');
-  const translated = translateMessagesRequest(parsed, model);
-  const call: UpstreamCallContext = { model, stream: translated.stream, startedAt: Date.now(), promptTokensEstimate: estimateInputTokens(parsed) };
+  const translated = translateMessagesRequest(parsed, model, { compactSchemas: grant.compactSchemas });
+  // #11395: a compacted request is estimated from what is actually sent (its
+  // advertised schemas shrank); the `full` exposure keeps today's estimate of
+  // the SDK payload, so its window planning is unchanged.
+  const promptTokensEstimate = estimateInputTokens(grant.compactSchemas ? translated.body : parsed);
+  const call: UpstreamCallContext = { model, stream: translated.stream, startedAt: Date.now(), promptTokensEstimate };
   const windowKey = { connectionId: grant.config.connectionId, configVersion: grant.config.configVersion, model };
   const plan = planRequest(windowKey, translated.maxTokens, call.promptTokensEstimate);
   if (plan.kind === 'too_large') return contextWindowRefusal(grant, call, plan.contextWindow, plan.promptTokens);

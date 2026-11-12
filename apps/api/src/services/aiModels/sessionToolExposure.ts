@@ -13,7 +13,9 @@ import {
   TOOL_PROFILE_UNDERPOWERED,
   checkSurfaceCoverage,
 } from './surfaceRequiredTools';
-import { effectiveToolProfile, resolveToolExposure, type ExtraToolInput, type ToolExposure, type ToolProfileFacts } from './toolExposure';
+import { DEFAULT_TOOL_PROFILE_FACTS, effectiveToolProfile, resolveToolExposure, toolProfileKey, type ExtraToolInput, type ToolExposure, type ToolProfileFacts } from './toolExposure';
+import { liveQueryKey, turnBindingFrom } from './turnBinding';
+import type { ResolvedModel } from './resolveModel';
 
 const MCP_NAME = /^mcp__.+?__(.+)$/;
 
@@ -106,6 +108,40 @@ export function finalizeSessionToolExposure(input: SessionToolExposureInput): Se
     onlyTools: breezeServer ? new Set(exposure.names.filter((n) => registry.has(n))) : undefined,
     keepsExtra: (name) => keptExtras.has(name),
   };
+}
+
+/**
+ * The chat exposure the system prompt is built from (#11395). Chat's prompt
+ * is composed in the turn preflight, before `getOrCreate` finalizes the
+ * session's exposure, so it re-runs the SAME resolver over the SAME inputs
+ * the chat query registers (the Breeze registry, no caller list): names and
+ * prompt mode match the registration by construction
+ * (sessionToolExposure.test.ts pins it). Extras are left out: tenant and
+ * flow tools never appear in the prompt's tool lines, and the approval mode
+ * only ever adds `propose_action_plan`, which chat always keeps.
+ */
+export function chatPromptExposure(
+  facts: ToolProfileFacts,
+  deps: { registryNames: () => readonly string[]; domainOf: (name: string) => AiToolDomain | undefined },
+): ToolExposure {
+  const constrained = effectiveToolProfile(facts, 'chat').profile !== 'full';
+  return resolveToolExposure({
+    surface: 'chat',
+    facts,
+    surfaceBaseSet: constrained ? deps.registryNames() : [],
+    extraTools: [],
+  }, { domainOf: deps.domainOf });
+}
+
+/**
+ * The live-query key `getOrCreate` uses for this resolved model, including
+ * the tool profile's segment (#11395). The topology answer cache keys on it,
+ * so an answer computed under one tool exposure is never served under
+ * another. The identity exposure keeps the one-argument key byte-identical.
+ */
+export function resolvedLiveQueryKey(resolved: ResolvedModel): string {
+  const facts = resolved.toolProfileFacts ?? DEFAULT_TOOL_PROFILE_FACTS;
+  return liveQueryKey(turnBindingFrom(resolved), toolProfileKey(facts, resolved.surface));
 }
 
 /**

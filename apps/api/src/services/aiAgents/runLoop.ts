@@ -2784,6 +2784,8 @@ async function driveSdkLoop(
   });
   const exposedNames = toolProfile.exposedNames;
   const registeredOnlyTools = toolProfile.onlyTools;
+  // #11395: ledger provenance for every hop's settlement.
+  const runToolExposure = { profile: toolProfile.exposure.profile, fingerprint: toolProfile.exposure.fingerprint };
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
@@ -2802,7 +2804,13 @@ async function driveSdkLoop(
       ),
       ...flowSdkTools.filter((t) => toolProfile.exposure.names === null || toolProfile.keepsFlowTool(t.name)),
     ],
-    registeredOnlyTools ? { onlyTools: registeredOnlyTools } : undefined);
+    registeredOnlyTools || toolProfile.exposure.names !== null
+      ? {
+          ...(registeredOnlyTools ? { onlyTools: registeredOnlyTools } : {}),
+          // #11395: a constrained profile advertises compact descriptions (no session to read it from).
+          ...(toolProfile.exposure.names !== null ? { toolExposure: toolProfile.exposure } : {}),
+        }
+      : undefined);
 
   const prompt = promptContext(ctx, effective);
   // S8: the ONE surface with a genuinely stable request identity — the agent
@@ -2946,6 +2954,8 @@ async function driveSdkLoop(
           key: hopIndex === 0 ? `agent-run:${run.id}` : `agent-run:${run.id}:${hopIndex}`,
           orgId: run.orgId,
           aiSessionId: ctx.sessionId ?? null,
+          // #11395: the run's tool profile compacts advertised schemas on a gateway hop.
+          ...(toolProfile.exposure.compactSchemas ? { compactSchemas: true } : {}),
         });
       } catch (error) {
         await releaseUnusedAiBudgetReservation({ orgId: run.orgId, reservationId: hopReservationId })
@@ -3174,6 +3184,7 @@ async function driveSdkLoop(
           messageCount: hopTurns,
           toolExecutionCount: 0,
           prompt: hopPromptProvenance,
+          toolExposure: runToolExposure,
         });
         priorHopsCostCents += settledHop.costCents;
         // Review S1: deferred but NOT persisted — keep the reservation held.
@@ -3275,6 +3286,7 @@ async function driveSdkLoop(
           messageCount: Math.max(1, turnCount - hopTurnsAtStart),
           toolExecutionCount: outcome.toolExecutionCount,
           prompt: promptProvenance,
+          toolExposure: runToolExposure,
         });
         // The run row carries the billed number (which also prices any model
         // the CLI switched to on its own at its platform rate), plus what the

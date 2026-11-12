@@ -423,4 +423,43 @@ describe('openai_compatible adapter (real Anthropic client through the gateway)'
       expect(sent).toEqual([32_000]);
     });
   });
+
+  describe('compactSchemas grants (#11395)', () => {
+    const sizedTools = [{
+      name: 'mcp__breeze__search', description: 's',
+      input_schema: { type: 'object' as const, required: ['q'], properties: { q: { type: 'string', maxLength: 50, pattern: '^a', description: 'query' } } },
+    }];
+    function compactClient(compactSchemas: boolean | undefined) {
+      const g = gw.grant({
+        config: { source: 'gateway', kind: 'openai_compatible', partnerId: 'p', connectionId: 'c', configVersion: 1, baseUrl: 'https://llm.example.com/v1' },
+        credential: { secret: 'sk-upstream-secret-1' }, wireModels: ['qwen'], orgId: 'o', aiSessionId: null, purpose: 'dispatch',
+        ...(compactSchemas === undefined ? {} : { compactSchemas }),
+      });
+      return new Anthropic({ baseURL: g.baseUrl, apiKey: GATEWAY_PLACEHOLDER_KEY, maxRetries: 0 });
+    }
+    // No usage upstream: input_tokens falls back to the gateway's own estimate.
+    const textReply = () => Response.json({ choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }] });
+    const params = () => (lastUpstream!.body.tools as Array<{ function: { parameters: unknown } }>)[0]!.function.parameters;
+
+    it('a compactSchemas grant sends compacted parameters upstream', async () => {
+      reply = textReply;
+      await compactClient(true).messages.create({ model: 'qwen', max_tokens: 64, tools: sizedTools, messages: [{ role: 'user', content: 'x' }] });
+      expect(params()).toEqual({ type: 'object', required: ['q'], properties: { q: { type: 'string', description: 'query' } } });
+    });
+
+    it('without compactSchemas the upstream parameters are unchanged', async () => {
+      reply = textReply;
+      await compactClient(undefined).messages.create({ model: 'qwen', max_tokens: 64, tools: sizedTools, messages: [{ role: 'user', content: 'x' }] });
+      expect(params()).toEqual(sizedTools[0]!.input_schema);
+    });
+
+    it('a compactSchemas grant estimates the translated body it sends, not the SDK payload', async () => {
+      reply = textReply;
+      const big = [{ ...sizedTools[0]!, input_schema: { type: 'object' as const, properties: { q: { type: 'string', pattern: 'p'.repeat(6000) } } } }];
+      const compact = await compactClient(true).messages.create({ model: 'qwen', max_tokens: 64, tools: big, messages: [{ role: 'user', content: 'x' }] });
+      const full = await compactClient(false).messages.create({ model: 'qwen', max_tokens: 64, tools: big, messages: [{ role: 'user', content: 'x' }] });
+      // The 6,000-byte pattern is not sent under compaction, so it is not estimated (6,000 / 3 = 2,000 tokens).
+      expect(full.usage.input_tokens - compact.usage.input_tokens).toBeGreaterThan(1900);
+    });
+  });
 });

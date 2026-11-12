@@ -240,6 +240,22 @@ describe('prepareSdkChild', () => {
     revoke();
   });
 
+  it('#11395: compactSchemas rides onto the gateway grant; absent = false (full unchanged)', async () => {
+    const gw = await getModelGateway();
+    const spy = vi.spyOn(gw, 'grant');
+    try {
+      const r = makeResolvedModel('openai_compatible');
+      const a = await prepareSdkChild(r, { key: 'sess-cs-1', orgId: 'org-1', aiSessionId: null, source: PARENT, compactSchemas: true });
+      const b = await prepareSdkChild(r, { key: 'sess-cs-2', orgId: 'org-1', aiSessionId: null, source: PARENT });
+      expect(spy.mock.calls[0]![0]).toMatchObject({ compactSchemas: true });
+      expect(spy.mock.calls[1]![0]).not.toHaveProperty('compactSchemas');
+      a.revoke();
+      b.revoke();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('records one sdk_session_create audit row with the connection id', async () => {
     const r = makeResolvedModel('openai_compatible');
     const { revoke } = await prepareSdkChild(r, { key: 'sess-5', orgId: 'org-1', aiSessionId: 'sess-5', source: PARENT });

@@ -1,4 +1,4 @@
-import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
+import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_COMPACT, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
 import { AI_SYSTEM_PROMPT_DIAGNOSIS } from './aiAgentDiagnosisPrompt';
 import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS, type AiPageContext, type AiToolDomain } from '@breeze/shared';
 import { aiTools } from './aiToolNames';
@@ -184,4 +184,31 @@ export function renderPageContextToolBlocks(ctx: AiPageContext, names: readonly 
 export function composeStaticSystemPrompt(toolNames: readonly string[], mode: ToolIndexMode = resolveToolIndexMode()): string {
   const index = mode === 'full' ? renderToolIndexByDomain(toolNames) : renderAlwaysOnIndex(toolNames);
   return [AI_SYSTEM_PROMPT_BASE, index, AI_SYSTEM_PROMPT_TAIL, AI_SYSTEM_PROMPT_DIAGNOSIS].join('\n');
+}
+
+/**
+ * #11395 (W03): the static chat prompt under a CONSTRAINED tool exposure —
+ * the compact rules and the exposure's own tool lines (every schema is
+ * inline: a constrained profile never searches), no diagnosis section and no
+ * domain vocabulary. A function of the exposed names only (sorted, page-free),
+ * so it is a byte-stable prompt-cache prefix across turns and pages.
+ */
+export function composeConstrainedSystemPrompt(toolNames: readonly string[]): string {
+  return [AI_SYSTEM_PROMPT_COMPACT, renderConstrainedToolLines(toolNames)].join('\n');
+}
+
+/**
+ * The constrained prompt's tool lines: each present domain with its tool
+ * names only. No action lists (each schema's `action` enum carries them, and
+ * every schema is inline), no notes and no vocabulary: the prefix stays
+ * small and names nothing the exposure lacks.
+ */
+function renderConstrainedToolLines(toolNames: readonly string[]): string {
+  const entries = listToolIndex(toolNames);
+  const lines = ['## Your Tools'];
+  for (const domain of AI_TOOL_DOMAINS) {
+    const inDomain = entries.filter((e) => e.domain === domain);
+    if (inDomain.length > 0) lines.push(`- **${AI_TOOL_DOMAIN_LABELS[domain]}**: ${inDomain.map((e) => e.name).join(', ')}`);
+  }
+  return lines.join('\n');
 }

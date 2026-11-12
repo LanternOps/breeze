@@ -43,8 +43,12 @@ describe('resolveToolExposure', () => {
     });
   });
 
-  it('auto with a known window but unmeasured prefixes stays full (ships dark)', () => {
-    expect(resolveToolExposure(input({ facts: facts({ effectiveWindow: 8192 }) })).profile).toBe('full');
+  it('auto with an unknown window stays full (ships dark: no window is known until W02)', () => {
+    expect(resolveToolExposure(input({ facts: facts({ effectiveWindow: null }) })).profile).toBe('full');
+  });
+
+  it('#11395: auto with a known window resolves from the measured pins', () => {
+    expect(resolveToolExposure(input({ facts: facts({ effectiveWindow: 8192 }) })).profile).toBe('minimal');
   });
 
   it('explicit full is the identity exposure too', () => {
@@ -213,9 +217,18 @@ describe('pickAutoProfile', () => {
     expect(pickAutoProfile(20000, 'chat', under)).toBe('minimal');
   });
 
-  it('unmeasured prefixes resolve to full (nothing constrained before W03 measures)', () => {
+  it('unmeasured prefixes resolve to full (nothing constrained on a guess)', () => {
     expect(pickAutoProfile(8192, 'helper', FIXTURE_PREFIX)).toBe('full');
-    expect(pickAutoProfile(8192, 'chat')).toBe('full');
+    // Office is not measured (#11395): its pins stay null.
+    expect(pickAutoProfile(8192, 'office_chat')).toBe('full');
+  });
+
+  it('#11395: the measured chat pins: 8k → minimal, 32k → standard, 131k → standard (full is ~128k on a gateway), 4k → too_small', () => {
+    expect(pickAutoProfile(8192, 'chat')).toBe('minimal');
+    expect(pickAutoProfile(32768, 'chat')).toBe('standard');
+    expect(pickAutoProfile(131072, 'chat')).toBe('standard');
+    expect(pickAutoProfile(4096, 'chat')).toBe('too_small');
+    expect(pickAutoProfile(1_000_000, 'chat')).toBe('full');
   });
 
   it('auto + tooSmall resolves minimal with tooSmall set', () => {

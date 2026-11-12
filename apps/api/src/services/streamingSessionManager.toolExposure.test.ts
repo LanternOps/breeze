@@ -73,6 +73,11 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (input: Record<string, unknown>) => input,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+// #11395: spy on the one SDK-child seam (real behaviour) to see what the exposure hands the grant.
+vi.mock('./aiModels/connectionFactory', async (orig) => {
+  const real = await orig<typeof import('./aiModels/connectionFactory')>();
+  return { ...real, prepareSdkChild: vi.fn(real.prepareSdkChild) };
+});
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
@@ -81,6 +86,7 @@ import { liveQueryKey, turnBindingFrom } from './aiModels/turnBinding';
 import { CHAT_MINIMAL_TOOLS } from './aiModels/toolProfiles';
 import { DEFAULT_TOOL_PROFILE_FACTS, type ToolProfileFacts } from './aiModels/toolExposure';
 import { createBreezeMcpServer } from './aiAgentSdkTools';
+import { prepareSdkChild } from './aiModels/connectionFactory';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -226,5 +232,31 @@ describe('tool exposure wiring (#11393 W01)', () => {
     ).rejects.toMatchObject({ code: 'tool_profile_underpowered' });
     expect(queryMock).not.toHaveBeenCalled();
     expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('#11395: the exposure decides compactSchemas on the SDK child (minimal + gateway: true; identity: absent)', async () => {
+    await create('s-cs-full', modelWith());
+    expect(vi.mocked(prepareSdkChild).mock.calls.at(-1)![1]).not.toHaveProperty('compactSchemas');
+    await create('s-cs-min', modelWith(MINIMAL));
+    expect(vi.mocked(prepareSdkChild).mock.calls.at(-1)![1]).toMatchObject({ compactSchemas: true });
+    // A constrained profile on a non-gateway transport keeps full schemas (plan Decision 1).
+    await create('s-cs-anth', modelWith(facts({ toolProfile: 'minimal', transport: 'anthropic' })));
+    expect(vi.mocked(prepareSdkChild).mock.calls.at(-1)![1]).not.toHaveProperty('compactSchemas');
+  });
+
+  it('#11395: a helper factory that registers the Breeze registry is narrowed to the curated helper list', async () => {
+    const levelList = ['get_device_details', 'analyze_metrics', 'execute_command', 'manage_services'].map((n) => `mcp__breeze__${n}`);
+    const factory = vi.fn(() => ({ server: { type: 'sdk' }, name: 'breeze' }));
+    const session = await create('s-helper-min', modelWith(MINIMAL, { surface: 'helper' }), levelList, factory, { registersBreezeServer: true });
+    // helper minimal is read-only: get_device_details and analyze_metrics survive, the rest do not.
+    expect(session.allowedTools).toEqual(['mcp__breeze__get_device_details', 'mcp__breeze__analyze_metrics']);
+    expect(session.toolExposure?.names).toEqual(['get_device_details', 'analyze_metrics']);
+  });
+
+  it('#11395: a client-declared helper factory keeps every declared tool', async () => {
+    const declared = ['mcp__client__open_settings', 'mcp__client__restart_app'];
+    const factory = vi.fn(() => ({ server: { type: 'sdk' }, name: 'client' }));
+    const session = await create('s-helper-client', modelWith(MINIMAL, { surface: 'helper' }), declared, factory);
+    expect(session.allowedTools).toEqual(declared);
   });
 });

@@ -988,6 +988,14 @@ export class StreamingSessionManager {
        * (spike D3) — silently: the user asked for it.
        */
       modelSwitch?: boolean;
+      /**
+       * #11395: the caller's `mcpServerFactory` registers the Breeze registry
+       * (`createBreezeMcpServer`, e.g. the helper's per-level factory), so the
+       * tool exposure narrows it like the default server. Unset for a factory
+       * that registers its own tools (client-declared helper tools, Office,
+       * the script builder).
+       */
+      registersBreezeServer?: boolean;
     },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
@@ -1201,7 +1209,7 @@ export class StreamingSessionManager {
       allowedTools,
       // Lambdas, not references: read only under a constrained profile.
       registryNames: () => listChatSurfaceToolNames(),
-      breezeServer: !mcpServerFactory,
+      breezeServer: !mcpServerFactory || options?.registersBreezeServer === true,
       domainOf: (name) => chatToolDomain(name),
       extraTools: [
         ...tenantDescriptors.map((d) => ({ name: d.qualifiedName, domain: 'integrations' as const })),
@@ -1363,6 +1371,8 @@ export class StreamingSessionManager {
     // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
     const child = await timePreStreamPhase('prepareSdkChild', () => prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
+      // #11395: a constrained profile on a gateway connection compacts the advertised schemas.
+      ...(sessionTools.exposure.compactSchemas ? { compactSchemas: true } : {}),
     }));
     const revokeEgressGrant = child.revoke;
     session.revokeEgressGrant = revokeEgressGrant;
@@ -2388,6 +2398,10 @@ export class StreamingSessionManager {
         // W11: the live query's prompt, not the claimed binding's profile (a
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
+        // #11395: the tool exposure this live query was created with.
+        toolExposure: session.toolExposure
+          ? { profile: session.toolExposure.profile, fingerprint: session.toolExposure.fingerprint }
+          : null,
         toolExecutionCount,
         // #10400: work round-trips only — a ToolSearch-only round-trip loads
         // tool definitions and is not charged to the session's turn budget.

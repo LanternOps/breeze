@@ -16,6 +16,7 @@ import type { OfferingOptions } from '@breeze/shared';
 import { buildSessionContextSnapshot } from './aiSessionOrgAnchor';
 import { CHAT_SESSION_TYPES } from './aiChatSessionTypes';
 import type { ActiveSession } from './streamingSessionManager';
+import type { ToolExposure } from './aiModels/toolExposure';
 import { escapeLike } from '../utils/sql';
 import { getActiveDeviceContext } from './brainDeviceContext';
 import { resolveEntityForCaller, resolveEntityRef, isResolveFailure } from './wisp/entityRefs';
@@ -958,27 +959,41 @@ export async function buildSystemPrompt(
   pageContext?: AiPageContext,
   approvalMode?: AiApprovalMode,
   ceiling?: GrantCeiling,
+  /**
+   * #11395: the chat tool exposure (`chatPromptExposure`). A constrained one
+   * swaps the static prompt for the compact rules plus the exposed tool lines
+   * and pre-expands no page domain; absent or identity (`names` null) builds
+   * today's prompt byte-for-byte.
+   */
+  exposure?: Pick<ToolExposure, 'names' | 'promptMode'>,
 ): Promise<string> {
   const parts: string[] = [];
 
   // A-W02: the tool index is generated from the registry. Loaded lazily so
   // this module stays importable without the tool hub (routes/devices tests
   // mock db/schema partially and would otherwise pull aiToolSchemas in).
-  const [{ composeStaticSystemPrompt, renderPageContextToolBlocks, resolveToolIndexMode }, { listChatSurfaceToolNames }] = await timePreStreamPhase('systemPrompt.modules', () => Promise.all([
+  const [toolIndexModule, { listChatSurfaceToolNames }] = await timePreStreamPhase('systemPrompt.modules', () => Promise.all([
     import('./aiToolIndex'),
     import('./aiAgentSdkTools'),
   ]));
+  const { composeStaticSystemPrompt, renderPageContextToolBlocks, resolveToolIndexMode } = toolIndexModule;
   // W19 (#10065): `lazy` (default) ships the always-on domain index here and
   // pre-expands the page's domains below; `full` ships the legacy whole index.
   // #11004: synchronous; the tool names come from the cached tool template.
   const toolIndexMode = resolveToolIndexMode();
+  const constrained = exposure?.promptMode === 'constrained' && exposure.names !== null;
   // #10430: a Wisp session's index names only the registry tools its grant
   // ceiling admits, by the same tool term its MCP server is filtered with
   // (wispSessionToolFilter).
   const { toolNames, staticPrompt } = timePreStreamPhase('systemPrompt.toolIndex', () => {
     const all = listChatSurfaceToolNames();
-    const names = ceiling ? all.filter((name) => ceilingAdmitsTool(ceiling, name)) : all;
-    return { toolNames: names, staticPrompt: composeStaticSystemPrompt(names, toolIndexMode) };
+    const admitted = ceiling ? all.filter((name) => ceilingAdmitsTool(ceiling, name)) : all;
+    if (constrained) {
+      const exposed = new Set(exposure!.names!);
+      const names = admitted.filter((name) => exposed.has(name));
+      return { toolNames: names, staticPrompt: toolIndexModule.composeConstrainedSystemPrompt(names) };
+    }
+    return { toolNames: admitted, staticPrompt: composeStaticSystemPrompt(admitted, toolIndexMode) };
   });
   parts.push(staticPrompt);
 
@@ -1088,7 +1103,9 @@ export async function buildSystemPrompt(
     // W19-D3: the page's tool domains (closed mapping keyed by type/kind enums, never
     // by a client string). The prompt is applied when the SDK query is
     // created, so this reflects the page the conversation's query started on.
-    if (toolIndexMode === 'lazy' && pageContextResolved) {
+    // #11395: a constrained exposure already lists every tool it has; no
+    // page expansion, so its tool lines are the same on every page.
+    if (toolIndexMode === 'lazy' && pageContextResolved && !constrained) {
       const pageTools = renderPageContextToolBlocks(pageContext, toolNames);
       if (pageTools) parts.push(pageTools);
     }
