@@ -6,7 +6,7 @@
 import type { AiConnectionEnvFields, AiConnectionKind } from '../constants/aiConnectionKinds';
 import type { AiSurface, TOOL_REQUIRING_SURFACES } from '../constants/aiSurfaces';
 import type { EffortLevel, ModelLifecycle, ModelRates, OfferingOptions, OptionSupport } from '../validators/aiModelOptions';
-import type { AiAssignmentWriteRole, AiUsageGroupBy } from '../validators/aiModelRegistryApi';
+import type { AiAssignmentWriteRole, AiToolAllowlist, AiToolProfile, AiUsageGroupBy } from '../validators/aiModelRegistryApi';
 
 export interface AiConnectionDto extends AiConnectionEnvFields {
   /** null for the implicit platform connection. */
@@ -83,6 +83,49 @@ export interface AiOfferingDto {
    * narrow); null for platform / anthropic_byok / catalog.
    */
   contextWindow: AiOfferingContextWindowDto | null;
+  /**
+   * #11398: the tool profile set on this model (partner level; organizations
+   * choose models, they cannot override it) and what each surface resolves
+   * to now. Every offering carries it; a synthesized platform row is `auto`.
+   */
+  toolProfile: AiOfferingToolProfileDto;
+}
+
+/** #11398: the surfaces a tool profile narrows. */
+export const AI_TOOL_PROFILED_SURFACES = ['chat', 'helper', 'script_builder', 'ai_agents', 'office_chat'] as const;
+export type AiToolProfiledSurface = (typeof AI_TOOL_PROFILED_SURFACES)[number];
+
+/**
+ * #11398: why a surface resolves to its profile.
+ *  - `explicit`: the partner chose a profile other than `auto`;
+ *  - `auto_window`: `auto` picked from the known context window (see `contextWindow.source`);
+ *  - `auto_unknown_window`: `auto` with no known window stays `full`;
+ *  - `auto_unmeasured`: `auto` on a surface whose prompt size is not measured stays `full`.
+ */
+export type AiToolProfileReason = 'explicit' | 'auto_window' | 'auto_unknown_window' | 'auto_unmeasured';
+
+export interface AiOfferingToolSurfaceDto {
+  surface: AiToolProfiledSurface;
+  /** The profile the surface applies now; `too_small` = no profile fits the window, so sessions refuse. */
+  resolved: 'full' | 'standard' | 'minimal' | 'custom' | 'too_small';
+  reason: AiToolProfileReason;
+  /**
+   * Tools the surface requires that the resolved profile drops; the surface
+   * refuses (`tool_profile_underpowered`) while this is non-empty. For
+   * `ai_agents` it is the device-troubleshooting run's floor (other runs keep
+   * their outcome tools under every profile).
+   */
+  missingRequired: string[];
+}
+
+export interface AiOfferingToolProfileDto {
+  profile: AiToolProfile;
+  allowlist: AiToolAllowlist | null;
+  surfaces: AiOfferingToolSurfaceDto[];
+  /** Stored `custom` tool names no surface declares any more (ignored at runtime). */
+  droppedCustomNames: string[];
+  /** A context window override applies to BYO OpenAI-compatible endpoint models only. */
+  windowOverrideSupported: boolean;
 }
 
 /**

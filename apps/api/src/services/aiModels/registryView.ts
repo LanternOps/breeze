@@ -45,6 +45,7 @@ import {
 import { resolveEffectiveContextWindow } from './contextWindowFacts';
 import { readSurfaceReadiness, readinessProfileKey, surfaceReadinessState, type ToolSurface } from './surfaceReadiness';
 import { toolProfileFactsFrom } from './toolProfileFacts';
+import { buildToolProfileDto, type StoredToolSettings, type ToolProfileCatalog } from './toolSettingsWrite';
 import { enableBlockerFor, type EnableEligibilityContext } from './eligibility';
 import { getPlatformInferenceGeo, listPlatformModels, type PlatformModel } from './platformModels';
 import { listConnections, type PartnerAiConnection } from './connections';
@@ -132,12 +133,28 @@ function contextWindowDto(o: Offering, conn: PartnerAiConnection | undefined): A
   };
 }
 
+/**
+ * #11398: the tool profile set on the model and what each surface resolves
+ * to now. The window is the gateway's effective one (null elsewhere, so `auto`
+ * stays `full` there). The `ai_agents` floor shown is the device
+ * troubleshooting run's, the only run profile with registry tools it requires.
+ */
+function toolProfileDto(o: StoredToolSettings, conn: PartnerAiConnection | undefined, toolCatalog: ToolProfileCatalog): AiOfferingDto['toolProfile'] {
+  const gateway = Boolean(conn && isGatewayConnectionKind(conn.kind));
+  const effectiveWindow = gateway ? resolveEffectiveContextWindow(o, conn!.configVersion).value : null;
+  return buildToolProfileDto(o, { effectiveWindow, gateway, catalog: toolCatalog, troubleshootingRuns: true });
+}
+
+/** A model with no stored row (a synthesized platform offering): `auto`, nothing set. */
+const NO_TOOL_SETTINGS: StoredToolSettings = { toolProfile: 'auto', toolAllowlist: null };
+
 function offeringDto(
   o: Offering,
   c: LoadedCandidate,
   blocker: AiOfferingDto['enableBlocker'],
   defaultFor: AiOfferingDto['defaultFor'],
   conn: PartnerAiConnection | undefined,
+  toolCatalog: ToolProfileCatalog,
 ): AiOfferingDto {
   const own = o.priceInputCentsPerM === null || o.priceOutputCentsPerM === null
     || o.priceCacheReadCentsPerM === null || o.priceCacheWriteCentsPerM === null
@@ -177,6 +194,7 @@ function offeringDto(
     updatedAt: o.updatedAt.toISOString(),
     verification: verificationDto(o, conn),
     contextWindow: contextWindowDto(o, conn),
+    toolProfile: toolProfileDto(o, conn, toolCatalog),
   };
 }
 
@@ -186,6 +204,7 @@ function synthesizedPlatformOffering(
   pm: PlatformModel,
   platformGeo: string | null,
   ctx: EnableEligibilityContext,
+  toolCatalog: ToolProfileCatalog,
 ): AiOfferingDto {
   const view = platformModelView(pm);
   return {
@@ -218,6 +237,7 @@ function synthesizedPlatformOffering(
     updatedAt: null,
     verification: null,
     contextWindow: null,
+    toolProfile: buildToolProfileDto(NO_TOOL_SETTINGS, { effectiveWindow: null, gateway: false, catalog: toolCatalog, troubleshootingRuns: true }),
   };
 }
 
@@ -263,7 +283,11 @@ function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
   };
 }
 
-export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiModelsSnapshotDto> {
+/**
+ * `toolCatalog` (#11398) is the tool registries' view (toolProfileCatalog.ts),
+ * passed in by the route so the registries stay out of this module's import graph.
+ */
+export async function buildPartnerModelsSnapshot(partnerId: string, toolCatalog: ToolProfileCatalog): Promise<AiModelsSnapshotDto> {
   const facts = await loadPartnerFacts(partnerId);
   const hosted = isHosted();
   const ctx: EnableEligibilityContext = { partnerId, partnerPlan: facts.plan, hosted };
@@ -309,12 +333,12 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
         return true;
       });
     const conn = o.connectionId === null ? undefined : connectionsById.get(o.connectionId);
-    offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor, conn));
+    offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor, conn, toolCatalog));
   }
   const added = new Set(offerings.filter((o) => o.connectionId === null).map((o) => o.platformModelId));
   for (const pm of platformModels) {
     if (!pm.platformOffered || pm.lifecycle !== 'available' || added.has(pm.id)) continue;
-    offeringDtos.push(synthesizedPlatformOffering(partnerId, pm, platformGeo, ctx));
+    offeringDtos.push(synthesizedPlatformOffering(partnerId, pm, platformGeo, ctx, toolCatalog));
   }
 
   const catalogEnabled = isLlmProviderCatalogEnabled();

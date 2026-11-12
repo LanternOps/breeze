@@ -5,6 +5,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { getConnection } from '../../services/aiModels/connections';
 import { getOffering } from '../../services/aiModels/offerings';
 import { CONNECTION_DISCONNECTED_MESSAGE, RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
+import { breezeToolProfileCatalog } from '../../services/aiModels/toolProfileCatalog';
 import {
   ensurePlatformOffering,
   listOfferingDefaultUses,
@@ -71,9 +72,16 @@ aiModelOfferingRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParam
       const uses = await listOfferingDefaultUses(partnerId, offeringId);
       if (uses.some((u) => u.surface === 'script_reviewer')) return c.json(APPROVALS_DECIDE_REQUIRED, 403);
     }
-    const offering = await updateOfferingDetails({ partnerId, offeringId, patch });
+    // #11398: a tool profile / window override is validated against the tool
+    // registries (the catalog) and every surface this model serves.
+    const offering = await updateOfferingDetails({ partnerId, offeringId, patch, toolCatalog: breezeToolProfileCatalog() });
     const { expectedUpdatedAt: _ignored, ...changed } = patch;
-    auditOffering(c, partnerId, 'updated', { offeringId: offering.id, fields: Object.keys(changed) });
+    auditOffering(c, partnerId, 'updated', {
+      offeringId: offering.id,
+      fields: Object.keys(changed),
+      // The tool settings change what every surface using this model can do: record the values, not just the field names.
+      ...(offering.toolSettingsChange ? { toolSettings: offering.toolSettingsChange } : {}),
+    });
     return c.json({ id: offering.id, updatedAt: offering.updatedAt.toISOString() });
   });
 });

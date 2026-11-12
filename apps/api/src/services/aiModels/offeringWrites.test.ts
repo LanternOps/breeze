@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   lastSet: undefined as Record<string, unknown> | undefined,
   insertedValues: undefined as Record<string, unknown> | undefined,
   systemContexts: 0,
+  loadServedToolSurfaces: vi.fn(async (..._a: unknown[]) => ({ surfaces: new Set<string>(), troubleshootingRuns: false })),
 }));
 
 vi.mock('./candidateLoader', async (orig) => ({
@@ -47,6 +48,10 @@ vi.mock('./registryWriteLock', () => ({
   },
 }));
 vi.mock('../../config/env', () => ({ isHosted: () => h.hosted }));
+vi.mock('./toolSettingsWrite', async (orig) => ({
+  ...(await orig<typeof import('./toolSettingsWrite')>()),
+  loadServedToolSurfaces: (...a: unknown[]) => h.loadServedToolSurfaces(...a),
+}));
 vi.mock('../../db', () => {
   const chain = (rows: () => unknown[]) => {
     const c: any = { from: () => c, where: () => c, limit: () => Promise.resolve(rows()), then: (r: any) => Promise.resolve(rows()).then(r) };
@@ -133,6 +138,7 @@ beforeEach(() => {
   h.systemContexts = 0;
   h.getPlatformModelById.mockResolvedValue(null);
   h.getPlatformInferenceGeo.mockResolvedValue(null);
+  h.loadServedToolSurfaces.mockResolvedValue({ surfaces: new Set<string>(), troubleshootingRuns: false });
 });
 
 describe('setOfferingEnabled', () => {
@@ -600,6 +606,94 @@ describe('updateOfferingDetails', () => {
       await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: false, force: false });
       expect(h.enableOffering).toHaveBeenCalledWith({ partnerId: P, offeringId: OFF, enabled: false });
     });
+  });
+});
+
+describe('updateOfferingDetails: tool profile and context window (#11398)', () => {
+  const at = UPDATED.toISOString();
+  const catalog = {
+    surfaceNames: (s: string) => new Set(s === 'script_builder'
+      ? ['apply_script_code', 'apply_script_metadata', 'query_devices', 'execute_script_on_device']
+      : ['query_devices', 'search_logs', 'set_device_context']),
+    domainOf: () => undefined,
+  };
+  const gatewayRow = (over: Record<string, unknown> = {}) =>
+    row({ source: 'discovered', connectionId: 'c-1', platformModelId: null, modelId: 'm', toolProfile: 'auto', toolAllowlist: null, ...over });
+  beforeEach(() => {
+    h.getOffering.mockResolvedValue(gatewayRow());
+    h.loadOfferingCandidate.mockResolvedValue(candidate({ funding: 'partner_key', connectionId: 'c-1' }));
+    h.dbUpdateReturning.mockImplementation(async () => [gatewayRow({ ...h.lastSet, updatedAt: new Date() })]);
+    h.dbSelectRows = [[{ kind: 'openai_compatible', configVersion: 2 }]];
+  });
+
+  it('a tool settings patch without the tool catalog is a programming error: nothing is written', async () => {
+    const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, toolProfile: 'standard' } }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/tool catalog/);
+    expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+  });
+
+  it('writes the profile and override on a gateway model, inside the registry lock, and reports the change', async () => {
+    const result = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'standard', contextWindowOverride: 32768 },
+    });
+    expect(h.calls).toEqual([`lock:${P}`, 'update']);
+    expect(h.lastSet).toMatchObject({ toolProfile: 'standard', contextWindowOverride: 32768 });
+    expect(h.loadServedToolSurfaces).toHaveBeenCalledWith(P, OFF);
+    expect(result.toolSettingsChange).toEqual({
+      from: { toolProfile: 'auto', toolAllowlist: null, contextWindowOverride: null },
+      to: { toolProfile: 'standard', toolAllowlist: null, contextWindowOverride: 32768 },
+    });
+  });
+
+  it('a patch without tool fields reports no tool change and never loads the served surfaces', async () => {
+    const result = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, displayName: 'x' } });
+    expect(result.toolSettingsChange).toBeNull();
+    expect(h.loadServedToolSurfaces).not.toHaveBeenCalled();
+  });
+
+  it('refuses minimal on a model the script builder uses (422 tool_profile_underpowered), nothing written', async () => {
+    h.loadServedToolSurfaces.mockResolvedValue({ surfaces: new Set(['script_builder']), troubleshootingRuns: false });
+    const err = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'minimal' },
+    }).catch((e) => e);
+    expect([err.status, err.code]).toEqual([422, 'tool_profile_underpowered']);
+    expect(err.details.surfaces).toEqual([{ surface: 'script_builder', missing: ['execute_script_on_device'] }]);
+    expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+  });
+
+  it('validates custom against the STORED profile: an allow-list alone on a standard model → 422', async () => {
+    h.getOffering.mockResolvedValue(gatewayRow({ toolProfile: 'standard' }));
+    const err = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolAllowlist: { domains: [], tools: ['search_logs'] } },
+    }).catch((e) => e);
+    expect([err.status, err.details]).toEqual([422, { field: 'toolAllowlist', reason: 'allowlist_requires_custom' }]);
+  });
+
+  it('refuses an override on a platform model (no connection): 422 gateway_only', async () => {
+    h.getOffering.mockResolvedValue(row({ toolProfile: 'auto', toolAllowlist: null }));
+    h.loadOfferingCandidate.mockResolvedValue(candidate());
+    h.dbSelectRows = [];
+    const err = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, contextWindowOverride: 32768 },
+    }).catch((e) => e);
+    expect([err.status, err.details]).toEqual([422, { field: 'contextWindowOverride', reason: 'gateway_only' }]);
+  });
+
+  it('refuses an override on an Anthropic-key connection model: 422 gateway_only', async () => {
+    h.dbSelectRows = [[{ kind: 'anthropic_byok', configVersion: 1 }]];
+    const err = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, contextWindowOverride: 32768 },
+    }).catch((e) => e);
+    expect(err.details).toEqual({ field: 'contextWindowOverride', reason: 'gateway_only' });
+  });
+
+  it('a profile on a platform model is accepted (names narrow on every transport)', async () => {
+    h.getOffering.mockResolvedValue(row({ toolProfile: 'auto', toolAllowlist: null }));
+    h.loadOfferingCandidate.mockResolvedValue(candidate());
+    h.dbSelectRows = [];
+    await updateOfferingDetails({ partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'standard' } });
+    expect(h.lastSet).toMatchObject({ toolProfile: 'standard' });
   });
 });
 
