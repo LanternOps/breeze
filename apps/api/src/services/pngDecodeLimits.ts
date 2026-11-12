@@ -21,6 +21,29 @@ export const MAX_PNG_DECODE_SIDE = 20_000;
  */
 export const MAX_PNG_DECODED_BYTES = 256 * 1024 * 1024;
 
+/**
+ * Bytes a decode holds at its peak per pixel, on top of the decoded rows:
+ * decoders expand to RGBA, split colour from alpha and keep a compressed copy
+ * for the PDF. Measured for an RGBA8 image between 16 and 64 million pixels:
+ * pdf-lib about 11, pdfkit and jsPDF about 15 bytes per pixel in total; rows
+ * (4 per pixel) plus 12 covers all three.
+ */
+const PNG_DECODE_PEAK_BYTES_PER_PIXEL = 12;
+
+/** Largest estimated peak a single decode may reach. The largest image the
+ *  limits above allow, in 8-bit RGBA, is estimated at about 1.02 GB. */
+export const MAX_PNG_DECODE_PEAK_BYTES = 1_200_000_000;
+
+/** Decodes estimated above this run one at a time across the process
+ *  (withPngDecodeSlot); smaller ones run concurrently. */
+export const PNG_DECODE_SINGLE_FLIGHT_BYTES = 64 * 1024 * 1024;
+
+export interface PngDecodeLimits {
+  maxPeakBytes: number;
+}
+
+const DEFAULT_LIMITS: PngDecodeLimits = { maxPeakBytes: MAX_PNG_DECODE_PEAK_BYTES };
+
 export const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /** Channels per pixel by colour type, and the bit depths PNG defines for it. */
@@ -41,6 +64,8 @@ export interface PngHeader {
   /** Bytes a decoder allocates for the rows: a filter byte per row (two when
    *  interlaced), plus a second copy of the rows when it de-interlaces. */
   decodedBytes: number;
+  /** Estimated peak memory of decoding and embedding the image. */
+  peakBytes: number;
 }
 
 export type PngDecodeCheck =
@@ -58,7 +83,8 @@ export type PngDecodeCheck =
  * animation chunks (pdf-lib renders every frame before it rejects an animated
  * PNG). The chunk walk reads only each chunk's length and type, up to IEND.
  */
-export function checkPngDecodable(data: Buffer): PngDecodeCheck {
+export function checkPngDecodable(data: Buffer, limits: Partial<PngDecodeLimits> = {}): PngDecodeCheck {
+  const { maxPeakBytes } = { ...DEFAULT_LIMITS, ...limits };
   const unreadable = (detail: string): PngDecodeCheck => ({ ok: false, reason: 'unreadable', detail });
   const tooLarge = (detail: string): PngDecodeCheck => ({ ok: false, reason: 'too_large', detail });
 
@@ -89,6 +115,10 @@ export function checkPngDecodable(data: Buffer): PngDecodeCheck {
   if (decodedBytes > MAX_PNG_DECODED_BYTES) {
     return tooLarge(`${decodedBytes} bytes of image rows, over the ${MAX_PNG_DECODED_BYTES}-byte limit`);
   }
+  const peakBytes = decodedBytes + PNG_DECODE_PEAK_BYTES_PER_PIXEL * width * height;
+  if (peakBytes > maxPeakBytes) {
+    return tooLarge(`an estimated ${peakBytes} bytes to decode, over the ${maxPeakBytes}-byte limit`);
+  }
 
   for (let offset = 8 + 25; offset + 8 <= data.length;) {
     const length = data.readUInt32BE(offset);
@@ -98,5 +128,87 @@ export function checkPngDecodable(data: Buffer): PngDecodeCheck {
     if (type === 'IEND') break;
     offset += 12 + length;
   }
-  return { ok: true, header: { width, height, bitDepth, colorType, interlaced: interlace === 1, decodedBytes } };
+  return { ok: true, header: { width, height, bitDepth, colorType, interlaced: interlace === 1, decodedBytes, peakBytes } };
+}
+
+/** The bytes of a `data:image/png;base64,` URL, or null for anything else. */
+export function pngBytesFromDataUrl(url: string | null | undefined): Buffer | null {
+  const m = url ? /^data:image\/png;base64,([A-Za-z0-9+/=\s]+)$/i.exec(url.trim()) : null;
+  return m ? Buffer.from(m[1]!, 'base64') : null;
+}
+
+// ── single flight for large decodes ─────────────────────────────────────────
+
+let slotHeld = false;
+const slotQueue: Array<() => void> = [];
+
+/** Waits for the process-wide large-decode slot (FIFO); resolves to its release. */
+function acquireSlot(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const grant = () => {
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        const next = slotQueue.shift();
+        if (next) next();
+        else slotHeld = false;
+      });
+    };
+    if (slotHeld) {
+      slotQueue.push(grant);
+    } else {
+      slotHeld = true;
+      grant();
+    }
+  });
+}
+
+/** Whether decoding `data` is estimated above PNG_DECODE_SINGLE_FLIGHT_BYTES. */
+export function isLargePngDecode(data: Buffer | null | undefined): boolean {
+  if (!data) return false;
+  const check = checkPngDecodable(data);
+  return check.ok && check.header.peakBytes > PNG_DECODE_SINGLE_FLIGHT_BYTES;
+}
+
+/**
+ * Runs `decode` (which decodes `data`, or embeds it in a document that does)
+ * holding the process-wide large-decode slot when the image is estimated above
+ * PNG_DECODE_SINGLE_FLIGHT_BYTES, so only one such decode is in memory at a
+ * time. Anything else (smaller PNGs, JPEGs, no image) runs at once.
+ */
+export async function withPngDecodeSlot<T>(data: Buffer | null | undefined, decode: () => Promise<T> | T): Promise<T> {
+  if (!isLargePngDecode(data)) return decode();
+  const release = await acquireSlot();
+  try {
+    return await decode();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * The large-decode slot for one document render that meets its images as it
+ * goes: `admit` takes the slot (once) when an image is estimated large, and
+ * `release` gives it back when the document is finished. A render that never
+ * meets a large image never waits.
+ */
+export function createPngDecodeSlotHolder(): { admit: (data: Buffer | null | undefined) => Promise<void>; release: () => void } {
+  let release: (() => void) | null = null;
+  let pending: Promise<void> | null = null;
+  let closed = false;
+  return {
+    admit: async (data) => {
+      if (closed || release || !isLargePngDecode(data)) return;
+      // A slot granted after the render already finished goes straight back.
+      pending ??= acquireSlot().then((r) => { if (closed) r(); else release = r; });
+      await pending;
+    },
+    release: () => {
+      closed = true;
+      const r = release;
+      release = null;
+      r?.();
+    },
+  };
 }

@@ -41,7 +41,7 @@ import { organizations, partners } from '../db/schema/orgs';
 import { computeAgreementSha256 } from './agreementContentHash';
 import { registerThemeFonts, resolvePageSize, type DocumentPageSize } from './documentThemes';
 import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs } from './pdfMerge';
-import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngDecodable } from './pngDecodeLimits';
+import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngDecodable, withPngDecodeSlot } from './pngDecodeLimits';
 import { certificateVersionFromColumn, type CertificateVersion } from './agreementCertificateVersion';
 
 // ---------------------------------------------------------------------------
@@ -372,16 +372,20 @@ async function normalizeOriginal(input: CertifiedAgreementInput): Promise<{ pdf:
   if (mime === 'image/png' || mime === 'image/jpeg') {
     if (mime === 'image/png') assertPngWithinDecodeLimits(pdfData);
     try {
-      const out = await PDFDocument.create({ updateMetadata: false });
-      const image = mime === 'image/png' ? await out.embedPng(pdfData) : await out.embedJpg(pdfData);
-      const [pw, ph] = input.pageSize === 'letter' ? PageSizes.Letter : PageSizes.A4;
-      const page = out.addPage([pw, ph]);
-      const margin = 36;
-      const scale = Math.min((pw - 2 * margin) / image.width, (ph - 2 * margin) / image.height);
-      const w = image.width * scale;
-      const h = image.height * scale;
-      page.drawImage(image, { x: (pw - w) / 2, y: (ph - h) / 2, width: w, height: h });
-      return { pdf: Buffer.from(await out.save()), last: { width: pw, height: ph } };
+      // A large PNG is decoded and saved holding the process-wide large-decode
+      // slot (pngDecodeLimits.ts), so only one is in memory at a time.
+      return await withPngDecodeSlot(mime === 'image/png' ? pdfData : null, async () => {
+        const out = await PDFDocument.create({ updateMetadata: false });
+        const image = mime === 'image/png' ? await out.embedPng(pdfData) : await out.embedJpg(pdfData);
+        const [pw, ph] = input.pageSize === 'letter' ? PageSizes.Letter : PageSizes.A4;
+        const page = out.addPage([pw, ph]);
+        const margin = 36;
+        const scale = Math.min((pw - 2 * margin) / image.width, (ph - 2 * margin) / image.height);
+        const w = image.width * scale;
+        const h = image.height * scale;
+        page.drawImage(image, { x: (pw - w) / 2, y: (ph - h) / 2, width: w, height: h });
+        return { pdf: Buffer.from(await out.save()), last: { width: pw, height: ph } };
+      });
     } catch (err) {
       throw toMergeError(err, 'The signed agreement image could not be read');
     }

@@ -376,6 +376,26 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
       await refusedWithoutDecoding(png(10, 10, [], [chunk('fcTL', Buffer.alloc(26))]));
     });
 
+    it('decodes large PNG originals one at a time across renders', async () => {
+      let running = 0;
+      let most = 0;
+      const decode = vi.spyOn(PDFDocument.prototype, 'embedPng').mockImplementation(async () => {
+        running += 1;
+        most = Math.max(most, running);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        running -= 1;
+        throw new Error('decoder reached');
+      });
+      try {
+        const large = png(4000, 4000);
+        await Promise.all([1, 2, 3].map(() => renderCertifiedAgreementPdf(makeInput(large, 'image/png')).catch(() => null)));
+        expect(decode).toHaveBeenCalledTimes(3);
+        expect(most).toBe(1);
+      } finally {
+        decode.mockRestore();
+      }
+    });
+
     it('still embeds a PNG at a scanned-page size, up to the pixel limit', async () => {
       await reachesDecoder(png(2550, 3300));
       // A Letter page at 600 dpi (about 34 million pixels) and a 49-million-pixel image.

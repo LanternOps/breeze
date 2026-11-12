@@ -28,7 +28,7 @@ import { renderRichTextIntoPdf, measureRichTextLead, parseRichText, WEB_TYPOGRAP
 import { registerThemeFonts, pdfPageSize, type DocumentThemeId, type DocumentPageSize, type PdfThemeFonts } from './documentThemes';
 import { parseTable, measureTable, renderTableIntoPdf, tableLeadHeight, type EnsureRoomRich } from './tablePdf';
 import { renderCalloutIntoPdf, measureCalloutLead } from './calloutPdf';
-import { checkPngDecodable } from './pngDecodeLimits';
+import { checkPngDecodable, createPngDecodeSlotHolder, pngBytesFromDataUrl } from './pngDecodeLimits';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -723,6 +723,37 @@ export async function renderQuotePdf(
   // here so the renderer stays pure / DB-free — same discipline as loadImage
   // and loadCatalogImage above.
   contractRenderData: Map<string, ContractPdfBlockData> = new Map(),
+): Promise<Buffer> {
+  // pdfkit decodes a PNG with transparency while the document is written, so a
+  // render that meets a large image holds the process-wide large-decode slot
+  // (pngDecodeLimits.ts) from that image until the document has ended. Every
+  // image passes through the loaders below (or is the logo) before it is
+  // inflated or drawn.
+  const slot = createPngDecodeSlotHolder();
+  const admitted = <A extends unknown[], R extends { data: Buffer } | null>(load: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      const img = await load(...args);
+      await slot.admit(img?.data);
+      return img;
+    };
+  try {
+    await slot.admit(pngBytesFromDataUrl(branding.logoUrl));
+    return await renderQuotePdfDocument(
+      quote, blocks, lines, admitted(loadImage), branding, admitted(loadCatalogImage), contractRenderData,
+    );
+  } finally {
+    slot.release();
+  }
+}
+
+async function renderQuotePdfDocument(
+  quote: QuoteHeader,
+  blocks: QuoteBlock[],
+  lines: QuoteLine[],
+  loadImage: (imageId: string) => Promise<{ data: Buffer } | null>,
+  branding: QuotePdfBranding,
+  loadCatalogImage: LoadCatalogImage,
+  contractRenderData: Map<string, ContractPdfBlockData>,
 ): Promise<Buffer> {
   const currency = quote.currencyCode ?? branding.currencyCode ?? 'USD';
   // Stamped send-time snapshot → partner-resolved branding locale → 'en'. Never

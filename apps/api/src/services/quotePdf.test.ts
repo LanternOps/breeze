@@ -460,6 +460,48 @@ describe('renderQuotePdf', () => {
     expect(text).toContain('BODYAFTERCOVER');
   });
 
+  it('renders that draw a large image take turns', async () => {
+    // RGBA (pdfkit decodes these) just over the single-flight estimate.
+    const side = 2100;
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(side, 0);
+    ihdr.writeUInt32BE(side, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    const row = Buffer.alloc(1 + side * 4, 0x80);
+    row[0] = 0;
+    const large = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', ihdr),
+      pngChunk('IDAT', zlib.deflateSync(Buffer.concat(Array.from({ length: side }, () => row)))),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+    const events: string[] = [];
+    const draw = PDFKitDocument.prototype.image;
+    const imageSpy = vi.spyOn(PDFKitDocument.prototype, 'image').mockImplementation(function (this: PDFKit.PDFDocument, ...args: unknown[]) {
+      events.push('draw');
+      return (draw as (...a: unknown[]) => PDFKit.PDFDocument).apply(this, args);
+    });
+    const render = (label: string) => renderQuotePdf(
+      {
+        id: label, quoteNumber: label, oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+        coverPage: { enabled: true, title: label, coverImageId: label },
+      } as never,
+      [],
+      [],
+      async () => ({ data: large }),
+      {},
+    ).then(() => { events.push('done'); });
+    try {
+      await Promise.all([render('A'), render('B')]);
+    } finally {
+      imageSpy.mockRestore();
+    }
+    // Both renders drew their image, and one finished before the other drew.
+    expect(events.filter((e) => e === 'draw')).toHaveLength(2);
+    expect(events.slice(events.indexOf('draw') + 1, events.lastIndexOf('draw'))).toContain('done');
+  });
+
   it('cover image: centre-crops (align/valign center) like the on-screen preview', async () => {
     const imageSpy = vi.spyOn(PDFKitDocument.prototype, 'image');
     try {
