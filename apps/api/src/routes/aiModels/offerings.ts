@@ -5,7 +5,6 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { getConnection } from '../../services/aiModels/connections';
 import { getOffering } from '../../services/aiModels/offerings';
 import { CONNECTION_DISCONNECTED_MESSAGE, RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
-import { breezeToolProfileCatalog } from '../../services/aiModels/toolProfileCatalog';
 import {
   ensurePlatformOffering,
   listOfferingDefaultUses,
@@ -17,6 +16,7 @@ import {
   APPROVALS_DECIDE_REQUIRED,
   canDecideApprovals,
   idParamSchema,
+  loadToolProfileCatalog,
   partnerRateLimit,
   partnerWrite,
   platformModelIdParamSchema,
@@ -74,7 +74,7 @@ aiModelOfferingRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParam
     }
     // #11398: a tool profile / window override is validated against the tool
     // registries (the catalog) and every surface this model serves.
-    const offering = await updateOfferingDetails({ partnerId, offeringId, patch, toolCatalog: breezeToolProfileCatalog() });
+    const offering = await updateOfferingDetails({ partnerId, offeringId, patch, toolCatalog: await loadToolProfileCatalog() });
     const { expectedUpdatedAt: _ignored, ...changed } = patch;
     auditOffering(c, partnerId, 'updated', {
       offeringId: offering.id,

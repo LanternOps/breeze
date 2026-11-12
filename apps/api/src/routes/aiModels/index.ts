@@ -7,7 +7,6 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../../middleware/auth';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
-import { breezeToolProfileCatalog } from '../../services/aiModels/toolProfileCatalog';
 import { aiModelAssignmentRoutes } from './assignments';
 import { aiModelChoiceRoutes } from './choices';
 import { aiModelConnectionRoutes } from './connections';
@@ -15,14 +14,14 @@ import { aiModelOfferingRoutes } from './offerings';
 import { aiModelOrgAssignmentRoutes } from './orgAssignments';
 import { aiModelResidencyRoutes } from './residency';
 import { aiModelUsageRoutes } from './usage';
-import { partnerRead, requirePartnerWide } from './shared';
+import { loadToolProfileCatalog, partnerRead, requirePartnerWide } from './shared';
 
 export const aiModelsRoutes = new Hono();
 aiModelsRoutes.use('*', authMiddleware);
 
 aiModelsRoutes.get('/', ...partnerRead, async (c) => {
   const { partnerId } = requirePartnerWide(c);
-  return c.json(await buildPartnerModelsSnapshot(partnerId, breezeToolProfileCatalog()));
+  return c.json(await buildPartnerModelsSnapshot(partnerId, await loadToolProfileCatalog()));
 });
 
 aiModelsRoutes.route('/connections', aiModelConnectionRoutes);
