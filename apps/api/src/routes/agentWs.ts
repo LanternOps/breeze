@@ -938,7 +938,8 @@ const heartbeatMessageSchema = z.object({
   type: z.literal('heartbeat'),
   timestamp: z.number(),
   ipHistoryUpdate: z.object({
-    deviceId: z.string().optional(),
+    // The agent's own device id (a UUID); only compared and, on a mismatch, logged.
+    deviceId: z.string().max(64).optional(),
     currentIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     changedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     removedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),

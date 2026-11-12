@@ -1898,6 +1898,28 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"heartbeat_ack"'));
   });
 
+  it('refuses a heartbeat whose ipHistoryUpdate.deviceId is longer than a device id, without logging it', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    rigStatusUpdateCapture();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    const logged: string[] = [];
+    const capture = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(capture);
+    const error = vi.spyOn(console, 'error').mockImplementation(capture);
+    try {
+      await handlers.onMessage({
+        data: JSON.stringify({ type: 'heartbeat', timestamp: 123, ipHistoryUpdate: { deviceId: 'd'.repeat(1_000_000) } }),
+      } as any, ws as any);
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('INVALID_MESSAGE'));
+      expect(Math.max(0, ...logged.map((line) => line.length))).toBeLessThan(10_000);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('excludes decommissioned/quarantined rows when update_status flips a device to updating', async () => {
     const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
     const { whereMock, setMock } = rigStatusUpdateCapture();
