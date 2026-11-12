@@ -18,7 +18,7 @@ const grant = (over: Partial<GatewayGrantRecord> = {}): GatewayGrantRecord => ({
   config: { source: 'gateway', kind: 'openai_compatible', partnerId: 'p1', connectionId: 'c1', configVersion: 1, baseUrl: 'https://llm.example.com/v1' },
   credential: { secret: 'sk-secret-123456' },
   wireModels: new Set(['m1']), orgId: 'o1', aiSessionId: 's1', purpose: 'dispatch',
-  expiresAt: Number.MAX_SAFE_INTEGER, inFlight: new Set(),
+  expiresAt: Number.MAX_SAFE_INTEGER, inFlight: new Set(), compactSchemas: false,
   ...over,
 });
 

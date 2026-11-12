@@ -480,8 +480,10 @@ helperRoutes.post(
           model,
           allowedTools,
           mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
-          // Device-initiated: the ledger attributes no Breeze user.
-          { budgetReservationId, ledgerUserId: null },
+          // Device-initiated: the ledger attributes no Breeze user. #11395: the
+          // per-level factory registers the Breeze registry, so a tool profile
+          // narrows it; client-declared tools are the client's own set.
+          { budgetReservationId, ledgerUserId: null, ...(clientTools.length === 0 ? { registersBreezeServer: true } : {}) },
         );
       } catch (err) {
         if (err instanceof LlmUnavailableError) {

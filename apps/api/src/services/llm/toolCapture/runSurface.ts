@@ -28,7 +28,8 @@
  * failure before any result — bad key, transport crash, etc.) propagates.
  */
 import { agentSdkWireOptions } from '../../aiModels/modelWireOptions';
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, query } from '@anthropic-ai/claude-agent-sdk';
+import { advertisedPrefixTokens, advertisedRequest, type MeasuredProfile } from './advertisedPrefix';
 import { composeStaticSystemPrompt } from '../../aiToolIndex';
 import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
 import { buildHelperSystemPrompt } from '../../helperAiAgent';
@@ -72,6 +73,13 @@ export interface RunSurfaceOptions {
    * production policy (host, override, turn budget) still applies.
    */
   surfaceSearch?: boolean;
+  /**
+   * #11395: capture under a tool profile, as a gateway offering on that
+   * profile would run: the exposure's tools, compact descriptions, prompt and
+   * tool-search decision, from the production resolvers (advertisedPrefix.ts).
+   * Unset: today's capture, unchanged.
+   */
+  profile?: MeasuredProfile;
 }
 
 export interface SurfaceCaptureResult {
@@ -85,6 +93,11 @@ export interface SurfaceCaptureResult {
   /** Qualified names of the tenant tools registered for this capture, in registration order. */
   tenantToolNames: string[];
   observation: StreamObservation;
+  /** #11395: set only for a `--profile` capture. */
+  profile?: MeasuredProfile;
+  /** #11395: the offline advertised-prefix measurement for this surface × profile (what PROFILE_PREFIX_TOKENS pins). */
+  advertisedPrefixTokens?: number;
+  exposureFingerprint?: string;
 }
 
 const DENY_MESSAGE = 'tool-capture harness: execution disabled';
@@ -126,9 +139,11 @@ export function captureToolSearchPolicy(
   env: Record<string, string>,
   override: ToolSearchOverride = 'auto',
   surfaceSearch: boolean = surface.toolSearch,
+  profileSearch: boolean = true,
 ): ToolSearchPolicy {
   return resolveToolSearchPolicy({
     surfaceSearch,
+    profileSearch,
     childEnv: env,
     remainingTurns: surface.turnBudget ?? CAPTURE_SESSION_TURN_BUDGET,
     override,
@@ -170,22 +185,29 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
   // are validate-only and never reach a handler that touches the DB. A surface
   // has either outcome tools (agent) or tenant tools (chat), never both.
   const outcomeTools = buildOutcomeSdkTools(surface.outcomeTools ?? []);
-  const mcpServer = surface.server === 'breeze'
+  // #11395: a profile capture registers exactly what the production resolvers give that profile.
+  const advertised = opts.profile ? advertisedRequest(surface, opts.profile, { tenantTools }) : null;
+  const mcpServer = advertised
+    ? createSdkMcpServer({ name: surface.mcpServerName, version: '1.0.0', tools: advertised.serverTools })
+    : surface.server === 'breeze'
     ? createBreezeMcpServer(denyAuth, denyPreToolUse, undefined, undefined, [...outcomeTools, ...tenantSdkTools], surface.onlyTools ? { onlyTools: surface.onlyTools } : undefined)
     : createScriptBuilderMcpServer(denyAuth, denyPreToolUse);
   // Derived from the tools the server actually registers (buildBreezeSdkTools),
   // not TOOL_TIERS — TOOL_TIERS is a system-prompt promotion index, and the
   // registry also includes env-gated tool sets (M365, Google Workspace, script
   // authoring) that TOOL_TIERS does not enumerate. See runSurface.test.ts.
-  const registeredToolNames = surface.server === 'breeze'
+  const registeredToolNames = advertised
+    ? [...new Set(advertised.serverTools.map((t) => t.name))].sort()
+    : surface.server === 'breeze'
     ? [...new Set(buildBreezeSdkTools(denyAuth, denyPreToolUse)
         .map((t) => t.name)
         .filter((name) => !surface.onlyTools || surface.onlyTools.has(name))
         .concat(outcomeTools.map((t) => t.name), tenantToolNames))].sort()
     : [...SCRIPT_BUILDER_MCP_TOOL_NAMES].sort();
-  const allowedTools = [...surface.allowedTools, ...tenantMcpToolNames(tenantTools)];
+  const allowedTools = advertised ? advertised.allowedTools : [...surface.allowedTools, ...tenantMcpToolNames(tenantTools)];
   const registeredToolCount = registeredToolNames.length;
-  const toolSearch = captureToolSearchPolicy(surface, opts.env, opts.toolSearchOverride, opts.surfaceSearch);
+  const toolSearch = captureToolSearchPolicy(surface, opts.env, opts.toolSearchOverride, opts.surfaceSearch,
+    advertised ? advertised.exposure.toolSearchAllowed : true);
   const observer = createStreamObserver();
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), opts.timeoutMs ?? 90_000);
@@ -195,7 +217,7 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
     const session = query({
       prompt: opts.prompt,
       options: {
-        systemPrompt: opts.systemPrompt ?? getCaptureSystemPrompt(surface),
+        systemPrompt: opts.systemPrompt ?? advertised?.system ?? getCaptureSystemPrompt(surface),
         model: opts.model,
         maxTurns: opts.maxTurns ?? 2,
         tools: toolSearch.tools,
@@ -223,5 +245,10 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
   } finally {
     clearTimeout(timer);
   }
-  return { surface: surface.id, registeredToolCount, registeredToolNames, allowedToolCount: allowedTools.length, tenantToolNames, observation };
+  return {
+    surface: surface.id, registeredToolCount, registeredToolNames, allowedToolCount: allowedTools.length, tenantToolNames, observation,
+    ...(advertised ? {
+      profile: opts.profile, advertisedPrefixTokens: advertisedPrefixTokens(advertised), exposureFingerprint: advertised.exposure.fingerprint,
+    } : {}),
+  };
 }

@@ -97,3 +97,33 @@ describe.skipIf(!RUN)('ai_invocations prompt provenance (#7609 W11)', () => {
     expect(byId.get(without)).toMatchObject({ prompt_profile: null, prompt_variant: null, occurred_at: null });
   });
 });
+
+describe.skipIf(!RUN)('ai_invocations tool exposure provenance (#11395 W03)', () => {
+  it('recordInvocation writes tool_profile and tool_exposure_fingerprint as breeze_app (NULL when absent)', async () => {
+    const { partnerId, orgId } = await org();
+    const base = {
+      orgId, surface: 'chat' as const, fundingSource: 'platform' as const,
+      requestedModel: 'claude-opus-5-5', servedModel: 'claude-opus-5-5',
+      tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, rateSnapshot: null, costCents: null,
+      ledgerMode: 'shadow' as const,
+    };
+    const [withIt, without] = await withDbAccessContext(orgContext(orgId, partnerId), async () => [
+      await recordInvocation({ ...base, toolProfile: 'minimal', toolExposureFingerprint: '0123456789abcdef' }),
+      await recordInvocation(base),
+    ]);
+    const rows = await adminSql`SELECT id, tool_profile, tool_exposure_fingerprint FROM ai_invocations WHERE id IN (${withIt}, ${without})`;
+    const byId = new Map(rows.map((r) => [String(r.id), r]));
+    expect(byId.get(withIt)).toMatchObject({ tool_profile: 'minimal', tool_exposure_fingerprint: '0123456789abcdef' });
+    expect(byId.get(without)).toMatchObject({ tool_profile: null, tool_exposure_fingerprint: null });
+  });
+
+  it('breeze_app cannot UPDATE the new columns, and the append-only trigger rejects a change to them', async () => {
+    const { orgId } = await org();
+    const id = await insertRow(orgId, { tool_profile: 'standard', tool_exposure_fingerprint: 'fedcba9876543210' });
+    const [p] = (await db.execute(sql`
+      SELECT has_column_privilege('breeze_app', 'ai_invocations', 'tool_profile', 'UPDATE') AS profile,
+             has_column_privilege('breeze_app', 'ai_invocations', 'tool_exposure_fingerprint', 'UPDATE') AS fingerprint`)) as unknown as Array<Record<string, boolean>>;
+    expect(p).toEqual({ profile: false, fingerprint: false });
+    expect(await sqlstate(adminSql`UPDATE ai_invocations SET tool_profile = 'full' WHERE id = ${id}`)).not.toBe('ok');
+  });
+});

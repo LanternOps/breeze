@@ -109,6 +109,7 @@ vi.mock('@breeze/shared/validators/ai', () => ({
 vi.mock('../services/scriptBuilderTools', () => ({
   createScriptBuilderMcpServer: vi.fn(),
   SCRIPT_BUILDER_MCP_TOOL_NAMES: [],
+  SCRIPT_BUILDER_MCP_SERVER_NAME: 'script_builder',
 }));
 
 // W03 Task 9: session create resolves through the registry (not exercised here).
@@ -127,6 +128,7 @@ import {
 import { runPreFlightChecks, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { releaseUnusedAiBudgetReservation, reserveAiBudget } from '../services/aiBudgetReservations';
 import { ToolProfileUnderpoweredError } from '../services/aiModels/sessionToolExposure';
+import { createScriptBuilderMcpServer } from '../services/scriptBuilderTools';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
@@ -380,6 +382,13 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       const text = await res.text();
       expect(text).toContain('script builder turn failed fast');
       expect(bus.unsubscribe).toHaveBeenCalled();
+
+      // #11395: the factory hands the live session to the server, so it can
+      // advertise only the session's tool exposure.
+      const factory = vi.mocked(streamingSessionManager.getOrCreate).mock.calls.at(-1)![8] as (...a: unknown[]) => unknown;
+      const getSession = () => activeSession;
+      factory('getAuth', 'pre', 'post', getSession);
+      expect(vi.mocked(createScriptBuilderMcpServer)).toHaveBeenLastCalledWith('getAuth', 'pre', 'post', getSession);
     });
 
     it('#7783: drops the pre-push subscription when the dispatch context fails', async () => {

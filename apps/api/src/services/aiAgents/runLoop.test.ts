@@ -273,6 +273,8 @@ const listChatSurfaceToolNames = vi.hoisted(() => vi.fn<() => string[]>());
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
   listChatSurfaceToolNames,
+  // #11395: read only under a constrained tool profile (a `custom` allow-list's domains).
+  chatToolDomain: () => undefined,
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
   // Mirrors BREEZE_MCP_TOOL_NAMES above (one tool, bare name) — runLoop.ts's
   // full-profile exposure (WQ3, #6755) derives from Object.keys(TOOL_TIERS)
@@ -942,6 +944,34 @@ describe('executeAgentRun', () => {
     expect(lastQueryOptions!.env).toEqual({ HTTPS_PROXY: 'http://127.0.0.1:9999' });
     // The grant never outlives the run.
     expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('#11395: a gateway run under a constrained tool profile asks prepareSdkChild for compacted schemas', async () => {
+    seedRows();
+    const gateway = makeResolvedModel('openai_compatible', {
+      surface: 'ai_agents',
+      toolProfileFacts: { toolProfile: 'minimal', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' },
+    });
+    resolveModel.mockResolvedValue(gateway);
+    await executeAgentRun(RUN_ID);
+    expect(prepareSdkChild).toHaveBeenCalledWith(gateway, {
+      key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1', compactSchemas: true,
+    });
+    // The server advertises under the same exposure (compact descriptions; no session to read it from).
+    expect(createBreezeMcpServer.mock.calls[0]?.[5]).toMatchObject({ toolExposure: { profile: 'minimal', promptMode: 'constrained' } });
+    // And the ledger records it.
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, toolExposure: { profile: 'minimal', fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/) },
+    }));
+  });
+
+  it('#11395: the identity tool profile passes no toolExposure to the server (registration unchanged)', async () => {
+    seedRows();
+    await executeAgentRun(RUN_ID);
+    expect(createBreezeMcpServer.mock.calls[0]?.[5] ?? {}).not.toHaveProperty('toolExposure');
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, toolExposure: { profile: 'full', fingerprint: 'full' },
+    }));
   });
 
   it('a non-catalog run takes its child env from prepareSdkChild for the resolved connection', async () => {
