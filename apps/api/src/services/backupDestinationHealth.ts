@@ -20,8 +20,10 @@ import { normalizeStorageIdentity } from './backupStorageIdentity';
 //    occurrences (offline, cancelled, non-storage failures) neither prove
 //    recovery nor erase earlier evidence.
 //  - Broken: two or more failing devices. A destination with decisive evidence
-//    from one device only: broken on one explicit refusal or missing
-//    destination, otherwise on its last two decisive occurrences both bad.
+//    from one device only (others offline or failing for other reasons count
+//    as that issue's "single-device destination"): broken on one explicit
+//    refusal or missing destination, otherwise on its last two decisive
+//    occurrences both bad.
 //  - Healthy only on affirmative evidence: no failing device, and clean
 //    occurrences from min(2, decisive devices) devices after the latest
 //    destination failure. Anything else is unknown.

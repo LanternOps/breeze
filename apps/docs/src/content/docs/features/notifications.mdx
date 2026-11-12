@@ -381,15 +381,22 @@ without saying so:
   organization when the devices that back up to it fail for a reason Breeze can
   tie to the destination: it refused access, the bucket or its data is missing,
   it rejected the request time, or storage operations kept failing. Two failing
-  devices open it; a destination only one device is using opens on one refusal
-  or missing bucket, or on two failed runs in a row. **Destination refused
-  access** and **Destination not found** open at once; **Destination failing**
-  opens when the next check still sees it. The notice says how many devices are
-  failing, since when, and what to check, and its **Fix** link opens the backup
-  profiles where you can run **Test connection**. It goes to the partner's users
-  who can manage backups. The incident clears once two devices (or the only one)
-  back up successfully, or when the destination is disabled or deleted. A device
-  that is offline or failing for another reason neither opens nor clears it. See
+  devices open it. When only one device has a recent success or destination
+  failure (the others are offline or failing for other reasons), one refusal or
+  missing bucket opens it, or two failed runs in a row. When most failing
+  devices agree the destination refused access or is missing, the incident is
+  **Destination refused access** or **Destination not found** and opens at
+  once; otherwise it is **Destination failing** and opens when the next check
+  still sees it. The notice says how many devices are failing, since when, and
+  what to check, and its **Fix** link opens the backup profiles where you can
+  run **Test connection**. It goes to the users who can manage backups (backup
+  write permission) for that organization: the MSP's staff, and the
+  organization's own admins when customer admin notices are on (below). The
+  incident clears after two checks in a row find no device still failing and
+  successful backups from two devices (or the only device with recent results)
+  since the last failure, or at once when the destination is disabled or
+  deleted. A device that is offline or failing for another reason neither opens
+  nor clears it. See
   [Backup troubleshooting](/backup/troubleshooting/#one-destination-failing-for-several-devices).
 
 Failures recorded by the backup, Huntress, EDR and Microsoft 365 syncs, backup

@@ -592,7 +592,7 @@ describe('backup dashboard routes', () => {
       expect(item.failureCause).toBe('storage_operation_failed');
     });
 
-    it('a failed evidence read degrades the attention list instead of failing the dashboard', async () => {
+    it('a failed evidence read keeps the per-device items and flags the degraded state', async () => {
       resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
       const failing = chainMock([]);
       failing.where = vi.fn(() => Promise.reject(new Error('evidence read failed')));
@@ -608,7 +608,8 @@ describe('backup dashboard routes', () => {
       const res = await app.request('/backup/dashboard');
       expect(res.status).toBe(200);
       const { data } = await res.json();
-      expect(data.attentionItems).toEqual([]);
+      // The per-device item computed before the destination read survives it.
+      expect(data.attentionItems.map((i: any) => i.id)).toEqual(['backup-failing-d1']);
       expect(data.attentionError).toBe(true);
     });
 
@@ -621,6 +622,24 @@ describe('backup dashboard routes', () => {
         ['single device refused', [row({ deviceId: 'd1' })]],
         ['5xx', [row({ deviceId: 'd1', errorLog: 'storage session: storage answered status 503' }), row({ deviceId: 'd2', errorLog: 'storage session: storage answered status 503' })]],
         ['old identity', [row({ deviceId: 'd1', storageIdentity: 'x' }), row({ deviceId: 'd2', storageIdentity: 'x' })]],
+        ['recovered among failing', [
+          row({ deviceId: 'd1', completedAt: hoursAgo(10), createdAt: hoursAgo(10) }),
+          row({ deviceId: 'd1', status: 'completed', errorLog: null }),
+          row({ deviceId: 'd2', completedAt: hoursAgo(9), createdAt: hoursAgo(9) }),
+          row({ deviceId: 'd3', completedAt: hoursAgo(8), createdAt: hoursAgo(8) }),
+        ]],
+        ['refusal beside an offline-only device', [
+          row({ deviceId: 'd1' }),
+          row({ deviceId: 'd2', errorLog: '[stale-backup-reaper] Device went offline during backup' }),
+        ]],
+        ['fan-out run with one refused job', (() => {
+          const run = hoursAgo(3);
+          return [
+            row({ deviceId: 'd1', status: 'completed', errorLog: null, createdAt: run }),
+            row({ deviceId: 'd1', createdAt: run, errorLog: 'storage session: storage answered status 503' }),
+            row({ deviceId: 'd2', errorLog: 'storage session: storage answered status 503' }),
+          ];
+        })()],
       ];
       for (const [name, rows] of fixtures) {
         const data = await dashboardWith(rows);
@@ -638,6 +657,7 @@ describe('backup dashboard routes', () => {
           expect(obs.detail, name).toMatch(new RegExp(`^${item.failingDevices} of ${item.totalDevices} devices? failing`));
           const conditionByCause: Record<string, string> = { storage_access_denied: 'destination_access_denied', storage_not_found: 'destination_not_found' };
           expect(obs.condition, name).toBe(conditionByCause[item.failureCause] ?? 'destination_failing');
+          expect(obs.severity, name).toBe(conditionByCause[item.failureCause] ? 'permanent' : 'transient');
         }
       }
     });

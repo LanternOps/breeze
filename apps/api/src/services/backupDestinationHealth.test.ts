@@ -200,6 +200,61 @@ describe('evaluateBackupDestination', () => {
     expect(evaluate([job('a', 1, 'failed', BREEZE_REFUSAL), job('b', 1, 'failed', BREEZE_REFUSAL)]).state).toBe('unknown');
   });
 
+  describe('review gaps (#11777)', () => {
+    it('inside one run a refusal outranks another destination fault, whatever the job order', () => {
+      const run = hoursAgo(1);
+      for (const jobs of [
+        [job('a', 1, 'failed', STORE_5XX, { createdAt: run }), job('a', 1, 'failed', DENIED, { createdAt: run })],
+        [job('a', 1, 'failed', DENIED, { createdAt: run }), job('a', 1, 'failed', STORE_5XX, { createdAt: run })],
+      ]) {
+        expect(evaluate(jobs)).toMatchObject({ state: 'broken', severity: 'permanent', cause: 'storage_access_denied', failingDevices: 1 });
+      }
+    });
+
+    it('a run with a completed job and an unknown one is good', () => {
+      const run = hoursAgo(1);
+      expect(evaluate([job('a', 1, 'completed', null, { createdAt: run }), job('a', 1, 'failed', OFFLINE, { createdAt: run })]))
+        .toMatchObject({ state: 'healthy', evidence: { decisiveDevices: 1 } });
+    });
+
+    it('the clean-device threshold counts devices with decisive evidence only', () => {
+      expect(evaluate([job('a', 1, 'completed'), job('b', 1, 'failed', OFFLINE)]))
+        .toMatchObject({ state: 'healthy', totalDevices: 2, evidence: { requiredCleanDevices: 1, decisiveDevices: 1 } });
+      expect(evaluate([job('a', 10, 'failed', DENIED), job('a', 2, 'completed'), job('b', 1, 'failed', OFFLINE)]).state).toBe('healthy');
+    });
+
+    it('a failure streak stops at the last good run', () => {
+      expect(evaluate([job('a', 20, 'completed'), job('a', 10, 'failed', STORE_5XX), job('a', 5, 'failed', STORE_5XX)]))
+        .toMatchObject({ state: 'broken', since: hoursAgo(10) });
+      expect(evaluate([job('a', 30, 'failed', STORE_5XX), job('a', 20, 'completed'), job('a', 5, 'failed', STORE_5XX), job('a', 3, 'failed', STORE_5XX)]))
+        .toMatchObject({ state: 'broken', since: hoursAgo(5) });
+      // since is the earliest streak start across failing devices.
+      expect(evaluate([job('a', 6, 'failed', DENIED), job('b', 9, 'failed', DENIED), job('b', 4, 'failed', DENIED)]).since).toEqual(hoursAgo(9));
+    });
+
+    it('with no current identity nothing is evidence', () => {
+      expect(evaluate([job('a', 1, 'failed', DENIED, { storageIdentity: null }), job('b', 1, 'failed', DENIED, { storageIdentity: null })], null))
+        .toMatchObject({ state: 'unknown', totalDevices: 0 });
+      expect(evaluate([job('a', 1, 'failed', DENIED), job('b', 1, 'failed', DENIED)], null)).toMatchObject({ state: 'unknown', totalDevices: 0 });
+    });
+
+    it('a recovered device among failing ones neither resolves nor counts as failing', () => {
+      const r = evaluate([
+        job('a', 10, 'failed', DENIED), job('a', 2, 'completed'),
+        job('b', 9, 'failed', DENIED),
+        job('c', 8, 'failed', DENIED),
+      ]);
+      expect(r).toMatchObject({ state: 'broken', failingDevices: 2, totalDevices: 3, since: hoursAgo(9) });
+      // Two failing, one recovers: one bad among decisive others is not broken, and not healthy either.
+      expect(evaluate([job('a', 10, 'failed', DENIED), job('a', 2, 'completed'), job('b', 9, 'failed', DENIED)]).state).toBe('unknown');
+    });
+
+    it('a 2-2 split names no cause', () => {
+      expect(evaluate([job('a', 1, 'failed', DENIED), job('b', 1, 'failed', DENIED), job('c', 1, 'failed', STORE_5XX), job('d', 1, 'failed', STORE_5XX)]))
+        .toMatchObject({ state: 'broken', cause: null, severity: 'transient', failingDevices: 4 });
+    });
+  });
+
   it('reports evidence counts', () => {
     const r = evaluate([job('a', 2, 'failed', DENIED), job('b', 1, 'failed', DENIED), job('c', 1, 'failed', OFFLINE)]);
     expect(r.evidence).toEqual({ decisiveDevices: 2, cleanDevicesSinceLastFailure: 0, requiredCleanDevices: 2, occurrences: 3 });

@@ -7,7 +7,7 @@
 -- 1. backup_jobs_unsuccessful_completed_at_idx (completed_at, config_id)
 --    WHERE status IN ('failed', 'partial', 'completed_with_errors'):
 --    the broken query, a range scan over the last 72 h of unsuccessful jobs
---    returning their config ids (index-only where the visibility map allows).
+--    (it reads each row's status and error_log from the heap to classify it).
 --    Covers unsuccessful rows only, so it grows with failures, not traffic.
 -- 2. backup_jobs_config_completed_at_idx (config_id, completed_at):
 --    the evidence read, every terminal outcome (successes included, since

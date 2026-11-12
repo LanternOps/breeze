@@ -338,15 +338,25 @@ async function resolveAttentionItems(
     items.sort((a, b) => new Date(b.lastFailureAt).getTime() - new Date(a.lastFailureAt).getTime());
     // #11768: a destination failing for several devices outranks the per-device
     // items it explains; those stay, after it.
+    // #11772: the destination items come from their own read. If it fails, the
+    // per-device items above still stand; the list is flagged as degraded so
+    // the UI does not present it as complete.
     const now = new Date();
-    const evidence = await withDbTransaction(() => loadDestinationEvidence(orgId, jobDeviceScope, allowedDeviceIds, now));
-    const destinationItems = resolveDestinationAttentionItems(evidence, now)
-      .sort((a, b) => b.failingDevices - a.failingDevices);
+    let destinationItems: Array<DestinationAttentionItem & { lastFailureAt: string }> = [];
+    let destinationError = false;
+    try {
+      const evidence = await withDbTransaction(() => loadDestinationEvidence(orgId, jobDeviceScope, allowedDeviceIds, now));
+      destinationItems = resolveDestinationAttentionItems(evidence, now)
+        .sort((a, b) => b.failingDevices - a.failingDevices);
+    } catch (err) {
+      console.error(`[BackupDashboard] Failed to resolve destination attention items for org ${orgId}:`, err instanceof Error ? err.message : err);
+      destinationError = true;
+    }
     return {
       items: [...destinationItems, ...items]
         .slice(0, ATTENTION_MAX_ITEMS)
         .map(({ lastFailureAt: _lastFailureAt, ...item }) => item),
-      error: false,
+      error: destinationError,
     };
   } catch (err) {
     console.error('[BackupDashboard] Failed to resolve attention items:', err instanceof Error ? err.message : err);
