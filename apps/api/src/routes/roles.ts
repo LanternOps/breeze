@@ -247,6 +247,15 @@ function validateAssignablePermissions(
   return null;
 }
 
+const OWN_ROLE_MFA_REQUIREMENT_ERROR = 'Another administrator must remove the MFA requirement from a role you hold.';
+
+class OwnRoleMfaRequirementError extends Error {
+  constructor() {
+    super(OWN_ROLE_MFA_REQUIREMENT_ERROR);
+    this.name = 'OwnRoleMfaRequirementError';
+  }
+}
+
 async function getAssignedUserIdsForRoles(roleIds: string[], scopeContext: ScopeContext): Promise<string[]> {
   if (roleIds.length === 0) return [];
 
@@ -592,7 +601,8 @@ roleRoutes.patch(
         isSystem: roles.isSystem,
         scope: roles.scope,
         partnerId: roles.partnerId,
-        orgId: roles.orgId
+        orgId: roles.orgId,
+        forceMfa: roles.forceMfa
       })
       .from(roles)
       .where(eq(roles.id, roleId))
@@ -651,7 +661,33 @@ roleRoutes.patch(
     }
     const affectedUserIds = await getAssignedUserIdsForRoles([...affectedRoleIds], scopeContext);
 
+    // A role's MFA requirement applies to its direct members, so a member may
+    // turn it on but another administrator has to turn it off. Saving other
+    // edits with forceMfa:false stays allowed while the role does not
+    // require MFA; the locked re-read in the transaction covers a requirement
+    // switched on after this request read the role.
+    const callerHoldsRole = body.forceMfa === false && (
+      affectedRoleIds.size === 1
+        ? affectedUserIds
+        : await getAssignedUserIdsForRoles([roleId], scopeContext)
+    ).includes(auth.user.id);
+    if (callerHoldsRole && role.forceMfa) {
+      return c.json({ error: OWN_ROLE_MFA_REQUIREMENT_ERROR }, 403);
+    }
+
     const result = await db.transaction(async (tx) => {
+      if (callerHoldsRole) {
+        const [locked] = await tx
+          .select({ forceMfa: roles.forceMfa })
+          .from(roles)
+          .where(eq(roles.id, roleId))
+          .for('update')
+          .limit(1);
+        if (locked?.forceMfa) {
+          throw new OwnRoleMfaRequirementError();
+        }
+      }
+
       // Update role fields
       const updates: {
         name?: string;
@@ -713,7 +749,13 @@ roleRoutes.patch(
       }
 
       return updatedRole;
+    }).catch((error: unknown) => {
+      if (error instanceof OwnRoleMfaRequirementError) return null;
+      throw error;
     });
+    if (!result) {
+      return c.json({ error: OWN_ROLE_MFA_REQUIREMENT_ERROR }, 403);
+    }
     await clearPermissionCachesForUsers(affectedUserIds);
 
     // Get updated permissions

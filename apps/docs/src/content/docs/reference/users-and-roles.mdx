@@ -626,6 +626,8 @@ Custom roles are created with `POST /roles` and must include a name. Permissions
 
 Set `forceMfa: true` (the **Require MFA for this role** toggle in Settings → Roles) to require every member assigned this role to enrol in MFA. It defaults to `false`, can be changed later with `PATCH /roles/:id`, and is not inherited through `parentRoleId` — each role sets it for its own members. Roles that require MFA show an **MFA required** badge in the roles list. The built-in Partner Admin role requires MFA and, like every system role, cannot be edited.
 
+You cannot turn off the MFA requirement on a role you are assigned yourself: `PATCH /roles/:id` with `forceMfa: false` returns `403` while the role requires MFA and you hold it in that partner or organisation. Another administrator has to make that change. Turning the requirement on, and saving other edits to a role you hold that does not require MFA, work as before.
+
 A role's owner axis is fixed at creation. Partner-scope callers choose it with `ownerScope`:
 
 | `ownerScope` | Result |
