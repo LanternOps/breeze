@@ -348,17 +348,24 @@ describe('findUnsafePortalCssPattern', () => {
 
     it('matches the reference result on generated inputs', () => {
       const alphabet = ['url(', 'URL(', '(', ')', "'", '"', ' ', '\t', 'x', 'https:', 'data:', 'u', 'r', 'l'];
-      let seed = 0x2f6e2b1;
-      const next = () => {
-        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-        return seed;
+      const random = (seed: number) => () => {
+        // mulberry32: 32-bit integer steps (Math.imul), so the sequence does not
+        // collapse the way a float LCG does.
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return (t ^ (t >>> 14)) >>> 0;
       };
-      for (let i = 0; i < 5000; i += 1) {
-        const length = next() % 14;
+      const next = random(0x2f6e2b1);
+      const seen = new Set<string>();
+      for (let i = 0; i < 20_000; i += 1) {
+        const length = next() % 16;
         let css = '';
         for (let j = 0; j < length; j += 1) css += alphabet[next() % alphabet.length];
+        seen.add(css);
         expect([css, findUnsafePortalCssPattern(css)]).toEqual([css, referenceUrlScan(css)]);
       }
+      expect(seen.size).toBeGreaterThan(15_000);
     });
   });
 });

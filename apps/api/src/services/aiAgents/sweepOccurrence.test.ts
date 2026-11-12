@@ -103,13 +103,18 @@ describe('CronOccurrenceCache', () => {
       ['15 3 * * 0', 'Australia/Lord_Howe'],
     ];
     const cache = new CronOccurrenceCache();
-    let seed = 0x5eed;
-    const next = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed;
+    const random = (seed: number) => () => {
+      // mulberry32: 32-bit integer steps (Math.imul), so the sequence does not
+      // collapse the way a float LCG does.
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (t ^ (t >>> 14)) >>> 0;
     };
+    const next = random(0x5eed);
     // Around the 2026-10-25 Berlin fall-back hour.
     let at = Date.parse('2026-10-24T20:00:00Z');
+    const steps = new Set<number>();
     for (let i = 0; i < 150; i += 1) {
       const step = next() % 10;
       if (step < 6) at += (1 + (next() % 5)) * MINUTE; // a normal tick or a few late
@@ -117,6 +122,7 @@ describe('CronOccurrenceCache', () => {
       else if (step < 9) at -= (next() % 120) * MINUTE; // the clock steps back
       else at += (next() % 3000) * MINUTE; // a long outage, past the lookback
       const now = new Date(at);
+      steps.add(at);
       cache.beginPass();
       for (const [cron, zone] of schedules) {
         const want = latestCronOccurrence(cron, zone, now);
@@ -126,6 +132,7 @@ describe('CronOccurrenceCache', () => {
       }
       cache.endPass();
     }
+    expect(steps.size).toBeGreaterThan(120);
   }, 60_000);
 
   it('lets a remembered occurrence age out of the window', () => {

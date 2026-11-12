@@ -320,18 +320,30 @@ describe('secret field-name checks', () => {
 
   it('treats a field name as secret exactly as the previous pattern did', () => {
     const alphabet = ['api', 'API', 'key', 'Key', 'access', 'private', 'client', 'secret', 'session', '\n', '\r', '\u2028', 'x', '_', 'encrypted', 'K'];
-    let seed = 0x7e57;
-    const next = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed;
+    const random = (seed: number) => () => {
+      // mulberry32: 32-bit integer steps (Math.imul), so the sequence does not
+      // collapse the way a float LCG does.
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (t ^ (t >>> 14)) >>> 0;
     };
+    const next = random(0x7e57);
+    const seen = new Set<string>();
+    let secret = 0;
     for (let i = 0; i < 20_000; i += 1) {
       let key = '';
-      for (let j = 1 + (next() % 6); j > 0; j -= 1) key += alphabet[next() % alphabet.length];
+      for (let j = 1 + (next() % 8); j > 0; j -= 1) key += alphabet[next() % alphabet.length];
+      seen.add(key);
+      if (refSecretKey.test(key)) secret += 1;
       const logOut = (redactAgentLogFields({ [key]: 'plain value' }) as Record<string, unknown>)[key];
       expect([key, logOut === '[REDACTED]']).toEqual([key, refSecretKey.test(key)]);
       const toolOut = (redactToolOutputFields({ [key]: { inner: 'plain value' } }) as Record<string, unknown>)[key];
       expect([key, toolOut === '[REDACTED]']).toEqual([key, refSecretMaterialKey.test(key) || refKeyMaterialKey.test(key)]);
     }
+    // Varied input (short names repeat), with both outcomes well represented.
+    expect(seen.size).toBeGreaterThan(12_000);
+    expect(secret).toBeGreaterThan(2_000);
+    expect(seen.size - secret).toBeGreaterThan(2_000);
   });
 });

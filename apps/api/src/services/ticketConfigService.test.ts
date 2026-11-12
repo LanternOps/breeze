@@ -721,16 +721,23 @@ describe('convertEmailInbound', () => {
     const fixed = ['"Jane Doe" <jane@x.com>', 'Jane Doe <jane@x.com>', 'jane@x.com', '<jane@x.com>', '  "<x>', '"" <x>', ' " a " <x>', 'a"b <x>', '"a" "b" <x>', '"a"  \t<x>', 'a\u00a0<x>', ''];
     for (const header of fixed) expect([header, extractFromName(header)]).toEqual([header, reference(header)]);
     const alphabet = ['"', '<', '>', ' ', '\t', 'a', 'b', '@', '\u00a0'];
-    let seed = 0x1f2e3d;
-    const next = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed;
+    const random = (seed: number) => () => {
+      // mulberry32: 32-bit integer steps (Math.imul), so the sequence does not
+      // collapse the way a float LCG does.
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (t ^ (t >>> 14)) >>> 0;
     };
+    const next = random(0x1f2e3d);
+    const seen = new Set<string>();
     for (let i = 0; i < 20_000; i += 1) {
       let header = '';
-      for (let j = next() % 12; j > 0; j -= 1) header += alphabet[next() % alphabet.length];
+      for (let j = next() % 18; j > 0; j -= 1) header += alphabet[next() % alphabet.length];
+      seen.add(header);
       expect([header, extractFromName(header)]).toEqual([header, reference(header)]);
     }
+    expect(seen.size).toBeGreaterThan(15_000);
   });
 
   it('converts a MICROSOFT 365 row with its body and sender name (#8299)', async () => {
