@@ -25,6 +25,20 @@ const mocks = vi.hoisted(() => ({
   unresolvedPartnerDecision: vi.fn(async () => ({ allow: false as const, code: 'TRUST_RESTRICTED' as const, capability: 'remote_control' as const, reason: 'unresolved' })),
   tightenStatementTimeout: vi.fn(async () => 0),
   checkVncConsentGate: vi.fn(async (): Promise<any> => ({ ok: true })),
+  resolveRoleLineage: vi.fn(async (roleId: string): Promise<Array<{ id: string; name: string }>> => [{ id: roleId, name: 'role' }]),
+  grantReadRoleIds: vi.fn<(roleIds: string[]) => void>(),
+}));
+
+// #9600: lineage-free by default; the grant read consumes the next queued
+// select exactly as the old direct role_permissions read did.
+vi.mock('./roleInheritance', () => ({
+  resolveRoleLineage: (roleId: string) => mocks.resolveRoleLineage(roleId),
+  // Mirrors the real fallback: no visible lineage reads the role's own rows.
+  getRolePermissionGrants: async (roleId: string) => {
+    const lineage = await mocks.resolveRoleLineage(roleId);
+    mocks.grantReadRoleIds(lineage.length > 0 ? lineage.map((entry) => entry.id) : [roleId]);
+    return mocks.select({}).from({}).innerJoin({}, {}).where({});
+  },
 }));
 
 // `services/tokenRevocation` is intentionally left UNMOCKED (see below) so
@@ -434,6 +448,20 @@ describe.each(['terminal', 'desktop', 'tunnel'] as const)(
       const result = await authorizeConsumedRemoteWsTicket(consumed(kind));
       expect(result).toEqual({ ok: false, reason, status });
       expect(mocks.rateLimiter).not.toHaveBeenCalled();
+    });
+
+    it('checks the grants of the member role\'s whole inheritance lineage (#9600)', async () => {
+      mocks.resolveRoleLineage.mockResolvedValueOnce([
+        { id: 'org-role', name: 'Child' },
+        { id: 'org-parent-role', name: 'Parent' },
+      ]);
+      installAuthorizationRows({ kind });
+
+      const result = await authorizeConsumedRemoteWsTicket(consumed(kind));
+
+      expect(result).toMatchObject({ ok: true });
+      expect(mocks.resolveRoleLineage).toHaveBeenCalledWith('org-role');
+      expect(mocks.grantReadRoleIds).toHaveBeenCalledWith(['org-role', 'org-parent-role']);
     });
 
     it('rejects a session/device tenant mismatch from the system-scoped join', async () => {
