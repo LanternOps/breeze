@@ -20,6 +20,30 @@
     "urgentWarning": "Moins de 30 secondes restantes. Cette demande sera automatiquement rejetée.",
     "progressLabel": "Temps restant avant refus automatique",
     "showParameters": "Paramètres de présentation",
+    "ticketComment": {
+      "publicTo": "Réponse visible par le client à {{recipient}}",
+      "publicNoRecipient": "Réponse visible par le client (envoyée par courriel au demandeur)",
+      "publicNoEmail": "Réponse visible par le client (aucun courriel du demandeur au dossier, donc aucun courriel n'est envoyé)",
+      "internal": "Note interne (non visible par le client)"
+    },
+    "memory": {
+      "heading": "Wisp retiendra",
+      "subjectKey": "Clé : {{key}} (remplace tout souvenir antérieur ayant cette clé)",
+      "moreInParameters": "D'autres champs se trouvent seulement sous Paramètres de présentation.",
+      "scope": {
+        "user": "Vous seulement",
+        "org": "Ce client",
+        "partner": "Tout votre MSP"
+      },
+      "types": {
+        "preference": "Préférence",
+        "standing_instruction": "Instruction permanente",
+        "fact": "Fait",
+        "decision": "Décision",
+        "concern_outcome": "Résultat de préoccupation",
+        "work_summary": "Résumé du travail"
+      }
+    },
     "approve": "Approuver",
     "reject": "Refuser",
     "approveVerify": "Vérifier et approuver",
