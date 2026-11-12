@@ -86,7 +86,8 @@
     "checklistProgress": "{{done}}/{{total}} Schritte",
     "checklistTitle": "Checkliste: {{done}} von {{total}} Schritten erledigt",
     "merged": "Zusammengeführt",
-    "ageTitle": "Eröffnet {{created}} · Aktualisiert {{updated}}"
+    "ageTitle": "Eröffnet {{created}} · Aktualisiert {{updated}}",
+    "imported": "Importiert"
   },
   "ticketArchivedList": {
     "emptyTitle": "Keine archivierten Tickets.",
@@ -445,7 +446,9 @@
         "paused": "SLA pausiert, {{relative}} übrig",
         "breached": "SLA durchbrochen"
       }
-    }
+    },
+    "importTickets": "Tickets importieren",
+    "importedOnly": "Nur importierte"
   },
   "ticketWorkbench": {
     "notFound": "Ticket nicht gefunden. Möglicherweise wurde es gelöscht oder Sie haben keinen Zugriff darauf.",

@@ -322,3 +322,21 @@ describe('TicketQueueList merged chip (#8972)', () => {
     expect(screen.queryByTestId('ticket-row-merged-tk-l')).toBeNull();
   });
 });
+
+describe('TicketQueueList imported chip (#8313)', () => {
+  it('marks a window-imported row "Imported" and leaves live rows alone', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-i', migrationWindowId: '6f1c2b0a-5d4e-4f3a-8b2c-1d0e9f8a7b6c' }),
+          makeTicket({ id: 'tk-l', migrationWindowId: null }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId('ticket-row-imported-tk-i')).toHaveTextContent('Imported');
+    expect(screen.queryByTestId('ticket-row-imported-tk-l')).toBeNull();
+  });
+});

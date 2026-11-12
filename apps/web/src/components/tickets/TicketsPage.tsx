@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { Plus } from 'lucide-react';
+import { Plus, Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -30,6 +30,7 @@ import { TICKET_FOCUS_SUBJECT_ID } from './TicketFocusHeader';
 import type { TicketType } from './ticketType';
 import { showBulkOutcomeToast, type BulkResult } from './ticketBulkOutcome';
 import { useFillAvailableHeight } from './useFillAvailableHeight';
+import { useTicketImportAccess } from '../ticketImport/importAccess';
 import {
   DEFAULT_QUEUE_HASH, TABS, hashFor, isLiveTab, isUuid, parseQueueHash, readStoredQueueTab, storeQueueTab, tabQuery,
   type LiveTab, type QueueHash, type Tab, type TicketSort,
@@ -110,6 +111,8 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   // re-enforces). UX-only: hides controls the caller can't use. Partner/Org Admin.
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
+  // #8313: the import wizard is for partner-scope, partner-wide admins only.
+  const canImport = useTicketImportAccess() === 'allowed';
 
   const [tab, setTabState] = useState<Tab>('open');
   // /tickets/[id] opens in the queue tab the tech last worked in; the first
@@ -143,7 +146,7 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   // QueueHash). Ticket-type filter (#7900): '' = All. Hash-backed so the
   // Service Desk nav entries (`/tickets#type=<type>`) and bookmarks deep-link in.
   const [queueHash, setQueueHash] = useHashState<QueueHash>(DEFAULT_QUEUE_HASH, parseQueueHash);
-  const { selection: hashFocus, sort, type: typeFilter, showMerged } = queueHash;
+  const { selection: hashFocus, sort, type: typeFilter, showMerged, importedOnly } = queueHash;
   // The route id stands in for the hash until the first in-page move, which
   // rewrites the URL to the canonical /tickets#<key>.
   const [routeFocus, setRouteFocus] = useState<string | null>(routeTicketId ?? null);
@@ -201,17 +204,19 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
   // sort, type and the merged toggle never clobber each other. `mergedValue`
   // defaults to the current toggle so the three-field callers keep it.
   // `push` adds a history entry (opening a ticket from the board); every other
-  // write replaces the current one.
-  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '', mergedValue: boolean = showMerged, opts?: { push?: boolean }) => {
+  // write replaces the current one. `imported` (#8313) likewise defaults to
+  // the current "Imported only" filter.
+  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '', mergedValue: boolean = showMerged, opts?: { push?: boolean; imported?: boolean }) => {
     setRouteFocus(null);
-    setQueueHash({ selection, sort: sortValue, type: typeValue, showMerged: mergedValue });
-    const hash = hashFor(selection, sortValue, typeValue || null, mergedValue);
+    const importedValue = opts?.imported ?? importedOnly;
+    setQueueHash({ selection, sort: sortValue, type: typeValue, showMerged: mergedValue, importedOnly: importedValue });
+    const hash = hashFor(selection, sortValue, typeValue || null, mergedValue, importedValue);
     // From /tickets/[id] the first move lands on the canonical /tickets URL.
     const url = routeTicketId ? `/tickets${window.location.search}${hash}` : (hash || window.location.pathname + window.location.search);
     if (opts?.push) pushUrl(url, { [FOCUS_ENTRY_MARK]: true });
     else replaceUrl(url);
     pagePath.current = window.location.pathname + window.location.search;
-  }, [setQueueHash, showMerged, routeTicketId]);
+  }, [setQueueHash, showMerged, importedOnly, routeTicketId]);
 
   const clearFilters = useCallback(() => {
     setPriorityFilter('');
@@ -265,9 +270,11 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
     // #8972: merged tombstones are hidden server-side unless asked for. Sent on
     // every tab; it only changes results where closed tickets can appear.
     if (showMerged) params.set('showMerged', 'true');
+    // #8313: only tickets a migration window imported.
+    if (importedOnly) params.set('imported', 'true');
     params.set('limit', '100');
     return params.toString();
-  }, [tab, tabReady, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort, showMerged]);
+  }, [tab, tabReady, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort, showMerged, importedOnly]);
   // The query the rows in `tickets` were fetched for (null until the first load).
   const [loadedQuery, setLoadedQuery] = useState<string | null>(null);
   const listIsCurrent = ticketQuery !== null && loadedQuery === ticketQuery;
@@ -799,13 +806,24 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
       <div hidden={inFocus} className="flex min-h-0 flex-1 flex-col" data-testid="tickets-triage">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h1 className="text-xl font-semibold" data-testid="tickets-heading">{t('ticketsPage.title')}</h1>
-          <a
-            href="/tickets/new"
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90"
-            data-testid="tickets-create-button"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" /> {t('ticketsPage.createTicket')}
-          </a>
+          <div className="flex items-center gap-2">
+            {canImport && (
+              <a
+                href="/tickets/import"
+                className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+                data-testid="tickets-import-button"
+              >
+                <Upload className="h-4 w-4" aria-hidden="true" /> {t('ticketsPage.importTickets')}
+              </a>
+            )}
+            <a
+              href="/tickets/new"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90"
+              data-testid="tickets-create-button"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" /> {t('ticketsPage.createTicket')}
+            </a>
+          </div>
         </div>
 
         <div className="mb-3 space-y-2">
@@ -854,6 +872,8 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
               onSort={(next) => writeHash(focusKey, next, typeFilter)}
               showMerged={showMerged}
               onShowMerged={(next) => writeHash(focusKey, sort, typeFilter, next)}
+              importedOnly={importedOnly}
+              onImportedOnly={(next) => writeHash(focusKey, sort, typeFilter, showMerged, { imported: next })}
               config={config}
             />
           )}
