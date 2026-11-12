@@ -57,6 +57,21 @@ if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
 return n
 `;
 
+// Give back an attempt that was refused for a reason other than the password.
+const RELEASE_ATTEMPT_SCRIPT = `
+local n = redis.call('DECR', KEYS[1])
+if n <= 0 then redis.call('DEL', KEYS[1]) end
+return n
+`;
+
+async function releaseAttempt(redis: AttemptStore, key: string): Promise<void> {
+  try {
+    await redis.eval(RELEASE_ATTEMPT_SCRIPT, 1, key);
+  } catch {
+    // Best-effort: the attempt then stays counted, the strict direction.
+  }
+}
+
 async function reserveAttempt(redis: AttemptStore, key: string): Promise<number | null> {
   try {
     const n = Number(await redis.eval(RESERVE_ATTEMPT_SCRIPT, 1, key, String(ATTEMPT_WINDOW_SECONDS)));
@@ -97,6 +112,10 @@ export async function checkSignupPassword(input: {
   const valid = await verifyPassword(input.passwordHash, input.password);
 
   if (accountAttempt && !accountAttempt.allowed) {
+    // Refused because of the account's sign-in lock, not because of this
+    // password: give the link its attempt back, so a lock on the account
+    // cannot use up the owner's signup link.
+    await releaseAttempt(input.redis, key);
     return { ok: false, reason: 'account_locked' };
   }
 

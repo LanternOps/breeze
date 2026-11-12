@@ -40,8 +40,15 @@ function fakeRedis(initial: Record<string, string> = {}) {
       return 1;
     }),
     del: vi.fn(async (key: string) => { await tick(); return store.delete(key) ? 1 : 0; }),
-    // The only script the service runs: INCR, and EXPIRE on the first increment.
-    eval: vi.fn(async (_script: string, _numKeys: number, key: string, seconds: string) => {
+    // The service's two scripts: reserve (INCR, EXPIRE on the first one) and
+    // give back (DECR, DEL at zero). Real Redis runs them in the integration suite.
+    eval: vi.fn(async (script: string, _numKeys: number, key: string, seconds?: string) => {
+      if (script.includes("redis.call('DECR', KEYS[1])")) {
+        const next = Number(store.get(key) ?? '0') - 1;
+        if (next <= 0) store.delete(key); else store.set(key, String(next));
+        await tick();
+        return next;
+      }
       const next = incrWithExpiry(key, Number(seconds));
       await tick();
       return next;
@@ -162,6 +169,29 @@ describe('checkSignupPassword', () => {
     expect(verifyPassword).toHaveBeenCalledOnce();
     expect(account.clearFailures).not.toHaveBeenCalled();
     expect(account.notifyLocked).not.toHaveBeenCalled();
+  });
+
+  it('does not use up the link while the account is locked out', async () => {
+    const redis = fakeRedis();
+    const locked = fakeAccount({ allowed: false, count: 6, reachesLimit: false });
+
+    for (let i = 0; i < SIGNUP_PASSWORD_MAX_ATTEMPTS + 1; i += 1) {
+      expect(await checkSignupPassword({ redis: redis as any, tokenHash: 't1', passwordHash, password: 'Signup-password-1', account: locked }))
+        .toEqual({ ok: false, reason: 'account_locked' });
+    }
+
+    expect(redis.store.has(signupPasswordAttemptKey('t1'))).toBe(false);
+    // Once the lock has passed, the same link still works.
+    expect(await checkSignupPassword({ redis: redis as any, tokenHash: 't1', passwordHash, password: 'Signup-password-1', account: fakeAccount() }))
+      .toEqual({ ok: true });
+  });
+
+  it('still counts a wrong password against the link while the account is unlocked', async () => {
+    const redis = fakeRedis();
+
+    await checkSignupPassword({ redis: redis as any, tokenHash: 't1', passwordHash, password: 'wrong', account: fakeAccount() });
+
+    expect(redis.store.get(signupPasswordAttemptKey('t1'))).toBe('1');
   });
 
   it('accepts the right password and clears the link and account counters', async () => {

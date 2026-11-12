@@ -437,7 +437,7 @@ Registration is two calls: `POST /auth/register-partner` requests the signup and
 
 `password` is required to complete a registration. Without it, or when it does not match, the response is `400` with `{ "error": "Enter the password you chose when signing up.", "status": "password_required" }` and nothing is created or consumed. Each link accepts five wrong passwords; after that it is retired and the response is the ordinary invalid-link `400`. Every refused attempt is recorded in the audit log as `auth.email_verify_failed` with the reason. An email-change confirmation link does not need a password.
 
-Signup verification links for accounts created before email-first signup ask for the account password the same way. For those accounts a wrong password also counts toward the account's sign-in lockout, and while the account is locked the confirmation is refused.
+Signup verification links for accounts created before email-first signup ask for the account password the same way. For those accounts a wrong password also counts toward the account's sign-in lockout, and while the account is locked the confirmation is refused. Attempts refused because of the lock do not count toward the link's five.
 
 **Success response (200):**
 

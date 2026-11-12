@@ -61,6 +61,22 @@ describe.skipIf(!RUN)('signup password attempts against real Redis', () => {
     await redis.del(signupPasswordAttemptKey(tokenHash));
   });
 
+  it('gives the link its attempt back when the account is locked out', async () => {
+    const tokenHash = `it-${randomUUID()}`;
+    const lockedAccount = {
+      reserve: async () => ({ allowed: false, count: 6, reachesLimit: false }),
+      notifyLocked: async () => undefined,
+      clearFailures: async () => undefined,
+    };
+
+    for (let i = 0; i < SIGNUP_PASSWORD_MAX_ATTEMPTS + 1; i += 1) {
+      expect(await checkSignupPassword({ redis, tokenHash, passwordHash, password: 'Signup-password-1', account: lockedAccount }))
+        .toEqual({ ok: false, reason: 'account_locked' });
+    }
+
+    expect(await redis.exists(signupPasswordAttemptKey(tokenHash))).toBe(0);
+  });
+
   it('clears the counter when the right password is given', async () => {
     const tokenHash = `it-${randomUUID()}`;
     await checkSignupPassword({ redis, tokenHash, passwordHash, password: 'wrong' });

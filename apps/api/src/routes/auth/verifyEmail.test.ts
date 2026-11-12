@@ -622,9 +622,9 @@ describe('POST /verify-email — signup password attempts', () => {
       }),
       expire: vi.fn(async () => 1),
       del: vi.fn(async (key: string) => (attemptStore.delete(key) ? 1 : 0)),
-      eval: vi.fn(async (_script: string, _keys: number, key: string) => {
-        const next = Number(attemptStore.get(key) ?? '0') + 1;
-        attemptStore.set(key, String(next));
+      eval: vi.fn(async (script: string, _keys: number, key: string) => {
+        const next = Number(attemptStore.get(key) ?? '0') + (script.includes("redis.call('DECR'") ? -1 : 1);
+        if (next <= 0) attemptStore.delete(key); else attemptStore.set(key, String(next));
         return next;
       }),
     } as any);
@@ -731,6 +731,19 @@ describe('POST /verify-email — signup password attempts', () => {
       expect.anything(),
       expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'account_locked', userId: 'u-9' }),
     );
+  });
+
+  it('keeps the signup link usable while the existing account is locked out', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
+
+    for (let i = 0; i < SIGNUP_PASSWORD_MAX_ATTEMPTS + 1; i += 1) {
+      const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
+      expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
+    }
+
+    expect(retireVerificationToken).not.toHaveBeenCalled();
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
   });
 
   it(`retires an existing account's signup link after ${SIGNUP_PASSWORD_MAX_ATTEMPTS} wrong passwords`, async () => {
