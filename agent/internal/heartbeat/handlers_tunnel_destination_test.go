@@ -38,7 +38,7 @@ func TestTunnelOpenVNCTypeOnlyReachesLocalVNCEndpoint(t *testing.T) {
 		{"127.0.0.1", 22},
 	} {
 		result := handleTunnelOpen(&Heartbeat{}, tunnelOpenPayload(target.host, target.port, "vnc"))
-		if result.Status != "failed" || !(strings.Contains(result.Error, "blocked") || strings.Contains(result.Error, "not permitted")) {
+		if result.Status != "failed" || (!strings.Contains(result.Error, "blocked") && !strings.Contains(result.Error, "not permitted")) {
 			t.Fatalf("vnc %s:%d result=%+v, want the destination refused", target.host, target.port, result)
 		}
 	}
