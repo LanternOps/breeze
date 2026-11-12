@@ -963,3 +963,20 @@ describe('timed extras and Load earlier (Wisp companion W02b)', () => {
     expect(el.scrollTop).toBe(0);
   });
 });
+
+describe('transcript removed by retention (#4342 W4)', () => {
+  it('shows the dated banner instead of the quick-action empty state', () => {
+    const { getByTestId, queryByText } = render(
+      <AiChatMessages {...baseProps} messages={[]} transcriptPurgedAt="2027-02-01T03:15:00.000Z" />,
+    );
+    const banner = getByTestId('ai-chat-transcript-purged');
+    expect(banner).toHaveTextContent(/Transcript removed by retention on/);
+    expect(banner).toHaveTextContent(/2027/);
+    expect(queryByText(/Ask about your devices/)).toBeNull();
+  });
+
+  it('renders unchanged when transcriptPurgedAt is null', () => {
+    const { queryByTestId } = render(<AiChatMessages {...baseProps} messages={[]} transcriptPurgedAt={null} />);
+    expect(queryByTestId('ai-chat-transcript-purged')).toBeNull();
+  });
+});

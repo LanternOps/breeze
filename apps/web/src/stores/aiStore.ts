@@ -146,6 +146,12 @@ interface AiState {
   isInterrupting: boolean;
   isFlagged: boolean;
   flagReason: string | null;
+  /**
+   * #4342 W4: set when transcript retention emptied the loaded session. Only
+   * `switchSession` can open one (History, the AI-origin chip): `loadSession`
+   * and `adoptSession` refuse non-active sessions, and a stub is never active.
+   */
+  transcriptPurgedAt: string | null;
   // M365 customer binding (Delegant helpdesk tools)
   m365Connections: M365Connection[];
   selectedM365ConnectionId: string | null;
@@ -290,6 +296,7 @@ const CLEARED_SESSION = {
   messages: [] as AiMessage[],
   isFlagged: false,
   flagReason: null,
+  transcriptPurgedAt: null,
   boundM365ConnectionId: null,
   pendingApproval: null,
   pendingPlan: null,
@@ -701,7 +708,7 @@ function startAttach(
       if (outcome.kind === 'not_found') {
         settleReady('not_found');
         set({
-          sessionId: null, sessionOrgId: null, messages: [], isLoading: false,
+          sessionId: null, sessionOrgId: null, messages: [], transcriptPurgedAt: null, isLoading: false,
           isStreaming: false, joinedMidResponse: false, pendingApproval: null, pendingPlan: null, activePlan: null,
         });
         return;
@@ -783,6 +790,7 @@ export const useAiStore = create<AiState>()(
   isInterrupting: false,
   isFlagged: false,
   flagReason: null,
+  transcriptPurgedAt: null,
   m365Connections: [],
   selectedM365ConnectionId: null,
   boundM365ConnectionId: null,
@@ -857,6 +865,7 @@ export const useAiStore = create<AiState>()(
           isLoading: false,
           isFlagged: false,
           flagReason: null,
+          transcriptPurgedAt: null,
           boundM365ConnectionId: null,
           pendingApproval: null,
           topologySiteId: selection?.siteId ?? null,
@@ -933,6 +942,7 @@ export const useAiStore = create<AiState>()(
         isLoading: false,
         isFlagged: false,
         flagReason: null,
+        transcriptPurgedAt: null,
         boundM365ConnectionId: data.delegantM365ConnectionId ?? null,
         topologySiteId: null,
         topologySelection: null,
@@ -958,7 +968,7 @@ export const useAiStore = create<AiState>()(
   // so the tech gets an answer without retyping the context.
   startDeviceTask: async (deviceId, ctx, initialMessage) => {
     useAiModelPickerStore.getState().clearSelection();
-    set({ pageContext: ctx, sessionId: null, sessionOrgId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
+    set({ pageContext: ctx, sessionId: null, sessionOrgId: null, messages: [], isFlagged: false, flagReason: null, transcriptPurgedAt: null, isOpen: true });
     await get().createSession({ deviceId });
     // Only send if the session was actually created — createSession leaves
     // sessionId null and sets `error` on failure; sending then would be session-less.
@@ -1019,6 +1029,7 @@ export const useAiStore = create<AiState>()(
         isLoading: false,
         isFlagged: !!data.session.flaggedAt,
         flagReason: data.session.flagReason ?? null,
+        transcriptPurgedAt: data.session.transcriptPurgedAt ?? null,
         boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
         turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
         thinking: false,
@@ -1440,7 +1451,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null, isStreaming: false, joinedMidResponse: false });
+      set({ sessionId: null, sessionOrgId: null, messages: [], transcriptPurgedAt: null, boundM365ConnectionId: null, isStreaming: false, joinedMidResponse: false });
       resetModelPicker();
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
@@ -1499,6 +1510,7 @@ export const useAiStore = create<AiState>()(
         isLoading: false,
         isFlagged: !!data.session?.flaggedAt,
         flagReason: data.session?.flagReason ?? null,
+        transcriptPurgedAt: data.session?.transcriptPurgedAt ?? null,
         boundM365ConnectionId: data.session?.delegantM365ConnectionId ?? null,
         turnModel: (data.session?.lastTurnModel ?? null) as AiTurnModel | null,
         thinking: false,
@@ -1638,6 +1650,7 @@ export const useAiStore = create<AiState>()(
       showHistory: false,
       isFlagged: !!data.session.flaggedAt,
       flagReason: data.session.flagReason ?? null,
+      transcriptPurgedAt: null, // adopt refuses a non-active session, and a purged one is never active
       boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
       turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
       ...topologyFieldsOf(data.session),

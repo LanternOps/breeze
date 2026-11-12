@@ -337,8 +337,10 @@
     "noLimit": "Sınır yok",
     "messagesPerMinute": "Kullanıcı başına mesaj/dakika",
     "messagesPerHour": "Mesaj/kuruluş başına saat",
-    "retentionDays": "Transkript saklama (gün)",
+    "retentionDays": "İstemci yapay zeka transkript saklama (gün)",
     "keepForever": "Sonsuza kadar sakla",
+    "retentionScope": "İstemci yapay zeka (AI for Office) görüşmelerine uygulanır. Boş bırakılırsa süresiz saklanır. Teknisyen yapay zeka görüşmelerinin kendi süresi vardır.",
+    "retentionTechnicianLink": "Teknisyen yapay zeka saklama ayarları",
     "brandingDescription": "Eklenti altbilgisinde gösterilir: \"BT sağlayıcınız tarafından yönetilir\" — beyaz etiket kancası (özellik §11).",
     "displayName": "Görünen ad",
     "mspNamePlaceholder": "MSP adınız",
@@ -1083,5 +1085,24 @@
     "feedbackGivenUseful": "Bunu yararlı olarak işaretlediniz",
     "feedbackGivenNotUseful": "Bunu yararlı değil olarak işaretlediniz",
     "feedbackSaved": "Teşekkürler. Wisp bunu hatırlayacak."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transkript {{date}} tarihinde saklama süresi nedeniyle kaldırıldı",
+    "removedLabel": "Saklama süresi nedeniyle kaldırıldı",
+    "removedHelp": "Mesajlar, başlık ve araç ayrıntıları transkript saklama süresine göre kaldırıldı. Maliyet, model ve tur sayısı korunur.",
+    "preview": {
+      "counting": "Bu süreden eski görüşmeler sayılıyor…",
+      "unavailable": "Bu süreden eski görüşmeler sayılamadı.",
+      "noneEnforced": "Bu süreye göre kaldırılması gereken görüşme yok.",
+      "nonePending": "Bu süreye göre kaldırılması gereken görüşme yok. Saklama uygulaması kapalı, bu nedenle henüz hiçbir şey kaldırılmıyor.",
+      "orgPending_one": "{{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "orgPending_other": "{{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "orgEnforced_one": "{{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "orgEnforced_other": "{{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "partnerPending_one": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "partnerPending_other": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "partnerEnforced_one": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "partnerEnforced_other": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak."
+    }
   }
 }

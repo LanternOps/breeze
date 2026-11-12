@@ -337,8 +337,10 @@
     "noLimit": "Sem limite",
     "messagesPerMinute": "Mensagens/min por usuário",
     "messagesPerHour": "Mensagens/hora por organização",
-    "retentionDays": "Retenção da transcrição (dias)",
+    "retentionDays": "Retenção de transcrições da IA do cliente (dias)",
     "keepForever": "Manter para sempre",
+    "retentionScope": "Aplica-se às conversas da IA do cliente (AI for Office). Em branco, elas são mantidas para sempre. As conversas da IA dos técnicos têm seu próprio período.",
+    "retentionTechnicianLink": "Configurações de retenção da IA dos técnicos",
     "brandingDescription": "Exibido no rodapé do suplemento: \"Governado pelo seu provedor de TI\" — o recurso de marca branca (especificação §11).",
     "displayName": "Nome de exibição",
     "mspNamePlaceholder": "Nome do seu MSP",
@@ -1083,5 +1085,24 @@
     "feedbackGivenUseful": "Você marcou isto como útil",
     "feedbackGivenNotUseful": "Você marcou isto como não útil",
     "feedbackSaved": "Obrigado. O Wisp vai se lembrar disso."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transcrição removida pela retenção em {{date}}",
+    "removedLabel": "Removida pela retenção",
+    "removedHelp": "As mensagens, o título e os detalhes das ferramentas foram removidos pelo período de retenção de transcrições. Custo, modelo e número de turnos são mantidos.",
+    "preview": {
+      "counting": "Contando as conversas mais antigas que este período…",
+      "unavailable": "Não foi possível contar as conversas mais antigas que este período.",
+      "noneEnforced": "Nenhuma conversa deve ser removida com este período.",
+      "nonePending": "Nenhuma conversa deve ser removida com este período. A aplicação da retenção está desativada, então nada é removido ainda.",
+      "orgPending_one": "{{display}} conversa deve ser removida com este período. Nada é removido ainda: a aplicação da retenção está desativada, e as mensagens dela serão removidas quando a aplicação for ativada.",
+      "orgPending_other": "{{display}} conversas devem ser removidas com este período. Nada é removido ainda: a aplicação da retenção está desativada, e as mensagens delas serão removidas quando a aplicação for ativada.",
+      "orgEnforced_one": "{{display}} conversa deve ser removida com este período; as mensagens dela serão removidas na próxima execução noturna.",
+      "orgEnforced_other": "{{display}} conversas devem ser removidas com este período; as mensagens delas serão removidas na próxima execução noturna.",
+      "partnerPending_one": "{{display}} conversa em suas organizações deve ser removida com este período. Nada é removido ainda: a aplicação da retenção está desativada, e as mensagens dela serão removidas quando a aplicação for ativada.",
+      "partnerPending_other": "{{display}} conversas em suas organizações devem ser removidas com este período. Nada é removido ainda: a aplicação da retenção está desativada, e as mensagens delas serão removidas quando a aplicação for ativada.",
+      "partnerEnforced_one": "{{display}} conversa em suas organizações deve ser removida com este período; as mensagens dela serão removidas na próxima execução noturna.",
+      "partnerEnforced_other": "{{display}} conversas em suas organizações devem ser removidas com este período; as mensagens delas serão removidas na próxima execução noturna."
+    }
   }
 }

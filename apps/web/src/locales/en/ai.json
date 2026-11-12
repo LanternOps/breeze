@@ -337,8 +337,10 @@
     "noLimit": "No limit",
     "messagesPerMinute": "Messages/min per user",
     "messagesPerHour": "Messages/hour per org",
-    "retentionDays": "Transcript retention (days)",
+    "retentionDays": "Client AI transcript retention (days)",
     "keepForever": "Keep forever",
+    "retentionScope": "Applies to client AI (AI for Office) conversations. Blank keeps them forever. Technician AI conversations have their own window.",
+    "retentionTechnicianLink": "Technician AI retention settings",
     "brandingDescription": "Shown in the add-in footer: \"Governed by your IT provider\" — the white-label hook (spec §11).",
     "displayName": "Display name",
     "mspNamePlaceholder": "Your MSP name",
@@ -1083,5 +1085,24 @@
     "feedbackGivenUseful": "You marked this useful",
     "feedbackGivenNotUseful": "You marked this not useful",
     "feedbackSaved": "Thanks. Wisp will remember that."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transcript removed by retention on {{date}}",
+    "removedLabel": "Removed by retention",
+    "removedHelp": "The messages, title and tool details were removed under the transcript retention window. Cost, model and turn count are kept.",
+    "preview": {
+      "counting": "Counting conversations older than this window…",
+      "unavailable": "Could not count the conversations older than this window.",
+      "noneEnforced": "No conversations are due for removal under this window.",
+      "nonePending": "No conversations are due for removal under this window. Retention enforcement is off, so nothing is removed yet.",
+      "orgPending_one": "{{display}} conversation is due for removal under this window. Nothing is removed yet: retention enforcement is off, and its messages will be removed once enforcement is turned on.",
+      "orgPending_other": "{{display}} conversations are due for removal under this window. Nothing is removed yet: retention enforcement is off, and their messages will be removed once enforcement is turned on.",
+      "orgEnforced_one": "{{display}} conversation is due for removal under this window; its messages will be removed in the next nightly run.",
+      "orgEnforced_other": "{{display}} conversations are due for removal under this window; their messages will be removed in the next nightly run.",
+      "partnerPending_one": "{{display}} conversation across your organizations is due for removal under this window. Nothing is removed yet: retention enforcement is off, and its messages will be removed once enforcement is turned on.",
+      "partnerPending_other": "{{display}} conversations across your organizations are due for removal under this window. Nothing is removed yet: retention enforcement is off, and their messages will be removed once enforcement is turned on.",
+      "partnerEnforced_one": "{{display}} conversation across your organizations is due for removal under this window; its messages will be removed in the next nightly run.",
+      "partnerEnforced_other": "{{display}} conversations across your organizations are due for removal under this window; their messages will be removed in the next nightly run."
+    }
   }
 }
