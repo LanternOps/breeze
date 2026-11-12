@@ -88,9 +88,16 @@ async function seed() {
 
     const runDeviceA = await run({ deviceId: deviceA.id });
     const runDeviceB = await run({ deviceId: deviceB.id });
-    const runAnalysisA = await run({ profile: 'analysis', triggerRef: { source: 'chat_analysis', siteId: siteA.id } });
-    const runAnalysisB = await run({ profile: 'analysis', triggerRef: { source: 'chat_analysis', siteId: siteB.id } });
-    const runAnalysisNoSite = await run({ profile: 'analysis', triggerRef: { source: 'chat_analysis', siteId: null } });
+    const analysis = (siteId: string | null, stagedInputs: typeof aiAgentRuns.$inferInsert['stagedInputs']) =>
+      run({ profile: 'analysis', triggerRef: { source: 'chat_analysis', siteId }, stagedInputs });
+    const staged = (deviceIds: string[], handles: string[] = []) => ({ handles, deviceIds, region: 'us' as const });
+    const runAnalysisA = await analysis(siteA.id, staged([deviceA.id]));
+    const runAnalysisB = await analysis(siteB.id, staged([deviceB.id]));
+    const runAnalysisNoSite = await analysis(null, staged([deviceA.id]));
+    const runAnalysisANoDevices = await analysis(siteA.id, staged([]));
+    const runAnalysisADeviceB = await analysis(siteA.id, staged([deviceA.id, deviceB.id]));
+    const runAnalysisAUnknownInputs = await analysis(siteA.id, null);
+    const runAnalysisAStagedHandle = await analysis(siteA.id, staged([deviceA.id], [randomUUID()]));
     const runDesignA = await run({ profile: 'design', triggerRef: { siteId: siteA.id } });
 
     const sessionOwnNoDevice = await session({ userId: user.id });
@@ -104,6 +111,10 @@ async function seed() {
       runAnalysisA: await artifact('run-analysis-a', runAnalysisA, null),
       runAnalysisB: await artifact('run-analysis-b', runAnalysisB, null),
       runAnalysisNoSite: await artifact('run-analysis-no-site', runAnalysisNoSite, null),
+      runAnalysisANoDevices: await artifact('run-analysis-a-no-devices', runAnalysisANoDevices, null),
+      runAnalysisADeviceB: await artifact('run-analysis-a-device-b', runAnalysisADeviceB, null),
+      runAnalysisAUnknownInputs: await artifact('run-analysis-a-unknown-inputs', runAnalysisAUnknownInputs, null),
+      runAnalysisAStagedHandle: await artifact('run-analysis-a-staged-handle', runAnalysisAStagedHandle, null),
       runDesignA: await artifact('run-design-a', runDesignA, null),
       sessionOwnNoDevice: await artifact('session-own', null, sessionOwnNoDevice),
       sessionOwnDeviceA: await artifact('session-own-device-a', null, sessionOwnDeviceA),
@@ -119,7 +130,7 @@ async function seed() {
       userId: user.id,
       deviceA: deviceA.id,
       deviceB: deviceB.id,
-      runs: { runDeviceA, runDeviceB, runAnalysisA, runAnalysisB },
+      runs: { runDeviceA, runDeviceB, runAnalysisA, runAnalysisB, runAnalysisADeviceB },
       artifacts,
     };
   });
@@ -160,7 +171,8 @@ describe('AI artifact site access (live DB)', () => {
 
   runDb('an unrestricted user sees every artifact in the organization', async () => {
     expect(await visibleNames(ids, authFor(ids, {}))).toEqual([
-      'neither', 'run-analysis-a', 'run-analysis-b', 'run-analysis-no-site', 'run-design-a',
+      'neither', 'run-analysis-a', 'run-analysis-a-device-b', 'run-analysis-a-no-devices',
+      'run-analysis-a-staged-handle', 'run-analysis-a-unknown-inputs', 'run-analysis-b', 'run-analysis-no-site', 'run-design-a',
       'run-device-a', 'run-device-b', 'session-other-device-a', 'session-own',
       'session-own-device-a', 'session-own-device-b',
     ]);
@@ -168,8 +180,26 @@ describe('AI artifact site access (live DB)', () => {
 
   runDb('a site-restricted user sees run artifacts of their sites and their own chat artifacts', async () => {
     expect(await visibleNames(ids, authFor(ids, { allowedSiteIds: [ids.siteA] }))).toEqual([
-      'run-analysis-a', 'run-device-a', 'session-own', 'session-own-device-a',
+      'run-analysis-a', 'run-analysis-a-no-devices', 'run-device-a', 'session-own', 'session-own-device-a',
     ]);
+  });
+
+  runDb('an analysis run is visible only when its recorded site and every input device are in allowed sites', async () => {
+    // Site A recorded but an input device in site B: hidden from a site-A user,
+    // visible to a user allowed both sites.
+    expect(await visibleNames(ids, authFor(ids, { allowedSiteIds: [ids.siteA] }))).not.toContain('run-analysis-a-device-b');
+    const both = await visibleNames(ids, authFor(ids, { allowedSiteIds: [ids.siteA, ids.siteB] }));
+    expect(both).toContain('run-analysis-a-device-b');
+    // Inputs that cannot be determined, or staged artifacts, stay hidden.
+    expect(both).not.toContain('run-analysis-a-unknown-inputs');
+    expect(both).not.toContain('run-analysis-a-staged-handle');
+    // An input device moving out of the allowed sites hides the run's artifacts.
+    await withSystemDbAccessContext(() => db.execute(
+      sql`UPDATE devices SET site_id = ${ids.siteB} WHERE id = ${ids.deviceA}`,
+    ));
+    const after = await visibleNames(ids, authFor(ids, { allowedSiteIds: [ids.siteA] }));
+    expect(after).not.toContain('run-analysis-a');
+    expect(after).toContain('run-analysis-a-no-devices');
   });
 
   runDb('a run artifact follows the run device when the device moves site', async () => {
@@ -200,6 +230,7 @@ describe('AI artifact site access (live DB)', () => {
     expect(await list(ids.runs.runDeviceB)).toEqual([]);
     expect((await list(ids.runs.runAnalysisA)).map((r) => r.name)).toEqual(['run-analysis-a']);
     expect(await list(ids.runs.runAnalysisB)).toEqual([]);
+    expect(await list(ids.runs.runAnalysisADeviceB)).toEqual([]);
     const unrestricted = await withSystemDbAccessContext(() => listArtifactsForAuth(ids.runs.runDeviceB, authFor(ids, {})));
     expect(unrestricted.map((r) => r.name)).toEqual(['run-device-b']);
   });

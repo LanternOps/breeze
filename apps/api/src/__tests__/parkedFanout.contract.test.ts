@@ -217,6 +217,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/aiAgents/analysisRunSite.ts': 'checks that the input devices an analysis run already names sit in its recorded site; selects no targets',
   'services/oemUpdates/revalidation.ts': 'vendor update claim recheck (#11065): reads the partner of the one device being claimed; selects no targets. A parked device is cancelled by partitionClaimable first',
   'services/oemUpdates/alerts.ts': 'vendor update alerts (#11065): reads the hostname of one device the monitor, a sweep or a result already named; selects no targets',
   'services/oemUpdates/results.ts': 'vendor update results (#11065): applies an agent report to the one device that sent it; selects no targets',

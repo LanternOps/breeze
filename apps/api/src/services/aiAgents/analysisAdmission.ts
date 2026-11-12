@@ -18,6 +18,7 @@
  * COMPILE ERROR here, not a blank toast in production.
  */
 import { resolveArtifact } from '../artifacts/artifactService';
+import { verifiedAnalysisSiteId } from './analysisRunSite';
 import {
   createAndEnqueueAgentRun,
   GrantDepthExceededError,
@@ -185,6 +186,10 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
     if (!record) return { created: false, refusal: 'artifact_forbidden' };
   }
 
+  // The recorded site decides which site-restricted users see this run's
+  // artifacts, so it is kept only when it holds every input device.
+  const siteId = await verifiedAnalysisSiteId(input.orgId, input.siteId, input.deviceIds);
+
   let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>>;
   try {
     result = await createAndEnqueueAgentRun({
@@ -203,7 +208,7 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
         source: 'chat_analysis',
         goal: input.goal,
         chatSessionId: input.sessionId,
-        siteId: input.siteId,
+        siteId,
         requestedByUserId: input.requestedByUserId,
       },
       analysis: { deviceIds: input.deviceIds, inputHandles: input.stagedHandles },

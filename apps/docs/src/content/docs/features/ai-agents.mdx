@@ -65,7 +65,7 @@ Admission checks happen before Breeze creates a run. If an agent policy filters 
 AI artifacts (files an AI run or chat produced, such as exports and analysis output) are listed, previewed, downloaded, and attached to tickets or reports under the same site rules as their source. For a user restricted to specific sites:
 
 - An artifact from a run on a device is available while that device is in one of the user's sites. If the device moves to another site or is deleted, its artifacts stop being available to the user.
-- An artifact from a device-less analysis run is available when the site the analysis was requested for is one of the user's sites. Other device-less runs' artifacts are not available.
+- An artifact from a device-less analysis run is available when the site the analysis was requested for, and every device the analysis read, are in the user's sites. An analysis is recorded against a site only when that site holds all of its devices. Other device-less runs' artifacts are not available.
 - An artifact captured in an AI chat with no run is available to the person who started that chat, as long as the chat's device, if it has one, is in one of their sites.
 - An artifact with neither a run nor a chat is not available.
 

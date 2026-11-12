@@ -502,9 +502,12 @@ export function artifactDownloadContentType(stored: string): string {
  *  - it belongs to a run whose device is still in the run's organization and
  *    currently in an allowed site (and, for an exact-device caller, is one of
  *    its devices); or
- *  - it belongs to a device-less `analysis` run and the site recorded on the
+ *  - it belongs to a device-less `analysis` run, the site recorded on the
  *    run when it was requested (`trigger_ref.siteId`) is an allowed site of
- *    the run's organization (site-restricted callers only); or
+ *    the run's organization, and every input device frozen on the run
+ *    (`staged_inputs.deviceIds`) is in the run's organization and currently
+ *    in an allowed site (site-restricted callers only). A run whose inputs
+ *    are not recorded, or that staged artifact inputs, is not visible; or
  *  - it has no run, and it was captured in a chat session the caller created,
  *    whose device (when the session has one) is in scope as above. A session
  *    with no device does not satisfy an exact-device caller.
@@ -537,6 +540,8 @@ export function artifactSiteScopeCondition(
   const runArms: SQL[] = [deviceInScope('artifact_scope_run_device', sql`${run}."device_id"`, sql`${run}."org_id"`)];
   if (allowedSites && allowedDevices === undefined) {
     const site = sql.identifier('artifact_scope_run_site');
+    const input = sql.identifier('artifact_scope_run_input');
+    const inputDevice = sql.identifier('artifact_scope_run_input_device');
     runArms.push(sql`(
       ${run}."device_id" IS NULL
       AND ${run}."profile" = 'analysis'
@@ -545,6 +550,18 @@ export function artifactSiteScopeCondition(
         WHERE ${site}."id"::text = ${run}."trigger_ref"->>'siteId'
           AND ${site}."org_id" = ${run}."org_id"
           AND ${inList(sql`${site}."id"`, allowedSites)}
+      )
+      AND jsonb_typeof(${run}."staged_inputs"->'deviceIds') = 'array'
+      AND jsonb_typeof(${run}."staged_inputs"->'handles') = 'array'
+      AND jsonb_array_length(${run}."staged_inputs"->'handles') = 0
+      AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(${run}."staged_inputs"->'deviceIds') AS ${input}("device_id")
+        WHERE NOT EXISTS (
+          SELECT 1 FROM "devices" AS ${inputDevice}
+          WHERE ${inputDevice}."id"::text = ${input}."device_id"
+            AND ${inputDevice}."org_id" = ${run}."org_id"
+            AND ${inList(sql`${inputDevice}."site_id"`, allowedSites)}
+        )
       )
     )`);
   }

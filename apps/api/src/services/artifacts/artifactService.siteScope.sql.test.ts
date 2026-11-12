@@ -34,6 +34,9 @@ describe('artifactSiteScopeCondition', () => {
     expect(query.sql).toContain('"artifact_scope_run_device"."site_id" IN');
     expect(query.sql).toContain(`"artifact_scope_run"."profile" = 'analysis'`);
     expect(query.sql).toContain(`"artifact_scope_run"."trigger_ref"->>'siteId'`);
+    expect(query.sql).toContain(`jsonb_array_elements_text("artifact_scope_run"."staged_inputs"->'deviceIds')`);
+    expect(query.sql).toContain(`jsonb_array_length("artifact_scope_run"."staged_inputs"->'handles') = 0`);
+    expect(query.sql).toContain('"artifact_scope_run_input_device"."site_id" IN');
     expect(query.sql).toContain('"artifact_scope_session"."user_id" =');
     expect(query.sql).toContain('"artifact_scope_session"."device_id" IS NULL OR');
     expect(query.params).toEqual(expect.arrayContaining([SITE, USER]));
@@ -44,6 +47,7 @@ describe('artifactSiteScopeCondition', () => {
     expect(query.sql).toContain('"artifact_scope_run_device"."id" IN');
     expect(query.sql).not.toContain('"site_id" IN');
     expect(query.sql).not.toContain('trigger_ref');
+    expect(query.sql).not.toContain('staged_inputs');
     expect(query.sql).not.toContain('"device_id" IS NULL OR');
     expect(query.params).toEqual(expect.arrayContaining([DEVICE, USER]));
   });
