@@ -2466,8 +2466,8 @@ export class StreamingSessionManager {
    * The gateway's reason for this turn's failure, removed as it is read. A
    * context-window refusal also marks the turn's observation, so that
    * settlement records it by name (#10577). A refused tool-call batch
-   * (W04 #11397) is recorded the same way, with its log-safe description
-   * (names only) as the failure detail; it is never the technician-facing
+   * (W04 #11397) is recorded by name the same way (the turn's stop reason)
+   * and its log-safe description (names only) is logged; it is never the technician-facing
    * reason (the model's text already carries the note), so it returns null.
    */
   private takeTurnGatewayNote(session: ActiveSession): string | null {

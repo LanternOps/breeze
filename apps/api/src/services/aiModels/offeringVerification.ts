@@ -28,9 +28,11 @@
  * Each turn runs on its own org-less verification grant (no window observer),
  * behind the same deny-all proxy, revoked when the turn ends. The verdicts are
  * stored per surface beside the basic record (surfaceReadiness.ts); a surface
- * turn never changes the basic verdict, and one that throws records nothing.
- * Spend is bounded per surface by SURFACE_TURN_MAX_TURNS requests and a
- * deadline, and per run by SURFACE_STAGE_BUDGET_MS.
+ * turn never changes the basic verdict. A surface whose plan, grant or turn
+ * throws is recorded `inconclusive` (a Breeze-side failure never refuses, and a
+ * re-verify always replaces an older verdict for the surfaces it runs).
+ * Spend: at most four surfaces, each one SDK session of SURFACE_TURN_MAX_TURNS
+ * model turns (the CLI may retry a failed request) within SURFACE_TURN_DEADLINE_MS.
  */
 import { randomUUID } from 'node:crypto';
 import { isGatewayConnectionKind, type AiSurface } from '@breeze/shared';
@@ -47,11 +49,13 @@ import { getConnection } from './connections';
 import { getGatewayAdapter, type GatewayGrant } from './gateway';
 import { takeGatewayFailure } from './gateway/failureNotes';
 import type { KnownWindow } from './gateway/openai/contextWindow';
-import type { SurfaceTurnInput, SurfaceTurnResult } from '../llm/surfaceTurnHarness';
+import type { SurfaceTurnInput, SurfaceTurnPlan, SurfaceTurnResult } from '../llm/surfaceTurnHarness';
+import { effectiveToolProfile } from './toolExposure';
 import type { SurfaceTurnPlanResult } from '../llm/surfaceTurnStubs';
 import { knownContextWindow, resolveEffectiveContextWindow } from './contextWindowFacts';
 import {
   SURFACE_TURN_VERSION,
+  failedToolSurfaces,
   readinessProfileKey,
   type SurfaceReadinessMap,
   type SurfaceReadinessOutcome,
@@ -105,12 +109,14 @@ export interface OfferingVerificationDeps {
   surfaceTurn?: SurfaceTurnRunner;
 }
 
-/** One surface turn: as long as the basic harness's SDK stage. */
+/**
+ * One surface turn: as long as the basic harness's SDK stage. Every turn gets
+ * the full deadline (four surfaces at most), so a slow endpoint is never cut
+ * short by an earlier surface's run.
+ */
 export const SURFACE_TURN_DEADLINE_MS = 150_000;
-/** Every surface turn of one run together (four surfaces at most). */
-export const SURFACE_STAGE_BUDGET_MS = 480_000;
-/** A turn is not started with less than this left of the stage budget. */
-const SURFACE_TURN_MIN_MS = 15_000;
+/** Stored for a surface whose turn could not run (a Breeze-side failure); fixed text. */
+const SURFACE_COULD_NOT_RUN_SUMMARY = 'Breeze could not run this check; try again.';
 
 async function defaultSurfaceTurn(): Promise<SurfaceTurnRunner> {
   // Lazy: the planner loads the whole tool registry, which a verify that
@@ -163,22 +169,23 @@ function summarize(result: FidelityCheckResult, secrets: ReadonlyArray<string | 
 }
 
 interface SurfaceStageContext {
-  offeringId: string;
+  offering: Parameters<typeof toolProfileFactsFrom>[0] & Parameters<typeof resolveEffectiveContextWindow>[0] & { id: string; capabilities: unknown };
+  configVersion: number;
   partnerId: string;
   wireModel: string;
-  facts: ToolProfileFacts;
   fingerprint: string;
   /** Issues one org-less verification grant for a surface turn. */
-  issueSurfaceGrant(noteKey: string, compactSchemas: boolean): GatewayGrant;
+  issueSurfaceGrant(noteKey: string, compactSchemas: boolean, known: KnownWindow | null): GatewayGrant;
   childEnvFor(grant: GatewayGrant): Record<string, string>;
   secrets: Array<string | null>;
   deps: OfferingVerificationDeps;
 }
 
 /**
- * The surface stage. Never throws: a surface whose plan or turn throws is
- * captured and records nothing (its stored entry stays as it was), and the
- * basic verdict is never touched.
+ * The surface stage. Never throws, and never touches the basic verdict. A
+ * surface whose plan, grant or turn throws is captured and recorded
+ * `inconclusive`, so an operator's re-verify always replaces the older
+ * verdict of every surface it reaches.
  */
 async function runSurfaceStage(ctx: SurfaceStageContext): Promise<{
   entries: SurfaceReadinessMap;
@@ -186,63 +193,81 @@ async function runSurfaceStage(ctx: SurfaceStageContext): Promise<{
 }> {
   const entries: SurfaceReadinessMap = {};
   const turns: OfferingVerificationResult['surfaceTurns'] = [];
+  const offeringId = ctx.offering.id;
+  const capture = (message: string, error: unknown): void => {
+    const scrubbed = new Error(`${message}: ${scrubSecrets(describeError(error), ctx.secrets, SUMMARY_MAX)}`);
+    console.error(`[aiModels] offering ${offeringId}: ${scrubbed.message}`);
+    captureException(scrubbed, undefined, { service: 'aiModels', stage: 'offering_surface_turn' });
+  };
   let assigned: AiSurface[];
+  let facts: ToolProfileFacts;
+  let known: KnownWindow | null;
   try {
-    assigned = await systemRead(() => listOfferingToolSurfaces(ctx.partnerId, ctx.offeringId));
-  } catch {
-    console.error(`[aiModels] offering ${ctx.offeringId}: could not list its tool surfaces; surface turns skipped`);
-    captureException(new Error('Offering tool-surface listing failed'), undefined, { service: 'aiModels', stage: 'offering_surface_turn' });
+    assigned = await systemRead(() => listOfferingToolSurfaces(ctx.partnerId, offeringId));
+    // The offering's facts as the resolver reads them (gatewayCandidate): its
+    // profile, allow-list and effective window under this connection version.
+    const window = resolveEffectiveContextWindow(ctx.offering, ctx.configVersion);
+    known = knownContextWindow(window);
+    facts = toolProfileFactsFrom(ctx.offering, 'gateway', window.value);
+  } catch (error) {
+    capture('surface turns skipped (could not list its tool surfaces or read its tool profile)', error);
     return { entries, turns };
   }
-  const surfaces = VERIFIED_SURFACES.filter((s) => assigned.includes(s));
+  // Plus every surface the offering is refused on now: an operator's
+  // re-verify must be able to clear it even after the assignment moved.
+  const refusedNow: readonly AiSurface[] = failedToolSurfaces(ctx.offering.capabilities, { endpointFingerprint: ctx.fingerprint, facts });
+  const surfaces = VERIFIED_SURFACES.filter((s) => assigned.includes(s) || refusedNow.includes(s));
   if (surfaces.length === 0) return { entries, turns };
 
   let runner: SurfaceTurnRunner;
   try {
     runner = ctx.deps.surfaceTurn ?? await defaultSurfaceTurn();
   } catch (error) {
-    captureException(new Error(`Surface turn could not load: ${scrubSecrets(describeError(error), ctx.secrets, SUMMARY_MAX)}`), undefined, { service: 'aiModels', stage: 'offering_surface_turn' });
+    capture('surface turns skipped (the surface turn could not load)', error);
     return { entries, turns };
   }
-  const stageEnds = Date.now() + SURFACE_STAGE_BUDGET_MS;
   for (const surface of surfaces) {
-    const remaining = stageEnds - Date.now();
-    if (remaining < SURFACE_TURN_MIN_MS) break;
     let grant: GatewayGrant | null = null;
+    let plan: SurfaceTurnPlan | null = null;
+    const record = (state: SurfaceReadinessOutcome, summary: string | null, tokens: { promptTokens: number | null; cachedTokens: number | null }): void => {
+      entries[surface] = {
+        state,
+        profileKey: readinessProfileKey(facts, surface),
+        exposureFingerprint: plan?.fingerprint ?? 'unknown',
+        profile: plan?.profile ?? effectiveToolProfile(facts, surface).profile,
+        endpointFingerprint: ctx.fingerprint,
+        version: SURFACE_TURN_VERSION,
+        at: new Date().toISOString(),
+        ...tokens,
+        summary,
+      };
+      turns.push({ surface, state, summary });
+      if (state !== 'passed') console.info(`[aiModels] offering ${offeringId} surface turn ${surface}: ${state}${summary ? ` (${summary})` : ''}`);
+    };
     try {
-      const planned = await runner.plan(surface, ctx.facts);
+      const planned = await runner.plan(surface, facts);
       if (planned.kind === 'refused') {
         turns.push({ surface, state: 'refused', summary: planned.message });
         continue;
       }
-      const { plan } = planned;
+      plan = planned.plan;
       const noteKey = randomUUID();
-      grant = ctx.issueSurfaceGrant(noteKey, plan.compactSchemas);
+      grant = ctx.issueSurfaceGrant(noteKey, plan.compactSchemas, known);
       const result = await runner.run({
         plan,
         wireModel: ctx.wireModel,
         childEnv: ctx.childEnvFor(grant),
-        deadlineMs: Math.min(SURFACE_TURN_DEADLINE_MS, remaining),
+        deadlineMs: SURFACE_TURN_DEADLINE_MS,
         gatewayFailure: () => takeGatewayFailure(noteKey),
       });
-      const summary = result.outcome === 'passed' ? null : scrubSecrets(result.detail, ctx.secrets, SUMMARY_MAX);
-      entries[surface] = {
-        state: result.outcome,
-        profileKey: readinessProfileKey(ctx.facts, surface),
-        exposureFingerprint: plan.fingerprint,
-        profile: plan.profile,
-        endpointFingerprint: ctx.fingerprint,
-        version: SURFACE_TURN_VERSION,
-        at: new Date().toISOString(),
-        promptTokens: result.promptTokens,
-        cachedTokens: result.cachedTokens,
-        summary,
-      };
-      turns.push({ surface, state: result.outcome, summary });
+      record(
+        result.outcome,
+        result.outcome === 'passed' ? null : scrubSecrets(result.detail, ctx.secrets, SUMMARY_MAX),
+        { promptTokens: result.promptTokens, cachedTokens: result.cachedTokens },
+      );
     } catch (error) {
-      const scrubbed = new Error(`Surface turn (${surface}) could not run: ${scrubSecrets(describeError(error), ctx.secrets, SUMMARY_MAX)}`);
-      console.error(`[aiModels] offering ${ctx.offeringId}: ${scrubbed.message}`);
-      captureException(scrubbed, undefined, { service: 'aiModels', stage: 'offering_surface_turn' });
+      capture(`surface turn (${surface}) could not run`, error);
+      record('inconclusive', SURFACE_COULD_NOT_RUN_SUMMARY, { promptTokens: null, cachedTokens: null });
     } finally {
       grant?.revoke();
     }
@@ -326,17 +351,13 @@ export async function verifyConnectionOffering(
       { client, childEnv, probeAdaptiveEffort: adapterCarriesThinking(config.kind) },
     );
     if (result.passed) {
-      // The offering's facts as the resolver reads them (gatewayCandidate):
-      // its profile, allow-list and effective window under this connection version.
-      const window = resolveEffectiveContextWindow(offering, conn.configVersion);
-      const known = knownContextWindow(window);
       surfaceStage = await runSurfaceStage({
-        offeringId: offering.id,
+        offering,
+        configVersion: conn.configVersion,
         partnerId: input.partnerId,
         wireModel,
-        facts: toolProfileFactsFrom(offering, 'gateway', window.value),
         fingerprint,
-        issueSurfaceGrant: (noteKey, compactSchemas) => {
+        issueSurfaceGrant: (noteKey, compactSchemas, known) => {
           const grant = gateway.grant({
             config,
             credential,

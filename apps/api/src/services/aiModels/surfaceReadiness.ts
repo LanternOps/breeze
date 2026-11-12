@@ -64,6 +64,17 @@ const recordSchema = z.object({
   summary: z.string().max(200).nullable(),
 }).strict();
 
+/**
+ * The surfaces whose new entry the reader would drop as malformed. Checked at
+ * write time, so a writer/schema drift is reported instead of silently
+ * turning every refusal off.
+ */
+export function invalidReadinessSurfaces(entries: SurfaceReadinessMap): ToolSurface[] {
+  return (Object.entries(entries) as Array<[ToolSurface, unknown]>)
+    .filter(([, entry]) => !recordSchema.safeParse(entry).success)
+    .map(([surface]) => surface);
+}
+
 function isToolSurface(surface: string): surface is ToolSurface {
   return (TOOL_REQUIRING_SURFACES as readonly string[]).includes(surface);
 }

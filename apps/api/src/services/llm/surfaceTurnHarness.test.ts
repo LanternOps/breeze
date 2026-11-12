@@ -155,10 +155,51 @@ describe('surfaceTurnHarness', () => {
     expect(result.cachedTokens).toBe(2000);
   });
 
+  it('a zero-token first usage (a gateway stream start) is not taken as the prompt size', async () => {
+    const sdk = fakeSdk({ calls: [{ name: 'query_devices', args: {} }], answer: echo, usage: { input_tokens: 0 } });
+    const result = await runSurfaceTurn({ ...base, plan: plan() }, { sdk, sentinel: SENTINEL });
+    expect(result.promptTokens).toBeNull();
+  });
+
   it('running out of turns is a failure of the model, not of the endpoint', async () => {
     const sdk = fakeSdk({ calls: [{ name: 'query_devices', args: {} }], subtype: 'error_max_turns', isError: true });
     const result = await runSurfaceTurn({ ...base, plan: plan() }, { sdk, sentinel: SENTINEL });
     expect(result.outcome).toBe('failed');
+  });
+
+  it('out of turns, then the SDK rejects (the CLI exits non-zero after the result): still a failure', async () => {
+    const sdk = fakeSdk({ calls: [{ name: 'query_devices', args: { limit: 'ten' } }], subtype: 'error_max_turns', isError: true });
+    const rejecting: typeof sdk = {
+      ...sdk,
+      query: (args) => (async function* run() {
+        yield* sdk.query(args) as AsyncIterable<unknown>;
+        throw new Error('Claude Code process exited with code 1');
+      })(),
+    };
+    const result = await runSurfaceTurn({ ...base, plan: plan() }, { sdk: rejecting, sentinel: SENTINEL });
+    expect(result).toMatchObject({ outcome: 'failed', zodValid: false });
+    expect(result.detail).toMatch(/within 4 turns/);
+  });
+
+  it('a success result followed by a rejection is judged on the result', async () => {
+    const sdk = fakeSdk({ calls: [{ name: 'query_devices', args: {} }], answer: echo });
+    const rejecting: typeof sdk = {
+      ...sdk,
+      query: (args) => (async function* run() {
+        yield* sdk.query(args) as AsyncIterable<unknown>;
+        throw new Error('Claude Code process exited with code 1');
+      })(),
+    };
+    expect((await runSurfaceTurn({ ...base, plan: plan() }, { sdk: rejecting, sentinel: SENTINEL })).outcome).toBe('passed');
+  });
+
+  it('a throwing validator (a Breeze defect) is inconclusive, never a model failure', async () => {
+    const sdk = fakeSdk({ calls: [{ name: 'query_devices', args: {} }], answer: (t) => t.join(' ') });
+    const result = await runSurfaceTurn({
+      ...base, plan: plan({ validate: () => { throw new Error('validator bug'); } }),
+    }, { sdk, sentinel: SENTINEL });
+    expect(result.outcome).toBe('inconclusive');
+    expect(result.detail).toMatch(/could not check/);
   });
 
   it('a refused tool-call batch the gateway noted is a failure', async () => {

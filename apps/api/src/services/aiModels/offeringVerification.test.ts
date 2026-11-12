@@ -75,7 +75,7 @@ vi.mock('./offeringVerificationStore', () => ({
 import { getLlmEgressProxy } from '../llm/llmEgressProxy';
 import { closeModelGateway, getModelGateway } from './gateway';
 import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
-import { verifyConnectionOffering } from './offeringVerification';
+import { SURFACE_TURN_DEADLINE_MS, verifyConnectionOffering } from './offeringVerification';
 import { readinessProfileKey } from './surfaceReadiness';
 
 const BASE_URL = 'https://llm.example.com/v1';
@@ -428,6 +428,20 @@ describe('verifyConnectionOffering — surface_turn (#11397)', () => {
     expect(none.planned).toEqual([]);
   });
 
+  it('a surface with a CURRENT failed entry is re-run even when no longer assigned, so a re-verify can clear it', async () => {
+    h.surfaces = ['helper'];
+    const failedChat = {
+      state: 'failed', profileKey: 'full', exposureFingerprint: 'full', profile: 'full', endpointFingerprint: FINGERPRINT,
+      version: '1', at: '2026-11-12T00:00:00.000Z', promptTokens: null, cachedTokens: null, summary: 'answered without calling a tool',
+    };
+    const staleAgents = { ...failedChat, endpointFingerprint: 'f'.repeat(64) };
+    h.offering = { ...h.offering!, capabilities: { breeze_surface_readiness: { chat: failedChat, ai_agents: staleAgents } } };
+    const d = deps();
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(d.planned).toEqual(['chat', 'helper']);
+    expect(readinessWritten()!.chat).toMatchObject({ state: 'passed' });
+  });
+
   it('Office and non-tool surfaces are never run', async () => {
     h.surfaces = ['office_chat', 'catalog_enrichment', 'chat'];
     const d = deps();
@@ -517,13 +531,53 @@ describe('verifyConnectionOffering — surface_turn (#11397)', () => {
     expect(r.surfaceTurns).toContainEqual({ surface: 'script_builder', state: 'refused', summary: 'underpowered' });
   });
 
-  it('a throwing turn records nothing for that surface and never fails the verification', async () => {
-    h.surfaces = ['chat', 'helper'];
-    const d = deps({ run: async (input) => { if (input.plan.surface === 'chat') throw new Error(`boom ${UPSTREAM_KEY}`); return result(); } });
+  it('a throwing turn or plan records inconclusive (so a re-verify clears an old failure) and never fails the verification', async () => {
+    h.surfaces = ['chat', 'helper', 'script_builder'];
+    const d = deps({
+      plan: (surface) => { if (surface === 'script_builder') throw new Error('planner bug'); return { kind: 'planned', plan: fakePlan(surface) }; },
+      run: async (input) => { if (input.plan.surface === 'chat') throw new Error(`boom ${UPSTREAM_KEY}`); return result(); },
+    });
     const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
     expect(r.state).toBe('verified');
-    expect(Object.keys(readinessWritten()!)).toEqual(['helper']);
+    const stored = readinessWritten()!;
+    expect(Object.keys(stored)).toEqual(['chat', 'helper', 'script_builder']);
+    expect(stored.chat).toMatchObject({ state: 'inconclusive', summary: 'Breeze could not run this check; try again.' });
+    expect(stored.script_builder).toMatchObject({ state: 'inconclusive', exposureFingerprint: 'unknown' });
+    expect(JSON.stringify(stored)).not.toContain(UPSTREAM_KEY);
     expect(JSON.stringify(h.captured.map(String))).not.toContain(UPSTREAM_KEY);
+    expect(r.surfaceTurns.map((t) => t.state)).toEqual(['inconclusive', 'passed', 'inconclusive']);
+  });
+
+  it('every turn gets the full deadline (no budget squeeze turns a slow endpoint into an inconclusive overwrite)', async () => {
+    h.surfaces = ['chat', 'helper', 'script_builder', 'ai_agents'];
+    const d = deps();
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(d.ran.map((i) => i.deadlineMs)).toEqual([SURFACE_TURN_DEADLINE_MS, SURFACE_TURN_DEADLINE_MS, SURFACE_TURN_DEADLINE_MS, SURFACE_TURN_DEADLINE_MS]);
+  });
+
+  it('a malformed stored allow-list or window field never makes the basic run "could not run"', async () => {
+    h.surfaces = ['chat'];
+    h.offering = { ...h.offering!, contextWindowObservedAt: 'not-a-date', contextWindowObserved: 9000, contextWindowObservedConfigVersion: 2 };
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, deps().deps);
+    expect(r.state).toBe('verified');
+  });
+
+  it('the turn reads its own gateway note (the grant session key is the note key)', async () => {
+    h.surfaces = ['chat'];
+    const d = deps({
+      run: async (input) => {
+        const base = input.childEnv.ANTHROPIC_BASE_URL!;
+        // An upstream that cannot be reached notes an uncoded failure under the grant's session.
+        await fetch(`${base}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'qwen', max_tokens: 5, messages: [{ role: 'user', content: 'x' }] }),
+        }).catch(() => undefined);
+        const note = input.gatewayFailure?.();
+        return result(note ? { outcome: 'inconclusive', passed: false, detail: `note: ${note.message}` } : { outcome: 'failed', passed: false, detail: 'no note' });
+      },
+    });
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(readinessWritten()!.chat).toMatchObject({ state: 'inconclusive' });
   });
 
   it('a failed assignment listing skips the surface stage; the basic record is still written', async () => {

@@ -29,7 +29,8 @@ import { and, eq, or, sql } from 'drizzle-orm';
 import { TOOL_REQUIRING_SURFACES, isGatewayConnectionKind, type AiSurface } from '@breeze/shared';
 import { db } from '../../db';
 import { aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
-import { SURFACE_READINESS_KEY, currentReadinessEntries, mergeSurfaceReadiness, type SurfaceReadinessMap } from './surfaceReadiness';
+import { SURFACE_READINESS_KEY, currentReadinessEntries, invalidReadinessSurfaces, mergeSurfaceReadiness, type SurfaceReadinessMap } from './surfaceReadiness';
+import { captureException } from '../sentry';
 import { endpointFingerprint, readVerification } from './gatewayCapabilities';
 import { inPartnerRegistryWrite } from './offeringWrites';
 import { RegistryWriteError } from './registryWriteErrors';
@@ -105,7 +106,14 @@ async function writeLocked(input: OfferingVerificationWrite): Promise<OfferingVe
   const existing = readVerification(offering.capabilities);
   if (existing && Date.parse(existing.at) >= input.startedAt.getTime()) return 'superseded';
 
-  const { kept, dropped } = currentReadinessEntries(input.surfaceReadiness ?? {}, offering, conn.configVersion);
+  // A record the reader would drop as malformed would silently turn its
+  // surface's refusal off: report the drift here, where it is written.
+  const invalid = invalidReadinessSurfaces(input.surfaceReadiness ?? {});
+  if (invalid.length > 0) {
+    captureException(new Error(`Surface readiness record(s) fail the stored schema: ${invalid.join(', ')}`), undefined, { service: 'aiModels', stage: 'offering_surface_turn' });
+  }
+  const valid = Object.fromEntries(Object.entries(input.surfaceReadiness ?? {}).filter(([s]) => !invalid.includes(s as never)));
+  const { kept, dropped } = currentReadinessEntries(valid, offering, conn.configVersion);
   if (dropped.length > 0) {
     console.info(`[aiModels] offering ${input.offeringId}: surface turn(s) superseded by a tool profile change: ${dropped.join(', ')}`);
   }

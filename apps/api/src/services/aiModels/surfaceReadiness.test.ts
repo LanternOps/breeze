@@ -6,6 +6,7 @@ import {
   SURFACE_TURN_VERSION,
   currentReadinessEntries,
   failedToolSurfaces,
+  invalidReadinessSurfaces,
   mergeSurfaceReadiness,
   readSurfaceReadiness,
   readinessProfileKey,
@@ -108,6 +109,21 @@ describe('surface readiness (#11393 W04 T11)', () => {
     const autoEntries = { chat: entry({ profileKey: readinessProfileKey(facts('auto'), 'chat') }) };
     expect(currentReadinessEntries(autoEntries, { ...row, toolProfile: 'auto' }, 4).dropped).toEqual([]);
     expect(currentReadinessEntries(autoEntries, { ...row, toolProfile: 'auto', contextWindowOverride: 8192 }, 4).dropped).toEqual(['chat']);
+  });
+
+  it('superseded per surface: one surface kept, another dropped, in the same write', () => {
+    const row = { toolProfile: 'auto' as const, toolAllowlist: null, contextWindowOverride: 8192, contextWindowDiscovered: null,
+      contextWindowObserved: null, contextWindowObservedAt: null, contextWindowObservedConfigVersion: null };
+    // At 8,192 auto narrows chat to minimal; the chat entry carries that key, the helper's a stale one.
+    const chat = entry({ profileKey: readinessProfileKey(facts('auto', 8192), 'chat') });
+    expect(chat.profileKey).toBe(minimalKey);
+    expect(currentReadinessEntries({ chat, helper: entry({ profileKey: 'not-the-key' }) }, row, 4)).toEqual({ kept: { chat }, dropped: ['helper'] });
+  });
+
+  it('a record the reader would drop is caught at write time', () => {
+    expect(invalidReadinessSurfaces({ chat: entry(), helper: entry({ summary: 'x'.repeat(201) }) })).toEqual(['helper']);
+    expect(invalidReadinessSurfaces({ chat: entry({ version: '' }) })).toEqual(['chat']);
+    expect(invalidReadinessSurfaces({ chat: entry() })).toEqual([]);
   });
 
   it('merge replaces the surfaces run now and keeps the others', () => {

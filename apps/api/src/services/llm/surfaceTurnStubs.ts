@@ -6,12 +6,14 @@
  * change moves the verify with it (surfaceTurnStubs.contract.test.ts pins
  * the declarations against the production servers).
  *
- * Verified surfaces and the variant each one runs (the largest variant, as
- * the prefix pins use, so the turn exercises what `auto` sized for):
+ * Verified surfaces and the variant each one runs:
  *  - chat           → the chat registry (no tenant/flow tools: org-less run)
- *  - helper         → the `extended` permission level
+ *  - helper         → the `extended` permission level (the largest)
  *  - script_builder → the script builder server
- *  - ai_agents      → the `analysis` run profile (+ its outcome tool)
+ *  - ai_agents      → the `analysis` run profile (+ its outcome tool), as the
+ *    plan names it: read-only and small (the prefix pins also measure the
+ *    larger `full` remediation variant). Its verdict stands for every agent
+ *    run on the offering.
  * Office is not verified in v1: its tools are declared and run by the Office
  * client, there is no production server to mirror, and its prefixes are
  * unmeasured. An Office readiness entry is therefore always absent (eligible).

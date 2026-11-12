@@ -31,7 +31,9 @@
  *
  * Refused tool-call batches (W04 #11397): calls whose turn the gateway refused
  * a tool-call batch in (ai_invocations.stop_reason 'refused_tool_batch'), per
- * call like refusals. Grouping by `tool_profile` keys on
+ * call like refusals. Recorded for StreamingSessionManager sessions (chat,
+ * helper, script builder, Office); AI agent runs do not record it yet, so
+ * they count 0. Grouping by `tool_profile` keys on
  * ai_invocations.tool_profile; a null (rows settled before tool profiles, or a
  * path that resolves no tool exposure) is its own 'unrecorded' group, as for
  * prompt_profile.

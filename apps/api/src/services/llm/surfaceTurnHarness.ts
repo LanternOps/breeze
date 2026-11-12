@@ -3,7 +3,9 @@
  * turn of a surface, as that surface would run it on the model under test —
  * its system prompt, its tool list under the offering's tool exposure (names,
  * descriptions and schemas exactly as production registers them) and its
- * `allowedTools` — answered by STUBS.
+ * `allowedTools` — answered by STUBS. Every tool is advertised inline: a host
+ * that defers chat tools behind tool search (AI_TOOL_SEARCH) is not mirrored;
+ * constrained profiles and gateways never defer.
  *
  * A stub keeps the production declaration and swaps only the handler: the
  * handler validates the input (the declaration's Zod shape, then the
@@ -16,15 +18,18 @@
  * Verdict (`outcome`):
  *  - `passed`: a call with valid input reached a stub AND the final answer
  *    carries the run's random sentinel (proof the tool result was read).
- *  - `failed`: the MODEL could not do the round trip — no tool call, only
- *    invalid input, no sentinel, out of turns, or a tool-call batch the
- *    gateway refused. Eligibility refuses the surface on this (T11).
- *  - `inconclusive`: the ENDPOINT or the run failed (an HTTP error, a context
- *    window the prompt does not fit, a timeout, a spawn error). Never refuses
- *    anything: the W02 window learning and the next verification own those.
+ *  - `failed`: the MODEL could not do the round trip — no tool call, a call
+ *    that never reached a stub (an input the SDK rejected, a name not
+ *    offered), only invalid input, no sentinel, out of turns, or a tool-call
+ *    batch the gateway refused. Eligibility refuses the surface on this (T11).
+ *  - `inconclusive`: the ENDPOINT, the run or Breeze failed (an HTTP error, a
+ *    context window the prompt does not fit, a timeout, a spawn error, a
+ *    validator that threw). Never refuses anything: the W02 window learning
+ *    and the next verification own those.
  *
- * Pure apart from the SDK child it spawns; the caller (offeringVerification)
- * owns the grant, the egress proxy and persistence.
+ * Side effects: the SDK child it spawns and an empty temp directory it runs
+ * in; the caller (offeringVerification) owns the grant, the egress proxy and
+ * persistence.
  */
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
@@ -66,7 +71,11 @@ export interface SurfaceTurnResult {
   passed: boolean;
   /** Why, ≤ 200 chars; the caller scrubs secrets before storing it. */
   detail: string;
-  /** The first request's prompt tokens (cache reads and writes included); null when the endpoint reported none. */
+  /**
+   * The first request's prompt tokens (cache reads and writes included) as the
+   * gateway reported them (its estimate when the endpoint states none),
+   * falling back to the session total; null when nothing non-zero was reported.
+   */
   promptTokens: number | null;
   cachedTokens: number | null;
   /** Bare name of the first tool the model called; null = none. */
@@ -99,7 +108,7 @@ export interface SurfaceTurnDeps {
   isolatedCwd?: () => Promise<IsolatedSdkCwd | null>;
 }
 
-interface StubCall { name: string; valid: boolean; error?: string }
+interface StubCall { name: string; valid: boolean; error?: string; harnessError?: string }
 
 function clip(text: string): string {
   return text.length <= DETAIL_MAX ? text : `${text.slice(0, DETAIL_MAX - 1)}…`;
@@ -118,8 +127,16 @@ export function stubTools(plan: SurfaceTurnPlan, sentinel: string, onCall: (call
   return plan.tools.map((declaration) => {
     const handler = async (args: unknown) => {
       const input = (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Record<string, unknown>;
-      const shape = z.object(declaration.inputSchema as z.ZodRawShape).safeParse(input);
-      const verdict = shape.success ? plan.validate(declaration.name, input) : { success: false as const, error: zodIssues(shape.error) };
+      let verdict: { success: true } | { success: false; error: string };
+      try {
+        const shape = z.object(declaration.inputSchema as z.ZodRawShape).safeParse(input);
+        verdict = shape.success ? plan.validate(declaration.name, input) : { success: false as const, error: zodIssues(shape.error) };
+      } catch (error) {
+        // A Breeze defect (a declaration or validator that throws), never the
+        // model's: the run is judged inconclusive, not failed.
+        onCall({ name: declaration.name, valid: false, harnessError: error instanceof Error ? error.message : 'unknown error' });
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'Breeze could not check this call.' }) }], isError: true };
+      }
       if (!verdict.success) {
         onCall({ name: declaration.name, valid: false, error: verdict.error });
         return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: verdict.error }) }], isError: true };
@@ -145,7 +162,9 @@ function firstUsage(usage: unknown): { prompt: number; cached: number } | null {
   const u = usage as Record<string, unknown>;
   const n = (k: string) => (typeof u[k] === 'number' && Number.isFinite(u[k]) ? (u[k] as number) : 0);
   if (typeof u.input_tokens !== 'number') return null;
-  return { prompt: n('input_tokens') + n('cache_read_input_tokens') + n('cache_creation_input_tokens'), cached: n('cache_read_input_tokens') };
+  const prompt = n('input_tokens') + n('cache_read_input_tokens') + n('cache_creation_input_tokens');
+  // A gateway stream starts with zero usage (the real count arrives later): not a size.
+  return prompt > 0 ? { prompt, cached: n('cache_read_input_tokens') } : null;
 }
 
 export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnDeps = {}): Promise<SurfaceTurnResult> {
@@ -229,9 +248,14 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
     }
   } catch (error) {
     if (timedOut) return verdict('inconclusive', `did not finish within ${Math.round(input.deadlineMs / 1000)} s`);
-    const note = gatewayFailure();
-    if (note?.code === 'refused_tool_batch') return verdict('failed', `the gateway refused the model's tool calls: ${note.message}`);
-    return verdict('inconclusive', `could not complete: ${note?.message ?? (error instanceof Error ? error.message : 'unknown error')}`);
+    // The SDK rejects the iterator when the CLI exits non-zero AFTER its
+    // `result` (e.g. error_max_turns; see toolCapture/runSurface.ts): a
+    // delivered result is judged below, as if the session had ended normally.
+    if (!final.message) {
+      const note = gatewayFailure();
+      if (note?.code === 'refused_tool_batch') return verdict('failed', `the gateway refused the model's tool calls: ${note.message}`);
+      return verdict('inconclusive', `could not complete: ${note?.message ?? (error instanceof Error ? error.message : 'unknown error')}`);
+    }
   } finally {
     clearTimeout(timer);
     cwd?.remove();
@@ -242,6 +266,8 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
   if (timedOut) return verdict('inconclusive', `did not finish within ${Math.round(input.deadlineMs / 1000)} s`);
   if (!result) return verdict('inconclusive', 'the session ended without a result');
 
+  const harnessError = calls.find((c) => c.harnessError);
+  if (harnessError) return verdict('inconclusive', `Breeze could not check the ${harnessError.name} call: ${harnessError.harnessError}`);
   const note = gatewayFailure();
   if (note?.code === 'refused_tool_batch') return verdict('failed', `the gateway refused the model's tool calls: ${note.message}`);
   if (result.subtype !== 'success' || result.is_error === true) {

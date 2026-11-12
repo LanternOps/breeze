@@ -91,7 +91,11 @@ export interface SdkTurnObservation {
   /**
    * W04 (#11397): the model gateway refused a tool-call batch of this turn it
    * could not verify (the model saw a fixed note instead). The log-safe
-   * description: names only, never arguments. null = none refused.
+   * description (names only, never arguments) is logged by the session
+   * manager; settlement reads only whether it is set. null = none refused.
+   * Set only on StreamingSessionManager turns (agent runs do not read the
+   * gateway's notes yet), and lost if a later uncoded gateway failure note
+   * of the same turn replaces it.
    */
   refusedToolBatch: string | null;
 }
@@ -366,7 +370,9 @@ function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkRe
   const servedModel = nothingServed ? binding.wireModel : observedServed;
   // A context-window refusal names a failed turn first (it is terminal and the
   // more specific reason); a refused tool batch names the turn whether or not
-  // it then completed, so the quality view can count it (W04 #11397).
+  // it then completed, so the quality view can count it (W04 #11397). A turn
+  // that refused a batch and then errored for another reason is therefore
+  // labelled refused_tool_batch, not error.
   const stopReason = refused ? 'refusal'
     : errored && obs.contextWindowExceeded ? 'context_window_exceeded'
       : obs.refusedToolBatch !== null ? 'refused_tool_batch'

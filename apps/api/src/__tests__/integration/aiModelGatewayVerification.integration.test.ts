@@ -281,14 +281,25 @@ describe('verifyConnectionOffering surface turns (#11397, real DB)', () => {
     expect(c!.facts.failedToolSurfaces).toEqual(['chat']);
   });
 
-  it('a later run keeps the surfaces it did not run, and an operator profile change makes the failed entry refuse nothing', async () => {
+  it('a later run keeps the surfaces it did not run, re-runs a refused surface after its assignment moved, and a profile change un-refuses', async () => {
     const { partnerId, offeringId } = await seed();
     await assign(partnerId, 'chat', { def: offeringId });
+    await assign(partnerId, 'script_builder', { def: offeringId });
+    await verifyConnectionOffering({ offeringId, partnerId }, { ...harness(() => PASS), surfaceTurn: turn('passed') });
+    // Chat now fails; the script builder entry stays as it was.
+    await fixtureSql`DELETE FROM ai_model_assignments WHERE offering_partner_id = ${partnerId} AND surface = 'script_builder'`;
     await verifyConnectionOffering({ offeringId, partnerId }, { ...harness(() => PASS), surfaceTurn: turn('failed') });
+    expect(await readiness(offeringId)).toMatchObject({ chat: { state: 'failed' }, script_builder: { state: 'passed' } });
+    // The chat assignment moves away; a re-verify still re-runs chat (refused now) beside the helper.
     await fixtureSql`DELETE FROM ai_model_assignments WHERE offering_partner_id = ${partnerId}`;
     await assign(partnerId, 'helper', { def: offeringId });
-    await verifyConnectionOffering({ offeringId, partnerId }, { ...harness(() => PASS), surfaceTurn: turn('passed') });
-    expect(Object.keys(await readiness(offeringId)).sort()).toEqual(['chat', 'helper']);
+    const ran: string[] = [];
+    await verifyConnectionOffering({ offeringId, partnerId }, {
+      ...harness(() => PASS),
+      surfaceTurn: { plan: async (surface) => { ran.push(surface); return plan(surface); }, run: async (input) => turn(input.plan.surface === 'chat' ? 'failed' : 'passed').run(input) },
+    });
+    expect(ran).toEqual(['chat', 'helper']);
+    expect(Object.keys(await readiness(offeringId)).sort()).toEqual(['chat', 'helper', 'script_builder']);
     expect((await loadOfferingCandidate(offeringId, partnerId))!.facts.failedToolSurfaces).toEqual(['chat']);
 
     await fixtureSql`UPDATE partner_ai_models SET tool_profile = 'standard' WHERE id = ${offeringId}`;

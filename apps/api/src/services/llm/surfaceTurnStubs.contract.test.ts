@@ -100,7 +100,8 @@ describe('surface_turn stubs are the production declarations', () => {
     expect(prod.length).toBeGreaterThan(0);
     const advertised = (tools: Array<Parameters<typeof advertisedTool>[1]>) => tools.map((t) => advertisedTool(plan.mcpServerName, t));
     expect(advertised(stubs)).toEqual(advertised(prod));
-    expect(stubs.map((s) => s.handler)).not.toContain(prod[0]!.handler);
+    // Every handler is replaced: none is the planned production declaration's own.
+    stubs.forEach((stub, i) => expect(stub.handler).not.toBe(plan.tools[i]!.handler));
     // The target is one of the stubs and allowed.
     expect(stubs.map((s) => s.name)).toContain(plan.targetTool);
     expect(plan.allowedTools).toContain(`mcp__${plan.mcpServerName}__${plan.targetTool}`);
