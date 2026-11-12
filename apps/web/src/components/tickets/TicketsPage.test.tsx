@@ -1537,6 +1537,20 @@ describe('TicketsPage — merged tickets (#8972)', () => {
     expect(window.location.hash).toBe('#T-2026-0001&merged=1');
   });
 
+  it('"Imported only" counts as a filter, and clearing the filters turns it off (#8313)', async () => {
+    window.location.hash = '#imported=1';
+    mockListApi((url) => (url.includes('imported=true') ? [] : [healthy]));
+    render(<TicketsPage />);
+    await screen.findByTestId('tickets-queue-empty');
+    // Filtered-empty, not onboarding: filtersActive counts it.
+    expect(screen.queryByTestId('tickets-empty')).toBeNull();
+    fireEvent.click(screen.getByTestId('tickets-filters-clear'));
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(ticketFetchUrls().at(-1)).not.toContain('imported');
+    expect(window.location.hash).not.toContain('imported=');
+    expect(screen.getByTestId('ticket-list-imported-only')).not.toBeChecked();
+  });
+
   it('a reload with #imported=1 restores the filter and is not read as a selection (#8313)', async () => {
     window.location.hash = '#imported=1';
     mockListApi([healthy]);

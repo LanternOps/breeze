@@ -198,7 +198,7 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
 
   // 'mine'/'unassigned' tabs already pin the assignee param; the filter select is locked there.
   const assigneeLocked = tab === 'mine' || tab === 'unassigned';
-  const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter || typeFilter);
+  const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter || typeFilter || importedOnly);
 
   // Single writer for the hash: state and URL always move together, so focus,
   // sort, type and the merged toggle never clobber each other. `mergedValue`
@@ -222,8 +222,8 @@ export default function TicketsPage({ routeTicketId }: Props = {}) {
     setPriorityFilter('');
     setCategoryFilter('');
     setAssigneeFilter('');
-    if (typeFilter) writeHash(focusKey, sort, '');
-  }, [typeFilter, focusKey, sort, writeHash]);
+    if (typeFilter || importedOnly) writeHash(focusKey, sort, '', showMerged, { imported: false });
+  }, [typeFilter, importedOnly, focusKey, sort, showMerged, writeHash]);
 
   // Filter options load once; failures degrade per-select (these are filters, not critical path).
   useEffect(() => {
