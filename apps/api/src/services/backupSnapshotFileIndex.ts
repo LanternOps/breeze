@@ -246,6 +246,26 @@ function claimPredicate(claim: HydrationClaim) {
 
 const MAX_STORED_REASON_LENGTH = 200;
 
+/**
+ * How much of a failure reason the redaction patterns read, so their work is
+ * bounded whatever a manifest holds. Only the first MAX_STORED_REASON_LENGTH
+ * characters are stored, so ten times that is ample.
+ */
+export const MAX_REDACTED_REASON_INPUT_LENGTH = MAX_STORED_REASON_LENGTH * 10;
+
+/** How much of an unparseable manifest key a failure reason quotes. */
+const MAX_REPORTED_KEY_LENGTH = 256;
+
+/** The reason cut to MAX_REDACTED_REASON_INPUT_LENGTH. A cut drops the token it
+ *  lands in (which could be part of a host the patterns would no longer
+ *  recognise) and marks the cut with an ellipsis. */
+function boundReasonInput(reason: string): string {
+  if (reason.length <= MAX_REDACTED_REASON_INPUT_LENGTH) return reason;
+  const head = reason.slice(0, MAX_REDACTED_REASON_INPUT_LENGTH);
+  const lastBreak = head.search(/\s\S*$/);
+  return `${lastBreak === -1 ? '' : head.slice(0, lastBreak + 1)}…`;
+}
+
 /** Last labels that mean a file name, not a host, in a dotted token. */
 const FILE_EXTENSIONS = new Set([
   'json', 'txt', 'gz', 'tgz', 'zip', 'log', 'js', 'ts', 'yaml', 'yml', 'xml', 'csv', 'db', 'bin', 'dat', 'tmp', 'bak', 'sql', 'pem', 'crt', 'key', 'enc', 'zst', 'xz', 'tar',
@@ -258,7 +278,7 @@ const FILE_EXTENSIONS = new Set([
  * network error code (#11280). Dotted hostnames are redacted unless the last label is a file extension.
  */
 export function redactIndexFailureReason(reason: string): string {
-  return reason
+  return boundReasonInput(reason)
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[redacted]')
     .replace(/\[[0-9a-f:]*:[0-9a-f:]*\](?::\d+)?/gi, '[redacted]')
     .replace(/(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4})?|::1\b/gi, '[redacted]')
@@ -611,7 +631,12 @@ async function validateSpooledManifest(
     return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', 'manifest has no files key') };
   }
   if (invalidKey !== null) {
-    return { outcome: await failOutsideContext(snapshot, 'manifest_key_invalid', `unparseable backupPath: ${invalidKey}`) };
+    // The key is shown only to identify the entry, so a long one is shortened
+    // before it reaches the stored reason, the worker log and error reporting.
+    // (Assigned inside the scan callback, so TypeScript cannot see it is a string here.)
+    const key: string = invalidKey as string;
+    const shown = key.length > MAX_REPORTED_KEY_LENGTH ? `${key.slice(0, MAX_REPORTED_KEY_LENGTH)}…` : key;
+    return { outcome: await failOutsideContext(snapshot, 'manifest_key_invalid', `unparseable backupPath: ${shown}`) };
   }
   if (tooManyOrigins) {
     return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', `manifest references more than ${MAX_MANIFEST_ORIGINS} other snapshots`) };
