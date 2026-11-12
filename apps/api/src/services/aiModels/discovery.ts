@@ -351,7 +351,7 @@ async function listConnectionModels(
   if (!provider) throw new Error('The catalog provider for this connection is not listed.');
   return [...new Set(provider.verifiedModels)]
     .filter((id) => Object.hasOwn(provider.modelMap, id))
-    .map((id) => ({ modelId: id, capabilities: null, displayName: null }));
+    .map((id) => ({ modelId: id, capabilities: null, displayName: null, contextLength: null }));
 }
 
 /** Shortest run of the key that is treated as the key itself when it appears in endpoint-supplied text. */
