@@ -22,6 +22,7 @@ import { transcriptPreviewDaysSchema } from '../../services/aiDataPolicy';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { lockPortalEntraOrgMappings } from '../../services/portalEntraTenantProof';
 import { auditPortalPasswordFallback } from '../../services/portalPasswordFallback';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { putPolicySchema, putTenantMappingSchema } from './schemas';
 import { clientAiAdminOrgRoutes } from './adminOrgs';
 import { clientAiAdminSessionRoutes } from './adminSessions';
@@ -34,7 +35,11 @@ import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
  * MSP-facing admin surface for Breeze AI for Office (spec §9, consumed by the
  * Plan-4 dashboard): tenant mapping + per-org policy. Mirrors routes/m365.ts:
  * group authMiddleware, feature 404 gate, ORGS_READ/ORGS_WRITE permissions,
- * MFA on the isolation-critical mapping mutations, writeRouteAudit on writes.
+ * MFA on every mapping and policy mutation, writeRouteAudit on writes.
+ *
+ * The tenant mapping and the policy apply to the whole organization, so their
+ * writes also require a caller with no site or exact-device restriction
+ * (`canMutateOrgWideGovernance`).
  *
  * Org access: resolveScopedOrgId(auth, :orgId) returns null when the caller
  * cannot access the org → respond 404 (never reveal cross-tenant existence).
@@ -121,6 +126,9 @@ clientAiAdminRoutes.put(
   zValidator('json', putTenantMappingSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
     if (!orgId) return c.json({ error: 'Organization not found' }, 404);
     // canAccessOrg is true for system scope: the holding org is never a target.
@@ -199,6 +207,9 @@ clientAiAdminRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
     if (!orgId) return c.json({ error: 'Organization not found' }, 404);
 
@@ -263,9 +274,13 @@ clientAiAdminRoutes.get(
 clientAiAdminRoutes.put(
   '/orgs/:orgId/policy',
   requireOrgsWrite,
+  requireMfa(),
   zValidator('json', putPolicySchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
     if (!orgId) return c.json({ error: 'Organization not found' }, 404);
 

@@ -35,7 +35,7 @@ Once your partner is entitled, you configure AI for Office per customer organiza
 
 ### Mapping the Customer's Microsoft Tenant
 
-Each customer organization must be mapped to its **Microsoft Entra tenant** so sign-ins resolve to the right org. This mapping is the foundation of tenant isolation and is set once per organization. Creating or changing a tenant mapping requires multi-factor authentication.
+Each customer organization must be mapped to its **Microsoft Entra tenant** so sign-ins resolve to the right org. This mapping is the foundation of tenant isolation and is set once per organization. Creating or changing a tenant mapping requires multi-factor authentication and a user without a site restriction.
 
 <Steps>
 1. Open the AI for Office admin area and select the customer organization.
@@ -110,7 +110,7 @@ Manage the links at **Settings → Outlook Add-in Bindings**. The list shows eac
 
 ## Permissions
 
-Viewing AI for Office configuration requires organization read access; changing org policies requires organization write access. Tenant-mapping changes additionally require multi-factor authentication. The per-partner entitlement is operator-only.
+Viewing AI for Office configuration requires organization read access; changing org policies or the tenant mapping requires organization write access and multi-factor authentication. Because the policy and the tenant mapping apply to the whole organization, a user restricted to specific sites cannot change them and receives a `403` asking an unrestricted administrator to make the change. The per-partner entitlement is operator-only.
 
 **Prompt templates have their own permissions** (v0.122.1). The template manager needs `client_ai_templates:read` to view templates and `client_ai_templates:write` to create, edit or delete them; creating, editing and deleting also require MFA when your MFA policy requires it. The **Templates** tab is hidden from users without read access, and its edit controls are hidden from users without write access.
 
