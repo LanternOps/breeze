@@ -22,7 +22,7 @@ import {
   unifiIntegrations,
 } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
-import { getTestRedis } from './setup';
+import { getTestDb, getTestRedis } from './setup';
 import { huntressSource } from '../../services/connectionHealth/sources/huntress';
 import { sentinelOneSource } from '../../services/connectionHealth/sources/sentinelOne';
 import { pax8Source } from '../../services/connectionHealth/sources/pax8';
@@ -34,6 +34,10 @@ import { dnsFilterSource } from '../../services/connectionHealth/sources/dnsFilt
 import { m365ConnectionSource } from '../../services/connectionHealth/sources/m365Connection';
 import { m365SyncSource } from '../../services/connectionHealth/sources/m365Sync';
 import { ticketMailboxSource } from '../../services/connectionHealth/sources/ticketMailbox';
+import { backupDestinationSource } from '../../services/connectionHealth/sources/backupDestination';
+import { normalizeStorageIdentity } from '../../services/backupStorageIdentity';
+import { sealBackupProviderConfig } from '../../services/backupProviderConfigSealing';
+import { sql } from 'drizzle-orm';
 import { runReconcile } from '../../services/connectionHealth/reconcile';
 import { CONNECTION_SOURCE_KINDS, type HealthSource } from '../../services/connectionHealth/types';
 
@@ -245,6 +249,101 @@ describe('broken query covers every broken verdict branch', () => {
       status: 'suspended', createdAt: OLD,
     }).returning({ id: m365Connections.id }));
     expect((await observe(m365ConnectionSource)).find((x) => x.sourceId === row!.id)).toMatchObject({ state: 'broken', severity: 'permanent' });
+  });
+});
+
+// #11772: one incident per backup_configs row when the destination itself is failing.
+describe('backup destination source', () => {
+  const DESTINATION = { endpoint: 'https://storage.example.test', bucket: 'dest-a', accessKey: 'synthetic', secretKey: 'synthetic' };
+  const IDENTITY = normalizeStorageIdentity('s3', DESTINATION);
+  // Stored the way the sealed column writes it, so the source's read must open it through the column.
+  const SEALED_DESTINATION = sealBackupProviderConfig(DESTINATION);
+  const DENIED = 'storage session: storage answered status 403 (AccessDenied)';
+  const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
+
+  async function tenant() {
+    const p = await partner();
+    const o = (await createOrganization({ partnerId: p })).id;
+    const siteId = randomUUID();
+    await getTestDb().execute(sql`INSERT INTO sites (id, org_id, name) VALUES (${siteId}, ${o}, 'Main')`);
+    const device = async () => {
+      const id = randomUUID();
+      await getTestDb().execute(sql`
+        INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+        VALUES (${id}, ${o}, ${siteId}, ${`agent-${id}`}, ${`host-${id}`}, 'windows', '11', 'amd64', '2.0.0')`);
+      return id;
+    };
+    const config = async (opts: { active?: boolean } = {}) => {
+      const id = randomUUID();
+      await getTestDb().execute(sql`
+        INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config, is_active, created_at)
+        VALUES (${id}, ${o}, 'Primary S3', 'file', 's3', ${JSON.stringify(SEALED_DESTINATION)}::jsonb, ${opts.active ?? true}, ${OLD.toISOString()}::timestamp)`);
+      return id;
+    };
+    const job = async (configId: string, deviceId: string, status: string, h: number, errorLog: string | null = null, identity: string = IDENTITY) => {
+      await getTestDb().execute(sql`
+        INSERT INTO backup_jobs (org_id, config_id, device_id, status, type, error_log, storage_identity, created_at, completed_at)
+        VALUES (${o}, ${configId}, ${deviceId}, ${status}::backup_status, 'scheduled', ${errorLog}, ${identity},
+                ${hoursAgo(h + 0.1).toISOString()}::timestamp, ${hoursAgo(h).toISOString()}::timestamptz)`);
+    };
+    return { p, o, device, config, job };
+  }
+
+  it('a destination refusing two devices is a permanent org incident; one device among healthy ones is not', async () => {
+    const t = await tenant();
+    const [d1, d2, d3] = [await t.device(), await t.device(), await t.device()];
+    const broken = await t.config();
+    await t.job(broken, d1, 'failed', 2, DENIED);
+    await t.job(broken, d2, 'failed', 1, DENIED);
+    await t.job(broken, d3, 'completed', 1);
+    const quiet = await t.config();
+    await t.job(quiet, d1, 'failed', 1, DENIED);
+    await t.job(quiet, d2, 'completed', 1);
+    await t.job(quiet, d3, 'completed', 1);
+
+    const untracked = await observe(backupDestinationSource);
+    expect(untracked.find((o) => o.sourceId === broken)).toMatchObject({
+      state: 'broken', severity: 'permanent', condition: 'destination_access_denied',
+      orgId: t.o, partnerId: t.p, displayName: 'Backup destination Primary S3', fixHref: '/backup#profiles',
+    });
+    expect(untracked.find((o) => o.sourceId === broken)!.detail).toMatch(/^2 of 3 devices failing since /);
+    expect(untracked.some((o) => o.sourceId === quiet)).toBe(false);
+    // Tracked, the quiet one reports its verdict (one bad device among healthy ones: unknown).
+    expect((await observe(backupDestinationSource, [quiet])).find((o) => o.sourceId === quiet)).toMatchObject({ state: 'unknown' });
+  });
+
+  it('a recovered destination is healthy; disabled retires; deleted is absent; old-identity failures do not count', async () => {
+    const t = await tenant();
+    const [d1, d2] = [await t.device(), await t.device()];
+    const recovered = await t.config();
+    await t.job(recovered, d1, 'failed', 10, DENIED);
+    await t.job(recovered, d2, 'failed', 9, DENIED);
+    await t.job(recovered, d1, 'completed', 2);
+    await t.job(recovered, d2, 'completed', 1);
+    const disabled = await t.config({ active: false });
+    await t.job(disabled, d1, 'failed', 1, DENIED);
+    await t.job(disabled, d2, 'failed', 1, DENIED);
+    const repointed = await t.config();
+    await t.job(repointed, d1, 'failed', 1, DENIED, 's3::storage.example.test::old-bucket');
+    await t.job(repointed, d2, 'failed', 1, DENIED, 's3::storage.example.test::old-bucket');
+    const deleted = randomUUID();
+
+    const untracked = await observe(backupDestinationSource);
+    expect(untracked.filter((o) => ([recovered, disabled, repointed] as string[]).includes(o.sourceId))).toEqual([]);
+    const tracked = await observe(backupDestinationSource, [recovered, disabled, repointed, deleted]);
+    expect(tracked.find((o) => o.sourceId === recovered)).toMatchObject({ state: 'healthy' });
+    expect(tracked.find((o) => o.sourceId === disabled)).toMatchObject({ state: 'retired' });
+    expect(tracked.find((o) => o.sourceId === repointed)).toMatchObject({ state: 'unknown' });
+    expect(tracked.some((o) => o.sourceId === deleted)).toBe(false);
+  });
+
+  it('failures older than the 72 h lookback are not evidence', async () => {
+    const t = await tenant();
+    const [d1, d2] = [await t.device(), await t.device()];
+    const stale = await t.config();
+    await t.job(stale, d1, 'failed', 73, DENIED);
+    await t.job(stale, d2, 'failed', 73, DENIED);
+    expect((await observe(backupDestinationSource)).some((o) => o.sourceId === stale)).toBe(false);
   });
 });
 

@@ -126,6 +126,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/partnerVisibleOrgs.ts': 'listing: the partner org-list population, shared with the partner settings inheritance counts (#9170); excludes hidden orgs, never reads devices',
   'services/aiToolsBackupRecoveryReads.ts': 'caller read: joins devices only to apply the site ceiling to a recovery row',
   'services/backupHealthReadModel.ts': 'read model: backup health',
+  'services/connectionHealth/sources/backupDestination.ts': 'read model: the backup_destination health verdict (#11772) counts the job outcomes of devices on one backup config; reads backup_jobs.device_id only to group them, selects no device targets and runs nothing',
   'services/contractQuantities.ts': 'billing: contract quantities',
   'services/endpointMessaging/history.ts': 'read model: endpoint message send history and per-device delivery detail (#8742); lists existing deliveries, selects no targets',
   'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
