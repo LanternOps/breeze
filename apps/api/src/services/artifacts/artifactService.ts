@@ -506,8 +506,9 @@ export function artifactDownloadContentType(stored: string): string {
  *    run when it was requested (`trigger_ref.siteId`) is an allowed site of
  *    the run's organization, and every input device frozen on the run
  *    (`staged_inputs.deviceIds`) is in the run's organization and currently
- *    in an allowed site (site-restricted callers only). A run whose inputs
- *    are not recorded, or that staged artifact inputs, is not visible; or
+ *    in an allowed site (site-restricted callers only). A run with no input
+ *    devices, whose inputs are not recorded, or that staged artifact inputs,
+ *    is not visible; or
  *  - it has no run, and it was captured in a chat session the caller created,
  *    whose device (when the session has one) is in scope as above. A session
  *    with no device does not satisfy an exact-device caller.
@@ -551,11 +552,19 @@ export function artifactSiteScopeCondition(
           AND ${site}."org_id" = ${run}."org_id"
           AND ${inList(sql`${site}."id"`, allowedSites)}
       )
-      AND jsonb_typeof(${run}."staged_inputs"->'deviceIds') = 'array'
-      AND jsonb_typeof(${run}."staged_inputs"->'handles') = 'array'
-      AND jsonb_array_length(${run}."staged_inputs"->'handles') = 0
+      AND CASE
+        WHEN jsonb_typeof(${run}."staged_inputs"->'deviceIds') = 'array'
+          AND jsonb_typeof(${run}."staged_inputs"->'handles') = 'array'
+        THEN jsonb_array_length(${run}."staged_inputs"->'deviceIds') > 0
+          AND jsonb_array_length(${run}."staged_inputs"->'handles') = 0
+        ELSE false
+      END
       AND NOT EXISTS (
-        SELECT 1 FROM jsonb_array_elements_text(${run}."staged_inputs"->'deviceIds') AS ${input}("device_id")
+        SELECT 1 FROM jsonb_array_elements_text(CASE
+          WHEN jsonb_typeof(${run}."staged_inputs"->'deviceIds') = 'array'
+          THEN ${run}."staged_inputs"->'deviceIds'
+          ELSE '[]'::jsonb
+        END) AS ${input}("device_id")
         WHERE NOT EXISTS (
           SELECT 1 FROM "devices" AS ${inputDevice}
           WHERE ${inputDevice}."id"::text = ${input}."device_id"

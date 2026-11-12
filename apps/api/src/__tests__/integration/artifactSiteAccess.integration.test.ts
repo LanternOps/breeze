@@ -97,6 +97,10 @@ async function seed() {
     const runAnalysisANoDevices = await analysis(siteA.id, staged([]));
     const runAnalysisADeviceB = await analysis(siteA.id, staged([deviceA.id, deviceB.id]));
     const runAnalysisAUnknownInputs = await analysis(siteA.id, null);
+    const runAnalysisANoDeviceKey = await analysis(siteA.id, { handles: [] } as never);
+    const runAnalysisAMalformedInputs = await analysis(siteA.id, { handles: [], deviceIds: deviceA.id } as never);
+    const runAnalysisBNoDevices = await analysis(siteB.id, staged([]));
+    const runAnalysisBDeviceA = await analysis(siteB.id, staged([deviceA.id]));
     const runAnalysisAStagedHandle = await analysis(siteA.id, staged([deviceA.id], [randomUUID()]));
     const runDesignA = await run({ profile: 'design', triggerRef: { siteId: siteA.id } });
 
@@ -114,6 +118,10 @@ async function seed() {
       runAnalysisANoDevices: await artifact('run-analysis-a-no-devices', runAnalysisANoDevices, null),
       runAnalysisADeviceB: await artifact('run-analysis-a-device-b', runAnalysisADeviceB, null),
       runAnalysisAUnknownInputs: await artifact('run-analysis-a-unknown-inputs', runAnalysisAUnknownInputs, null),
+      runAnalysisANoDeviceKey: await artifact('run-analysis-a-no-device-key', runAnalysisANoDeviceKey, null),
+      runAnalysisAMalformedInputs: await artifact('run-analysis-a-malformed-inputs', runAnalysisAMalformedInputs, null),
+      runAnalysisBNoDevices: await artifact('run-analysis-b-no-devices', runAnalysisBNoDevices, null),
+      runAnalysisBDeviceA: await artifact('run-analysis-b-device-a', runAnalysisBDeviceA, null),
       runAnalysisAStagedHandle: await artifact('run-analysis-a-staged-handle', runAnalysisAStagedHandle, null),
       runDesignA: await artifact('run-design-a', runDesignA, null),
       sessionOwnNoDevice: await artifact('session-own', null, sessionOwnNoDevice),
@@ -171,8 +179,9 @@ describe('AI artifact site access (live DB)', () => {
 
   runDb('an unrestricted user sees every artifact in the organization', async () => {
     expect(await visibleNames(ids, authFor(ids, {}))).toEqual([
-      'neither', 'run-analysis-a', 'run-analysis-a-device-b', 'run-analysis-a-no-devices',
-      'run-analysis-a-staged-handle', 'run-analysis-a-unknown-inputs', 'run-analysis-b', 'run-analysis-no-site', 'run-design-a',
+      'neither', 'run-analysis-a', 'run-analysis-a-device-b', 'run-analysis-a-malformed-inputs', 'run-analysis-a-no-device-key', 'run-analysis-a-no-devices',
+      'run-analysis-a-staged-handle', 'run-analysis-a-unknown-inputs', 'run-analysis-b', 'run-analysis-b-device-a',
+      'run-analysis-b-no-devices', 'run-analysis-no-site', 'run-design-a',
       'run-device-a', 'run-device-b', 'session-other-device-a', 'session-own',
       'session-own-device-a', 'session-own-device-b',
     ]);
@@ -180,7 +189,7 @@ describe('AI artifact site access (live DB)', () => {
 
   runDb('a site-restricted user sees run artifacts of their sites and their own chat artifacts', async () => {
     expect(await visibleNames(ids, authFor(ids, { allowedSiteIds: [ids.siteA] }))).toEqual([
-      'run-analysis-a', 'run-analysis-a-no-devices', 'run-device-a', 'session-own', 'session-own-device-a',
+      'run-analysis-a', 'run-device-a', 'session-own', 'session-own-device-a',
     ]);
   });
 
@@ -193,13 +202,25 @@ describe('AI artifact site access (live DB)', () => {
     // Inputs that cannot be determined, or staged artifacts, stay hidden.
     expect(both).not.toContain('run-analysis-a-unknown-inputs');
     expect(both).not.toContain('run-analysis-a-staged-handle');
+    expect(both).not.toContain('run-analysis-a-no-device-key');
+    // Inputs of the wrong JSON shape are hidden, not a query error.
+    expect(both).not.toContain('run-analysis-a-malformed-inputs');
+    // An analysis with no input devices fails closed for restricted users,
+    // whichever site it recorded.
+    expect(both).not.toContain('run-analysis-a-no-devices');
+    expect(both).not.toContain('run-analysis-b-no-devices');
+    // The recorded site must itself be allowed, even when every input device is.
+    const siteAOnly = await visibleNames(ids, authFor(ids, { allowedSiteIds: [ids.siteA] }));
+    expect(siteAOnly).not.toContain('run-analysis-b-device-a');
+    expect(siteAOnly).not.toContain('run-analysis-b-no-devices');
+    expect(both).toContain('run-analysis-b-device-a');
     // An input device moving out of the allowed sites hides the run's artifacts.
     await withSystemDbAccessContext(() => db.execute(
       sql`UPDATE devices SET site_id = ${ids.siteB} WHERE id = ${ids.deviceA}`,
     ));
     const after = await visibleNames(ids, authFor(ids, { allowedSiteIds: [ids.siteA] }));
     expect(after).not.toContain('run-analysis-a');
-    expect(after).toContain('run-analysis-a-no-devices');
+    expect(after).not.toContain('run-analysis-a-no-devices');
   });
 
   runDb('a run artifact follows the run device when the device moves site', async () => {

@@ -34,7 +34,8 @@ describe('artifactSiteScopeCondition', () => {
     expect(query.sql).toContain('"artifact_scope_run_device"."site_id" IN');
     expect(query.sql).toContain(`"artifact_scope_run"."profile" = 'analysis'`);
     expect(query.sql).toContain(`"artifact_scope_run"."trigger_ref"->>'siteId'`);
-    expect(query.sql).toContain(`jsonb_array_elements_text("artifact_scope_run"."staged_inputs"->'deviceIds')`);
+    expect(query.sql).toContain('jsonb_array_elements_text(CASE');
+    expect(query.sql).toContain(`jsonb_array_length("artifact_scope_run"."staged_inputs"->'deviceIds') > 0`);
     expect(query.sql).toContain(`jsonb_array_length("artifact_scope_run"."staged_inputs"->'handles') = 0`);
     expect(query.sql).toContain('"artifact_scope_run_input_device"."site_id" IN');
     expect(query.sql).toContain('"artifact_scope_session"."user_id" =');

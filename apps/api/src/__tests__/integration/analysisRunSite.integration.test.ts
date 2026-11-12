@@ -11,7 +11,7 @@ import { createDevice, createOrganization, createPartner, createSite } from './d
 const runDb = it.runIf(Boolean(process.env.DATABASE_URL));
 
 describe('verifiedAnalysisSiteId (live DB)', () => {
-  runDb('keeps a site only when it is in the org and holds every input device', async () => {
+  runDb('keeps a site only when it is in the org and holds every input device, of which there is at least one', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const otherOrg = await createOrganization({ partnerId: partner.id });
@@ -22,7 +22,10 @@ describe('verifiedAnalysisSiteId (live DB)', () => {
     const deviceA2 = await createDevice({ orgId: org.id, siteId: siteA.id });
     const deviceB = await createDevice({ orgId: org.id, siteId: siteB.id });
 
-    expect(await verifiedAnalysisSiteId(org.id, siteA.id, [])).toBe(siteA.id);
+    // No input devices: nothing ties the run to a site.
+    expect(await verifiedAnalysisSiteId(org.id, siteA.id, [])).toBeNull();
+    // The stored id is the database's, in its canonical form.
+    expect(await verifiedAnalysisSiteId(org.id, siteA.id.toUpperCase(), [deviceA.id])).toBe(siteA.id);
     expect(await verifiedAnalysisSiteId(org.id, siteA.id, [deviceA.id, deviceA2.id, deviceA.id])).toBe(siteA.id);
     expect(await verifiedAnalysisSiteId(org.id, siteA.id, [deviceA.id, deviceB.id])).toBeNull();
     expect(await verifiedAnalysisSiteId(org.id, siteA.id, [randomUUID()])).toBeNull();
