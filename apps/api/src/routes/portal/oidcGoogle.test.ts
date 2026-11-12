@@ -577,8 +577,26 @@ describe('GET /auth/oidc/google/callback', () => {
 
   const DENY_REASONS: PortalOidcDenyReason[] = [
     'org_unresolved', 'host_mismatch', 'org_unavailable', 'method_off', 'identity_other_org', 'identity_conflict',
-    'account_inactive', 'invited_only', 'invite_invalid', 'link_invalid', 'requests_capped', 'no_address', 'request_conflict',
+    'account_inactive', 'invited_only', 'invite_invalid', 'link_invalid', 'requests_capped', 'no_address',
   ];
+
+  it('request_conflict (D9) lands on its own result code with p=google; the reason is audited as a denial', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { res } = await signInWith({ kind: 'denied', reason: 'request_conflict', orgId: ORG });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=request_pending&p=google`);
+      expectClearsBinding(res);
+      expect(portalSessions.size).toBe(0);
+      expect(h.audit).toHaveBeenCalledTimes(1);
+      expect(h.audit.mock.calls[0]![1]).toMatchObject({
+        action: 'portal.auth.oidc.login', result: 'failure', orgId: ORG,
+        details: { provider: 'google', outcome: 'denied', reason: 'request_conflict' },
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
   it.each(DENY_REASONS)('every denied reason maps to the same redirect; the reason goes only to audit (provider google) (%s)', async (reason) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

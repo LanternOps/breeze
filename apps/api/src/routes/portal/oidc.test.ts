@@ -673,6 +673,24 @@ describe('GET /auth/oidc/entra/callback', () => {
     'account_inactive', 'invited_only', 'invite_invalid', 'link_invalid', 'requests_capped', 'no_address',
   ];
 
+  it('request_conflict (W7 D9) lands on its own result code with no provider parameter; the reason is audited as a denial', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { res } = await signInWith({ kind: 'denied', reason: 'request_conflict', orgId: ORG });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=request_pending`);
+      expectClearsBinding(res);
+      expect(portalSessions.size).toBe(0);
+      expect(h.audit).toHaveBeenCalledTimes(1);
+      expect(h.audit.mock.calls[0]![1]).toMatchObject({
+        action: 'portal.auth.oidc.login', result: 'failure', orgId: ORG,
+        details: { provider: 'entra', outcome: 'denied', reason: 'request_conflict' },
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it.each(DENY_REASONS)('callback maps every denied reason to the same redirect and writes the reason only to audit (%s)', async (reason) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
