@@ -186,6 +186,16 @@ describe('checkSignupPassword', () => {
       .toEqual({ ok: true });
   });
 
+  it('gives the link attempt back for a locked account whatever password was sent', async () => {
+    const redis = fakeRedis();
+    const locked = fakeAccount({ allowed: false, count: 6, reachesLimit: false });
+
+    expect(await checkSignupPassword({ redis: redis as any, tokenHash: 't1', passwordHash, password: 'wrong', account: locked }))
+      .toEqual({ ok: false, reason: 'account_locked' });
+
+    expect(redis.store.has(signupPasswordAttemptKey('t1'))).toBe(false);
+  });
+
   it('still counts a wrong password against the link while the account is unlocked', async () => {
     const redis = fakeRedis();
 
