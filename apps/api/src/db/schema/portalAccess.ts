@@ -67,6 +67,9 @@ export const portalAccessRequests = pgTable('portal_access_requests', {
   // Entra oid ; Google sub
   subject: text('subject'),
   entraTenantId: text('entra_tenant_id'),
+  // W7: the `hd` of a Google request, lower(btrim()); set for, and only for,
+  // source 'google' (portal_access_requests_google_hd_chk).
+  googleHostedDomain: text('google_hosted_domain'),
   status: text('status').$type<PortalAccessRequestStatus>().notNull().default('pending'),
   requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
   lastRequestedAt: timestamp('last_requested_at', { withTimezone: true }).notNull().defaultNow(),
