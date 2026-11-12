@@ -20,8 +20,20 @@ import { isSiteRestrictedPrincipalKind } from '../services/resilienceSiteAuthori
 import {
   classifyDrExecutionAuthorizationError,
   createDrExecutionAndEnqueue,
+  DrPlanDefinitionError,
 } from '../services/drExecutionService';
 import { isBareMetalRebuildConfig } from '../services/drBareMetalRebuildStep';
+import { drExecutionView } from '../services/drExecutionView';
+import {
+  addDrPlanGroup,
+  deleteDrPlanGroup,
+  DR_PLAN_EXECUTION_IN_PROGRESS,
+  updateDrPlan,
+  updateDrPlanGroup,
+  type DrPlanChanges,
+  type DrPlanGroupChanges,
+  type DrPlanWriteResult,
+} from '../services/drPlanWrites';
 import {
   collectReadableDrRows,
   drGroupsReadable,
@@ -186,6 +198,25 @@ async function authorizePlanStoredDevices(
   return authorizeStoredDevices(c, groups.flatMap((group) => uniqueDeviceIds(group.devices)), orgId);
 }
 
+/**
+ * The response for a plan write that did not land. Every plan and group write
+ * goes through services/drPlanWrites.ts (plan row lock, refusal while an
+ * execution is pending or running, plan revision moved with the write).
+ */
+function planWriteRefusal(c: Context, result: Exclude<DrPlanWriteResult<unknown>, { status: 'written' }>) {
+  switch (result.status) {
+    case 'execution_in_progress':
+      return c.json({
+        error: 'A DR execution of this plan is pending or running. Wait for it to finish, or abort it, before changing the plan.',
+        code: DR_PLAN_EXECUTION_IN_PROGRESS,
+      }, 409);
+    case 'group_not_found':
+      return c.json({ error: 'Group not found' }, 404);
+    case 'plan_not_found':
+      return c.json({ error: 'Plan not found' }, 404);
+  }
+}
+
 function resolveOrgId(
   auth: {
     orgId?: string | null;
@@ -329,18 +360,16 @@ drRoutes.patch(
     const planDenial = await authorizePlanStoredDevices(c, id, orgId);
     if (planDenial) return denyDeviceScope(c, planDenial);
 
-    const updateData: Record<string, unknown> = { updatedAt: new Date() };
-    if (payload.name !== undefined) updateData.name = payload.name;
-    if (payload.description !== undefined) updateData.description = payload.description;
-    if (payload.status !== undefined) updateData.status = payload.status;
-    if (payload.rpoTargetMinutes !== undefined) updateData.rpoTargetMinutes = payload.rpoTargetMinutes;
-    if (payload.rtoTargetMinutes !== undefined) updateData.rtoTargetMinutes = payload.rtoTargetMinutes;
+    const changes: DrPlanChanges = {};
+    if (payload.name !== undefined) changes.name = payload.name;
+    if (payload.description !== undefined) changes.description = payload.description;
+    if (payload.status !== undefined) changes.status = payload.status;
+    if (payload.rpoTargetMinutes !== undefined) changes.rpoTargetMinutes = payload.rpoTargetMinutes;
+    if (payload.rtoTargetMinutes !== undefined) changes.rtoTargetMinutes = payload.rtoTargetMinutes;
 
-    const [updated] = await db
-      .update(drPlans)
-      .set(updateData)
-      .where(and(eq(drPlans.id, id), eq(drPlans.orgId, orgId)))
-      .returning();
+    const result = await updateDrPlan({ planId: id, orgId, changes });
+    if (result.status !== 'written') return planWriteRefusal(c, result);
+    const updated = result.row;
 
     writeRouteAudit(c, {
       orgId,
@@ -377,11 +406,9 @@ drRoutes.delete(
     if (planDenial) return denyDeviceScope(c, planDenial);
 
     // Archive instead of hard delete
-    const [updated] = await db
-      .update(drPlans)
-      .set({ status: 'archived', updatedAt: new Date() })
-      .where(and(eq(drPlans.id, id), eq(drPlans.orgId, orgId)))
-      .returning();
+    const result = await updateDrPlan({ planId: id, orgId, changes: { status: 'archived' } });
+    if (result.status !== 'written') return planWriteRefusal(c, result);
+    const updated = result.row;
 
     writeRouteAudit(c, {
       orgId,
@@ -424,23 +451,21 @@ drRoutes.post(
       if (denial) return denyDeviceScope(c, denial);
     }
 
-    const [row] = await db
-      .insert(drPlanGroups)
-      .values({
-        planId,
-        orgId,
+    const result = await addDrPlanGroup({
+      planId,
+      orgId,
+      values: {
         name: payload.name,
         sequence: payload.sequence ?? 0,
         dependsOnGroupId: payload.dependsOnGroupId ?? null,
         devices: payload.devices ?? [],
         restoreConfig: payload.restoreConfig ?? {},
         estimatedDurationMinutes: payload.estimatedDurationMinutes ?? null,
-      })
-      .returning();
+      },
+    });
+    if (result.status !== 'written') return planWriteRefusal(c, result);
 
-    if (!row) return c.json({ error: 'Failed to create group' }, 500);
-
-    return c.json({ data: row }, 201);
+    return c.json({ data: result.row }, 201);
   }
 );
 
@@ -482,27 +507,18 @@ drRoutes.patch(
       if (denial) return denyDeviceScope(c, denial);
     }
 
-    const updateData: Record<string, unknown> = {};
-    if (payload.name !== undefined) updateData.name = payload.name;
-    if (payload.sequence !== undefined) updateData.sequence = payload.sequence;
-    if (payload.dependsOnGroupId !== undefined) updateData.dependsOnGroupId = payload.dependsOnGroupId;
-    if (payload.devices !== undefined) updateData.devices = payload.devices;
-    if (payload.restoreConfig !== undefined) updateData.restoreConfig = payload.restoreConfig;
-    if (payload.estimatedDurationMinutes !== undefined) updateData.estimatedDurationMinutes = payload.estimatedDurationMinutes;
+    const changes: DrPlanGroupChanges = {};
+    if (payload.name !== undefined) changes.name = payload.name;
+    if (payload.sequence !== undefined) changes.sequence = payload.sequence;
+    if (payload.dependsOnGroupId !== undefined) changes.dependsOnGroupId = payload.dependsOnGroupId;
+    if (payload.devices !== undefined) changes.devices = payload.devices;
+    if (payload.restoreConfig !== undefined) changes.restoreConfig = payload.restoreConfig;
+    if (payload.estimatedDurationMinutes !== undefined) changes.estimatedDurationMinutes = payload.estimatedDurationMinutes;
 
-    const [updated] = await db
-      .update(drPlanGroups)
-      .set(updateData)
-      .where(
-        and(
-          eq(drPlanGroups.id, gid),
-          eq(drPlanGroups.planId, planId),
-          eq(drPlanGroups.orgId, orgId)
-        )
-      )
-      .returning();
+    const result = await updateDrPlanGroup({ planId, orgId, groupId: gid, changes });
+    if (result.status !== 'written') return planWriteRefusal(c, result);
 
-    return c.json({ data: updated });
+    return c.json({ data: result.row });
   }
 );
 
@@ -535,15 +551,8 @@ drRoutes.delete(
     const storedDenial = await authorizeStoredDevices(c, existing.devices, orgId);
     if (storedDenial) return denyDeviceScope(c, storedDenial);
 
-    await db
-      .delete(drPlanGroups)
-      .where(
-        and(
-          eq(drPlanGroups.id, gid),
-          eq(drPlanGroups.planId, planId),
-          eq(drPlanGroups.orgId, orgId)
-        )
-      );
+    const result = await deleteDrPlanGroup({ planId, orgId, groupId: gid });
+    if (result.status !== 'written') return planWriteRefusal(c, result);
 
     return c.json({ success: true });
   }
@@ -603,6 +612,16 @@ drRoutes.post(
         executionType,
         initiatedBy: auth.user?.id ?? null,
         auth,
+        // The same bar, checked against the definition the execution actually
+        // captured under the plan lock (the check above read the plan earlier).
+        validateDefinition: (groups) => {
+          if (groups.some((group) => isBareMetalRebuildConfig(group.restoreConfig))) {
+            const perms = c.get('permissions') as UserPermissions | undefined;
+            if (!perms || !hasPermission(perms, PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action)) {
+              throw new DrPlanDefinitionError('backup_write_required');
+            }
+          }
+        },
       });
     } catch (error) {
       const failure = classifyDrExecutionAuthorizationError(error);
@@ -620,7 +639,7 @@ drRoutes.post(
       details: { planId, executionType },
     });
 
-    return c.json({ data: execution }, 201);
+    return c.json({ data: drExecutionView(execution) }, 201);
   }
 );
 
@@ -661,14 +680,14 @@ drRoutes.get(
       return db.select().from(drExecutions).where(and(...pageConditions))
         .orderBy(desc(drExecutions.createdAt), desc(drExecutions.id)).limit(pageSize);
     };
-    if (siteCeiling === null) return c.json({ data: await load(undefined, limit) });
+    if (siteCeiling === null) return c.json({ data: (await load(undefined, limit)).map(drExecutionView) });
 
     const visible = await collectReadableDrRows({
       limit,
       load,
       filter: (rows) => filterReadableDrExecutions(rows, auth, orgId, allowedSiteIds),
     });
-    return c.json({ data: visible });
+    return c.json({ data: visible.map(drExecutionView) });
   }
 );
 
@@ -718,7 +737,7 @@ drRoutes.get(
 
     return c.json({
       data: {
-        ...execution,
+        ...drExecutionView(execution),
         plan: plan ?? null,
         groups,
       },
@@ -767,6 +786,6 @@ drRoutes.post(
       resourceId: id,
     });
 
-    return c.json({ data: updated });
+    return c.json({ data: updated ? drExecutionView(updated) : updated });
   }
 );

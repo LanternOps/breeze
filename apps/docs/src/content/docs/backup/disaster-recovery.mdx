@@ -121,6 +121,18 @@ If a group can't start, the execution error names the specific missing prerequis
 
 DR plan steps that restore a backup also follow the [restore integrity checks](/backup/restoring/#integrity-checks-on-restore): each target device needs a v0.120.0 or later agent, and a plan cannot restore a **Not verified** (unattested) snapshot, because that needs a technician's two-factor confirmation. Restore such a snapshot from the console instead.
 
+### What an execution runs
+
+Each execution runs the recovery groups as they were when it started: their devices, sequence order, dependencies and restore configuration are saved with the execution, and later plan edits never change a queued or running execution.
+
+While an execution of a plan is pending or running, the plan and its recovery groups cannot be edited or archived. The console shows an error, and the API returns `409` with the code `dr_plan_execution_in_progress`. Wait for the execution to finish, or abort it, then make the change.
+
+When an AI assistant or API key asks to run a plan, a second person approves it. The approval covers every recovery group's devices, order, dependencies and restore configuration, not only the plan name. If the plan or any of its groups changes after approval, the run is refused (`dr_plan_changed`) and a new approval is needed.
+
+<Aside type="caution" title="Upgrading">
+Executions that were already queued or running before the upgrade have no saved group definition. They stop with `execution_definition_unavailable` instead of continuing, and commands already sent to devices are not recalled. Review pending and running executions before upgrading, and start a new execution afterwards if one is still needed. Approvals to run a plan that were granted but not yet carried out before the upgrade must be requested again.
+</Aside>
+
 ### Viewing Execution History
 
 Past executions are listed on the plan detail page, showing:

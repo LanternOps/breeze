@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
@@ -13,7 +14,7 @@ vi.mock('../db', () => ({
 }));
 
 import { db } from '../db';
-import { drPlans } from '../db/schema';
+import { drExecutions, drPlans } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
@@ -22,11 +23,16 @@ import { createDrExecutionAndEnqueue } from './drExecutionService';
 import { resolveAiCallerPermissions } from './aiToolsRestoreAuthorization';
 import { requiredPermissionsForTool } from './aiGuardrails';
 import { ResilienceAuthorizationError } from './resilienceSiteAuthorization';
+import { DrPlanDefinitionError } from './drExecutionService';
 
-vi.mock('./drExecutionService', async (importOriginal) => ({
-  classifyDrExecutionAuthorizationError: (await importOriginal<typeof import('./drExecutionService')>()).classifyDrExecutionAuthorizationError,
-  createDrExecutionAndEnqueue: vi.fn(),
-}));
+vi.mock('./drExecutionService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./drExecutionService')>();
+  return {
+    classifyDrExecutionAuthorizationError: actual.classifyDrExecutionAuthorizationError,
+    DrPlanDefinitionError: actual.DrPlanDefinitionError,
+    createDrExecutionAndEnqueue: vi.fn(),
+  };
+});
 vi.mock('./aiToolsRestoreAuthorization', () => ({
   resolveAiCallerPermissions: vi.fn(),
 }));
@@ -61,6 +67,7 @@ function createQueryChain(rows: any[] = []) {
   chain.groupBy = vi.fn(() => chain);
   chain.orderBy = vi.fn(() => chain);
   chain.limit = vi.fn(() => chain);
+  chain.for = vi.fn(() => chain);
   chain.offset = vi.fn(() => chain);
   chain.then = (resolve: (value: any[]) => unknown, reject?: (error: unknown) => unknown) =>
     Promise.resolve(rows).then(resolve, reject);
@@ -121,6 +128,20 @@ function mockInsertSequence(rowsList: any[][]) {
 function mockUpdateSequence(rowsList: any[][]) {
   let index = 0;
   vi.mocked(db.update).mockImplementation(() => createUpdateChain(rowsList[index++] ?? []) as any);
+}
+
+/** The approved definition an execute_dr_plan release carries into the handler. */
+function approvedContext(groups: unknown[], overrides: Record<string, unknown> = {}) {
+  return {
+    actionIntentId: 'intent-1',
+    verifiedDrPlan: {
+      digest: 'approved-digest',
+      definition: {
+        planId: PLAN_ID, orgId: ORG_ID, updatedAt: '2026-08-01T00:00:00.000Z', status: 'active',
+        groups: groups as any, ...overrides,
+      },
+    },
+  };
 }
 
 function makeAuth(): AuthContext {
@@ -275,7 +296,7 @@ describe('aiToolsDR handlers', () => {
     ['manage_dr_plan', { action: 'update_plan', planId: PLAN_ID, name: 'Updated DR Plan' }],
   ])('%s handler returns a JSON string', async (toolName, input) => {
     prepareHandlerMocks(toolName);
-    const result = await toolMap.get(toolName)!.handler(input as Record<string, unknown>, makeAuth());
+    const result = await toolMap.get(toolName)!.handler(input as Record<string, unknown>, makeAuth(), approvedContext([]));
     expect(typeof result).toBe('string');
     expect(() => JSON.parse(result)).not.toThrow();
   });
@@ -310,9 +331,11 @@ describe('aiToolsDR handlers', () => {
         [planRow],
         [{ id: HOST_ID, orgId: ORG_ID, siteId: null, status: 'online', osType: 'linux' }],
         [{ id: DEVICE_ID, siteId: null }], // group devices are all in the plan's org
+        [{ id: PLAN_ID, orgId: ORG_ID }], // plan row lock
+        [], // no pending or running execution
       ]);
       mockInsertSequence([[{ id: GROUP_ID }]]);
-      // W03-D10: the plan revision bump must match the plan row.
+      // The plan revision bump must match the plan row.
       vi.mocked(db.update).mockImplementation(() => createUpdateChain([{ id: PLAN_ID }]) as any);
       const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
         action: 'add_group', planId: PLAN_ID, name: 'Tier 1', devices: [DEVICE_ID],
@@ -434,12 +457,55 @@ describe('DR plan tools match the route', () => {
     },
   );
 
+  it('execute_dr_plan refuses a call that carries no approved definition', async () => {
+    mockSelectSequence([[planRow]]);
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+    ));
+    expect(result.error).toBe('approved_definition_required');
+    expect(createDrExecutionAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('execute_dr_plan refuses an approved definition of another plan', async () => {
+    mockSelectSequence([[planRow]]);
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+      approvedContext([], { planId: '77777777-7777-7777-7777-777777777777' }),
+    ));
+    expect(result.error).toBe('approved_definition_required');
+    expect(createDrExecutionAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('execute_dr_plan hands the approved definition to the execution unchanged', async () => {
+    mockSelectSequence([[planRow]]);
+    vi.mocked(resolveAiCallerPermissions).mockResolvedValue(grant(['devices', 'execute'], ['backup', 'write']) as any);
+    const context = approvedContext([bareMetalGroup]);
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(), context,
+    ));
+    expect(result.success).toBe(true);
+    expect(result.groupCount).toBe(1);
+    expect(createDrExecutionAndEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+      verifiedDefinition: context.verifiedDrPlan,
+    }));
+  });
+
+  it('execute_dr_plan reports a plan changed since approval', async () => {
+    mockSelectSequence([[planRow]]);
+    vi.mocked(createDrExecutionAndEnqueue).mockReset();
+    vi.mocked(createDrExecutionAndEnqueue).mockRejectedValue(new DrPlanDefinitionError('dr_plan_changed'));
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'failover' }, makeAuth(), approvedContext([]),
+    ));
+    expect(result.error).toBe('dr_plan_changed');
+  });
+
   it('execute_dr_plan refuses a BARE_METAL_REBUILD plan without backup:write', async () => {
-    mockSelectSequence([[planRow], [bareMetalGroup]]);
+    mockSelectSequence([[planRow]]);
     vi.mocked(resolveAiCallerPermissions).mockResolvedValue(grant(['devices', 'execute']) as any);
 
     const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
-      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(), approvedContext([bareMetalGroup]),
     ));
 
     expect(result.error).toBe('backup_write_required');
@@ -447,11 +513,11 @@ describe('DR plan tools match the route', () => {
   });
 
   it('execute_dr_plan runs a BARE_METAL_REBUILD plan with backup:write', async () => {
-    mockSelectSequence([[planRow], [bareMetalGroup]]);
+    mockSelectSequence([[planRow]]);
     vi.mocked(resolveAiCallerPermissions).mockResolvedValue(grant(['devices', 'execute'], ['backup', 'write']) as any);
 
     const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
-      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(), approvedContext([bareMetalGroup]),
     ));
 
     expect(result.success).toBe(true);
@@ -461,7 +527,7 @@ describe('DR plan tools match the route', () => {
   it('execute_dr_plan does not need backup:write for a plan without bare-metal groups', async () => {
     prepareHandlerMocks('execute_dr_plan');
     const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
-      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(), approvedContext([]),
     ));
     expect(result.success).toBe(true);
     expect(resolveAiCallerPermissions).not.toHaveBeenCalled();
@@ -473,7 +539,7 @@ describe('DR plan tools match the route', () => {
     vi.mocked(createDrExecutionAndEnqueue).mockRejectedValue(new ResilienceAuthorizationError(403, 'site_access_denied'));
 
     const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
-      { planId: PLAN_ID, executionType: 'failover' }, makeAuth(),
+      { planId: PLAN_ID, executionType: 'failover' }, makeAuth(), approvedContext([]),
     ));
 
     expect(result.error).toBe('site_access_denied');
@@ -500,20 +566,23 @@ describe('DR plan tools match the route', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  // W03-D10 (#6757, quorum QW3): an approved or running execution re-reads the
-  // plan's groups, and the execute_dr_plan effect digest pins only the plan
-  // row. So a plan write must not land while an execution is pending/running,
-  // and every group write bumps the plan row (fail-safe: BEFORE the group write).
-  describe('a plan cannot change under an approved or running execution (W03-D10)', () => {
+  // Every plan and group write goes through drPlanWrites: it locks the plan
+  // row (execution creation takes the same lock), refuses while an execution
+  // is pending or running, and moves the plan revision in the same
+  // transaction, so an approval pinned before the change no longer matches.
+  describe('plan and group writes go through the locked plan write path', () => {
     const group = { id: GROUP_ID, orgId: ORG_ID, devices: [DEVICE_ID] };
+    const locked = [{ id: PLAN_ID, orgId: ORG_ID }];
     const running = [{ id: EXECUTION_ID }];
-    it.each([
-      ['update_plan', { action: 'update_plan', planId: PLAN_ID, name: 'x' }, [[planRow], running]],
-      ['add_group', { action: 'add_group', planId: PLAN_ID, name: 'g' }, [[planRow], running]],
-      ['update_group', { action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, name: 'x' }, [[group], running]],
-      ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, [[group], running]],
-    ] as const)('%s is refused while an execution is pending or running', async (_name, input, selects) => {
-      mockSelectSequence(selects as unknown as any[][]);
+    const WRITES = [
+      ['update_plan', { action: 'update_plan', planId: PLAN_ID, name: 'x' }, [planRow]],
+      ['add_group', { action: 'add_group', planId: PLAN_ID, name: 'g' }, [planRow]],
+      ['update_group', { action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, name: 'x' }, [group]],
+      ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, [group]],
+    ] as const;
+
+    it.each(WRITES)('%s is refused while an execution is pending or running', async (_name, input, first) => {
+      mockSelectSequence([[...first], locked, running]);
       const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
       expect(result.error).toBe('dr_plan_execution_in_progress');
       expect(db.update).not.toHaveBeenCalled();
@@ -521,18 +590,29 @@ describe('DR plan tools match the route', () => {
       expect(db.delete).not.toHaveBeenCalled();
     });
 
-    // PR review (#10117): a zero-row write under forced RLS is a silent no-op,
-    // so neither the revision bump nor the group/plan write may report success
-    // when it matched nothing — a skipped bump would leave the digest unmoved.
-    it.each([
-      ['add_group', { action: 'add_group', planId: PLAN_ID, name: 'g' }, [[planRow], []]],
-      ['update_group', { action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, name: 'x' }, [[group], []]],
-      ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, [[group], []]],
-    ] as const)('%s refuses, writing no group, when the plan revision bump matches no row', async (_name, input, selects) => {
-      mockSelectSequence(selects as unknown as any[][]);
-      vi.mocked(db.update).mockImplementation(((table: unknown) => createUpdateChain(table === drPlans ? [] : [{ id: GROUP_ID }])) as any);
+    it.each(WRITES)('%s locks the plan row before it checks for executions', async (_name, input, first) => {
+      const chains: any[] = [];
+      const rows = [[...first], locked, [], [{ id: PLAN_ID }]];
+      vi.mocked(db.select).mockImplementation((() => {
+        const chain = createQueryChain(rows[chains.length] ?? []);
+        chains.push(chain);
+        return chain;
+      }) as any);
+      vi.mocked(db.update).mockImplementation((() => createUpdateChain([{ id: PLAN_ID }])) as any);
+      vi.mocked(db.insert).mockImplementation((() => createInsertChain([{ id: GROUP_ID }])) as any);
+      vi.mocked(db.delete).mockImplementation((() => createDeleteChain([{ id: GROUP_ID }])) as any);
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
+      expect(result.error).toBeUndefined();
+      expect(chains[1].from).toHaveBeenCalledWith(drPlans);
+      expect(chains[1].for).toHaveBeenCalledWith('update');
+      expect(chains[2].from).toHaveBeenCalledWith(drExecutions);
+    });
+
+    it.each(WRITES)('%s refuses, writing nothing, when the plan row is gone', async (_name, input, first) => {
+      mockSelectSequence([[...first], []]);
       const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
       expect(result.error).toBe('Plan not found or access denied');
+      expect(db.update).not.toHaveBeenCalled();
       expect(db.insert).not.toHaveBeenCalled();
       expect(db.delete).not.toHaveBeenCalled();
     });
@@ -542,31 +622,29 @@ describe('DR plan tools match the route', () => {
       ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, 'Group not found or access denied'],
       ['update_plan', { action: 'update_plan', planId: PLAN_ID, name: 'x' }, 'Plan not found or access denied'],
     ] as const)('%s reports an error when its write matches no row', async (name, input, error) => {
-      mockSelectSequence(name === 'update_plan' ? [[planRow], []] : [[group], []]);
+      mockSelectSequence([name === 'update_plan' ? [planRow] : [group], locked, []]);
       vi.mocked(db.update).mockImplementation(((table: unknown) => createUpdateChain(table === drPlans && name !== 'update_plan' ? [{ id: PLAN_ID }] : [])) as any);
       vi.mocked(db.delete).mockImplementation((() => createDeleteChain([])) as any);
       const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
       expect(result.error).toBe(error);
     });
 
-    it.each([
-      ['add_group', { action: 'add_group', planId: PLAN_ID, name: 'g' }, [[planRow], []]],
-      ['update_group', { action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, name: 'x' }, [[group], []]],
-      ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, [[group], []]],
-    ] as const)('%s bumps dr_plans.updated_at before writing the group', async (_name, input, selects) => {
-      mockSelectSequence(selects as unknown as any[][]);
-      mockInsertSequence([[{ id: GROUP_ID }]]);
+    it.each(WRITES)('%s moves dr_plans.updated_at with the write', async (_name, input, first) => {
+      mockSelectSequence([[...first], locked, []]);
       const order: string[] = [];
+      const planSets: Record<string, unknown>[] = [];
       vi.mocked(db.update).mockImplementation(((table: unknown) => {
-        order.push(table === drPlans ? 'plan' : 'other-update');
-        return createUpdateChain([{ id: GROUP_ID }]);
+        order.push(table === drPlans ? 'plan' : 'group-write');
+        const chain = createUpdateChain([table === drPlans ? { id: PLAN_ID } : { id: GROUP_ID }]);
+        if (table === drPlans) chain.set = vi.fn((values: Record<string, unknown>) => { planSets.push(values); return chain; });
+        return chain;
       }) as any);
       vi.mocked(db.insert).mockImplementation((() => { order.push('group-write'); return createInsertChain([{ id: GROUP_ID }]); }) as any);
       vi.mocked(db.delete).mockImplementation((() => { order.push('group-write'); return createDeleteChain([{ id: GROUP_ID }]); }) as any);
       const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
       expect(result.error).toBeUndefined();
-      expect(order[0]).toBe('plan');
-      expect(order.length).toBeGreaterThan(1);
+      expect(order).toContain('plan');
+      expect(planSets.some((values) => values.updatedAt instanceof Date)).toBe(true);
     });
   });
 
