@@ -275,7 +275,7 @@ func TestHandleHttpRequest(t *testing.T) {
 
 		// 127.0.0.1 is block-listed, so we bind the test server to all
 		// interfaces and connect via the machine's non-loopback IPv4 address so
-		// IsBlocked passes. If no such address exists (e.g. loopback-only CI),
+		// the deny list passes. If no such address exists (e.g. loopback-only CI),
 		// skip — the fetch→encode path is covered by TestFetchAndEncodeHttp.
 		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("X-Test", "yes")

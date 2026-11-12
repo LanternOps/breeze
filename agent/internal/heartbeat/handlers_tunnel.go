@@ -46,45 +46,24 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	isVNC := tunnelType == "vnc"
 
-	// Defense-in-depth: check hardcoded block list.
-	if blocked, reason := tunnel.IsBlocked(targetHost, targetPort, isVNC); blocked {
+	// Defense-in-depth: every address the target resolves to must pass the
+	// hardcoded deny list and the allowlist rules sent in the payload. The
+	// only exception is the local VNC endpoint (127.0.0.1:5900); a "vnc" type
+	// does not relax the checks for any other destination. Empty rules = deny.
+	rules := parseTunnelAllowlistRules(cmd.Payload["allowlistRules"])
+	dialHost, err := tunnel.ResolveDestination(targetHost, targetPort, isVNC, rules)
+	if err != nil {
 		return tools.CommandResult{
 			Status:     "failed",
-			Error:      fmt.Sprintf("target %s:%d is blocked: %s", targetHost, targetPort, reason),
+			Error:      err.Error(),
 			DurationMs: time.Since(start).Milliseconds(),
-		}
-	}
-
-	// Defense-in-depth: validate against allowlist rules sent in the payload.
-	if !isVNC {
-		var rules []tunnel.AllowlistRule
-		if rawRules, ok := cmd.Payload["allowlistRules"].([]interface{}); ok {
-			for _, r := range rawRules {
-				if pattern, ok := r.(string); ok {
-					rule, err := tunnel.ParseAllowlistRule(pattern)
-					if err != nil {
-						log.Warn("invalid allowlist rule from API", "pattern", pattern, "error", err.Error())
-						continue
-					}
-					rules = append(rules, rule)
-				}
-			}
-		}
-		// Defense-in-depth: deny if target doesn't match any rule.
-		// Empty rules = deny (API should always send rules for proxy tunnels).
-		if !tunnel.IsAllowed(targetHost, targetPort, rules) {
-			return tools.CommandResult{
-				Status:     "failed",
-				Error:      fmt.Sprintf("target %s:%d not permitted by allowlist", targetHost, targetPort),
-				DurationMs: time.Since(start).Milliseconds(),
-			}
 		}
 	}
 
 	// For VNC on macOS, ensure Screen Sharing is running.
 	// On non-darwin, IsScreenSharingRunning() returns false and
 	// EnableScreenSharing() is a no-op, so skip the policy gate.
-	if isVNC && tunnel.IsScreenSharingSupported() {
+	if isVNC && targetHost == "127.0.0.1" && targetPort == 5900 && tunnel.IsScreenSharingSupported() {
 		managedByPolicy := h.tunnelMgr != nil && h.tunnelMgr.IsManagedByPolicy()
 		running := tunnel.IsScreenSharingRunning()
 
@@ -146,7 +125,7 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	if err := h.tunnelMgr.OpenTunnel(tunnelID, targetHost, targetPort, tunnelType, onData, onClose); err != nil {
+	if err := h.tunnelMgr.OpenTunnel(tunnelID, dialHost, targetPort, tunnelType, onData, onClose); err != nil {
 		return tools.CommandResult{
 			Status:     "failed",
 			Error:      err.Error(),
@@ -159,6 +138,29 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 		"target":   fmt.Sprintf("%s:%d", targetHost, targetPort),
 		"type":     tunnelType,
 	}, time.Since(start).Milliseconds())
+}
+
+// parseTunnelAllowlistRules parses the destination rules sent by the API. A
+// rule that does not parse permits nothing, so it is logged and skipped.
+func parseTunnelAllowlistRules(raw any) []tunnel.AllowlistRule {
+	rawRules, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	rules := make([]tunnel.AllowlistRule, 0, len(rawRules))
+	for _, r := range rawRules {
+		pattern, ok := r.(string)
+		if !ok {
+			continue
+		}
+		rule, err := tunnel.ParseAllowlistRule(pattern)
+		if err != nil {
+			log.Warn("invalid allowlist rule from API", "pattern", pattern, "error", err.Error())
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	return rules
 }
 
 func handleTunnelData(h *Heartbeat, cmd Command) tools.CommandResult {

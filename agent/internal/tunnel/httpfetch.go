@@ -33,6 +33,10 @@ type FetchRequest struct {
 	// SkipTLSVerify disables TLS certificate verification for this request.
 	// Set per-session for known self-signed embedded LAN devices. Default false.
 	SkipTLSVerify bool
+	// DialIP, when set, is the numeric address the connection is made to. The
+	// caller sets it to the address it validated for Host; Host still supplies
+	// the URL, the Host header and the TLS server name.
+	DialIP string
 }
 
 // FetchResponse holds the proxied response.
@@ -71,7 +75,7 @@ func Fetch(ctx context.Context, req FetchRequest, timeout time.Duration, maxBody
 	// SECURITY: build the URL with net/url and pin the host to req.Host.
 	// A browser-supplied path like "@evil.com/x" or "//evil.com/x" would, if
 	// string-concatenated, re-parse so the host becomes evil.com — bypassing the
-	// IsBlocked/IsAllowed checks (which only validated req.Host). Reject anything
+	// destination checks (which only validated req.Host). Reject anything
 	// that is not a plain relative path before constructing the request.
 	if !strings.HasPrefix(req.Path, "/") {
 		return nil, fmt.Errorf("path must start with /")
@@ -115,9 +119,22 @@ func Fetch(ctx context.Context, req FetchRequest, timeout time.Duration, maxBody
 		}
 	}
 
+	var dialContext func(context.Context, string, string) (net.Conn, error)
+	if req.DialIP != "" {
+		if net.ParseIP(req.DialIP) == nil {
+			return nil, fmt.Errorf("invalid dial address")
+		}
+		dialAddr := net.JoinHostPort(req.DialIP, strconv.Itoa(req.Port))
+		dialer := &net.Dialer{Timeout: timeout}
+		dialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, dialAddr)
+		}
+	}
+
 	client := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
+			DialContext: dialContext,
 			// TLS verification is ON by default. It is disabled only when the
 			// owning tunnel session explicitly opted in (req.SkipTLSVerify) for a
 			// known self-signed embedded LAN device — a per-session, audited choice.
