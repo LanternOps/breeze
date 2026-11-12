@@ -20,8 +20,9 @@ export const CONTEXT_WINDOW_MEMO_MAX_ENTRIES = 1_000;
 /** Refusing with no provider call needs a window the endpoint stated this recently; past it the endpoint is asked again. */
 export const CONTEXT_WINDOW_REFUSAL_FRESH_MS = 10 * 60_000;
 
-const MIN_PLAUSIBLE_WINDOW = 1024;
-const MAX_PLAUSIBLE_TOKENS = 100_000_000;
+/** Bounds a stated, discovered or persisted window must fall within (#11396 reads them too). */
+export const MIN_PLAUSIBLE_WINDOW = 1024;
+export const MAX_PLAUSIBLE_TOKENS = 100_000_000;
 const MIN_SAFETY_MARGIN = 256;
 const SAFETY_MARGIN_RATIO = 0.01;
 /**
