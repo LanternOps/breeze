@@ -2176,9 +2176,11 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
 
     expect(res.status).toBe(401);
     expect(createTokenPair).not.toHaveBeenCalled();
-    // A locked account must not be able to reset its own failure counter or
-    // move last_login_at by presenting the correct password.
+    // A locked account must not be able to reset its own failure counter, give
+    // its attempt back, or move last_login_at by presenting the correct password.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(clearAccountFailures).not.toHaveBeenCalled();
+    expect(releaseAccountAttempt).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
   });
 
@@ -2217,6 +2219,23 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     expect(reserveAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'admin@msp.com');
   });
 
+  it('keeps a wrong password counted and sends no notice before the limit', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 3, reachesLimit: false });
+    vi.mocked(verifyPassword).mockResolvedValue(false);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'nope' });
+
+    expect(res.status).toBe(401);
+    await new Promise((resolve) => setImmediate(resolve));
+    // Giving the attempt back on a wrong password would switch the lockout off.
+    expect(releaseAccountAttempt).not.toHaveBeenCalled();
+    expect(auditUserLoginFailure).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ action: 'auth.login.account_locked' }) }),
+    );
+  });
+
   it('sends the lockout notice when a wrong password is the attempt that reaches the limit', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
     vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 5, reachesLimit: true });
@@ -2234,6 +2253,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
         }),
       );
     });
+    expect(releaseAccountAttempt).not.toHaveBeenCalled();
   });
 
   it('gives the reserved attempt back after a correct password', async () => {

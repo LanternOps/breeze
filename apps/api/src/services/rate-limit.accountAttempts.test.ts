@@ -43,6 +43,12 @@ describe('reserveAccountAttempt', () => {
     expect(await reserveAccountAttempt(redis as unknown as Redis, 'victim@example.com')).toEqual(expected);
   });
 
+  it('refuses when the reply is not a number', async () => {
+    const redis = { eval: vi.fn(async () => 'not-a-number') };
+
+    expect((await reserveAccountAttempt(redis as unknown as Redis, 'victim@example.com')).allowed).toBe(false);
+  });
+
   it('refuses when Redis is missing or fails, as the lockout check always has', async () => {
     const failing = { eval: vi.fn(async () => { throw new Error('redis down'); }) };
 
@@ -70,6 +76,19 @@ describe('releaseAccountAttempt', () => {
     expect(script).toContain("redis.call('DECR', KEYS[1])");
     expect(script).toContain("redis.call('DEL', KEYS[1])");
     expect(key).toBe('login:account-fail:victim@example.com');
+  });
+
+  it('does nothing when the lockout is turned off (LOGIN_ACCOUNT_LOCKOUT_MAX=0)', async () => {
+    process.env.LOGIN_ACCOUNT_LOCKOUT_MAX = '0';
+    try {
+      const redis = { eval: vi.fn() };
+
+      await releaseAccountAttempt(redis as unknown as Redis, 'victim@example.com');
+
+      expect(redis.eval).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.LOGIN_ACCOUNT_LOCKOUT_MAX;
+    }
   });
 
   it('is best-effort', async () => {
