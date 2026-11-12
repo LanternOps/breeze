@@ -688,9 +688,10 @@ export async function denyPortalAccessRequest(
 // ---------------------------------------------------------------------------
 
 /**
- * The source and address of one of the org's requests, for the route's
- * pre-approval checks (W6 D11). Null when there is no such request in the org
- * (or the id is malformed); the approval then reports NOT_FOUND itself.
+ * The source, address and (for `google`) Workspace domain of one of the org's
+ * requests, for the route's pre-approval checks (W6 D11, W7 D3 / D8). Null when
+ * there is no such request in the org (or the id is malformed); the approval
+ * then reports NOT_FOUND itself.
  *
  * Its own savepoint, so a failed read stops there and a caller catching OUTSIDE
  * this call (the `/decide` loop) leaves the request transaction usable (#11203).
@@ -698,11 +699,15 @@ export async function denyPortalAccessRequest(
 export async function readPortalAccessRequestForDecision(
   orgId: string,
   requestId: string,
-): Promise<{ source: PortalAccessRequestSource; email: string } | null> {
+): Promise<{ source: PortalAccessRequestSource; email: string; googleHostedDomain: string | null } | null> {
   if (!UUID_RE.test(requestId)) return null;
   return withDbTransaction(async () => {
     const [row] = await db
-      .select({ source: portalAccessRequests.source, email: portalAccessRequests.email })
+      .select({
+        source: portalAccessRequests.source,
+        email: portalAccessRequests.email,
+        googleHostedDomain: portalAccessRequests.googleHostedDomain,
+      })
       .from(portalAccessRequests)
       .where(and(eq(portalAccessRequests.id, requestId), eq(portalAccessRequests.orgId, orgId)))
       .limit(1);

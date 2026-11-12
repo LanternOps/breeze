@@ -1613,4 +1613,99 @@ describe('routes (real router)', () => {
     expect((await inviteRes.json()).data.id).toBe(logins[0]!.id);
     expect((await readRequest(requestId)).portalUserId).toBe(logins[0]!.id);
   });
+
+  // W7 (#11384) D3, D8 through the real router: the route reads the request's
+  // hd and the contact rule with W5's read API outside the request
+  // transaction (it throws inside one), and the service fences the domain row.
+  const googleRequest = async (orgId: string, email: string, hostedDomain: string) => requestIdOf(await createPortalAccessRequest({
+    source: 'google', orgId, email, name: null, sub: `g-${randomUUID()}`, hostedDomain,
+  }));
+  const contactsAt = (orgId: string, email: string) =>
+    sys(() => db.select({ id: contacts.id }).from(contacts).where(and(eq(contacts.orgId, orgId), eq(contacts.email, email))));
+  /** What a W5 clear (`msp_removed`) writes: the row stays, its verification goes. */
+  const clearVerification = async (orgId: string, domain: string) => {
+    const cleared = await getTestDb().update(customerEmailDomains).set({
+      verifiedAt: null, verifiedMethod: null, verifiedEvidence: null, lastPassedAt: null, clearedAt: new Date(), clearedReason: 'msp_removed',
+    }).where(and(eq(customerEmailDomains.orgId, orgId), eq(customerEmailDomains.domain, domain)))
+      .returning({ id: customerEmailDomains.id });
+    expect(cleared).toHaveLength(1);
+  };
+
+  it('approve of a google request: hd re-checked outside the request transaction; the contact linked only under D3', async () => {
+    const { org, post, base } = await routeFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const secondary = await verifiedSelfDomain(org);
+    const people = [
+      { email: `g-on-${randomUUID()}@${hd.domain}`, contact: true },              // address on the hd
+      { email: `g-sec-${randomUUID()}@${secondary}`, contact: true },             // another domain verified for this org
+      { email: `g-off-${randomUUID()}@unverified.example.test`, contact: false }, // a domain nobody verified
+    ];
+    for (const person of people) {
+      const requestId = await googleRequest(org.id, person.email, hd.domain);
+      const res = await post(`${base}/${requestId}/approve`);
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect((await res.json()).data.outcome).toBe('account_created');
+      expect((await readRequest(requestId)).status).toBe('approved');
+      const [login] = await loginsFor(org.id, person.email);
+      expect(login).toMatchObject({ authMethod: 'google', status: 'active', browserAccess: 'granted' });
+      const contactRows = await contactsAt(org.id, person.email);
+      if (person.contact) {
+        expect(login!.contactId).toBe(contactRows[0]!.id);
+      } else {
+        expect(login!.contactId).toBeNull();
+        expect(contactRows).toEqual([]);
+      }
+    }
+    expect(sentEmails.map((e) => e.kind)).toEqual(['approved', 'approved', 'approved']);
+  });
+
+  it('approve refuses a google request whose hd is no longer verified (409), request stays pending', async () => {
+    const { org, get, post, base } = await routeFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const email = `g-lapsed-${randomUUID()}@${hd.domain}`;
+    const requestId = await googleRequest(org.id, email, hd.domain);
+    await clearVerification(org.id, hd.domain);
+
+    const res = await post(`${base}/${requestId}/approve`);
+    expect(res.status, await res.clone().text()).toBe(409);
+    expect(await res.json()).toEqual({
+      error: "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.",
+      code: 'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED',
+    });
+    expect((await readRequest(requestId)).status).toBe('pending');
+    expect(await loginsFor(org.id, email)).toEqual([]);
+    expect(sentEmails).toEqual([]);
+
+    // The queue shows why: the row's hd is no longer verified.
+    const list = await get(base);
+    expect(list.status).toBe(200);
+    expect((await list.json()).data.find((i: { id: string }) => i.id === requestId))
+      .toMatchObject({ source: 'google', googleHostedDomain: hd.domain, domainVerified: false });
+  });
+
+  it('decide reports domain_not_verified for a google request whose hd now belongs to another org and approves the rest', async () => {
+    const { org, post, base } = await routeFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    // Another org of the same partner holds the second request's hd: the fact names that org, not this one.
+    const sibling = await createOrganization({ partnerId: org.partnerId });
+    const elsewhere = await seedVerifiedGoogleDomain(sibling);
+    const okEmail = `g-ok-${randomUUID()}@${hd.domain}`;
+    const movedEmail = `g-moved-${randomUUID()}@${elsewhere.domain}`;
+    const okId = await googleRequest(org.id, okEmail, hd.domain);
+    const movedId = await googleRequest(org.id, movedEmail, elsewhere.domain);
+
+    const res = await post(`${base}/decide`, { requestIds: [movedId, okId], decision: 'approve' });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [
+        { requestId: movedId, result: 'domain_not_verified' },
+        { requestId: okId, result: 'approved' },
+      ],
+    });
+    expect((await readRequest(okId)).status).toBe('approved');
+    expect((await readRequest(movedId)).status).toBe('pending');
+    expect(await loginsFor(org.id, okEmail)).toHaveLength(1);
+    expect(await loginsFor(org.id, movedEmail)).toEqual([]);
+    expect(sentEmails).toEqual([{ kind: 'approved', to: okEmail }]);
+  });
 });

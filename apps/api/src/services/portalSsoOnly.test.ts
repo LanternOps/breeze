@@ -37,6 +37,7 @@ const g = vi.hoisted(() => ({
   verified: new Set<string>(),
   calls: [] as string[],
   error: null as Error | null,
+  policy: null as null | { effective: Record<string, { value: unknown; source: string }> },
 }));
 vi.mock('./portalAccessPolicy', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./portalAccessPolicy')>();
@@ -47,6 +48,10 @@ vi.mock('./portalAccessPolicy', async (importOriginal) => {
       if (g.error) throw g.error;
       return g.verified.has(orgId) ? ['contoso.example.com'] : [];
     }),
+    // W7 D12: resolveInviteSignInMethods' policy read. Pass-through unless a test sets `g.policy`.
+    resolvePortalAccessPolicy: vi.fn(async (orgId: string) => (g.policy
+      ? g.policy
+      : actual.resolvePortalAccessPolicy(orgId))),
   };
 });
 
@@ -57,6 +62,7 @@ import {
   isSsoOnlyStranded,
   lockSsoOnlyImpact,
   readSsoOnlyGoogleFacts,
+  resolveInviteSignInMethods,
   selectSsoOnlyFlips,
   ssoOnlyImpactDigest,
   type SsoOnlyFlipCandidate,
@@ -370,5 +376,30 @@ describe('W7: Google domain facts in the sso_only flips', () => {
     respondPartnerScope();
     g.error = new Error('evidence read failed');
     await expect(computeSsoOnlyFlips(partnerOwner, { googleEnabled: true })).rejects.toThrow('evidence read failed');
+  });
+});
+
+describe('W7: resolveInviteSignInMethods (D12)', () => {
+  const ORG = ORG_A;
+  const policy = (entra: boolean, google: boolean, passwordMode: 'allowed' | 'sso_only') => ({
+    effective: {
+      entraEnabled: { value: entra, source: 'org' },
+      googleEnabled: { value: google, source: 'org' },
+      passwordMode: { value: passwordMode, source: 'org' },
+    },
+  });
+  afterEach(() => { g.policy = null; });
+
+  it('reports each SSO method and the password from the effective policy', async () => {
+    const cases: Array<[ReturnType<typeof policy>, { microsoft: boolean; google: boolean; password: boolean }]> = [
+      [policy(false, false, 'allowed'), { microsoft: false, google: false, password: true }],
+      [policy(true, false, 'allowed'), { microsoft: true, google: false, password: true }],
+      [policy(false, true, 'sso_only'), { microsoft: false, google: true, password: false }],
+      [policy(true, true, 'allowed'), { microsoft: true, google: true, password: true }],
+    ];
+    for (const [effective, expected] of cases) {
+      g.policy = effective;
+      expect(await resolveInviteSignInMethods(ORG)).toEqual(expected);
+    }
   });
 });

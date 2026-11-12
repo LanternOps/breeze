@@ -791,7 +791,22 @@ describe('readPortalAccessRequestForDecision', () => {
     expect(await readPortalAccessRequestForDecision(ORG, 'not-a-uuid')).toBeNull();
     expect(h.calls).toHaveLength(0);
   });
+
+  it('W7 D8: also reads google_hosted_domain, the hd the route re-checks before a google approval', async () => {
+    h.results.push([{ source: 'google', email: 'ada@example.com', googleHostedDomain: 'example.com' }]);
+    expect(await readPortalAccessRequestForDecision(ORG, REQ))
+      .toEqual({ source: 'google', email: 'ada@example.com', googleHostedDomain: 'example.com' });
+    expect(firstSelectColumns(h.calls[0])).toEqual({
+      source: portalAccessRequests.source,
+      email: portalAccessRequests.email,
+      googleHostedDomain: portalAccessRequests.googleHostedDomain,
+    });
+  });
 });
+
+function firstSelectColumns(call: Call | undefined): unknown {
+  return call?.args[0];
+}
 
 describe('summarizePendingPortalAccessRequests', () => {
   it('totals the per-org counts', async () => {

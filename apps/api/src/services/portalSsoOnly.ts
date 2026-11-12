@@ -462,13 +462,22 @@ export function ssoOnlyImpactDigest(flips: SsoOnlyOrgImpact[]): string {
   return createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
+/** The sign-in methods an invite email offers. */
+export type InviteSignInMethods = { microsoft: boolean; google: boolean; password: boolean };
+
 /**
- * Which sign-in methods an invite email offers (spec §5.5): Microsoft when it is
- * effective for the org, a password when password sign-in is allowed. Read in a
- * savepoint of the held context, so a caller that catches a failure here leaves
- * its own transaction usable (#11203).
+ * Which sign-in methods an invite email offers (spec §5.5, W7 D12): Microsoft
+ * and Google each when effective for the org, a password when password sign-in
+ * is allowed. Google is effective only while the org has a verified domain
+ * (W7 D6): the resolver reads W5 outside the request transaction itself. Read
+ * in a savepoint of the held context, so a caller that catches a failure here
+ * leaves its own transaction usable (#11203).
  */
-export async function resolveInviteSignInMethods(orgId: string): Promise<{ microsoft: boolean; password: boolean }> {
+export async function resolveInviteSignInMethods(orgId: string): Promise<InviteSignInMethods> {
   const policy = await withDbTransactionIfHeld(() => resolvePortalAccessPolicy(orgId));
-  return { microsoft: isSignInMethodAllowed(policy, 'entra'), password: isSignInMethodAllowed(policy, 'password') };
+  return {
+    microsoft: isSignInMethodAllowed(policy, 'entra'),
+    google: isSignInMethodAllowed(policy, 'google'),
+    password: isSignInMethodAllowed(policy, 'password'),
+  };
 }
