@@ -8,7 +8,7 @@
 
 import { ERROR_CODES } from '@breeze/shared';
 import { findPartnerGroupRefs } from './groupFilterRefs';
-import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_AI_READ_ONLY_BODY } from './deviceGroupOwnership';
+import { acquireMembershipExportOrgLock, findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_AI_READ_ONLY_BODY } from './deviceGroupOwnership';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -2147,6 +2147,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access denied: some devices are outside your access', deniedDevices });
         }
 
+        // Export admission before the first membership row, the order every membership
+        // writer uses (services/groupMembership.ts evaluateGroupMembership).
+        await acquireMembershipExportOrgLock(groupOrgId);
         if (action === 'add_devices') {
           const results = await db.insert(deviceGroupMemberships)
             .values(requestedIds.map((deviceId) => ({

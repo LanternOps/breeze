@@ -141,9 +141,17 @@ export async function acquireGroupOrgMembershipLocks(
 }
 
 
-/** Match org-move/merge order: export admission must precede membership rows. */
-export async function acquireMembershipExportOrgLock(orgId: string): Promise<void> {
-  await db.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY[${orgId}]::uuid[])`);
+/**
+ * Match org-move/merge order: export admission must precede membership rows.
+ * Every membership writer takes it before its first membership write, so two
+ * writers never hold a row the other is waiting to write. `executor` is the
+ * caller's transaction or savepoint when it has one.
+ */
+export async function acquireMembershipExportOrgLock(
+  orgId: string,
+  executor: { execute(query: SQL): Promise<unknown> } = db,
+): Promise<void> {
+  await executor.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY[${orgId}]::uuid[])`);
 }
 
 /** Resolve only the caller's own organization under its existing RLS context. */

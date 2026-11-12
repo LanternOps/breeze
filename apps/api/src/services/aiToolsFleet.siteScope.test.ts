@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Membership writers take the org export lock first; it is a database call
+// this file's mocked db cannot run. Each writer's lock order is checked on
+// real Postgres by its own race in groupMembershipWriteOrder.integration.test.ts.
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  acquireMembershipExportOrgLock: vi.fn(async () => {}),
+}));
+
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
