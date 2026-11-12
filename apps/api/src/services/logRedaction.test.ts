@@ -6,6 +6,7 @@ import {
   redactLogFields,
   redactLogMessage,
   redactSensitiveValueShapes,
+  redactToolOutputFields,
 } from './logRedaction';
 
 describe('log redaction', () => {
@@ -301,3 +302,36 @@ describe('EDR provider credential field names (#8165 regression pin)', () => {
   });
 });
 
+describe('secret field-name checks', () => {
+  // The name checks before the word-pair rules were made linear, kept as the reference.
+  const refSecretKey = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
+  const refSecretMaterialKey = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
+  const refKeyMaterialKey = /(?:encrypt(?:ed|ion)_?keys?|recovery_?keys?|key_?hash(?:es)?|communities|[a-z0-9]_?encrypted)$/i;
+
+  it('checks a field name in linear time', () => {
+    for (const word of ['api', 'access', 'private', 'client']) {
+      const key = word.repeat(Math.floor(60_000 / word.length));
+      const started = performance.now();
+      const out = redactAgentLogFields({ [key]: 'plain value' }) as Record<string, unknown>;
+      expect(performance.now() - started).toBeLessThan(100);
+      expect(out[key]).toBe('plain value');
+    }
+  });
+
+  it('treats a field name as secret exactly as the previous pattern did', () => {
+    const alphabet = ['api', 'API', 'key', 'Key', 'access', 'private', 'client', 'secret', 'session', '\n', '\r', '\u2028', 'x', '_', 'encrypted', 'K'];
+    let seed = 0x7e57;
+    const next = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed;
+    };
+    for (let i = 0; i < 20_000; i += 1) {
+      let key = '';
+      for (let j = 1 + (next() % 6); j > 0; j -= 1) key += alphabet[next() % alphabet.length];
+      const logOut = (redactAgentLogFields({ [key]: 'plain value' }) as Record<string, unknown>)[key];
+      expect([key, logOut === '[REDACTED]']).toEqual([key, refSecretKey.test(key)]);
+      const toolOut = (redactToolOutputFields({ [key]: { inner: 'plain value' } }) as Record<string, unknown>)[key];
+      expect([key, toolOut === '[REDACTED]']).toEqual([key, refSecretMaterialKey.test(key) || refKeyMaterialKey.test(key)]);
+    }
+  });
+});
