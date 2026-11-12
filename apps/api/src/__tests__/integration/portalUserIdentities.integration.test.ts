@@ -33,8 +33,11 @@ import * as orgMergeModule from '../../services/orgMerge';
 import { resolveAndMintClientSession } from '../../services/clientAiExchange';
 import type { ClientAiEntraClaims } from '../../services/clientAiEntraJwt';
 import {
+  PORTAL_GOOGLE_ISSUER,
   ensureEntraIdentity,
   findPortalUserIdByEntraIdentity,
+  findPortalUserIdByIdentity,
+  linkPortalUserIdentity,
   listIdentityProvidersByUser,
   portalUserHasIdentitySql,
   reconcilePortalUserIdentities,
@@ -697,5 +700,103 @@ describe('portal identity drift report job', () => {
     const [{ n: after }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_user_identities`);
     expect(after).toBe(before);
     expect(await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, missing.id))).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W7 (#11384, plan D5): the Google branch of the identity link and the
+// provider-neutral reader, against the real unique keys and RLS (breeze_app,
+// system context, as sign-in runs them).
+// ---------------------------------------------------------------------------
+
+describe('linkPortalUserIdentity google + findPortalUserIdByIdentity (W7)', () => {
+  const googleSub = () => `g-${randomUUID()}`;
+  const link = (input: Parameters<typeof linkPortalUserIdentity>[1]) =>
+    withSystemDbAccessContext(() => linkPortalUserIdentity(db, input));
+  const identitiesOf = (portalUserId: string) =>
+    admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, portalUserId));
+
+  it('an account with an entra identity can link a google identity; a second google identity is a conflict', async () => {
+    const login = await seedEntraLogin(fx.orgId);
+    await seedIdentity(fx.orgId, login.id, login.tid, login.oid);
+    const sub = googleSub();
+    const now = new Date('2027-02-01T12:00:00Z');
+
+    await expect(link({
+      orgId: fx.orgId, portalUserId: login.id, provider: 'google', sub, linkedVia: 'self_link', clearPasswordHash: false, now,
+    })).resolves.toEqual({ kind: 'linked' });
+
+    const rows = await identitiesOf(login.id);
+    expect(rows.map((r: { provider: string }) => r.provider).sort()).toEqual(['entra', 'google']);
+    expect(rows.find((r: { provider: string }) => r.provider === 'google')).toMatchObject({
+      orgId: fx.orgId, issuer: PORTAL_GOOGLE_ISSUER, subject: sub, entraTenantId: null, linkedVia: 'self_link',
+    });
+    // Linking Google never touches the Entra identity or the legacy entra_* columns.
+    expect(rows.find((r: { provider: string }) => r.provider === 'entra')).toMatchObject({ issuer: entraIss(login.tid), subject: login.oid });
+    const [account] = await admin().select().from(portalUsers).where(eq(portalUsers.id, login.id));
+    expect(account).toMatchObject({ entraTenantId: login.tid, entraOid: login.oid });
+
+    // A second Google identity on the same account: (portal_user_id, provider) is taken. No throw, nothing written.
+    const outcome = await withSystemDbAccessContext(async () => {
+      const r = await linkPortalUserIdentity(db, {
+        orgId: fx.orgId, portalUserId: login.id, provider: 'google', sub: googleSub(), linkedVia: 'self_link', clearPasswordHash: true, now,
+      });
+      // Same transaction: a 23505 here would have aborted it (25P02).
+      const [probe] = await db.execute<{ one: number }>(sql`SELECT 1 AS one`);
+      return { r, probe };
+    });
+    expect(outcome).toEqual({ r: { kind: 'conflict' }, probe: { one: 1 } });
+    expect(await identitiesOf(login.id)).toHaveLength(2);
+  });
+
+  it('a google identity held by another account is a conflict; clearPasswordHash is not applied', async () => {
+    const holder = await seedEntraLogin(fx.orgId);
+    const sub = googleSub();
+    await link({ orgId: fx.orgId, portalUserId: holder.id, provider: 'google', sub, linkedVia: 'invite', clearPasswordHash: false, now: new Date() });
+    const [other] = await admin().insert(portalUsers).values({
+      orgId: fx.orgId, email: `pw-${randomUUID()}@example.com`, authMethod: 'password', passwordHash: 'hash-kept', status: 'active', browserAccess: 'granted',
+    }).returning({ id: portalUsers.id });
+
+    await expect(link({
+      orgId: fx.orgId, portalUserId: other.id, provider: 'google', sub, linkedVia: 'invite', clearPasswordHash: true, now: new Date(),
+    })).resolves.toEqual({ kind: 'conflict' });
+    expect(await identitiesOf(other.id)).toEqual([]);
+    const [after] = await admin().select().from(portalUsers).where(eq(portalUsers.id, other.id));
+    expect(after.passwordHash).toBe('hash-kept');
+  });
+
+  it('a google link with clearPasswordHash nulls the hash and writes no entra_* column', async () => {
+    const [login] = await admin().insert(portalUsers).values({
+      orgId: fx.orgId, email: `pw-${randomUUID()}@example.com`, authMethod: 'password', passwordHash: 'hash-cleared', status: 'active', browserAccess: 'granted',
+    }).returning({ id: portalUsers.id });
+    await expect(link({
+      orgId: fx.orgId, portalUserId: login.id, provider: 'google', sub: googleSub(), linkedVia: 'invite', clearPasswordHash: true, now: new Date(),
+    })).resolves.toEqual({ kind: 'linked' });
+    const [after] = await admin().select().from(portalUsers).where(eq(portalUsers.id, login.id));
+    expect(after).toMatchObject({ passwordHash: null, entraTenantId: null, entraOid: null, authMethod: 'password' });
+  });
+
+  it('findPortalUserIdByIdentity finds google and entra identities; the entra wrapper is unchanged', async () => {
+    const login = await seedEntraLogin(fx.orgId);
+    await seedIdentity(fx.orgId, login.id, login.tid, login.oid);
+    const sub = googleSub();
+    await link({ orgId: fx.orgId, portalUserId: login.id, provider: 'google', sub, linkedVia: 'self_link', clearPasswordHash: false, now: new Date() });
+    const expected = { portalUserId: login.id, orgId: fx.orgId };
+
+    const found = await withSystemDbAccessContext(async () => ({
+      google: await findPortalUserIdByIdentity(db, { provider: 'google', sub }),
+      entra: await findPortalUserIdByIdentity(db, { provider: 'entra', tid: login.tid, oid: login.oid }),
+      wrapper: await findPortalUserIdByEntraIdentity(db, { tid: login.tid, oid: login.oid }),
+      // The subject is case-sensitive and never normalized (D1).
+      otherCase: await findPortalUserIdByIdentity(db, { provider: 'google', sub: sub.toUpperCase() }),
+      // Each provider's lookup ignores the other's identity, even with a matching subject.
+      crossProvider: await findPortalUserIdByIdentity(db, { provider: 'google', sub: login.oid }),
+    }));
+    expect(found).toEqual({ google: expected, entra: expected, wrapper: expected, otherCase: null, crossProvider: null });
+
+    // Under another org's context the identity is invisible (RLS).
+    const foreign = await withDbAccessContext(orgCtx(await otherOrg()), () =>
+      findPortalUserIdByIdentity(db, { provider: 'google', sub }));
+    expect(foreign).toBeNull();
   });
 });

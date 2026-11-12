@@ -281,6 +281,12 @@ x-api-env: &api-env
   PORTAL_ENTRA_CLIENT_ID: ${PORTAL_ENTRA_CLIENT_ID:-}
   PORTAL_ENTRA_CLIENT_SECRET: ${PORTAL_ENTRA_CLIENT_SECRET:-}
   PORTAL_ENTRA_CALLBACK_BASE_URL: ${PORTAL_ENTRA_CALLBACK_BASE_URL:-}
+  # Customer portal "Sign in with Google" (the portal's own Google OAuth client).
+  # Off unless both the client ID and secret are set; the callback base is
+  # optional (defaults to the origin of PUBLIC_URL). See .env.example.
+  PORTAL_GOOGLE_CLIENT_ID: ${PORTAL_GOOGLE_CLIENT_ID:-}
+  PORTAL_GOOGLE_CLIENT_SECRET: ${PORTAL_GOOGLE_CLIENT_SECRET:-}
+  PORTAL_GOOGLE_CALLBACK_BASE_URL: ${PORTAL_GOOGLE_CALLBACK_BASE_URL:-}
   # Customer-portal self-registration kill switch (portal registration W6); unset = on.
   PORTAL_SELF_REGISTRATION_ENABLED: ${PORTAL_SELF_REGISTRATION_ENABLED:-}
   # Optional customer Graph-read onboarding. The executor is intentionally

@@ -26,6 +26,10 @@ describe('portal access tables export policy (W3)', () => {
     expect(Object.keys(policy!.columns).sort()).toEqual([...dbColumns].sort());
   });
 
+  it('classifies google_hosted_domain (W7 #11384) as include: a plain domain, like entra_tenant_id', () => {
+    expect(registry['portal_access_requests']?.columns['google_hosted_domain']?.decision).toBe('include');
+  });
+
   it('keeps password_mode via reviewedIncluded (holds a mode, not a secret)', () => {
     expect(registry['portal_access_policies']?.columns['password_mode']?.decision).toBe('include');
   });

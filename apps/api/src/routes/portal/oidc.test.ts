@@ -153,7 +153,7 @@ function policyFor(orgId: string, mode: 'allowed' | 'sso_only' | 'both') {
   return {
     orgId, partnerId: 'p-1',
     entraTenant: proven ? { tenantId: TENANT, provenAt: '2027-01-23T10:00:00.000Z' } : null,
-    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven }),
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven, googleDomainVerified: false }),
   };
 }
 
@@ -277,7 +277,7 @@ describe('GET /auth/methods', () => {
     const caps = { entra: true, google: false, selfRegistration: true };
     const withMode = (mode: 'off' | 'approval' | 'instant') => ({
       orgId: ORG, partnerId: 'p-1', entraTenant: null,
-      ...pickEffectivePortalAccessPolicy({ ...NO_ROW, selfRegistrationMode: mode }, null, caps, { entraTenantProven: false }),
+      ...pickEffectivePortalAccessPolicy({ ...NO_ROW, selfRegistrationMode: mode }, null, caps, { entraTenantProven: false, googleDomainVerified: false }),
     });
     h.hostOrg.mockImplementation(async (host: string) => (host === 'portal.acme.test' ? ORG : null));
     const ask = async () => (await (await app().request('/auth/methods', { headers: { Host: 'portal.acme.test' } })).json()) as { requestAccess: boolean };
@@ -303,7 +303,7 @@ describe('GET /auth/methods', () => {
     policyTestOnly.setCapabilities({ entra: true, google: false, selfRegistration: false });
     h.resolvePolicy.mockResolvedValue({
       orgId: ORG, partnerId: 'p-1', entraTenant: null,
-      ...pickEffectivePortalAccessPolicy({ ...NO_ROW, selfRegistrationMode: 'instant' }, null, { ...caps, selfRegistration: false }, { entraTenantProven: false }),
+      ...pickEffectivePortalAccessPolicy({ ...NO_ROW, selfRegistrationMode: 'instant' }, null, { ...caps, selfRegistration: false }, { entraTenantProven: false, googleDomainVerified: false }),
     });
     expect((await ask()).requestAccess).toBe(false);
   });

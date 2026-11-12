@@ -584,6 +584,17 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     ],
   }),
   defineEntry({
+    id: 'portal-google',
+    group: 'identity-sso',
+    label: 'Customer portal: Sign in with Google (OAuth client)',
+    docsUrl: '/deploy/environment/',
+    vars: [
+      { name: 'PORTAL_GOOGLE_CLIENT_ID', secret: false, required: true },
+      { name: 'PORTAL_GOOGLE_CLIENT_SECRET', required: true },
+      { name: 'PORTAL_GOOGLE_CALLBACK_BASE_URL' },
+    ],
+  }),
+  defineEntry({
     id: 'twilio',
     group: 'identity-sso',
     label: 'Twilio SMS',

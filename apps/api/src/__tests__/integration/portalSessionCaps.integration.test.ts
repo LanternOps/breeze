@@ -21,8 +21,8 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { clientAiTenantMappings, portalAccessPolicies, portalUserIdentities, portalUsers } from '../../db/schema';
+import { and, eq } from 'drizzle-orm';
+import { clientAiTenantMappings, customerEmailDomains, portalAccessPolicies, portalUserIdentities, portalUsers } from '../../db/schema';
 import { clientAiAuthMiddleware } from '../../middleware/clientAiAuth';
 import { CLIENT_AI_REDIS_KEYS, CLIENT_AI_SESSION_TTL_SECONDS } from '../../routes/clientAi/schemas';
 import { portalRoutes } from '../../routes/portal';
@@ -48,7 +48,7 @@ const app = (() => {
 
 const profile = (token: string) => app.request('/portal/profile', { headers: { Authorization: `Bearer ${token}` } });
 
-async function mint(input: { portalUserId: string; orgId: string; authEpoch: number; method: PortalSessionMethod; entraTenantId?: string }) {
+async function mint(input: { portalUserId: string; orgId: string; authEpoch: number; method: PortalSessionMethod; entraTenantId?: string; googleHostedDomain?: string }) {
   const res = await app.request('/test/mint', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
   });
@@ -174,6 +174,133 @@ describe('entra browser sessions: tenant pin and absolute cap (real DB + router)
     const entraInSsoOnly = await mint({ ...ssoOnly.session, method: 'entra', entraTenantId: ssoOnly.tenantId });
     await expectRefusedAndPurged(pwInSsoOnly);
     expect((await profile(entraInSsoOnly)).status).toBe(200);
+  });
+});
+
+/**
+ * W7 (#11384) plan D7, Review Focus 3: a google session pins the verified
+ * Workspace domain (`hd`) it signed in with. The session middleware re-resolves
+ * the policy per request, and with Google on the resolver reads the org's
+ * verified domains (W5 read API, full freshness rules), so a domain that is
+ * removed or displaced ends every google session for it on the next request,
+ * while sessions for another still-verified domain of the same org live on.
+ * Verified domains are seeded as superuser (the W5 verifier is other suites').
+ */
+describe('google browser sessions: verified-domain pin and absolute cap (real DB + router)', () => {
+  const newDomain = (label: string) => `${label}-${randomUUID().slice(0, 8)}.example.com`;
+
+  async function seedVerifiedDomain(org: { id: string; partnerId: string }, domain: string) {
+    const at = new Date(Date.now() - 60_000);
+    await getTestDb().insert(customerEmailDomains).values({
+      partnerId: org.partnerId, orgId: org.id, domain, isActive: true, verificationToken: `tok-${randomUUID()}`,
+      verifiedAt: at, verifiedMethod: 'dns_txt', verifiedEvidence: { via: 'dns_txt', recordName: `_breeze-verify.${domain}` },
+      lastCheckedAt: at, lastPassedAt: at, lastCheckStatus: 'pass',
+    });
+  }
+
+  /** What a W5 clear writes (`msp_removed`, `displaced`): the row stays, its verification goes. */
+  async function clearVerification(orgId: string, domain: string, reason: 'msp_removed' | 'displaced') {
+    const cleared = await getTestDb().update(customerEmailDomains).set({
+      verifiedAt: null, verifiedMethod: null, verifiedEvidence: null, lastPassedAt: null,
+      clearedAt: new Date(), clearedReason: reason,
+    }).where(and(eq(customerEmailDomains.orgId, orgId), eq(customerEmailDomains.domain, domain)))
+      .returning({ id: customerEmailDomains.id });
+    expect(cleared).toHaveLength(1);
+  }
+
+  /** An org with Google on (org row), the given domains verified for it, and one active browser account. */
+  async function setupGoogle(policy: Partial<typeof portalAccessPolicies.$inferInsert>, domains: string[]) {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    await seedPolicy({ orgId: org.id, googleEnabled: true, ...policy });
+    for (const domain of domains) await seedVerifiedDomain({ id: org.id, partnerId: partner.id }, domain);
+    const [user] = await getTestDb().insert(portalUsers).values({
+      orgId: org.id, email: `gcaps-${randomUUID()}@acme.example`, passwordHash: await hashPassword('PortalCapsPass1!'),
+      authMethod: 'password', status: 'active', browserAccess: 'granted',
+    }).returning({ id: portalUsers.id, authEpoch: portalUsers.authEpoch });
+    return { orgId: org.id, partnerId: partner.id, session: { portalUserId: user!.id, orgId: org.id, authEpoch: user!.authEpoch } };
+  }
+
+  beforeEach(() => {
+    __testOnly.setCapabilities({ entra: false, google: true, selfRegistration: false });
+  });
+
+  it('google session dies on the next request when its hd verification is removed', async () => {
+    const hd = newDomain('rm');
+    const { orgId, partnerId, session } = await setupGoogle({ passwordMode: 'sso_only' }, [hd]);
+    const token = await mint({ ...session, method: 'google', googleHostedDomain: hd });
+    expect((await profile(token)).status).toBe(200);
+
+    await clearVerification(orgId, hd, 'msp_removed');
+    await expectRefusedAndPurged(token);
+
+    // Purged, not merely refused: verifying the domain again does not revive it.
+    await getTestDb().delete(customerEmailDomains).where(eq(customerEmailDomains.orgId, orgId));
+    await seedVerifiedDomain({ id: orgId, partnerId }, hd);
+    expect((await profile(token)).status).toBe(401);
+  });
+
+  it('google session dies when the domain is displaced to another org', async () => {
+    const hd = newDomain('disp');
+    const kept = newDomain('kept');
+    // Two verified domains, so Google stays on in org A: only the pin can refuse.
+    const { orgId, session } = await setupGoogle({}, [hd, kept]);
+    const displacedSession = await mint({ ...session, method: 'google', googleHostedDomain: hd });
+    const keptSession = await mint({ ...session, method: 'google', googleHostedDomain: kept });
+    expect((await profile(displacedSession)).status).toBe(200);
+    expect((await profile(keptSession)).status).toBe(200);
+
+    // Org B (another partner) takes the domain: A's row is cleared `displaced`, B's verified.
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    await clearVerification(orgId, hd, 'displaced');
+    await seedVerifiedDomain({ id: orgB.id, partnerId: partnerB.id }, hd);
+
+    await expectRefusedAndPurged(displacedSession);
+    expect((await profile(keptSession)).status).toBe(200);
+  });
+
+  it('a session for another still-verified hd of the same org survives', async () => {
+    const gone = newDomain('gone');
+    const other = newDomain('other');
+    const { orgId, session } = await setupGoogle({ passwordMode: 'sso_only' }, [gone, other]);
+    const goneSession = await mint({ ...session, method: 'google', googleHostedDomain: gone });
+    const otherSession = await mint({ ...session, method: 'google', googleHostedDomain: other });
+    // The same person, a password session: refused throughout (sso_only with Google on).
+    const pwSession = await mint({ ...session, method: 'password' });
+
+    await clearVerification(orgId, gone, 'msp_removed');
+
+    await expectRefusedAndPurged(goneSession);
+    const res = await profile(otherSession);
+    expect(res.status).toBe(200);
+    expect(portalSessions.has(otherSession)).toBe(true);
+    await expectRefusedAndPurged(pwSession);
+
+    // A session minted for a domain the org never verified is refused outright.
+    const neverVerified = await mint({ ...session, method: 'google', googleHostedDomain: newDomain('never') });
+    await expectRefusedAndPurged(neverVerified);
+  });
+
+  it('lowering ssoSessionMaxHours kills an older google session', async () => {
+    const hd = newDomain('cap');
+    const { orgId, session } = await setupGoogle({ passwordMode: 'sso_only' }, [hd]);
+    const older = await mint({ ...session, method: 'google', googleHostedDomain: hd });
+    const fresh = await mint({ ...session, method: 'google', googleHostedDomain: hd });
+    ageSession(older, 2 * HOUR_MS);
+    ageSession(fresh, 30 * 60_000);
+
+    expect((await profile(older)).status).toBe(200);
+    expect((await profile(fresh)).status).toBe(200);
+
+    await setOrgPolicy(orgId, { ssoSessionMaxHours: 1 });
+
+    await expectRefusedAndPurged(older);
+    expect((await profile(fresh)).status).toBe(200);
+
+    // Turning Google off ends the rest (W4 D9 parity).
+    await setOrgPolicy(orgId, { googleEnabled: false });
+    await expectRefusedAndPurged(fresh);
   });
 });
 

@@ -1342,6 +1342,16 @@ To set up the app registration:
 4. Under **API permissions**, add the delegated permissions `openid`, `profile` and `email`, plus `Directory.Read.All`. `Directory.Read.All` is used only during the tenant proof sign-in, so a customer's administrator can confirm their role. **Do not grant tenant-wide admin consent for `Directory.Read.All`**; customers consent to `openid profile email` only.
 5. Under **Token configuration**, add the ID-token optional claims `acct`, `email` and `xms_edov`.
 
+## Customer portal Google sign-in (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORTAL_GOOGLE_CLIENT_ID` | — | Client ID of the **Breeze Portal** Google OAuth web client (ends in `.apps.googleusercontent.com`). Sign in with Google for the customer portal stays off until both this and the secret are set. |
+| `PORTAL_GOOGLE_CLIENT_SECRET` | — | Client secret for that OAuth client. |
+| `PORTAL_GOOGLE_CALLBACK_BASE_URL` | origin of `PUBLIC_URL`, then `PUBLIC_APP_URL`, then `PUBLIC_API_URL` | Base URL used to build the redirect URI. Set it only when the portal is served from a different host than the API; use the portal host. |
+
+The OAuth client is a Google Cloud **Web application** client with one authorized redirect URI: `https://<your-breeze-domain>/api/v1/portal/auth/oidc/google/callback`.
+
 <Aside>
   The portal and the API must be served from one site, as in the default Caddy layout. The sign-in binding cookie is `SameSite=Lax`, so a split-site deployment can't complete the sign-in. If your portal is served from a separate host, set `PORTAL_ENTRA_CALLBACK_BASE_URL` to the portal host.
 </Aside>
